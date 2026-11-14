@@ -18,7 +18,8 @@ prints one line per fact:
      owner changed.
   3. **The gate over HTTPS**, from HQ: `/login` is Odile's page, anonymous `/`
      is a 302 to it, the judge signs in, and `/verify` is the tenant's own
-     report whose measurement is the one `/attestation` carries.
+     report whose measurement is the one `/attestation` carries; the page's
+     one-line `--expect` command is run end to end.
   4. **The DNS record.** The HQ demo copy is retired (2026-11-13), so the
      program prints the one-line command that moves the record; a switch back
      also needs an HQ demo restored, which this tree no longer carries.
@@ -77,6 +78,7 @@ UPLOADS = (
     ("demo-tenant-site.caddy", 0o644),
     ("login.html", 0o644),
     ("verify-lede.html", 0o644),
+    ("verify-command.html", 0o644),
     ("start-here.md", 0o644),
     ("session-receipt.json", 0o644),
 )
@@ -321,6 +323,12 @@ def verify_public(judge_password: str) -> tuple[bool, list[str]]:
                "/verify's measurement is /attestation's: "
                f"{(page_measurement.group(1) if page_measurement else '-')[:24]}… vs "
                f"{report_measurement[:24]}…")
+        command = re.search(
+            r"\./odile-verify https://demo\.odile\.fyi --expect ([0-9a-f]{96})",
+            verify_text)
+        record(command is not None and command.group(1) == report_measurement,
+               "the /verify page prints the one-line --expect command with this "
+               "machine's measurement")
     return ok, lines
 
 
@@ -436,6 +444,13 @@ def self_test() -> int:
           "the demo page passes the lede check")
     check(bool(lede_problem('<main><p class="lede">%s</p></main>' % CUSTOMER_SENTENCE)),
           "a page that opens with the customer row fails the lede check")
+    command = (HERE / "verify-command.html").read_text(encoding="utf-8")
+    check(command.count("<!--demo-check-->") == 1
+          and command.count("<!--/demo-check-->") == 1
+          and command.count("{{MEASUREMENT}}") == 1
+          and "./odile-verify https://demo.odile.fyi --expect {{MEASUREMENT}}" in command
+          and "<script" not in command and "<img" not in command,
+          "the demo command is one marked section with one measurement slot")
     check(RELEASE_SETUP_SOURCE.is_file()
           and "release-setup.done" in RELEASE_SETUP_SOURCE.read_text(encoding="utf-8"),
           "the release setup script this deploy installs writes its done marker once")
@@ -455,7 +470,8 @@ def cleanup_dry_run(console) -> None:
     one form the Webapp's command guard allows (no `rm -rf`, no `find -delete`,
     and the uploaded files are root-owned)."""
     names = ("apply_demo_public.py", "demo-tenant-site.caddy", "login.html",
-             "verify-lede.html", "start-here.md", "session-receipt.json")
+             "verify-lede.html", "verify-command.html", "start-here.md",
+             "session-receipt.json")
     quoted = " ".join(f"odile-demo-public-dryrun/{name}" for name in names)
     console.run(f"cd /tmp && sudo rm -f {quoted}", check=False)
     console.run("cd /tmp && sudo rmdir odile-demo-public-dryrun", check=False)
