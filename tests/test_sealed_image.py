@@ -57,6 +57,15 @@ SPIKE_MISSING = (
     "from this checkout; the hook, its stub harness and the reference decoder "
     "are exercised at HQ"
 )
+# `sealed-initrd.sh` reads the same HQ-only hook before its dry-run branch and
+# before its `--source` check, so a public checkout cannot run either of the
+# two script tests below; they run at HQ.
+INITRD_HOOK_MISSING = (
+    "sealed-initrd.sh reads the HQ-only hook "
+    "spike/sealed-unlock/initramfs/bb-sealed-unlock before it plans or checks "
+    "--source, and that file is absent from this checkout; the script tests are "
+    "exercised at HQ"
+)
 SEED = b"odile-bench-vcek-NOT-a-secret-32"
 IMAGE = ROOT / "deploy" / "image"
 # A real ed25519 public key line; the measured `bb.key=` is its base64.
@@ -410,6 +419,7 @@ class SealedHarnessTests(unittest.TestCase):
 class ScriptTests(unittest.TestCase):
     """The shell entry points: dry runs name the right work and change nothing."""
 
+    @unittest.skipUnless(HOOK.is_file(), INITRD_HOOK_MISSING)
     def test_sealed_initrd_dry_run_needs_no_source_and_names_it_missing(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             # Only the chroot is a dry-run input; the blackbox-images source is
@@ -435,6 +445,7 @@ class ScriptTests(unittest.TestCase):
             self.assertIn("mkinitramfs", result.stdout)
             self.assertFalse(out.exists(), "sealed-initrd --dry-run created its output")
 
+    @unittest.skipUnless(HOOK.is_file(), INITRD_HOOK_MISSING)
     def test_sealed_initrd_build_without_a_source_exits_2_and_names_the_flag(self) -> None:
         # The dry run plans; the build needs the tree. Removing the check must
         # not turn a missing source into a half-run build.

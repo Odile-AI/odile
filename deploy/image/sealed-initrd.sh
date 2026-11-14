@@ -103,6 +103,7 @@ done
 REL_DIR=${REL_DIR:-$OUT/release}
 BOOT=$OUT/boot
 KVER=6.12.115+deb13.1-amd64
+[ -f "$HOOK" ] || { echo "sealed-initrd: missing hook $HOOK" >&2; exit 2; }
 [ -x "$CHROOT/usr/sbin/mkinitramfs" ] || {
     echo "sealed-initrd: no initramfs-tools in $CHROOT (set --chroot)" >&2
     exit 2
@@ -120,9 +121,6 @@ fi
 if [ "$DRY_RUN" = 1 ]; then
     if [ "$HAVE_SOURCE" = 0 ]; then
         say missing "no blackbox-images source at $SOURCE (set --source); a real build stops before this plan runs"
-    fi
-    if [ ! -f "$HOOK" ]; then
-        say missing "no sealed-unlock hook at $HOOK; a real build stops before this plan runs"
     fi
     say would "verify $REL_DIR/{vmlinuz,initrd.img} and the source tarball hash"
     say would "copy $KVER modules + vmlinuz into $CHROOT and run depmod"
@@ -142,10 +140,6 @@ fi
     echo "sealed-initrd: no blackbox-images source at $SOURCE (set --source)" >&2
     exit 2
 }
-# The hook is in-tree at the spike path; a public checkout does not carry the
-# spike tree, so name it only when the build actually needs it (a dry run on
-# such a checkout still gets the plan, naming the hook as missing above).
-[ -f "$HOOK" ] || { echo "sealed-initrd: missing hook $HOOK" >&2; exit 2; }
 
 for tool in unmkinitramfs cpio gzip sha256sum gcc depmod cmp; do
     command -v "$tool" >/dev/null 2>&1 || { echo "sealed-initrd: missing $tool" >&2; exit 2; }
