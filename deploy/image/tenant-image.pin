@@ -35,7 +35,7 @@
   "schema": 1,
   "seal_blob_sha256": "64c994436378abdeb13d273223de2b855fe4b55a7474dd0d597b10981700c6c5",
   "seal_id": "37fa4c5d5fd74163",
-  "seal_key_id": "key_sha256=3461070ef08003753718b09d879970e980814cc26425d77717d6c2a9e39433b0",
+  "seal_key_id": "key_sha256=0c5e415a968a99f18d757adbe892d7352f77175790566dcd67e470a255caee9a",
   "signature": {
     "cert_fingerprint_sha256": "5A:21:B4:7F:D5:26:B6:E0:21:15:B1:E6:23:78:16:B1:D1:E5:63:67:CC:B5:B2:E8:22:F2:70:A7:7F:47:75:C0",
     "cert_sha256": "aea9052cf8d2d0f404c5320848eb0f5402cea090248f05a51bbb5cfdbd2b1a06",
