@@ -1706,8 +1706,11 @@ body equal to `web/<name>`; HEAD is 200 with `Content-Length` and no body, and
 `/nope.png` is 404 `no-store`. `scripts/manifest.py build --root
 /var/tmp/odile-505-port/root --user odile505p --audit
 …/usr/local/bin/odile-audit` produced `ffe35c32…` (49,957 bytes, 48 skills, 9
-packages, audit `539e205f…`); the diff against `main`'s `-6` document prints
-nothing but `generated_at` (the tool ignores it). The installer is `730278bb…`
+packages, audit `539e205f…`); `scripts/manifest.py diff` against `main`'s `-6`
+document prints exactly one changed row, `installer_sha256` (`49f90a3c…` →
+`730278bb…`; the tool ignores `generated_at` by design), so the vendor pin
+`c73dad4d…`, the skills artifact and the meter-free rows are unchanged. The
+installer is `730278bb…`
 (1,355,057 bytes: this card's icon set, routes and `--icons` start on the
 one-root head); `release/odile_install.py` is the same bytes;
 `release/release.json` names installer `730278bb…` and manifest `ffe35c32…`
@@ -1717,9 +1720,9 @@ card on the replaced tree at 14:49Z and odl/ODL-521 here at 15:21Z), `-6` is
 t_781fc5cb's and on `main`, and `-7` is odl/ODL-521's; the live cut at the cut's own measurement (2026-11-14T19:46Z) was
 `2026.11.14-4` (`6b42f8ef…`, 616,370 bytes); by 20:05Z it was `2026.11.14-6`
 (`49f90a3c…`, 616,403 bytes), and the next deploy publishes this cut. `make
-check` is green: 1,275 tests, `--self-test` PASS, secret scan PASS
-(303 files, 8,330,179 bytes), claims lint 17 files /
-13 phrases, brand lint 16 surfaces / 21 colours. It is
+check` is green at the corrected head (2026-11-14T21:23Z): 1,275 tests,
+`--self-test` PASS, secret scan PASS (303 files, 8,330,403 bytes), claims
+lint 17 files / 13 phrases, brand lint 16 surfaces / 21 colours. It is
 committed, not deployed.
 
 The clock starts at the build's `uki.sh --sign` and stops when
