@@ -315,6 +315,22 @@ def block_after(text: str, marker: str) -> str:
     return ""
 
 
+def _luminance(hex_color: str) -> float:
+    channels = []
+    for index in (1, 3, 5):
+        value = int(hex_color[index:index + 2], 16) / 255
+        channels.append(value / 12.92 if value <= 0.03928
+                        else ((value + 0.055) / 1.055) ** 2.4)
+    return 0.2126 * channels[0] + 0.7152 * channels[1] + 0.0722 * channels[2]
+
+
+def contrast(foreground: str, background: str) -> float:
+    """WCAG 2.x contrast for two opaque #RRGGBB values."""
+    first, second = _luminance(foreground), _luminance(background)
+    high, low = max(first, second), min(first, second)
+    return (high + 0.05) / (low + 0.05)
+
+
 class ChromeParityTests(unittest.TestCase):
     """The bytes that ship are the ODL-330/ODL-500 source, not a third copy."""
 
@@ -475,6 +491,78 @@ class SurfaceValueTests(unittest.TestCase):
         self.assertEqual(rule.get("font-size"), ["17px !important"],
                          "the composer is product prose, not the vendor's 14.3 px scale")
         self.assertEqual(rule.get("line-height"), ["1.55 !important"])
+
+
+class RaisedSurfaceTests(unittest.TestCase):
+    """The states the native session menu opened are on the sheet (round 3).
+
+    The session menu went native when ODL-391 §2.5 was retired, and its
+    popover, the Delete / Rename dialogs and the destructive confirm were the
+    one part of the workspace still painting the vendor's near-white. Each
+    value below was measured on the live demo before the fix and is pinned
+    here so a later edit cannot quietly put it back.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.css = CHROME_CSS.read_text(encoding="utf-8")
+        cls.js = CHROME_JS.read_text(encoding="utf-8")
+
+    def test_the_raised_surface_tokens_are_the_card(self):
+        # The vendor derives these from its neutral #fcfcfc: 28 % card for
+        # --ui-bg-elevated, 22 % for the surface, 0 % for the bubble. The
+        # seed kept the derived value near-white (menu ≈ #F8F6EF, dialog
+        # pixel #F6F4EE) until the derived token itself was re-declared.
+        tokens = declarations(self.css, "html:root")
+        for token in ("--ui-bg-elevated", "--ui-surface-background",
+                      "--ui-chat-bubble-background"):
+            self.assertEqual(tokens.get(token), ["#f2e9d4 !important"],
+                             f"{token} is not the sheet's --card; the vendor's "
+                             "color-mix into #fcfcfc is the painted value")
+
+    def test_every_elevated_slot_paints_the_card(self):
+        for slot in ("dropdown-menu-content", "select-content",
+                     "dialog-content", "thread-timeline-popover"):
+            rule = declarations(self.css, f'[data-slot="{slot}"]')
+            self.assertEqual(rule.get("background"), ["#f2e9d4 !important"],
+                             f"{slot} is not painted --card")
+
+    def test_the_caption_role_is_soft_and_reads_at_body_contrast(self):
+        # --ui-text-tertiary was ink at 54 %: the Delete description measured
+        # 3.762:1 at 12 px and "Scroll to bottom" 3.619:1 on the card.
+        tokens = declarations(self.css, "html:root")
+        self.assertEqual(tokens.get("--ui-text-tertiary"), ["#4a4136 !important"],
+                         "the caption role is --soft #4A4136, not 54 % ink")
+        for ground in ("#f2e9d4", "#eadfc4"):
+            self.assertGreaterEqual(contrast("#4a4136", ground), 4.5,
+                                    f"--soft on {ground} is below body contrast")
+
+    def test_a_destructive_button_is_quiet_and_never_the_fill(self):
+        # Measured before: rgb(255,255,255) on rgb(110,42,42) #6E2A2A.
+        # Oxblood is never a fill and a destructive action is never the
+        # filled button; the secondary shape is transparent + --edge border.
+        rule = declarations(self.css, 'button[data-variant="destructive"]')
+        self.assertEqual(rule.get("background-color"), ["transparent !important"],
+                         "the destructive confirm is still a filled button")
+        self.assertEqual(rule.get("color"), ["#6e2a2a !important"],
+                         "the destructive label is not --error")
+        self.assertEqual(rule.get("border"),
+                         ["1px solid rgba(28, 24, 19, 0.55) !important"],
+                         "the destructive confirm has no --edge boundary")
+        self.assertNotIn("#fff", " ".join(sum(rule.values(), [])))
+        self.assertNotIn("#ffffff", " ".join(sum(rule.values(), [])))
+
+    def test_the_dialog_scrim_is_warm_ink(self):
+        rule = declarations(self.css, '[data-slot="dialog-overlay"]')
+        self.assertEqual(rule.get("background-color"),
+                         ["rgba(28, 24, 19, 0.22) !important"],
+                         "the scrim is pure black, not the sheet's ink")
+
+    def test_the_sidebar_is_a_named_navigation_landmark(self):
+        self.assertIn("const SIDEBAR = '[data-slot=\"sidebar\"]'", self.js)
+        self.assertIn("const SIDEBAR_LABEL = 'Sessions'", self.js)
+        self.assertIn("sidebar.setAttribute('role', 'navigation')", self.js)
+        self.assertIn("sidebar.setAttribute('aria-label', SIDEBAR_LABEL)", self.js)
 
 
 class ChromeSpliceTests(unittest.TestCase):

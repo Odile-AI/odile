@@ -62,9 +62,10 @@
  * everywhere else: odile.fyi/verify describes the demo machine, while a
  * subscriber's report is served by that subscriber's VM (odilectl/offboard.py
  * probes the same path). And the workspace gets the semantics the vendor shell
- * omits — `role="main"` on the chat surface and one visually hidden <h1> named
- * as the page title — because BRAND.md §Accessibility tokens asks for one
- * heading per screen and named landmarks.
+ * omits — `role="main"` on the chat surface, one visually hidden <h1> named
+ * as the page title, and `role="navigation"` + `aria-label="Sessions"` on the
+ * session list — because BRAND.md §Accessibility tokens asks for one heading
+ * per screen and named landmarks.
  */
 ;(() => {
   'use strict'
@@ -101,6 +102,11 @@
   // chat surface itself carries.
   const CHAT_SURFACE = '[data-chat-surface]'
   const WORKSPACE_TITLE = 'h1.odile-workspace-title'
+  // The session list's panel. The vendor renders it as a plain <div>; the
+  // sheet asks for named landmarks, and the list of sessions is the
+  // workspace's navigation, so it takes `role="navigation"` + a label.
+  const SIDEBAR = '[data-slot="sidebar"]'
+  const SIDEBAR_LABEL = 'Sessions'
   // The vendor's session menu is left exactly as it ships (ODL-391 §2.5 is
   // retired, 2026-11-14): the demo's `session_guard.py` and Caddy's REST
   // refusal are gone, so Delete, Rename… and Archive work from the judge's
@@ -269,6 +275,15 @@
     if (heading.textContent !== name) {
       heading.textContent = name
     }
+    const sidebar = document.querySelector(SIDEBAR)
+    if (sidebar) {
+      if (sidebar.getAttribute('role') !== 'navigation') {
+        sidebar.setAttribute('role', 'navigation')
+      }
+      if (sidebar.getAttribute('aria-label') !== SIDEBAR_LABEL) {
+        sidebar.setAttribute('aria-label', SIDEBAR_LABEL)
+      }
+    }
   }
 
   // The titlebar's right-hand cluster is the app controls. The link is a
@@ -351,6 +366,7 @@
         node.matches(MENU_ITEM) ||
         node.matches(VERIFY_LINK) ||
         node.matches(CHAT_SURFACE) ||
+        node.matches(SIDEBAR) ||
         node.matches(RIGHT_CLUSTER))
     ) {
       return true
@@ -369,6 +385,7 @@
           node.querySelector(COMPOSER) ||
           node.querySelector(MENU_ITEM) ||
           node.querySelector(CHAT_SURFACE) ||
+          node.querySelector(SIDEBAR) ||
           node.querySelector(RIGHT_CLUSTER)
       )
     )

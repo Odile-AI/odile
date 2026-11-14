@@ -192,6 +192,73 @@ html p.wordmark + p code {
   --composer-fill: #f2e9d4 !important;
 }
 
+/* The raised surfaces the session menu opened (ODL-503 round 3).
+ *
+ * The vendor derives every elevated token by mixing a seed into its own
+ * neutral `#fcfcfc` (`--theme-neutral-card`): `--ui-bg-elevated` is 28 % of
+ * the card, `--ui-surface-background` and `--ui-bg-editor` 22 %, the chat
+ * bubble 0 %. Declaring the seeds (the block above) therefore leaves the
+ * painted value near-white — measured on the tenant 2026-11-14: the
+ * `Session actions` popover and both dialogs computed
+ * `color(srgb .977 .967 .944)` and the dialog interior pixel was
+ * rgb(246,244,238) #F6F4EE. BRAND.md §Colour: a raised panel is `--card`
+ * #F2E9D4, "never a white box", and `--paper-light` is the lightest paper.
+ *
+ * The derived tokens are declared where the vendor declares them (`:root`),
+ * with `html` in front so this rule out-ranks the vendor's own `:root`
+ * whatever order the two stylesheets arrive in — the `--composer-fill`
+ * lesson below, measured when a same-specificity root value lost to the
+ * vendor's later rule. The four slots the vendor paints with the elevated
+ * 96 % mix are re-declared as the card itself, so the painted value is the
+ * sheet's hex and not a 4 % blend of the paper behind it.
+ */
+html:root {
+  --ui-bg-elevated: #f2e9d4 !important;
+  --ui-surface-background: #f2e9d4 !important;
+  --ui-chat-bubble-background: #f2e9d4 !important;
+  /* `--ui-text-tertiary` is ink at 54 % (`color-mix(--ui-base 54%,
+   * transparent)`): the Delete dialog's description measured 3.762:1 at
+   * 12 px and "Scroll to bottom" 3.619:1 on the card. The caption role is
+   * --soft #4A4136 (8.27:1 on the card, 7.55:1 on paper). The composer's
+   * placeholder keeps its own #5D5244 rule below. */
+  --ui-text-tertiary: #4a4136 !important;
+}
+
+[data-slot="dropdown-menu-content"],
+[data-slot="select-content"],
+[data-slot="dialog-content"],
+[data-slot="thread-timeline-popover"] {
+  background: #f2e9d4 !important;
+}
+
+/* A destructive action is never the filled button (BRAND.md §Component
+ * states). The vendor's Delete confirm carries `data-variant="destructive"`
+ * and paints `bg-destructive text-white`: measured rgb(255,255,255) on
+ * rgb(110,42,42) #6E2A2A at 54×28. Oxblood is "never a fill, never a
+ * button" (§Colour) and paper is never #FFF. The sheet's quiet shape is the
+ * one the action takes: transparent fill, 1 px --edge border, --error
+ * label, underline on hover. `button` in the selector keeps the rule off a
+ * menu row that carries the same variant attribute. */
+button[data-variant="destructive"] {
+  background-color: transparent !important;
+  color: #6e2a2a !important;
+  border: 1px solid rgba(28, 24, 19, 0.55) !important;
+  box-shadow: none !important;
+}
+
+button[data-variant="destructive"]:hover,
+button[data-variant="destructive"]:focus-visible {
+  background-color: transparent !important;
+  text-decoration: underline !important;
+}
+
+/* The dialog scrim is the sheet's warm ink, not pure black: the vendor's
+ * `bg-black/22` computes oklab(0 0 0 / 0.22). BRAND.md bans #000, and at
+ * 22 % the difference reads as a colder dim over paper. */
+[data-slot="dialog-overlay"] {
+  background-color: rgba(28, 24, 19, 0.22) !important;
+}
+
 /* The composer placeholder is a pseudo-element and the vendor paints it with
  * `--ui-text-tertiary` (ink at 54 %: 3.72:1 on the old fill). The sheet's
  * colour rule for an opaque paper field is `--placeholder-on-paper` #5D5244
