@@ -15,7 +15,7 @@ Live demo: https://demo.odile.fyi/login
 - **`installer/`** — the signed installer that provisions a fresh machine and verifies its own bytes.
 - **`release/`** — the signed release manifest, the public signing key, and the published installer.
 - **`seed/`, `status/`, `update/`, `support/`** — first-visit seeding, the status surface, in-place updates, and the support agent.
-- **`attest.py`, `odile-verify`, `odile-verify.pin`** — the attestation report, the standalone verifier a stranger runs, and the measurement it checks against.
+- **`attest.py`, `odile-verify`, `odile-verify.pin`** — the TEE attestation report, the standalone verifier a stranger runs, and the measurement it checks against.
 - **`deploy/`** — systemd units, Caddy, Postfix and OpenDKIM configuration, and the boot-image build.
 - **`web/`, `templates/`, `skills/`** — the static site, the workspace templates, and the agent skills shipped with a machine.
 - **`demo/`** — a local demo that runs on one standard-library server, with no network and no key.
