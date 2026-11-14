@@ -2,7 +2,7 @@
 
 A full agent, privately.
 
-Odile is an AI agent that gets things done with privacy. Every Odile agent runs on its own AMD SEV-SNP confidential virtual machine and uses confidential inference, protecting your agent from outsider access at the hardware level.
+Odile is an AI agent that gets things done with privacy. Every Odile agent runs on its own AMD SEV-SNP confidential virtual machine and uses [NEAR AI](https://near.ai/) confidential inference, protecting your agent from outsider access at the hardware level.
 
 ## Demo
 
