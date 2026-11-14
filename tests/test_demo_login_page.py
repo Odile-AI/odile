@@ -23,7 +23,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 LOGIN_PAGE = ROOT / "deploy" / "demo-host" / "login.html"
 CLAIMS_MD = (ROOT / "docs" / "CLAIMS.md").read_text(encoding="utf-8")
-README_MD = (ROOT / "README.md").read_text(encoding="utf-8")
+JUDGE_HTML = (ROOT / "web" / "judge.html").read_text(encoding="utf-8")
 LOGIN_HTML = LOGIN_PAGE.read_text(encoding="utf-8")
 
 
@@ -49,12 +49,17 @@ BOUNDARY_SENTENCE = (
 
 
 def readme_credential(field: str) -> str:
-    """The published demo account, read from README's `| Field | Value |` row."""
-    values = re.findall(rf"^\| {field} \| `([^`]+)` \|$", README_MD, re.MULTILINE)
+    """The published demo account, read from the judge page.
+
+    The README stopped carrying the credentials when it was cut to three
+    sentences; web/judge.html is the page a judge is sent to, so it is the one
+    place the account is published.
+    """
+    values = re.findall(rf"<dt>{field}</dt><dd>([^<]+)</dd>", JUDGE_HTML)
     if not values:
-        raise AssertionError(f"README.md has no '| {field} | `…` |' row")
+        raise AssertionError(f"web/judge.html has no <dt>{field}</dt><dd>…</dd>")
     if len(set(values)) != 1:
-        raise AssertionError(f"README.md's {field} rows disagree: {values}")
+        raise AssertionError(f"web/judge.html's {field} rows disagree: {values}")
     return values[0]
 
 
