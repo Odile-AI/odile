@@ -299,6 +299,40 @@ h1.odile-workspace-title {
   white-space: nowrap !important;
 }
 
+/* The page's first focusable element (BRAND.md §Accessibility tokens,
+ * Keyboard: a skip link is first when a page has more than one landmark).
+ * The workspace has two — the chat surface's main and the session list's
+ * navigation — and the vendor shell ships no skip link; the script inserts
+ * one as body's first child. This is the shipped `web/roadmap.html` `.skip`
+ * pattern: absolute off-screen until focused, then a 44 px ink tab with the
+ * brand's mono caps label, 24 px from the edge (18 px at phone widths). The
+ * global :focus-visible ring puts the sheet's 2 px ink at 3 px offset around
+ * it. */
+a.odile-skip-link {
+  position: absolute;
+  left: -9999px;
+  top: 0;
+  z-index: 80;
+  box-sizing: border-box;
+}
+
+a.odile-skip-link:focus {
+  left: 24px;
+  top: 12px;
+  display: inline-block;
+  min-height: 44px;
+  padding: 12px 16px;
+  background: #1c1813;
+  color: #eadfc4;
+  text-decoration: none;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 1.2;
+  letter-spacing: 0.20em;
+  text-transform: uppercase;
+}
+
 /* The page is its own paper (ODL-503 follow-up).
  *
  * The theme engine paints from the tokens above, but the tenant's fallback
@@ -401,6 +435,9 @@ a.odile-verify-link:focus-visible {
 }
 
 @media (max-width: 560px) {
+  a.odile-skip-link:focus {
+    left: 18px;
+  }
   a.odile-verify-link {
     right: 196px; /* 12 px inset + 176 px cluster + 8 px gap */
     padding: 0 2px;

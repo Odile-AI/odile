@@ -565,6 +565,81 @@ class RaisedSurfaceTests(unittest.TestCase):
         self.assertIn("sidebar.setAttribute('aria-label', SIDEBAR_LABEL)", self.js)
 
 
+class KeyboardAccessTests(unittest.TestCase):
+    """The sheet's keyboard rules: a skip link, and overlays that land back."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.css = CHROME_CSS.read_text(encoding="utf-8")
+        cls.js = CHROME_JS.read_text(encoding="utf-8")
+
+    def test_the_skip_link_is_the_scripts_first_focusable(self):
+        # BRAND.md §Accessibility tokens (Keyboard): a skip link is first when
+        # a page has more than one landmark, and the workspace has two.
+        self.assertIn("const SKIP_LINK = 'a.odile-skip-link'", self.js)
+        self.assertIn("const SKIP_TARGET = 'odile-main'", self.js)
+        self.assertIn("const SKIP_LABEL = 'Skip to content'", self.js)
+        self.assertIn("link.href = '#' + SKIP_TARGET", self.js)
+        self.assertIn("link.textContent = SKIP_LABEL", self.js)
+        self.assertIn("document.body.insertBefore(link, document.body.firstChild)",
+                      self.js,
+                      "the skip link must be body's first child, before #root")
+        self.assertIn("document.body.insertBefore(existing, document.body.firstChild)",
+                      self.js,
+                      "a re-mounted body must not push the skip link behind the app")
+
+    def test_the_skip_link_carries_the_roadmap_pattern(self):
+        off = declarations(self.css, "a.odile-skip-link")
+        self.assertEqual(off.get("position"), ["absolute"])
+        self.assertEqual(off.get("left"), ["-9999px"])
+        self.assertEqual(off.get("top"), ["0"])
+        focus = declarations(self.css, "a.odile-skip-link:focus")
+        self.assertEqual(focus.get("top"), ["12px"])
+        self.assertEqual(focus.get("left"), ["24px"])
+        self.assertEqual(focus.get("min-height"), ["44px"],
+                         "the skip link is not a 44 px target")
+        self.assertEqual(focus.get("padding"), ["12px 16px"])
+        self.assertEqual(focus.get("background"), ["#1c1813"])
+        self.assertEqual(focus.get("color"), ["#eadfc4"])
+        self.assertTrue(" ".join(focus.get("font-family", [])).startswith("ui-monospace"),
+                        "the skip label is not the brand's mono caps role")
+        self.assertEqual(focus.get("text-transform"), ["uppercase"])
+        self.assertGreaterEqual(contrast("#eadfc4", "#1c1813"), 7.0,
+                                "the skip label leaves the sheet's contrast")
+        narrow = block_after(self.css, "@media (max-width: 560px)")
+        self.assertIn("a.odile-skip-link:focus", narrow)
+        self.assertIn("left: 18px", narrow)
+
+    def test_the_main_surface_is_the_skip_target(self):
+        self.assertIn("surface.setAttribute('id', SKIP_TARGET)", self.js)
+        self.assertIn("surface.setAttribute('tabindex', '-1')", self.js,
+                      "a same-page anchor needs a focusable target outside the tab order")
+        # The vendor's router owns the fragment and refocuses the composer for
+        # any focus inside the app root, so the link must not follow the hash:
+        # it lands on the main landmark's composer itself.
+        self.assertIn("link.addEventListener('click', focusSkipTarget)", self.js)
+        self.assertIn("event.preventDefault()", self.js)
+        self.assertIn("main.querySelector(COMPOSER) || main", self.js)
+        self.assertIn("main.scrollIntoView({ block: 'start' })", self.js)
+
+    def test_the_dialog_close_paths_restore_the_opener(self):
+        # The vendor's Radix dialogs leave activeElement on <body> after
+        # Cancel, Close and Escape (measured 2026-11-14 on the tenant), so the
+        # chrome remembers the pre-overlay focus and puts it back.
+        self.assertIn("const DIALOG = '[role=\"dialog\"], [role=\"alertdialog\"]'", self.js)
+        self.assertIn("const MENU = '[role=\"menu\"]'", self.js)
+        self.assertIn("document.addEventListener('focusin', rememberFocus, true)", self.js)
+        self.assertIn("target.closest(DIALOG) || target.closest(MENU)", self.js,
+                      "an overlay's own controls must not become the remembered opener")
+        self.assertIn("lastFocusOutside = target", self.js)
+        self.assertIn("window.setTimeout(restoreOpener, 0)", self.js,
+                      "a removed dialog does not schedule the focus repair")
+        self.assertIn("opener.focus({ preventScroll: true })", self.js)
+        for guard in ("opener.isConnected", "opener.getClientRects().length"):
+            self.assertIn(guard, self.js,
+                          f"restoreOpener can focus a re-rendered-away opener ({guard})")
+
+
 class ChromeSpliceTests(unittest.TestCase):
     """One tag per asset, one convergence, the vendor shell underneath."""
 
