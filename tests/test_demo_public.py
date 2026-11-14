@@ -9,7 +9,10 @@ template; the customer's installer page is untouched.
 These tests pin three things:
 
 * the lede is assembled from sentences a reviewer can find verbatim in
-  `docs/CLAIMS.md` or `web/judge.html` (a coined demo sentence is a finding);
+  `docs/CLAIMS.md` or the published record of the lede
+  (`docs/runbooks/demo-public.md`, the ODL-503 decision) — a coined demo
+  sentence is a finding. `web/judge.html`, the second source until ODL-901
+  retired the page, is gone;
 * the injection is anchored on the tenant block, changes nothing outside it and
   is idempotent — and every page the signed installer/release ships still
   carries the general row, so a customer machine renders it;
@@ -31,6 +34,11 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 DEMO = ROOT / "deploy" / "demo-host"
 LEDE = DEMO / "verify-lede.html"
+#: The demo lede's second approved source. `web/judge.html` carried the copy
+#: until ODL-901 retired it; the runbook publishes the same paragraph as the
+#: ODL-503 decision, so a reviewer can still check every sentence after the page
+#: is gone.
+LEDE_RECORD = ROOT / "docs" / "runbooks" / "demo-public.md"
 CUSTOMER_SENTENCE = "No one at Odile can log in to a tenant machine."
 INSTALLERS = (ROOT / "installer" / "odile_install.py",
               ROOT / "release" / "odile_install.py")
@@ -65,6 +73,25 @@ def sentences(markup: str) -> list[str]:
     return [part.strip() for part in re.split(r"(?<=\.)\s+", body) if part.strip()]
 
 
+def published_lede(path: Path) -> str:
+    """The lede as the runbook publishes it: one `>` block, unwrapped.
+
+    The block is the record of the copy a reviewer approved (ODL-503), so the
+    ledger below can still be checked sentence by sentence now that the page
+    which carried it is gone. A missing block is a failure, not an empty pass:
+    an empty string would make every sentence check vacuously true.
+    """
+    block: list[str] = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if line.startswith(">"):
+            block.append(line[1:].strip())
+        elif block:
+            break
+    if not block:
+        raise AssertionError(f"{path} publishes no quoted lede")
+    return flatten(" ".join(block))
+
+
 class LedeSourceTests(unittest.TestCase):
     """The copy is approved copy, not a sentence invented for the demo."""
 
@@ -72,7 +99,7 @@ class LedeSourceTests(unittest.TestCase):
     def setUpClass(cls):
         cls.markup = LEDE.read_text(encoding="utf-8").strip()
         cls.claims = flatten((ROOT / "docs" / "CLAIMS.md").read_text(encoding="utf-8"))
-        cls.judge = flatten((ROOT / "web" / "judge.html").read_text(encoding="utf-8"))
+        cls.record = published_lede(LEDE_RECORD)
 
     def test_the_lede_is_one_paragraph_and_no_slot_or_markup_smuggling(self):
         text = self.markup
@@ -83,10 +110,10 @@ class LedeSourceTests(unittest.TestCase):
         self.assertNotIn("{{", text)
         self.assertNotIn("<script", text)
 
-    def test_every_sentence_is_in_the_deck_or_the_judge_page_verbatim(self):
+    def test_every_sentence_is_in_the_deck_or_the_published_record_verbatim(self):
         for sentence in sentences(self.markup):
             with self.subTest(sentence=sentence):
-                self.assertTrue(flatten(sentence) in self.claims or flatten(sentence) in self.judge,
+                self.assertTrue(flatten(sentence) in self.claims or flatten(sentence) in self.record,
                                 f"not a published sentence: {sentence!r}")
 
     def test_the_lede_names_the_boot_key_and_the_shared_sign_in(self):
