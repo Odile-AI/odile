@@ -524,50 +524,23 @@ class Flow(unittest.TestCase):
         self.assertIn('href="https://demo.odile.fyi/login"', body)
         self.assertNotIn("{{", body)
 
-    def test_judge_page_is_one_no_js_front_door(self):
-        res, body = self.request("/judge")
-        self.assertEqual(res.status, 200)
-        self.assertIn("text/html", res.getheader("Content-Type") or "")
-        self.assertNotIn("<script", body.lower())
-        self.assertIn("Odile gives you your own computer, with an agent inside it.", body)
-        self.assertIn("This is Odile's tenant machine", body)
-        self.assertIn("odile-demo-kestrel-2026", body)
-        self.assertIn("Write a note in notes/ called hello.md", body)
-        self.assertIn('href="https://demo.odile.fyi/verify"', body)
-        self.assertIn("https://demo.odile.fyi/login?next=", body)
-        self.assertEqual(body.count('class="primary"'), 1, "one primary action")
-
-    def test_judge_page_leads_with_the_tenant_claim(self):
-        # The first paragraph is the one claim only Odile can make; the demo
-        # scope follows under a label that marks it as the exception. Both
-        # strings also appear in <head>, so the order is checked from <main>,
-        # not from byte 0 of the document.
-        _, body = self.request("/judge")
-        body = body.decode() if isinstance(body, bytes) else body
-        claim = "No one at Odile can log in to a tenant machine."
-        demo = "This is Odile's tenant machine"
-        label = "The exception"
-        lede = re.search(r'<p class="lede">(.*?)</p>', body, re.S)
-        if lede is None:
-            self.fail("the judge page has no lede paragraph")
-        self.assertEqual(" ".join(lede.group(1).split()), claim)
-        main = body.index("<main>")
-        self.assertIn(claim, body[main:],
-                      "the claim must appear in the body, not only in <head>")
-        claim_at = body.index(claim, main)
-        demo_at = body.index(demo, main)
-        self.assertLess(claim_at, demo_at,
-                        "the tenant claim must come before the demo scope")
-        self.assertIn(label, body, "the demo scope has no exception label")
-        self.assertTrue(claim_at < body.index(label, main) < demo_at,
-                        "the exception label must sit between the claim and the demo scope")
-        self.assertIn("Odile holds this machine's boot key and can log in.", body)
-        self.assertNotIn("It is not a tenant machine.", body)
-
-    def test_judge_page_has_no_unrendered_placeholders(self):
-        _, body = self.request("/judge")
-        self.assertNotIn("{{", body)
-        self.assertNotIn("}}", body)
+    def test_judge_is_a_permanent_redirect_to_the_tenant_sign_in(self):
+        # /judge is printed on the title and end cards of the posted demo cut,
+        # so the retirement is a 301 to the tenant's own sign-in — not a 404,
+        # and not the signup flow's 303. The query string is not carried: the
+        # target is one page, not a second front door to this service. HEAD
+        # matters as much as GET: a link checker or `curl -I` must see it.
+        for path in ("/judge", "/judge?x=1"):
+            with self.subTest(path=path):
+                res, body = self.request(path)
+                self.assertEqual(res.status, 301)
+                self.assertEqual(res.getheader("Location"),
+                                 "https://demo.odile.fyi/login")
+                self.assertEqual(body, "")
+        res, body = self.request("/judge", "HEAD")
+        self.assertEqual(res.status, 301)
+        self.assertEqual(res.getheader("Location"), "https://demo.odile.fyi/login")
+        self.assertEqual(body, "")
 
     def test_verify_page_offers_the_verifier_bundle(self):
         _, body = self.request("/verify")
