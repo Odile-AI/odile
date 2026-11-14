@@ -80,9 +80,9 @@ machine is rebuilt and you restore from your backup."
 
 ## 3. The machine dies
 
-We rebuild it and restore last night's backup from the recovery file. Backed up
-nightly. Rebuildable in under an hour — without a key. The drill is practiced
-before you get a machine.
+We rebuild it; you ask the agent to restore last night's backup with the
+recovery file. Backed up nightly. Rebuildable in under an hour — without a key.
+The drill is practiced before you get a machine.
 
 **Ask first:** is the machine still running? If it is, the agent can show the
 recovery file again. If it is gone, the rebuild makes a new machine.
@@ -177,8 +177,8 @@ solved.
    the revoke command. It is a root shell for the hours named, and it is logged
    on the machine.
 5. **A rebuild.** Last resort when the recovery code is lost or the disk will not
-   open: we rebuild the machine and restore last night's backup from the
-   recovery file.
+   open: We rebuild it; you ask the agent to restore last night's backup with
+   the recovery file.
 
 In the Webapp the same three exits are one command: `/odile-help`. It prints
 the FAQ link, the `odile-diag` command and the grant command. Hermes's own

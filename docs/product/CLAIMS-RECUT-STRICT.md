@@ -488,8 +488,9 @@ clause); the DoD grep over both pages is empty.
 ## 11. Landing record — ODL-474, 14 November 2026
 
 The decision was taken on 13 November 2026; the landing commit is 14 November
-2026, after the branch was merged with `main`'s v3.9c deck and the release was
-re-cut at the converged head.
+2026. It was built on the legacy history (`4896ddb`), ported as `05887d6` onto
+the public `main` `55ec2c1`, and merged with `main`'s `83eefd2` head before the
+release was re-cut at the converged head.
 
 The five sentences §6 held were published as **v3.10** after both M2 drills
 passed: ODL-215 (`9f43829`) ran the nightly backup and the restore drill (a
@@ -518,8 +519,8 @@ quote them.
   reviewed file, places it at `/usr/local/sbin/odile-support` (0755 root) and
   links `/usr/local/bin/odile-diag` beside it, so the A10 answer's two commands
   exist on a fresh tenant. The installer is re-signed and the release cut from
-  the converged tree is `2026.11.14-6` (installer `a891090c…`, manifest
-  `55beb8ff…`), from a fresh scratch root the merged installer made (24/24,
+  the converged tree is `2026.11.14-9` (installer `9aded116…`, manifest
+  `b9ac1264…`), from a fresh scratch root the merged installer made (24/24,
   run 2 `tenant: same`); `docs/runbooks/install.md` §12.6 carries the full
   record.
 

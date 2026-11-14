@@ -1,8 +1,8 @@
 {
   "artifacts": {
     "installer": {
-      "sha256": "a891090c8e55da0008807380658f8eb4c513b37bc6d684e6e2ebcf702319470e",
-      "size": 672909,
+      "sha256": "9aded116bfbb54f2d5c0c75c0460b81fca93dca07f8c7f980f10c398d149f9a7",
+      "size": 672942,
       "url": "odile_install.py"
     },
     "skills": {
@@ -14,14 +14,14 @@
   "boot": {
     "kernel": "6.12.115+deb13.1-amd64"
   },
-  "generated_at": "2026-11-14T14:46:00Z",
+  "generated_at": "2026-11-14T21:40:00Z",
   "manifest": {
-    "sha256": "55beb8ff8aea5d1e84df55517eb32107c52d94e7d9ee28654842dd92f5771ccf",
+    "sha256": "b9ac12648e8f66693a49661a44675bb8d234a996eee18c529ee145ed3811c952",
     "signature_url": "manifest.json.sig",
     "url": "manifest.json"
   },
-  "notes": "ODL-474 lands the five held M2 sentences as v3.10: A9's backup clause, the machine-dies answer, the reset/unlock restore half, the reliability row and A10's support answer, verbatim on the pages, docs/FAQ.md, the odile-help skill and the support email. The installer places odile-support and odile-diag (ODL-217's deferred step), embeds the v3.10 skill and cuts on the merged head that carries main's v3.9c deck and the meter-free installer.",
+  "notes": "ODL-474 lands the five held M2 sentences as v3.10 on the one-root tree: A9's backup clause, the machine-dies answer, the reset/unlock restore half, the reliability row and A10's support answer, verbatim on the pages, docs/FAQ.md, the odile-help skill and the support email; the installer embeds and places odile-support/odile-diag and carries main's v3.9f /verify page. Cut at 2026-11-14T21:40:00Z from a fresh scratch root the merged installer made (24/24, run 2 tenant: same).",
   "product": "odile",
-  "release": "2026.11.14-6",
+  "release": "2026.11.14-9",
   "schema": 1
 }

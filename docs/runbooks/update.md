@@ -820,16 +820,24 @@ committed, not deployed: measured 2026-11-14T07:58Z, the URL serves
 which still pins the old script, so the next `./scripts/deploy.sh` from a `main` that
 carries this merge publishes the new cut.
 
-**The `2026.11.14-6` cut (ODL-474's v3.10 landing).** This tree cuts
-`2026.11.14-6` on the converged head that carries `main`'s `8ea15e2` (v3.9c,
-the meter-free installer, and the in-place `-4` re-cut) and the v3.10 landing.
-`install.md` §12.6 has the full record: installer `a891090c…` (672,909 bytes),
-manifest `55beb8ff…` (49,957 bytes), skills `9d82653f…` (851,945 bytes), a
-second cut byte-identical on all eight names, committed and not deployed (the
-URL still serves the deployed `2026.11.14-4`, installer `fc723909…`). The id
-ledger: `2026.11.14-4` is `main`'s, re-cut in place at 09:32:15Z; `-5` is
-carried by the open `odl/ODL-521` branch; `-6` was the next free id at
-`2026-11-14T14:46:00Z`, later than every live cut by `generated_at`. The
+**The `2026.11.14-9` cut (ODL-474's v3.10 landing, ported onto the one-root
+tree).** The v3.10 landing was built on the legacy history (`4896ddb`) and
+ported as `05887d6` onto the public `main` `55ec2c1`; this branch merges
+`main`'s `83eefd2` head (the v3.9f `/verify` page and `/judge`'s retirement)
+and re-embeds every surface before cutting. `install.md` §12.6 has the full
+record: installer `9aded116…` (672,942 bytes), manifest `b9ac1264…` (48 skills,
+audit `539e205f…`), skills `9d82653f…` (851,945 bytes), built from
+`/var/tmp/odile-474-merge-cand-port`, the fresh scratch root the merged
+installer made (`sim_tenant.py --reset --apply`, 24/24; run 2 `tenant: same`,
+0 writes; `install.sh` 68015 bytes, sha256 `c73dad4d…` matches the pin), and a
+second cut byte-identical on all eight names. It is committed, not deployed:
+measured 2026-11-14T21:31Z, the URL serves the deployed `2026.11.14-6`
+(installer `49f90a3c…`, 616,403 bytes; manifest `f6dea119…`), which is
+t_781fc5cb's v3.9f demo-lede re-embed. The id ledger: `2026.11.14-4` is
+`main`'s, re-cut in place at 09:32:15Z; `-5` is carried by the open
+`odl/ODL-521` branch; `-6` is t_781fc5cb's, published; `-7` is carried by
+`odl/ODL-521` and `-8` by the open `port/odl-505`; `-9` was the next free id
+at `2026-11-14T21:40:00Z`, later than every cut by `generated_at`. The
 `2026.11.13-7`, `-8` and `-9` ids are still carried by open branches and are
 not reused.
 
