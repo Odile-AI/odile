@@ -1,15 +1,19 @@
-"""ODL-238 / ODL-470 — the five support answers stay inside the claims deck.
+"""ODL-238 / ODL-470 / ODL-474 — the five support answers stay inside the deck.
 
 `docs/FAQ.md` is a public-facing support document (the claims lint already
 scans it). Every sentence it marks as a deck row must appear verbatim in
-`docs/CLAIMS.md`, or — until ODL-462 lands the strict-bar re-cut — in a decided
-v3.9 row of `docs/product/CLAIMS-RECUT-STRICT.md`. The `odile-help` skill must
-name the three real exits: the FAQ link, `odile-diag`, and the support grant.
+`docs/CLAIMS.md`, or in a decided v3.9 row of
+`docs/product/CLAIMS-RECUT-STRICT.md` that the deck has not yet absorbed. The
+`odile-help` skill must name the three real exits: the FAQ link, `odile-diag`,
+and the support grant.
 
 ODL-470 re-cut the answers from the v3.4 ceremony (a boot SSH key, an unlock
-prompt, a passphrase typed over SSH) to the sealed boot. The last two tests are
-the card's first DoD mechanically: the old ceremony is gone from all three
-surfaces, and the machine-dies moment promises no restore at M1.
+prompt, a passphrase typed over SSH) to the sealed boot. ODL-474 landed the
+sentences the M2 drills held back: the restore and the reliability row after
+ODL-215, the support-grant answer after ODL-217. The last two tests are the
+mechanical half: the old ceremony is gone from all three surfaces, and the
+machine-dies moment promises last night's backup — on the help surfaces, not on
+`web/faq.html`.
 
 These are the mechanical half of "the five answers exist and match the deck";
 the round trip and the transcript are in `docs/evidence/odl-238/`.
@@ -25,6 +29,9 @@ DECK = ROOT / "docs" / "CLAIMS.md"
 DECIDED = ROOT / "docs" / "product" / "CLAIMS-RECUT-STRICT.md"
 SKILL = ROOT / "skills" / "odile-help" / "SKILL.md"
 EMAIL = ROOT / "templates" / "emails" / "support.md"
+# The public FAQ the installed skill points at. Its `<code>` markup is the
+# only difference from the deck's plain text.
+PAGE = ROOT / "web" / "faq.html"
 # The file the installer writes as the tenant's $HOME/AGENTS.md. It is the
 # surface the agent answers from, so the cut ceremony must be gone from it too
 # (ODL-496: it taught the v3.7 reboot row until the embed and the cut moved).
@@ -33,6 +40,35 @@ AGENTS = ROOT / "templates" / "tenant-agents.md"
 CITED = re.compile(r'"([^"]+)"')
 CLOCK = re.compile(r"\b(?:[01]?\d|2[0-3]):[0-5]\d\b")
 DECK_BLOCK = re.compile(r"^\*\*Deck(?: \(v3\.9\))?:\*\*")
+
+# The three v3.10 passages, exactly as `docs/CLAIMS.md` §5 carries them. The
+# verbatim test below is the sharper guard: a paraphrase ("ask me" for "ask the
+# agent") passed the restore-presence check the first writer shipped.
+MACHINE_DIES = (
+    "We rebuild it; you ask the agent to restore last night's backup with your "
+    "recovery file — the one you downloaded on your first visit. If the machine "
+    "is still running and you lost your copy, ask the agent to show you the "
+    "file. Target under an hour; your last day may be lost. The drill is "
+    "practiced before you get a machine."
+)
+RESET_RESTORE = (
+    "No. There is no escrow and no passphrase. A lost sign-in is reset on the "
+    "machine with your recovery code; if the disk will not open, the machine is "
+    "rebuilt and you restore from your backup."
+)
+SUPPORT_GRANT = (
+    "Ask the agent to run `odile-diag` and email the bundle to help@odile.fyi. "
+    "If that is not enough, ask it to run `odile-support grant --hours 24`; it "
+    "prints the expiry and the revoke command, and every session is logged. A "
+    "grant is a handover: it can read the mounted disk, every file, the "
+    "agent's memory and past prompts, the sign-in hash, and the backup password "
+    "if the recovery file is still on the machine. Expiry and revoke block new "
+    "logins; an open session keeps running until it exits. A root shell can add "
+    "a keyslot, copy the volume key, or leave a service behind, so ask the "
+    "agent to check `authorized_keys`, `cryptsetup luksDump` and `crontab -l` "
+    "after revoke. The grant log is written on the machine; a root shell can "
+    "edit it."
+)
 
 # The decided v3.9 rows the five answers quote while `docs/CLAIMS.md` is still
 # v3.8. ODL-462 lands them in the deck; until then this tuple is what keeps a
@@ -51,9 +87,7 @@ DECIDED_ROWS = (
     "there. We never see it. It is the only app-layer gate: no 2FA in V0.1.",
     "A lost Odile sign-in is reset on the machine with your recovery code. "
     "There is no HQ reset.",
-    "A lost sign-in is reset on the machine with your recovery code; if the "
-    "disk will not open, the machine is rebuilt and you restore from your "
-    "backup.",
+    RESET_RESTORE,
     "At HQ we hold your email, the record of your machine, and a boot key "
     "with no private half. Not the disk key, not your sign-in.",
     "A recovery code and a recovery file are the way back: the code resets "
@@ -65,6 +99,9 @@ DECIDED_ROWS = (
     "A root shell, for 24 hours — only when you grant it.",
     "It can add a LUKS keyslot or copy the volume key, so it can keep disk "
     "access after the grant.",
+    MACHINE_DIES,
+    SUPPORT_GRANT,
+    "Backed up nightly. Rebuildable in under an hour — without a key.",
 )
 
 # The ceremony v3.4 taught and the sealed boot removed: the card's DoD grep,
@@ -117,6 +154,13 @@ def quoted(text: str) -> str:
     return " ".join(line.lstrip("> ").strip() for line in text.splitlines() if line.startswith(">"))
 
 
+def plain(text: str) -> str:
+    """The reader's text: blockquote markers, `<code>` markup and backticks gone."""
+    text = text.replace("<code>", "").replace("</code>", "").replace("`", "")
+    text = "\n".join(line.lstrip("> ").strip() for line in text.splitlines())
+    return flat(re.sub(r"<[^>]+>", " ", text))
+
+
 class SupportAnswers(unittest.TestCase):
     def test_every_deck_citation_is_an_approved_sentence(self):
         deck = flat(DECK.read_text(encoding="utf-8"))
@@ -160,18 +204,34 @@ class SupportAnswers(unittest.TestCase):
             found = sorted({match.group(0).lower() for match in OLD_CEREMONY.finditer(text)})
             self.assertEqual(found, [], f"{path.relative_to(ROOT)} still teaches {found}")
 
-    def test_the_machine_dies_answer_promises_no_restore(self):
-        # At M1 there is no nightly backup (ODL-215 is M2), so the moment says
-        # the recovery file holds the backup password and promises no restore;
-        # ODL-474 adds the restore sentence after the drill. The guard is on the
-        # quoted reply a user reads, not the guidance note beside it.
+    def test_the_machine_dies_answer_promises_the_restore(self):
+        # ODL-474 flips the M1 guard after ODL-215's drill: the quoted reply a
+        # user reads promises last night's backup and the measured target, the
+        # help surfaces carry the reliability row, and `web/faq.html` keeps it
+        # off (ODL-474's DoD: the FAQ does not gain the reliability row).
         faq = FAQ.read_text(encoding="utf-8")
-        self.assertIn("backup password", quoted(section(faq, 3)).lower())
+        self.assertIn("restore", quoted(section(faq, 3)).lower())
         for path in (FAQ, SKILL, EMAIL):
             text = path.read_text(encoding="utf-8")
-            reply = quoted(section(text, 3) if path == FAQ else text).lower()
-            self.assertNotIn("restore", reply, f"{path.relative_to(ROOT)} promises a restore")
-        self.assertNotIn("backed up nightly", faq.lower())
+            self.assertIn("restore", text.lower(), f"{path.relative_to(ROOT)} lost the restore")
+            self.assertIn("backed up nightly", text.lower(),
+                          f"{path.relative_to(ROOT)} lost the reliability row")
+        page = (ROOT / "web" / "faq.html").read_text(encoding="utf-8")
+        self.assertNotIn("backed up nightly", page.lower())
+
+    def test_the_landed_answers_are_verbatim(self):
+        # ODL-474's DoD says "verbatim", not "the same fact": the first writer
+        # shipped "ask me" where the deck says "ask the agent". Each passage is
+        # checked against the surface the DoD names, with markup removed.
+        for label, answer, surfaces in (
+            ("the machine-dies answer", MACHINE_DIES, (FAQ, SKILL, EMAIL)),
+            ("the reset/unlock answer", RESET_RESTORE, (FAQ, PAGE)),
+            ("the support-grant answer", SUPPORT_GRANT, (PAGE, EMAIL)),
+        ):
+            needle = flat(answer).replace("`", "")
+            for path in surfaces:
+                self.assertIn(needle, plain(path.read_text(encoding="utf-8")),
+                              f"{path.relative_to(ROOT)} does not carry {label} verbatim")
 
     def test_no_reliability_fact_escapes_the_deck(self):
         # A fact stated in the guidance prose is not covered by a **Deck:**

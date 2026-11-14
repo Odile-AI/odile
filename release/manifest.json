@@ -1,6 +1,6 @@
 {
   "audit_sha256": "539e205f7d26e1c0757a4cdabbcae444c98df10f6e68eff92b4c147604cf4e4e",
-  "generated_at": "2026-11-14T09:32:15Z",
+  "generated_at": "2026-11-14T14:46:00Z",
   "hermes": {
     "commit": "2bd378ed1b8d6bf2192cb26e0a55ff3091e6bd19",
     "commit_source": "git",
@@ -1339,7 +1339,7 @@
       "source_sha256": "1faeb5281c0b84c0d235e64dcebf8709a497e48dcb573181b46b2e959f27b0ca"
     }
   },
-  "installer_sha256": "6b42f8ef13f0352ba2cc6cb7d10635f0f29f1bcbf245bda6debd686125b7017c",
+  "installer_sha256": "a891090c8e55da0008807380658f8eb4c513b37bc6d684e6e2ebcf702319470e",
   "mode": "scratch",
   "model": "deepseek-ai/DeepSeek-V4.1-Flash-1017-abliterated",
   "packages": {
@@ -1410,7 +1410,7 @@
     "media/youtube-content": "99c1d16fe30c7124b9c7c1beb1338b915f7e04cc30f42fb593e5830dbb5065e1",
     "note-taking/obsidian": "b94764d4470516f8a3a33d48485426a8866008949cf915f8198224b3885ad103",
     "odile-first-run": "ea37ad3cacb77f8464b23f10b3bf7a00359e582accb62bf42298a697905b9c59",
-    "odile-help": "b5184e2f5dcc5538ca7417f23bbeae523297e7495847febe3b75bdec4035a121",
+    "odile-help": "960f61aee60a9b1f091ae42adb6e69b47c9a9d4e8b631ee37822a29a49f692eb",
     "odile-home": "9b303aeb2f03934604f5800ac3fba089a51b5d106f91ed0eec26f9c78db12256",
     "odile-recipes": "7824a794671b9bcc49d2f327a152ee2ef23caa87017da6c7699acd7eaba6f3bf",
     "productivity/document-to-action-items": "83d657838d8cea1bf919735e94ba5cfbcffed675a15ada2c9a804844bc646eaf",

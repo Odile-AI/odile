@@ -1,4 +1,4 @@
-# Odile — claims deck (v3.9e, the strict bar: no user SSH key, no passphrase, sealed boot, sign-in at first visit; one NEAR key per user, no meter)
+# Odile — claims deck (v3.10, the strict bar: no user SSH key, no passphrase, sealed boot, sign-in at first visit; one NEAR key per user, no meter)
 
 **Rule:** no public sentence about privacy, security or reliability ships unless it is in this file. If a sentence is not here, it is not approved. `docs/MVP-V0.1.md` §7 is the rationale; this is the copy.
 
@@ -152,9 +152,13 @@ ahead of its proof; the landing card holds the page sentence until the drill.
 ODL-466 (`docs/security/CLAIMS-VERDICT-strict.md`) is the verdict on each row.
 A held row is published by the card named here, in a deck row that already
 says what it will say. ODL-217 (support grant) merged at `ebaf266` and ODL-215
-(backups and the restore drill) merged at `9f43829`, both on 13 November 2026:
-those rows' proofs have run, and the sentences stay off the public pages only
-until ODL-474 lands them as v3.10.
+(backups and the restore drill) merged at `9f43829`, both on 13 November 2026;
+**ODL-474 landed their sentences as v3.10 on 14 November 2026** — A9's backup
+clause, the machine-dies answer, the reset/unlock answer's restore half, the
+"Backed up nightly" row and A10's support-grant answer are published on
+`web/faq.html`, `web/terms.html`, `web/claim.html` and the installed help
+surface, and the installer now places `odile-support` and `odile-diag`. The
+table below is what is still held.
 
 | Held sentence or clause | Why it is held | Lands with |
 |---|---|---|
@@ -176,13 +180,9 @@ until ODL-474 lands them as v3.10.
 | "We can stop it. We cannot read it." | the disk half (§0.1) | `t_28dda3b7` |
 | "On a tenant machine, Odile cannot read the disk, the prompts or the files; a support grant can." | the disk half (§0.1) | `t_28dda3b7` |
 | "Memory is encrypted by the CPU. The hosting provider sees ciphertext.", the second sentence | the disk half (§0.1) | `t_28dda3b7` |
-| "Can you reset my sign-in or unlock my disk?", "unlock my disk" and the restore clause | the disk key is the build key (§0.1); the restore drill landed with ODL-215, the page sentence is ODL-474 | `t_28dda3b7`, ODL-474 |
-| A9, "the file opens your backup" | the drill landed with ODL-215; the page sentence is ODL-474 | ODL-474 |
-| "Backed up nightly. Rebuildable in under an hour — without a key." | the nightly backup landed with ODL-215; the page sentence is ODL-474 | ODL-474 |
-| "The encrypted backup is kept 30 days after cancellation, then deleted. Odile can delete it, not read it." | the backup landed with ODL-215; the page sentence is ODL-474 | ODL-474 |
-| "The machine is in Montreal, Canada. Backups are off-site.", "Backups are off-site." | the backup landed with ODL-215; the page sentence is ODL-474 | ODL-474 |
-| "What happens if the machine dies?" — the whole answer | the restore drill landed with ODL-215; the page answer is ODL-474 | ODL-474 |
-| A10, and the "Can you fix something for me?" answer | the grant drill landed with ODL-217; the page row and the answer's invocation path (the installer places `odile-diag`/`odile-support`) are ODL-474 | ODL-474 |
+| "Can you reset my sign-in or unlock my disk?", the "unlock my disk" half | the disk key is the build key (§0.1); the restore half landed with ODL-474 (v3.10) | `t_28dda3b7` |
+| "The encrypted backup is kept 30 days after cancellation, then deleted. Odile can delete it, not read it." | the backup landed with ODL-215; the page sentence is on `web/privacy.html`, outside ODL-474's touches | `t_5f10dd14` |
+| "The machine is in Montreal, Canada. Backups are off-site.", "Backups are off-site." | the backup landed with ODL-215; the page sentence is on `web/faq.html`, outside the five passages ODL-474's DoD names | `t_5f10dd14` |
 | §4.4, the optional laptop verifier command | `./odile-verify` prints FAIL on a tenant: the demo's vendored VCEK and release, no `--expect` | `t_8a0ef011` |
 One decision in v3.9 is **not** a hold, and it is recorded here so the table
 stays a list of sentences a card will publish:
@@ -464,3 +464,4 @@ the machine.
 | 2026-11-14 | v3.9c: **the meter is retired from the product record** (ODL-205; card t_7f339817, from Savio's 2026-11-13 instruction "Remove everything meter in our project codebase… simply deploy a new Near AI API key for each new individual user, even in production"). The data-inventory meter row is replaced by the machine's own NEAR AI key — one per user, written at install, read by the agent, the only inference credential; §1 Money and place records the path and the cost model: no meter, no proxy, no per-request ledger, the key's prepaid credit is the allowance, Odile tops up at the billing anchor, and at zero the provider refuses and the agent reports it. The public "hard-capped" money row is unchanged — the key's balance is what makes it true — and ODL-242 proves the zero-balance message. History is not rewritten: the ODL-391/ODL-501/ODL-503 meter-and-cap records stay in `docs/backlog.yaml` with a retirement note, and `docs/security/CLAIMS-VERDICT-strict.md` carries one dated note at its meter rows. Code: `f884184` (merged `0a4b726`). By the Product lead under `docs/AGENT-ORG.md` §3; verifier review. | Product lead |
 | 2026-11-14 | v3.9d: the landing description is Savio's own sentence, verbatim — "Full agent with full privacy. Always-on agents running on confidential computers and powered by confidential models." It replaces the v3.8 landing sentence on `web/index.html` (the visible lede, `<meta name=description>` and `og:description`), and the machine section gains it as one row: `always-on` and `confidential models` are approved as written, the second being the plain form of §1 *Inference*'s NEAR AI enclave row. `full privacy` leaves §2's lint list for the same reason it was on it — no row carried it, and now one does. Savio's instruction, 2026-11-14 16:05Z. | Savio |
 | 2026-11-14 | v3.9e: the public site drops V0.1, version labels and the ten-person count — Savio's instruction of 2026-11-14 ("remove all mentioning of V0.1 and/or versioning, ten testers, etc. We'll define such details later"). §1's ten-people row becomes "The waitlist hears first."; the Reliability row becomes "Runs around the clock. Uptime is published on the status page."; §5 loses the "Why only ten people?" answer. `web/index.html`, `web/faq.html`, `web/terms.html` (which also loses its whole "The machine and the price" section under Savio's separate decision), `web/claim.html` and `templates/status.html` carry no V0.1/alpha/ten-people wording; live-verified, `make check` OK. Commits `b0b7186`, `4b09cac`. | Chief of Staff |
+| 2026-11-14 | v3.10: decided 13 November 2026; landed 14 November 2026. The five M2 sentences land — A9's "the file opens your backup" clause, the §5 machine-dies answer, the §5 reset/unlock answer's restore half, "Backed up nightly. Rebuildable in under an hour — without a key.", and A10's §5 support-grant answer — verbatim, no new sentence. Surfaces: `web/faq.html` (the reset/unlock answer, the machine-dies answer and "Can you fix something for me?"), `web/terms.html` (A9 and the reliability row), `web/claim.html` (A10 back in "Who holds what"), `docs/FAQ.md` (moments 2, 3 and 5), `skills/odile-help/SKILL.md` (the machine-dies moment) and `templates/emails/support.md` (bodies 3 and 5); `web/first-visit.html`'s two done pages already carried A9's full row and were re-embedded byte-identically. The installer now places `odile-support` and `odile-diag` (ODL-217's deferred step), so the A10 answer's two commands exist on a fresh tenant; the skill is re-embedded, the installer re-signed, and the release cut from the converged tree is named in `docs/runbooks/install.md` §12.6. **Evidence:** ODL-215 (`9f43829`: the nightly backup and the restore drill, RTO 38m03s, the restore into a rebuilt guest) and ODL-217 (`ebaf266`: the grant expiry and revoke drill); `tests/test_claims.py`, `tests/test_help_answers.py` and `tests/test_installer_copy.py`; claims lint and `make check`. The two backup rows §1a still holds (30-day retention, "Backups are off-site") live on pages outside this card's `touches` and are `t_5f10dd14`. By the Product lead under `docs/AGENT-ORG.md` §3 (D-002); verifier review. | Product lead |

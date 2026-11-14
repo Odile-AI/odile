@@ -820,6 +820,19 @@ committed, not deployed: measured 2026-11-14T07:58Z, the URL serves
 which still pins the old script, so the next `./scripts/deploy.sh` from a `main` that
 carries this merge publishes the new cut.
 
+**The `2026.11.14-6` cut (ODL-474's v3.10 landing).** This tree cuts
+`2026.11.14-6` on the converged head that carries `main`'s `8ea15e2` (v3.9c,
+the meter-free installer, and the in-place `-4` re-cut) and the v3.10 landing.
+`install.md` §12.6 has the full record: installer `a891090c…` (672,909 bytes),
+manifest `55beb8ff…` (49,957 bytes), skills `9d82653f…` (851,945 bytes), a
+second cut byte-identical on all eight names, committed and not deployed (the
+URL still serves the deployed `2026.11.14-4`, installer `fc723909…`). The id
+ledger: `2026.11.14-4` is `main`'s, re-cut in place at 09:32:15Z; `-5` is
+carried by the open `odl/ODL-521` branch; `-6` was the next free id at
+`2026-11-14T14:46:00Z`, later than every live cut by `generated_at`. The
+`2026.11.13-7`, `-8` and `-9` ids are still carried by open branches and are
+not reused.
+
 ## 6. The guest: check, apply, rollback
 
 The machine's v1 tree is its identity: `manifest.py build` is

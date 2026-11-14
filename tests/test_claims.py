@@ -233,7 +233,10 @@ class ClaimsDeckTests(unittest.TestCase):
         # ODL-466's verdict blocks these on the re-key (t_28dda3b7), the
         # pre-first-visit gate (t_adcdec31) and the M2 drills; CLAIMS.md §1a
         # holds them from the public pages until their card lands. The deck
-        # keeps the row, the page does not quote the clause.
+        # keeps the row, the page does not quote the clause. ODL-474 landed the
+        # backup and grant rows as v3.10; what is left is the disk-custody and
+        # pre-first-visit clusters, the two backup rows outside ODL-474's DoD,
+        # and the dropped timing.
         held = (
             "The only sign-in is yours.",
             "The disk unlocks only on the boot you verify.",
@@ -242,25 +245,50 @@ class ClaimsDeckTests(unittest.TestCase):
             "We can stop it. We cannot read it.",
             "On a tenant machine, Odile cannot read the disk",
             "The hosting provider sees ciphertext",
-            "Backed up nightly",
             "The encrypted backup is kept 30 days",
             "backups are off-site",
-            "the file opens your backup",
             "Claiming takes 3 minutes",
         )
-        # web/first-visit.html is the installer's embedded FIRST_VISIT_PAGE
-        # (pinned byte-for-byte by tests/test_first_visit.py); re-cutting its A9
-        # row needs a re-embed, a re-sign and a new release cut, so ODL-474 owns
-        # it (its touches and DoD name the page). Every page this landing owns is
-        # scanned.
-        surfaces = [
-            path for path in sorted((ROOT / "web").glob("*.html"))
-            if path.name != "first-visit.html"
-        ] + [ROOT / "README.md"]
+        surfaces = sorted((ROOT / "web").glob("*.html")) + [ROOT / "README.md"]
         for path in surfaces:
             text = path.read_text(encoding="utf-8")
             for clause in held:
                 self.assertNotIn(clause, text, "%s quotes a held clause: %r" % (path.name, clause))
+
+    def test_the_v310_landing_is_verbatim_on_its_surfaces(self):
+        # The deck leads the pages: the header, the change-log row and every
+        # page carry the same date and the same rows (ODL-474's fourth DoD).
+        deck = (ROOT / "docs" / "CLAIMS.md").read_text(encoding="utf-8")
+        self.assertIn("v3.10", deck.splitlines()[0])
+        self.assertIn("| 2026-11-14 | v3.10:", deck)
+        faq = (ROOT / "web" / "faq.html").read_text(encoding="utf-8")
+        terms = (ROOT / "web" / "terms.html").read_text(encoding="utf-8")
+        claim = (ROOT / "web" / "claim.html").read_text(encoding="utf-8")
+        first = (ROOT / "web" / "first-visit.html").read_text(encoding="utf-8")
+        for passage in (
+            "A recovery code and a recovery file are the way back: the code resets "
+            "your sign-in, the file opens your backup.",
+            "We rebuild it; you ask the agent to restore last night's backup with "
+            "your recovery file",
+            "if the disk will not open, the machine is rebuilt and you restore from "
+            "your backup.",
+            "Ask the agent to run <code>odile-diag</code> and email the bundle to "
+            "help@odile.fyi.",
+        ):
+            self.assertIn(passage, faq, "web/faq.html does not carry %r" % passage)
+        self.assertIn("Backed up nightly. Rebuildable in under an hour — without a key.",
+                      terms, "web/terms.html does not carry the reliability row")
+        self.assertNotIn("Backed up nightly", faq,
+                         "web/faq.html gained the reliability row; ODL-474 keeps it off")
+        self.assertIn(
+            "A support grant is a time-boxed door into the running machine. It ends "
+            "for new logins when it expires or you revoke it.",
+            claim, "web/claim.html does not carry A10 back",
+        )
+        self.assertEqual(
+            first.count("the code resets your sign-in, the file opens your backup"), 2,
+            "web/first-visit.html's two done pages must carry A9's full sentence",
+        )
 
 
 class FaqTests(unittest.TestCase):

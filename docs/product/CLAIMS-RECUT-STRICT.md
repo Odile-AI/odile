@@ -484,3 +484,57 @@ clause); the DoD grep over both pages is empty.
   `TENANT_AGENTS_SOURCE` with a SHA-256 pin and a detached signature, so the fix
   is a re-embed plus a new release cut. Card ODL-496.
 - `docs/runbooks/alerting.md` quotes A6 as a status-page example; same card.
+
+## 11. Landing record — ODL-474, 14 November 2026
+
+The decision was taken on 13 November 2026; the landing commit is 14 November
+2026, after the branch was merged with `main`'s v3.9c deck and the release was
+re-cut at the converged head.
+
+The five sentences §6 held were published as **v3.10** after both M2 drills
+passed: ODL-215 (`9f43829`) ran the nightly backup and the restore drill (a
+rebuild with the recovery file; RTO 38m03s), and ODL-217 (`ebaf266`) ran the
+grant expiry and revoke drill. The deck's rows did not change; the pages now
+quote them.
+
+- **A9's backup clause** — `web/faq.html`'s reset/unlock answer, `web/terms.html`,
+  `docs/FAQ.md`'s reset and restore answers, and the machine-dies moment in
+  `skills/odile-help/SKILL.md`. `web/first-visit.html`'s two done pages already
+  carried the full row (ODL-471); the merge with `main` brought ODL-504's icon
+  links onto the page, so ODL-474 re-embedded the merged bytes and the
+  `FIRST_VISIT_PAGE` pin moved with them (`4d7c4960…`).
+- **The §5 machine-dies answer** — `web/faq.html`, `docs/FAQ.md` moment 3 and
+  the skill; the "Backed up nightly. Rebuildable in under an hour — without a
+  key." row landed with it on `web/terms.html`, `docs/FAQ.md`,
+  `skills/odile-help/SKILL.md` and `templates/emails/support.md`, and not on
+  `web/faq.html`.
+- **The §5 reset/unlock restore half** — the full decided answer on
+  `web/faq.html`, `docs/FAQ.md` and the skill.
+- **A10's row and §5 support answer** — `web/faq.html`'s "Can you fix something
+  for me?", `templates/emails/support.md` body 5, and A10's access row back in
+  `web/claim.html`'s "Who holds what".
+- **The invocation path.** ODL-217 deferred the placement of
+  `support/odile_support.py` to this card; the installer now embeds the
+  reviewed file, places it at `/usr/local/sbin/odile-support` (0755 root) and
+  links `/usr/local/bin/odile-diag` beside it, so the A10 answer's two commands
+  exist on a fresh tenant. The installer is re-signed and the release cut from
+  the converged tree is `2026.11.14-6` (installer `a891090c…`, manifest
+  `55beb8ff…`), from a fresh scratch root the merged installer made (24/24,
+  run 2 `tenant: same`); `docs/runbooks/install.md` §12.6 carries the full
+  record.
+
+Still held, and named in `docs/CLAIMS.md` §1a: the 30-day retention row (its
+page is `web/privacy.html`) and "Backups are off-site" — both outside this
+card's `touches`, card `t_5f10dd14`.
+
+Two measured details bound the A10 answer; neither rewords it. The post-revoke
+check names `crontab -l`, and Debian 13 on the tenant image has no `cron`
+package, so ODL-217 measured `crontab not installed` (`docs/runbooks/support.md`
+§8.4). The user's route is the agent, and the agent's check is the guarded line
+in `support/odile_support.py` — `if command -v crontab >/dev/null; then sudo
+crontab -l; else echo 'crontab not installed'; fi` — with `systemctl
+list-timers --all` beside it; the deck sentence is published as decided. During
+a live grant `/verify` shows `usable keys` and `operator key` FAIL and the bare
+`FAIL — the access report did not pass`, because a granted key is in
+`authorized_keys` by design; the reporter row is routed to card `t_e23f3288`,
+not changed here.

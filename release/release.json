@@ -1,27 +1,27 @@
 {
   "artifacts": {
     "installer": {
-      "sha256": "6b42f8ef13f0352ba2cc6cb7d10635f0f29f1bcbf245bda6debd686125b7017c",
-      "size": 616370,
+      "sha256": "a891090c8e55da0008807380658f8eb4c513b37bc6d684e6e2ebcf702319470e",
+      "size": 672909,
       "url": "odile_install.py"
     },
     "skills": {
-      "sha256": "09be3cd1bd0556a9a8e9da0adbfd9c50dbf09607418f6a78fc7c97f3a3450722",
-      "size": 851865,
+      "sha256": "9d82653f88504fd9391fffaeb68b59d0e943651336efb7ccc1026dacba2730c8",
+      "size": 851945,
       "url": "skills.tar.gz"
     }
   },
   "boot": {
     "kernel": "6.12.115+deb13.1-amd64"
   },
-  "generated_at": "2026-11-14T09:32:15Z",
+  "generated_at": "2026-11-14T14:46:00Z",
   "manifest": {
-    "sha256": "65ac178cb89f353f2bc2da22344bbee7396658220be737e42d952e1cd9b1ef81",
+    "sha256": "55beb8ff8aea5d1e84df55517eb32107c52d94e7d9ee28654842dd92f5771ccf",
     "signature_url": "manifest.json.sig",
     "url": "manifest.json"
   },
-  "notes": "t_9c2d31f1 on top of the 2026.11.14-3 vendor re-pin: web/verify.html drops the retired demo-reset note (the public demo moved to the tenant at ODL-503; CLAIMS v3.8b says there is no nightly reset), so the installer re-embeds the page and this cut names the merged bytes. installer_sha256, the installer size, the manifest hash and this document's hash move; the vendor pin c73dad4d, the skills artifact and the meter-free manifest rows are -3's.",
+  "notes": "ODL-474 lands the five held M2 sentences as v3.10: A9's backup clause, the machine-dies answer, the reset/unlock restore half, the reliability row and A10's support answer, verbatim on the pages, docs/FAQ.md, the odile-help skill and the support email. The installer places odile-support and odile-diag (ODL-217's deferred step), embeds the v3.10 skill and cuts on the merged head that carries main's v3.9c deck and the meter-free installer.",
   "product": "odile",
-  "release": "2026.11.14-4",
+  "release": "2026.11.14-6",
   "schema": 1
 }

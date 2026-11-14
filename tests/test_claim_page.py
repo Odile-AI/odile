@@ -75,7 +75,8 @@ ROW_SEAL = ("The disk unlocks only on the boot you verify. Change the image, and
 ROW_NO_PASSPHRASE = "There is no passphrase to type."
 ROW_REBOOT = "After a reboot, it starts itself. The seal is the key."
 # A10 is held from the public pages until ODL-217 proves the grant; ODL-474
-# returns it. The old "a reboot closes it" wording is false and must not ship.
+# returned it after that drill. The old "a reboot closes it" wording is false
+# and must not ship.
 ROW_SUPPORT = "A support grant is a time-boxed door into the running machine"
 ROW_SIGN_IN = ("Your Odile sign-in is set on your machine at first visit and "
                "hashed there. We never see it.")
@@ -222,12 +223,11 @@ class ClaimPageTests(unittest.TestCase):
         self.assertNotIn('href="http', page)
         self.assertNotIn('src="http', page)
         # The trust moment — key custody and the reboot — is above the form;
-        # the fold rule lives in BRAND.md §Spacing. A10 is held until ODL-217
-        # proves the grant, so it must not appear yet.
+        # the fold rule lives in BRAND.md §Spacing. A10 returned with ODL-474
+        # after ODL-217's grant drill.
         self.assertLess(page.index("Who holds what"), page.index("<form"))
-        for row in (ROW_NO_LOGIN, ROW_HQ, ROW_REBOOT):
+        for row in (ROW_NO_LOGIN, ROW_SUPPORT, ROW_HQ, ROW_REBOOT):
             self.assertIn(row, page)
-        self.assertNotIn(ROW_SUPPORT, page)
         # The lede is the decided row's first two sentences, verbatim.
         self.assertIn(ROW_FIRST_RUN, page)
         self.assertNotIn(ROW_FIRST_RUN_TAIL, page)
