@@ -11986,7 +11986,7 @@ def self_test() -> int:
             check.ok("the certificate fingerprint is SHA-256 and matches openssl", got == want,
                      f"got {got!r}")
             if made_issuer.returncode == 0:
-                chained = "sha256:" + sha256(ssl.PEM_cert_to_DER_cert(bundle.decode("utf-8")))
+                chained = "sha256:" + sha256(bundle)  # the whole bundle, not a second PEM parse
                 check.ok("a store file with the issuer chain pins the leaf, not the chain",
                          got == want and got != chained,
                          f"got {got!r}, whole-bundle {chained!r}")
