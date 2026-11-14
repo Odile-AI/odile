@@ -361,9 +361,10 @@ class Flow(unittest.TestCase):
             re.search(r"<(?:script|link|img)\b[^>]*\b(?:src|href)=[\"']https?://", body, re.I),
             "the page makes an external request")
         self.assertNotIn("url(http", body.replace(" ", "").lower())
-        # An <a> is a click, not a request. The page names no host but our own:
-        # the testnet record and its explorer link are gone (ODL-421).
-        allowed = re.compile(r"^https://odile\.fyi(?:/[^\s\"'<>]*)?$")
+        # An <a> is a click, not a request. The page names no host but ours and
+        # the demo's own front door: Savio made https://demo.odile.fyi/login
+        # the judge's entry surface on 2026-11-14 and /judge retires to a 301.
+        allowed = re.compile(r"^https://(?:odile\.fyi|demo\.odile\.fyi)(?:/[^\s\"'<>]*)?$")
         for url in re.findall(r"https?://[^\s\"'<>]+", body):
             self.assertRegex(url, allowed, "the page names an external URL: %s" % url)
 
@@ -575,11 +576,16 @@ class Flow(unittest.TestCase):
         self.assertIn("./odile-verify https://odile.fyi", body)
         self.assertEqual(len(re.findall(r"state state-[a-z]+", body)), 1)
 
-    def test_verify_page_scopes_the_machine_and_links_back(self):
+    def test_verify_page_names_the_tenant_machine_and_links_to_the_login(self):
+        # ODL-503 moved the public demo onto Odile's tenant machine, so the
+        # demo block quotes the v3.8b deck row verbatim. Savio's 2026-11-14
+        # decision makes the tenant's login page the judge's entry surface;
+        # the header and foot links go there, not to the retiring /judge.
         _, body = self.request("/verify")
-        self.assertIn("This is Odile's demo machine", body)
-        self.assertIn("It is not a tenant machine", body)
-        self.assertIn('href="/judge"', body)
+        self.assertIn("This is Odile's tenant machine", body)
+        self.assertIn("Odile holds this machine's boot key and can log in.", body)
+        self.assertNotIn("It is not a tenant machine", body)
+        self.assertEqual(body.count('href="https://demo.odile.fyi/login"'), 2)
 
     def test_verify_page_carries_no_retired_demo_note(self):
         # ODL-503 moved the public demo to the tenant; HQ's /verify is the
@@ -1382,8 +1388,7 @@ class StatusPage(unittest.TestCase):
         self.assertEqual(res.status, 200)
         self.assertTrue((res.getheader("Content-Type") or "").startswith("text/html"))
         for row in (
-            "Runs around the clock. V0.1 target: 99.0% uptime; V0.1.1 target: 99.5%. "
-            "Both published on the status page.",
+            "Runs around the clock. Uptime is published on the status page.",
             "The status page counts uptime and names no tenant.",
         ):
             self.assertIn(row, body)
@@ -1431,8 +1436,7 @@ class StatusPage(unittest.TestCase):
                       "the terms page names a status page it does not link")
         text = body.decode("utf-8") if isinstance(body, bytes) else body
         self.assertIn(
-            "Runs around the clock. V0.1 target: 99.0% uptime; V0.1.1 target: 99.5%. "
-            "Both published on the status page.",
+            "Runs around the clock. Uptime is published on the status page.",
             re.sub(r"<[^>]+>", "", text),
         )
 

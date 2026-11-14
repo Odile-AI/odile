@@ -3033,7 +3033,7 @@ section{margin:0 0 8px}
 # exactly the surface it writes to /usr/local/lib/odile/. --self-test
 # fails on a one-byte edit. The handoff audit (ODL-208) is embedded the
 # same way and installed at /usr/local/bin/odile-audit.
-VERIFY_PAGE_SHA256 = "8b1a3198a6c416845dc54407d21506c48eaecf1f93c8df32c5d7941eb20019c3"
+VERIFY_PAGE_SHA256 = "bf4dda174d7f973f90fae6550cfe180d1fc5dc0dcc985c7cb00f0340d218fafc"
 VERIFY_PAGE = r'''<!doctype html>
 <html lang="en">
 <head>
@@ -3146,12 +3146,12 @@ pre code::selection{background:var(--term-ink);color:var(--term)}
   <header class="top">
     <a class="brand" href="/">Odile</a>
     <!--demo-->
-    <a class="back" href="/judge"><span class="arrow" aria-hidden="true">&larr;</span>Back to the demo</a>
+    <a class="back" href="https://demo.odile.fyi/login"><span class="arrow" aria-hidden="true">&larr;</span>Back to the demo</a>
     <!--/demo-->
   </header>
   <h1>Verify</h1>
   <!--demo-->
-  <p class="lede">This is Odile's demo machine: one shared workspace on our measured AMD SEV-SNP machine. Odile holds this key and can log in. It is not a tenant machine.</p>
+  <p class="lede">This is Odile's tenant machine: one shared workspace on our measured AMD SEV-SNP machine. Odile holds this machine's boot key and can log in.</p>
   <!--/demo-->
   <!--tenant-->
   <p class="lede">No one at Odile can log in to a tenant machine.</p>
@@ -3241,7 +3241,7 @@ pre code::selection{background:var(--term-ink);color:var(--term)}
     </ol>
   </section>
 
-  <p class="foot"><!--demo--><a href="/judge">Back to the demo</a> <span class="mono">&middot;</span> <!--/demo--><a href="/">odile.fyi</a></p>
+  <p class="foot"><!--demo--><a href="https://demo.odile.fyi/login">Back to the demo</a> <span class="mono">&middot;</span> <!--/demo--><a href="/">odile.fyi</a></p>
 </main>
 </body>
 </html>
