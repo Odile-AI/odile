@@ -9,7 +9,7 @@
 # when the value is gone; do not move the date forward without a reason here.
 public-ip	scripts/send_test.py	sha256:6694f83c9f47	documentation address in a smoke-test recipient, never dialled	2027-12-31
 credential-assignment	deploy/demo-host/login.html	sha256:b2132046eb76	the published demo password: public by design, and the page is the judge's one button	2027-12-31
-credential-assignment	deploy/image/tenant-image.pin	sha256:417b28e44772	a measured image hash recorded as a bench fixture, not a credential	2027-12-31
+credential-assignment	deploy/image/tenant-image.pin	sha256:417b28e44772	the one-time seed token for bench tenant odl-7971a8 (instance 31a63bbb), spent 2026-11-14; kept so the pin cmdline stays byte-identical	2027-12-31
 credential-assignment	tests/test_first_visit.py	sha256:f4a39f182031	test fixture: a password the first-visit form must reject	2027-12-31
 credential-assignment	tests/test_first_visit.py	sha256:92d152347635	test fixture: base64 of the literal 'secret-placeholder'	2027-12-31
 credential-assignment	tests/test_first_visit.py	sha256:e024fef88814	test fixture: a backup password, never used to encrypt anything	2027-12-31
