@@ -1,8 +1,8 @@
 {
   "artifacts": {
     "installer": {
-      "sha256": "6b42f8ef13f0352ba2cc6cb7d10635f0f29f1bcbf245bda6debd686125b7017c",
-      "size": 616370,
+      "sha256": "10a38b68681ff62f67c799626f52154a801df53e0a4d54cec8055c8d56f1e6df",
+      "size": 617829,
       "url": "odile_install.py"
     },
     "skills": {
@@ -14,14 +14,14 @@
   "boot": {
     "kernel": "6.12.115+deb13.1-amd64"
   },
-  "generated_at": "2026-11-14T09:32:15Z",
+  "generated_at": "2026-11-14T15:21:35Z",
   "manifest": {
-    "sha256": "65ac178cb89f353f2bc2da22344bbee7396658220be737e42d952e1cd9b1ef81",
+    "sha256": "daa8340f566ca645bf8e2845e6a29ffcee6d5a0c6074592ed71b699dc075978e",
     "signature_url": "manifest.json.sig",
     "url": "manifest.json"
   },
-  "notes": "t_9c2d31f1 on top of the 2026.11.14-3 vendor re-pin: web/verify.html drops the retired demo-reset note (the public demo moved to the tenant at ODL-503; CLAIMS v3.8b says there is no nightly reset), so the installer re-embeds the page and this cut names the merged bytes. installer_sha256, the installer size, the manifest hash and this document's hash move; the vendor pin c73dad4d, the skills artifact and the meter-free manifest rows are -3's.",
+  "notes": "ODL-521: the published image ships no usable sign-in \u2014 install-stack.sh --production writes a discarded scrypt hash carrying '# odile-signin-placeholder: 1', the first boot leaves it, and the release installer's --first-visit write replaces any hash that is not the owner's on every run until POST /first-visit records signin_set_at. Cut on top of 2026.11.14-4: only installer_sha256, generated_at and the two JSON documents' signatures move; the vendor pin, the skills artifact and the meter-free rows are -4's.",
   "product": "odile",
-  "release": "2026.11.14-4",
+  "release": "2026.11.14-5",
   "schema": 1
 }

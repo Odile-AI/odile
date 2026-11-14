@@ -1601,6 +1601,25 @@ verify against `installer/odile-signing-key.pub`. The cut was made at
 `https://odile.fyi/odile_install.py` hashes to `fc723909…` (616,368 bytes), and
 HQ's `/verify` carries no "resets daily".
 
+**The `2026.11.14-5` cut (ODL-521, the image's sign-in).** This tree merges
+the new single-root `main` (8e37ec3) into ODL-521's sign-in slice and cuts
+`-5` on that head. The installer carries both: the published image's `.env`
+holds a discarded scrypt hash behind `# odile-signin-placeholder: 1`, the
+first boot leaves it alone, and `ensure_env(first_visit=True)` rewrites the
+hash on every boot until the first-visit page records `signin_set_at`. The
+installer moves from `6b42f8ef…` (616,370 bytes) to `10a38b68…` (617,829
+bytes). The manifest is the `-4` document with only `installer_sha256` and
+`generated_at` moved (`daa8340f…`); the vendor pin, the skills artifact
+`09be3cd1…` (851,865 bytes, the canonical `<home>/workspace` cut) and the
+meter-free rows are unchanged. `release/release.json` names installer
+`10a38b68…` (617,829 bytes) and manifest `daa8340f…` (`c6fa1ed1…`). Both JSON
+signatures verify against `installer/odile-signing-key.pub`, and
+`tools/recut_release.py --check` prints `ok` for the installer, its release
+copy, the manifest, the release document and the pin's hook. It is
+**committed, not deployed**: measured 2026-11-14T15:25Z,
+`https://odile.fyi/release.json` serves `2026.11.14-4` until the next
+`./deploy.sh` from a `main` that carries this merge.
+
 The clock starts at the build's `uki.sh --sign` and stops when
 `https://<slug>.odile.fyi/login` answers 200 over TLS. The gate is 30 minutes.
 Round 8 is the measured stop: the panel was saved at 14:42:53Z, the guest's
