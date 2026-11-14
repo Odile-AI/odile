@@ -1,19 +1,12 @@
 # Odile
 
-Odile gives you a personal Linux computer with an AI agent living inside it, reachable from any browser. Each machine runs on an AMD SEV-SNP confidential VM whose boot is measured, so a stranger can check what is running without trusting us. One agent per subscriber, provisioned from a signed image, updated in place, and still working when the tab is closed.
+Full agent with full privacy.
+
+Odile gives you an AI agent that get things done for you with full respect for your privacy. Every Odile agent has its own AMD SEV-SNP confidential virtual machine and utilizes confidentially inferenced AI models, ensuring your interactions with Odile are truly yours.
 
 ## Demo
 
-A live demo workspace runs at <https://odile.fyi/judge> — sign in with the public demo password, ask the agent to write a file, close the tab, and the file is still there.
-
-## Demo account
-
-| Field | Value |
-|---|---|
-| Username | `judge` |
-| Password | `odile-demo-kestrel-2026` |
-
-The password is public by design: one shared workspace on Odile's own tenant machine.
+Live demo: https://demo.odile.fyi/login
 
 ## Core components
 
