@@ -62,9 +62,35 @@
  * everywhere else: odile.fyi/verify describes the demo machine, while a
  * subscriber's report is served by that subscriber's VM (odilectl/offboard.py
  * probes the same path). And the workspace gets the semantics the vendor shell
- * omits — `role="main"` on the chat surface and one visually hidden <h1> named
- * as the page title — because BRAND.md §Accessibility tokens asks for one
- * heading per screen and named landmarks.
+ * omits — `role="main"` on the chat surface, one visually hidden <h1> named
+ * as the page title, and `role="navigation"` + `aria-label="Sessions"` on the
+ * session list — because BRAND.md §Accessibility tokens asks for one heading
+ * per screen and named landmarks.
+ *
+ * The two landmarks bring the sheet's keyboard rule with them: "a skip link is
+ * the first focusable element when a page has more than one landmark". The
+ * vendor shell has none, so the chrome inserts one as body's first child,
+ * pointing at the main surface, and gives that surface the target id and
+ * `tabindex="-1"` a same-page link needs. The stylesheet carries the shipped
+ * `web/roadmap.html` `.skip` pattern (off-screen until focused, then a 44 px
+ * ink tab).
+ *
+ * Dialogs are the vendor's Radix ones, and their close paths do not restore
+ * the opener: measured 2026-11-14 on the tenant, Cancel, Close and Escape all
+ * left `document.activeElement` on <body>, so the next Tab started from the
+ * top of the shell instead of the row's `Session actions` trigger. The chrome
+ * remembers the last element focused outside any overlay (the trigger the menu
+ * opened from), watches the body for a dialog leaving the DOM, and puts focus
+ * back on that element when the vendor has not. Radix still owns the trap, the
+ * Escape key and the close animation; this only repairs the landing spot.
+ *
+ * The remembered opener needs two doors. A keyboard-opened menu focuses the
+ * trigger, so `focusin` sees it; a pointer-opened menu does not (Radix opens
+ * on `pointerdown`, prevents the default focus, and moves focus to the menu
+ * container), so the trigger under the pointer is recorded from the capture
+ * phase of `pointerdown` itself. Measured 2026-11-14 on a fresh page: without
+ * the pointer listener, Cancel left focus on the composer at 1440 and on
+ * "Hide sidebar" at 390 — never the trigger the user clicked.
  */
 ;(() => {
   'use strict'
@@ -101,12 +127,36 @@
   // chat surface itself carries.
   const CHAT_SURFACE = '[data-chat-surface]'
   const WORKSPACE_TITLE = 'h1.odile-workspace-title'
+  // The session list's panel. The vendor renders it as a plain <div>; the
+  // sheet asks for named landmarks, and the list of sessions is the
+  // workspace's navigation, so it takes `role="navigation"` + a label.
+  const SIDEBAR = '[data-slot="sidebar"]'
+  const SIDEBAR_LABEL = 'Sessions'
   // The vendor's session menu is left exactly as it ships (ODL-391 §2.5 is
   // retired, 2026-11-14): the demo's `session_guard.py` and Caddy's REST
   // refusal are gone, so Delete, Rename… and Archive work from the judge's
   // browser. `MENU_ITEM` only keeps the scan alive when a menu mounts.
   const MENU_ITEM = '[role="menuitem"]'
+  // The workspace has two landmarks (main + the session list), so BRAND.md
+  // §Accessibility tokens (Keyboard) asks for a skip link as the first
+  // focusable element. The vendor shell has none; the script inserts one as
+  // body's first child and gives the chat surface the same-page target.
+  const SKIP_LINK = 'a.odile-skip-link'
+  const SKIP_TARGET = 'odile-main'
+  const SKIP_LABEL = 'Skip to content'
+  // Radix removes a closed dialog from the DOM and the vendor's dialogs leave
+  // focus on <body> (measured 2026-11-14: Cancel, Close and Escape alike).
+  // `DIALOG` and `MENU` are the overlays whose own controls must not become
+  // the remembered opener; the last focus outside both is the row's
+  // `Session actions` trigger.
+  const DIALOG = '[role="dialog"], [role="alertdialog"]'
+  const MENU = '[role="menu"]'
+  // The row's kebab. Radix's trigger opens the menu on pointerdown without
+  // focusing itself, so a pointer-opened overlay has to remember this button
+  // from the event under the cursor (see `rememberPointer`).
+  const ROW_KEBAB = 'button[aria-label="Session actions"]'
   let themeFontGuard = false
+  let lastFocusOutside = null
 
 
   function isThemeFont(node) {
@@ -259,6 +309,14 @@
     if (surface.getAttribute('role') !== 'main') {
       surface.setAttribute('role', 'main')
     }
+    // The skip link is a same-page anchor; its target has to be focusable
+    // without entering the tab order, which is what `tabindex="-1"` is for.
+    if (surface.getAttribute('id') !== SKIP_TARGET) {
+      surface.setAttribute('id', SKIP_TARGET)
+    }
+    if (surface.getAttribute('tabindex') !== '-1') {
+      surface.setAttribute('tabindex', '-1')
+    }
     let heading = surface.querySelector(WORKSPACE_TITLE)
     if (!heading) {
       heading = document.createElement('h1')
@@ -268,6 +326,15 @@
     const name = document.title || TITLE
     if (heading.textContent !== name) {
       heading.textContent = name
+    }
+    const sidebar = document.querySelector(SIDEBAR)
+    if (sidebar) {
+      if (sidebar.getAttribute('role') !== 'navigation') {
+        sidebar.setAttribute('role', 'navigation')
+      }
+      if (sidebar.getAttribute('aria-label') !== SIDEBAR_LABEL) {
+        sidebar.setAttribute('aria-label', SIDEBAR_LABEL)
+      }
     }
   }
 
@@ -325,6 +392,99 @@
     link.style.paddingBottom = `${Math.max(0, Math.min(height - 12, padding))}px`
   }
 
+  // The page's first focusable element. Inserted as body's first child, in
+  // front of the vendor's #root, so one Tab reaches it before `Open settings`
+  // and the composer. The vendor re-mounts the app root but not body, and the
+  // observer puts the link back if anything does remove it.
+  //
+  // The activation handler does not let the browser follow the hash: the
+  // vendor's router owns the fragment (it rewrites `#…` to `#/` and
+  // re-renders), and the vendor refocuses the composer for any focus that
+  // lands inside the app root (measured 2026-11-14: focusing the main surface,
+  // the sidebar and the hidden h1 all put focus on the composer). So the link
+  // skips to the composer itself — the main landmark's primary control — and
+  // scrolls the surface to the top. The main node still carries the target id
+  // and `tabindex="-1"` as the anchor's documented target and the fallback
+  // when the composer is not mounted.
+  function focusSkipTarget(event) {
+    const main = document.getElementById(SKIP_TARGET)
+    if (!main) {
+      return
+    }
+    event.preventDefault()
+    const target = main.querySelector(COMPOSER) || main
+    target.focus({ preventScroll: true })
+    main.scrollIntoView({ block: 'start' })
+  }
+
+  function ensureSkipLink() {
+    const existing = document.querySelector(SKIP_LINK)
+    if (existing) {
+      if (document.body.firstChild !== existing) {
+        document.body.insertBefore(existing, document.body.firstChild)
+      }
+      return
+    }
+    const link = document.createElement('a')
+    link.className = 'odile-skip-link'
+    link.href = '#' + SKIP_TARGET
+    link.textContent = SKIP_LABEL
+    link.addEventListener('click', focusSkipTarget)
+    document.body.insertBefore(link, document.body.firstChild)
+  }
+
+  // The opener is whatever held focus before the overlay: the `Session
+  // actions` trigger when the menu opened, because the menu's own nodes are
+  // excluded. Capture phase, so the value is current before any handler the
+  // vendor runs on the same event.
+  function rememberFocus(event) {
+    const target = event.target
+    if (!target || target.nodeType !== 1 || target === document.body) {
+      return
+    }
+    if (target.closest(DIALOG) || target.closest(MENU)) {
+      return
+    }
+    lastFocusOutside = target
+  }
+
+  // A pointer-opened menu never focuses its trigger (Radix opens on
+  // `pointerdown`, calls preventDefault and moves focus to the menu container),
+  // so `rememberFocus` never sees the button the user actually pressed. Record
+  // it here, on the capture phase, before Radix's handler mounts the menu. The
+  // trigger is the only element taken from a pointer event; clicks on the
+  // overlay or the dialog's own buttons must not replace it.
+  function rememberPointer(event) {
+    const target = event.target
+    if (!target || target.nodeType !== 1 || typeof target.closest !== 'function') {
+      return
+    }
+    const trigger = target.closest(ROW_KEBAB)
+    if (!trigger || !trigger.isConnected) {
+      return
+    }
+    lastFocusOutside = trigger
+  }
+
+  // After Cancel, Close or Escape the vendor leaves activeElement on <body>;
+  // Radix sometimes restores the opener itself. Only move focus when the
+  // vendor has not, and only to an element that is still connected and still
+  // has a box (the sidebar row may have been re-rendered out from under it).
+  function restoreOpener() {
+    const active = document.activeElement
+    if (active && active !== document.body && active.isConnected && !active.closest(DIALOG)) {
+      return
+    }
+    const opener = lastFocusOutside
+    if (!opener || !opener.isConnected || typeof opener.focus !== 'function') {
+      return
+    }
+    if (!opener.getClientRects().length) {
+      return
+    }
+    opener.focus({ preventScroll: true })
+  }
+
   function scan() {
     const region = document.querySelector(REGION)
     if (region) {
@@ -335,6 +495,7 @@
     renameEmptyState()
     renameTitle()
     ensureLandmarks()
+    ensureSkipLink()
     ensureVerifyLink()
   }
 
@@ -351,6 +512,7 @@
         node.matches(MENU_ITEM) ||
         node.matches(VERIFY_LINK) ||
         node.matches(CHAT_SURFACE) ||
+        node.matches(SIDEBAR) ||
         node.matches(RIGHT_CLUSTER))
     ) {
       return true
@@ -369,6 +531,7 @@
           node.querySelector(COMPOSER) ||
           node.querySelector(MENU_ITEM) ||
           node.querySelector(CHAT_SURFACE) ||
+          node.querySelector(SIDEBAR) ||
           node.querySelector(RIGHT_CLUSTER)
       )
     )
@@ -389,6 +552,8 @@
   function start() {
     scan()
     stripThemeFonts()
+    document.addEventListener('focusin', rememberFocus, true)
+    document.addEventListener('pointerdown', rememberPointer, true)
     window.addEventListener('resize', positionVerifyLink)
     const observer = new MutationObserver((records) => {
       for (const record of records) {
@@ -425,9 +590,26 @@
           scan()
           return
         }
-        // The app controls cluster is re-mounted on some layouts; when the
-        // verify link goes with it, put it back before the next paint.
+        // A closed dialog is Radix unmounting. Repair the landing spot once
+        // the vendor's own cleanup has run; `restoreOpener` leaves a focus
+        // Radix placed itself alone.
         for (const node of record.removedNodes) {
+          if (
+            node &&
+            node.nodeType === 1 &&
+            (node.matches(DIALOG) || node.querySelector(DIALOG))
+          ) {
+            window.setTimeout(restoreOpener, 0)
+            continue
+          }
+          if (
+            node &&
+            node.nodeType === 1 &&
+            (node.matches(SKIP_LINK) || node.querySelector(SKIP_LINK))
+          ) {
+            scan()
+            continue
+          }
           if (
             node &&
             node.nodeType === 1 &&

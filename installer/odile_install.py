@@ -10411,6 +10411,22 @@ def ensure_skin(layout: Layout, dry: bool) -> bool:
     return True
 
 
+def first_visit_signin_set(layout: Layout) -> bool:
+    """True once the first-visit page has written the owner's own sign-in.
+
+    The page records ``signin_set_at`` in the state it owns. Before that
+    timestamp every hash in the tenant .env is a placeholder — the image's, the
+    first boot's, or an earlier run's — and every boot of the installer must
+    replace it. After it, the hash is the owner's and a boot must keep it, or
+    the first-visit sign-in would change on every reboot.
+    """
+    try:
+        state = json.loads(layout.first_visit_state.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    return isinstance(state, dict) and bool(state.get("signin_set_at"))
+
+
 def ensure_env(layout: Layout, password: str | None, username: str,
                dry: bool, first_visit: bool = False) -> tuple[bool, str | None]:
     """Write the .env; return (changed, the plaintext password when known).
@@ -10420,10 +10436,16 @@ def ensure_env(layout: Layout, password: str | None, username: str,
     re-checks the gate only when the caller supplied it.
 
     Under ``--first-visit`` the hash is a placeholder for a discarded random
-    password: nobody can sign in until the first-visit page writes the real
-    one, which is the strict bar (the installer never knows the sign-in).
+    password until the first-visit page writes the owner's: nobody can sign in
+    before that, which is the strict bar (the installer never knows the
+    sign-in). The placeholder is rewritten on every run before the visit, even
+    when the allowlist already looks valid, so an image hash of a public
+    password cannot survive the first boot (ODL-521). The session-signing
+    secret is kept: the first-visit write must not rotate it (ODL-522 owns the
+    per-machine secret).
     """
     target = layout.hermes_home / ".env"
+    signin_set = first_visit_signin_set(layout) if first_visit else False
     if target.is_file():
         text = target.read_text(encoding="utf-8")
         outside, seat = count_env_violations(text)
@@ -10436,7 +10458,8 @@ def ensure_env(layout: Layout, password: str | None, username: str,
                 "error: --signin-password does not match the existing hash in "
                 f"{target}; omit it to keep the current password, or reset the file"
             )
-        if sorted(keys) == sorted(TENANT_ENV_KEYS) and outside == 0 and seat == 0:
+        if (sorted(keys) == sorted(TENANT_ENV_KEYS) and outside == 0 and seat == 0
+                and not (first_visit and not signin_set)):
             mode = target.stat().st_mode & 0o777
             changed = False
             if mode != 0o600:
@@ -10446,8 +10469,10 @@ def ensure_env(layout: Layout, password: str | None, username: str,
                 changed = True
             print(f"same         {target} (mode 0600, 3 allowlisted keys, allowlist ok)")
             return changed, password
-        print(f"{'would rewrite' if dry else 'rewrite':<12} {target} "
-              f"(outside the allowlist: {outside}; seat secrets: {seat})")
+        reason = ("the sign-in hash is a placeholder until first visit"
+                  if first_visit and not signin_set
+                  else "outside the allowlist: %d; seat secrets: %d" % (outside, seat))
+        print(f"{'would rewrite' if dry else 'rewrite':<12} {target} ({reason})")
     else:
         values = {}
         print(f"{'would write' if dry else 'write':<12} {target} (3 allowlisted keys, mode 0600)")
@@ -10455,17 +10480,18 @@ def ensure_env(layout: Layout, password: str | None, username: str,
     if dry:
         return True, password
     password_hash = values.get("HERMES_DASHBOARD_BASIC_AUTH_PASSWORD_HASH") or ""
-    if not password_hash:
-        if first_visit:
-            # A real scrypt hash of a password nobody knows: the gate is shut,
-            # and the first-visit page is the only way to open it. The plaintext
-            # is generated and discarded in one expression, never printed.
-            password = None
-            password_hash = hash_password(generate_password())
-            print("write        the sign-in hash is a placeholder until first visit")
-        else:
-            password = resolve_signin_password(password, interactive=True)
-            password_hash = hash_password(password)
+    if first_visit and not signin_set:
+        # A real scrypt hash of a password nobody knows: the gate is shut,
+        # and the first-visit page is the only way to open it. The plaintext
+        # is generated and discarded in one expression, never printed. This
+        # runs even when an existing (image) hash is present: otherwise the
+        # image's public bench password would survive the first boot.
+        password = None
+        password_hash = hash_password(generate_password())
+        print("write        the sign-in hash is a placeholder until first visit")
+    elif not password_hash:
+        password = resolve_signin_password(password, interactive=True)
+        password_hash = hash_password(password)
     secret = values.get("HERMES_DASHBOARD_BASIC_AUTH_SECRET") or base64.b64encode(
         secrets.token_bytes(32)
     ).decode()

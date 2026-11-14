@@ -387,6 +387,22 @@ def block_after(text: str, marker: str) -> str:
     return ""
 
 
+def _luminance(hex_color: str) -> float:
+    channels = []
+    for index in (1, 3, 5):
+        value = int(hex_color[index:index + 2], 16) / 255
+        channels.append(value / 12.92 if value <= 0.03928
+                        else ((value + 0.055) / 1.055) ** 2.4)
+    return 0.2126 * channels[0] + 0.7152 * channels[1] + 0.0722 * channels[2]
+
+
+def contrast(foreground: str, background: str) -> float:
+    """WCAG 2.x contrast for two opaque #RRGGBB values."""
+    first, second = _luminance(foreground), _luminance(background)
+    high, low = max(first, second), min(first, second)
+    return (high + 0.05) / (low + 0.05)
+
+
 class ChromeParityTests(unittest.TestCase):
     """The bytes that ship are the ODL-330/ODL-500 source, not a third copy."""
 
@@ -547,6 +563,172 @@ class SurfaceValueTests(unittest.TestCase):
         self.assertEqual(rule.get("font-size"), ["17px !important"],
                          "the composer is product prose, not the vendor's 14.3 px scale")
         self.assertEqual(rule.get("line-height"), ["1.55 !important"])
+
+
+class RaisedSurfaceTests(unittest.TestCase):
+    """The states the native session menu opened are on the sheet (round 3).
+
+    The session menu went native when ODL-391 §2.5 was retired, and its
+    popover, the Delete / Rename dialogs and the destructive confirm were the
+    one part of the workspace still painting the vendor's near-white. Each
+    value below was measured on the live demo before the fix and is pinned
+    here so a later edit cannot quietly put it back.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.css = CHROME_CSS.read_text(encoding="utf-8")
+        cls.js = CHROME_JS.read_text(encoding="utf-8")
+
+    def test_the_raised_surface_tokens_are_the_card(self):
+        # The vendor derives these from its neutral #fcfcfc: 28 % card for
+        # --ui-bg-elevated, 22 % for the surface, 0 % for the bubble. The
+        # seed kept the derived value near-white (menu ≈ #F8F6EF, dialog
+        # pixel #F6F4EE) until the derived token itself was re-declared.
+        tokens = declarations(self.css, "html:root")
+        for token in ("--ui-bg-elevated", "--ui-surface-background",
+                      "--ui-chat-bubble-background"):
+            self.assertEqual(tokens.get(token), ["#f2e9d4 !important"],
+                             f"{token} is not the sheet's --card; the vendor's "
+                             "color-mix into #fcfcfc is the painted value")
+
+    def test_every_elevated_slot_paints_the_card(self):
+        for slot in ("dropdown-menu-content", "select-content",
+                     "dialog-content", "thread-timeline-popover"):
+            rule = declarations(self.css, f'[data-slot="{slot}"]')
+            self.assertEqual(rule.get("background"), ["#f2e9d4 !important"],
+                             f"{slot} is not painted --card")
+
+    def test_the_caption_role_is_soft_and_reads_at_body_contrast(self):
+        # --ui-text-tertiary was ink at 54 %: the Delete description measured
+        # 3.762:1 at 12 px and "Scroll to bottom" 3.619:1 on the card.
+        tokens = declarations(self.css, "html:root")
+        self.assertEqual(tokens.get("--ui-text-tertiary"), ["#4a4136 !important"],
+                         "the caption role is --soft #4A4136, not 54 % ink")
+        for ground in ("#f2e9d4", "#eadfc4"):
+            self.assertGreaterEqual(contrast("#4a4136", ground), 4.5,
+                                    f"--soft on {ground} is below body contrast")
+
+    def test_a_destructive_button_is_quiet_and_never_the_fill(self):
+        # Measured before: rgb(255,255,255) on rgb(110,42,42) #6E2A2A.
+        # Oxblood is never a fill and a destructive action is never the
+        # filled button; the secondary shape is transparent + --edge border.
+        rule = declarations(self.css, 'button[data-variant="destructive"]')
+        self.assertEqual(rule.get("background-color"), ["transparent !important"],
+                         "the destructive confirm is still a filled button")
+        self.assertEqual(rule.get("color"), ["#6e2a2a !important"],
+                         "the destructive label is not --error")
+        self.assertEqual(rule.get("border"),
+                         ["1px solid rgba(28, 24, 19, 0.55) !important"],
+                         "the destructive confirm has no --edge boundary")
+        self.assertNotIn("#fff", " ".join(sum(rule.values(), [])))
+        self.assertNotIn("#ffffff", " ".join(sum(rule.values(), [])))
+
+    def test_the_dialog_scrim_is_warm_ink(self):
+        rule = declarations(self.css, '[data-slot="dialog-overlay"]')
+        self.assertEqual(rule.get("background-color"),
+                         ["rgba(28, 24, 19, 0.22) !important"],
+                         "the scrim is pure black, not the sheet's ink")
+
+    def test_the_sidebar_is_a_named_navigation_landmark(self):
+        self.assertIn("const SIDEBAR = '[data-slot=\"sidebar\"]'", self.js)
+        self.assertIn("const SIDEBAR_LABEL = 'Sessions'", self.js)
+        self.assertIn("sidebar.setAttribute('role', 'navigation')", self.js)
+        self.assertIn("sidebar.setAttribute('aria-label', SIDEBAR_LABEL)", self.js)
+
+
+class KeyboardAccessTests(unittest.TestCase):
+    """The sheet's keyboard rules: a skip link, and overlays that land back."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.css = CHROME_CSS.read_text(encoding="utf-8")
+        cls.js = CHROME_JS.read_text(encoding="utf-8")
+
+    def test_the_skip_link_is_the_scripts_first_focusable(self):
+        # BRAND.md §Accessibility tokens (Keyboard): a skip link is first when
+        # a page has more than one landmark, and the workspace has two.
+        self.assertIn("const SKIP_LINK = 'a.odile-skip-link'", self.js)
+        self.assertIn("const SKIP_TARGET = 'odile-main'", self.js)
+        self.assertIn("const SKIP_LABEL = 'Skip to content'", self.js)
+        self.assertIn("link.href = '#' + SKIP_TARGET", self.js)
+        self.assertIn("link.textContent = SKIP_LABEL", self.js)
+        self.assertIn("document.body.insertBefore(link, document.body.firstChild)",
+                      self.js,
+                      "the skip link must be body's first child, before #root")
+        self.assertIn("document.body.insertBefore(existing, document.body.firstChild)",
+                      self.js,
+                      "a re-mounted body must not push the skip link behind the app")
+
+    def test_the_skip_link_carries_the_roadmap_pattern(self):
+        off = declarations(self.css, "a.odile-skip-link")
+        self.assertEqual(off.get("position"), ["absolute"])
+        self.assertEqual(off.get("left"), ["-9999px"])
+        self.assertEqual(off.get("top"), ["0"])
+        focus = declarations(self.css, "a.odile-skip-link:focus")
+        self.assertEqual(focus.get("top"), ["12px"])
+        self.assertEqual(focus.get("left"), ["24px"])
+        self.assertEqual(focus.get("min-height"), ["44px"],
+                         "the skip link is not a 44 px target")
+        self.assertEqual(focus.get("padding"), ["12px 16px"])
+        self.assertEqual(focus.get("background"), ["#1c1813"])
+        self.assertEqual(focus.get("color"), ["#eadfc4"])
+        self.assertTrue(" ".join(focus.get("font-family", [])).startswith("ui-monospace"),
+                        "the skip label is not the brand's mono caps role")
+        self.assertEqual(focus.get("text-transform"), ["uppercase"])
+        self.assertGreaterEqual(contrast("#eadfc4", "#1c1813"), 7.0,
+                                "the skip label leaves the sheet's contrast")
+        narrow = block_after(self.css, "@media (max-width: 560px)")
+        self.assertIn("a.odile-skip-link:focus", narrow)
+        self.assertIn("left: 18px", narrow)
+
+    def test_the_main_surface_is_the_skip_target(self):
+        self.assertIn("surface.setAttribute('id', SKIP_TARGET)", self.js)
+        self.assertIn("surface.setAttribute('tabindex', '-1')", self.js,
+                      "a same-page anchor needs a focusable target outside the tab order")
+        # The vendor's router owns the fragment and refocuses the composer for
+        # any focus inside the app root, so the link must not follow the hash:
+        # it lands on the main landmark's composer itself.
+        self.assertIn("link.addEventListener('click', focusSkipTarget)", self.js)
+        self.assertIn("event.preventDefault()", self.js)
+        self.assertIn("main.querySelector(COMPOSER) || main", self.js)
+        self.assertIn("main.scrollIntoView({ block: 'start' })", self.js)
+
+    def test_the_dialog_close_paths_restore_the_opener(self):
+        # The vendor's Radix dialogs leave activeElement on <body> after
+        # Cancel, Close and Escape (measured 2026-11-14 on the tenant), so the
+        # chrome remembers the pre-overlay focus and puts it back.
+        self.assertIn("const DIALOG = '[role=\"dialog\"], [role=\"alertdialog\"]'", self.js)
+        self.assertIn("const MENU = '[role=\"menu\"]'", self.js)
+        self.assertIn("document.addEventListener('focusin', rememberFocus, true)", self.js)
+        self.assertIn("target.closest(DIALOG) || target.closest(MENU)", self.js,
+                      "an overlay's own controls must not become the remembered opener")
+        self.assertIn("lastFocusOutside = target", self.js)
+        self.assertIn("window.setTimeout(restoreOpener, 0)", self.js,
+                      "a removed dialog does not schedule the focus repair")
+        self.assertIn("opener.focus({ preventScroll: true })", self.js)
+        for guard in ("opener.isConnected", "opener.getClientRects().length"):
+            self.assertIn(guard, self.js,
+                          f"restoreOpener can focus a re-rendered-away opener ({guard})")
+
+    def test_a_pointer_opened_dialog_remembers_the_trigger_under_the_pointer(self):
+        # Radix opens the menu on pointerdown, prevents the trigger's default
+        # focus and moves focus to the menu container, so `focusin` never sees
+        # the button a pointer user pressed. Measured 2026-11-14 on a fresh
+        # page: Cancel / Close / Escape left focus on the composer at 1440 and
+        # on "Hide sidebar" at 390, never the row's `Session actions` trigger.
+        # The capture-phase pointerdown listener records that trigger as the
+        # same remembered opener the keyboard path uses.
+        self.assertIn("const ROW_KEBAB = 'button[aria-label=\"Session actions\"]'",
+                      self.js)
+        self.assertIn("document.addEventListener('pointerdown', rememberPointer, true)",
+                      self.js,
+                      "a pointer-opened overlay has no focusin on its trigger")
+        self.assertIn("const trigger = target.closest(ROW_KEBAB)", self.js)
+        self.assertIn("lastFocusOutside = trigger", self.js,
+                      "the pointer listener does not feed restoreOpener's opener")
+        self.assertIn("typeof target.closest !== 'function'", self.js,
+                      "a non-element pointer target would throw in closest")
 
 
 class ChromeSpliceTests(unittest.TestCase):

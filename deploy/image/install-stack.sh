@@ -26,7 +26,13 @@
 #
 # Idempotency: a second run prints `same` for every piece and changes
 # nothing. The generated .env keeps its scrypt hash and signing secret because
-# a marker records which bench password produced them.
+# a marker records what produced them (the bench password, or the fact that a
+# discarded one did). A published image's first boot leaves the file alone:
+# the hash is already a placeholder and the session secret does not move.
+#
+# The published image carries no password a stranger can use (ODL-521): its
+# .env holds a scrypt hash of a discarded password, and the first-visit page is
+# the only writer of a usable sign-in.
 #
 # Exit codes: 0 ok, 1 an apply failed, 2 bad input or a missing prerequisite.
 set -euo pipefail
@@ -67,7 +73,9 @@ usage: install-stack.sh [--user NAME] [--password PW] [--webapp-host HOST]
 
   --user NAME       unprivileged tenant account (default: tenant, $ODILE_TENANT_USER)
   --password PW     bench Webapp password (default: a public bench fixture,
-                    $ODILE_BENCH_PASSWORD). Only its scrypt hash is written.
+                    $ODILE_BENCH_PASSWORD). Only its scrypt hash is written,
+                    and only into a bench image: a published image's .env
+                    holds a discarded password's hash (ODL-521).
   --webapp-host H   address the Webapp binds (default: 127.0.0.1). The
                     container passes 0.0.0.0 because its network namespace is
                     the boundary; a real tenant stays on loopback behind Caddy.
@@ -235,15 +243,24 @@ fi
 # 4. .env — the three auth keys, never a provider key. The bench never calls
 #    inference, so no NEAR key is copied into the image.
 #
-#    The marker lets a rerun keep the same scrypt hash (and therefore the same
-#    sessions) while still noticing a different --password.
+#    ODL-521: the published image ships no usable sign-in. A production build
+#    (sealed-image.sh --production writes /etc/odile/production before this
+#    script runs) writes a scrypt hash of a password generated here and
+#    discarded, with the marker that says so; the bench build keeps the
+#    documented fixture password its QEMU smoke signs in with. The first boot
+#    of a published image leaves the file alone: the placeholder already
+#    rejects every password, and the session secret must be byte-identical
+#    before and after the boot (the per-machine secret is ODL-522's card).
+#
+#    The marker is what makes a rerun idempotent with a random value: the
+#    bench marker records which bench password produced the hash, and the
+#    production marker records that the hash belongs to a discarded password.
 
 password_sha=$(printf '%s' "$BENCH_PASSWORD" | sha256sum | cut -d' ' -f1)
 env_file=$HERMES_HOME/.env
-if [ -f "$env_file" ] && grep -qx "# bench-password-sha256: $password_sha" "$env_file"; then
-    say same "$env_file (bench password unchanged)"
-else
-    password_hash=$(/usr/bin/python3 - "$BENCH_PASSWORD" <<'PY'
+
+scrypt_hash() {  # $1 = password; the provider's scrypt encoding
+    /usr/bin/python3 - "$1" <<'PY'
 import base64, hashlib, secrets, sys
 password = sys.argv[1].encode("utf-8")
 salt = secrets.token_bytes(16)
@@ -251,22 +268,105 @@ dk = hashlib.scrypt(password, salt=salt, n=2**14, r=8, p=1, dklen=32, maxmem=0)
 print("scrypt$16384$8$1$%s$%s" % (
     base64.b64encode(salt).decode(), base64.b64encode(dk).decode()))
 PY
-)
-    auth_secret=$(/usr/bin/python3 -c 'import secrets; print(secrets.token_hex(32))')
+}
+
+discarded_scrypt_hash() {  # a hash of a password generated and thrown away
+    /usr/bin/python3 - <<'PY'
+import base64, hashlib, secrets
+password = secrets.token_hex(32).encode("ascii")
+salt = secrets.token_bytes(16)
+dk = hashlib.scrypt(password, salt=salt, n=2**14, r=8, p=1, dklen=32, maxmem=0)
+print("scrypt$16384$8$1$%s$%s" % (
+    base64.b64encode(salt).decode(), base64.b64encode(dk).decode()))
+PY
+}
+
+fresh_secret() {
+    /usr/bin/python3 -c 'import secrets; print(secrets.token_hex(32))'
+}
+
+first_visit_signin_set() {  # 0 once the page has written the owner's sign-in
+    [ -f /etc/odile/first-visit.json ] || return 1
+    /usr/bin/python3 - /etc/odile/first-visit.json <<'PY'
+import json, sys
+try:
+    state = json.load(open(sys.argv[1], encoding="utf-8"))
+except (OSError, ValueError):
+    raise SystemExit(1)
+raise SystemExit(0 if isinstance(state, dict) and state.get("signin_set_at") else 1)
+PY
+}
+
+bench_password_verifies() {  # 0 when this .env's hash accepts the bench fixture
+    [ -f "$env_file" ] || return 1
+    /usr/bin/python3 - "$env_file" "$BENCH_PASSWORD" <<'PY'
+import base64, hashlib, sys
+path, password = sys.argv[1], sys.argv[2]
+value = ""
+with open(path, encoding="utf-8") as handle:
+    for line in handle:
+        if line.startswith("HERMES_DASHBOARD_BASIC_AUTH_PASSWORD_HASH="):
+            value = line.rstrip("\n").split("=", 1)[1]
+            break
+parts = value.split("$")
+if len(parts) != 6 or parts[0] != "scrypt":
+    raise SystemExit(1)
+try:
+    n, r, p = int(parts[1]), int(parts[2]), int(parts[3])
+    salt = base64.b64decode(parts[4], validate=True)
+    expected = base64.b64decode(parts[5], validate=True)
+    derived = hashlib.scrypt(password.encode("utf-8"), salt=salt, n=n, r=r, p=p,
+                             dklen=len(expected), maxmem=0)
+except (ValueError, OSError):
+    raise SystemExit(1)
+raise SystemExit(0 if derived == expected else 1)
+PY
+}
+
+write_env() {  # $1 marker line, $2 hash, $3 secret, $4 what
+    local marker=$1 hash=$2 secret=$3 what=$4 env_tmp
     env_tmp=$(mktemp "$HERMES_HOME/.env.XXXXXX")
     cat > "$env_tmp" <<EOF
-# Odile image bench — generated by deploy/image/install-stack.sh, never edited
-# by hand. Exactly three keys: the judge-facing login and its signing secret.
-# No provider key: the bench runs no inference.
-# bench-password-sha256: $password_sha
+# Odile tenant .env — generated by deploy/image/install-stack.sh, never edited
+# by hand. Exactly three keys: the owner's sign-in and the session signing
+# secret. No provider key: the inference credential is in /etc/odile/key.env.
+$marker
 HERMES_DASHBOARD_BASIC_AUTH_USERNAME=$TENANT_USER
-HERMES_DASHBOARD_BASIC_AUTH_PASSWORD_HASH=$password_hash
-HERMES_DASHBOARD_BASIC_AUTH_SECRET=$auth_secret
+HERMES_DASHBOARD_BASIC_AUTH_PASSWORD_HASH=$hash
+HERMES_DASHBOARD_BASIC_AUTH_SECRET=$secret
 EOF
     chown "$TENANT_USER:$TENANT_USER" "$env_tmp"
     chmod 0600 "$env_tmp"
     mv "$env_tmp" "$env_file"
-    say write "$env_file (mode 0600, $TENANT_USER)"
+    say write "$env_file (mode 0600, $TENANT_USER; $what)"
+}
+
+if [ -f /etc/odile/production ]; then
+    # The published image: no usable sign-in in the bytes, and no rewrite of a
+    # hash that is already unusable. The Hermes bootstrap leaves its own
+    # .env.example copy behind, so "exists" is not enough: the file must carry
+    # a scrypt hash, and that hash must not accept the public fixture. The
+    # release installer's --first-visit write is what replaces the placeholder
+    # on every run until the page sets the owner's; install-stack only repairs
+    # a file that still accepts the bench fixture (the bench-disk-as-published
+    # case) or has no usable hash at all.
+    if [ ! -f "$env_file" ] \
+            || ! grep -q '^HERMES_DASHBOARD_BASIC_AUTH_PASSWORD_HASH=scrypt[$]' "$env_file" \
+            || bench_password_verifies; then
+        write_env "# odile-signin-placeholder: 1" "$(discarded_scrypt_hash)" \
+            "$(fresh_secret)" "a discarded sign-in, no usable password"
+    elif first_visit_signin_set; then
+        say same "$env_file (the owner's sign-in)"
+    else
+        say same "$env_file (a discarded sign-in, no usable password)"
+    fi
+elif [ -f "$env_file" ] && grep -qx "# bench-password-sha256: $password_sha" "$env_file"; then
+    say same "$env_file (bench password unchanged)"
+else
+    # The bench image: the documented fixture password its QEMU smoke signs in
+    # with. It is public on purpose and never reaches a tenant.
+    write_env "# bench-password-sha256: $password_sha" "$(scrypt_hash "$BENCH_PASSWORD")" \
+        "$(fresh_secret)" "the bench fixture password"
 fi
 install -d -o "$TENANT_USER" -g "$TENANT_USER" -m 0700 "$HERMES_HOME/scripts" "$HERMES_HOME/cron"
 
@@ -395,8 +495,12 @@ install -d -m 0755 "$BENCH_LIB" "$STATE_DIR"
 for f in bench.py smoke.sh; do
     install -m 0755 "$HERE/$f" "$BENCH_LIB/$f"
 done
-printf '%s\n' "$BENCH_PASSWORD" > "$STATE_DIR/password"
-chmod 0600 "$STATE_DIR/password"
+# The fixture password in the clear is a bench artefact; a published image
+# ships no plaintext password at all (ODL-521).
+if [ ! -f /etc/odile/production ]; then
+    printf '%s\n' "$BENCH_PASSWORD" > "$STATE_DIR/password"
+    chmod 0600 "$STATE_DIR/password"
+fi
 
 if [ "$GUEST_SMOKE" = 1 ]; then
     unit_tmp=$(mktemp)
