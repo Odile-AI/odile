@@ -1720,9 +1720,9 @@ card on the replaced tree at 14:49Z and odl/ODL-521 here at 15:21Z), `-6` is
 t_781fc5cb's and on `main`, and `-7` is odl/ODL-521's; the live cut at the cut's own measurement (2026-11-14T19:46Z) was
 `2026.11.14-4` (`6b42f8ef…`, 616,370 bytes); by 20:05Z it was `2026.11.14-6`
 (`49f90a3c…`, 616,403 bytes), and the next deploy publishes this cut. `make
-check` is green at the corrected head (2026-11-14T21:23Z): 1,275 tests,
-`--self-test` PASS, secret scan PASS (303 files, 8,330,403 bytes), claims
-lint 17 files / 13 phrases, brand lint 16 surfaces / 21 colours. It is
+check` is green at the merged head: 1,299 tests,
+`--self-test` PASS, secret scan PASS (305 files, 8,363,501 bytes), claims
+lint 18 files / 13 phrases, brand lint 17 surfaces / 21 colours. It is
 committed, not deployed.
 
 The clock starts at the build's `uki.sh --sign` and stops when
