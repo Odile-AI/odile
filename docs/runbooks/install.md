@@ -1698,7 +1698,6 @@ be reused: `-6` is `main`'s t_781fc5cb cut, `-7` is `main`'s ODL-521 cut and
 `-8` is carried by the open `port/odl-505`, so `-9` was the next free id at
 2026-11-14T22:00:00Z, later than every cut by `generated_at`.
 
-
 The clock starts at the build's `uki.sh --sign` and stops when
 `https://<slug>.odile.fyi/login` answers 200 over TLS. The gate is 30 minutes.
 Round 8 is the measured stop: the panel was saved at 14:42:53Z, the guest's
