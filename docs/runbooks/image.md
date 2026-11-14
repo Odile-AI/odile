@@ -879,7 +879,15 @@ a17894cf0da9f083e5375156f48814098512e34cebf492c03677078747c9a278  /var/tmp/odile
 The build ran at `git rev-parse HEAD` = `1629b14ed71888bc9c398ac47b341dcba606452d`. The commit that adds
 this section changes only `docs/runbooks/image.md`, so the installer, the
 release documents and the image bytes measured below are the ones that head
-built.
+built. `main` then added `055709d` (one `docs/runbooks/demo-public.md` row) and
+the branch merged it at `4ca0e01`; the diff below prints nothing, so the
+handoff tree's build inputs are the head's:
+
+```sh
+$ git diff --stat 1629b14..4ca0e01 -- deploy installer release skills update \
+      scripts web/first-visit.html web/verify.html attest.py
+$ # (no output: the only moved file is docs/runbooks/demo-public.md)
+```
 
 The build also places the image's own pin inside the sealed root
 (`place-pin.sh`, after `uki.sh`): `/verify`'s access report and the release
