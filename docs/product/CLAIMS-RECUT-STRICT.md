@@ -489,8 +489,8 @@ clause); the DoD grep over both pages is empty.
 
 The decision was taken on 13 November 2026; the landing commit is 14 November
 2026. It was built on the legacy history (`4896ddb`), ported as `05887d6` onto
-the public `main` `55ec2c1`, and merged with `main`'s `83eefd2` head before the
-release was re-cut at the converged head.
+the public `main` `55ec2c1`, and merged with `main`'s `73bd8726` head before
+the release was re-cut at the converged head.
 
 The five sentences §6 held were published as **v3.10** after both M2 drills
 passed: ODL-215 (`9f43829`) ran the nightly backup and the restore drill (a

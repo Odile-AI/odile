@@ -1637,9 +1637,9 @@ id.
 **The `2026.11.14-9` cut (ODL-474's v3.10 landing, ported onto the one-root
 tree).** The v3.10 landing was built on the legacy history (`4896ddb`, base
 `52141b9`); the Chief of Staff ported it as `05887d6` onto the public `main`
-`55ec2c1`, and this branch merges `main`'s `83eefd2` head into it — the v3.9f
-`/verify` page, `/judge`'s retirement to a 301 and the `-6` pair — before the
-cut. All five embed tools re-ran on the merged sources: the tenant bundle
+`55ec2c1`, and this branch merges `main`'s `73bd8726` head into it — the
+`83eefd2` v3.9f `/verify` page and `/judge`'s retirement to a 301, the `-6`
+pair, and the demo verifier-command port — before the cut. All five embed tools re-ran on the merged sources: the tenant bundle
 (`odile-help` source `b726ca8c…`), the backup (`d9c4278a…`), the support
 program (`0460f6ea…`), the first-visit page (pin `4d7c4960…`, unchanged) and
 the `/verify` page (`bf4dda17…`, main's v3.9f bytes). The installer is
