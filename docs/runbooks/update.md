@@ -823,9 +823,9 @@ carries this merge publishes the new cut.
 **The `2026.11.14-9` cut (ODL-474's v3.10 landing, ported onto the one-root
 tree).** The v3.10 landing was built on the legacy history (`4896ddb`) and
 ported as `05887d6` onto the public `main` `55ec2c1`; this branch merges
-`main`'s `d0597e2` head (`-7`, ODL-521's first-visit sign-in rule, plus the
-demo verifier-command port and the v3.9f `/verify` page) and re-embeds every
-surface before cutting. `install.md` §12.6 has the full record: installer
+`main`'s `7ef4175` head (ODL-503's Webapp chrome, `-7` — ODL-521's first-visit
+sign-in rule — plus the demo verifier-command port and the v3.9f `/verify`
+page) and re-embeds every surface before cutting. `install.md` §12.6 has the full record: installer
 `e47ae718…` (674,401 bytes), manifest `6457af75…` (48 skills, audit
 `539e205f…`), skills `9d82653f…` (851,945 bytes), built from
 `/var/tmp/odile-474-merge-cand-port2`, the fresh scratch root the merged

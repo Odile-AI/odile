@@ -1662,10 +1662,10 @@ and the pin's hook (`949adeb2…`). The branch's pre-merge cut was
 **The `2026.11.14-9` cut (ODL-474's v3.10 landing, ported onto the one-root
 tree).** The v3.10 landing was built on the legacy history (`4896ddb`, base
 `52141b9`); the Chief of Staff ported it as `05887d6` onto the public `main`
-`55ec2c1`, and this branch merges `main`'s `d0597e2` head into it — `-7`
-(ODL-521's first-visit sign-in rule), `73bd8726`'s demo verifier-command port,
-the `83eefd2` v3.9f `/verify` page and `/judge`'s retirement to a 301 — before
-the cut. All five embed tools re-ran on the merged sources: the tenant bundle
+`55ec2c1`, and this branch merges `main`'s `7ef4175` head into it — ODL-503's
+Webapp chrome, `-7` (ODL-521's first-visit sign-in rule), `73bd8726`'s demo
+verifier-command port, the `83eefd2` v3.9f `/verify` page and `/judge`'s
+retirement to a 301 — before the cut. All five embed tools re-ran on the merged sources: the tenant bundle
 (`odile-help` source `b726ca8c…`), the backup (`d9c4278a…`), the support
 program (`0460f6ea…`), the first-visit page (pin `4d7c4960…`, unchanged) and
 the `/verify` page (`bf4dda17…`, main's v3.9f bytes). The installer is
