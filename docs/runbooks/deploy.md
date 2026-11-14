@@ -61,11 +61,21 @@ git rev-parse HEAD          # record the deployed commit; §4.1 checks against i
 ./scripts/deploy.sh                 # apply; ends with `active` and `page 200`
 ```
 
-The first two output lines name the checkout and the runtime; the third is the
-guard verdict:
+The script resolves the repository root from its own path, so the first output
+line is the checkout — not `scripts/` — whichever directory you run it from.
+Measured on 2026-11-14 at `83eefd2`:
 
 ```text
-→ guard   HEAD bfe62fc contains main 0df4706
+→ source  /root/odile
+→ runtime /opt/odile
+→ guard   HEAD 83eefd2 contains main 83eefd2
+```
+
+A copy of the script outside `scripts/` — where `..` is not the checkout —
+refuses before the guard or any write, naming the directory it resolved:
+
+```text
+deploy: refused: <dir> is not the repository root (no app.py; run scripts/deploy.sh from the checkout)
 ```
 
 A refused deploy prints one stderr line, exits 1 and writes nothing (measured
@@ -100,6 +110,14 @@ except the host-only paths `scripts/deploy.sh` excludes:
 - `.worktrees/` — transient git worktree copies. Excluded so a deploy does not
   copy ~250 MB into the runtime, nor delete the runtime copy when deploying
   from a task worktree.
+
+- `scripts/deploy.sh` (tracked) and, on this host, the root-level copy of it
+  listed in `.git/info/exclude` — the entry point itself. Both are excluded
+  by root-anchored paths, so neither is copied into `/opt/odile`, and
+  `--delete` cannot remove the one that is not the rsync source. Before
+  2026-11-14 the tracked script resolved its source as `scripts/` and a run
+  from there planned 1305 file deletions, including `app.py` and every page
+  under `web/` (see §2).
 
 `tools/daily_visual.py` was also host-only. It has no consumer in the repo and
 no cron job references it, so it was retired, not restored; its only copy is in

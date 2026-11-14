@@ -4,7 +4,21 @@
 #   ./scripts/deploy.sh -n     dry run
 #   ./scripts/deploy.sh --allow-behind   deploy an old checkout (rollback only)
 set -e
-cd "$(dirname "$0")"
+# The entry point lives in scripts/ — in this checkout and in the published
+# tree, where tools/build_public_tree.py MOVEs the root entry point here.
+# Resolve the repository root from the script's own path, not the caller's cwd:
+# `dirname "$0"` alone is `scripts/`, and the rsync below would then copy the
+# scripts directory over /opt/odile (measured 2026-11-14: 1305 file deletions
+# planned, including app.py and every page under web/).
+SCRIPT_DIR=$(unset CDPATH; cd -- "$(dirname -- "$0")" && pwd)
+cd "$SCRIPT_DIR/.."
+# A copy of this script outside scripts/ resolves one level too high (at the
+# checkout root, `..` is /root). Refuse before any probe or write rather than
+# rsync the wrong tree with --delete.
+if [ ! -f app.py ]; then
+  echo "deploy: refused: $(pwd) is not the repository root (no app.py; run scripts/deploy.sh from the checkout)" >&2
+  exit 1
+fi
 
 DRY=0
 ALLOW_BEHIND=0
@@ -84,11 +98,17 @@ PREV_SEED=$(sha256sum /opt/odile/seed/seed.py 2>/dev/null | cut -d' ' -f1 || tru
 # docs/growth is a host-only workspace (queue, log, research, assets) written by
 # the growth cron jobs. It is not in git, so --delete must not remove it.
 # .worktrees holds transient git worktree copies; never ship or delete them.
+# Neither entry point ships. The tracked one is scripts/deploy.sh; this host
+# also keeps a root-level copy of it (listed in .git/info/exclude). The paths
+# are anchored to the transfer root, so a deploy from either layout leaves both
+# out of /opt/odile and --delete cannot remove the copy that is not the rsync
+# source.
 set -- \
   --exclude '.git' \
   --exclude '.worktrees' \
   --exclude 'build' \
-  --exclude 'scripts/deploy.sh' \
+  --exclude '/deploy.sh' \
+  --exclude '/scripts/deploy.sh' \
   --exclude 'docs/growth' \
   --exclude 'IDEA.md' \
   --exclude 'PROJECT.md' \
