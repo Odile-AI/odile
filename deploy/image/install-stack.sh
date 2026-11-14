@@ -420,23 +420,28 @@ systemctl enable "$SERVICE_NAME.service" >/dev/null
 say same "$SERVICE_NAME.service enabled at boot"
 
 # --------------------------------------------------------------------------
-# 6b. the Webapp brand re-assert (ODL-503 follow-up)
+# 6b. the Webapp surface re-assert (ODL-503 follow-up, ODL-500 chrome)
 #
-# The installer links the Odile brand once, at install time (ODL-240). A
-# `hermes update` rebuilds dist-webapp from the vendor package, and that
-# rebuild drops both the asset and the tag: measured on the demo tenant,
-# 2026-11-14 01:26Z, title `Hermes` and wordmark `HERMES AGENT` with the
-# palette still Odile's. These pieces make the re-assert part of the machine
-# instead of part of a repair: the bytes, the helper, a path unit on the built
-# shell, and a drop-in that runs the same helper before the gateway starts.
+# The installer links the Odile brand once, at install time (ODL-240), and the
+# ODL-500 chrome (paper, the embedded Cormorant Garamond subset, the Verify
+# link) was only ever part of the HQ demo. A `hermes update` rebuilds
+# dist-webapp from the vendor package, and that rebuild drops the asset, the
+# tag, the chrome stylesheet and its tag: measured on the demo tenant,
+# 2026-11-14 01:26Z, title `Hermes` and wordmark `HERMES AGENT`; and again at
+# 09:01Z, paper `--paper-v0` #F6F0E4 and the system serif stack. These pieces
+# make the re-assert part of the machine instead of part of a repair: the
+# bytes, the helper, a path unit on the built shell and its three assets, and
+# a drop-in that runs the same helper before the gateway starts.
 #
 # The trigger is the bundle changing (the path unit), not a boot; the drop-in
 # is the backstop for the update flow that rebuilds and then restarts the
 # gateway. A drop-in, not an ExecStartPre in tenant.service, because the
-# release installer rewrites odile-agent.service on every boot.
+# release installer writes odile-agent.service on its first run (and on
+# --force) and would drop an ExecStartPre written into it.
 BRAND_LIB=/usr/local/lib/odile
 install -d -m 0755 "$BRAND_LIB"
-for pair in "webapp-brand.js:0644" "odile-webapp-brand.py:0755"; do
+for pair in "webapp-brand.js:0644" "webapp-chrome.css:0644" \
+            "webapp-chrome.js:0644" "odile-webapp-brand.py:0755"; do
     f=${pair%%:*}; mode=${pair##*:}
     if cmp -s "$HERE/$f" "$BRAND_LIB/$f"; then
         say same "$BRAND_LIB/$f"
@@ -471,11 +476,11 @@ else
 fi
 systemctl enable odile-webapp-brand.path >/dev/null
 say same "odile-webapp-brand.path enabled (a rebuild starts it)"
-# Converge this build now, so a fresh machine leaves the image with the name on
-# it and does not wait for the first rebuild. In a build chroot there is no
-# PID 1 to ask; the guest gets the unit started below.
+# Converge this build now, so a fresh machine leaves the image with the name
+# and the paper on it and does not wait for the first rebuild. In a build
+# chroot there is no PID 1 to ask; the guest gets the unit started below.
 if ! /usr/bin/python3 "$BRAND_LIB/odile-webapp-brand.py" --home "$TENANT_HOME"; then
-    say warn "the Webapp brand re-assert failed; the path unit will retry"
+    say warn "the Webapp surface re-assert failed; the path unit will retry"
 fi
 if [ -d /run/systemd/system ]; then
     systemctl daemon-reload
