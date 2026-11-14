@@ -2,7 +2,7 @@
 
 A full agent, privately.
 
-Odile is an AI agent that gets things done with privacy. Every Odile agent runs on its own AMD SEV-SNP confidential virtual machine and uses confidential inference, protecting your agent from outsider access at the hardware level.
+Odile is an AI agent that gets things done with privacy. Every Odile agent runs on its own AMD SEV-SNP confidential virtual machine and uses [NEAR AI](https://near.ai/) confidential inference, protecting your agent from outsider access at the hardware level.
 
 ## Demo
 
@@ -29,7 +29,7 @@ In this demo your prompts go from the browser to Odile's tenant machine and then
 - **`installer/`** — the signed installer that provisions a fresh machine and verifies its own bytes.
 - **`release/`** — the signed release manifest, the public signing key, and the published installer.
 - **`seed/`, `status/`, `update/`, `support/`** — first-visit seeding, the status surface, in-place updates, and the support agent.
-- **`attest.py`, `odile-verify`, `odile-verify.pin`** — the attestation report, the standalone verifier a stranger runs, and the measurement it checks against.
+- **`attest.py`, `odile-verify`, `odile-verify.pin`** — the TEE attestation report, the standalone verifier a stranger runs, and the measurement it checks against.
 - **`deploy/`** — systemd units, Caddy, Postfix and OpenDKIM configuration, and the boot-image build.
 - **`web/`, `templates/`, `skills/`** — the static site, the workspace templates, and the agent skills shipped with a machine.
 - **`demo/`** — a local demo that runs on one standard-library server, with no network and no key.

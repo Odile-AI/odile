@@ -1,4 +1,4 @@
-# Odile — claims deck (v3.9c, the strict bar: no user SSH key, no passphrase, sealed boot, sign-in at first visit; one NEAR key per user, no meter)
+# Odile — claims deck (v3.9e, the strict bar: no user SSH key, no passphrase, sealed boot, sign-in at first visit; one NEAR key per user, no meter)
 
 **Rule:** no public sentence about privacy, security or reliability ships unless it is in this file. If a sentence is not here, it is not approved. `docs/MVP-V0.1.md` §7 is the rationale; this is the copy.
 
@@ -19,7 +19,8 @@ Use these verbatim, or a subset that does not change the meaning. Anything stron
 - "A real Linux machine, not a chat window."
 - "One machine per person. Nothing is shared."
 - "It keeps working when you close the tab."
-- "V0.1 is ten people, each with a machine built by hand. The waitlist hears first."
+- "Full agent with full privacy. Always-on agents running on confidential computers and powered by confidential models."
+- "The waitlist hears first."
 
 ### Access — the core claim
 
@@ -59,9 +60,15 @@ sentence.
 
 The sign-in page (Savio, 13 November 2026, card t_3d717ffc) carries the first
 row above and nothing else: one **Sign in** button, the published `judge`
-credential, no version credit. The tenant-machine, no-nightly-reset and
-public-password rows stay in this section because `web/judge.html` and
-`README.md` carry them; `deploy/demo-host/login.html` does not.
+credential, no version credit. The tenant-machine, public-password and
+shared-workspace rows are carried by the tenant's own `/verify`
+(`deploy/demo-host/verify-lede.html`, served at `demo.odile.fyi/verify`) and by
+`web/verify.html`'s demo block, which quotes the tenant-machine row verbatim;
+`web/judge.html` carried them until ODL-901 retired `/judge` to a 301 (Savio,
+14 November 2026), and `README.md` was simplified the same day to link the login
+page only. The no-nightly-reset row stays approved here and has no public home
+until a card publishes it; `deploy/demo-host/login.html` carries only the first
+row.
 
 ### First run and support
 
@@ -141,7 +148,7 @@ column in any store is missing from `web/privacy.html`.
 
 ### Reliability
 
-- "Runs around the clock. V0.1 target: 99.0% uptime; V0.1.1 target: 99.5%. Both published on the status page."
+- "Runs around the clock. Uptime is published on the status page."
 - "Backed up nightly. Rebuildable in under an hour — without a key."
 
 ## 1a. Held from the public pages — the row is approved, its proof or its landing has not run
@@ -218,7 +225,11 @@ math no longer carries an owner-wait bucket. `templates/status.html` and
 | "your data never leaves the machine" | It goes to inference | "Prompts go only to the inference enclave" |
 | "fully audited" | One external audit, scoped | "Audited for X; findings published" |
 
-Lint list: `unhackable`, `zero-knowledge`, `zero knowledge`, `trustless`, `military-grade`, `provably private`, `we hold your keys`, `we can log in`, `operator access`, `no one can access`, `can't see your data`, `cannot see your data`, `never leaves`, `full privacy`.
+Lint list: `unhackable`, `zero-knowledge`, `zero knowledge`, `trustless`, `military-grade`, `provably private`, `we hold your keys`, `we can log in`, `operator access`, `no one can access`, `can't see your data`, `cannot see your data`, `never leaves`.
+
+Retired from this list on 2026-11-14: `full privacy` — it was banned because no
+row carried it. Savio made it his own landing sentence (v3.9d), so the row now
+approves it verbatim and a generic ban would only flag the page the deck allows.
 
 <!-- claims-lint:on -->
 
@@ -431,8 +442,6 @@ the machine.
 
 **"Do you train on my data?"** No — per our inference provider's terms. (Do not publish until the written confirmation is on file.)
 
-**"Why only ten people?"** Because each one is a machine we provision by hand, and we want ten people who will tell us the truth.
-
 ---
 
 ## 6. Change log
@@ -459,3 +468,6 @@ the machine.
 | 2026-11-13 | v3.9a: the two status rows re-cut for the sealed boot (ODL-467) — the reliability row drops "with owner-waiting counted separately" and the status-page row becomes "The status page counts uptime and names no tenant." The uptime math changes with them: `status/status.py` counts `ready` time only, a legacy `waiting_for_owner` segment is neither up nor down and gets no bucket, and the incidents list is `down` only. `templates/status.html` and `web/terms.html` carry the decided rows verbatim; `app.py` serves the page at `/status`; `odilectl/health.py` raises `down` for a stopped heartbeat and sends no unlock email. Evidence: `tests/test_status.py`, `tests/test_heartbeat.py`, `tests/test_flow.py`, `make check`. Decided under the ODL-467 card (the re-cut table in `docs/product/CLAIMS-RECUT-STRICT.md` §2 assigns both rows to it); verifier review. | Product lead |
 | 2026-11-13 | v3.9b: the demo sign-in page's copy is Savio's boundary sentence, verbatim — "This is an Odile demo instance. Despite that it runs on confidential compute and inference, access is open to public. Everyone could see everything on this machine. Refrain from uploading personal and sensitive details." The page loses the demo-machine, reset and public-password lines and the Hermes version credit; one **Sign in** button posts the published `judge` credential. The three older demo rows stay in the deck because `web/judge.html` and `README.md` still carry them. Savio's instruction of 2026-11-13, card t_3d717ffc: a record of his sentence, not a new claim (Product lead approval requested on that card; verifier review). | Savio via t_3d717ffc |
 | 2026-11-14 | v3.9c: **the meter is retired from the product record** (ODL-205; card t_7f339817, from Savio's 2026-11-13 instruction "Remove everything meter in our project codebase… simply deploy a new Near AI API key for each new individual user, even in production"). The data-inventory meter row is replaced by the machine's own NEAR AI key — one per user, written at install, read by the agent, the only inference credential; §1 Money and place records the path and the cost model: no meter, no proxy, no per-request ledger, the key's prepaid credit is the allowance, Odile tops up at the billing anchor, and at zero the provider refuses and the agent reports it. The public "hard-capped" money row is unchanged — the key's balance is what makes it true — and ODL-242 proves the zero-balance message. History is not rewritten: the ODL-391/ODL-501/ODL-503 meter-and-cap records stay in `docs/backlog.yaml` with a retirement note, and `docs/security/CLAIMS-VERDICT-strict.md` carries one dated note at its meter rows. Code: `f884184` (merged `0a4b726`). By the Product lead under `docs/AGENT-ORG.md` §3; verifier review. | Product lead |
+| 2026-11-14 | v3.9d: the landing description is Savio's own sentence, verbatim — "Full agent with full privacy. Always-on agents running on confidential computers and powered by confidential models." It replaces the v3.8 landing sentence on `web/index.html` (the visible lede, `<meta name=description>` and `og:description`), and the machine section gains it as one row: `always-on` and `confidential models` are approved as written, the second being the plain form of §1 *Inference*'s NEAR AI enclave row. `full privacy` leaves §2's lint list for the same reason it was on it — no row carried it, and now one does. Savio's instruction, 2026-11-14 16:05Z. | Savio |
+| 2026-11-14 | v3.9e: the public site drops V0.1, version labels and the ten-person count — Savio's instruction of 2026-11-14 ("remove all mentioning of V0.1 and/or versioning, ten testers, etc. We'll define such details later"). §1's ten-people row becomes "The waitlist hears first."; the Reliability row becomes "Runs around the clock. Uptime is published on the status page."; §5 loses the "Why only ten people?" answer. `web/index.html`, `web/faq.html`, `web/terms.html` (which also loses its whole "The machine and the price" section under Savio's separate decision), `web/claim.html` and `templates/status.html` carry no V0.1/alpha/ten-people wording; live-verified, `make check` OK. Commits `b0b7186`, `4b09cac`. | Chief of Staff |
+| 2026-11-14 | v3.9f: the last public copy that contradicted the demo rows. `web/verify.html`'s `<!--demo-->` lede is re-cut to the v3.8b tenant row **verbatim** — "This is Odile's tenant machine: one shared workspace on our measured AMD SEV-SNP machine. Odile holds this machine's boot key and can log in." — and its two `/judge` links (header and foot) go to `https://demo.odile.fyi/login`, which Savio made the judge's entry surface on 2026-11-14; `/judge` retires to a 301 (ODL-901). The note under §1 now names the surfaces that carry the demo rows after `web/judge.html`: the tenant's own `/verify` and the `web/verify.html` demo block, with `README.md` simplified to a login link (`9083922`, 2026-11-14T15:24Z) and the login page carrying only the v3.9b boundary row. **No approved sentence changed.** The page is byte-embedded in the signed installer, so this cut re-embeds and re-signs it as `2026.11.14-6` (installer `49f90a3c…`, 616,403 B; manifest `f6dea119…`; `docs/runbooks/install.md` §12.6). Measured 2026-11-14T16:40Z: `https://odile.fyi/verify` answered 200 with the old sentence (live is still `-4`: installer `6b42f8ef…`, 616,370 bytes, manifest `65ac178c…`, the 15:16Z deploy), and `https://demo.odile.fyi/login` answered 200 with one **Sign in** button; the next deploy publishes `-6`. Card t_781fc5cb; by the Product lead under `docs/AGENT-ORG.md` §3; verifier review. | Product lead |

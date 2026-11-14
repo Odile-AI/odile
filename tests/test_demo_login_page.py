@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import base64
 import contextlib
+import hashlib
 import importlib.util
 import io
 import os
@@ -23,8 +24,14 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 LOGIN_PAGE = ROOT / "deploy" / "demo-host" / "login.html"
 CLAIMS_MD = (ROOT / "docs" / "CLAIMS.md").read_text(encoding="utf-8")
-README_MD = (ROOT / "README.md").read_text(encoding="utf-8")
 LOGIN_HTML = LOGIN_PAGE.read_text(encoding="utf-8")
+
+# Savio simplified README.md on 2026-11-14 (`9083922`) and its judge table
+# left with it; the sign-in page is now the surface that carries the credential
+# it posts. Pin it here as a digest — a plaintext literal trips `make secrets`
+# — so a rotation in one place fails in the other.
+PUBLISHED_USERNAME = "judge"
+PUBLISHED_PASSWORD_SHA256 = "b2132046eb76dbefc76f19c766fe69e8a9a1698d9dc797e421f8ad2ff3fbb8d2"
 
 
 def load(name: str, path: Path):
@@ -46,16 +53,6 @@ BOUNDARY_SENTENCE = (
     "and inference, access is open to public. Everyone could see everything on this "
     "machine. Refrain from uploading personal and sensitive details."
 )
-
-
-def readme_credential(field: str) -> str:
-    """The published demo account, read from README's `| Field | Value |` row."""
-    values = re.findall(rf"^\| {field} \| `([^`]+)` \|$", README_MD, re.MULTILINE)
-    if not values:
-        raise AssertionError(f"README.md has no '| {field} | `…` |' row")
-    if len(set(values)) != 1:
-        raise AssertionError(f"README.md's {field} rows disagree: {values}")
-    return values[0]
 
 
 class LoginPageTests(unittest.TestCase):
@@ -108,16 +105,16 @@ class LoginPageTests(unittest.TestCase):
         self.assertIn('role="alert"', LOGIN_HTML)
 
     def test_the_button_signs_in_with_the_published_demo_account(self) -> None:
-        # One source of truth: a rotation in README.md that misses the page
-        # would leave a button that cannot sign in.
-        password = readme_credential("Password")
-        username = readme_credential("Username")
+        # One source of truth: a rotation that misses the page would leave a
+        # button that cannot sign in.
+        username = PUBLISHED_USERNAME
         pw_literal = re.search(r"var DEMO_PASSWORD = '([^']*)';", LOGIN_HTML)
         user_literal = re.search(r"var DEMO_USERNAME = '([^']*)';", LOGIN_HTML)
         self.assertIsNotNone(pw_literal)
         self.assertIsNotNone(user_literal)
         assert pw_literal is not None and user_literal is not None
-        self.assertEqual(pw_literal.group(1), password)
+        password = hashlib.sha256(pw_literal.group(1).encode("utf-8")).hexdigest()
+        self.assertEqual(password, PUBLISHED_PASSWORD_SHA256)
         self.assertEqual(user_literal.group(1), username)
         self.assertIn("password: DEMO_PASSWORD", LOGIN_HTML)
 

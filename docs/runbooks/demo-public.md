@@ -22,7 +22,7 @@ page a judge should be sent to. It does not demonstrate a user-held key.
 | Webapp | `127.0.0.1:9130`, the `tenant` gateway; `webapp.public_url` is `https://demo.odile.fyi` |
 | Host check | Hermes refuses a Host header that is not the bound host or `webapp.public_url` (`400 Invalid Host header`); the demo host *is* the public_url, so the machine's own name `odl-7971a8.odile.fyi` still answers `/verify`, `/first-visit` and `/manifest`, but its Webapp path is refused |
 | Gate | Hermes dashboard basic-auth provider (`HERMES_DASHBOARD_BASIC_AUTH_*` in `/home/tenant/.hermes/.env`, mode 0600) |
-| Account | `judge`; the password is published in `README.md`'s judge table, never here |
+| Account | `judge`; the password is carried by the sign-in page's form (`deploy/demo-host/login.html`), never here |
 | Sign-in page | `/srv/odile-demo/login.html`, Caddy's `handle /login*`. Committed and live are **one file**: sha256 `94a22b03748f40ae…` (167,426 B), t_9896a577's artwork page ("The demo machine" + the inlined Ruysch band; cards t_3d717ffc, t_330cea5c, t_9896a577), installed from `deploy/demo-host/login.html`. `--no-login` remains for a deploy that must keep the machine's current page |
 | Caddy block | `deploy/caddy/demo-tenant-site.caddy`, sha256 `64fd9d64e9e3a1309b0c214512b104b3e15c30824edc85d5cac049869f99d1f4`, 3,213 B; no mutation matcher and no self-update matcher — every write reaches Hermes (§4) |
 | Seeded session | `Start here — Odile demo`, pinned, two messages, id `local-931d9e32…` (the constant `/judge` deep-links); written **once**, when the row is absent, and never rewritten |
@@ -87,16 +87,17 @@ paragraph never reaches a browser. Re-cutting the release to change that would
 change what every customer machine verifies. Instead:
 
 - `deploy/demo-host/verify-lede.html` is the demo's one paragraph, assembled
-  from `docs/CLAIMS.md` §"The demo machine" rows and `web/judge.html`;
+  from `docs/CLAIMS.md` §"The demo machine" rows; `web/judge.html`, the
+  second source until ODL-901 retired the page, is gone;
 - `deploy/demo-host/verify-command.html` is the demo's one-line command
   section: the terminal block's last line is
   `cd odile-verify && ./odile-verify https://demo.odile.fyi --expect …`, and
   the first-visit renderer fills `{{MEASUREMENT}}` from the report it serves.
   A tenant URL is not the pin's `source`, so the verifier's own rule needs
-  `--expect`; the page is where a judge copies the number. `README.md` and
-  `web/judge.html` name the same form and send the reader to the page for the
-  live value; `check_demo_public.py` extracts that line and runs it out of the
-  published tarball, so the page and the verifier cannot drift;
+  `--expect`; the page is where a judge copies the number. `README.md` names
+  the same form and sends the reader to the page for the live value;
+  `check_demo_public.py` extracts that line and runs it out of the published
+  tarball, so the page and the verifier cannot drift;
 - `apply_demo_public.py` replaces the tenant block's one lede in
   `/usr/local/lib/odile/verify.html` — the template the first-visit service
   reads per request — adds the command section inside the same block, and keeps
@@ -166,6 +167,48 @@ Hermes accepts (the installer's `custom_providers:` list and the normalised
 `custom_providers: []` + `providers:` map). It validates the YAML before every
 write; `--report` prints the row the machine actually uses, and
 `check_demo_public.py` fails on any other label or route.
+
+### What a judge can reach on this machine
+
+The published password signs in as `judge`, and the transport it lands on runs
+one command per `shell.exec` as `tenant` — an account with passwordless sudo
+(`sudo -n id -un` → `root`). That is the demo's design: one shared machine,
+Odile holds the boot key, and the public copy says so. These are the commands
+that measure it, run through the tenant's own Webapp transport
+(`tenant_console.py`); this is the 2026-11-14 01:39–01:46Z transcript:
+
+```sh
+$ id -un; sudo -n id -un
+tenant
+root
+$ ls -l /home/tenant/.hermes/.env
+-rw------- 1 tenant tenant 348 Nov 13 10:41 /home/tenant/.hermes/.env
+$ grep -c '^HERMES_CUSTOM_CLOUD_API_NEAR_AI_API_KEY=' ~/.hermes/.env
+1
+$ systemctl is-active odile-meter; systemctl is-enabled odile-meter
+inactive
+masked
+$ ls -ld /var/lib/odile
+drwxr-xr-x 2 odile-meter odile-meter 4096 Nov 13 10:40 /var/lib/odile
+$ sudo -n nft list ruleset
+sudo: nft: command not found
+```
+
+Measured 2026-11-14 01:39–01:46Z and re-checked 15:05–15:35Z; re-measured
+17:54:57Z. Two readings are not the same at every probe, and both are kept:
+
+- `systemctl is-enabled odile-meter` → `masked` at 01:4xZ (the unit was still
+  installed), `not-found` from 15:05Z on (the unit is gone — t_e237e261, §2);
+- `ls -ld /var/lib/odile` → `odile-meter odile-meter`, mtime 2026-11-13 10:40
+  at 01:4xZ; `root root`, mtime 2026-11-14 04:51 at 17:54Z. The directory
+  remains; its owner moved.
+
+The other four readings are identical at every probe: the shell is `tenant`,
+`sudo -n` is root, the tenant's one Near AI key is readable from it
+(`grep -c` → 1 in a `0600` `.env` owned by `tenant`, 348 B), and there is no
+`nft` on the machine. So the key the agent spends against is the key the
+published password can read; the only cap is the provider's own balance (§3),
+because there is no meter to mask or start.
 
 ## 4. Verify
 
@@ -247,7 +290,9 @@ counts. The check also reads the served `/verify` and fails if its first
 paragraph is not `deploy/demo-host/verify-lede.html` or if the customer row
 still appears. `--report --session-id <id>` prints one session's row and a
 digest of its messages, which is what the deploy-changes-no-session check
-compares.
+compares. What the same console reaches when it runs a shell — `tenant`,
+passwordless root, the tenant's Near AI key — is the six-command block in §3,
+with its outputs and dates.
 
 ## 5. The DNS record
 
@@ -357,6 +402,21 @@ transcript.
 | The gate, before the merge | `deploy/demo-host/evidence/odl-503-followup-check-2026-11-14.txt`: PASS 44/44 |
 | The gate, after merging main | `deploy/demo-host/evidence/odl-503-followup-check-2026-11-14T0405.txt`: 46 passed, 1 failed — the failure is the 25-turn cap t_ee5aac66 removes; every `/verify` line and the measurement pass |
 | Screenshots | `odl-503-followup-verify-1440.png`, `-390.png` (viewport) and `-1440-full.png`, `-390-full.png`; at both widths `scrollWidth == clientWidth`, 0 `<img>`, body `rgb(234,223,196)`, lede `rgb(74,65,54)` |
+
+### Evidence for the verifier command (2026-11-14)
+
+| What | Where |
+|---|---|
+| The page's line | `https://demo.odile.fyi/verify` 200, sha256 `6c6fe7aa…`, 43,082 B at 20:15Z; its `<!--demo-check-->` section is `deploy/demo-host/verify-command.html` (sha256 `46c95b39…`) with the measurement it serves, `9f01725a…f137` = `/attestation` |
+| The line in a judge's shell | `check_demo_public.py` extracts it and runs it from the published bundle: `expected PASS matches --expect …` / `PASS — the CPU signed this report and the launch measurement matches the pin.`, exit 0 |
+| The plain form is the defect | `./odile-verify https://demo.odile.fyi` prints `a tenant run needs --expect <measurement>`, exit 2 — the pin's `source` is the HQ record |
+| The pages that hand it over | `README.md` (a `/verify` pointer, no bare command) and the demo page; `/judge` is a 301 since ODL-901, so `web/judge.html` no longer ships |
+
+### The published password's reach (2026-11-14)
+
+| What | Where |
+|---|---|
+| The shell, the root and the key | The six-command block in §3, with its outputs: `id -un` → `tenant`, `sudo -n id -un` → `root`, the `0600` 348-byte `.env` owned by `tenant` with one `HERMES_CUSTOM_CLOUD_API_NEAR_AI_API_KEY` (`grep -c` → 1), the meter (`masked` at 01:4xZ, `not-found` after t_e237e261), `/var/lib/odile` (`odile-meter` at 01:4xZ, `root` at 17:54Z) and no `nft`; measured 2026-11-14 01:39–01:46Z, re-checked 15:05–15:35Z and re-measured 17:54:57Z through `tenant_console.py` with the published password. The threat note that carried these facts as prose is deleted history (t_9d7ee536, commit `1257777`); this row and the §3 block are their surviving record. |
 
 **The freeze removal (t_69f1a5f3, 2026-11-14).** The committed block is
 `deploy/caddy/demo-tenant-site.caddy` sha256 `64fd9d64…` (3,213 B, matchers

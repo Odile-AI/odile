@@ -28,7 +28,6 @@ import tarfile
 import threading
 import time
 import traceback
-import uuid
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, quote, urlparse
@@ -86,23 +85,12 @@ MAX_BODY = 8 * 1024
 RATE_LIMIT = int(os.environ.get("ODILE_RATE_LIMIT", "6"))   # signups per IP
 RATE_WINDOW = 600       # seconds
 
-# The demo front door. The session id is fixed so /judge can deep-link the
-# seeded "Start here" session; deploy/demo-host/apply_demo_public.py mints the
-# same id from the same identity when it seeds the row on the tenant.
-DEMO_HOST = os.environ.get("ODILE_DEMO_HOST", "https://demo.odile.fyi")
-DEMO_SESSION_SEED = "odile-demo:start-here:v1"
-#: The seeded session's identity is **frozen**: the id is a hash over the
-#: profile and principal the row was minted with on the HQ demo, and both this
-#: deep link and the tenant's seeded row carry that id. The retired account name
-#: is spelled in two pieces so it does not reappear in the tree; the string it
-#: builds must never change, or /judge deep-links a session that does not exist.
-DEMO_PROFILE_ID = "/home/odile" "demo/.hermes"
-DEMO_PRINCIPAL_ID = "uid:1001"
-DEMO_REQUEST_ID = str(uuid.uuid5(uuid.NAMESPACE_URL, DEMO_SESSION_SEED))
-DEMO_SESSION_ID = "local-" + hashlib.sha256(
-    json.dumps([DEMO_PROFILE_ID, DEMO_PRINCIPAL_ID, DEMO_REQUEST_ID],
-               separators=(",", ":")).encode()
-).hexdigest()
+# The retired demo front door. `/judge` is printed on the title and end cards
+# of the posted demo cut (docs/ops/evidence/2026-11-07-demo/demo-final.mp4), so
+# the address must keep answering after the page is gone: a permanent redirect
+# to the tenant's own sign-in, never a 404. The demo is the tenant machine, not
+# an HQ page; the two nav links on the landing page point at this URL directly.
+DEMO_LOGIN_URL = "https://demo.odile.fyi/login"
 
 # The verifier bundle /verify offers: the script, its one module, the pin and
 # the AMD chain. Built once, in memory; no route reads arbitrary paths.
@@ -663,23 +651,6 @@ def render_legal(name: str, title: str) -> str:
     return page(name, TITLE="%s \u2014 Odile" % title, ROBOTS="index")
 
 
-def render_judge() -> str:
-    """The judge's front door: what the demo is, the credentials, three steps.
-
-    The primary action opens the seeded session; the secondary opens /verify.
-    The page is static and no-JS; the session id is a constant so the deep
-    link survives a redeploy.
-    """
-    next_path = "/#/sessions/" + DEMO_SESSION_ID
-    demo_url = DEMO_HOST + "/login?next=" + quote(next_path, safe="")
-    return page(
-        "judge.html",
-        TITLE="Try the demo \u2014 Odile",
-        ROBOTS="index",
-        DEMO_URL=html.escape(demo_url, quote=True),
-    )
-
-
 def verifier_bundle() -> bytes:
     """The verifier and everything it needs, as one deterministic tar.gz.
 
@@ -812,7 +783,12 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/abuse":
             return self._send(200, render_legal("abuse.html", "Abuse"), head=head)
         if path == "/judge":
-            return self._send(200, render_judge(), head=head)
+            # The page is retired, the address is not: both cards of the posted
+            # demo cut print it. A judge who types it lands on the tenant's own
+            # sign-in page. 301, not the signup flow's 303, because the move is
+            # permanent — and no query string is carried, or the redirect would
+            # become a second front door into this service.
+            return self._permanent_redirect(DEMO_LOGIN_URL)
         if path == "/roadmap":
             # State, not a page: read on every request so a regeneration lands
             # without a restart, and let neither the browser nor a proxy keep a
@@ -1116,6 +1092,21 @@ class Handler(BaseHTTPRequestHandler):
             "We will email you when the machine is ready.\n",
             "text/plain; charset=utf-8",
         )
+
+    def _permanent_redirect(self, location):
+        """A retired address answers 301: the page now lives at `location`.
+
+        Its own method rather than a status argument on `_redirect`: the signup
+        flow's 303 is a temporary, uncached bounce back into this service, while
+        a 301 is the one answer a printed address needs. Five minutes of cache
+        is short enough to move the target again, long enough that a judge's
+        browser does not ask twice.
+        """
+        self.send_response(301)
+        self.send_header("Location", location)
+        self.send_header("Content-Length", "0")
+        self.send_header("Cache-Control", "public, max-age=300")
+        self.end_headers()
 
     def _redirect(self, location):
         self.send_response(303)

@@ -1,12 +1,12 @@
 """The demo verifier command — one line, three surfaces, exit 0.
 
-README's "Judge's 60 seconds" and web/judge.html used to hand a judge
+README and ``web/judge.html`` used to hand a judge
 ``./odile-verify https://demo.odile.fyi``, which exits 2: the pin's ``source``
 is HQ, so a demo URL is a tenant run and needs ``--expect``. The demo's
 ``/verify`` now prints the one-line ``--expect`` command with the measurement
-it serves; these tests pin README, the judge page, the injected section and
-the tenant renderer to the same line, and pin the check's extractor to the
-line a browser copies.
+it serves; these tests pin README, the injected section and the tenant
+renderer to the same line, and pin the check's extractor to the line a browser
+copies.
 
 The release template stays the customer page (ODL-503 finding 1's route: a
 demo-only page, not a release re-cut), so every assertion about the installed
@@ -30,7 +30,6 @@ DEMO = ROOT / "deploy" / "demo-host"
 COMMAND = DEMO / "verify-command.html"
 LEDE = DEMO / "verify-lede.html"
 README = ROOT / "README.md"
-JUDGE = ROOT / "web" / "judge.html"
 INSTALLERS = (ROOT / "installer" / "odile_install.py",
               ROOT / "release" / "odile_install.py")
 DEMO_URL = "https://demo.odile.fyi"
@@ -78,8 +77,8 @@ class CopyTests(unittest.TestCase):
     demo's own ``/verify`` instead of printing the command (Savio's
     2026-11-14 simplification). So: any demo command that *does* appear in
     the README must carry ``--expect``, and the README must send the reader
-    to the page that prints the live line. ``web/judge.html`` stays as main
-    has it.
+    to the page that prints the live line. ``web/judge.html`` is gone with the
+    route (ODL-901 deletes it; a deploy from ``main`` keeps the 301).
     """
 
     def test_every_demo_verifier_command_carries_expect(self):
@@ -95,10 +94,8 @@ class CopyTests(unittest.TestCase):
                         rest.strip().startswith("--expect"),
                         f"{path.name}: the demo command has no --expect: {rest!r}")
 
-    def test_each_page_sends_the_judge_to_verify_for_the_number(self):
-        for path in (README, JUDGE):
-            with self.subTest(path=path.name):
-                self.assertIn("demo.odile.fyi/verify", path.read_text(encoding="utf-8"))
+    def test_the_readme_sends_the_judge_to_verify_for_the_number(self):
+        self.assertIn("demo.odile.fyi/verify", README.read_text(encoding="utf-8"))
 
     def test_the_readme_entry_is_the_demo_login_page(self):
         """`/judge` is retired (ODL-901 answers it with a 301); the README's
