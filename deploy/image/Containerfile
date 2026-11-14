@@ -41,7 +41,8 @@ COPY install-stack.sh config.yaml tenant.service bench-heartbeat.sh \
      bench.py smoke.sh odile-bench-smoke.service \
      odile-bench-proxy.service odile-bench-proxy.socket \
      odile-webapp-brand.py odile-webapp-brand.service odile-webapp-brand.path \
-     odile-webapp-brand.conf webapp-brand.js /usr/local/lib/odile-image/
+     odile-webapp-brand.conf webapp-brand.js \
+     webapp-chrome.css webapp-chrome.js /usr/local/lib/odile-image/
 
 # The container's network namespace is the boundary, so the Webapp binds all
 # interfaces *inside* the namespace; podman publishes it on 127.0.0.1 only.

@@ -10,15 +10,17 @@
 #
 # The directory is watched by file, not wholesale: a build writes hundreds of
 # files, and a PathChanged on the directory would either storm the service or
-# trip its trigger limit. The shell and the asset are the two entries the brand
-# depends on — one write each per build, plus one for this helper's own write,
-# which converges on the next run and stops.
+# trip its trigger limit. The shell and the three assets the surface depends on
+# — one write each per build, plus one for this helper's own write, which
+# converges on the next run and stops.
 Description=Odile: watch the Webapp bundle for a rebuild
 Documentation=file:///usr/local/lib/odile/odile-webapp-brand.py
 
 [Path]
 PathChanged=__TENANT_HOME__/.hermes/hermes-agent/apps/desktop/dist-webapp/index.html
 PathChanged=__TENANT_HOME__/.hermes/hermes-agent/apps/desktop/dist-webapp/odile-brand.js
+PathChanged=__TENANT_HOME__/.hermes/hermes-agent/apps/desktop/dist-webapp/odile-demo-chrome.css
+PathChanged=__TENANT_HOME__/.hermes/hermes-agent/apps/desktop/dist-webapp/odile-demo-chrome.js
 Unit=odile-webapp-brand.service
 TriggerLimitIntervalSec=60
 TriggerLimitBurst=20
