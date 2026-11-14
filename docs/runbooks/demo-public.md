@@ -151,6 +151,48 @@ Hermes accepts (the installer's `custom_providers:` list and the normalised
 write; `--report` prints the row the machine actually uses, and
 `check_demo_public.py` fails on any other label or route.
 
+### What a judge can reach on this machine
+
+The published password signs in as `judge`, and the transport it lands on runs
+one command per `shell.exec` as `tenant` — an account with passwordless sudo
+(`sudo -n id -un` → `root`). That is the demo's design: one shared machine,
+Odile holds the boot key, and the public copy says so. These are the commands
+that measure it, run through the tenant's own Webapp transport
+(`tenant_console.py`); this is the 2026-11-14 01:39–01:46Z transcript:
+
+```sh
+$ id -un; sudo -n id -un
+tenant
+root
+$ ls -l /home/tenant/.hermes/.env
+-rw------- 1 tenant tenant 348 Nov 13 10:41 /home/tenant/.hermes/.env
+$ grep -c '^HERMES_CUSTOM_CLOUD_API_NEAR_AI_API_KEY=' ~/.hermes/.env
+1
+$ systemctl is-active odile-meter; systemctl is-enabled odile-meter
+inactive
+masked
+$ ls -ld /var/lib/odile
+drwxr-xr-x 2 odile-meter odile-meter 4096 Nov 13 10:40 /var/lib/odile
+$ sudo -n nft list ruleset
+sudo: nft: command not found
+```
+
+Measured 2026-11-14 01:39–01:46Z and re-checked 15:05–15:35Z; re-measured
+17:54:57Z. Two readings are not the same at every probe, and both are kept:
+
+- `systemctl is-enabled odile-meter` → `masked` at 01:4xZ (the unit was still
+  installed), `not-found` from 15:05Z on (the unit is gone — t_e237e261, §2);
+- `ls -ld /var/lib/odile` → `odile-meter odile-meter`, mtime 2026-11-13 10:40
+  at 01:4xZ; `root root`, mtime 2026-11-14 04:51 at 17:54Z. The directory
+  remains; its owner moved.
+
+The other four readings are identical at every probe: the shell is `tenant`,
+`sudo -n` is root, the tenant's one Near AI key is readable from it
+(`grep -c` → 1 in a `0600` `.env` owned by `tenant`, 348 B), and there is no
+`nft` on the machine. So the key the agent spends against is the key the
+published password can read; the only cap is the provider's own balance (§3),
+because there is no meter to mask or start.
+
 ## 4. Verify
 
 ```sh
@@ -231,7 +273,9 @@ counts. The check also reads the served `/verify` and fails if its first
 paragraph is not `deploy/demo-host/verify-lede.html` or if the customer row
 still appears. `--report --session-id <id>` prints one session's row and a
 digest of its messages, which is what the deploy-changes-no-session check
-compares.
+compares. What the same console reaches when it runs a shell — `tenant`,
+passwordless root, the tenant's Near AI key — is the six-command block in §3,
+with its outputs and dates.
 
 ## 5. The DNS record
 
@@ -341,6 +385,12 @@ transcript.
 | The gate, before the merge | `deploy/demo-host/evidence/odl-503-followup-check-2026-11-14.txt`: PASS 44/44 |
 | The gate, after merging main | `deploy/demo-host/evidence/odl-503-followup-check-2026-11-14T0405.txt`: 46 passed, 1 failed — the failure is the 25-turn cap t_ee5aac66 removes; every `/verify` line and the measurement pass |
 | Screenshots | `odl-503-followup-verify-1440.png`, `-390.png` (viewport) and `-1440-full.png`, `-390-full.png`; at both widths `scrollWidth == clientWidth`, 0 `<img>`, body `rgb(234,223,196)`, lede `rgb(74,65,54)` |
+
+### The published password's reach (2026-11-14)
+
+| What | Where |
+|---|---|
+| The shell, the root and the key | The six-command block in §3, with its outputs: `id -un` → `tenant`, `sudo -n id -un` → `root`, the `0600` 348-byte `.env` owned by `tenant` with one `HERMES_CUSTOM_CLOUD_API_NEAR_AI_API_KEY` (`grep -c` → 1), the meter (`masked` at 01:4xZ, `not-found` after t_e237e261), `/var/lib/odile` (`odile-meter` at 01:4xZ, `root` at 17:54Z) and no `nft`; measured 2026-11-14 01:39–01:46Z, re-checked 15:05–15:35Z and re-measured 17:54:57Z through `tenant_console.py` with the published password. The threat note that carried these facts as prose is deleted history (t_9d7ee536, commit `1257777`); this row and the §3 block are their surviving record. |
 
 **The freeze removal (t_69f1a5f3, 2026-11-14).** The committed block is
 `deploy/caddy/demo-tenant-site.caddy` sha256 `64fd9d64…` (3,213 B, matchers
