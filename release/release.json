@@ -1,8 +1,8 @@
 {
   "artifacts": {
     "installer": {
-      "sha256": "49f90a3c00015451f9737d7330b6e1a7b1e4f07b48a1a44f79cb0ef6f68e510a",
-      "size": 616403,
+      "sha256": "ae2c839dabe457a1ec17674a0f13290ab81c2b99735c2e6f1798193f6e148244",
+      "size": 617862,
       "url": "odile_install.py"
     },
     "skills": {
@@ -14,14 +14,14 @@
   "boot": {
     "kernel": "6.12.115+deb13.1-amd64"
   },
-  "generated_at": "2026-11-14T15:12:51Z",
+  "generated_at": "2026-11-14T17:45:39Z",
   "manifest": {
-    "sha256": "f6dea119632629c9e805352d398f4af2d7dd94b9b673d4c9aa74dfed0babb11c",
+    "sha256": "4caad797a75c3585fba914f5f115451bbe8257f8370740f972dbac5e025b069b",
     "signature_url": "manifest.json.sig",
     "url": "manifest.json"
   },
-  "notes": "t_781fc5cb: HQ's /verify demo block stops saying the demo is not a tenant machine. It now quotes the v3.8b deck row verbatim (Odile's tenant machine, one shared workspace, Odile holds this machine's boot key and can log in) and its two back links go to https://demo.odile.fyi/login, which Savio made the judge's entry surface on 2026-11-14; /judge is retired to a 301 by ODL-901. The installer re-embeds web/verify.html, so installer_sha256, the installer size, the manifest hash and this document's hash move; the vendor pin c73dad4d, the skills artifact and the meter-free manifest rows are -4's.",
+  "notes": "ODL-521: the published image ships no usable sign-in \u2014 install-stack.sh --production writes a discarded scrypt hash carrying '# odile-signin-placeholder: 1', the first boot leaves it, and the release installer's --first-visit write replaces any hash that is not the owner's on every run until POST /first-visit records signin_set_at. Cut on top of 2026.11.14-6 (t_781fc5cb's demo-lede re-embed): installer_sha256, the installer size, the manifest hash and this document's hash move; the vendor pin c73dad4d, the skills artifact and the meter-free rows are -6's. The branch's pre-merge cut was 2026.11.14-5 (installer 10a38b68\u2026), superseded here.",
   "product": "odile",
-  "release": "2026.11.14-6",
+  "release": "2026.11.14-7",
   "schema": 1
 }

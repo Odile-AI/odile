@@ -29,6 +29,15 @@ ExecStart=/usr/bin/python3 /usr/local/lib/odile/odile-manifest.py serve --manife
 # The group is created by install-stack.sh in this image, so it exists before
 # this unit starts.
 SupplementaryGroups=odile-manifest
+# ODL-521: DynamicUser allocates a transient user *and group* named after the
+# unit, and the group this unit must join is itself called `odile-manifest`
+# (main's meter removal renamed it from `odile-meter`). Without a distinct
+# user name the allocation fails closed — measured on the ODL-521 image:
+# "Failed to update dynamic user credentials: User or group with specified name
+# already exists" — and the first boot refuses to continue. The process is
+# still an unprivileged dynamic user; only its name stops colliding with the
+# group it joins.
+User=odile-manifest-svc
 DynamicUser=yes
 NoNewPrivileges=yes
 ProtectSystem=strict

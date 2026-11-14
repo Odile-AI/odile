@@ -1628,6 +1628,30 @@ verify against `installer/odile-signing-key.pub`. The cut was made at
 carried by the ODL-505 icon branch (`legacy/wt505`), so `-6` is the next free
 id.
 
+**The `2026.11.14-7` cut (ODL-521, the image's sign-in).** This tree merges
+`main`'s `-6` demo-lede cut into ODL-521's sign-in slice and cuts `-7` on the
+merged head. The installer carries both: the published image's `.env` holds a
+discarded scrypt hash behind `# odile-signin-placeholder: 1`, the first boot
+leaves it alone, and `ensure_env(first_visit=True)` rewrites the hash on every
+boot until the first-visit page records `signin_set_at`. The merged installer
+is `ae2c839d…` (617,862 bytes); `installer/embed_verify.py`'s new page pin
+`bf4dda17…` and the sign-in rule travel in the same bytes. The manifest is the
+`-6` document with only `installer_sha256` moved — `4caad797…`; its
+`generated_at` stays `2026-11-14T15:12:51Z`, the `-6` cut's value. The vendor
+pin `c73dad4d…`, the skills artifact `09be3cd1…`
+(851,865 bytes, the canonical `<home>/workspace` cut) and the meter-free rows
+are unchanged. `release/release.json` names installer `ae2c839d…` and manifest
+`4caad797…` (`822ce724…`). Both JSON signatures verify against
+`installer/odile-signing-key.pub`, and `tools/recut_release.py --check` prints
+`ok` for the installer, its release copy, the manifest, the release document
+and the pin's hook (`949adeb2…`). The branch's pre-merge cut was
+`2026.11.14-5` (installer `10a38b68…`), superseded here because `-6` landed on
+`main` first. It is **committed, not deployed**: measured 2026-11-14T20:20Z,
+`https://odile.fyi/release.json` serves `2026.11.14-6` (installer `49f90a3c…`,
+616,403 bytes; manifest `f6dea119…`), byte-identical to
+`/opt/odile/release/release.json` (mtime 2026-11-14T17:20:27Z); the next
+`./deploy.sh` from a `main` that carries this merge publishes `-7`.
+
 The clock starts at the build's `uki.sh --sign` and stops when
 `https://<slug>.odile.fyi/login` answers 200 over TLS. The gate is 30 minutes.
 Round 8 is the measured stop: the panel was saved at 14:42:53Z, the guest's
