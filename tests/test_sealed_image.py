@@ -1,0 +1,2942 @@
+#!/usr/bin/python3
+"""Tests for the sealed image bench (ODL-454).
+
+Two layers, both fast and hermetic:
+
+* the C stand-in for Servury's snpreport is compiled once and exercised
+  against Python's hashlib/hmac and against the spike's reference decoder.
+  This is the piece the boot chain actually calls, so it is tested by running
+  it, not by reading its source;
+* the harness that decides whether a boot unsealed or failed closed is driven
+  from a written serial file, the same way the host reads a real QEMU serial
+  log.
+
+The QEMU, debootstrap and LUKS runs are the card's evidence, not this suite.
+"""
+
+from __future__ import annotations
+
+import base64
+import contextlib
+import hashlib
+import hmac
+import http.client
+import http.server
+import importlib.util
+import io
+import json
+import os
+import pathlib
+import re
+import shutil
+import signal
+import stat
+import subprocess
+import sys
+import tempfile
+import threading
+import time
+import unittest
+from unittest import mock
+
+ROOT = pathlib.Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "deploy" / "image"))
+
+import bench  # noqa: E402
+
+SOURCE = ROOT / "deploy" / "image" / "bench-snpreport.c"
+SEAL_REF = ROOT / "spike" / "sealed-unlock" / "seal_ref.py"
+PIN = ROOT / "deploy" / "image" / "tenant-image.pin"
+HOOK = ROOT / "spike" / "sealed-unlock" / "initramfs" / "bb-sealed-unlock"
+# The spike tree (the sealed-unlock hook, its stub harness and the reference
+# decoder) is HQ-only: `/spike/` is in .git/info/exclude and is not part of the
+# published tree. Tests that drive those bytes skip here, with this reason,
+# instead of failing a public checkout's `make check`; at HQ they run.
+SPIKE_MISSING = (
+    "spike/sealed-unlock is HQ-only (excluded in .git/info/exclude) and absent "
+    "from this checkout; the hook, its stub harness and the reference decoder "
+    "are exercised at HQ"
+)
+# `sealed-initrd.sh` reads the same HQ-only hook before its dry-run branch and
+# before its `--source` check, so a public checkout cannot run either of the
+# two script tests below; they run at HQ.
+INITRD_HOOK_MISSING = (
+    "sealed-initrd.sh reads the HQ-only hook "
+    "spike/sealed-unlock/initramfs/bb-sealed-unlock before it plans or checks "
+    "--source, and that file is absent from this checkout; the script tests are "
+    "exercised at HQ"
+)
+SEED = b"odile-bench-vcek-NOT-a-secret-32"
+IMAGE = ROOT / "deploy" / "image"
+# A real ed25519 public key line; the measured `bb.key=` is its base64.
+BOOT_KEY_TEXT = (
+    "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAICFh7hQkST5vRDolO3yqwCARRugZahMdc+WgR69JsoXG "
+    "odile-test throwaway boot key"
+)
+
+
+def _load(name: str, path: pathlib.Path):
+    spec = importlib.util.spec_from_file_location(name, path)
+    assert spec is not None and spec.loader is not None, path
+    module = importlib.util.module_from_spec(spec)
+    # dataclasses resolves a class's module through sys.modules, so a module
+    # loaded by path must be registered before it is executed (the release
+    # installer uses @dataclass at import time).
+    sys.modules[name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+firstboot = _load("odile_firstboot", IMAGE / "odile-firstboot.py")
+fixture = _load("odile_firstboot_fixture", IMAGE / "firstboot-fixture.py")
+
+MANIFEST_CHECKER = IMAGE / "odile-manifest.py"
+
+
+def ed25519_key(base: pathlib.Path) -> tuple[pathlib.Path, pathlib.Path]:
+    """A throwaway Ed25519 pair in the release's file shapes (PEM + SPKI)."""
+    if not shutil.which("openssl"):
+        raise unittest.SkipTest("openssl is missing")
+    priv = base.with_suffix(".pem")
+    pub = base.with_suffix(".pub")
+    priv.parent.mkdir(parents=True, exist_ok=True)
+    subprocess.run(["openssl", "genpkey", "-algorithm", "ED25519", "-out", str(priv)],
+                   check=True, capture_output=True, timeout=60)
+    os.chmod(priv, 0o600)
+    subprocess.run(["openssl", "pkey", "-in", str(priv), "-pubout", "-out", str(pub)],
+                   check=True, capture_output=True, timeout=60)
+    return priv, pub
+
+
+def sign_release_file(path: pathlib.Path, key: pathlib.Path) -> pathlib.Path:
+    """Sign `path` the way `manifest.py sign` writes a release: base64, 76 cols."""
+    result = subprocess.run(["openssl", "dgst", "-sign", str(key), str(path)],
+                            check=True, capture_output=True, timeout=60)
+    signature = path.parent / (path.name + ".sig")
+    signature.write_bytes(base64.encodebytes(result.stdout))
+    return signature
+
+
+RELEASE_INSTALLER = b"#!/usr/bin/python3\nprint('the release installer')\n"
+RELEASE_LISTENER = b"#!/usr/bin/python3\nprint('the release listener')\n"
+
+
+def release_fixture(directory: pathlib.Path, key: pathlib.Path, *,
+                    installer: bytes = RELEASE_INSTALLER) -> pathlib.Path:
+    """The release/ directory shape: installer, signed manifest pair, listener.
+
+    The manifest names the installer by hash, which is the relation the first
+    boot's placement and CLAIMS 4.6 depend on.
+    """
+    directory.mkdir(parents=True, exist_ok=True)
+    (directory / "odile_install.py").write_bytes(installer)
+    document = {
+        "schema": 1,
+        "mode": "scratch",
+        "installer_sha256": hashlib.sha256(installer).hexdigest(),
+        "generated_at": "2026-11-11T00:00:00Z",
+    }
+    manifest = directory / "manifest.json"
+    manifest.write_bytes((json.dumps(document, indent=2, sort_keys=True) + "\n").encode())
+    sign_release_file(manifest, key)
+    (directory / "manifest.py").write_bytes(RELEASE_LISTENER)
+    (directory / "odile-manifest.py").write_bytes(MANIFEST_CHECKER.read_bytes())
+    (directory / "odile-manifest.service").write_bytes(
+        (IMAGE / "odile-manifest.service").read_bytes())
+    return directory
+
+
+def expected_key(cmdline: str) -> bytes:
+    return hmac.new(SEED, b"odile-bench-snp-v1\n" + cmdline.encode(), hashlib.sha256).digest()
+
+
+class SnpreportTests(unittest.TestCase):
+    """The stand-in, run as a binary: key derivation, format, exit codes."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        if not shutil.which("gcc"):
+            raise unittest.SkipTest("gcc is not installed; the image build needs it")
+        cls.tmp = tempfile.TemporaryDirectory()
+        cls.dir = pathlib.Path(cls.tmp.name)
+        cls.bin = cls.dir / "snpreport"
+        subprocess.run(
+            ["gcc", "-O2", "-static", "-s", "-o", str(cls.bin), str(SOURCE)],
+            check=True, timeout=120,
+        )
+
+    @classmethod
+    def tearDownClass(cls) -> None:
+        cls.tmp.cleanup()
+
+    def run_tool(self, *args: str, cmdline: str | None = None) -> subprocess.CompletedProcess:
+        command = [str(self.bin), *args]
+        if cmdline is not None:
+            path = self.dir / "cmdline"
+            path.write_text(cmdline + "\n")
+            command += ["--cmdline-file", str(path)]
+        return subprocess.run(command, capture_output=True, text=True, timeout=60)
+
+    def test_selftest_passes(self) -> None:
+        result = self.run_tool("--selftest")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("selftest ok", result.stdout)
+
+    def test_fingerprint_matches_hashlib(self) -> None:
+        data = self.dir / "abc"
+        data.write_bytes(b"abc")
+        result = self.run_tool("--fp", str(data))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        import base64
+        want = "SHA256:" + base64.b64encode(hashlib.sha256(b"abc").digest()).decode().rstrip("=")
+        self.assertEqual(result.stdout.strip(), want)
+
+    def test_the_key_is_hmac_over_the_measured_cmdline(self) -> None:
+        result = self.run_tool("--key-hex", cmdline="root=/dev/mapper/root_crypt seal_id=bench")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.strip(), expected_key("root=/dev/mapper/root_crypt seal_id=bench").hex())
+
+    def test_a_different_seal_id_derives_a_different_key(self) -> None:
+        one = self.run_tool("--key-hex", cmdline="root=/dev/x seal_id=tenant-one")
+        two = self.run_tool("--key-hex", cmdline="root=/dev/x seal_id=tenant-two")
+        self.assertNotEqual(one.stdout, two.stdout)
+        self.assertEqual(len(one.stdout.strip()), 64)
+
+    def test_round_trip_and_fail_closed(self) -> None:
+        plain = self.dir / "vol.key"
+        plain.write_bytes(bytes(range(64)))
+        blob = self.dir / "vol.blob"
+        out = self.dir / "out.key"
+        sealed = self.run_tool("--seal", str(plain), str(blob), cmdline="bb.host=one seal_id=a")
+        self.assertEqual(sealed.returncode, 0, sealed.stderr)
+        opened = self.run_tool("--unseal", str(blob), str(out), cmdline="bb.host=one seal_id=a")
+        self.assertEqual(opened.returncode, 0, opened.stderr)
+        self.assertEqual(out.read_bytes(), plain.read_bytes())
+
+        # The changed command line is the card's fail-closed case: rc 6, the
+        # code Servury's snpreport returns and the hook treats as "leave the
+        # prompt".
+        changed = self.run_tool("--unseal", str(blob), str(out), cmdline="bb.host=one seal_id=b")
+        self.assertEqual(changed.returncode, 6, changed.stderr)
+
+    def test_a_tampered_blob_returns_6(self) -> None:
+        plain = self.dir / "tamper.key"
+        plain.write_bytes(b"x" * 64)
+        blob = self.dir / "tamper.blob"
+        self.run_tool("--seal", str(plain), str(blob), cmdline="seal_id=t")
+        data = bytearray(blob.read_bytes())
+        data[-1] ^= 1
+        blob.write_bytes(bytes(data))
+        result = self.run_tool("--unseal", str(blob), str(self.dir / "nope"), cmdline="seal_id=t")
+        self.assertEqual(result.returncode, 6, result.stderr)
+
+    @unittest.skipUnless(SEAL_REF.is_file(), SPIKE_MISSING)
+    def test_the_spike_reference_unseals_our_blob(self) -> None:
+        plain = self.dir / "ref.key"
+        plain.write_bytes(bytes(range(64)))
+        blob = self.dir / "ref.blob"
+        cmdline = "root=/dev/mapper/root_crypt seal_id=ref"
+        self.run_tool("--seal", str(plain), str(blob), cmdline=cmdline)
+        out = self.dir / "ref.out"
+        result = subprocess.run(
+            [sys.executable, str(SEAL_REF), expected_key(cmdline).hex(), "unseal", str(blob), str(out)],
+            capture_output=True, text=True, timeout=60,
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(out.read_bytes(), plain.read_bytes())
+
+    @unittest.skipUnless(SEAL_REF.is_file(), SPIKE_MISSING)
+    def test_we_unseal_the_spike_reference_blob(self) -> None:
+        plain = self.dir / "back.key"
+        plain.write_bytes(bytes(range(64)))
+        blob = self.dir / "back.blob"
+        cmdline = "root=/dev/mapper/root_crypt seal_id=back"
+        result = subprocess.run(
+            [sys.executable, str(SEAL_REF), expected_key(cmdline).hex(), "seal", str(plain), str(blob)],
+            capture_output=True, text=True, timeout=60,
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        out = self.dir / "back.out"
+        opened = self.run_tool("--unseal", str(blob), str(out), cmdline=cmdline)
+        self.assertEqual(opened.returncode, 0, opened.stderr)
+        self.assertEqual(out.read_bytes(), plain.read_bytes())
+
+
+class SealedHarnessTests(unittest.TestCase):
+    """The boot-side decision: opened, prompt, and the extra evidence line."""
+
+    def wait(self, text: str, expect: str, timeout: float = 5) -> tuple[bool, str]:
+        with tempfile.TemporaryDirectory() as tmp:
+            serial = pathlib.Path(tmp) / "boot.log"
+            serial.write_text(text)
+            return bench.wait_sealed(serial, expect, timeout)
+
+    def test_an_opened_boot_is_a_pass(self) -> None:
+        ok, detail = self.wait(f"...\n{bench.SEALED_OPENED}\n", "opened")
+        self.assertTrue(ok, detail)
+
+    def test_a_prompt_is_the_documented_fail_closed_state(self) -> None:
+        ok, detail = self.wait(
+            f"bb-sealed-unlock: the blob is not sealed to this boot (unseal rc 6); leaving cryptroot's prompt\n"
+            f"{bench.CRYPTROOT_PROMPT} \n",
+            "prompt",
+        )
+        self.assertTrue(ok, detail)
+        self.assertIn("failed the seal", detail)
+
+    def test_a_prompt_without_the_hook_failure_is_not_a_fail_closed_pass(self) -> None:
+        # The stock image also prompts; only the hook's own rc line proves the
+        # prompt is the documented fail-closed state rather than a missing hook.
+        ok, detail = self.wait(f"{bench.CRYPTROOT_PROMPT} \n", "prompt")
+        self.assertFalse(ok, detail)
+        self.assertIn("never reported a seal failure", detail)
+
+    def test_a_prompt_after_an_open_is_not_a_fail_closed_pass(self) -> None:
+        ok, detail = self.wait(f"{bench.SEALED_OPENED}\n{bench.CRYPTROOT_PROMPT}\n", "prompt")
+        self.assertFalse(ok, detail)
+
+    def test_a_missing_line_fails(self) -> None:
+        ok, detail = self.wait("nothing here\n", "opened", timeout=0.1)
+        self.assertFalse(ok)
+        self.assertIn("no '", detail)
+
+    def test_the_guest_sealed_line_is_parsed_and_is_not_a_sixth_check(self) -> None:
+        text = "\n".join(
+            f"ODILE-BENCH {name} PASS detail" for name in bench.CHECK_NAMES
+        ) + "\nODILE-BENCH sealed-unlock PASS state opened; root_crypt active\n"
+        checks, _ = bench.parse_guest(text)
+        self.assertEqual(set(checks), set(bench.CHECK_NAMES))
+        sealed = bench.parse_guest_sealed(text)
+        self.assertIsNotNone(sealed)
+        assert sealed is not None
+        self.assertTrue(sealed.ok)
+
+    def test_a_plain_image_has_no_sealed_check(self) -> None:
+        with mock.patch.object(bench, "SEALED_STATE", pathlib.Path("/nonexistent/state")), \
+                mock.patch.object(bench, "root_mapper_source", return_value="/dev/sda1"):
+            self.assertIsNone(bench.check_sealed_unlock())
+
+    def test_the_root_mount_is_read_from_proc_mounts(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            mounts = pathlib.Path(tmp) / "mounts"
+            mounts.write_text(
+                "/dev/sda1 /boot ext4 rw 0 0\n"
+                "/dev/mapper/root_crypt / ext4 rw,relatime 0 0\n"
+                "proc /proc proc rw 0 0\n"
+            )
+            self.assertEqual(bench.root_mapper_source(mounts), "/dev/mapper/root_crypt")
+
+    def test_a_missing_mounts_file_has_no_source(self) -> None:
+        self.assertEqual(bench.root_mapper_source(pathlib.Path("/nonexistent/mounts")), "")
+
+    @staticmethod
+    def mapper_tree(tmp: str, dm_name: str) -> pathlib.Path:
+        root = pathlib.Path(tmp)
+        (root / "dev" / "mapper").mkdir(parents=True)
+        (root / "dev" / "dm-0").write_text("")
+        (root / "dev" / "mapper" / "root_crypt").symlink_to("../dm-0")
+        (root / "sys" / "class" / "block" / "dm-0" / "dm").mkdir(parents=True)
+        (root / "sys" / "class" / "block" / "dm-0" / "dm" / "name").write_text(dm_name + "\n")
+        return root
+
+    def test_the_mapper_name_comes_from_sysfs_not_the_symlink(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertTrue(bench.mapper_is_active("/dev/mapper/root_crypt", root=self.mapper_tree(tmp, "root_crypt")))
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self.mapper_tree(tmp, "some_other_name")
+            self.assertFalse(
+                bench.mapper_is_active("/dev/mapper/root_crypt", root=root),
+                "a symlink called root_crypt must not pass when the kernel's dm name differs",
+            )
+
+    def test_a_non_device_source_is_not_a_mapper(self) -> None:
+        self.assertFalse(bench.mapper_is_active("overlay"))
+        self.assertFalse(bench.mapper_is_active(""))
+
+    def test_the_guest_check_names_the_root_device_without_cryptsetup(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            state = pathlib.Path(tmp) / "state"
+            state.write_text("opened\n")
+            with mock.patch.object(bench, "SEALED_STATE", state), \
+                    mock.patch.object(bench, "root_mapper_source", return_value="/dev/mapper/root_crypt"), \
+                    mock.patch.object(bench, "mapper_is_active", return_value=True), \
+                    mock.patch.object(bench.shutil, "which", return_value=None):
+                check = bench.check_sealed_unlock()
+        assert check is not None
+        self.assertTrue(check.ok, check.detail)
+        self.assertIn("/dev/mapper/root_crypt", check.detail)
+        self.assertIn("dm name root_crypt", check.detail)
+
+    def test_an_unsealed_state_fails_even_with_the_mapper_present(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            state = pathlib.Path(tmp) / "state"
+            state.write_text("unseal-failed rc=6\n")
+            with mock.patch.object(bench, "SEALED_STATE", state), \
+                    mock.patch.object(bench, "root_mapper_source", return_value="/dev/mapper/other"), \
+                    mock.patch.object(bench, "mapper_is_active", return_value=True):
+                check = bench.check_sealed_unlock()
+        assert check is not None
+        self.assertFalse(check.ok)
+        self.assertIn("unseal-failed rc=6", check.detail)
+
+    def test_the_uki_boot_uses_ovmf_kernel_and_a_scsi_disk(self) -> None:
+        captured: dict[str, list[str]] = {}
+
+        def fake_popen(command, **kwargs):  # noqa: ANN001 - subprocess API
+            captured["command"] = command
+            return mock.MagicMock()
+
+        with mock.patch.object(bench.subprocess, "Popen", side_effect=fake_popen):
+            bench.boot_qemu_uki(
+                pathlib.Path("/var/tmp/x.raw"), pathlib.Path("/var/tmp/x.efi"), pathlib.Path("/var/tmp/OVMF.fd"),
+                pathlib.Path("/var/tmp/boot.log"), pathlib.Path("/var/tmp/bench.log"), 19132, 2048, 2,
+            )
+        command = captured["command"]
+        self.assertEqual(command[command.index("-bios") + 1], "/var/tmp/OVMF.fd")
+        self.assertEqual(command[command.index("-kernel") + 1], "/var/tmp/x.efi")
+        self.assertIn("virtio-scsi-pci,id=scsi0", command)
+        self.assertIn("scsi-hd,drive=disk0,bus=scsi0.0", command)
+        serials = [command[i + 1] for i, value in enumerate(command) if value == "-serial"]
+        self.assertEqual(serials, ["file:/var/tmp/boot.log", "file:/var/tmp/bench.log"])
+        self.assertTrue(any("hostfwd=tcp:127.0.0.1:19132" in arg for arg in command))
+
+    def test_a_tmpfs_disk_warns_and_names_var_tmp(self) -> None:
+        # ODL-335: the sealed bench boots an 8 GB raw disk. On tmpfs that is
+        # 8 GB of host memory plus the guest's RAM, and `df /` never shows it.
+        with mock.patch.object(bench.subprocess, "Popen", return_value=mock.MagicMock()):
+            err = io.StringIO()
+            with contextlib.redirect_stderr(err):
+                bench.boot_qemu_uki(
+                    pathlib.Path("/tmp/x.raw"), pathlib.Path("/var/tmp/x.efi"), pathlib.Path("/var/tmp/OVMF.fd"),
+                    pathlib.Path("/var/tmp/boot.log"), pathlib.Path("/var/tmp/bench.log"), 19132, 2048, 2,
+                )
+        warning = err.getvalue()
+        self.assertIn("/tmp/x.raw", warning)
+        self.assertIn("/var/tmp", warning)
+        self.assertEqual(len(warning.strip().splitlines()), 1, warning)
+
+
+class ScriptTests(unittest.TestCase):
+    """The shell entry points: dry runs name the right work and change nothing."""
+
+    @unittest.skipUnless(HOOK.is_file(), INITRD_HOOK_MISSING)
+    def test_sealed_initrd_dry_run_needs_no_source_and_names_it_missing(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            # Only the chroot is a dry-run input; the blackbox-images source is
+            # not. A host that has never had it must still get the plan — on
+            # 11 Nov the check before the dry-run branch made `make check` red
+            # after every reboot, because the fixture lived in /tmp (tmpfs).
+            chroot = pathlib.Path(tmp) / "chroot"
+            (chroot / "usr" / "sbin").mkdir(parents=True)
+            mkinitramfs = chroot / "usr" / "sbin" / "mkinitramfs"
+            mkinitramfs.write_text("#!/bin/sh\n")
+            mkinitramfs.chmod(0o755)
+            missing = pathlib.Path(tmp) / "no-such-blackbox-images"
+            out = pathlib.Path(tmp) / "out"
+            env = dict(os.environ, ODILE_BLACKBOX_SOURCE=str(missing))
+            result = subprocess.run(
+                ["bash", str(ROOT / "deploy" / "image" / "sealed-initrd.sh"),
+                 "--dry-run", "--out", str(out), "--chroot", str(chroot)],
+                capture_output=True, text=True, timeout=60, env=env,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn(f"no blackbox-images source at {missing}", result.stdout)
+            self.assertIn("bb-sealed-unlock", result.stdout)
+            self.assertIn("mkinitramfs", result.stdout)
+            self.assertFalse(out.exists(), "sealed-initrd --dry-run created its output")
+
+    @unittest.skipUnless(HOOK.is_file(), INITRD_HOOK_MISSING)
+    def test_sealed_initrd_build_without_a_source_exits_2_and_names_the_flag(self) -> None:
+        # The dry run plans; the build needs the tree. Removing the check must
+        # not turn a missing source into a half-run build.
+        with tempfile.TemporaryDirectory() as tmp:
+            chroot = pathlib.Path(tmp) / "chroot"
+            (chroot / "usr" / "sbin").mkdir(parents=True)
+            mkinitramfs = chroot / "usr" / "sbin" / "mkinitramfs"
+            mkinitramfs.write_text("#!/bin/sh\n")
+            mkinitramfs.chmod(0o755)
+            missing = pathlib.Path(tmp) / "no-such-blackbox-images"
+            out = pathlib.Path(tmp) / "out"
+            env = dict(os.environ, ODILE_BLACKBOX_SOURCE=str(missing))
+            result = subprocess.run(
+                ["bash", str(ROOT / "deploy" / "image" / "sealed-initrd.sh"),
+                 "--out", str(out), "--chroot", str(chroot)],
+                capture_output=True, text=True, timeout=60, env=env,
+            )
+            self.assertEqual(result.returncode, 2, result.stdout)
+            self.assertIn(f"no blackbox-images source at {missing}", result.stderr)
+            self.assertIn("--source", result.stderr)
+            self.assertFalse(out.exists(), "the build made its output before the source check")
+
+    def test_sealed_image_dry_run_changes_nothing(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            out = pathlib.Path(tmp) / "out"
+            result = subprocess.run(
+                ["bash", str(ROOT / "deploy" / "image" / "sealed-image.sh"),
+                 "--dry-run", "--out", str(out)],
+                capture_output=True, text=True, timeout=60,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("shred its private half", result.stdout)
+            self.assertIn("luksFormat", result.stdout)
+            self.assertFalse((out / "odile-tenant-sealed.raw").exists())
+
+    def test_sealed_image_dry_run_names_the_release_placement(self) -> None:
+        # ODL-472: the image must carry the release installer and the signed
+        # manifest pair, or the first boot has nothing to place and CLAIMS 4.6
+        # hashes a path that does not exist.
+        with tempfile.TemporaryDirectory() as tmp:
+            result = subprocess.run(
+                ["bash", str(IMAGE / "sealed-image.sh"), "--dry-run",
+                 "--out", str(pathlib.Path(tmp) / "out")],
+                capture_output=True, text=True, timeout=60,
+            )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("release/", result.stdout)
+        self.assertIn("manifest", result.stdout)
+        self.assertIn("odile-manifest.service", result.stdout)
+
+    def test_uki_dry_run_names_signing_and_pinning(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            boot = pathlib.Path(tmp) / "boot"
+            boot.mkdir()
+            for name in ("vmlinuz", "initrd.img"):
+                (boot / name).write_bytes(b"x")
+            (boot / "cmdline").write_text("root=/dev/x seal_id=bench\n")
+            (boot / "uname").write_text("6.12.0-test\n")
+            result = subprocess.run(
+                ["bash", str(ROOT / "deploy" / "image" / "uki.sh"),
+                 "--dry-run", "--in", tmp, "--sign", "--pin", str(pathlib.Path(tmp) / "pin.json")],
+                capture_output=True, text=True, timeout=60,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("8731846c", result.stdout)
+            self.assertIn("sbsign", result.stdout)
+            self.assertIn("write the pin", result.stdout)
+
+    def test_sealed_image_re_execs_into_a_private_mount_namespace(self) -> None:
+        # The first fix ran `mount --make-rprivate /` in the host namespace and
+        # made the *host* tree private (the demo reconcile broke until it was
+        # made shared again). The re-exec must come after the dry-run exit and
+        # before the first mount.
+        text = (ROOT / "deploy" / "image" / "sealed-image.sh").read_text()
+        reexec = 'exec unshare -m --propagation private "$0" "${ORIG_ARGS[@]}"'
+        self.assertIn(reexec, text)
+        self.assertIn("ODILE_SEALED_IN_NS", text)
+        self.assertLess(text.index("ORIG_ARGS=(\"$@\")"), text.index("while [ $# -gt 0 ]"),
+                        "the original argv must be saved before the option loop consumes it")
+        self.assertLess(text.index('if [ "$DRY_RUN" = 1 ]'), text.index(reexec),
+                        "--dry-run must not need a mount namespace")
+        self.assertLess(text.index(reexec), text.index("\nmount --make-rprivate"))
+
+    def test_the_namespace_re_exec_replays_the_arguments_and_leaves_the_host_alone(self) -> None:
+        if os.geteuid() != 0:
+            self.skipTest("sealed-image.sh refuses a non-root caller before the re-exec")
+        if not shutil.which("unshare"):
+            self.skipTest("unshare is missing")
+
+        def root_propagation() -> list[str]:
+            for line in pathlib.Path("/proc/self/mountinfo").read_text().splitlines():
+                fields = line.split()
+                if len(fields) > 6 and fields[4] == "/":
+                    return [field for field in fields[6:] if field.startswith("shared:")]
+            return []
+
+        before = root_propagation()
+        with tempfile.TemporaryDirectory() as tmp:
+            out = pathlib.Path(tmp) / "out"
+            boot = out / "boot"
+            boot.mkdir(parents=True)
+            for name in ("vmlinuz", "initrd.img"):
+                (boot / name).write_bytes(b"x")
+            (boot / "uname").write_text("6.12.0-test\n")
+            snp = out / "bench-snpreport"
+            snp.write_text("#!/bin/sh\nexit 0\n")
+            snp.chmod(0o755)
+            # An existing disk makes the child exit right after the re-exec, so
+            # the test stops before any mount is made.
+            (out / "odile-tenant-sealed.raw").write_bytes(b"")
+            result = subprocess.run(
+                ["bash", str(ROOT / "deploy" / "image" / "sealed-image.sh"), "--out", str(out)],
+                capture_output=True, text=True, timeout=120,
+            )
+            self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+            self.assertIn("private mount namespace", result.stdout)
+            # The message names the --out the caller passed, not the default:
+            # the re-exec replayed the command line.
+            self.assertIn(str(out), result.stderr)
+            self.assertIn("exists; pass --force", result.stderr)
+        self.assertEqual(root_propagation(), before,
+                         "the build changed the host mount propagation")
+
+    @staticmethod
+    def _cmdline_file(tmp: str, name: str, text: str) -> pathlib.Path:
+        path = pathlib.Path(tmp) / name
+        path.write_text(text + "\n")
+        return path
+
+    def test_sealed_image_can_reuse_an_exact_measured_line(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            line = (
+                "root=/dev/mapper/root_crypt ro bb.host=odile-bench "
+                "bb.ip4=192.0.2.10/24 bb.gw4=192.0.2.1 "
+                "bb.key=c3NoLWVkMjU1MTkgQUFBQUMzTnphQzFsWkRJMU5URTVBQUFBSUFZU3o5SWVwbHJWenRXNVN5V2ZBcU9uNGlKMG5tS0NpZjhqNHlMMXExTzAgb2RpbGUtYmVuY2ggdGhyb3dhd2F5IGJvb3Qga2V5Cg== "
+                "seal_id=odl454-bench-v1"
+            )
+            cmdline = self._cmdline_file(tmp, "cmdline", line)
+            result = subprocess.run(
+                ["bash", str(ROOT / "deploy" / "image" / "sealed-image.sh"),
+                 "--dry-run", "--out", str(pathlib.Path(tmp) / "out"),
+                 "--cmdline-file", str(cmdline)],
+                capture_output=True, text=True, timeout=60,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("reuse the measured line", result.stdout)
+            self.assertNotIn("generate a throwaway", result.stdout)
+
+    def test_sealed_image_rejects_a_cmdline_without_an_ip4_token(self) -> None:
+        """Round 4's defect: the installer's boot check needs one bb.ip4=."""
+        with tempfile.TemporaryDirectory() as tmp:
+            line = (
+                "root=/dev/mapper/root_crypt ro bb.host=odile-bench "
+                "bb.key=c3NoLWVkMjU1MTkgQUFBQUMzTnphQzFsWkRJMU5URTVBQUFBSUFZU3o5SWVwbHJWenRXNVN5V2ZBcU9uNGlKMG5tS0NpZjhqNHlMMXExTzAgb2RpbGUtYmVuY2ggdGhyb3dhd2F5IGJvb3Qga2V5Cg== "
+                "seal_id=odl454-bench-v1"
+            )
+            cmdline = self._cmdline_file(tmp, "cmdline", line)
+            result = subprocess.run(
+                ["bash", str(ROOT / "deploy" / "image" / "sealed-image.sh"),
+                 "--dry-run", "--out", str(pathlib.Path(tmp) / "out"),
+                 "--cmdline-file", str(cmdline)],
+                capture_output=True, text=True, timeout=60,
+            )
+            self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+            self.assertIn("bb.ip4=", result.stderr)
+            self.assertIn("exactly one", result.stderr)
+
+    def test_sealed_image_rejects_a_cmdline_without_a_seal_id(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            cmdline = self._cmdline_file(
+                tmp, "cmdline", "root=/dev/mapper/root_crypt ro bb.key=c3NoZQ==")
+            result = subprocess.run(
+                ["bash", str(ROOT / "deploy" / "image" / "sealed-image.sh"),
+                 "--dry-run", "--out", str(pathlib.Path(tmp) / "out"),
+                 "--cmdline-file", str(cmdline)],
+                capture_output=True, text=True, timeout=60,
+            )
+            self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+            self.assertIn("no seal_id=", result.stderr)
+
+    def test_sealed_image_rejects_seal_id_with_cmdline_file(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            cmdline = self._cmdline_file(
+                tmp, "cmdline", "root=/dev/mapper/root_crypt ro bb.key=c3NoZQ== seal_id=one")
+            result = subprocess.run(
+                ["bash", str(ROOT / "deploy" / "image" / "sealed-image.sh"),
+                 "--dry-run", "--out", str(pathlib.Path(tmp) / "out"),
+                 "--cmdline-file", str(cmdline), "--seal-id", "two"],
+                capture_output=True, text=True, timeout=60,
+            )
+            self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+            self.assertIn("mutually exclusive", result.stderr)
+
+
+class PinTests(unittest.TestCase):
+    """The committed pin is the release record; a stranger reads it, not a log."""
+
+    def test_the_pin_exists_and_its_runs_agree(self) -> None:
+        self.assertTrue(PIN.is_file(), f"{PIN} is missing; build the image and pin it")
+        pin = json.loads(PIN.read_text())
+        self.assertEqual(pin["card"], "ODL-456")
+        self.assertEqual(pin["release"], "2026.11.1")
+        for name in ("uki_signed", "uki_unsigned", "loose"):
+            runs = pin["runs"][name]
+            self.assertEqual(len(runs), 2, name)
+            self.assertEqual(runs[0], runs[1], f"{name} measurements differ")
+            self.assertRegex(runs[0], r"^[0-9a-f]{96}$")
+        self.assertTrue(pin["signature"]["verified"])
+        self.assertRegex(pin["signature"]["cert_sha256"], r"^[0-9a-f]{64}$")
+
+    @unittest.skipUnless(HOOK.is_file(), SPIKE_MISSING)
+    def test_the_pin_carries_the_hook_at_the_end_of_the_order(self) -> None:
+        pin = json.loads(PIN.read_text())
+        hooks = [line for line in pin["order"] if "bb-sealed-unlock" in line]
+        self.assertEqual(len(hooks), 1, pin["order"])
+        self.assertEqual(hooks[0], '/scripts/init-premount/bb-sealed-unlock "$@"')
+        self.assertEqual(pin["order"][-1], hooks[0], "the hook must be the last init-premount script")
+        self.assertTrue(any("bb-wait" in line for line in pin["order"][:-1]), pin["order"])
+        self.assertEqual(pin["hook_sha256"], hashlib.sha256(HOOK.read_bytes()).hexdigest())
+        self.assertGreaterEqual(len(pin["order"]), 4)
+
+    def test_the_pin_has_the_seal_id_and_no_private_key(self) -> None:
+        pin = json.loads(PIN.read_text())
+        self.assertEqual(pin["seal_id"], pin["cmdline"].split("seal_id=")[1].split()[0])
+        self.assertIn("root=/dev/mapper/root_crypt", pin["cmdline"])
+        self.assertIn("bb.key=", pin["cmdline"])
+        self.assertEqual(pin["boot_key_private_half"], "shredded")
+        self.assertNotIn("PRIVATE KEY", PIN.read_text())
+        self.assertEqual(pin["seal_key_id"], "key_sha256=" + expected_key(pin["cmdline"]).hex())
+
+
+class FirstbootUnitTests(unittest.TestCase):
+    """The cmdline facts and the state formats the boot writes (ODL-456)."""
+
+    IID = "45445445-0000-4000-8000-000000000454"
+    TOKEN = "ab" * 32
+
+    def test_cmdline_tokens_are_key_value_and_the_last_wins(self) -> None:
+        text = "root=/dev/x bb.iid=one odile.token=aa odile.token=bb"
+        tokens = firstboot.parse_cmdline(text)
+        self.assertEqual(tokens["bb.iid"], "one")
+        self.assertEqual(tokens["odile.token"], "bb")
+        facts = firstboot.cmdline_facts("bb.iid=one odile.token=%s" % self.TOKEN)
+        self.assertEqual(facts["instance_id"], "one")
+        self.assertEqual(facts["token"], self.TOKEN)
+        self.assertEqual(facts["seed_url"], firstboot.DEFAULT_SEED_URL)
+
+    def test_a_custom_seed_url_is_read_from_the_cmdline(self) -> None:
+        facts = firstboot.cmdline_facts(
+            "bb.iid=one odile.seed_url=http://10.0.2.2:8081/seed")
+        self.assertEqual(facts["seed_url"], "http://10.0.2.2:8081/seed")
+
+    def test_the_first_visit_state_is_the_token_hash_and_nothing_else(self) -> None:
+        state = json.loads(firstboot.first_visit_state(self.TOKEN))
+        self.assertEqual(state["version"], 1)
+        self.assertEqual(state["token_sha256"], hashlib.sha256(self.TOKEN.encode()).hexdigest())
+        self.assertIsNone(state["used_at"])
+        self.assertIsNone(state["recovery_hash"])
+        self.assertNotIn(self.TOKEN, json.dumps(state))
+
+    def test_the_state_is_written_once_and_a_spent_page_stays_spent(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = pathlib.Path(tmp) / "first-visit.json"
+            self.assertTrue(firstboot.write_first_visit_state(str(path), self.TOKEN))
+            before = path.read_bytes()
+            self.assertFalse(firstboot.write_first_visit_state(str(path), "cd" * 32))
+            self.assertEqual(path.read_bytes(), before)
+            self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+
+    def test_the_seed_validator_refuses_a_credential_field(self) -> None:
+        seed = {
+            "slug": "odl-bench", "instance_id": self.IID, "near_api_key": "k",
+            "model": "m", "support_public_key": "ssh-ed25519 x",
+            "backup_repo_url": "sftp:x", "mail_relay": {
+                "host": "h", "port": 587, "username": "u", "secret": "s"},
+            "hermes_version": "v", "password": "hunter2",
+        }
+        with self.assertRaises(firstboot.Refusal) as caught:
+            firstboot.validate_seed(seed, self.IID)
+        self.assertIn("password", caught.exception.reason)
+
+    def test_the_seed_validator_requires_this_instance(self) -> None:
+        seed = {
+            "slug": "odl-bench", "instance_id": "another", "near_api_key": "k",
+            "model": "m", "support_public_key": "ssh-ed25519 x",
+            "backup_repo_url": "sftp:x", "mail_relay": {
+                "host": "h", "port": 587, "username": "u", "secret": "s"},
+            "hermes_version": "v",
+        }
+        with self.assertRaises(firstboot.Refusal):
+            firstboot.validate_seed(seed, self.IID)
+
+    def test_the_seed_validator_accepts_a_rebuild_and_refuses_a_broken_one(self) -> None:
+        seed = {
+            "slug": "odl-bench", "instance_id": self.IID, "near_api_key": "k",
+            "model": "m", "support_public_key": "ssh-ed25519 x",
+            "backup_repo_url": "sftp:x", "mail_relay": {
+                "host": "h", "port": 587, "username": "u", "secret": "s"},
+            "hermes_version": "v",
+            "rebuild": {"kdf": "hmac-sha256-ctr-v1", "sealed": "00aa",
+                        "tag": "00" * 32},
+        }
+        self.assertIs(firstboot.validate_seed(seed, self.IID), seed)
+        for broken, reason in (
+            ({"kdf": "aes-256-gcm", "sealed": "00aa", "tag": "00" * 32}, "kdf"),
+            ({"kdf": "hmac-sha256-ctr-v1", "sealed": "0aa", "tag": "00" * 32}, "sealed"),
+            ({"kdf": "hmac-sha256-ctr-v1", "sealed": "00aa", "tag": "00"}, "tag"),
+        ):
+            with self.assertRaises(firstboot.Refusal) as caught:
+                firstboot.validate_seed(dict(seed, rebuild=broken), self.IID)
+            self.assertIn(reason, caught.exception.reason)
+
+    def test_the_boot_record_reads_the_measured_key_and_the_pin_release(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            pin = root / "tenant-image.pin"
+            pin.write_text(json.dumps({"release": "2026.11.1"}), encoding="utf-8")
+            line = ("root=/dev/mapper/root_crypt bb.iid=%s bb.host=odl-bench bb.key=%s"
+                    % (self.IID, base64.b64encode(BOOT_KEY_TEXT.encode()).decode()))
+            record, fingerprint, reason = firstboot.boot_record_facts(
+                line, pin_path=str(pin), boot_key_path=str(root / "absent.pub"),
+                boot_record_path=str(root / "absent.json"),
+                host_key_path=str(root / "absent-host.pub"),
+                first_visit_path=str(root / "absent.json"),
+            )
+        self.assertEqual(reason, "")
+        self.assertEqual(record["release"], "2026.11.1")
+        self.assertEqual(record["first_visit"], "pending")
+        self.assertEqual(record["cmdline"], line)
+        self.assertTrue(fingerprint.startswith("SHA256:"))
+
+    def test_the_boot_record_prefers_the_pin_and_falls_back_to_the_boot_record(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            pin = root / "pin.json"
+            pin.write_text(json.dumps({"release": "2026.11.1"}), encoding="utf-8")
+            boot_record = root / "boot-record.json"
+            boot_record.write_text(json.dumps({"release": "2026.10.1"}), encoding="utf-8")
+            self.assertEqual(firstboot.pinned_release(str(pin), str(boot_record)),
+                             ("2026.11.1", ""))
+            pin.unlink()
+            self.assertEqual(firstboot.pinned_release(str(pin), str(boot_record)),
+                             ("2026.10.1", ""))
+
+    def test_a_multi_line_or_unknown_key_is_not_a_public_key(self) -> None:
+        self.assertIsNone(firstboot.public_key_line("ssh-ed25519 AAAA\nssh-ed25519 BBBB"))
+        self.assertIsNone(firstboot.public_key_line("ssh-dss AAAA"))
+        parsed = firstboot.public_key_line(BOOT_KEY_TEXT)
+        self.assertEqual(parsed[0], BOOT_KEY_TEXT)
+        self.assertRegex(parsed[1], r"^SHA256:[A-Za-z0-9+/]{43}$")
+
+    def test_the_boot_record_skips_a_mismatched_key_file(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            pin = root / "pin.json"
+            pin.write_text(json.dumps({"release": "2026.11.1"}), encoding="utf-8")
+            key_file = root / "boot-key.pub"
+            key_file.write_text(
+                "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIL7Tzl2nYSnGVbP/Vfp9wJwD7q2Wt2mJKT5p8g4oWn7Z "
+                "other\n", encoding="utf-8")
+            line = ("root=/dev/mapper/root_crypt bb.iid=%s bb.key=%s"
+                    % (self.IID, base64.b64encode(BOOT_KEY_TEXT.encode()).decode()))
+            record, _, reason = firstboot.boot_record_facts(
+                line, pin_path=str(pin), boot_key_path=str(key_file),
+                boot_record_path=str(root / "absent.json"),
+                host_key_path=str(root / "absent-host.pub"),
+                first_visit_path=str(root / "absent.json"),
+            )
+        self.assertIsNone(record)
+        self.assertIn("disagree", reason)
+
+
+
+class FirstbootExchangeTests(unittest.TestCase):
+    """The program against the real seed service: exchange, refusal, cache."""
+
+    IID = "45445445-0000-4000-8000-000000000454"
+    SLUG = "odl-bench"
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.dir = pathlib.Path(self.tmp.name)
+        os.chmod(self.dir, 0o700)
+        self.seed = _load("odile_seed_test", ROOT / "seed" / "seed.py")
+        # ODL-514: two keys. The release key signs the installer, manifest and
+        # release and certifies the seed key; the seed key signs the body. The
+        # test keeps them distinct so a direct check cannot pass by accident.
+        self.rpriv, self.rpub = self._key(self.dir / "release")
+        self.priv, self.pub = self._key(self.dir / "seed")
+        self.server, self.token = self._service(self.dir / "seed.db", self.priv,
+                                                self.rpriv, self.rpub)
+        self.installer = self.dir / "installer.sh"
+        self.installer.write_text(
+            '#!/bin/sh\nprintf \'%s\\n\' "$*" >> "$FAKE_INSTALLER_LOG"\n'
+            'exit "${FAKE_INSTALLER_RC:-0}"\n')
+        self.installer.chmod(0o755)
+        self.log = self.dir / "installer.log"
+        self.cmdline = self.dir / "cmdline"
+        self.state = self.dir / "firstboot.json"
+        self.cache = self.dir / "etc" / "seed.json"
+        # ODL-472: the image carries a release/ directory; the first boot
+        # places its installer and signed manifest pair before it runs.
+        self.release = release_fixture(self.dir / "release", self.rpriv)
+        self.installer_copy = self.dir / "bin" / "odile-install.sh"
+        self.unit_target = self.dir / "systemd" / "odile-manifest.service"
+        # The measured boot record's inputs (ODL-398 follow-up): the pin the
+        # image was built from, and the first-visit state the machine writes.
+        self.pin = self.dir / "tenant-image.pin"
+        self.pin.write_text(json.dumps({"release": "2026.11.1"}), encoding="utf-8")
+        self.boot_key_path = self.dir / "boot-key.pub"
+        self.host_key_path = self.dir / "host-key.pub"
+        self.host_key_path.write_text(BOOT_KEY_TEXT + "\n", encoding="utf-8")
+        self.first_visit_state = self.dir / "etc" / "first-visit.json"
+
+    def tearDown(self) -> None:
+        self.server.shutdown()
+        self.server.server_close()
+        self.tmp.cleanup()
+
+    @staticmethod
+    def _key(base: pathlib.Path) -> tuple[pathlib.Path, pathlib.Path]:
+        if not shutil.which("openssl"):
+            raise unittest.SkipTest("openssl is missing")
+        priv = base.with_suffix(".pem")
+        pub = base.with_suffix(".pub")
+        priv.parent.mkdir(parents=True, exist_ok=True)
+        subprocess.run(["openssl", "genpkey", "-algorithm", "ED25519", "-out", str(priv)],
+                       check=True, capture_output=True, timeout=60)
+        os.chmod(priv, 0o600)
+        subprocess.run(["openssl", "pkey", "-in", str(priv), "-pubout", "-out", str(pub)],
+                       check=True, capture_output=True, timeout=60)
+        return priv, pub
+
+    def _identity(self, seed_key: pathlib.Path, release_key: pathlib.Path) -> tuple[bytes, bytes]:
+        """(seed public key, the release key's certificate over those bytes)."""
+        public = subprocess.run(["openssl", "pkey", "-in", str(seed_key), "-pubout"],
+                                check=True, capture_output=True, timeout=60).stdout
+        source = self.dir / "identity.pub"
+        source.write_bytes(public)
+        certificate = self.dir / "identity.crt"
+        subprocess.run(["openssl", "dgst", "-sign", str(release_key), "-out",
+                        str(certificate), str(source)],
+                       check=True, capture_output=True, timeout=60)
+        return public, certificate.read_bytes()
+
+    def _service(self, db: pathlib.Path, key: pathlib.Path,
+                 release_key: pathlib.Path | None = None,
+                 release_pub: pathlib.Path | None = None):
+        config = self.dir / "seed-config.json"
+        config.write_text(json.dumps({
+            "near_api_key": "bench-near-key", "model": "bench-model",
+            "support_public_key": "ssh-ed25519 bench", "backup_repo_url": "sftp:bench",
+            "hermes_version": "v0.23.0",
+            "mail_relay": {"host": "h", "port": 587, "username": "u", "secret": "s"},
+        }))
+        os.chmod(config, 0o600)
+        con = self.seed.connect(str(db))
+        try:
+            self.seed.ensure_schema(con)
+            con.execute("INSERT INTO tenants (slug, email, state, created_at)"
+                        " VALUES (?, ?, 'invited', '2026-11-10T00:00:00Z')",
+                        (self.SLUG, "bench@odile.test"))
+            con.commit()
+            # The first boot's record writes the tenant spine; the fixture HQ
+            # database carries the same tables and one order at first_boot.
+            from odilectl import state as state_module
+
+            con.executescript(state_module.SCHEMA)
+            con.execute(
+                "UPDATE tenants SET state = 'provisioned', server_id = ? WHERE slug = ?",
+                (self.IID, self.SLUG))
+            con.execute(
+                "INSERT INTO tenant_state (slug, state, server_id, initramfs_host_key,"
+                " detail, created_at, updated_at)"
+                " VALUES (?, 'first_boot', ?, ?, '{}', ?, ?)",
+                (self.SLUG, self.IID, "SHA256:bench-initramfs",
+                 "2026-11-10T00:00:00Z", "2026-11-10T00:00:00Z"))
+            con.commit()
+            binding = self.seed.bind(con, self.SLUG, self.IID)
+        finally:
+            con.close()
+
+        class Quiet(self.seed.Handler):
+            def log_message(self, format, *args):  # noqa: A002 - stdlib signature
+                pass
+
+        server = self.seed.ThreadingHTTPServer(("127.0.0.1", 0), Quiet)
+        server.daemon_threads = True
+        server.config = json.loads(config.read_text())
+        server.config_path = str(config)
+        server.rebuilds_path = str(self.dir / "seed-rebuilds.json")
+        server.signing_key = str(key)
+        if release_key is not None:
+            # The service carries the pair it would load from disk: the seed
+            # public key and the release key's certificate over it.
+            server.identity = self._identity(key, release_key)
+        server.db_path = str(db)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        return server, binding["token"]
+
+    def port(self) -> int:
+        return self.server.server_address[1]
+
+    def write_cmdline(self, token: str | None = None, instance: str = IID,
+                      url: str | None = None) -> None:
+        line = ["root=/dev/mapper/root_crypt", "bb.iid=" + instance,
+                "bb.host=" + self.SLUG,
+                "bb.key=" + base64.b64encode(BOOT_KEY_TEXT.encode()).decode()]
+        if token is not None:
+            line.append("odile.token=" + token)
+        line.append("odile.seed_url=" + (url or "http://127.0.0.1:%d/seed" % self.port()))
+        self.cmdline.write_text(" ".join(line) + "\n")
+
+    def run_boot(self, *, installer: pathlib.Path | None = None,
+                 pubkey: pathlib.Path | None = None, first_visit_port: int = 0,
+                 release: pathlib.Path | None = None,
+                 recovery: pathlib.Path | None = None,
+                 recovery_seed: pathlib.Path | None = None) -> tuple[int, str]:
+        argv = [
+            "--cmdline", str(self.cmdline), "--state", str(self.state),
+            "--seed-cache", str(self.cache), "--signing-key", str(pubkey or self.rpub),
+            "--installer", str(installer or self.installer),
+            "--first-visit-port", str(first_visit_port),
+            "--log", str(self.dir / "installer-run.log"),
+            "--release-dir", str(release or self.release),
+            "--installer-copy", str(self.installer_copy),
+            "--etc-dir", str(self.dir / "etc"),
+            "--odile-lib", str(self.dir / "lib"),
+            "--manifest-unit", str(self.unit_target),
+            "--pin", str(self.pin),
+            "--boot-key", str(self.boot_key_path),
+            "--boot-record", str(self.dir / "boot-record.json"),
+            "--host-key", str(self.host_key_path),
+            "--first-visit-state", str(self.first_visit_state),
+        ]
+        if recovery is not None:
+            argv += ["--recovery", str(recovery)]
+        if recovery_seed is not None:
+            argv += ["--recovery-seed", str(recovery_seed)]
+        output = io.StringIO()
+        env = {"FAKE_INSTALLER_LOG": str(self.log)}
+        # The gate host is not the image: no unit may be enabled on it.
+        with mock.patch.dict(os.environ, env), \
+                mock.patch.object(firstboot, "SYSTEMD_DIR", str(self.dir / "no-systemd")), \
+                contextlib.redirect_stdout(output):
+            code = firstboot.main(argv)
+        return code, output.getvalue()
+
+    def ledger_used(self) -> str | None:
+        con = self.seed.connect(str(self.dir / "seed.db"))
+        try:
+            row = con.execute("SELECT used_at FROM seed_tokens").fetchone()
+            return row["used_at"]
+        finally:
+            con.close()
+
+    # -- a rebuild: the seed carries the old repository password, sealed ------
+
+    REBUILD_PASSWORD = "test-rebuild-password-2026-0001"
+
+    def seal_rebuild(self, password: str, *, key_token: str | None = None) -> None:
+        """Put a sealed rebuild entry in this fixture's seed config.
+
+        `key_token` seals under another token than the one the cmdline carries;
+        the entry's `token_hash` still matches this boot's token, so the seed
+        is *served* and the guest has to refuse the tag — the stale-seal path.
+        """
+        entry = self.seed.seal_backup_password(password, key_token or self.token)
+        entry["token_hash"] = hashlib.sha256(self.token.encode()).hexdigest()
+        path = self.dir / "seed-rebuilds.json"
+        path.write_text(json.dumps({self.SLUG: entry}), encoding="utf-8")
+        os.chmod(path, 0o600)
+
+    def capture_installer(self, recovery: pathlib.Path) -> pathlib.Path:
+        """An installer that records the recovery file it sees when it starts."""
+        proof = self.dir / "recovery-at-installer.txt"
+        path = self.dir / "capture-installer.sh"
+        path.write_text(
+            "#!/bin/sh\n"
+            "printf '%s\\n' \"$*\" >> \"$FAKE_INSTALLER_LOG\"\n"
+            f"grep '^Backup password:' '{recovery}' > '{proof}' || exit 9\n")
+        path.chmod(0o755)
+        return path
+
+    def test_a_rebuild_seed_writes_the_old_password_before_the_installer(self) -> None:
+        self.write_cmdline(self.token)
+        self.seal_rebuild(self.REBUILD_PASSWORD)
+        recovery = self.dir / "etc" / "recovery.txt"
+        code, output = self.run_boot(
+            installer=self.capture_installer(recovery), recovery=recovery,
+            recovery_seed=IMAGE / "recovery-seed.py")
+        self.assertEqual(code, 0, output)
+        self.assertIn("odile-firstboot: installed %s" % self.SLUG, output)
+        self.assertEqual(recovery.stat().st_mode & 0o777, 0o600)
+        text = recovery.read_text(encoding="utf-8")
+        password = re.search(r"^Backup password:[ \t]*(\S+)[ \t]*$", text, re.M)
+        self.assertIsNotNone(password, text)
+        assert password is not None
+        self.assertEqual(password.group(1), self.REBUILD_PASSWORD)
+        self.assertIn("Tenant:              %s" % self.SLUG, text)
+        self.assertIn("Instance:            %s" % self.IID, text)
+        # The installer saw the old password already in place: the write is
+        # before it runs, not after the first-visit unit's ExecStartPre.
+        self.assertIn(self.REBUILD_PASSWORD,
+                      (self.dir / "recovery-at-installer.txt").read_text(encoding="utf-8"))
+        # The value appears in no argv and no log line.
+        self.assertNotIn(self.REBUILD_PASSWORD,
+                         (self.dir / "installer.log").read_text(encoding="utf-8"))
+        self.assertNotIn(self.REBUILD_PASSWORD,
+                         (self.dir / "installer-run.log").read_text(encoding="utf-8"))
+
+    def test_a_first_install_seed_leaves_the_recovery_file_to_the_unit(self) -> None:
+        self.write_cmdline(self.token)
+        recovery = self.dir / "etc" / "recovery.txt"
+        code, output = self.run_boot(recovery=recovery,
+                                     recovery_seed=IMAGE / "recovery-seed.py")
+        self.assertEqual(code, 0, output)
+        self.assertFalse(recovery.exists(),
+                         "a first install mints its password in recovery-seed.py, not here")
+
+    def test_a_seed_sealed_for_another_token_fails_closed(self) -> None:
+        self.write_cmdline(self.token)
+        self.seal_rebuild(self.REBUILD_PASSWORD, key_token="d4" * 32)
+        recovery = self.dir / "etc" / "recovery.txt"
+        code, output = self.run_boot(recovery=recovery,
+                                     recovery_seed=IMAGE / "recovery-seed.py")
+        self.assertEqual(code, 0, output)
+        lines = [line for line in output.splitlines() if line.strip()]
+        self.assertEqual(lines, ["odile-firstboot: fail-closed: the seed's rebuild "
+                                 "password does not open with this setup token"], output)
+        self.assertFalse(recovery.exists())
+        self.assertFalse(self.log.exists(), "the installer must not run")
+        state = json.loads(self.state.read_text(encoding="utf-8"))
+        self.assertFalse(state["ok"])
+
+    def test_the_first_boot_exchanges_installs_and_records_the_state(self) -> None:
+        self.write_cmdline(self.token)
+        code, output = self.run_boot()
+        self.assertEqual(code, 0, output)
+        lines = [line for line in output.splitlines() if line.strip()]
+        self.assertEqual(len(lines), 1, output)
+        self.assertTrue(lines[0].startswith("odile-firstboot: installed %s" % self.SLUG), output)
+        self.assertIn("first-visit not checked", lines[0])
+
+        cache = json.loads(self.cache.read_text())
+        self.assertEqual(cache["slug"], self.SLUG)
+        self.assertEqual(cache["instance_id"], self.IID)
+        self.assertEqual(self.cache.stat().st_mode & 0o777, 0o600)
+        # The release installer's cache contract: the exact signed bytes and a
+        # base64 signature beside them, both 0600, verifying against the key
+        # the image carries.
+        sig_path = self.cache.with_suffix(".sig")
+        self.assertTrue(sig_path.is_file())
+        self.assertEqual(sig_path.stat().st_mode & 0o777, 0o600)
+        signature = base64.b64decode(sig_path.read_text().strip(), validate=True)
+        self.assertEqual(len(signature), 64)
+        with tempfile.NamedTemporaryFile() as sig_file:
+            sig_file.write(signature)
+            sig_file.flush()
+            verified = subprocess.run(
+                ["openssl", "dgst", "-verify", str(self.pub), "-signature", sig_file.name],
+                input=self.cache.read_bytes(), capture_output=True, timeout=30)
+        self.assertEqual(verified.returncode, 0, verified.stderr)
+        # ODL-514: the body is signed by the seed key, not the release key. The
+        # release key signs the certificate over the seed public key; a direct
+        # check of the body against the release key must fail, so this test
+        # cannot pass with the old one-key model.
+        seed_public = subprocess.run(["openssl", "pkey", "-in", str(self.priv), "-pubout"],
+                                     check=True, capture_output=True, timeout=60).stdout
+        self.assertEqual(cache["signing_key"], seed_public.decode("ascii"))
+        self.assertEqual(cache["signing_key_sha256"], hashlib.sha256(seed_public).hexdigest())
+        certificate = base64.b64decode(cache["signing_key_cert"], validate=True)
+        self.assertEqual(len(certificate), 64)
+        with tempfile.TemporaryDirectory() as cert_tmp:
+            cert_dir = pathlib.Path(cert_tmp)
+            (cert_dir / "seed.pub").write_bytes(seed_public)
+            (cert_dir / "cert.bin").write_bytes(certificate)
+            cert_ok = subprocess.run(
+                ["openssl", "dgst", "-verify", str(self.rpub), "-signature",
+                 str(cert_dir / "cert.bin"), str(cert_dir / "seed.pub")],
+                capture_output=True, timeout=30)
+            self.assertEqual(cert_ok.returncode, 0, cert_ok.stderr)
+        with tempfile.NamedTemporaryFile() as sig_file:
+            sig_file.write(signature)
+            sig_file.flush()
+            not_release = subprocess.run(
+                ["openssl", "dgst", "-verify", str(self.rpub), "-signature", sig_file.name],
+                input=self.cache.read_bytes(), capture_output=True, timeout=30)
+        self.assertNotEqual(not_release.returncode, 0, "the body must not verify against the release key")
+        state = json.loads(self.state.read_text())
+        self.assertTrue(state["ok"])
+        self.assertEqual(state["seed_sha256"],
+                         hashlib.sha256(self.cache.read_bytes()).hexdigest())
+        first_visit = json.loads((self.dir / "etc" / "first-visit.json").read_text())
+        self.assertEqual(first_visit["token_sha256"],
+                         hashlib.sha256(self.token.encode()).hexdigest())
+        self.assertNotIn(self.token, (self.dir / "etc" / "first-visit.json").read_text())
+        calls = self.log.read_text().splitlines()
+        self.assertEqual(len(calls), 1)
+        self.assertIn("--seed " + str(self.cache), calls[0])
+        self.assertIn("--first-visit-token " + self.token, calls[0])
+        self.assertIsNotNone(self.ledger_used())
+
+    def test_the_first_boot_reports_the_measured_key_and_the_pin(self) -> None:
+        self.write_cmdline(self.token)
+        code, output = self.run_boot()
+        self.assertEqual(code, 0, output)
+        self.assertIn("record 2026.11.1 pending key SHA256:", output)
+        con = self.seed.connect(str(self.dir / "seed.db"))
+        con.row_factory = self.seed.sqlite3.Row
+        try:
+            tenant = con.execute(
+                "SELECT state, ssh_public_key, release FROM tenants WHERE slug = ?",
+                (self.SLUG,)).fetchone()
+            spine = con.execute(
+                "SELECT state, release, initramfs_host_key, detail FROM tenant_state"
+                " WHERE slug = ?", (self.SLUG,)).fetchone()
+            events = con.execute(
+                "SELECT kind, from_state, to_state FROM tenant_state_events"
+                " WHERE slug = ? ORDER BY id", (self.SLUG,)).fetchall()
+        finally:
+            con.close()
+        self.assertEqual(tenant["ssh_public_key"], BOOT_KEY_TEXT)
+        self.assertEqual(tenant["release"], "2026.11.1")
+        self.assertEqual(tenant["state"], "installed")
+        self.assertEqual(spine["state"], "first_visit")
+        self.assertEqual(spine["release"], "2026.11.1")
+        self.assertIsNone(spine["initramfs_host_key"])
+        detail = json.loads(spine["detail"])
+        self.assertEqual(detail["boot_key"], BOOT_KEY_TEXT)
+        self.assertEqual(detail["first_visit"], "pending")
+        self.assertIn("host_key", detail)
+        self.assertEqual([(row["kind"], row["from_state"], row["to_state"])
+                          for row in events],
+                         [("first_visit", "first_boot", "first_visit")])
+
+    def test_a_reboot_after_the_first_visit_reports_ready_and_keeps_one_line(self) -> None:
+        self.write_cmdline(self.token)
+        self.assertEqual(self.run_boot()[0], 0)
+        state = json.loads(self.first_visit_state.read_text())
+        state["signin_set_at"] = "2026-11-12T14:57:46Z"
+        self.first_visit_state.write_text(json.dumps(state), encoding="utf-8")
+        code, output = self.run_boot()
+        self.assertEqual(code, 0, output)
+        self.assertEqual(output.strip(), "odile-firstboot: same")
+        con = self.seed.connect(str(self.dir / "seed.db"))
+        con.row_factory = self.seed.sqlite3.Row
+        try:
+            spine = con.execute(
+                "SELECT state, detail FROM tenant_state WHERE slug = ?",
+                (self.SLUG,)).fetchone()
+        finally:
+            con.close()
+        self.assertEqual(spine["state"], "ready")
+        self.assertEqual(json.loads(spine["detail"])["first_visit"], "done")
+        log = (self.dir / "installer-run.log").read_text()
+        self.assertIn("record      2026.11.1 done key SHA256:", log)
+
+    def test_a_missing_pin_skips_the_record_and_keeps_the_old_row(self) -> None:
+        self.pin.unlink()
+        self.write_cmdline(self.token)
+        code, output = self.run_boot()
+        self.assertEqual(code, 0, output)
+        self.assertIn("record skipped (no pinned release", output)
+        con = self.seed.connect(str(self.dir / "seed.db"))
+        con.row_factory = self.seed.sqlite3.Row
+        try:
+            tenant = con.execute(
+                "SELECT ssh_public_key, release FROM tenants WHERE slug = ?",
+                (self.SLUG,)).fetchone()
+            spine = con.execute(
+                "SELECT state, initramfs_host_key FROM tenant_state WHERE slug = ?",
+                (self.SLUG,)).fetchone()
+        finally:
+            con.close()
+        self.assertIsNone(tenant["ssh_public_key"])
+        self.assertIsNone(tenant["release"])
+        self.assertEqual(spine["state"], "first_boot")
+        self.assertEqual(spine["initramfs_host_key"], "SHA256:bench-initramfs")
+
+    def test_a_key_file_that_disagrees_with_the_measured_line_skips_the_record(self) -> None:
+        other = (
+            "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIL7Tzl2nYSnGVbP/Vfp9wJwD7q2Wt2mJKT5p8g4oWn7Z "
+            "odile-other"
+        )
+        self.boot_key_path.write_text(other + "\n", encoding="utf-8")
+        self.write_cmdline(self.token)
+        code, output = self.run_boot()
+        self.assertEqual(code, 0, output)
+        self.assertIn("record skipped (the measured boot key and", output)
+
+
+    def test_a_second_boot_is_same_and_calls_no_installer(self) -> None:
+        self.write_cmdline(self.token)
+        self.assertEqual(self.run_boot()[0], 0)
+        first_boot_at = json.loads(self.state.read_text())["first_boot_at"]
+        time.sleep(1.1)
+        code, output = self.run_boot()
+        self.assertEqual(code, 0)
+        self.assertEqual(output.strip(), "odile-firstboot: same")
+        self.assertEqual(len(self.log.read_text().splitlines()), 1)
+        self.assertEqual(json.loads(self.state.read_text())["first_boot_at"], first_boot_at)
+
+    def test_check_reports_installed_only_after_an_install(self) -> None:
+        argv = ["--cmdline", str(self.cmdline), "--state", str(self.state),
+                "--seed-cache", str(self.cache), "--signing-key", str(self.rpub),
+                "--installer", str(self.installer), "--log", str(self.dir / "log"),
+                "--check"]
+        with mock.patch.dict(os.environ, {"FAKE_INSTALLER_LOG": str(self.log)}):
+            self.assertEqual(firstboot.main(argv), 1)
+            self.write_cmdline(self.token)
+            self.run_boot()
+            self.assertEqual(firstboot.main(argv), 0)
+
+    def test_a_missing_token_fails_closed_with_one_line(self) -> None:
+        self.write_cmdline(None)
+        code, output = self.run_boot()
+        self.assertEqual(code, 0)
+        self.assertEqual(output.strip(),
+                         "odile-firstboot: fail-closed: no setup token in the command line")
+        self.assertFalse(self.cache.exists())
+
+    def test_a_used_token_fails_closed_and_the_machine_is_not_half_installed(self) -> None:
+        self.write_cmdline(self.token)
+        self.assertEqual(self.run_boot()[0], 0)
+        self.state.unlink()
+        self.cache.unlink()
+        code, output = self.run_boot()
+        self.assertEqual(code, 0)
+        self.assertEqual(output.strip(), "odile-firstboot: fail-closed: seed token used")
+        self.assertFalse(self.cache.exists())
+        self.assertEqual(len(self.log.read_text().splitlines()), 1)
+
+    def test_a_token_bound_to_another_instance_fails_closed(self) -> None:
+        self.write_cmdline(self.token, instance="some-other-instance")
+        code, output = self.run_boot()
+        self.assertEqual(code, 0)
+        self.assertIn("bound to another instance", output)
+        self.assertFalse(self.cache.exists())
+
+    def test_a_certificate_from_another_key_fails_closed(self) -> None:
+        other_priv, other_pub = self._key(self.dir / "k2")
+        other_release = release_fixture(self.dir / "release-other", other_priv)
+        self.write_cmdline(self.token)
+        code, output = self.run_boot(pubkey=other_pub, release=other_release)
+        self.assertEqual(code, 0)
+        self.assertIn("seed signing key certificate was not signed by", output)
+        self.assertIn(str(other_pub), output)
+        self.assertFalse(self.cache.exists())
+        # The service signs after it spends the token (seed.redeem's UPDATE is
+        # the single-use gate), so the exchange consumed it even though this
+        # guest could not verify the answer. What matters here: no cache, no
+        # install, one line, and an operator rotates rather than retries.
+        self.assertIsNotNone(self.ledger_used())
+
+    @staticmethod
+    def _signed(body: dict, key: pathlib.Path) -> tuple[bytes, bytes]:
+        raw = (json.dumps(body, sort_keys=True, separators=(",", ":")) + "\n").encode()
+        signature = subprocess.run(
+            ["openssl", "dgst", "-sign", str(key), "-out", "/dev/stdout"],
+            input=raw, check=True, capture_output=True, timeout=60).stdout
+        return raw, signature
+
+    def test_a_legacy_seed_without_a_certificate_verifies_against_the_release_key(self) -> None:
+        """An installed tenant's seed carries no certificate; it must still open."""
+        body = {"slug": self.SLUG, "instance_id": self.IID}
+        raw, signature = self._signed(body, self.rpriv)
+        self.assertEqual(firstboot.verify_seed_body(raw, signature, str(self.rpub)), body)
+        # The same body signed by another key is refused, one line.
+        raw, signature = self._signed(body, self.priv)
+        with self.assertRaises(firstboot.Refusal) as caught:
+            firstboot.verify_seed_body(raw, signature, str(self.rpub))
+        self.assertEqual(caught.exception.reason, "seed signature does not verify")
+
+    def test_a_certificate_signed_by_the_retired_key_is_accepted(self) -> None:
+        """The one-release key move: the prev pub beside the current one verifies."""
+        prev_priv, prev_pub = self._key(self.dir / "prev")
+        public, certificate = self._identity(self.priv, prev_priv)
+        body = {
+            "signing_key": public.decode("ascii"),
+            "signing_key_sha256": hashlib.sha256(public).hexdigest(),
+            "signing_key_cert": base64.b64encode(certificate).decode("ascii"),
+        }
+        raw, signature = self._signed(body, self.priv)
+        current = self.dir / "odile-signing-key.pub"
+        current.write_bytes(self.rpub.read_bytes())
+        (self.dir / "odile-signing-key.prev.pub").write_bytes(prev_pub.read_bytes())
+        self.assertEqual(firstboot.verify_seed_body(raw, signature, str(current)), body)
+        # Without the retired half beside it, the same certificate is refused.
+        (self.dir / "odile-signing-key.prev.pub").unlink()
+        with self.assertRaises(firstboot.Refusal) as caught:
+            firstboot.verify_seed_body(raw, signature, str(current))
+        self.assertIn("certificate was not signed by", caught.exception.reason)
+
+    def test_a_failed_installer_retries_from_the_cache(self) -> None:
+        self.write_cmdline(self.token)
+        with mock.patch.dict(os.environ, {"FAKE_INSTALLER_RC": "1"}):
+            code, output = self.run_boot()
+        self.assertEqual(code, 0)
+        self.assertIn("fail-closed: installer failed (rc 1)", output)
+        self.assertTrue(self.cache.exists())
+        # The token is spent; the retry must use the cache, not /seed (410).
+        code, output = self.run_boot()
+        self.assertEqual(code, 0)
+        self.assertTrue(output.startswith("odile-firstboot: installed %s" % self.SLUG), output)
+        self.assertEqual(len(self.log.read_text().splitlines()), 2)
+
+
+    def test_the_first_boot_places_the_installer_and_the_signed_pair_before_it_installs(self) -> None:
+        self.write_cmdline(self.token)
+        code, output = self.run_boot()
+        self.assertEqual(code, 0, output)
+        self.assertIn("installed %s" % self.SLUG, output)
+        placed = self.installer_copy.read_bytes()
+        self.assertEqual(placed, (self.release / "odile_install.py").read_bytes())
+        self.assertEqual(self.installer_copy.stat().st_mode & 0o777, 0o755)
+        manifest = self.dir / "etc" / "manifest.json"
+        self.assertEqual(manifest.read_bytes(), (self.release / "manifest.json").read_bytes())
+        self.assertEqual((self.dir / "etc" / "manifest.json.sig").read_bytes(),
+                         (self.release / "manifest.json.sig").read_bytes())
+        self.assertEqual(hashlib.sha256(placed).hexdigest(),
+                         json.loads(manifest.read_text())["installer_sha256"])
+        self.assertTrue((self.dir / "lib" / "manifest.py").is_file())
+        self.assertTrue((self.dir / "lib" / "odile-manifest.py").is_file())
+        self.assertTrue(self.unit_target.is_file())
+        # The placement log is the record a second boot is compared against.
+        log = (self.dir / "installer-run.log").read_text()
+        self.assertTrue(any(line.split()[0] == "install" and str(self.installer_copy) in line
+                            for line in log.splitlines()), log)
+        self.assertTrue(any(line.split()[0] == "install" and str(manifest) in line
+                            for line in log.splitlines()), log)
+
+    def test_the_second_boot_places_the_same_bytes_and_logs_same(self) -> None:
+        self.write_cmdline(self.token)
+        self.assertEqual(self.run_boot()[0], 0)
+        first_log = (self.dir / "installer-run.log").read_text()
+        code, output = self.run_boot()
+        self.assertEqual(code, 0)
+        self.assertEqual(output.strip(), "odile-firstboot: same")
+        second_log = (self.dir / "installer-run.log").read_text()[len(first_log):]
+        self.assertTrue(any(line.split()[0] == "same" and str(self.installer_copy) in line
+                            for line in second_log.splitlines()), second_log)
+        self.assertTrue(any(line.split()[0] == "same" and str(self.dir / "etc" / "manifest.json") in line
+                            for line in second_log.splitlines()), second_log)
+
+
+class ReleasePlacementTests(unittest.TestCase):
+    """ODL-472: the image's release becomes the machine's, idempotently."""
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.dir = pathlib.Path(self.tmp.name)
+        self.priv, self.pub = ed25519_key(self.dir / "k")
+        self.release = release_fixture(self.dir / "release", self.priv)
+        self.installer = self.dir / "bin" / "odile-install.sh"
+        self.etc = self.dir / "etc"
+        self.lib = self.dir / "lib" / "odile"
+        self.unit = self.dir / "systemd" / "odile-manifest.service"
+        self.log = self.dir / "firstboot.log"
+        self.calls: list[list[str]] = []
+
+    def tearDown(self) -> None:
+        self.tmp.cleanup()
+
+    def systemctl(self, argv: list[str]) -> subprocess.CompletedProcess:
+        self.calls.append(list(argv))
+        if argv[:1] == ["is-active"]:
+            return subprocess.CompletedProcess(argv, 0, "active\n", "")
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    def kwargs(self, **overrides) -> dict:
+        values = dict(
+            release_dir=str(self.release),
+            installer_target=str(self.installer),
+            etc_dir=str(self.etc),
+            lib_dir=str(self.lib),
+            unit_target=str(self.unit),
+            signing_key=str(self.pub),
+            log_path=str(self.log),
+        )
+        values.update(overrides)
+        return values
+
+    def place(self, **overrides) -> list[str]:
+        return firstboot.place_release(systemctl=self.systemctl, **self.kwargs(**overrides))
+
+    def paths(self) -> list[pathlib.Path]:
+        return [
+            self.installer,
+            self.etc / "manifest.json",
+            self.etc / "manifest.json.sig",
+            self.lib / "manifest.py",
+            self.lib / "odile-manifest.py",
+            self.unit,
+        ]
+
+    def test_the_release_installer_and_the_signed_pair_land_byte_identical(self) -> None:
+        lines = self.place()
+        self.assertEqual(self.installer.read_bytes(), (self.release / "odile_install.py").read_bytes())
+        self.assertEqual(self.installer.stat().st_mode & 0o777, 0o755)
+        manifest = self.etc / "manifest.json"
+        self.assertEqual(manifest.read_bytes(), (self.release / "manifest.json").read_bytes())
+        self.assertEqual((self.etc / "manifest.json.sig").read_bytes(),
+                         (self.release / "manifest.json.sig").read_bytes())
+        self.assertEqual(manifest.stat().st_mode & 0o777, 0o644)
+        self.assertEqual((self.etc / "manifest.json.sig").stat().st_mode & 0o777, 0o644)
+        # The relation CLAIMS 4.6 reads: the placed installer is the one the
+        # placed manifest names.
+        self.assertEqual(hashlib.sha256(self.installer.read_bytes()).hexdigest(),
+                         json.loads(manifest.read_text())["installer_sha256"])
+        self.assertEqual((self.lib / "manifest.py").read_bytes(), RELEASE_LISTENER)
+        self.assertEqual((self.lib / "manifest.py").stat().st_mode & 0o777, 0o755)
+        self.assertEqual((self.lib / "odile-manifest.py").read_bytes(),
+                         MANIFEST_CHECKER.read_bytes())
+        self.assertEqual(self.unit.read_bytes(), (IMAGE / "odile-manifest.service").read_bytes())
+        self.assertEqual(self.unit.stat().st_mode & 0o777, 0o644)
+        self.assertTrue(any(line.startswith("install") and str(self.installer) in line
+                            for line in lines), lines)
+        # The listener is started through systemd, not left on disk.
+        self.assertIn(["enable", "odile-manifest.service"], self.calls)
+        self.assertIn(["start", "odile-manifest.service"], self.calls)
+        self.assertIn(["daemon-reload"], self.calls)
+        self.assertTrue((self.dir / "firstboot.log").is_file())
+
+    def test_a_second_placement_is_same_and_rewrites_nothing(self) -> None:
+        self.place()
+        before = {path: path.stat().st_mtime_ns for path in self.paths()}
+        self.calls.clear()
+        lines = self.place()
+        after = {path: path.stat().st_mtime_ns for path in self.paths()}
+        self.assertEqual(before, after, "the second placement rewrote a file")
+        verbs = [line.split()[0] for line in lines]
+        self.assertTrue(set(verbs) <= {"same", "verify"}, lines)
+        self.assertNotIn(["daemon-reload"], self.calls, "the unit was unchanged")
+        self.assertIn(["start", "odile-manifest.service"], self.calls)
+
+    def test_a_machine_with_its_own_pair_keeps_it(self) -> None:
+        self.place()
+        newer = b"#!/usr/bin/python3\nprint('newer')\n"
+        other = release_fixture(self.dir / "other", self.priv, installer=newer)
+        # `odile_update.py apply` writes the installer and the pair together
+        # (update/odile_update.py apply_change, write_records).
+        self.installer.write_bytes((other / "odile_install.py").read_bytes())
+        os.chmod(self.installer, 0o755)
+        (self.etc / "manifest.json").write_bytes((other / "manifest.json").read_bytes())
+        (self.etc / "manifest.json.sig").write_bytes((other / "manifest.json.sig").read_bytes())
+        lines = self.place()
+        self.assertEqual((self.etc / "manifest.json").read_bytes(),
+                         (other / "manifest.json").read_bytes(),
+                         "the machine's own manifest was overwritten")
+        self.assertEqual(self.installer.read_bytes(), newer,
+                         "the installer the machine's own pair names was overwritten")
+        # The relation CLAIMS 4.6 reads, on a machine that was updated: the
+        # placed installer is the one the kept manifest names.
+        self.assertEqual(hashlib.sha256(self.installer.read_bytes()).hexdigest(),
+                         json.loads((other / "manifest.json").read_text())["installer_sha256"])
+        self.assertTrue(any(line.startswith("keep") and "manifest.json" in line
+                            for line in lines), lines)
+        self.assertTrue(any(line.startswith("keep") and str(self.installer) in line
+                            for line in lines), lines)
+        # And it converges: a third placement rewrites neither file.
+        before = {path: path.stat().st_mtime_ns for path in self.paths()}
+        self.place()
+        self.assertEqual(before, {path: path.stat().st_mtime_ns for path in self.paths()},
+                         "the kept installer or pair was rewritten")
+
+    def test_a_machine_pair_that_does_not_name_the_installer_fails_closed(self) -> None:
+        self.place()
+        other = release_fixture(self.dir / "other", self.priv,
+                                installer=b"#!/usr/bin/python3\nprint('newer')\n")
+        (self.etc / "manifest.json").write_bytes((other / "manifest.json").read_bytes())
+        (self.etc / "manifest.json.sig").write_bytes((other / "manifest.json.sig").read_bytes())
+        for state, want in (("mismatched", RELEASE_INSTALLER), ("missing", None)):
+            with self.subTest(state=state):
+                if state == "missing":
+                    self.installer.unlink()
+                with self.assertRaises(firstboot.Refusal) as caught:
+                    self.place()
+                self.assertIn("manifest does not name", caught.exception.reason)
+                self.assertEqual((self.etc / "manifest.json").read_bytes(),
+                                 (other / "manifest.json").read_bytes(),
+                                 "the pair was overwritten before the refusal")
+                if want is None:
+                    self.assertFalse(self.installer.exists(),
+                                     "an installer the pair does not name was placed")
+                else:
+                    self.assertEqual(self.installer.read_bytes(), want,
+                                     "the refused boot rewrote the installer")
+
+    def test_a_tampered_image_pair_fails_closed_before_anything_is_written(self) -> None:
+        with open(self.release / "manifest.json", "ab") as handle:
+            handle.write(b"tampered\n")
+        with self.assertRaises(firstboot.Refusal) as caught:
+            self.place()
+        self.assertIn("manifest signature does not verify", caught.exception.reason)
+        self.assertFalse(self.installer.exists(), "the installer was placed before the check")
+        self.assertFalse((self.etc / "manifest.json").exists())
+        self.assertEqual(self.calls, [], "a unit was touched for a pair that does not verify")
+
+    def test_a_tampered_installed_pair_fails_closed(self) -> None:
+        self.place()
+        with open(self.etc / "manifest.json", "ab") as handle:
+            handle.write(b"tampered\n")
+        with self.assertRaises(firstboot.Refusal) as caught:
+            self.place()
+        self.assertIn("manifest signature does not verify", caught.exception.reason)
+
+    def test_a_missing_release_artifact_is_named(self) -> None:
+        (self.release / "odile_install.py").unlink()
+        with self.assertRaises(firstboot.Refusal) as caught:
+            self.place()
+        self.assertIn("release installer", caught.exception.reason)
+
+    def test_a_chroot_places_files_and_starts_no_unit(self) -> None:
+        lines = firstboot.place_release(**self.kwargs())
+        self.assertTrue(self.installer.is_file())
+        self.assertTrue(self.unit.is_file())
+        self.assertFalse(any("odile-manifest.service" in " ".join(line.split()) for line in lines
+                             if line.startswith("start")), lines)
+
+
+class ManifestCheckerTests(unittest.TestCase):
+    """The gate the unit runs: verify the release pair, then serve its bytes."""
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.dir = pathlib.Path(self.tmp.name)
+        self.priv, self.pub = ed25519_key(self.dir / "k")
+        self.release = release_fixture(self.dir / "release", self.priv)
+        self.manifest = self.release / "manifest.json"
+        self.signature = self.release / "manifest.json.sig"
+
+    def tearDown(self) -> None:
+        self.tmp.cleanup()
+
+    def run_check(self) -> subprocess.CompletedProcess:
+        return subprocess.run(
+            [sys.executable, str(MANIFEST_CHECKER), "--check",
+             "--manifest", str(self.manifest), "--signature", str(self.signature),
+             "--pubkey", str(self.pub)],
+            capture_output=True, text=True, timeout=60)
+
+    def test_the_checker_accepts_the_signed_pair(self) -> None:
+        result = self.run_check()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("OK", result.stdout)
+        self.assertIn(json.loads(self.manifest.read_text())["installer_sha256"][:12],
+                      result.stdout)
+
+    def test_the_checker_refuses_a_tampered_manifest(self) -> None:
+        with open(self.manifest, "ab") as handle:
+            handle.write(b"tampered\n")
+        result = self.run_check()
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("does not verify", result.stdout + result.stderr)
+
+    def test_the_checker_refuses_a_signature_that_is_not_base64(self) -> None:
+        self.signature.write_text("not base64 at all\n")
+        result = self.run_check()
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("not base64", result.stdout + result.stderr)
+
+    def test_the_checker_refuses_a_missing_pubkey(self) -> None:
+        (self.dir / "k.pub").unlink()
+        result = self.run_check()
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("signing key", result.stdout + result.stderr)
+
+    def serve(self) -> tuple[subprocess.Popen, int]:
+        process = subprocess.Popen(
+            [sys.executable, str(MANIFEST_CHECKER), "serve",
+             "--manifest", str(self.manifest), "--signature", str(self.signature),
+             "--pubkey", str(self.pub), "--program", str(ROOT / "scripts" / "manifest.py"),
+             "--port", "0"],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        assert process.stdout is not None
+        # The checker prints its verification line, then execs the listener
+        # which prints the bound port.
+        line = process.stdout.readline()
+        if "listening" not in line:
+            self.assertIn("OK", line, line)
+            line = process.stdout.readline()
+        self.assertIn("listening", line, line)
+        port = int(line.rsplit(":", 1)[1].split()[0])
+        return process, port
+
+    def test_serve_serves_the_signed_bytes_with_no_store(self) -> None:
+        process, port = self.serve()
+        try:
+            connection = http.client.HTTPConnection("127.0.0.1", port, timeout=15)
+            connection.request("GET", "/manifest")
+            response = connection.getresponse()
+            body = response.read()
+            self.assertEqual(response.status, 200)
+            self.assertEqual(response.getheader("Cache-Control"), "no-store")
+            self.assertEqual(body, self.manifest.read_bytes())
+            connection.close()
+        finally:
+            process.terminate()
+            process.wait(timeout=30)
+
+    def test_serve_refuses_a_tampered_pair_and_never_listens(self) -> None:
+        with open(self.manifest, "ab") as handle:
+            handle.write(b"tampered\n")
+        result = subprocess.run(
+            [sys.executable, str(MANIFEST_CHECKER), "serve",
+             "--manifest", str(self.manifest), "--signature", str(self.signature),
+             "--pubkey", str(self.pub), "--program", str(ROOT / "scripts" / "manifest.py"),
+             "--port", "0"],
+            capture_output=True, text=True, timeout=60)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertNotIn("listening", result.stdout)
+        self.assertIn("does not verify", result.stdout + result.stderr)
+
+
+class ManifestUnitTests(unittest.TestCase):
+    """The unit the first boot installs: check first, then listen on loopback."""
+
+    def test_the_unit_checks_the_pair_before_the_listener_starts(self) -> None:
+        unit = (IMAGE / "odile-manifest.service").read_text(encoding="utf-8")
+        self.assertIn("ExecStartPre=/usr/bin/python3 /usr/local/lib/odile/odile-manifest.py --check", unit)
+        self.assertIn("--manifest /etc/odile/manifest.json", unit)
+        self.assertIn("--signature /etc/odile/manifest.json.sig", unit)
+        self.assertIn("--pubkey /etc/odile/odile-signing-key.pub", unit)
+        self.assertIn("ExecStart=/usr/bin/python3 /usr/local/lib/odile/odile-manifest.py serve", unit)
+        self.assertIn("--program /usr/local/lib/odile/manifest.py", unit)
+        self.assertIn("--bind 127.0.0.1", unit)
+        self.assertIn("--port 8012", unit)
+        self.assertIn("DynamicUser=yes", unit)
+        self.assertLess(unit.index("ExecStartPre="), unit.index("ExecStart="))
+
+    def test_the_bench_proxy_placeholder_has_a_substitution(self) -> None:
+        installer = (IMAGE / "install-stack.sh").read_text(encoding="utf-8")
+        for name in ("odile-bench-proxy-manifest.socket", "odile-bench-proxy-manifest.service"):
+            text = (IMAGE / name).read_text(encoding="utf-8")
+            for placeholder in sorted(set(re.findall(r"__[A-Z_]+__", text))):
+                self.assertIn(f"s|{placeholder}|", installer,
+                              f"{name}: {placeholder} has no substitution in install-stack.sh")
+
+    def test_the_listener_program_is_the_release_copy_of_manifest_py(self) -> None:
+        # The first boot installs the image's copy under the name the unit
+        # runs; the image build copies scripts/manifest.py there (sealed-image).
+        build = (IMAGE / "sealed-image.sh").read_text(encoding="utf-8")
+        self.assertIn("scripts/manifest.py", build)
+        self.assertIn("odile-manifest.py", build)
+        self.assertIn("odile-manifest.service", build)
+
+
+class ManifestBenchTests(unittest.TestCase):
+    """The host's read of /manifest through the forwarded guest port."""
+
+    @staticmethod
+    def serve(body: bytes, cache: str | None = "no-store") -> http.server.ThreadingHTTPServer:
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):  # noqa: N802 - stdlib signature
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                if cache:
+                    self.send_header("Cache-Control", cache)
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, format, *args):  # noqa: A002 - stdlib signature
+                pass
+
+        server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        return server
+
+    def test_the_served_bytes_are_the_signed_bytes(self) -> None:
+        payload = b'{"schema": 1}\n'
+        server = self.serve(payload)
+        try:
+            check = bench.manifest_served(server.server_address[1], payload, timeout=2)
+        finally:
+            server.shutdown()
+            server.server_close()
+        self.assertTrue(check.ok, check.detail)
+        self.assertIn("no-store", check.detail)
+
+    def test_a_different_body_is_not_the_signed_pair(self) -> None:
+        server = self.serve(b'{"schema": 2}\n')
+        try:
+            check = bench.manifest_served(server.server_address[1], b'{"schema": 1}\n', timeout=0.3)
+        finally:
+            server.shutdown()
+            server.server_close()
+        self.assertFalse(check.ok)
+        self.assertIn("different", check.detail)
+
+    def test_a_missing_no_store_header_fails(self) -> None:
+        payload = b"{}\n"
+        server = self.serve(payload, cache=None)
+        try:
+            check = bench.manifest_served(server.server_address[1], payload, timeout=0.3)
+        finally:
+            server.shutdown()
+            server.server_close()
+        self.assertFalse(check.ok)
+        self.assertIn("cache-control", check.detail)
+
+    def test_a_refused_manifest_is_a_pass_only_when_nothing_answers(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), http.server.BaseHTTPRequestHandler)
+            port = server.server_address[1]
+            server.server_close()  # a port nothing listens on
+        check = bench.manifest_refused(port, attempts=1)
+        self.assertTrue(check.ok, check.detail)
+
+        payload = b"{}\n"
+        server = self.serve(payload)
+        try:
+            check = bench.manifest_refused(server.server_address[1], attempts=1)
+        finally:
+            server.shutdown()
+            server.server_close()
+        self.assertFalse(check.ok)
+        self.assertIn("200", check.detail)
+
+    def test_the_uki_boot_forwards_the_manifest_port(self) -> None:
+        captured: dict[str, list[str]] = {}
+
+        def fake_popen(command, **kwargs):  # noqa: ANN001 - subprocess API
+            captured["command"] = command
+            return mock.MagicMock()
+
+        with mock.patch.object(bench.subprocess, "Popen", side_effect=fake_popen):
+            bench.boot_qemu_uki(
+                pathlib.Path("/var/tmp/x.raw"), pathlib.Path("/var/tmp/x.efi"), pathlib.Path("/var/tmp/OVMF.fd"),
+                pathlib.Path("/var/tmp/boot.log"), pathlib.Path("/var/tmp/bench.log"), 19132, 2048, 2,
+                manifest_port=19134,
+            )
+        netdev = captured["command"][captured["command"].index("-netdev") + 1]
+        self.assertIn("hostfwd=tcp:127.0.0.1:19134-:8012", netdev)
+
+
+class FixtureRebuildTests(unittest.TestCase):
+    """`firstboot-fixture.py prepare --backup-password-file`: the bench's writer.
+
+    The QEMU rebuild in the card's evidence runs `prepare` with the user's old
+    recovery file; this holds the two properties the guest depends on: the file
+    the service reads holds ciphertext under the token it just minted, and the
+    real exchange serves it so `odile-firstboot` can open it.
+    """
+
+    INSTANCE = "45445445-0000-4000-8000-000000000699"
+    SLUG = "odl-bench"
+    PASSWORD = "test-rebuild-password-2026-0001"
+
+    @staticmethod
+    def certified_identity(directory: pathlib.Path, key: pathlib.Path) -> tuple[bytes, bytes]:
+        """(seed public key PEM, a release key's certificate over it) for `redeem`.
+
+        ODL-514: the seed service signs with its own key and carries the release
+        key's certificate over that key. A direct `redeem` call has no service
+        around it, so it passes the pair the service would have loaded.
+        """
+        public = subprocess.run(["openssl", "pkey", "-in", str(key), "-pubout"],
+                                check=True, capture_output=True, timeout=60).stdout
+        public_file = directory / "seed.pub"
+        public_file.write_bytes(public)
+        release = directory / "release.pem"
+        subprocess.run(["openssl", "genpkey", "-algorithm", "ED25519", "-out", str(release)],
+                       check=True, capture_output=True, timeout=60)
+        os.chmod(release, 0o600)
+        certificate = directory / "seed-key.crt"
+        subprocess.run(["openssl", "dgst", "-sign", str(release), "-out", str(certificate),
+                        str(public_file)], check=True, capture_output=True, timeout=60)
+        return public, certificate.read_bytes()
+
+    def test_prepare_cuts_the_certificate_the_guest_walks(self) -> None:
+        """The fixture's seed key is certified by the release key's public half (ODL-514)."""
+        if not shutil.which("openssl"):
+            raise unittest.SkipTest("openssl is missing")
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = pathlib.Path(tmp) / "bench"
+            seed_key = pathlib.Path(tmp) / "seed.pem"
+            release_key = pathlib.Path(tmp) / "release.pem"
+            for key in (seed_key, release_key):
+                subprocess.run(["openssl", "genpkey", "-algorithm", "ED25519", "-out", str(key)],
+                               check=True, capture_output=True, timeout=60)
+                os.chmod(key, 0o600)
+            result = fixture.prepare(directory, self.INSTANCE, self.SLUG, str(seed_key),
+                                     release_key=str(release_key))
+            certificate = pathlib.Path(result["certificate"])
+            public = pathlib.Path(result["seed_pubkey"])
+            self.assertEqual(len(certificate.read_bytes()), 64)
+            self.assertEqual(stat.S_IMODE(certificate.stat().st_mode), 0o644)
+            release_pub = subprocess.run(["openssl", "pkey", "-in", str(release_key), "-pubout"],
+                                         check=True, capture_output=True, timeout=60).stdout
+            self.assertEqual(pathlib.Path(result["release_pubkey"]).read_bytes(), release_pub)
+            verified = subprocess.run(
+                ["openssl", "dgst", "-verify", result["release_pubkey"],
+                 "-signature", str(certificate), str(public)],
+                capture_output=True, timeout=30)
+            self.assertEqual(verified.returncode, 0, verified.stderr)
+
+    def test_prepare_seals_the_old_password_under_the_token_it_mints(self) -> None:
+        if not shutil.which("openssl"):
+            raise unittest.SkipTest("openssl is missing")
+        seed_module = _load("odile_seed_fixture_rebuild", ROOT / "seed" / "seed.py")
+        firstboot_module = _load("odile_firstboot_fixture_rebuild", IMAGE / "odile-firstboot.py")
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = pathlib.Path(tmp) / "bench"
+            key = pathlib.Path(tmp) / "k.pem"
+            subprocess.run(["openssl", "genpkey", "-algorithm", "ED25519", "-out", str(key)],
+                           check=True, capture_output=True, timeout=60)
+            os.chmod(key, 0o600)
+            result = fixture.prepare(directory, self.INSTANCE, self.SLUG, str(key), self.PASSWORD)
+            self.assertEqual(result["rebuild"], "sealed")
+            rebuilds_file = directory / "seed-rebuilds.json"
+            self.assertEqual(stat.S_IMODE(rebuilds_file.stat().st_mode), 0o600)
+            self.assertNotIn(self.PASSWORD, rebuilds_file.read_text(encoding="utf-8"))
+            rebuilds = seed_module.load_rebuilds(str(rebuilds_file))
+            self.assertEqual(rebuilds[self.SLUG]["token_hash"],
+                             hashlib.sha256(result["token"].encode()).hexdigest())
+            con = seed_module.connect(str(directory / "seed.db"))
+            try:
+                config = json.loads((directory / "seed-config.json").read_text(encoding="utf-8"))
+                served = seed_module.redeem(con, result["token"], self.INSTANCE,
+                                            config, rebuilds,
+                                            identity=self.certified_identity(directory, key))
+            finally:
+                con.close()
+            self.assertEqual(firstboot_module.unseal_rebuild(served["rebuild"], result["token"]),
+                             self.PASSWORD)
+
+    def test_prepare_rearms_the_token_an_image_already_carries(self) -> None:
+        """A bench rerun: the measured line cannot change, so the token must not."""
+        if not shutil.which("openssl"):
+            raise unittest.SkipTest("openssl is missing")
+        seed_module = _load("odile_seed_fixture_rearm", ROOT / "seed" / "seed.py")
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = pathlib.Path(tmp) / "bench"
+            key = pathlib.Path(tmp) / "k.pem"
+            subprocess.run(["openssl", "genpkey", "-algorithm", "ED25519", "-out", str(key)],
+                           check=True, capture_output=True, timeout=60)
+            os.chmod(key, 0o600)
+            first = fixture.prepare(directory, self.INSTANCE, self.SLUG, str(key), self.PASSWORD)
+            before = seed_module.load_rebuilds(str(directory / "seed-rebuilds.json"))[self.SLUG]
+            second = fixture.prepare(directory, self.INSTANCE, self.SLUG, str(key),
+                                     self.PASSWORD, first["token"])
+            self.assertEqual(second["token"], first["token"])
+            # The same token seals to the same ciphertext; only created_at moves.
+            after = seed_module.load_rebuilds(str(directory / "seed-rebuilds.json"))[self.SLUG]
+            self.assertEqual((after["sealed"], after["tag"]), (before["sealed"], before["tag"]))
+            con = seed_module.connect(str(directory / "seed.db"))
+            try:
+                rows = con.execute(
+                    "SELECT token_hash, used_at FROM seed_tokens WHERE token_hash = ?",
+                    (hashlib.sha256(first["token"].encode()).hexdigest(),)).fetchall()
+            finally:
+                con.close()
+            self.assertEqual(len(rows), 1, "one row per token, never a duplicate")
+            self.assertIsNone(rows[0]["used_at"], "re-armed means live again")
+
+    def test_prepare_without_the_file_carries_no_rebuild(self) -> None:
+        if not shutil.which("openssl"):
+            raise unittest.SkipTest("openssl is missing")
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = pathlib.Path(tmp) / "bench"
+            key = pathlib.Path(tmp) / "k.pem"
+            subprocess.run(["openssl", "genpkey", "-algorithm", "ED25519", "-out", str(key)],
+                           check=True, capture_output=True, timeout=60)
+            os.chmod(key, 0o600)
+            result = fixture.prepare(directory, self.INSTANCE, self.SLUG, str(key))
+            self.assertEqual(result["rebuild"], "none")
+            self.assertFalse((directory / "seed-rebuilds.json").exists())
+
+
+class FirstbootBenchTests(unittest.TestCase):
+    """The harness that reads the unit's one line and the page's answer."""
+
+    def test_the_installed_line_requires_the_page_status(self) -> None:
+        self.assertEqual(
+            bench.parse_guest_firstboot(
+                "…\nodile-firstboot: installed odl-bench (instance x) · first-visit 200 · 3s\n"),
+            ("installed", "installed odl-bench (instance x) · first-visit 200 · 3s"))
+        self.assertEqual(bench.parse_guest_firstboot("noise\n"), None)
+
+    def test_each_state_parses_and_the_last_line_wins(self) -> None:
+        text = ("odile-firstboot: fail-closed: no setup token in the command line\n"
+                "odile-firstboot: same\n")
+        self.assertEqual(bench.parse_guest_firstboot(text), ("same", "same"))
+        self.assertEqual(bench.parse_guest_firstboot("odile-firstboot: fail-closed: seed token used\n"),
+                         ("fail-closed", "seed token used"))
+
+    def test_wait_firstboot_matches_only_the_expected_state(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            serial = pathlib.Path(tmp) / "boot.log"
+            serial.write_text("odile-firstboot: same\n")
+            self.assertTrue(bench.wait_firstboot(serial, "same", 1)[0])
+            self.assertFalse(bench.wait_firstboot(serial, "installed", 0.2)[0])
+            self.assertFalse(bench.wait_firstboot(serial, "fail-closed", 0.2)[0])
+            serial.write_text("odile-firstboot: installed odl-bench · first-visit 200 · 3s\n")
+            self.assertTrue(bench.wait_firstboot(serial, "installed", 1)[0])
+            serial.write_text("odile-firstboot: installed odl-bench · first-visit nope\n")
+            ok, detail = bench.wait_firstboot(serial, "installed", 0.2)
+            self.assertFalse(ok)
+            self.assertIn("page", detail)
+
+    def test_the_first_visit_page_check_reads_the_form(self) -> None:
+        class Form(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):  # noqa: N802 - stdlib signature
+                body = (b"<html><form method=\"post\" action=\"/first-visit\">"
+                        b"<label>Set your sign-in</label></form></html>")
+                self.send_response(200)
+                self.send_header("Content-Type", "text/html; charset=utf-8")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, format, *args):  # noqa: A002 - stdlib signature
+                pass
+
+        server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Form)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        try:
+            check = bench.first_visit_page(server.server_address[1], "ab" * 32, timeout=2)
+        finally:
+            server.shutdown()
+            server.server_close()
+        self.assertTrue(check.ok, check.detail)
+        self.assertIn("200", check.detail)
+
+    def test_the_page_check_fails_when_the_page_is_absent(self) -> None:
+        class Gone(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):  # noqa: N802 - stdlib signature
+                self.send_response(404)
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+
+            def log_message(self, format, *args):  # noqa: A002 - stdlib signature
+                pass
+
+        server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Gone)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        try:
+            check = bench.first_visit_page(server.server_address[1], "ab" * 32, timeout=0.3)
+        finally:
+            server.shutdown()
+            server.server_close()
+        self.assertFalse(check.ok)
+
+    def test_the_uki_boot_forwards_the_first_visit_port_only_when_asked(self) -> None:
+        captured: dict[str, list[str]] = {}
+
+        def fake_popen(command, **kwargs):  # noqa: ANN001 - subprocess API
+            captured["command"] = command
+            return mock.MagicMock()
+
+        with mock.patch.object(bench.subprocess, "Popen", side_effect=fake_popen):
+            bench.boot_qemu_uki(
+                pathlib.Path("/var/tmp/x.raw"), pathlib.Path("/var/tmp/x.efi"), pathlib.Path("/var/tmp/OVMF.fd"),
+                pathlib.Path("/var/tmp/boot.log"), pathlib.Path("/var/tmp/bench.log"), 19132, 2048, 2,
+            )
+        netdev = captured["command"][captured["command"].index("-netdev") + 1]
+        self.assertIn("hostfwd=tcp:127.0.0.1:19132-:9130", netdev)
+        self.assertNotIn(":8091", netdev)
+
+        with mock.patch.object(bench.subprocess, "Popen", side_effect=fake_popen):
+            bench.boot_qemu_uki(
+                pathlib.Path("/var/tmp/x.raw"), pathlib.Path("/var/tmp/x.efi"), pathlib.Path("/var/tmp/OVMF.fd"),
+                pathlib.Path("/var/tmp/boot.log"), pathlib.Path("/var/tmp/bench.log"), 19132, 2048, 2,
+                first_visit_port=19133,
+            )
+        netdev = captured["command"][captured["command"].index("-netdev") + 1]
+        self.assertIn("hostfwd=tcp:127.0.0.1:19133-:8091", netdev)
+
+
+class FirstbootScriptTests(unittest.TestCase):
+    """The units and the installer's flags: the image's boot contract."""
+
+    def test_the_firstboot_unit_runs_before_the_tenant_and_speaks_on_the_console(self) -> None:
+        unit = (IMAGE / "odile-firstboot.service").read_text(encoding="utf-8")
+        self.assertIn("Type=oneshot", unit)
+        self.assertIn("RemainAfterExit=yes", unit)
+        self.assertIn("Before=odile-agent.service", unit)
+        self.assertIn("After=network-online.target", unit)
+        self.assertIn("StandardOutput=journal+console", unit)
+        self.assertIn("StandardError=journal+console", unit)
+        self.assertIn("ExecStart=/usr/bin/python3 /usr/local/lib/odile-image/odile-firstboot.py", unit)
+        self.assertIn("ConditionPathExists=/usr/local/lib/odile-image/odile-firstboot.py", unit)
+
+    def test_every_first_visit_placeholder_has_a_substitution(self) -> None:
+        installer = (IMAGE / "install-stack.sh").read_text(encoding="utf-8")
+        for name in ("odile-first-visit.service", "odile-bench-proxy-firstvisit.service",
+                     "odile-bench-proxy-firstvisit.socket"):
+            text = (IMAGE / name).read_text(encoding="utf-8")
+            for placeholder in sorted(set(re.findall(r"__[A-Z_]+__", text))):
+                self.assertIn(f"s|{placeholder}|", installer,
+                              f"{name}: {placeholder} has no substitution in install-stack.sh")
+
+    def test_the_manifest_listener_can_traverse_the_release_installers_etc(self) -> None:
+        """Round 7: 503 "manifest unavailable" on the finished tenant.
+
+        The release installer sets /etc/odile to 0750 root:odile-manifest; the
+        listener runs as a DynamicUser and could not read the pair without the
+        group, so /manifest answered 503 while the installer's own check had
+        passed. The unit must join the group, and the image must create it
+        before the unit starts.
+        """
+        unit = (IMAGE / "odile-manifest.service").read_text(encoding="utf-8")
+        self.assertIn("DynamicUser=yes", unit)
+        self.assertIn("SupplementaryGroups=odile-manifest", unit)
+        installer = (IMAGE / "install-stack.sh").read_text(encoding="utf-8")
+        self.assertIn("getent group odile-manifest", installer)
+        self.assertIn("groupadd --system odile-manifest", installer)
+        release_installer = (ROOT / "installer" / "odile_install.py").read_text(encoding="utf-8")
+        self.assertIn('MANIFEST_GROUP = "odile-manifest"', release_installer)
+        self.assertIn("ensure_dir(layout.etc, 0o750, 0, group_id(MANIFEST_GROUP)", release_installer)
+
+    def test_the_manifest_listener_dynamic_user_does_not_collide_with_its_group(self) -> None:
+        """ODL-521: a DynamicUser named after the unit cannot join a group of
+        that name.
+
+        systemd allocates a transient user *and group* named after the unit.
+        Main's meter removal renamed the group this unit joins from
+        `odile-meter` to `odile-manifest`, so the allocation failed on a real
+        boot — `Failed to update dynamic user credentials: User or group with
+        specified name already exists` — and the first boot stopped before the
+        sign-in evidence could be taken. The unit must name a user that is not
+        the group it joins.
+        """
+        unit = (IMAGE / "odile-manifest.service").read_text(encoding="utf-8")
+        self.assertIn("DynamicUser=yes", unit)
+        group = re.search(r"^SupplementaryGroups=(\S+)$", unit, re.M)
+        user = re.search(r"^User=(\S+)$", unit, re.M)
+        self.assertIsNotNone(group, "the unit joins no group; /etc/odile is 0750 root:<group>")
+        self.assertIsNotNone(user, "DynamicUser names its transient user after the unit")
+        self.assertNotEqual(user.group(1), group.group(1),
+                            "DynamicUser's transient group would collide with the joined group")
+
+    def test_the_image_names_the_gateway_unit_as_the_release_does(self) -> None:
+        """Round 6: two units for one gateway, and a report for the wrong user.
+
+        The release installer writes `odile-agent.service` and runs the
+        access report with the wrapper's default user (`odile`). The image used
+        `odile-tenant.service` and the account `tenant`: the release's second
+        gateway would lose the port, and the report failed on
+        /home/odile/.hermes/.env. The image must converge on the release's unit
+        name and pin the tenant account in a drop-in the rewrite cannot remove.
+        """
+        release = (ROOT / "installer" / "odile_install.py").read_text(encoding="utf-8")
+        self.assertIn('unit_name="odile-agent"', release)
+        installer = (IMAGE / "install-stack.sh").read_text(encoding="utf-8")
+        self.assertIn("SERVICE_NAME=odile-agent", installer)
+        self.assertIn('"s|__UNIT__|$SERVICE_NAME|g"', installer)
+        dropin = (IMAGE / "odile-access-report-user.conf").read_text(encoding="utf-8")
+        self.assertIn("Environment=ODILE_ACCESS_USER=tenant", dropin)
+        self.assertIn("/etc/systemd/system/odile-access-report.service.d/10-tenant-user.conf",
+                      installer)
+        image = (IMAGE / "sealed-image.sh").read_text(encoding="utf-8")
+        self.assertIn("odile-access-report-user.conf", image)
+        self.assertNotIn("SERVICE_NAME=odile-tenant", installer)
+
+    def test_the_first_visit_unit_restarts_the_tenants_own_unit(self) -> None:
+        unit = (IMAGE / "odile-first-visit.service").read_text(encoding="utf-8")
+        self.assertIn("--state /etc/odile/first-visit.json", unit)
+        self.assertIn("--env-file __TENANT_HOME__/.hermes/.env", unit)
+        self.assertIn("--reload-command 'systemctl restart __UNIT__'", unit)
+        self.assertIn("ReadWritePaths=__TENANT_HOME__ /etc/odile", unit)
+
+    def test_install_stack_names_the_seed_and_token_flags(self) -> None:
+        result = subprocess.run(
+            ["bash", str(IMAGE / "install-stack.sh"), "--help"],
+            capture_output=True, text=True, timeout=60)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("--seed FILE", result.stdout)
+        self.assertIn("--first-visit-token TOKEN", result.stdout)
+        self.assertIn("--first-visit-port", result.stdout)
+
+    def test_install_stack_refuses_a_token_without_a_seed(self) -> None:
+        result = subprocess.run(
+            ["bash", str(IMAGE / "install-stack.sh"), "--first-visit-token", "ab" * 32],
+            capture_output=True, text=True, timeout=60)
+        self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+        self.assertIn("--first-visit-token needs --seed", result.stderr)
+
+    def test_sealed_image_dry_run_names_the_first_boot(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            result = subprocess.run(
+                ["bash", str(IMAGE / "sealed-image.sh"), "--dry-run",
+                 "--out", str(pathlib.Path(tmp) / "out")],
+                capture_output=True, text=True, timeout=60)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("odile-firstboot.service", result.stdout)
+        self.assertIn("odile.token", result.stdout)
+
+    def test_the_production_image_ships_a_discarded_signin(self) -> None:
+        """ODL-521: no public password in the published bytes.
+
+        A production build (`sealed-image.sh --production` writes
+        /etc/odile/production before install-stack runs) writes a hash of a
+        password generated and discarded, with the marker that says so; the
+        bench build keeps its documented fixture password, which the QEMU smoke
+        signs in with. The first boot of a published image leaves the file
+        alone: the placeholder is already unusable and the session secret must
+        not move. The release installer's --first-visit write is what replaces
+        the hash on every run until the page sets the owner's.
+        """
+        installer = (IMAGE / "install-stack.sh").read_text(encoding="utf-8")
+        self.assertIn("discarded_scrypt_hash", installer)
+        self.assertIn("# odile-signin-placeholder: 1", installer)
+        self.assertIn("first_visit_signin_set", installer)
+        self.assertIn("/etc/odile/first-visit.json", installer)
+        self.assertIn("[ -f /etc/odile/production ]", installer)
+        self.assertIn("# bench-password-sha256: $password_sha", installer)
+        self.assertIn("bench_password_verifies", installer)
+        # The Hermes bootstrap leaves its own .env.example copy in place: a
+        # published image must replace a file with no scrypt hash, not keep it.
+        self.assertIn('[ ! -f "$env_file" ]', installer)
+        self.assertIn("PASSWORD_HASH=scrypt[$]", installer)
+        # The bench image's old .env header is gone with the usable hash.
+        self.assertNotIn("Odile image bench — generated by deploy/image/install-stack.sh",
+                         installer)
+        # The first boot of a published image must not rewrite the file: the
+        # production branch prints `same` for a hash that rejects the fixture.
+        production = installer.index("if [ -f /etc/odile/production ]; then")
+        bench = installer.index("elif [ -f \"$env_file\" ] && grep -qx")
+        branch = installer[production:bench]
+        self.assertIn("say same", branch)
+        self.assertIn("write_env", branch)
+        self.assertLess(branch.index("bench_password_verifies"),
+                        branch.index("write_env"),
+                        "the hash must be checked before the file is rewritten")
+
+    def test_the_first_visit_write_replaces_the_hash_until_the_page_sets_it(self) -> None:
+        """The installer half of ODL-521, read where it runs.
+
+        `ensure_env(first_visit=True)` must not take the converged early return
+        before `signin_set_at` exists: an image hash that looks valid (a scrypt
+        hash of the public fixture) is exactly the exploit. The unit-level
+        behaviour is in tests/test_first_visit.py; this binds the shipped
+        installer to it.
+        """
+        installer = (ROOT / "installer" / "odile_install.py").read_text(encoding="utf-8")
+        self.assertIn("def first_visit_signin_set(", installer)
+        self.assertIn("signin_set_at", installer)
+        self.assertIn("first_visit and not signin_set", installer)
+        self.assertIn("placeholder until first visit", installer)
+
+    def test_every_shell_script_parses(self) -> None:
+        # The seal script has no .sh suffix (it is installed as a program), so
+        # it is named here: a syntax error in it is a first boot that never
+        # re-keys.
+        scripts = sorted(IMAGE.glob("*.sh")) + [IMAGE / "bb-sealed-provision"]
+        for path in scripts:
+            result = subprocess.run(["bash", "-n", str(path)],
+                                    capture_output=True, text=True, timeout=60)
+            self.assertEqual(result.returncode, 0, f"{path}: {result.stderr}")
+        # And under the /bin/sh it declares, which on the image is dash.
+        result = subprocess.run(["/bin/sh", "-n", str(IMAGE / "bb-sealed-provision")],
+                                capture_output=True, text=True, timeout=60)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_the_pin_carries_a_well_formed_seed_channel_when_it_has_one(self) -> None:
+        pin = json.loads(PIN.read_text())
+        tokens = pin["cmdline"].split()
+        token = [t for t in tokens if t.startswith("odile.token=")]
+        if not token:
+            self.skipTest("the pinned line predates ODL-456; rebuild to add the channel")
+        self.assertRegex(token[0][len("odile.token="):], r"^[0-9a-f]{64}$")
+        url = [t for t in tokens if t.startswith("odile.seed_url=")]
+        self.assertEqual(len(url), 1, pin["cmdline"])
+        self.assertRegex(url[0][len("odile.seed_url="):], r"^https?://")
+
+
+class HookBootstrapHarnessTests(unittest.TestCase):
+    """ODL-332: the first boot's bootstrap branch, driven by the hook itself.
+
+    The hook is a shell script in an initramfs; reading its source proves
+    nothing. This runs the spike's stub harness (fake mount/cryptsetup/
+    snpreport, a fake /dev/sda2) and requires every assertion to pass,
+    including the two the strict first run depends on: no blob yet, and a blob
+    sealed to another host — both open with the bootstrap key and say so.
+    """
+
+    HARNESS = ROOT / "spike" / "sealed-unlock" / "initramfs" / "test-bb-sealed-unlock.sh"
+
+    @unittest.skipUnless(HARNESS.is_file(), SPIKE_MISSING)
+    def test_the_hook_opens_with_the_bootstrap_key_and_the_harness_passes(self) -> None:
+        result = subprocess.run(["sh", str(self.HARNESS)],
+                                capture_output=True, text=True, timeout=120)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("harness: PASS", result.stdout)
+        self.assertNotIn("\nnot ok ", "\n" + result.stdout)
+        oks = [line for line in result.stdout.splitlines() if line.startswith("ok ")]
+        self.assertGreaterEqual(len(oks), 52)
+        self.assertIn("bootstrap_no_blob_state - state is opened-bootstrap", result.stdout)
+        self.assertIn("bootstrap_unseal_state - state is opened-bootstrap", result.stdout)
+
+
+class ProductionImageTests(unittest.TestCase):
+    """ODL-332: the tenant image and its first-boot seal are wired together."""
+
+    def dry_run(self, *extra: str) -> str:
+        result = subprocess.run(
+            ["bash", str(IMAGE / "sealed-image.sh"), "--dry-run", *extra],
+            capture_output=True, text=True, timeout=120)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return result.stdout
+
+    def test_the_production_plan_names_the_bootstrap_key_and_the_seal_unit(self) -> None:
+        output = self.dry_run("--production")
+        self.assertIn("first-boot bootstrap key /odile/luks-bootstrap.key", output)
+        self.assertIn("odile-seal-provision.service", output)
+        self.assertIn("resolver: 1.1.1.1 9.9.9.9", output)
+        self.assertNotIn("luks-bootstrap.key", self.dry_run(), "the bench must not write it")
+        # ODL-454 follow-up: the bench rehearsal writes the same bootstrap key,
+        # ships no blob, and runs the seal unit with the stand-in, so the first
+        # boot's re-key is exercised without an AMD PSP.
+        rehearsal = self.dry_run("--first-boot-seal")
+        self.assertIn("bootstrap key /odile/luks-bootstrap.key and no blob", rehearsal)
+        self.assertIn("bench stand-in as its snpreport", rehearsal)
+        both = subprocess.run(
+            ["bash", str(IMAGE / "sealed-image.sh"), "--dry-run", "--production",
+             "--first-boot-seal"],
+            capture_output=True, text=True, timeout=120)
+        self.assertEqual(both.returncode, 2, both.stdout + both.stderr)
+        self.assertIn("mutually exclusive", both.stderr)
+
+    def test_the_seal_unit_runs_before_the_first_boot_and_needs_servurys_binary(self) -> None:
+        text = (IMAGE / "odile-seal-provision.service").read_text()
+        self.assertIn("Before=odile-firstboot.service", text)
+        self.assertIn("ConditionPathExists=/usr/local/lib/odile-image/snpreport", text)
+        self.assertIn("ExecStart=/usr/local/lib/odile-image/bb-sealed-provision", text)
+        self.assertIn("EXISTING_KEY_FILE=/run/bb/boot/odile/luks-bootstrap.key", text)
+        # The first boot re-encrypts 7.3 GiB; the 90 s default would SIGTERM it
+        # mid-re-key and the disk would never be re-keyed.
+        self.assertIn("TimeoutStartSec=infinity", text)
+
+    def test_the_image_carries_udev_because_the_rekey_needs_it(self) -> None:
+        """Without systemd-udevd the online re-key blocks in libdevmapper's wait.
+
+        debootstrap's minbase leaves udev out. The first boot's `cryptsetup
+        reencrypt` then never gets its dm completion event (measured on the
+        ODL-454 follow-up bench: the unit sat in finalize while the guest was
+        idle), and /dev/ttyS0 never becomes a device unit, so the console has
+        no getty and there is no drill shell. The package list is the fix, so
+        the list is what this test reads.
+        """
+        text = (IMAGE / "sealed-image.sh").read_text()
+        include = next(line for line in text.splitlines() if line.startswith("INCLUDE="))
+        self.assertIn("udev", include.split("=", 1)[1].split(","))
+
+    def test_the_provision_script_commits_only_after_the_rekey_is_proved(self) -> None:
+        text = (IMAGE / "bb-sealed-provision").read_text()
+        command = "cryptsetup --batch-mode reencrypt --progress-frequency 30"
+        self.assertIn(command, text)
+        self.assertIn('--key-file "$KEY" --key-slot "$NEW_SLOT" "$ROOT_PART"', text)
+        block = text[text.index(command):text.index("the volume re-key did not complete")]
+        self.assertNotIn("--keep-key", block, "the volume key must be regenerated, not kept")
+        self.assertLess(text.index(command), text.index("COMMITTED=1"))
+        self.assertLess(text.index("MK_BEFORE"), text.index("COMMITTED=1"))
+        self.assertIn('shred -u "$BOOT_MNT$SEAL_DIR/luks-bootstrap.key"', text)
+        # The shred lives in finalize(); every success path calls it after the
+        # re-key is proved -- the end of a first run, and the `already
+        # provisioned` path that finishes a run killed after the commit.
+        committed = text.index("COMMITTED=1")
+        self.assertLess(committed, text.index("\nfinalize\n", committed))
+        self.assertLess(text.index("already provisioned"),
+                        text.index("finalize", text.index("already provisioned")))
+        self.assertIn('"bootstrap_removed":%s', text)
+
+    def test_the_bootstrap_key_is_written_before_the_volume_key_is_shredded(self) -> None:
+        text = (IMAGE / "sealed-image.sh").read_text()
+        self.assertLess(
+            text.index('install -m 0600 "$VOLKEY" "$BOOT_MNT/odile/luks-bootstrap.key"'),
+            text.rindex('shred -u "$VOLKEY"'),
+        )
+
+    def test_the_initrd_build_pins_servurys_release_snpreport(self) -> None:
+        text = (IMAGE / "sealed-initrd.sh").read_text()
+        self.assertIn("1e2a6c0782bebf471a6973a2bf1f0eee5fac86005a5ee56c5b8939ef40cacc77", text)
+        self.assertIn("--snpreport", text)
+        self.assertIn("is not Servury's release binary", text)
+
+    def test_the_production_image_runs_the_release_installer_after_the_page(self) -> None:
+        unit = (IMAGE / "odile-release-setup.service").read_text()
+        self.assertIn("After=odile-firstboot.service", unit)
+        self.assertIn("ConditionPathExists=/etc/odile/production", unit)
+        self.assertIn("ConditionPathExists=/usr/local/bin/odile-install.sh", unit)
+        script = (IMAGE / "odile-release-setup.sh").read_text()
+        self.assertIn("--first-visit --first-visit-token", script)
+        # Round 5: the seed loader reads kit["setup_token"], which only --token
+        # sets; without it the installer exits 1 after the boot check passes.
+        self.assertIn('--token "$TOKEN"', script)
+        self.assertIn("the recovery kit has no 64-hex setup token", script)
+        self.assertIn("--public-url \"https://$HOST.odile.fyi\"", script)
+        self.assertIn("--user tenant --port 9130", script)
+        self.assertLess(script.index("--instance-id"), script.index("--slug"))
+        image = (IMAGE / "sealed-image.sh").read_text()
+        self.assertIn("odile-release-setup.service", image)
+        self.assertIn("systemctl enable odile-release-setup.service", image)
+
+
+class FirstBootReKeyTests(unittest.TestCase):
+    """ODL-454 follow-up: the first boot must replace the *volume* key.
+
+    A keyslot dance (`luksAddKey` + `luksKillSlot`) leaves the LUKS master key
+    alone, and the published image carries that master key inside its own
+    keyslot -- so the image, plus the bootstrap key it publishes, opens the
+    live disk. These tests run the real script against a real LUKS2 volume and
+    assert what the holder of the image can do afterwards: the build key must
+    not open the volume, the volume key must be different, and the guest's
+    sealed key must open it with the filesystem intact.
+
+    The fixture's build keyslot uses PBKDF2 so the gate does not spend a
+    minute per test in Argon2id; the behaviour under test is the volume key,
+    which no PBKDF touches.
+    """
+
+    VOLUME = 64 << 20
+    REKEY_VOLUME = 2 << 30
+    BOOT = 32 << 20
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        for tool in ("cryptsetup", "losetup", "mkfs.ext4", "gcc", "mount", "umount"):
+            if not shutil.which(tool):
+                raise unittest.SkipTest(f"{tool} is missing")
+        if os.geteuid() != 0:
+            raise unittest.SkipTest("LUKS, loop devices and mount need root")
+        cls.tmp = tempfile.TemporaryDirectory(prefix="odile-rekey-")
+        cls.dir = pathlib.Path(cls.tmp.name)
+        cls.bin = cls.dir / "snpreport-standin"
+        subprocess.run(
+            ["gcc", "-O2", "-static", "-s", "-o", str(cls.bin), str(SOURCE)],
+            check=True, timeout=120,
+        )
+        cls.cmdline = cls.dir / "cmdline"
+        cls.cmdline.write_text("root=/dev/mapper/root_crypt ro seal_id=rekey-test bb.iid=1\n")
+        cls.standin = cls.dir / "snpreport"
+        cls.standin.write_text(
+            "#!/bin/sh\nexec %s \"$@\" --cmdline-file %s\n" % (cls.bin, cls.cmdline))
+        cls.standin.chmod(0o755)
+
+    @classmethod
+    def tearDownClass(cls) -> None:
+        cls.tmp.cleanup()
+
+    # -- fixture -----------------------------------------------------------
+
+    def env(self) -> dict:
+        env = dict(os.environ)
+        env["PATH"] = "/usr/sbin:/usr/bin:/sbin:/bin:" + env.get("PATH", "")
+        return env
+
+    def crypt(self, *args: str) -> subprocess.CompletedProcess:
+        return subprocess.run(["cryptsetup", *args], capture_output=True, text=True,
+                              timeout=600, env=self.env())
+
+    def fixture(self, volume: int = 0) -> dict:
+        """A disk shaped like the published image's: a LUKS2 root whose only
+        key is the build key, and a boot partition that carries that key as
+        /odile/luks-bootstrap.key and no blob (the tenant's first-boot state).
+        """
+        volume = volume or self.VOLUME
+        base = pathlib.Path(tempfile.mkdtemp(dir=self.dir))
+        fx: dict = {"base": base, "root": base / "root.img", "boot": base / "boot.img",
+                    "build": base / "build.key", "mnt": base / "boot.mnt",
+                    "work": base / "work", "state": base / "seal.json",
+                    "marker": base / "marker.sha"}
+        with open(fx["root"], "wb") as handle:
+            handle.truncate(volume)
+        with open(fx["boot"], "wb") as handle:
+            handle.truncate(self.BOOT)
+        subprocess.run(["mkfs.ext4", "-q", "-F", str(fx["boot"])], check=True,
+                       timeout=120, capture_output=True)
+        fx["build"].write_bytes(os.urandom(64))
+        fx["build"].chmod(0o600)
+        made = self.crypt("--batch-mode", "--type", "luks2", "--pbkdf", "pbkdf2",
+                          "--pbkdf-force-iterations", "1000",
+                          "--key-file", str(fx["build"]), "luksFormat", str(fx["root"]))
+        self.assertEqual(made.returncode, 0, made.stderr)
+
+        root_loop = subprocess.run(["losetup", "-f", "--show", str(fx["root"])],
+                                   check=True, capture_output=True, text=True).stdout.strip()
+        self.addCleanup(subprocess.run, ["losetup", "-d", root_loop], capture_output=True)
+        boot_loop = subprocess.run(["losetup", "-f", "--show", str(fx["boot"])],
+                                   check=True, capture_output=True, text=True).stdout.strip()
+        self.addCleanup(subprocess.run, ["losetup", "-d", boot_loop], capture_output=True)
+        fx["root_loop"] = root_loop
+        fx["boot_loop"] = boot_loop
+
+        result = self.crypt("--key-file", str(fx["build"]), "luksOpen", root_loop, "odile-rekey")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.addCleanup(subprocess.run, ["cryptsetup", "close", "odile-rekey"],
+                        capture_output=True)
+        rootmnt = base / "root.mnt"
+        rootmnt.mkdir()
+        subprocess.run(["mkfs.ext4", "-q", "/dev/mapper/odile-rekey"], check=True,
+                       timeout=120, capture_output=True)
+        subprocess.run(["mount", "/dev/mapper/odile-rekey", str(rootmnt)], check=True, timeout=60)
+        (rootmnt / "marker.txt").write_text("the tenant's own filesystem\n")
+        payload = os.urandom(1 << 20)
+        (rootmnt / "blob").write_bytes(payload)
+        (rootmnt / "tail.txt").write_text("the far end of the filesystem\n")
+        fx["marker"].write_text(hashlib.sha256(payload).hexdigest() + "  blob\n")
+        subprocess.run(["sync"], check=True)
+        subprocess.run(["umount", str(rootmnt)], check=True, timeout=60)
+        self.assertEqual(self.crypt("close", "odile-rekey").returncode, 0)
+
+        fx["mnt"].mkdir()
+        subprocess.run(["mount", boot_loop, str(fx["mnt"])], check=True, timeout=60)
+        (fx["mnt"] / "odile").mkdir()
+        shutil.copyfile(fx["build"], fx["mnt"] / "odile" / "luks-bootstrap.key")
+        os.chmod(fx["mnt"] / "odile" / "luks-bootstrap.key", 0o600)
+        subprocess.run(["umount", str(fx["mnt"])], check=True, timeout=60)
+        return fx
+
+    # -- helpers -----------------------------------------------------------
+
+    def provision_env(self, fx: dict) -> dict:
+        env = self.env()
+        env.update({
+            "ROOT_PART": fx["root_loop"], "BOOT_PART": fx["boot_loop"],
+            "BOOT_MNT": str(fx["mnt"]), "SEAL_DIR": "/odile",
+            "WORKDIR": str(fx["work"]), "SNPREPORT": str(self.standin),
+            "STATE": str(fx["state"]),
+            "EXISTING_KEY_FILE": str(fx["mnt"] / "odile" / "luks-bootstrap.key"),
+        })
+        return env
+
+    def run_provision(self, fx: dict, *args: str) -> subprocess.CompletedProcess:
+        return subprocess.run(["sh", str(IMAGE / "bb-sealed-provision"), *args],
+                              capture_output=True, text=True, timeout=900,
+                              env=self.provision_env(fx))
+
+    def header(self, fx: dict) -> str:
+        return self.crypt("luksDump", fx["root_loop"]).stdout
+
+    def interrupt_rekey(self, fx: dict) -> str:
+        """SIGTERM the run's process group the moment the header shows the
+        re-encryption requirement -- the state `systemctl stop` leaves.
+
+        The check and the signal are milliseconds apart while the data pass
+        lasts seconds (REKEY_VOLUME), so the signal lands inside the pass and
+        cryptsetup tears down with the requirement still set. The assertions
+        after the wait pin that state: a test that let the re-key finish would
+        exercise nothing.
+        """
+        log = fx["base"] / "interrupt.log"
+        with open(log, "wb") as handle:
+            proc = subprocess.Popen(
+                ["sh", str(IMAGE / "bb-sealed-provision")],
+                stdout=handle, stderr=subprocess.STDOUT,
+                env=self.provision_env(fx), start_new_session=True)
+        try:
+            deadline = time.monotonic() + 300
+            while time.monotonic() < deadline:
+                if "online-reencrypt" in self.header(fx):
+                    break
+                if proc.poll() is not None:
+                    self.fail("the re-key finished before it could be interrupted:\n"
+                              + log.read_text())
+                time.sleep(0.02)
+            else:
+                self.fail("the re-encryption requirement never reached the header")
+            # The requirement reaches the header before cryptsetup starts moving
+            # data; a SIGTERM in that gap kills the process before its handler
+            # prints "Reencryption interrupted." (measured in CI: two identical
+            # jobs at one commit, and the check job's signal landed too early).
+            # Settle inside the data pass, and fail clearly if it was over.
+            time.sleep(1.0)
+            self.assertIsNone(proc.poll(), "the re-key finished before it could be interrupted")
+            os.killpg(proc.pid, signal.SIGTERM)
+            self.assertNotEqual(proc.wait(timeout=300), 0, log.read_text())
+        finally:
+            if proc.poll() is None:
+                os.killpg(proc.pid, signal.SIGKILL)
+                proc.wait(timeout=60)
+        output = log.read_text()
+        self.assertIn("Reencryption interrupted.", output)
+        self.assertIn("online-reencrypt", self.header(fx))
+        return output
+
+    def master_key(self, fx: dict, key: pathlib.Path) -> str:
+        """SHA-256 of the 64-byte master key, read through `key`."""
+        result = self.crypt("--batch-mode", "luksDump", "--dump-master-key",
+                            "--key-file", str(key), fx["root_loop"])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        lines = result.stdout.splitlines()
+        start = next(i for i, line in enumerate(lines) if "MK dump:" in line)
+        hexed = "".join(line.replace("MK dump:", "") for line in lines[start:])
+        return hashlib.sha256(bytes.fromhex("".join(hexed.split()))).hexdigest()
+
+    def opens(self, fx: dict, key: pathlib.Path) -> bool:
+        return self.crypt("luksOpen", "--test-passphrase", "--key-file", str(key),
+                          fx["root_loop"]).returncode == 0
+
+    def mount_boot(self, fx: dict) -> None:
+        """Mount the boot partition even if a killed run left it mounted."""
+        subprocess.run(["umount", str(fx["mnt"])], capture_output=True)
+        subprocess.run(["mount", fx["boot_loop"], str(fx["mnt"])], check=True, timeout=60)
+
+    def unseal(self, fx: dict, out: pathlib.Path) -> pathlib.Path:
+        blob = fx["mnt"] / "odile" / "luks-vol.key.sealed"
+        self.mount_boot(fx)
+        try:
+            shutil.copyfile(blob, fx["base"] / "blob.copy")
+        finally:
+            subprocess.run(["umount", str(fx["mnt"])], check=True, timeout=60)
+        result = subprocess.run([str(self.standin), "--unseal",
+                                 str(fx["base"] / "blob.copy"), str(out)],
+                                capture_output=True, text=True, timeout=60)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return out
+
+    def boot_files(self, fx: dict) -> dict:
+        files = {}
+        self.mount_boot(fx)
+        try:
+            for name in ("luks-vol.key.sealed", "luks-vol.keyslot", "luks-bootstrap.key"):
+                path = fx["mnt"] / "odile" / name
+                files[name] = path.read_bytes() if path.exists() else None
+        finally:
+            subprocess.run(["umount", str(fx["mnt"])], check=True, timeout=60)
+        return files
+
+    def keyslots(self, fx: dict) -> list:
+        result = self.crypt("luksDump", fx["root_loop"])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return [line.split(":")[0].strip() for line in result.stdout.splitlines()
+                if line.startswith("  ") and line.rstrip().endswith(": luks2")]
+
+    # -- the behaviour -----------------------------------------------------
+
+    def test_the_first_boot_replaces_the_build_volume_key(self) -> None:
+        fx = self.fixture()
+        before = self.master_key(fx, fx["build"])
+        self.assertTrue(self.opens(fx, fx["build"]))
+        result = self.run_provision(fx)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("re-keying", result.stdout)
+        self.assertIn("re-keyed: volume key", result.stdout)
+        self.assertIn("shredded the first-boot bootstrap key", result.stdout)
+        # The definitive fact: the volume key is not the published image's.
+        guest = self.unseal(fx, fx["base"] / "guest.key")
+        self.assertNotEqual(before, self.master_key(fx, guest))
+        # The image's own way in is gone, file and keyslot alike.
+        self.assertFalse(self.opens(fx, fx["build"]))
+        files = self.boot_files(fx)
+        self.assertIsNone(files["luks-bootstrap.key"])
+        self.assertIsNotNone(files["luks-vol.key.sealed"])
+        self.assertEqual(len(self.keyslots(fx)), 1)
+        # And the tenant's data came through the online re-encryption intact.
+        self.assertTrue(self.opens(fx, guest))
+        self.crypt("--key-file", str(guest), "luksOpen", fx["root_loop"], "odile-rekey-check")
+        rootmnt = fx["base"] / "check.mnt"
+        rootmnt.mkdir()
+        subprocess.run(["mount", "-o", "ro", "/dev/mapper/odile-rekey-check", str(rootmnt)],
+                       check=True, timeout=60)
+        try:
+            self.assertEqual((rootmnt / "marker.txt").read_text(), "the tenant's own filesystem\n")
+            self.assertEqual(hashlib.sha256((rootmnt / "blob").read_bytes()).hexdigest(),
+                             fx["marker"].read_text().split()[0])
+        finally:
+            subprocess.run(["umount", str(rootmnt)], check=True, timeout=60)
+            self.crypt("close", "odile-rekey-check")
+        state = json.loads(fx["state"].read_text())
+        self.assertTrue(state["sealed"])
+        self.assertTrue(state["bootstrap_removed"])
+
+    def test_an_interrupted_rekey_is_resumed_on_the_next_run(self) -> None:
+        """A stop mid-re-key must be finished by the next run, not fatal.
+
+        The header is left in `Requirements: online-reencrypt-*` with the
+        volume key the pass generated already wrapped by the blob's keyslot, and
+        the image's build key no longer opens it. The next run must unseal V,
+        repair the metadata, resume, and then finalize: one keyslot, the
+        bootstrap file shredded, seal.json written, the same volume key -- not a
+        third one -- and the tenant's data intact.
+        """
+        fx = self.fixture(self.REKEY_VOLUME)
+        before = self.master_key(fx, fx["build"])
+        self.interrupt_rekey(fx)
+        self.assertFalse(self.opens(fx, fx["build"]))
+        guest = self.unseal(fx, fx["base"] / "guest.key")
+        self.assertTrue(self.opens(fx, guest))
+        self.assertNotEqual(before, self.master_key(fx, guest))
+        files = self.boot_files(fx)
+        self.assertIsNotNone(files["luks-vol.key.sealed"])
+        self.assertIsNotNone(files["luks-bootstrap.key"])
+
+        again = self.run_provision(fx)
+        self.assertEqual(again.returncode, 0, again.stdout + again.stderr)
+        self.assertIn("resuming the interrupted re-encryption", again.stdout)
+        self.assertNotIn("re-keying ", again.stdout)
+        self.assertIn("shredded the first-boot bootstrap key", again.stdout)
+        self.assertEqual(self.master_key(fx, guest), self.master_key(
+            fx, self.unseal(fx, fx["base"] / "guest2.key")))
+        self.assertFalse(self.opens(fx, fx["build"]))
+        self.assertEqual(len(self.keyslots(fx)), 1)
+        self.assertIsNone(self.boot_files(fx)["luks-bootstrap.key"])
+        state = json.loads(fx["state"].read_text())
+        self.assertTrue(state["sealed"])
+        self.assertTrue(state["bootstrap_removed"])
+        # The data pass the interrupted run started is now whole: the filesystem
+        # checks clean and the far end of the volume reads.
+        opened = self.crypt("--key-file", str(guest), "luksOpen",
+                            fx["root_loop"], "odile-resume-check")
+        self.assertEqual(opened.returncode, 0, opened.stderr)
+        try:
+            if shutil.which("e2fsck"):
+                fsck = subprocess.run(["e2fsck", "-fn", "/dev/mapper/odile-resume-check"],
+                                      capture_output=True, text=True, timeout=300)
+                self.assertEqual(fsck.returncode, 0, fsck.stdout + fsck.stderr)
+            rootmnt = fx["base"] / "resume.mnt"
+            rootmnt.mkdir()
+            subprocess.run(["mount", "-o", "ro", "/dev/mapper/odile-resume-check", str(rootmnt)],
+                           check=True, timeout=60)
+            try:
+                self.assertEqual((rootmnt / "marker.txt").read_text(),
+                                 "the tenant's own filesystem\n")
+                self.assertEqual((rootmnt / "tail.txt").read_text(),
+                                 "the far end of the filesystem\n")
+                self.assertEqual(hashlib.sha256((rootmnt / "blob").read_bytes()).hexdigest(),
+                                 fx["marker"].read_text().split()[0])
+            finally:
+                subprocess.run(["umount", str(rootmnt)], check=True, timeout=60)
+        finally:
+            self.crypt("close", "odile-resume-check")
+
+    def test_a_second_run_writes_nothing_and_a_rotate_keeps_the_guest_key(self) -> None:
+        """The keyslot dance is the fallback: a new V, the same volume key."""
+        fx = self.fixture()
+        self.assertEqual(self.run_provision(fx).returncode, 0)
+        keyslots = self.keyslots(fx)
+        sealed = self.boot_files(fx)["luks-vol.key.sealed"]
+        first = self.unseal(fx, fx["base"] / "guest.key")
+        volume = self.master_key(fx, first)
+
+        state_before = fx["state"].read_text()
+        second = self.run_provision(fx)
+        self.assertEqual(second.returncode, 0, second.stdout + second.stderr)
+        self.assertIn("already provisioned", second.stdout)
+        self.assertIn("state already final", second.stdout)
+        self.assertNotIn("re-keyed", second.stdout)
+        self.assertEqual(self.keyslots(fx), keyslots)
+        self.assertEqual(self.boot_files(fx)["luks-vol.key.sealed"], sealed)
+        self.assertEqual(self.master_key(fx, fx["base"] / "guest.key"), volume)
+        # "writes nothing" is literal: the state file keeps its bytes.
+        self.assertEqual(fx["state"].read_text(), state_before)
+
+        rotated = self.run_provision(fx, "--rotate")
+        self.assertEqual(rotated.returncode, 0, rotated.stdout + rotated.stderr)
+        self.assertNotIn("re-keyed", rotated.stdout)
+        self.assertIn("killed the previous keyslot", rotated.stdout)
+        replacement = self.unseal(fx, fx["base"] / "guest2.key")
+        self.assertNotEqual(first.read_bytes(), replacement.read_bytes())
+        self.assertFalse(self.opens(fx, first))
+        self.assertTrue(self.opens(fx, replacement))
+        self.assertEqual(self.master_key(fx, replacement), volume)
+        self.assertEqual(len(self.keyslots(fx)), 1)
+
+    def test_a_run_killed_after_the_rekey_is_finalized_on_the_next_run(self) -> None:
+        """The re-key commits, then the machine dies before the shred.
+
+        That disk has the blob, the guest key and no build keyslot -- but the
+        bootstrap file is still on the boot partition and /verify has no state.
+        `already provisioned` must still finalize: shred the file and write
+        seal.json. The bench found this exact shape when the first boot hung in
+        the re-key's finalize (ODL-454 follow-up, 2026-11-13).
+        """
+        fx = self.fixture()
+        self.assertEqual(self.run_provision(fx).returncode, 0)
+        subprocess.run(["mount", fx["boot_loop"], str(fx["mnt"])], check=True, timeout=60)
+        try:
+            shutil.copyfile(fx["build"], fx["mnt"] / "odile" / "luks-bootstrap.key")
+            os.chmod(fx["mnt"] / "odile" / "luks-bootstrap.key", 0o600)
+        finally:
+            subprocess.run(["umount", str(fx["mnt"])], check=True, timeout=60)
+        fx["state"].unlink()
+
+        again = self.run_provision(fx)
+        self.assertEqual(again.returncode, 0, again.stdout + again.stderr)
+        self.assertIn("already provisioned", again.stdout)
+        self.assertIn("shredded the first-boot bootstrap key", again.stdout)
+        self.assertIsNone(self.boot_files(fx)["luks-bootstrap.key"])
+        state = json.loads(fx["state"].read_text())
+        self.assertTrue(state["sealed"])
+        self.assertTrue(state["bootstrap_removed"])
+        self.assertEqual(len(self.keyslots(fx)), 1)
+
+
+class ReleasesRouteTests(unittest.TestCase):
+    """ODL-332: /releases/* is spliced before the site's catch-all, once."""
+
+    LIVE = (
+        "{\n\tadmin off\n}\n\n"
+        "odile.fyi {\n"
+        "\thandle {\n\t\treverse_proxy 127.0.0.1:8080\n\t}\n"
+        "\t# BEGIN odile-seed\n\thandle @seed {\n\t}\n\t# END odile-seed\n"
+        "}\n"
+    )
+
+    def setUp(self) -> None:
+        self.module = _load("odile_deploy_releases", ROOT / "deploy" / "caddy" / "deploy_releases.py")
+        self.fragment = (ROOT / "deploy" / "caddy" / "releases.caddy").read_text()
+
+    def test_the_block_lands_inside_the_site_before_the_catch_all(self) -> None:
+        spliced = self.module.splice(self.LIVE, self.fragment)
+        self.assertLess(spliced.index("handle_path /releases/*"), spliced.index("# BEGIN odile-seed"))
+        self.assertLess(spliced.index("odile.fyi {"), spliced.index("handle_path /releases/*"))
+        self.assertEqual(spliced.count("handle_path /releases/*"), 1)
+
+    def test_a_second_splice_is_the_same_file(self) -> None:
+        once = self.module.splice(self.LIVE, self.fragment)
+        self.assertEqual(self.module.splice(once, self.fragment), once)
+
+    def test_an_unbalanced_marker_is_an_error_not_a_guess(self) -> None:
+        broken = self.LIVE.replace("# END odile-seed", "")
+        broken = broken.replace("# BEGIN odile-seed", "# BEGIN odile-releases\nhandle_path /x/* {\n}\n")
+        with self.assertRaises(ValueError):
+            self.module.splice(broken, self.fragment)
+
+
+class ProductionStandInTests(unittest.TestCase):
+    """ODL-332: the production image is not the bench image.
+
+    The QEMU stand-ins (the smoke unit, its proxy sockets and the boot-report
+    stand-in) are gated on the production marker; the machine's own pin is
+    placed in the disk after `uki.sh` has measured the signed UKI.
+    """
+
+    def test_a_production_build_takes_no_guest_smoke(self) -> None:
+        text = (IMAGE / "sealed-image.sh").read_text()
+        self.assertIn('[ "$GUEST_SMOKE" = 1 ] && [ "$PRODUCTION" != 1 ]', text)
+
+    def test_the_bench_attest_stand_in_is_skipped_in_production(self) -> None:
+        text = (IMAGE / "install-stack.sh").read_text()
+        self.assertIn('[ ! -f /etc/odile/production ]', text)
+        guard = text.index('if [ "$unit" = odile-bench-attest.service ]')
+        enable = text.index('systemctl enable "$unit"')
+        self.assertLess(guard, enable)
+        self.assertIn("Servury's own boot report", text)
+
+    def test_place_pin_opens_the_disk_with_the_bootstrap_key(self) -> None:
+        place = IMAGE / "place-pin.sh"
+        self.assertTrue(place.is_file())
+        self.assertTrue(os.access(place, os.X_OK))
+        text = place.read_text()
+        self.assertIn("/odile/luks-bootstrap.key", text)
+        self.assertIn("/etc/odile/tenant-image.pin", text)
+        self.assertIn("unshare -m", text)
+        self.assertIn("--production", (IMAGE / "sealed-image.sh").read_text())
+
+    def test_place_pin_refuses_a_missing_pin(self) -> None:
+        with tempfile.NamedTemporaryFile(suffix=".raw") as disk:
+            result = subprocess.run(
+                ["bash", str(IMAGE / "place-pin.sh"), "--disk", disk.name,
+                 "--pin", "/nonexistent.pin"],
+                capture_output=True, text=True, timeout=60)
+        self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+        self.assertIn("no pin at /nonexistent.pin", result.stderr)
+
+
+class RecoverySeedTests(unittest.TestCase):
+    """ODL-332 round 7: the done page offered no recovery file.
+
+    The first-visit page is reachable as soon as Caddy answers; the release
+    installer writes /etc/odile/recovery.txt only near the end of its run. A
+    user who set the sign-in inside that window got a done page saying "The
+    recovery file is not available on this machine" and no download (measured:
+    page at 09:17:37.890Z, file at 09:17:37.994Z). The first-visit unit now
+    seeds the file first. These tests run the program and compare its bytes
+    with the installer's own renderer, so the two formats cannot drift.
+    """
+
+    SCRIPT = IMAGE / "recovery-seed.py"
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.dir = pathlib.Path(self.tmp.name)
+        self.path = self.dir / "recovery.txt"
+        self.cmdline = self.dir / "cmdline"
+        self.cmdline.write_text(
+            "root=/dev/mapper/root_crypt ro console=ttyS0 bb.release=2026.11.2"
+            " bb.host=odl-7971a8 bb.iid=31a63bbb seal_id=0123456789abcdef\n",
+            encoding="utf-8")
+        self.installer = _load("odile_install_recovery_seed",
+                               ROOT / "installer" / "odile_install.py")
+
+    def run_seed(self, *extra: str) -> subprocess.CompletedProcess:
+        return subprocess.run(
+            [sys.executable, str(self.SCRIPT), "--path", str(self.path),
+             "--cmdline", str(self.cmdline), *extra],
+            capture_output=True, text=True, timeout=60)
+
+    def run_seed_stdin(self, password: str) -> subprocess.CompletedProcess:
+        """A rebuild's call: the password on stdin, never on argv."""
+        return subprocess.run(
+            [sys.executable, str(self.SCRIPT), "--path", str(self.path),
+             "--tenant", "odl-7971a8", "--instance", "31a63bbb", "--password-stdin"],
+            input=password, capture_output=True, text=True, timeout=60)
+
+    def test_a_seeded_password_replaces_a_generated_one_and_keeps_written(self) -> None:
+        first = self.run_seed()
+        self.assertEqual(first.returncode, 0, first.stderr)
+        generated = self.installer.parse_recovery(self.path.read_text(encoding="utf-8"))
+        password = "test-rebuild-password-2026-0001"
+        result = self.run_seed_stdin(password)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        parsed = self.installer.parse_recovery(self.path.read_text(encoding="utf-8"))
+        self.assertEqual(parsed["backup_password"], password)
+        self.assertNotEqual(parsed["backup_password"], generated["backup_password"])
+        self.assertEqual(parsed["written"], generated["written"])
+        self.assertEqual(stat.S_IMODE(self.path.stat().st_mode), 0o600)
+        self.assertIn("the password from the seed", result.stdout)
+        self.assertNotIn(password, result.stdout)
+        self.assertNotIn(password, result.stderr)
+
+    def test_the_stdin_reader_refuses_a_short_blank_or_spaced_value(self) -> None:
+        self.assertEqual(self.run_seed().returncode, 0)
+        before = self.path.read_bytes()
+        for bad in ("short", "", "two words 0123456789abcdef"):
+            result = self.run_seed_stdin(bad)
+            self.assertNotEqual(result.returncode, 0, bad)
+            self.assertIn("recovery-seed:", result.stderr)
+            self.assertEqual(self.path.read_bytes(), before, bad)
+
+    def test_the_seed_is_the_installers_own_recovery_file(self) -> None:
+        result = self.run_seed()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(stat.S_IMODE(self.path.stat().st_mode), 0o600)
+        text = self.path.read_text(encoding="utf-8")
+        parsed = self.installer.parse_recovery(text)
+        self.assertEqual(len(parsed.get("backup_password", "")), 32)
+        # `ensure_recovery` adopts the password and Written it finds and
+        # rewrites from its own renderer; that renderer must produce exactly
+        # these bytes from the same inputs.
+        self.assertEqual(
+            text,
+            self.installer.render_recovery(
+                "odl-7971a8", "31a63bbb", parsed["backup_password"], None,
+                "odl-7971a8.odile.fyi", written=parsed["written"]))
+        self.assertIn("Certificate SHA-256: (pending", text)
+
+    def test_a_second_run_leaves_the_file_byte_identical(self) -> None:
+        first = self.run_seed()
+        self.assertEqual(first.returncode, 0, first.stderr)
+        before = self.path.read_bytes()
+        stamp = self.path.stat().st_mtime_ns
+        second = self.run_seed()
+        self.assertEqual(second.returncode, 0, second.stderr)
+        self.assertEqual(self.path.read_bytes(), before)
+        self.assertEqual(self.path.stat().st_mtime_ns, stamp)
+
+    def test_an_installers_recovery_file_is_not_replaced(self) -> None:
+        canonical = self.installer.render_recovery(
+            "odl-7971a8", "31a63bbb", "Z" * 32, "sha256:" + "a" * 64,
+            "odl-7971a8.odile.fyi", written="2026-11-12T09:17:37Z")
+        self.path.write_text(canonical, encoding="utf-8")
+        os.chmod(self.path, 0o600)
+        result = self.run_seed()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.path.read_text(encoding="utf-8"), canonical)
+
+    def test_the_seed_names_the_machine_from_the_command_line(self) -> None:
+        result = self.run_seed()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        parsed = self.installer.parse_recovery(self.path.read_text(encoding="utf-8"))
+        self.assertIn("odl-7971a8", self.path.read_text(encoding="utf-8"))
+        self.assertIn("31a63bbb", self.path.read_text(encoding="utf-8"))
+        self.assertIn("written", parsed)
+        # A command line with no bb.host writes nothing rather than a file
+        # naming the wrong machine.
+        self.cmdline.write_text("root=/dev/mapper/root_crypt ro\n", encoding="utf-8")
+        self.path.unlink()
+        result = self.run_seed()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse(self.path.exists())
+
+    def test_the_first_visit_unit_seeds_before_it_serves(self) -> None:
+        unit = (IMAGE / "odile-first-visit.service").read_text(encoding="utf-8")
+        self.assertIn(
+            "ExecStartPre=/usr/bin/python3 /usr/local/lib/odile/recovery-seed.py",
+            unit)
+        self.assertIn("--path /etc/odile/recovery.txt", unit)
+        self.assertLess(unit.index("ExecStartPre="), unit.index("\nExecStart="))
+        stack = (IMAGE / "install-stack.sh").read_text(encoding="utf-8")
+        self.assertIn(
+            'install_file "$HERE/recovery-seed.py" /usr/local/lib/odile/recovery-seed.py 0755',
+            stack)
+        image = (IMAGE / "sealed-image.sh").read_text(encoding="utf-8")
+        self.assertIn("recovery-seed.py", image)
+
+
+if __name__ == "__main__":
+    unittest.main()
