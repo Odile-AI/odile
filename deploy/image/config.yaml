@@ -1,0 +1,44 @@
+# Odile image bench — the tenant profile served on the Webapp port.
+#
+# The same five blocks as deploy/demo-host/config.yaml, with two bench-only
+# changes:
+#   * public_url is a non-loopback name so the Hermes basic-auth gate engages
+#     even on a loopback bind (public_hosts_engage_gate in
+#     hermes_cli/web_server_boundary.py). The host name is never resolved: the
+#     bench talks to the bound address, and the Host-header check accepts a
+#     loopback alias when the bind is loopback. A real tenant gets
+#     https://<tenant>.odile.fyi here.
+#   * __WEBAPP_HOST__ and __WEBAPP_PORT__ are substituted by install-stack.sh
+#     (--webapp-host/--webapp-port): loopback in the QEMU guest, all
+#     interfaces inside the container's own network namespace. On a real
+#     tenant the Webapp stays on 127.0.0.1 behind Caddy.
+#
+# install-stack.sh prepends the `_config_version` value Hermes seeded, so this
+# file never pins a schema number.
+
+model:
+  default: "deepseek-ai/DeepSeek-V4.1-Flash-1017-abliterated"
+  provider: "custom"
+  base_url: "https://cloud-api.near.ai/v1"
+
+agent:
+  reasoning_effort: "high"
+
+custom_providers:
+  - name: Near AI
+    base_url: https://cloud-api.near.ai/v1
+    key_env: HERMES_CUSTOM_CLOUD_API_NEAR_AI_API_KEY
+    model: deepseek-ai/DeepSeek-V4.1-Flash-1017-abliterated
+
+webapp:
+  enabled: true
+  host: __WEBAPP_HOST__
+  port: __WEBAPP_PORT__
+  public_url: "http://tenant.odile.test:__WEBAPP_PORT__"
+
+# Hermes's own Desktop first-run chat is off, exactly as on a tenant (ODL-387).
+# The bench serves the same first screen a tenant gets; without this block the
+# Webapp opens Hermes's scripted greeting and name card before Odile's ritual.
+onboarding:
+  run: false
+  profile_build: "off"

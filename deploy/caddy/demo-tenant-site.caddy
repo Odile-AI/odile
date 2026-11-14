@@ -1,0 +1,87 @@
+# BEGIN odile-demo-public
+# demo.odile.fyi — the hosted demo, served by Odile's own tenant machine
+# (odl-7971a8, 203.0.113.87): the `tenant` gateway on 127.0.0.1:9130 and the
+# first-visit service on 127.0.0.1:8091. Card: ODL-503.
+#
+# Committed source of truth for the live block in the tenant's
+# /etc/caddy/Caddyfile. Apply and verify it with
+# deploy/demo-host/deploy_demo_public.py and deploy/demo-host/check_demo_public.py.
+# Edit this file, not the live Caddyfile.
+#
+# `/login` is Odile's page: Caddy serves /srv/odile-demo/login.html before the
+# gate, so the first branded moment after "Live demo" is Odile's. The page
+# posts to Hermes's own /auth/password-login; the sign-in gate, its cookie and
+# the judge account stay Hermes's. Every other path is the Webapp.
+#
+# `/verify` and `/attestation` are this machine's own report: the first-visit
+# service renders the access report the machine wrote, and the attestation is
+# the CPU's own JSON. A judge sent to https://demo.odile.fyi/verify reads the
+# report of the machine that answered, not Odile's HQ page.
+#
+# Every write reaches Hermes: the block carries no deny-by-default mutation
+# matcher and no self-update matcher (t_69f1a5f3, Savio 2026-11-13: "Remove
+# everything about freezing in our project codebase (self-update block
+# included)"). A judge saves settings and deletes sessions like a customer, and
+# a self-update is open; a 403 from this block would be the regression. The
+# sign-in gate, its cookie and the judge account stay Hermes's.
+#
+# `admin off` means a change here needs `systemctl restart caddy`; the deploy
+# script validates, backs up and restarts.
+demo.odile.fyi {
+	encode zstd gzip
+
+	header {
+		Server odile-demo
+		Strict-Transport-Security "max-age=31536000"
+		X-Robots-Tag "noindex, nofollow"
+	}
+
+	# Odile sign-in page, installed by deploy/demo-host/deploy_demo_public.py.
+	# `no-store` keeps a signed-out browser from showing a stale page.
+	handle /login* {
+		root * /srv/odile-demo
+		rewrite * /login.html
+		header Cache-Control "no-store"
+		file_server
+	}
+
+	# The machine's own access report (ODL-473), rendered by the tenant's
+	# first-visit service. Exact path: nothing else reaches the service here.
+	handle /verify {
+		header Cache-Control "no-store"
+		reverse_proxy 127.0.0.1:8091
+	}
+
+	# The CPU's own report, the file /verify reads. Public by design; one file,
+	# so no other path under /var/lib/odile is reachable.
+	handle /attestation {
+		header Cache-Control "no-store"
+		header Content-Type "application/json"
+		rewrite * /attestation.json
+		root * /var/lib/odile
+		file_server
+	}
+
+	# The API browser is the operator's map of the surface; the Webapp never
+	# loads it. 404, so it does not advertise what is left.
+	@apidocs path /openapi.json /docs /redoc /api/openapi.json
+	handle @apidocs {
+		respond 404
+	}
+
+	handle {
+		reverse_proxy 127.0.0.1:9130 {
+			# public_url builds the sign-in callback and the origin check from
+			# the host the browser used, so forward the browser's Host.
+			header_up Host {host}
+			# Chat tokens and the Webapp's events stream as they are produced;
+			# Caddy upgrades the WebSocket itself.
+			flush_interval -1
+		}
+	}
+
+	log {
+		output discard
+	}
+}
+# END odile-demo-public

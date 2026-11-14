@@ -1,0 +1,40 @@
+# Odile zero-touch first boot — fetch the seed and install (ODL-456).
+#
+# One oneshot per boot, before the tenant gateway. It prints exactly one
+# `odile-firstboot:` line to the serial console (`installed`, `same`, or
+# `fail-closed: <reason>`) and writes nothing else there; the installer it
+# runs logs to /var/log/odile-firstboot.log.
+#
+# It runs as root because its whole job is privileged and one-time: read the
+# measured command line, exchange the one-time setup token at the seed
+# endpoint, write /etc/odile/seed.json 0600, install the first-visit state and
+# start the page. The tenant process it starts is unprivileged.
+#
+# Fail-closed is not a failure of the boot: the unit exits 0, the rest of the
+# system comes up, and the machine is reachable. A missing or spent token means
+# "not installed", never "half installed" — the seed cache is written atomically
+# and the state file only after the installer returned 0.
+[Unit]
+Description=Odile zero-touch first boot — seed and install
+After=network-online.target
+Wants=network-online.target
+Before=odile-agent.service
+ConditionPathExists=/usr/local/lib/odile-image/odile-firstboot.py
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/bin/python3 /usr/local/lib/odile-image/odile-firstboot.py
+# The installer converges the stack under emulation; a TCG guest takes minutes,
+# not seconds. The fail-closed paths return long before this.
+TimeoutStartSec=1200
+# The console is the evidence surface: one line, on ttyS0, in the serial
+# transcript. StandardError goes to the same place so a Python traceback cannot
+# hide in the journal alone.
+StandardOutput=journal+console
+StandardError=journal+console
+# No sandbox: the unit starts other units and writes /etc, /var/lib and /var/log.
+# It is a oneshot in the measured image, not a listener.
+
+[Install]
+WantedBy=multi-user.target

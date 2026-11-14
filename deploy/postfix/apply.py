@@ -1,0 +1,583 @@
+#!/usr/bin/python3
+"""Reconcile Postfix on this machine with the files committed in deploy/postfix/.
+
+    ./deploy/postfix/apply.py             dry run: say what would change
+    ./deploy/postfix/apply.py --apply     write, postmap, create mailboxes, restart
+    ./deploy/postfix/apply.py --check     exit 1 if anything differs (monitoring)
+    ./deploy/postfix/apply.py --self-test offline checks for the fresh-host path
+
+The committed files are the source of truth; /etc/postfix is a copy of them.
+Comparing is byte-for-byte plus owner and mode, so "a second run changes
+nothing" is a fact and not a hope.
+
+Two pieces of state are *derived* from the committed files rather than
+committed themselves, and a fresh host is exactly where they go missing:
+
+  * `/etc/postfix/virtual.db`, built by `postmap` from `virtual`. Without it
+    help@odile.fyi and every VERP bounce address are dead while the config
+    still looks right, so the database is checked by asking it the questions
+    Postfix will ask, not by trusting its presence;
+  * the two local mailboxes — `dsn` for VERP bounces and DMARC reports,
+    `help` for replies — each a nologin user with a Maildir.
+
+The SASL account database (/etc/sasldb2) is *state*, not config: it holds
+tenant secrets, is created with saslpasswd2, and never appears in git. This
+script verifies it and fixes its permissions; it does not invent accounts.
+
+Exit codes: 0 clean or applied, 1 drift (with --check) or a failed step,
+2 usage error.
+"""
+
+from __future__ import annotations
+
+import argparse
+import grp
+import os
+import pwd
+import stat
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+from typing import NamedTuple, Sequence
+
+HERE = Path(__file__).resolve().parent
+POSTFIX = Path("/etc/postfix")
+VIRTUAL = POSTFIX / "virtual"
+VIRTUAL_DB = POSTFIX / "virtual.db"
+SASLDB = Path("/etc/sasldb2")
+
+
+class Mailbox(NamedTuple):
+    user: str
+    home: Path
+    reason: str
+
+
+# Every address under mail.odile.fyi that is not help@ resolves here (see
+# deploy/postfix/virtual): VERP bounces, DMARC reports, delay notices.
+MAILBOXES = (
+    Mailbox("dsn", Path("/var/mail/dsn"),
+            "every VERP sender and every unmatched address under mail.odile.fyi"),
+    Mailbox("help", Path("/var/mail/help"), "replies to help@odile.fyi"),
+)
+
+# source (relative to this directory), destination, owner, group, mode
+FILES = [
+    ("main.cf", POSTFIX / "main.cf", "root", "root", 0o644),
+    ("master.cf", POSTFIX / "master.cf", "root", "root", 0o644),
+    ("virtual", VIRTUAL, "root", "root", 0o644),
+    ("sender_login.pcre", POSTFIX / "sender_login.pcre", "root", "root", 0o644),
+    ("sasl/smtpd.conf", POSTFIX / "sasl" / "smtpd.conf", "root", "root", 0o644),
+]
+
+
+def ids(owner: str, group: str) -> tuple[int, int]:
+    return pwd.getpwnam(owner).pw_uid, grp.getgrnam(group).gr_gid
+
+
+def first_difference(wanted: bytes, live: bytes) -> str:
+    want = wanted.decode("utf-8", "replace").splitlines()
+    have = live.decode("utf-8", "replace").splitlines()
+    for number, (left, right) in enumerate(zip(want, have), start=1):
+        if left != right:
+            return f"line {number}: committed {left!r}, live {right!r}"
+    if len(want) > len(have):
+        return f"live file ends at line {len(have)}; committed has {len(want)}"
+    return f"live file has {len(have)} lines; committed has {len(want)}"
+
+
+def inspect(entry) -> list[str]:
+    """Everything that differs for one file, as human-readable lines."""
+    source, destination, owner, group, mode = entry
+    problems: list[str] = []
+    wanted = (HERE / source).read_bytes()
+    if not destination.exists():
+        return [f"{destination}: missing"]
+    live = destination.read_bytes()
+    if wanted != live:
+        problems.append(f"{destination}: content differs — {first_difference(wanted, live)}")
+    info = destination.stat()
+    if stat.S_IMODE(info.st_mode) != mode:
+        problems.append(
+            f"{destination}: mode {oct(stat.S_IMODE(info.st_mode))[2:]}, want {oct(mode)[2:]}"
+        )
+    uid, gid = ids(owner, group)
+    if (info.st_uid, info.st_gid) != (uid, gid):
+        problems.append(f"{destination}: owner {info.st_uid}:{info.st_gid}, want {owner}:{group}")
+    return problems
+
+
+def write(entry) -> bool:
+    """Copy one file into place atomically. Returns True if content changed."""
+    source, destination, owner, group, mode = entry
+    wanted = (HERE / source).read_bytes()
+    changed = not destination.exists() or destination.read_bytes() != wanted
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    uid, gid = ids(owner, group)
+    if changed:
+        handle = tempfile.NamedTemporaryFile(dir=destination.parent, delete=False)
+        try:
+            handle.write(wanted)
+            handle.flush()
+            os.fsync(handle.fileno())
+        finally:
+            handle.close()
+        os.chmod(handle.name, mode)
+        os.chown(handle.name, uid, gid)
+        os.replace(handle.name, destination)
+    else:
+        os.chmod(destination, mode)
+        os.chown(destination, uid, gid)
+    return changed
+
+
+def mailbox_problems(boxes: Sequence[Mailbox] | None = None) -> list[str]:
+    """Each mailbox needs a local user, the committed home, and a Maildir."""
+    problems: list[str] = []
+    for box in MAILBOXES if boxes is None else boxes:
+        try:
+            account = pwd.getpwnam(box.user)
+        except KeyError:
+            problems.append(
+                f"system user {box.user!r} is missing: {box.reason} has nowhere to land"
+            )
+            continue
+        if Path(account.pw_dir) != box.home:
+            problems.append(f"{box.user} home is {account.pw_dir}, want {box.home}")
+        maildir = box.home / "Maildir"
+        for sub in ("new", "cur", "tmp"):
+            directory = maildir / sub
+            if not directory.is_dir():
+                problems.append(f"{directory}: missing")
+        if maildir.is_dir():
+            info = maildir.stat()
+            if stat.S_IMODE(info.st_mode) != 0o700:
+                problems.append(
+                    f"{maildir}: mode {oct(stat.S_IMODE(info.st_mode))[2:]}, want 700"
+                )
+            if (info.st_uid, info.st_gid) != (account.pw_uid, account.pw_gid):
+                problems.append(
+                    f"{maildir}: owner {info.st_uid}:{info.st_gid}, "
+                    f"want {box.user}:{box.user}"
+                )
+    return problems
+
+
+def ensure_mailbox(boxes: Sequence[Mailbox] | None = None) -> list[str]:
+    """Create whatever mailbox_problems() reports. Returns what it did."""
+    actions: list[str] = []
+    for box in MAILBOXES if boxes is None else boxes:
+        try:
+            account = pwd.getpwnam(box.user)
+        except KeyError:
+            subprocess.run(
+                ["useradd", "--create-home", "--home-dir", str(box.home),
+                 "--shell", "/usr/sbin/nologin", box.user],
+                check=True,
+            )
+            account = pwd.getpwnam(box.user)
+            actions.append(f"{box.home} (system user {box.user})")
+        maildir = box.home / "Maildir"
+        for sub in ("new", "cur", "tmp"):
+            directory = maildir / sub
+            if not directory.is_dir():
+                directory.mkdir(parents=True, exist_ok=True)
+                actions.append(str(directory))
+            os.chown(directory, account.pw_uid, account.pw_gid)
+        if maildir.is_dir():
+            info = maildir.stat()
+            if (stat.S_IMODE(info.st_mode) != 0o700
+                    or (info.st_uid, info.st_gid) != (account.pw_uid, account.pw_gid)):
+                actions.append(f"{maildir} (mode 700, owner {box.user})")
+        os.chmod(maildir, 0o700)
+        os.chown(maildir, account.pw_uid, account.pw_gid)
+    return actions
+
+
+def virtual_entries(path: Path | None = None) -> dict[str, str]:
+    """The alias map as Postfix will read it: key → destination, comments gone."""
+    entries: dict[str, str] = {}
+    text = (path or VIRTUAL).read_text(encoding="utf-8")
+    for line in text.splitlines():
+        line = line.split("#", 1)[0].strip()
+        fields = line.split()
+        if len(fields) >= 2:
+            entries[fields[0]] = " ".join(fields[1:])
+    return entries
+
+
+def postmap_entries(path: Path | None = None) -> tuple[dict[str, str], str]:
+    """List the live database itself with `postmap -s`. Returns (map, error).
+
+    `postmap -s` prints one `key<TAB>value` line per element, which is the
+    only way to see an entry the committed source no longer has: `-q` for the
+    committed keys cannot answer a question nobody asks.
+    """
+    target = path or VIRTUAL
+    code, output = run(["postmap", "-s", str(target)])
+    if code != 0:
+        return {}, output or f"postmap -s {target} exited {code}"
+    entries: dict[str, str] = {}
+    for line in output.splitlines():
+        fields = line.split(None, 1)
+        if len(fields) == 2:
+            entries[fields[0]] = fields[1].strip()
+    return entries, ""
+
+
+def virtual_db_problems() -> list[str]:
+    """A missing, stale or over-full alias database breaks help@ and bounces.
+
+    Presence is not enough and neither is answering the committed keys: a
+    database that still holds an alias removed from `virtual` answers every
+    remaining question correctly while routing mail to a mailbox the source no
+    longer names. So the whole live entry set (`postmap -s`) is compared with
+    the committed file, and a database older than its source is drift because
+    Postfix logs exactly that warning on every delivery.
+    """
+    if not VIRTUAL.exists():
+        return []  # inspect() reports the missing source file
+    if not VIRTUAL_DB.exists():
+        return [
+            f"{VIRTUAL_DB}: missing — run postmap {VIRTUAL} (help@ and every "
+            "bounce address are dead without it)"
+        ]
+    problems: list[str] = []
+    info = VIRTUAL_DB.stat()
+    if stat.S_IMODE(info.st_mode) != 0o644:
+        problems.append(
+            f"{VIRTUAL_DB}: mode {oct(stat.S_IMODE(info.st_mode))[2:]}, want 644"
+        )
+    if (info.st_uid, info.st_gid) != (0, 0):
+        problems.append(f"{VIRTUAL_DB}: owner {info.st_uid}:{info.st_gid}, want root:root")
+    if info.st_mtime < VIRTUAL.stat().st_mtime:
+        problems.append(
+            f"{VIRTUAL_DB}: older than {VIRTUAL} (Postfix warns on every delivery; "
+            "re-run --apply)"
+        )
+    live, error = postmap_entries()
+    if error:
+        problems.append(f"{VIRTUAL_DB}: cannot list (postmap -s: {error})")
+        return problems
+    wanted = virtual_entries()
+    extra = sorted(set(live) - set(wanted))
+    missing = sorted(set(wanted) - set(live))
+    if extra:
+        problems.append(
+            f"{VIRTUAL_DB}: holds {len(extra)} alias(es) not in {VIRTUAL}: "
+            f"{', '.join(extra)} (stale; re-run --apply)"
+        )
+    if missing:
+        problems.append(
+            f"{VIRTUAL_DB}: missing {len(missing)} alias(es) from {VIRTUAL}: "
+            f"{', '.join(missing)} (stale; re-run --apply)"
+        )
+    for key in sorted(set(live) & set(wanted)):
+        if live[key] != wanted[key]:
+            problems.append(
+                f"{VIRTUAL_DB}: {key!r} → {live[key]!r}, want {wanted[key]!r} "
+                "(stale; re-run --apply)"
+            )
+    return problems
+
+
+def sync_virtual_db(source_rewritten: bool = False) -> tuple[bool, str]:
+    """Rebuild the alias database when it is stale or its source was rewritten.
+
+    Returns (rebuilt, error). `--apply` passes source_rewritten=True whenever
+    it has just written `virtual`, because a *removal* from the committed file
+    leaves every remaining key answering correctly — only the rewrite itself
+    says the database must be rebuilt.
+    """
+    if not virtual_db_problems() and not source_rewritten:
+        return False, ""
+    code, output = rebuild_virtual_db()
+    return True, ("" if code == 0 else output)
+
+
+def rebuild_virtual_db() -> tuple[int, str]:
+    return run(["postmap", str(VIRTUAL)])
+
+
+def sasldb_problems() -> list[str]:
+    if not SASLDB.exists():
+        return [
+            f"{SASLDB}: missing — create the submission account with saslpasswd2 "
+            "(docs/runbooks/email.md §5.2); the password lives only on HQ"
+        ]
+    problems = []
+    info = SASLDB.stat()
+    if stat.S_IMODE(info.st_mode) != 0o640:
+        problems.append(f"{SASLDB}: mode {oct(stat.S_IMODE(info.st_mode))[2:]}, want 640")
+    if info.st_gid != grp.getgrnam("postfix").gr_gid:
+        problems.append(f"{SASLDB}: group {info.st_gid}, want postfix")
+    return problems
+
+
+def fix_sasldb() -> None:
+    if not SASLDB.exists():
+        return
+    os.chmod(SASLDB, 0o640)
+    os.chown(SASLDB, 0, grp.getgrnam("postfix").gr_gid)
+
+
+def run(command: list[str]) -> tuple[int, str]:
+    try:
+        result = subprocess.run(command, capture_output=True, text=True, check=False)
+    except FileNotFoundError:
+        # A host without the package should report drift, not a traceback.
+        return 127, f"{command[0]}: command not found"
+    return result.returncode, (result.stdout + result.stderr).strip()
+
+
+def drift() -> list[str]:
+    return [problem for entry in FILES for problem in inspect(entry)] + \
+        mailbox_problems() + virtual_db_problems() + sasldb_problems()
+
+
+def self_test() -> int:
+    """Offline checks for the fresh-host path. No network, no /etc writes.
+
+    The ownership half of --apply is root-only by nature; the checks that
+    create a mailbox use the current uid/gid so they run anywhere.
+    """
+    failures = 0
+    count = 0
+
+    def check(name: str, got, want) -> None:
+        nonlocal failures, count
+        count += 1
+        if got == want:
+            print(f"ok    {name}")
+        else:
+            failures += 1
+            print(f"FAIL  {name}: got {got!r}, want {want!r}")
+
+    check("both mailboxes are reconciled, not only help",
+          [box.user for box in MAILBOXES], ["dsn", "help"])
+    entries = virtual_entries(HERE / "virtual")
+    check("the catch-all routes to dsn", entries.get("@mail.odile.fyi"), "dsn")
+    check("help@odile.fyi routes to help", entries.get("help@odile.fyi"), "help")
+
+    real_getpwnam = pwd.getpwnam
+    real_run = subprocess.run
+    with tempfile.TemporaryDirectory(prefix="odile-postfix-mailbox-") as tmp:
+        home = Path(tmp) / "dsn"
+        box = Mailbox("dsn", home, "bounces")
+        state = {"created": False}
+        calls: list[list[str]] = []
+        uid, gid = os.getuid(), os.getgid()
+
+        def fake_getpwnam(name):
+            if name == box.user and state["created"]:
+                return pwd.struct_passwd(
+                    (box.user, "x", uid, gid, "", str(home), "/usr/sbin/nologin")
+                )
+            raise KeyError(name)
+
+        def fake_run(command, **kwargs):
+            calls.append(list(command))
+            if command[0] == "useradd":
+                state["created"] = True
+            return subprocess.CompletedProcess(command, 0, "", "")
+
+        try:
+            pwd.getpwnam = fake_getpwnam
+            subprocess.run = fake_run
+            problems = mailbox_problems([box])
+            check("a host without the dsn user is drift",
+                  any("dsn" in problem and "missing" in problem for problem in problems), True)
+            actions = ensure_mailbox([box])
+            check("--apply creates the missing user with useradd",
+                  calls[0][:3], ["useradd", "--create-home", "--home-dir"])
+            check("useradd targets the committed home", calls[0][3], str(home))
+            check("the Maildir exists afterwards",
+                  all((home / "Maildir" / sub).is_dir() for sub in ("new", "cur", "tmp")),
+                  True)
+            check("ensure_mailbox reports what it created", len(actions) >= 2, True)
+            check("nothing is left to fix", mailbox_problems([box]), [])
+
+            calls.clear()
+            for sub in ("new", "cur", "tmp"):
+                (home / "Maildir" / sub).rmdir()
+            ensure_mailbox([box])
+            check("an existing user is not useradd'ed again", [call[0] for call in calls], [])
+            check("a missing Maildir is recreated",
+                  all((home / "Maildir" / sub).is_dir() for sub in ("new", "cur", "tmp")),
+                  True)
+        finally:
+            pwd.getpwnam = real_getpwnam
+            subprocess.run = real_run
+
+    global VIRTUAL, VIRTUAL_DB
+    saved = (VIRTUAL, VIRTUAL_DB)
+    with tempfile.TemporaryDirectory(prefix="odile-postfix-db-") as tmp:
+        VIRTUAL = Path(tmp) / "virtual"
+        VIRTUAL_DB = Path(tmp) / "virtual.db"
+
+        def answers(key: str) -> bool:
+            return run(["postmap", "-q", key, str(VIRTUAL)])[0] == 0
+
+        VIRTUAL.write_text(
+            "@mail.odile.fyi dsn\nhelp@odile.fyi help\ninvite@odile.fyi help\n",
+            encoding="utf-8",
+        )
+        try:
+            check("a missing virtual.db is drift",
+                  any("missing" in problem for problem in virtual_db_problems()), True)
+            code, output = rebuild_virtual_db()
+            check("postmap builds the database", (code, VIRTUAL_DB.exists()), (0, True))
+            check("a fresh database matches the committed entries",
+                  virtual_db_problems(), [])
+
+            # A key removed from the source but still present in the database.
+            VIRTUAL.write_text("@mail.odile.fyi dsn\nhelp@odile.fyi help\n",
+                               encoding="utf-8")
+            check("a removed key still in the database is drift",
+                  any("invite@odile.fyi" in problem and "not in" in problem
+                      for problem in virtual_db_problems()), True)
+            rebuilt, error = sync_virtual_db(source_rewritten=True)
+            check("--apply after a removal rebuilds the database",
+                  (rebuilt, error), (True, ""))
+            check("the removed key stops answering", answers("invite@odile.fyi"), False)
+            check("the removal leaves nothing behind", virtual_db_problems(), [])
+            check("a second run with no rewrite is a no-op",
+                  sync_virtual_db(False), (False, ""))
+
+            # An extra entry the source never had.
+            stale_source = Path(tmp) / "stale-source"
+            stale_source.write_text(
+                VIRTUAL.read_text(encoding="utf-8") + "stale-alias@mail.odile.fyi help\n",
+                encoding="utf-8",
+            )
+            code, output = run(["postmap", str(stale_source)])
+            check("postmap builds the over-full fixture",
+                  (code, Path(str(stale_source) + ".db").exists()), (0, True))
+            VIRTUAL_DB.write_bytes(Path(str(stale_source) + ".db").read_bytes())
+            os.chmod(VIRTUAL_DB, 0o644)
+            check("an extra alias in the database is drift",
+                  any("stale-alias@mail.odile.fyi" in problem
+                      for problem in virtual_db_problems()), True)
+            rebuilt, error = sync_virtual_db(False)
+            check("--apply removes an extra alias", (rebuilt, error), (True, ""))
+            check("the extra key stops answering", answers("stale-alias@mail.odile.fyi"), False)
+            check("the extra entry leaves nothing behind", virtual_db_problems(), [])
+
+            # A destination changed in the source.
+            VIRTUAL.write_text("@mail.odile.fyi someone-else\nhelp@odile.fyi help\n",
+                               encoding="utf-8")
+            check("a database built from older content is caught by its answers",
+                  any("stale" in problem for problem in virtual_db_problems()), True)
+            sync_virtual_db(True)
+            check("postmap fixes the stale database", virtual_db_problems(), [])
+
+            # A database older than its source with identical entries.
+            info = VIRTUAL_DB.stat()
+            os.utime(VIRTUAL_DB, (info.st_mtime - 300, info.st_mtime - 300))
+            check("a database older than its source is drift",
+                  any("older than" in problem for problem in virtual_db_problems()), True)
+            rebuilt, error = sync_virtual_db(False)
+            check("--apply rebuilds a database older than its source",
+                  (rebuilt, error), (True, ""))
+            check("a rebuilt database is clean and the next run is a no-op",
+                  (virtual_db_problems(), sync_virtual_db(False)), ([], (False, "")))
+        finally:
+            VIRTUAL, VIRTUAL_DB = saved
+
+    print(f"\n{count} checks, {failures} failed")
+    return 0 if failures == 0 else 1
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(
+        description="Reconcile Postfix on this machine with deploy/postfix/."
+    )
+    group = parser.add_mutually_exclusive_group()
+    group.add_argument("--apply", action="store_true", help="write the changes")
+    group.add_argument("--check", action="store_true", help="exit 1 on any drift")
+    group.add_argument("--self-test", action="store_true", help="offline checks")
+    args = parser.parse_args(argv)
+
+    if args.self_test:
+        return self_test()
+
+    problems = drift()
+
+    if args.check:
+        for problem in problems:
+            print(f"DRIFT  {problem}")
+        if problems:
+            print(f"\n{len(problems)} difference(s) from deploy/postfix")
+            return 1
+        print("clean: /etc/postfix matches deploy/postfix, virtual.db matches virtual, "
+              "both mailboxes and the SASL database are present")
+        return 0
+
+    if not args.apply:
+        if not problems:
+            print("nothing to do; /etc/postfix matches deploy/postfix")
+            return 0
+        for problem in problems:
+            print(f"would fix  {problem}")
+        print(f"\ndry run: {len(problems)} change(s); pass --apply to write")
+        return 0
+
+    # --apply: files first, then the state they depend on, then reload once.
+    content_changed = False
+    virtual_rewritten = False
+    for entry in FILES:
+        changed = write(entry)
+        content_changed = content_changed or changed
+        if changed and entry[1] == VIRTUAL:
+            virtual_rewritten = True
+        print(f"{'wrote' if changed else 'ok':<6} {entry[1]}")
+
+    # The alias database is rebuilt whenever it is missing, stale, older than
+    # its source, or the source was just rewritten — the last case is what
+    # makes a removed alias take effect.
+    rebuilt, error = sync_virtual_db(virtual_rewritten)
+    if rebuilt:
+        if error:
+            print(f"postmap {VIRTUAL} failed:\n{error}")
+            return 1
+        print(f"wrote  {VIRTUAL_DB} (postmap)")
+
+    if mailbox_problems():
+        for action in ensure_mailbox():
+            print(f"wrote  {action}")
+
+    if sasldb_problems():
+        if SASLDB.exists():
+            fix_sasldb()
+            print(f"fixed  {SASLDB} (mode 640, group postfix)")
+        else:
+            print(f"warn   {SASLDB} is missing: run the saslpasswd2 step in the runbook")
+
+    code, output = run(["postfix", "check"])
+    if code != 0:
+        print(f"postfix check failed:\n{output}")
+        return 1
+
+    left = drift()
+    if left:
+        for problem in left:
+            print(f"still  {problem}")
+        return 1
+
+    if content_changed:
+        # A reload re-reads main.cf but does not rebuild listening sockets, so
+        # a change to inet_protocols would look applied and not be. Restart is
+        # the honest verb; the queue survives it.
+        code, output = run(["systemctl", "restart", "postfix"])
+        if code != 0:
+            print(f"postfix restart failed:\n{output}")
+            return 1
+        print("restarted postfix")
+    if not content_changed:
+        print("nothing to do; /etc/postfix matches deploy/postfix")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

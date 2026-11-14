@@ -1,0 +1,41 @@
+[Unit]
+# ODL-332 / ODL-454 follow-up: the first boot of a disk written from the
+# published image opens its root with the as-built bootstrap key (the image is
+# built on a host with no AMD PSP, so it cannot seal to the tenant's chip).
+# This oneshot finishes the job, once: a fresh 64-byte keyslot key V, sealed
+# with SNP_GET_DERIVED_KEY and proved to open the volume; then the volume is
+# re-keyed with cryptsetup reencrypt, which generates a new volume (master) key
+# on this guest, re-encrypts the data in place -- online, with the root
+# mounted -- and removes every other keyslot, so the build-time volume key the
+# published image carries no longer opens this disk. The bootstrap file is
+# shredded last. After it, the measured boot is the only key. A machine with no
+# /dev/sev-guest (the QEMU bench) runs it with the bench stand-in when the
+# image was built with --first-boot-seal; a production image without Servury's
+# snpreport is inert and keeps the bootstrap way in.
+Description=Odile: re-key the root volume and seal its key to this guest (first boot)
+Documentation=file:///usr/local/lib/odile-image/bb-sealed-provision
+After=local-fs.target
+Before=odile-firstboot.service
+ConditionPathExists=/usr/local/lib/odile-image/snpreport
+ConditionPathExists=!/var/lib/odile/seal.json
+
+[Service]
+Type=oneshot
+# The re-key re-encrypts the whole root volume (7.3 GiB on the 8 GiB image),
+# so the start time is bounded by the disk, not by DefaultTimeoutStartSec
+# (90 s). Without this the unit is SIGTERMed mid-re-key on every boot, the
+# build keyslot survives and the disk is never re-keyed. The reencryption is
+# resumable, but there is no reason to interrupt it.
+TimeoutStartSec=infinity
+Environment=ROOT_PART=/dev/sda3
+Environment=BOOT_PART=/dev/sda2
+Environment=SEAL_DIR=/odile
+Environment=SNPREPORT=/usr/local/lib/odile-image/snpreport
+Environment=EXISTING_KEY_FILE=/run/bb/boot/odile/luks-bootstrap.key
+ExecStart=/usr/local/lib/odile-image/bb-sealed-provision
+RemainAfterExit=yes
+StandardOutput=journal+console
+StandardError=journal+console
+
+[Install]
+WantedBy=multi-user.target

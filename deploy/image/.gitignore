@@ -1,0 +1,7 @@
+# mkdisk.sh writes the disk, its qcow2 copy, the extracted kernel/initramfs
+# and the boot log here. Tens of gigabytes of build artefacts; never tracked.
+out/
+# The sealed bench (ODL-454): the LUKS disk, the UKI, the rebuilt initrd and
+# the measured command line. Same rule — the pin and the runbook name them by
+# hash, the files themselves stay out of git.
+out-sealed/

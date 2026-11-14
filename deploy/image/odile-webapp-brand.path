@@ -1,0 +1,27 @@
+[Unit]
+# ODL-503 follow-up: watch the built Webapp shell, not the boot.
+#
+# `hermes update` rebuilt apps/desktop/dist-webapp on the demo tenant at
+# 2026-11-14 01:26Z: index.html became the vendor's shell, odile-brand.js was
+# gone, and the next thing anyone saw was the vendor's name on our page. The
+# trigger has to be the bundle changing, because that is the event that drops
+# the tag (the owner's no-boot-re-assert decision, t_ee5aac66, rules out a boot
+# rewrite).
+#
+# The directory is watched by file, not wholesale: a build writes hundreds of
+# files, and a PathChanged on the directory would either storm the service or
+# trip its trigger limit. The shell and the asset are the two entries the brand
+# depends on — one write each per build, plus one for this helper's own write,
+# which converges on the next run and stops.
+Description=Odile: watch the Webapp bundle for a rebuild
+Documentation=file:///usr/local/lib/odile/odile-webapp-brand.py
+
+[Path]
+PathChanged=__TENANT_HOME__/.hermes/hermes-agent/apps/desktop/dist-webapp/index.html
+PathChanged=__TENANT_HOME__/.hermes/hermes-agent/apps/desktop/dist-webapp/odile-brand.js
+Unit=odile-webapp-brand.service
+TriggerLimitIntervalSec=60
+TriggerLimitBurst=20
+
+[Install]
+WantedBy=multi-user.target

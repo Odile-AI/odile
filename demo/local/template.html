@@ -1,0 +1,200 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Odile — local demo</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' fill='%23f6f0e4'/%3E%3Ccircle cx='16' cy='16' r='7.5' fill='none' stroke='%231c1813' stroke-width='1.6'/%3E%3C/svg%3E">
+<style>
+@font-face{font-family:"Cormorant Garamond";font-style:normal;font-weight:300 700;font-display:swap;src:url(/assets/cormorant-garamond.woff2) format("woff2")}
+:root{
+  --paper:#F6F0E4;
+  --card:#FBF6EA;
+  --ink:#1C1813;
+  --ink-hover:#2A241C;
+  --soft:#4A4136;
+  --edge:rgba(28,24,19,.55);
+  --line:rgba(28,24,19,.18);
+  --line-soft:rgba(28,24,19,.10);
+  --placeholder-on-paper:#776B5A;
+  --error:#8F3418;
+  --term:#17130F;
+  --term-edge:#2A241D;
+  --term-ink:#EFE7D8;
+  --term-dim:#A79C8B;
+  --term-command:#FFF8EA;
+  --serif:"Cormorant Garamond","Iowan Old Style","Palatino Linotype",Palatino,Georgia,serif;
+  --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,"Liberation Mono",monospace;
+}
+*{box-sizing:border-box}
+html{background:var(--paper);color:var(--ink)}
+body{margin:0;min-height:100svh;background:var(--paper);font-family:var(--serif);font-size:17px;line-height:1.55;font-weight:400;-webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility}
+::selection{background:rgba(28,24,19,.16)}
+::placeholder{color:var(--placeholder-on-paper);font-style:italic;opacity:1}
+a{color:inherit;text-decoration-thickness:1px;text-underline-offset:.22em}
+button,input,textarea{font:inherit;color:inherit}
+button{cursor:pointer}
+:focus-visible{outline:2px solid var(--ink);outline-offset:3px}
+h1,h2,h3{font-weight:500;letter-spacing:-.025em;margin:0}
+p{margin:0}
+.bar{display:flex;align-items:center;justify-content:space-between;gap:18px;height:56px;padding:0 max(18px,calc((100vw - 1180px)/2 + 26px));border-bottom:1px solid var(--line)}
+.bar-left,.bar-right{display:flex;align-items:center;gap:16px;min-width:0}
+.mark{font-weight:500;font-size:24px;letter-spacing:-.02em;line-height:1;color:var(--ink);text-decoration:none}
+.tag,.kicker,.label,.tiny{font-size:10px;letter-spacing:.24em;text-transform:uppercase;font-weight:600;color:var(--soft)}
+.tag{border-left:1px solid var(--line);padding-left:16px}
+.stage{max-width:1180px;margin:0 auto;padding:44px 26px 92px}
+.head{max-width:74ch}
+.kicker{margin:0 0 12px}
+h1{font-size:clamp(2.4rem,4.6vw,3.8rem);line-height:1.02;letter-spacing:-.025em;text-wrap:balance;overflow-wrap:anywhere;margin:0 0 16px}
+.lede{font-size:1.14rem;line-height:1.5;color:var(--soft);max-width:64ch;margin:0 0 10px}
+.lede strong{font-weight:500;color:var(--ink)}
+.note{font-size:1rem;color:var(--soft);max-width:66ch;margin:0}
+.workspace{display:grid;grid-template-columns:minmax(0,1.55fr) minmax(300px,.7fr);gap:46px;margin-top:40px;align-items:start}
+.main{min-width:0}
+.rail{min-width:0;display:flex;flex-direction:column;border-left:1px solid var(--line);padding-left:30px}
+.panel{border-top:1px solid var(--line);padding:22px 0 26px}
+.panel:first-child{border-top:0;padding-top:0}
+.panel h2{font-size:10px;letter-spacing:.24em;text-transform:uppercase;font-weight:600;color:var(--soft);margin:0 0 12px}
+.transcript{display:flex;flex-direction:column;gap:14px;min-height:1px}
+.turn{border-left:2px solid var(--line);padding:2px 0 2px 14px;max-width:68ch;min-width:0}
+.turn.user{border-left-color:var(--edge)}
+.role{font-size:10px;letter-spacing:.2em;text-transform:uppercase;font-weight:600;color:var(--soft);margin:0 0 3px}
+.turn p{margin:0;overflow-wrap:anywhere}
+.empty{color:var(--soft);font-style:italic;margin:0}
+.composer{display:flex;align-items:flex-end;gap:0;margin-top:18px;border-bottom:1px solid var(--edge)}
+.composer input{flex:1 1 auto;min-width:0}
+.btn{display:inline-flex;align-items:center;justify-content:center;min-height:44px;padding:0 22px;background:var(--ink);color:var(--paper);border:1px solid var(--ink);font-size:10px;letter-spacing:.28em;text-transform:uppercase;font-weight:600;text-decoration:none}
+.btn:hover{background:var(--ink-hover);border-color:var(--ink-hover)}
+.btn.secondary{background:transparent;color:var(--ink);border-color:var(--edge)}
+.btn.secondary:hover{background:rgba(28,24,19,.05);border-color:var(--ink)}
+input[type=text],textarea{width:100%;border:0;border-bottom:1px solid var(--edge);background:transparent;padding:10px 2px 11px;font-size:1.04rem;border-radius:0}
+textarea{border:1px solid var(--line);background:var(--card);padding:11px 12px;margin-top:10px;resize:vertical;min-height:74px}
+input[type=text]:focus-visible,textarea:focus-visible{outline:2px solid var(--ink);outline-offset:3px}
+.term-wrap{margin:0 0 16px;min-width:0}
+pre.term{font-family:var(--mono);font-size:12.5px;line-height:1.6;background:var(--term);border:1px solid var(--term-edge);color:var(--term-ink);padding:14px 16px;white-space:pre-wrap;overflow-wrap:anywhere;margin:0 0 10px;max-height:280px;overflow:auto}
+pre.term:last-child{margin-bottom:0}
+.term-cmd{color:var(--term-command)}
+.term-exit{color:var(--term-dim)}
+.term-wrap :focus-visible{outline-color:var(--term-ink)}
+.help{color:var(--soft);font-size:.92rem;margin:10px 0 0;max-width:64ch}
+.flash{color:var(--soft);font-size:.96rem;margin:0 0 8px;min-height:0;min-width:0;overflow-wrap:anywhere}
+.flash:empty{display:none}
+.flash.error{color:var(--error)}
+ul.files{list-style:none;margin:0;padding:0}
+ul.files li{display:grid;grid-template-columns:minmax(0,1fr) max-content;gap:2px 16px;padding:10px 0;border-top:1px solid var(--line-soft);font-family:var(--mono);font-size:12.5px;min-width:0}
+ul.files li:first-child{border-top:0}
+ul.files li.empty{display:block;font-family:var(--serif);font-size:1rem}
+.fname{overflow-wrap:anywhere}
+.meta{color:var(--soft);font-size:11.5px;white-space:nowrap}
+.preview{grid-column:1 / -1;color:var(--soft);font-size:11.5px;overflow-wrap:anywhere}
+.fileform{margin-top:10px}
+.fileform .btn{margin-top:10px}
+.railbox{padding:18px 0;border-top:1px solid var(--line)}
+.railbox:first-child{border-top:0;padding-top:0}
+.railbox h2{font-size:10px;letter-spacing:.24em;text-transform:uppercase;font-weight:600;color:var(--soft);margin:0 0 9px}
+.railtxt{color:var(--soft);font-size:.98rem;margin:0 0 8px;overflow-wrap:anywhere}
+.railtxt:last-child{margin-bottom:0}
+.mono{font-family:var(--mono);font-size:12.5px;overflow-wrap:anywhere;color:var(--ink)}
+pre.hb{font-family:var(--mono);font-size:11.5px;line-height:1.7;color:var(--soft);white-space:pre-wrap;overflow-wrap:anywhere;margin:6px 0 0}
+.foot{border-top:1px solid var(--line);margin-top:40px;padding-top:18px;color:var(--soft);font-size:.92rem;max-width:78ch}
+.visually-hidden{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap;border:0}
+@media (max-width:900px){
+  .workspace{grid-template-columns:minmax(0,1fr);gap:0}
+  .rail{border-left:0;padding-left:0;margin-top:8px}
+  .railbox:first-child{border-top:1px solid var(--line);padding-top:18px}
+}
+@media (max-width:560px){
+  .stage{padding:30px 18px 70px}
+  .bar{padding:0 18px}
+  .bar-right .tiny{display:none}
+  .tag{border-left:0;padding-left:0}
+  .composer{flex-wrap:wrap;border-bottom:0}
+  .composer input{flex:1 1 100%;border-bottom:1px solid var(--edge)}
+  .composer .btn{width:100%;margin-top:12px}
+}
+@media (prefers-reduced-motion: reduce){
+  *{scroll-behavior:auto !important}
+}
+</style>
+</head>
+<body>
+<header class="bar">
+  <div class="bar-left"><span class="mark">Odile</span></div>
+  <div class="bar-right"><span class="tag">Local demo</span><span class="tiny">one server · no framework</span></div>
+</header>
+<main class="stage">
+  <header class="head">
+    <p class="kicker">The workspace, reproduced</p>
+    <h1>The workspace, on your machine.</h1>
+    <p class="lede"><strong>{{sentence}}</strong></p>
+    <p class="note">No Hermes install, no NEAR key, no network. The chat answer is canned; the shell runs here, in a temporary workspace.</p>
+  </header>
+
+  <div class="workspace">
+    <div class="main">
+      <section class="panel" id="chat" aria-labelledby="h-chat">
+        <h2 id="h-chat">Chat</h2>
+        {{chat_flash}}
+        <div class="transcript">{{chat}}</div>
+        <form class="composer" method="post" action="/chat">
+          <label class="visually-hidden" for="message">Message</label>
+          <input id="message" name="message" type="text" placeholder="Ask the machine…" autocomplete="off">
+          <button class="btn" type="submit">Ask</button>
+        </form>
+      </section>
+
+      <section class="panel" id="shell" aria-labelledby="h-shell">
+        <h2 id="h-shell">Shell</h2>
+        {{shell_flash}}
+        <div class="term-wrap" role="log" aria-label="Shell transcript">{{shell}}</div>
+        <form class="composer" method="post" action="/shell">
+          <label class="visually-hidden" for="command">Command</label>
+          <input id="command" name="command" type="text" placeholder="printf 'hello\n'" autocomplete="off" spellcheck="false">
+          <button class="btn secondary" type="submit">Run</button>
+        </form>
+        <p class="help">Runs as you, on this computer, in the demo workspace. Five seconds, then the process group is killed.</p>
+      </section>
+
+      <section class="panel" id="files" aria-labelledby="h-files">
+        <h2 id="h-files">Files</h2>
+        {{file_flash}}
+        <ul class="files">{{files}}</ul>
+        <form class="fileform" method="post" action="/file">
+          <label class="visually-hidden" for="name">File name</label>
+          <input id="name" name="name" type="text" placeholder="note.md" autocomplete="off" spellcheck="false">
+          <label class="visually-hidden" for="content">Contents</label>
+          <textarea id="content" name="content" rows="3" placeholder="Write something that survives a restart."></textarea>
+          <button class="btn secondary" type="submit">Write file</button>
+        </form>
+      </section>
+    </div>
+
+    <aside class="rail" aria-label="The machine">
+      <section class="railbox" aria-labelledby="h-job">
+        <h2 id="h-job">The job</h2>
+        <p class="railtxt">A background thread appends a line every {{heartbeat_seconds}} seconds. Restart the server and the log keeps its lines.</p>
+        <pre class="hb" id="heartbeat">{{heartbeat}}</pre>
+      </section>
+      <section class="railbox" aria-labelledby="h-route">
+        <h2 id="h-route">The route</h2>
+        <p class="mono">{{model_id}}</p>
+        <p class="railtxt">{{model_host}} · NEAR AI's confidential cloud, inside a hardware enclave.</p>
+        <p class="railtxt">The local answer is canned; the model is not called.</p>
+      </section>
+      <section class="railbox" aria-labelledby="h-gate">
+        <h2 id="h-gate">The gate</h2>
+        <p class="railtxt">The password is printed in the terminal that runs <span class="mono">make demo</span>. HTTP Basic, one user: <span class="mono">odile</span>.</p>
+      </section>
+      <section class="railbox" aria-labelledby="h-not">
+        <h2 id="h-not">What this is not</h2>
+        <p class="railtxt">Not the machine. No Hermes, no SEV-SNP, no NEAR key, no network. A reproduction of the surface.</p>
+      </section>
+    </aside>
+  </div>
+
+  <footer class="foot">
+    <p>Files and the job log live in the demo state directory until you remove them — <span class="mono">demo/local/state</span> by default. Restart the server: both survive.</p>
+  </footer>
+</main>
+</body>
+</html>

@@ -1,0 +1,22 @@
+# Odile image bench — the guest's stand-in for Caddy on the manifest port.
+#
+# The manifest listener binds 127.0.0.1:8012 (odile-manifest.service); on a
+# tenant Caddy is the public listener at /manifest. The bench guest has no
+# Caddy, so this socket accepts the host-forwarded connection on QEMU's slirp
+# address and systemd-socket-proxyd pipes it to the loopback listener (the
+# same shape as odile-bench-proxy-firstvisit.socket). 10.0.2.15 is QEMU
+# user-mode networking's guest address; it does not exist on a Blackbox.
+[Unit]
+Description=Odile image bench — loopback stand-in for Caddy (manifest)
+Wants=network-online.target
+After=network-online.target
+
+[Socket]
+ListenStream=10.0.2.15:__MANIFEST_PORT__
+FreeBind=yes
+Restart=always
+RestartSec=2
+Accept=no
+
+[Install]
+WantedBy=sockets.target

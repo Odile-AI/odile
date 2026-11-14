@@ -1,0 +1,715 @@
+#!/usr/bin/env python3
+"""odile-verify — check a machine's SEV-SNP report against the pin in this repo.
+
+    ./odile-verify https://odile.fyi
+    ./odile-verify --expect <96-hex-measurement> https://odile.fyi
+    ./odile-verify --report tests/fixtures/verify/report-2026-11-06.json
+    ./odile-verify --release 2026.11.1 --expect <measurement> https://<slug>.odile.fyi
+    ./odile-verify --expect <measurement> --record boot-record.json https://<slug>.odile.fyi
+    ./odile-verify --expect <measurement> --previous boot-record.json https://<slug>.odile.fyi
+    ./odile-verify --print-pin https://odile.fyi > odile-verify.pin
+
+It fetches exactly one URL (`<base>/attestation`), reads the report out of the
+signed bytes rather than trusting the JSON summary, verifies the AMD certificate
+chain and the ECDSA signature, and compares the launch measurement to the pin.
+
+The certificate chain is the repository's vendored one for the demo machine. A
+tenant's report names another chip, so the vendored VCEK does not bind it: the
+verifier then fetches the report's own VCEK from AMD's Key Distribution Service
+for the report's raw chip id and reported TCB, and checks it against the pinned
+ARK. That is the only second URL it ever fetches; `--no-kds` refuses it.
+
+Release selection: `--release <id>` picks `releases[<id>]` in the pin; without
+it, the served document's `release` field picks the entry. A release that is not
+in the pin is a FAIL — never a fallback to the newest entry. When neither exists,
+the v1 top-level record of the demo machine is used, so `./odile-verify
+https://odile.fyi` still passes with no argument.
+
+The pin is a per-release recipe, not a per-machine number: the release entry
+carries the artifact hashes and measurement parameters, and the machine's own
+command line makes the measurement per machine. A tenant run therefore needs
+`--expect`, the number the user recomputed; without it the chain alone is not a
+boot check (usage error, exit 2). The demo is the source named by the pin's
+`source`; it keeps the v1 record.
+
+On a release-selected PASS the command prints the odile.boot-record.v1 record
+from PIN-POLICY §4.3; `--record PATH` also writes it and `--previous PATH`
+compares it to an earlier record.
+
+Dependencies: Python 3 and the `openssl` binary. No pip, no state written
+unless the user asks for it with --record. The only network calls are the
+machine's `/attestation` and, when the vendored VCEK does not bind the report,
+AMD's KDS for that report's VCEK.
+
+Exit codes: 0 PASS, 1 FAIL, 2 usage or I/O error.
+"""
+
+from __future__ import annotations
+
+import argparse
+import base64
+import hashlib
+import json
+import os
+import re
+import subprocess
+import sys
+import tempfile
+import urllib.error
+import urllib.parse
+import urllib.request
+from datetime import datetime, timezone
+
+ROOT = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, os.path.join(ROOT, "tools"))
+
+import snp_report  # noqa: E402
+
+DEFAULT_PIN = os.path.join(ROOT, "odile-verify.pin")
+DEFAULT_AMD_DIR = os.path.join(ROOT, "tests", "fixtures", "amd")
+MAX_BODY = 1 << 20          # a 1184-byte report plus JSON is under 8 KiB
+TIMEOUT = 30
+HEX_RE = re.compile(r"^[0-9a-fA-F]{96}$")
+HEX64_RE = re.compile(r"^[0-9a-fA-F]{64}$")
+
+# The release entry is a recipe: these names are the schema PIN-POLICY §4.2
+# shows, and a missing one is a malformed pin, not a warning.
+ARTIFACTS = ("OVMF.amdsev.fd", "vmlinuz", "initrd.img")
+PARAMETERS = ("vcpu_type", "guest_features", "policy", "vmm")
+INPUTS = ("kernel_version", "kernel_package_sha256", "debian_snapshot", "edk2")
+RECORD_SCHEMA = "odile.boot-record.v1"
+RECORD_FIELDS = ("release", "cmdline_sha256", "measurement")
+
+# The exact sentence the card requires, kept in one place.
+NOT_LIVENESS = (
+    "This is the boot report, not a liveness proof. It is the report the CPU "
+    "signed at boot (or at its last refresh): it proves what the CPU signed, "
+    "not that the machine is up now. It does not measure the app layer, and the "
+    "pin is provenance, not innocence: the pin and this verifier live in the "
+    "same repository, so they prove which image, not that the image is honest."
+)
+
+
+class VerifyError(Exception):
+    """Bad input, an unreachable URL or an unreadable pin."""
+
+
+class _OneURL(urllib.request.HTTPRedirectHandler):
+    """Refuse redirects so the command fetches exactly one URL."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+def fetch(url: str) -> bytes:
+    request = urllib.request.Request(
+        url,
+        headers={"User-Agent": "odile-verify/1.0", "Accept": "application/json"},
+    )
+    opener = urllib.request.build_opener(_OneURL)
+    try:
+        with opener.open(request, timeout=TIMEOUT) as response:
+            if response.status != 200:
+                raise VerifyError("%s returned HTTP %d" % (url, response.status))
+            body = response.read(MAX_BODY + 1)
+    except urllib.error.HTTPError as exc:
+        raise VerifyError("%s returned HTTP %d %s" % (url, exc.code, exc.reason)) from exc
+    except urllib.error.URLError as exc:
+        raise VerifyError("%s is unreachable: %s" % (url, exc.reason)) from exc
+    except OSError as exc:
+        raise VerifyError("%s failed: %s" % (url, exc)) from exc
+    if len(body) > MAX_BODY:
+        raise VerifyError("%s returned more than 1 MiB" % url)
+    return body
+
+
+def attestation_url(base: str) -> str:
+    parsed = urllib.parse.urlparse(base)
+    if parsed.scheme not in ("http", "https") or not parsed.netloc:
+        raise VerifyError("not an http(s) URL: %s" % base)
+    if parsed.username or parsed.password:
+        raise VerifyError("the URL must not carry credentials: %s" % base)
+    if parsed.query or parsed.fragment:
+        raise VerifyError("the URL must not carry a query or fragment: %s" % base)
+    url = base.rstrip("/")
+    if not url.endswith("/attestation"):
+        url += "/attestation"
+    return url
+
+
+def parse_document(body: bytes) -> dict:
+    try:
+        data = json.loads(body)
+    except ValueError as exc:
+        raise VerifyError("the response is not JSON: %s" % exc) from exc
+    if not isinstance(data, dict):
+        raise VerifyError("the response is not a JSON object")
+    return data
+
+
+def report_from_document(data: dict) -> tuple[snp_report.Report, str | None]:
+    if data.get("available") is not True:
+        raise VerifyError("the response says the report is not available")
+    if data.get("guest") != "sev-snp":
+        raise VerifyError("the response does not claim a sev-snp guest")
+    encoded = data.get("report_b64")
+    if not isinstance(encoded, str) or not encoded:
+        raise VerifyError("the response has no report_b64")
+    try:
+        raw = base64.b64decode(encoded, validate=True)
+    except ValueError as exc:
+        raise VerifyError("report_b64 is not valid base64: %s" % exc) from exc
+    report = snp_report.Report(raw)
+
+    fetched_at = data.get("fetched_at")
+    if not isinstance(fetched_at, str) or not fetched_at:
+        raise VerifyError("the response has no fetched_at")
+    return report, fetched_at
+
+
+def served_checks(data: dict, report: snp_report.Report) -> list[str]:
+    """The JSON summary must not disagree with the signed bytes."""
+    problems: list[str] = []
+    if data.get("report_size") != len(report.raw):
+        problems.append(
+            "report_size is %r, the report is %d bytes"
+            % (data.get("report_size"), len(report.raw))
+        )
+    if data.get("report_version") != report.version:
+        problems.append(
+            "report_version is %r, the report says %d"
+            % (data.get("report_version"), report.version)
+        )
+    served = data.get("measurement")
+    if not isinstance(served, str) or served.lower() != report.measurement_hex:
+        problems.append("the JSON measurement is not the signed measurement")
+    return problems
+
+
+def load_pin(path: str) -> dict:
+    try:
+        with open(path, encoding="utf-8") as f:
+            pin = json.load(f)
+    except OSError as exc:
+        raise VerifyError("no pin at %s (%s); pass --expect <measurement>" % (path, exc)) from exc
+    except ValueError as exc:
+        raise VerifyError("the pin at %s is not JSON: %s" % (path, exc)) from exc
+    if not isinstance(pin, dict):
+        raise VerifyError("the pin at %s is not a JSON object" % path)
+    measurement = pin.get("measurement")
+    if not isinstance(measurement, str) or not HEX_RE.match(measurement):
+        raise VerifyError("the pin at %s has no 96-hex measurement" % path)
+    schema = pin.get("schema")
+    if schema is not None and schema != 2:
+        raise VerifyError(
+            "the pin at %s has schema %r; this verifier reads schema 2" % (path, schema)
+        )
+    releases = pin.get("releases")
+    if releases is not None and not isinstance(releases, dict):
+        raise VerifyError("the pin at %s has a releases field that is not an object" % path)
+    if schema == 2 and not isinstance(releases, dict):
+        raise VerifyError("the pin at %s says schema 2 but has no releases map" % path)
+    return pin
+
+
+def validate_release_entry(entry: object) -> list[str]:
+    """Every field PIN-POLICY §4.2 promises, checked before it is printed."""
+    if not isinstance(entry, dict):
+        return ["the release entry is not a JSON object"]
+    problems: list[str] = []
+    url = entry.get("release_url")
+    if not isinstance(url, str) or not url.startswith("https://"):
+        problems.append("release_url is not an https URL")
+    digest = entry.get("release_json_sha256")
+    if not isinstance(digest, str) or not HEX64_RE.match(digest):
+        problems.append("release_json_sha256 is not a 64-hex hash")
+    artifacts = entry.get("artifacts")
+    if not isinstance(artifacts, dict):
+        problems.append("artifacts is not an object")
+    else:
+        for name in ARTIFACTS:
+            value = artifacts.get(name)
+            if not isinstance(value, str) or not HEX64_RE.match(value):
+                problems.append("artifacts[%r] is not a 64-hex hash" % name)
+    parameters = entry.get("measurement_parameters")
+    if not isinstance(parameters, dict):
+        problems.append("measurement_parameters is not an object")
+    else:
+        for name in PARAMETERS:
+            value = parameters.get(name)
+            if not isinstance(value, str) or not value:
+                problems.append("measurement_parameters[%r] is missing" % name)
+    counts = entry.get("vcpu_counts")
+    if not isinstance(counts, list) or not counts or any(
+        not isinstance(n, int) or isinstance(n, bool) or n < 1 for n in counts
+    ):
+        problems.append("vcpu_counts is not a non-empty list of positive integers")
+    inputs = entry.get("inputs")
+    if not isinstance(inputs, dict):
+        problems.append("inputs is not an object")
+    else:
+        for name in INPUTS:
+            value = inputs.get(name)
+            if not isinstance(value, str) or not value:
+                problems.append("inputs[%r] is missing" % name)
+    for name in ("pinned_at", "evidence"):
+        value = entry.get(name)
+        if not isinstance(value, str) or not value:
+            problems.append("%s is missing" % name)
+    return problems
+
+
+def select_release(pin: dict, release_id: str) -> tuple[dict | None, str, str]:
+    """(entry, failing label, detail); the label is pinned to the fail table."""
+    releases = pin.get("releases")
+    if not isinstance(releases, dict) or release_id not in releases:
+        return None, "release", "release not pinned: %s" % release_id
+    entry = releases[release_id]
+    problems = validate_release_entry(entry)
+    if problems:
+        return None, "pin", "the pin entry for %s is malformed: %s" % (
+            release_id, "; ".join(problems))
+    return entry, "release", ""
+
+
+def cmdline_for_hash(cmdline: str) -> str:
+    """The measured command line, with the trailing ` initrd=initrd` stripped."""
+    text = cmdline.strip()
+    suffix = " initrd=initrd"
+    if text.endswith(suffix):
+        return text[: -len(suffix)]
+    return text
+
+
+def build_record(
+    release_id: str, entry: dict, report: snp_report.Report, data: dict, checked_at: str
+) -> dict:
+    """The per-machine record from PIN-POLICY §4.3, not repository state."""
+    record: dict = {
+        "schema": RECORD_SCHEMA,
+        "release": release_id,
+        "artifacts": entry["artifacts"],
+        "measurement_parameters": entry["measurement_parameters"],
+    }
+    counts = entry.get("vcpu_counts")
+    reported = data.get("vcpus")
+    if isinstance(reported, int) and not isinstance(reported, bool) and reported > 0:
+        record["vcpus"] = reported
+    elif isinstance(counts, list) and len(counts) == 1:
+        record["vcpus"] = counts[0]
+    cmdline = data.get("cmdline")
+    record["cmdline_sha256"] = (
+        hashlib.sha256(cmdline_for_hash(cmdline).encode("utf-8")).hexdigest()
+        if isinstance(cmdline, str) and cmdline.strip()
+        else None
+    )
+    record["measurement"] = report.measurement_hex
+    record["checked_at"] = checked_at
+    record["verifier"] = "odile-verify (chain and expected number)"
+    return record
+
+
+def load_previous(path: str) -> dict:
+    try:
+        with open(path, "rb") as f:
+            raw = f.read(MAX_BODY + 1)
+    except OSError as exc:
+        raise VerifyError("cannot read --previous %s: %s" % (path, exc)) from exc
+    if len(raw) > MAX_BODY:
+        raise VerifyError("--previous %s is larger than 1 MiB" % path)
+    try:
+        previous = json.loads(raw)
+    except ValueError as exc:
+        raise VerifyError("--previous %s is not JSON: %s" % (path, exc)) from exc
+    if not isinstance(previous, dict) or previous.get("schema") != RECORD_SCHEMA:
+        raise VerifyError("--previous %s is not an %s record" % (path, RECORD_SCHEMA))
+    return previous
+
+
+def compare_records(current: dict, previous: dict) -> list[str]:
+    """Name what moved; an empty list means the same boot."""
+    moved: list[str] = []
+    for field in RECORD_FIELDS:
+        if previous.get(field) != current.get(field):
+            moved.append(
+                "%s moved: %s -> %s"
+                % (field, previous.get(field), current.get(field))
+            )
+    return moved
+
+
+def write_record(path: str, record: dict) -> None:
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(record, f, indent=2)
+        f.write("\n")
+
+
+def normalise_measurement(value: str) -> str:
+    text = value.strip()
+    if not HEX_RE.match(text):
+        raise VerifyError("--expect wants 96 hex characters (48 bytes), got %r" % value)
+    return text.lower()
+
+
+def git_head() -> str:
+    try:
+        cp = subprocess.run(
+            ["git", "-C", ROOT, "rev-parse", "HEAD"],
+            capture_output=True, text=True, timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return "unknown"
+    if cp.returncode != 0:
+        return "unknown"
+    return cp.stdout.strip() or "unknown"
+
+
+def row(out, label: str, ok: bool, detail: str) -> None:
+    print("  %-11s %-4s  %s" % (label, "PASS" if ok else "FAIL", detail), file=out)
+
+
+def value(out, label: str, text: str) -> None:
+    print("  %-11s      %s" % (label, text), file=out)
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(
+        description="Verify an Odile SEV-SNP attestation report against the pin.",
+    )
+    parser.add_argument("url", nargs="?", help="base URL, e.g. https://odile.fyi")
+    parser.add_argument("--report", metavar="FILE",
+                        help="read a saved attestation JSON instead of fetching")
+    parser.add_argument("--expect", metavar="HEX",
+                        help="compare against this 96-hex measurement instead of the pin")
+    parser.add_argument("--release", metavar="ID",
+                        help="pinned release to check (default: the document's release)")
+    parser.add_argument("--record", metavar="FILE",
+                        help="after a PASS on a pinned release, write the odile.boot-record.v1 record")
+    parser.add_argument("--previous", metavar="FILE",
+                        help="compare this run's record with an earlier odile.boot-record.v1 record")
+    parser.add_argument("--pin", default=DEFAULT_PIN, help="pin file (default: odile-verify.pin)")
+    parser.add_argument("--amd-dir", default=DEFAULT_AMD_DIR,
+                        help="directory holding ark.pem, ask.pem and vcek.pem")
+    parser.add_argument("--kds-base", default=snp_report.KDS_BASE,
+                        help="AMD KDS base URL (default: %(default)s)")
+    parser.add_argument("--no-kds", action="store_true",
+                        help="never fetch a VCEK from AMD's KDS; use --amd-dir only")
+    parser.add_argument("--print-pin", action="store_true",
+                        help="after a PASS, print a fresh pin document on stdout "
+                             "(the check transcript goes to stderr)")
+    args = parser.parse_args(argv)
+
+    if args.print_pin and args.expect:
+        parser.error("--print-pin and --expect are mutually exclusive")
+    if args.print_pin and args.release:
+        parser.error("--print-pin and --release are mutually exclusive; the pin "
+                     "record is the demo's, and a release entry is a recipe")
+    if args.print_pin and (args.record or args.previous):
+        parser.error("--print-pin and --record/--previous are mutually exclusive")
+    if args.release is not None and not args.release.strip():
+        parser.error("--release needs a release id")
+    kds = urllib.parse.urlparse(args.kds_base)
+    if kds.scheme not in ("http", "https") or not kds.netloc \
+            or kds.username or kds.password:
+        parser.error("--kds-base wants an http(s) URL without credentials")
+    if not args.report and not args.url:
+        parser.error("give a URL or --report FILE")
+
+    # With --print-pin, stdout carries only the pin document, so it can be
+    # redirected into odile-verify.pin; the human transcript goes to stderr.
+    out = sys.stderr if args.print_pin else sys.stdout
+
+    expect: str | None = None
+    if args.expect:
+        try:
+            expect = normalise_measurement(args.expect)
+        except VerifyError as exc:
+            parser.error(str(exc))
+
+    def say(*parts: object) -> None:
+        print(*parts, file=out)
+
+    try:
+        source = args.report or attestation_url(args.url)
+    except VerifyError as exc:
+        parser.error(str(exc))
+
+    try:
+        if args.report:
+            with open(args.report, "rb") as f:
+                body = f.read(MAX_BODY + 1)
+            if len(body) > MAX_BODY:
+                raise VerifyError("%s is larger than 1 MiB" % args.report)
+        else:
+            body = fetch(source)
+        data = parse_document(body)
+        report, fetched_at = report_from_document(data)
+    except (OSError, VerifyError, snp_report.ReportError) as exc:
+        say("FAIL — %s" % exc)
+        say()
+        say(NOT_LIVENESS)
+        return 1
+
+    failures = False
+
+    def fail_row(label: str, detail: str) -> None:
+        nonlocal failures
+        row(out, label, False, detail)
+        failures = True
+
+    # The pin is loaded lazily: `--expect` alone never needed it before, and a
+    # v1 pin still verifies.
+    pin_cache: dict[str, object] = {"loaded": False}
+
+    def get_pin() -> dict | None:
+        if not pin_cache["loaded"]:
+            pin_cache["loaded"] = True
+            try:
+                pin_cache["pin"] = load_pin(args.pin)
+            except VerifyError as exc:
+                pin_cache["pin"] = exc
+        cached = pin_cache["pin"]
+        return cached if isinstance(cached, dict) else None
+
+    def pin_error() -> str:
+        cached = pin_cache.get("pin")
+        return str(cached) if isinstance(cached, VerifyError) else "no pin"
+
+    say("odile-verify — AMD SEV-SNP report against the pin in this repository")
+    say()
+    value(out, "source", source)
+    value(out, "fetched_at", fetched_at)
+    value(out, "measurement", report.measurement_hex)
+
+    amd_dir = args.amd_dir
+    checks: list[snp_report.Check]
+    vcek_row: tuple[bool, str] | None = None
+    kds_url: str | None = None
+    binds, bind_detail = snp_report.vcek_binds(report, amd_dir)
+    if binds:
+        # The demo's vendored VCEK, and any report from the same chip and TCB:
+        # no second URL, exactly the command the /verify page describes.
+        checks = snp_report.run_checks(report, amd_dir)
+    elif args.no_kds:
+        vcek_row = (
+            False,
+            "the vendored VCEK does not bind the report and --no-kds is set: "
+            + bind_detail,
+        )
+        checks = snp_report.run_checks(report, amd_dir)
+    else:
+        # A tenant's report names another chip: fetch that report's own VCEK
+        # from AMD's KDS for the raw chip id and reported TCB, and run the
+        # same checks against it. The ARK fingerprint pin is unchanged.
+        try:
+            with tempfile.TemporaryDirectory(prefix="odile-verify-kds-") as kds_dir:
+                kds_url, digest = snp_report.install_tenant_chain(
+                    report, kds_dir, fallback_dir=args.amd_dir,
+                    base=args.kds_base,
+                )
+                checks = snp_report.run_checks(report, kds_dir)
+            vcek_row = (
+                True,
+                "fetched the report's own VCEK from AMD KDS for chip %s TCB %s "
+                "(sha256 %s); the chain is checked against the pinned ARK"
+                % (report.chip_id.hex()[:16] + "…", report.tcb(), digest),
+            )
+        except snp_report.ReportError as exc:
+            vcek_row = (False, str(exc))
+            checks = snp_report.run_checks(report, amd_dir)
+
+    if kds_url is not None:
+        value(out, "kds", kds_url)
+    if vcek_row is not None:
+        row(out, "vcek", vcek_row[0], vcek_row[1])
+        failures = failures or not vcek_row[0]
+    for check in checks:
+        row(out, check.name, check.ok, check.detail)
+        failures = failures or not check.ok
+
+    problems = served_checks(data, report)
+    row(out, "served", not problems, "; ".join(problems) if problems else
+        "the JSON summary agrees with the signed bytes")
+    failures = failures or bool(problems)
+
+    served_release = data.get("release")
+    release_id: str | None = args.release or (
+        served_release if isinstance(served_release, str) and served_release else None
+    )
+    release_requested = bool(release_id)
+    entry: dict | None = None
+    demo = False
+    pin_error_printed = False
+
+    if args.print_pin:
+        # The refresh rewrites the demo record; a release entry is a recipe and
+        # has no per-machine number to refresh.
+        pass
+    elif "release" in data and not (
+        isinstance(served_release, str) and served_release
+    ):
+        fail_row("release", "the served document has a malformed release field")
+        release_id = None
+    elif args.release and served_release and args.release != served_release:
+        fail_row(
+            "release",
+            "the served document says %s, --release says %s"
+            % (served_release, args.release),
+        )
+        release_id = None
+    elif release_id:
+        pin = get_pin()
+        if pin is None:
+            fail_row("pin", pin_error())
+            pin_error_printed = True
+        else:
+            demo = source == pin.get("source")
+            entry, label, detail = select_release(pin, release_id)
+            if entry is None:
+                fail_row(label, detail)
+            else:
+                reported = data.get("vcpus")
+                if "vcpus" in data and not (
+                    isinstance(reported, int) and not isinstance(reported, bool)
+                    and reported > 0
+                ):
+                    fail_row("release", "the served document has a malformed vcpus field")
+                elif "vcpus" in data and reported not in entry["vcpu_counts"]:
+                    fail_row(
+                        "release",
+                        "the pin entry was measured at vcpu_counts %s; the machine "
+                        "reports %d vCPUs" % (entry["vcpu_counts"], reported),
+                    )
+                else:
+                    row(out, "release", True,
+                        "%s is pinned (%d artifacts, vcpu_counts %s)" % (
+                            release_id, len(entry["artifacts"]), entry["vcpu_counts"]))
+
+    if not args.print_pin:
+        if expect is not None:
+            ok = report.measurement_hex == expect
+            row(out, "expected", ok, "matches --expect %s" % expect if ok else
+                "is %s, --expect says %s" % (report.measurement_hex, expect))
+            failures = failures or not ok
+        elif release_requested and (release_id is None or entry is None):
+            # The release row already failed; do not compare a tenant's number
+            # to the demo record as a second, misleading FAIL.
+            pass
+        elif release_id and not demo:
+            parser.error(
+                "a tenant run needs --expect <measurement>; the chain alone "
+                "is not a boot check"
+            )
+        else:
+            pin = get_pin()
+            if pin is None:
+                if not pin_error_printed:
+                    fail_row("pin", pin_error())
+            else:
+                want = pin["measurement"].lower()
+                ok = report.measurement_hex == want
+                if ok and pin.get("report_version") not in (None, report.version):
+                    ok = False
+                    detail = "the pin records report version %r, the report says %d" % (
+                        pin.get("report_version"), report.version)
+                elif ok:
+                    detail = "matches %s (fetched_at %s, pinned from %s)" % (
+                        os.path.relpath(args.pin, ROOT),
+                        pin.get("fetched_at", "unknown"),
+                        pin.get("commit", "unknown"),
+                    )
+                else:
+                    detail = "is %s, the pin says %s" % (report.measurement_hex, want)
+                row(out, "pin", ok, detail)
+                failures = failures or not ok
+
+    record: dict | None = None
+    if not args.print_pin:
+        if entry is not None:
+            record = build_record(
+                release_id, entry, report, data,
+                datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            )
+            if (args.record or args.previous) and record["cmdline_sha256"] is None:
+                fail_row("served", "the served document carries no cmdline; "
+                                   "the boot record needs it")
+        elif args.record or args.previous:
+            if release_id is None:
+                parser.error(
+                    "--record/--previous need a pinned release; pass --release "
+                    "or serve a document with a release field"
+                )
+
+    if args.print_pin:
+        if failures:
+            say("\nFAIL — not printing a pin for a report that did not verify.")
+            say()
+            say(NOT_LIVENESS)
+            return 1
+        old: dict | None = None
+        if os.path.exists(args.pin):
+            try:
+                old = load_pin(args.pin)
+            except VerifyError as exc:
+                say("\nFAIL — not printing a pin: %s" % exc)
+                say()
+                say(NOT_LIVENESS)
+                return 1
+        fresh = {
+            "measurement": report.measurement_hex,
+            "report_version": report.version,
+            "policy": "0x%x" % report.policy,
+            "fetched_at": fetched_at,
+            "pinned_at": datetime.now(timezone.utc).strftime("%Y-%m-%d"),
+            "source": source,
+            "commit": git_head(),
+        }
+        merged = dict(old) if old else {}
+        merged.update(fresh)
+        print(json.dumps(merged, indent=2, ensure_ascii=False))
+        return 0
+
+    if failures:
+        say()
+        say("FAIL — the report did not verify against the chain and the pin.")
+        say()
+        say(NOT_LIVENESS)
+        return 1
+
+    if record is not None:
+        if args.previous:
+            try:
+                previous = load_previous(args.previous)
+            except VerifyError as exc:
+                print("odile-verify: %s" % exc, file=sys.stderr)
+                return 2
+            moved = compare_records(record, previous)
+            say()
+            if moved:
+                for line in moved:
+                    value(out, "previous", line)
+            else:
+                value(out, "previous", "same")
+        if args.record:
+            try:
+                write_record(args.record, record)
+            except OSError as exc:
+                print("odile-verify: cannot write --record %s: %s" % (args.record, exc),
+                      file=sys.stderr)
+                return 2
+            value(out, "record", "written to %s" % args.record)
+        say()
+        say("boot record (%s):" % RECORD_SCHEMA)
+        say(json.dumps(record, indent=2))
+        if record.get("cmdline_sha256") is None:
+            say("  note: the served document carries no cmdline; cmdline_sha256 is null.")
+
+    say()
+    say("PASS — the CPU signed this report and the launch measurement matches the pin.")
+    say()
+    say(NOT_LIVENESS)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

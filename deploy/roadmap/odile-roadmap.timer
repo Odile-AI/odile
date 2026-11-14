@@ -1,0 +1,20 @@
+# Odile — regenerate the roadmap page every fifteen minutes. ODL-490.
+#
+# Committed source of truth for /etc/systemd/system/odile-roadmap.timer;
+# scripts/deploy.sh installs it and `systemctl enable --now odile-roadmap.timer` links
+# it into timers.target. Fifteen minutes is the cadence the card asks for: the
+# page is a view of the board, not an alert, and a card that moves is visible
+# within a quarter of an hour. The [Install] section is the boot path.
+[Unit]
+Description=Odile roadmap page — every fifteen minutes
+
+[Timer]
+OnCalendar=*:0/15
+AccuracySec=15s
+RandomizedDelaySec=0
+# A missed run (host down, deploy restart) is caught up once after boot.
+Persistent=true
+Unit=odile-roadmap.service
+
+[Install]
+WantedBy=timers.target

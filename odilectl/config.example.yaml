@@ -1,0 +1,15 @@
+# odilectl config — copy to /root/.odile/config.yaml and chmod 0600.
+#
+# The CLI refuses a file that is group- or world-readable. The four credential
+# groups are the reseller key, the DNS token, the mail relay key and the paths
+# below. Values may contain ':' and '#'; a line starting with '#' is a comment.
+provider: servury
+reseller_key: REPLACE_ME
+dns_token: REPLACE_ME
+relay_key: REPLACE_ME
+state_db: /var/lib/odile/waitlist.db
+seed_db: /var/lib/odile/waitlist.db
+backup_repo: sftp://backup@example.invalid/odile
+support_public_key: /etc/odile/support/odile-support.pub
+default_plan_id: 113
+default_days: 31

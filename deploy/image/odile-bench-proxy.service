@@ -1,0 +1,21 @@
+# Odile image bench — pipe the socket's connections to the loopback Webapp.
+#
+# One process per listening socket (Accept=no in odile-bench-proxy.socket);
+# systemd-socket-proxyd is part of systemd, so the bench adds no package.
+# A restart of odile-agent does not touch this unit: the next connection
+# opens a fresh one to whatever is listening on 127.0.0.1:__WEBAPP_PORT__.
+[Unit]
+Description=Odile image bench — loopback proxy for host-forwarded Webapp traffic
+Requires=odile-bench-proxy.socket
+After=odile-bench-proxy.socket odile-agent.service
+# socket-proxyd serves one connection and exits, so systemd starts this unit
+# per connection. The default start limit (5 starts / 10 s) made the host's
+# one-second gate poll hit the limit; after that the socket accepted
+# connections that nothing served, and the bench saw a 15 s timeout on a
+# healthy Webapp (measured 2026-11-08). Unlimited starts on purpose.
+StartLimitIntervalSec=0
+StartLimitBurst=0
+
+[Service]
+ExecStart=/lib/systemd/systemd-socket-proxyd 127.0.0.1:__WEBAPP_PORT__
+PrivateTmp=true

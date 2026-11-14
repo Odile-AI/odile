@@ -1,0 +1,15 @@
+# BEGIN odile-testing
+# testing.odile.fyi — retired as a surface on 2026-11-11 (Savio direction).
+#
+# One destination serves manual testing and the hackathon demo: demo.odile.fyi.
+# The prototype this host carried teaches the six-act ceremony the strict bar
+# deletes ("Claim your machine"), so serving it again would mislead a tester.
+# The hostname stays only as a 301 so posts, screenshots and the runbook that
+# name it do not 404.
+#
+# Committed source of truth for the live block in /etc/caddy/Caddyfile; apply
+# with deploy/caddy/deploy_testing_host.py. Edit this file, not the live file.
+testing.odile.fyi {
+	redir https://demo.odile.fyi{uri} permanent
+}
+# END odile-testing

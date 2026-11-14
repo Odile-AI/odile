@@ -1,0 +1,651 @@
+#!/bin/bash
+# install-stack.sh — install the Odile tenant stack into a root filesystem.
+#
+# One definition, used twice:
+#   * deploy/image/Containerfile runs it while building the container image;
+#   * deploy/image/mkdisk.sh copies this directory into a debootstrapped root
+#     and runs it under chroot.
+#
+# What it installs:
+#   * an unprivileged OS user (default `tenant`; no sudo, own home);
+#   * Hermes Agent v0.23.0 (stable, commit 2bd378ed1b8d) as that user,
+#     Webapp bundle built;
+#   * the tenant config (Webapp on loopback 9130 behind the basic-auth gate)
+#     and the .env allowlist (username, scrypt hash, signing secret only);
+#   * one Hermes cron job, `bench-heartbeat`, every minute, no agent, no
+#     inference;
+#   * /etc/systemd/system/odile-agent.service, enabled at boot;
+#   * with --guest-smoke: the bench smoke script and the oneshot unit that
+#     runs it at boot and prints the result to the serial console.
+#   * with --seed FILE --first-visit-token TOKEN (ODL-456, run at first boot
+#     by odile-firstboot.service): the verified seed copied to
+#     /etc/odile/seed.json 0600, the first-visit state (the token's SHA-256
+#     only), the first-visit service and page, its unit, and its bench proxy.
+#     A machine that already holds a first-visit state keeps it: a spent page
+#     stays spent.
+#
+# Idempotency: a second run prints `same` for every piece and changes
+# nothing. The generated .env keeps its scrypt hash and signing secret because
+# a marker records which bench password produced them.
+#
+# Exit codes: 0 ok, 1 an apply failed, 2 bad input or a missing prerequisite.
+set -euo pipefail
+# The Hermes venv on a seat host puts its own python first; this script wants
+# the distribution python and the distribution binaries, in the image and on
+# the builder alike.
+PATH=/usr/sbin:/usr/bin:/sbin:/bin
+export PATH
+
+HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+
+TENANT_USER=${ODILE_TENANT_USER:-tenant}
+EXPECTED_VERSION=${ODILE_HERMES_VERSION:-Hermes Agent v0.23.0}
+# The stable channel moves; the bench and the demo host were verified against
+# this commit, and `--channel stable` alone would silently install a newer
+# patch (measured 2026-11-10: the tip was v0.23.1 and the shell check failed).
+HERMES_COMMIT=${ODILE_HERMES_COMMIT:-2bd378ed1b8d}
+BENCH_PASSWORD=${ODILE_BENCH_PASSWORD:-odile-bench-not-a-secret}
+WEBAPP_HOST=${ODILE_WEBAPP_HOST:-127.0.0.1}
+WEBAPP_PORT=${ODILE_WEBAPP_PORT:-9130}
+INSTALLER_URL=${ODILE_INSTALLER_URL:-https://hermes-agent.nousresearch.com/install.sh}
+SERVICE_NAME=odile-agent
+BENCH_LIB=/usr/local/lib/odile-bench
+STATE_DIR=/var/lib/odile-bench
+
+GUEST_SMOKE=0
+SEED_FILE=""
+FIRST_VISIT_TOKEN=""
+FIRST_VISIT_PORT=${ODILE_FIRST_VISIT_PORT:-8091}
+MANIFEST_PORT=${ODILE_MANIFEST_PORT:-8012}
+
+usage() {
+    cat <<'EOF'
+usage: install-stack.sh [--user NAME] [--password PW] [--webapp-host HOST]
+                        [--webapp-port PORT] [--guest-smoke]
+                        [--seed FILE --first-visit-token TOKEN]
+                        [--first-visit-port PORT]
+
+  --user NAME       unprivileged tenant account (default: tenant, $ODILE_TENANT_USER)
+  --password PW     bench Webapp password (default: a public bench fixture,
+                    $ODILE_BENCH_PASSWORD). Only its scrypt hash is written.
+  --webapp-host H   address the Webapp binds (default: 127.0.0.1). The
+                    container passes 0.0.0.0 because its network namespace is
+                    the boundary; a real tenant stays on loopback behind Caddy.
+  --webapp-port P   Webapp port (default: 9130)
+  --guest-smoke     also install the boot-time smoke unit that prints its
+                    result to the serial console (mkdisk.sh uses this).
+  --seed FILE       a verified seed (the first boot's /etc/odile/seed.json);
+                    store it 0600 and install the first-visit page for TOKEN.
+  --first-visit-token TOKEN
+                    the one-time token the first-visit page checks (64 hex).
+                    Required with --seed; only its SHA-256 is written.
+  --first-visit-port P
+                    the loopback port the first-visit page binds (default 8091)
+EOF
+}
+
+say() { printf '%-12s %s\n' "$1" "$2"; }
+
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --user) TENANT_USER=$2; shift 2 ;;
+        --password) BENCH_PASSWORD=$2; shift 2 ;;
+        --webapp-host) WEBAPP_HOST=$2; shift 2 ;;
+        --webapp-port) WEBAPP_PORT=$2; shift 2 ;;
+        --guest-smoke) GUEST_SMOKE=1; shift ;;
+        --seed) SEED_FILE=$2; shift 2 ;;
+        --first-visit-token) FIRST_VISIT_TOKEN=$2; shift 2 ;;
+        --first-visit-port) FIRST_VISIT_PORT=$2; shift 2 ;;
+        -h|--help) usage; exit 0 ;;
+        *) echo "install-stack: unknown argument: $1" >&2; usage >&2; exit 2 ;;
+    esac
+done
+
+command -v useradd >/dev/null 2>&1 || { echo "install-stack: useradd is missing (passwd package)" >&2; exit 2; }
+command -v curl >/dev/null 2>&1 || { echo "install-stack: curl is missing" >&2; exit 2; }
+command -v git >/dev/null 2>&1 || { echo "install-stack: git is missing" >&2; exit 2; }
+command -v runuser >/dev/null 2>&1 || { echo "install-stack: runuser is missing (util-linux)" >&2; exit 2; }
+[ "$(id -u)" -eq 0 ] || { echo "install-stack: must run as root" >&2; exit 2; }
+[ -f "$HERE/tenant.service" ] || { echo "install-stack: $HERE/tenant.service is missing" >&2; exit 2; }
+[ -f "$HERE/config.yaml" ] || { echo "install-stack: $HERE/config.yaml is missing" >&2; exit 2; }
+[ -f "$HERE/bench-heartbeat.sh" ] || { echo "install-stack: $HERE/bench-heartbeat.sh is missing" >&2; exit 2; }
+
+# The first-boot apply (ODL-456) is two pieces that only make sense together:
+# the verified seed, and the one-time token the page it enables checks.
+if [ -n "$FIRST_VISIT_TOKEN" ] && [ -z "$SEED_FILE" ]; then
+    echo "install-stack: --first-visit-token needs --seed (the verified seed)" >&2
+    exit 2
+fi
+if [ -n "$SEED_FILE" ]; then
+    [ -s "$SEED_FILE" ] || { echo "install-stack: no seed at $SEED_FILE" >&2; exit 2; }
+    [ -n "$FIRST_VISIT_TOKEN" ] || {
+        echo "install-stack: --seed needs --first-visit-token (the page's one-time token)" >&2
+        exit 2
+    }
+    printf '%s' "$FIRST_VISIT_TOKEN" | grep -Eq '^[0-9a-f]{64}$' || {
+        echo "install-stack: --first-visit-token must be 64 lowercase hex" >&2
+        exit 2
+    }
+fi
+
+# --------------------------------------------------------------------------
+# 1. the unprivileged tenant account
+
+if id "$TENANT_USER" >/dev/null 2>&1; then
+    TENANT_HOME=$(getent passwd "$TENANT_USER" | cut -d: -f6)
+    say same "$TENANT_USER exists (uid $(id -u "$TENANT_USER"), home $TENANT_HOME)"
+else
+    useradd --create-home --user-group --shell /bin/bash "$TENANT_USER"
+    TENANT_HOME=$(getent passwd "$TENANT_USER" | cut -d: -f6)
+    say create "$TENANT_USER (uid $(id -u "$TENANT_USER"), home $TENANT_HOME)"
+fi
+[ -n "$TENANT_HOME" ] && [ -d "$TENANT_HOME" ] || {
+    echo "install-stack: $TENANT_USER has no home directory" >&2
+    exit 1
+}
+HERMES_HOME=$TENANT_HOME/.hermes
+INSTALL_DIR=$HERMES_HOME/hermes-agent
+LAUNCHER=$INSTALL_DIR/.hermes/bin/hermes
+WEBAPP_INDEX=$INSTALL_DIR/apps/desktop/dist-webapp/index.html
+
+as_tenant() {
+    runuser -u "$TENANT_USER" -- env HOME="$TENANT_HOME" \
+        HERMES_HOME="$HERMES_HOME" "$@"
+}
+
+# --------------------------------------------------------------------------
+# 2. Hermes, pinned to the release the demo host runs
+
+installed_version() {
+    [ -x "$LAUNCHER" ] || return 1
+    as_tenant "$LAUNCHER" --version 2>/dev/null | head -n 1
+}
+
+VERSION_LINE=$(installed_version || true)
+if [ -n "$VERSION_LINE" ] && [ -d "$INSTALL_DIR/.git" ]; then
+    say same "$INSTALL_DIR"
+    say same "$VERSION_LINE"
+    case "$VERSION_LINE" in
+        "$EXPECTED_VERSION"*) ;;
+        *)
+            echo "install-stack: warning: expected $EXPECTED_VERSION; the Webapp gate and" >&2
+            echo "              config schema were verified against that release" >&2
+            ;;
+    esac
+else
+    installer=$(mktemp)
+    trap 'rm -f "$installer"' EXIT
+    curl -fsSL --max-time 120 "$INSTALLER_URL" -o "$installer"
+    chmod 0644 "$installer"
+    say install "Hermes as $TENANT_USER into $HERMES_HOME (stable, browser and cua skipped)"
+    as_tenant bash "$installer" --channel stable --commit "$HERMES_COMMIT" \
+        --non-interactive --skip-browser --skip-computer-use
+    VERSION_LINE=$(installed_version || true)
+    [ -n "$VERSION_LINE" ] || { echo "install-stack: Hermes install produced no launcher" >&2; exit 1; }
+    say installed "$VERSION_LINE"
+    trap - EXIT
+    rm -f "$installer"
+fi
+
+if [ -f "$WEBAPP_INDEX" ]; then
+    say same "Webapp bundle $WEBAPP_INDEX"
+else
+    say build "Webapp bundle (first build only; minutes)"
+    as_tenant "$LAUNCHER" webapp --build-only
+    [ -f "$WEBAPP_INDEX" ] || { echo "install-stack: webapp --build-only produced no bundle" >&2; exit 1; }
+    say built "Webapp bundle"
+fi
+
+# The demo host's unit puts the installer's node first on PATH so a Webapp
+# terminal has it. Find the directory the installer actually created rather
+# than pinning a version that a future stable release will move.
+TENANT_PATH=$TENANT_HOME/.local/bin
+NODE_BIN=$(find "$HERMES_HOME/tools" -maxdepth 2 -type d -name 'node-*-linux-x64' -print -quit 2>/dev/null || true)
+if [ -n "$NODE_BIN" ]; then
+    TENANT_PATH=$NODE_BIN/bin:$TENANT_PATH
+    say same "node on the tenant PATH ($NODE_BIN/bin)"
+fi
+
+# --------------------------------------------------------------------------
+# 3. config.yaml — the five managed blocks, and the schema version Hermes
+#    itself seeded, so a future schema bump does not need an edit here.
+
+if [ -f "$HERMES_HOME/config.yaml" ]; then
+    CONFIG_VERSION=$(sed -n 's/^_config_version:[[:space:]]*//p' "$HERMES_HOME/config.yaml" | head -n 1)
+else
+    CONFIG_VERSION=""
+fi
+: "${CONFIG_VERSION:=52}"
+config_tmp=$(mktemp "$HERMES_HOME/.config.yaml.XXXXXX")
+{
+    printf '_config_version: %s\n' "$CONFIG_VERSION"
+    sed -e "s|__WEBAPP_HOST__|$WEBAPP_HOST|g" -e "s|__WEBAPP_PORT__|$WEBAPP_PORT|g" "$HERE/config.yaml"
+} > "$config_tmp"
+if [ -f "$HERMES_HOME/config.yaml" ] && cmp -s "$config_tmp" "$HERMES_HOME/config.yaml"; then
+    say same "$HERMES_HOME/config.yaml"
+    rm -f "$config_tmp"
+else
+    chown "$TENANT_USER:$TENANT_USER" "$config_tmp"
+    chmod 0644 "$config_tmp"
+    mv "$config_tmp" "$HERMES_HOME/config.yaml"
+    say write "$HERMES_HOME/config.yaml"
+fi
+
+# --------------------------------------------------------------------------
+# 4. .env — the three auth keys, never a provider key. The bench never calls
+#    inference, so no NEAR key is copied into the image.
+#
+#    The marker lets a rerun keep the same scrypt hash (and therefore the same
+#    sessions) while still noticing a different --password.
+
+password_sha=$(printf '%s' "$BENCH_PASSWORD" | sha256sum | cut -d' ' -f1)
+env_file=$HERMES_HOME/.env
+if [ -f "$env_file" ] && grep -qx "# bench-password-sha256: $password_sha" "$env_file"; then
+    say same "$env_file (bench password unchanged)"
+else
+    password_hash=$(/usr/bin/python3 - "$BENCH_PASSWORD" <<'PY'
+import base64, hashlib, secrets, sys
+password = sys.argv[1].encode("utf-8")
+salt = secrets.token_bytes(16)
+dk = hashlib.scrypt(password, salt=salt, n=2**14, r=8, p=1, dklen=32, maxmem=0)
+print("scrypt$16384$8$1$%s$%s" % (
+    base64.b64encode(salt).decode(), base64.b64encode(dk).decode()))
+PY
+)
+    auth_secret=$(/usr/bin/python3 -c 'import secrets; print(secrets.token_hex(32))')
+    env_tmp=$(mktemp "$HERMES_HOME/.env.XXXXXX")
+    cat > "$env_tmp" <<EOF
+# Odile image bench — generated by deploy/image/install-stack.sh, never edited
+# by hand. Exactly three keys: the judge-facing login and its signing secret.
+# No provider key: the bench runs no inference.
+# bench-password-sha256: $password_sha
+HERMES_DASHBOARD_BASIC_AUTH_USERNAME=$TENANT_USER
+HERMES_DASHBOARD_BASIC_AUTH_PASSWORD_HASH=$password_hash
+HERMES_DASHBOARD_BASIC_AUTH_SECRET=$auth_secret
+EOF
+    chown "$TENANT_USER:$TENANT_USER" "$env_tmp"
+    chmod 0600 "$env_tmp"
+    mv "$env_tmp" "$env_file"
+    say write "$env_file (mode 0600, $TENANT_USER)"
+fi
+install -d -o "$TENANT_USER" -g "$TENANT_USER" -m 0700 "$HERMES_HOME/scripts" "$HERMES_HOME/cron"
+
+# --------------------------------------------------------------------------
+# 5. one cron job, no agent: the demo's `demo-heartbeat`, every minute so the
+#    bench check is bounded. Its stdout is the job's stored output.
+
+install -o "$TENANT_USER" -g "$TENANT_USER" -m 0755 \
+    "$HERE/bench-heartbeat.sh" "$HERMES_HOME/scripts/bench-heartbeat.sh"
+# v0.23.0's `cron list` has no --json flag; the job store is the stable
+# surface. A rerun must not create a second job (the bench fires it every
+# minute, so duplicates would double the log lines and the evidence).
+cron_job_exists() {
+    [ -s "$HERMES_HOME/cron/jobs.json" ] || return 1
+    /usr/bin/python3 - "$HERMES_HOME/cron/jobs.json" <<'PY'
+import json, sys
+try:
+    data = json.load(open(sys.argv[1], encoding="utf-8"))
+except (OSError, ValueError):
+    raise SystemExit(1)
+jobs = data.get("jobs", []) if isinstance(data, dict) else data
+matches = [j for j in jobs if isinstance(j, dict) and j.get("name") == "bench-heartbeat"]
+raise SystemExit(0 if matches else 1)
+PY
+}
+if cron_job_exists; then
+    say same "cron job bench-heartbeat (every 1m, no-agent)"
+else
+    as_tenant "$LAUNCHER" cron create 1m \
+        --name bench-heartbeat --no-agent --script bench-heartbeat.sh --deliver local
+    say create "cron job bench-heartbeat (every 1m, no-agent)"
+fi
+
+# --------------------------------------------------------------------------
+# 6. the service unit
+
+unit_tmp=$(mktemp)
+sed -e "s|__TENANT_USER__|$TENANT_USER|g" \
+    -e "s|__TENANT_HOME__|$TENANT_HOME|g" \
+    -e "s|__TENANT_PATH__|$TENANT_PATH|g" \
+    "$HERE/tenant.service" > "$unit_tmp"
+if cmp -s "$unit_tmp" "/etc/systemd/system/$SERVICE_NAME.service"; then
+    say same "/etc/systemd/system/$SERVICE_NAME.service"
+    rm -f "$unit_tmp"
+else
+    chmod 0644 "$unit_tmp"
+    mv "$unit_tmp" "/etc/systemd/system/$SERVICE_NAME.service"
+    say write "/etc/systemd/system/$SERVICE_NAME.service"
+fi
+systemctl enable "$SERVICE_NAME.service" >/dev/null
+say same "$SERVICE_NAME.service enabled at boot"
+
+# --------------------------------------------------------------------------
+# 6b. the Webapp brand re-assert (ODL-503 follow-up)
+#
+# The installer links the Odile brand once, at install time (ODL-240). A
+# `hermes update` rebuilds dist-webapp from the vendor package, and that
+# rebuild drops both the asset and the tag: measured on the demo tenant,
+# 2026-11-14 01:26Z, title `Hermes` and wordmark `HERMES AGENT` with the
+# palette still Odile's. These pieces make the re-assert part of the machine
+# instead of part of a repair: the bytes, the helper, a path unit on the built
+# shell, and a drop-in that runs the same helper before the gateway starts.
+#
+# The trigger is the bundle changing (the path unit), not a boot; the drop-in
+# is the backstop for the update flow that rebuilds and then restarts the
+# gateway. A drop-in, not an ExecStartPre in tenant.service, because the
+# release installer rewrites odile-agent.service on every boot.
+BRAND_LIB=/usr/local/lib/odile
+install -d -m 0755 "$BRAND_LIB"
+for pair in "webapp-brand.js:0644" "odile-webapp-brand.py:0755"; do
+    f=${pair%%:*}; mode=${pair##*:}
+    if cmp -s "$HERE/$f" "$BRAND_LIB/$f"; then
+        say same "$BRAND_LIB/$f"
+    else
+        install -m "$mode" "$HERE/$f" "$BRAND_LIB/$f"
+        say write "$BRAND_LIB/$f"
+    fi
+done
+for unit in odile-webapp-brand.service odile-webapp-brand.path; do
+    unit_tmp=$(mktemp)
+    sed -e "s|__TENANT_HOME__|$TENANT_HOME|g" "$HERE/$unit" > "$unit_tmp"
+    if cmp -s "$unit_tmp" "/etc/systemd/system/$unit"; then
+        say same "/etc/systemd/system/$unit"
+        rm -f "$unit_tmp"
+    else
+        chmod 0644 "$unit_tmp"
+        mv "$unit_tmp" "/etc/systemd/system/$unit"
+        say write "/etc/systemd/system/$unit"
+    fi
+done
+BRAND_DROPIN=/etc/systemd/system/$SERVICE_NAME.service.d/10-odile-webapp-brand.conf
+install -d -m 0755 "${BRAND_DROPIN%/*}"
+unit_tmp=$(mktemp)
+sed -e "s|__TENANT_HOME__|$TENANT_HOME|g" "$HERE/odile-webapp-brand.conf" > "$unit_tmp"
+if cmp -s "$unit_tmp" "$BRAND_DROPIN"; then
+    say same "$BRAND_DROPIN"
+    rm -f "$unit_tmp"
+else
+    chmod 0644 "$unit_tmp"
+    mv "$unit_tmp" "$BRAND_DROPIN"
+    say write "$BRAND_DROPIN"
+fi
+systemctl enable odile-webapp-brand.path >/dev/null
+say same "odile-webapp-brand.path enabled (a rebuild starts it)"
+# Converge this build now, so a fresh machine leaves the image with the name on
+# it and does not wait for the first rebuild. In a build chroot there is no
+# PID 1 to ask; the guest gets the unit started below.
+if ! /usr/bin/python3 "$BRAND_LIB/odile-webapp-brand.py" --home "$TENANT_HOME"; then
+    say warn "the Webapp brand re-assert failed; the path unit will retry"
+fi
+if [ -d /run/systemd/system ]; then
+    systemctl daemon-reload
+    systemctl start odile-webapp-brand.path
+    say start "odile-webapp-brand.path (bundle watches armed)"
+fi
+
+# --------------------------------------------------------------------------
+# 7. optional: the boot-time smoke unit (QEMU image only)
+
+install -d -m 0755 "$BENCH_LIB" "$STATE_DIR"
+for f in bench.py smoke.sh; do
+    install -m 0755 "$HERE/$f" "$BENCH_LIB/$f"
+done
+printf '%s\n' "$BENCH_PASSWORD" > "$STATE_DIR/password"
+chmod 0600 "$STATE_DIR/password"
+
+if [ "$GUEST_SMOKE" = 1 ]; then
+    unit_tmp=$(mktemp)
+    sed -e "s|__TENANT_USER__|$TENANT_USER|g" \
+        -e "s|__TENANT_HOME__|$TENANT_HOME|g" \
+        -e "s|__BENCH_PASSWORD__|$BENCH_PASSWORD|g" \
+        -e "s|__WEBAPP_PORT__|$WEBAPP_PORT|g" \
+        "$HERE/odile-bench-smoke.service" > "$unit_tmp"
+    if cmp -s "$unit_tmp" /etc/systemd/system/odile-bench-smoke.service; then
+        say same "/etc/systemd/system/odile-bench-smoke.service"
+        rm -f "$unit_tmp"
+    else
+        chmod 0644 "$unit_tmp"
+        mv "$unit_tmp" /etc/systemd/system/odile-bench-smoke.service
+        say write "/etc/systemd/system/odile-bench-smoke.service"
+    fi
+    systemctl enable odile-bench-smoke.service >/dev/null
+    say same "odile-bench-smoke.service enabled at boot"
+
+    # The Caddy stand-in: the host-forwarded port reaches the guest's slirp
+    # address; socket-proxyd hands the connection to the loopback Webapp.
+    for unit in odile-bench-proxy.socket odile-bench-proxy.service; do
+        unit_tmp=$(mktemp)
+        sed -e "s|__WEBAPP_PORT__|$WEBAPP_PORT|g" "$HERE/$unit" > "$unit_tmp"
+        if cmp -s "$unit_tmp" "/etc/systemd/system/$unit"; then
+            say same "/etc/systemd/system/$unit"
+            rm -f "$unit_tmp"
+        else
+            chmod 0644 "$unit_tmp"
+            mv "$unit_tmp" "/etc/systemd/system/$unit"
+            say write "/etc/systemd/system/$unit"
+        fi
+    done
+    systemctl enable odile-bench-proxy.socket >/dev/null
+    say same "odile-bench-proxy.socket enabled at boot"
+
+    # The first-visit page has its own loopback port (ODL-457); the bench's
+    # stand-in Caddy needs a socket on the slirp address for it as well, or the
+    # host-forwarded connection would reach nothing. Installed here (build
+    # time); the page itself is installed by the first boot (step 8).
+    for unit in odile-bench-proxy-firstvisit.socket odile-bench-proxy-firstvisit.service; do
+        unit_tmp=$(mktemp)
+        sed -e "s|__FIRST_VISIT_PORT__|$FIRST_VISIT_PORT|g" "$HERE/$unit" > "$unit_tmp"
+        if cmp -s "$unit_tmp" "/etc/systemd/system/$unit"; then
+            say same "/etc/systemd/system/$unit"
+            rm -f "$unit_tmp"
+        else
+            chmod 0644 "$unit_tmp"
+            mv "$unit_tmp" "/etc/systemd/system/$unit"
+            say write "/etc/systemd/system/$unit"
+        fi
+    done
+    systemctl enable odile-bench-proxy-firstvisit.socket >/dev/null
+    say same "odile-bench-proxy-firstvisit.socket enabled at boot"
+
+    # The manifest listener binds loopback too (ODL-472); the host reads
+    # /manifest through this stand-in for Caddy, exactly as it reads the
+    # first-visit page. Installed at build time; the first boot starts the
+    # listener itself once the signed pair is in place.
+    for unit in odile-bench-proxy-manifest.socket odile-bench-proxy-manifest.service; do
+        unit_tmp=$(mktemp)
+        sed -e "s|__MANIFEST_PORT__|$MANIFEST_PORT|g" "$HERE/$unit" > "$unit_tmp"
+        if cmp -s "$unit_tmp" "/etc/systemd/system/$unit"; then
+            say same "/etc/systemd/system/$unit"
+            rm -f "$unit_tmp"
+        else
+            chmod 0644 "$unit_tmp"
+            mv "$unit_tmp" "/etc/systemd/system/$unit"
+            say write "/etc/systemd/system/$unit"
+        fi
+    done
+    systemctl enable odile-bench-proxy-manifest.socket >/dev/null
+    say same "odile-bench-proxy-manifest.socket enabled at boot"
+fi
+
+# --------------------------------------------------------------------------
+# 7b. the machine's own attestation and access report (ODL-397, ODL-473)
+#
+# The /verify page reads two files this step's units write: the served
+# attestation document (from Servury's boot report, or the bench stand-in
+# derived from the image's own pin) and the access report (the strict bar's
+# five lines). The units run before the gateway on every boot; here they run
+# once so a machine that just installed has both. The page itself is installed
+# in two places: the image root has it from the build, and the first boot
+# installs it with the seed (step 8).
+
+install_file() {  # src dst mode label
+    if cmp -s "$1" "$2" 2>/dev/null; then
+        say same "$2"
+    else
+        install -m "$3" "$1" "$2"
+        say write "$2"
+    fi
+}
+
+if [ ! -f "$HERE/verify.html" ] || [ ! -f "$HERE/access_report.sh" ] \
+        || [ ! -f "$HERE/verify_and_unlock.sh" ]; then
+    say skip "the /verify report surface (ODL-473 is not in this image)"
+else
+    install -d -m 0755 /usr/local/lib/odile
+    # The units below run with ProtectSystem=strict and ReadWritePaths=/var/lib/odile;
+    # systemd refuses to start them (226/NAMESPACE) when that path does not exist.
+    # It is created here, in the image build's chroot and on a machine whose first
+    # boot installed later than the units' own start, so the first run is not a race.
+    install -d -m 0755 /var/lib/odile
+    # The release installer creates this group too; creating it here means the
+    # manifest listener's SupplementaryGroups=odile-manifest resolves before the
+    # first boot reaches the release half, and /etc/odile stays 0750 when the
+    # installer sets it. Same flags as odile_install.py's ensure_manifest_group.
+    if ! getent group odile-manifest >/dev/null 2>&1; then
+        groupadd --system odile-manifest || true
+        say create "system group odile-manifest (the manifest listener's traverse)"
+    fi
+    install_file "$HERE/verify.html" /usr/local/lib/odile/verify.html 0644
+    install_file "$HERE/access_report.sh" /usr/local/lib/odile/access_report.sh 0755
+    install_file "$HERE/verify_and_unlock.sh" /usr/local/lib/odile/verify_and_unlock.sh 0755
+    if [ -f "$HERE/attest.py" ]; then
+        install_file "$HERE/attest.py" /usr/local/lib/odile/attest.py 0755
+    fi
+    if [ -f "$HERE/bench-attest.py" ] && [ ! -f /etc/odile/production ]; then
+        install_file "$HERE/bench-attest.py" /usr/local/lib/odile/bench_attest.py 0755
+    fi
+    # The release installer rewrites odile-access-report.service itself, with
+    # no Environment= line, and its wrapper then looks up the user `odile`;
+    # this image's tenant account is `tenant`. A drop-in survives that rewrite
+    # because the installer writes the unit file, not this directory. Measured
+    # on ODL-332 round 6: without it the unit failed to start ("no
+    # /home/odile/.hermes/.env") and the release install stopped there.
+    if [ -f "$HERE/odile-access-report-user.conf" ]; then
+        install -d -m 0755 /etc/systemd/system/odile-access-report.service.d
+        install_file "$HERE/odile-access-report-user.conf" \
+            /etc/systemd/system/odile-access-report.service.d/10-tenant-user.conf 0644
+        say same "odile-access-report.service.d/10-tenant-user.conf (ODILE_ACCESS_USER=tenant)"
+    fi
+    for unit in odile-bench-attest.service odile-attest-boot.service odile-access-report.service; do
+        # The bench attest stand-in derives a report from the pin and the
+        # command line; on a Blackbox Servury's bb-seed already wrote the real
+        # /run/blackbox/attest.json and the stand-in would overwrite it.
+        if [ "$unit" = odile-bench-attest.service ] && [ -f /etc/odile/production ]; then
+            say skip "$unit (production image: Servury's own boot report)"
+            continue
+        fi
+        [ -f "$HERE/$unit" ] || continue
+        install_file "$HERE/$unit" "/etc/systemd/system/$unit" 0644
+        systemctl enable "$unit" >/dev/null
+        say same "$unit enabled at boot"
+    done
+    if [ -d /run/systemd/system ]; then
+        # The units order themselves (bench stand-in -> attestation -> report).
+        systemctl start odile-bench-attest.service odile-attest-boot.service \
+            odile-access-report.service 2>/dev/null || true
+        say start "the boot report and the machine's access report"
+    fi
+fi
+
+# --------------------------------------------------------------------------
+# 8. optional: the seed and the first-visit page (ODL-456's first boot)
+
+if [ -n "$SEED_FILE" ]; then
+    # The seed arrives already signature-checked by odile-firstboot; this
+    # checks only what the installer is about to rely on.
+    SEED_SLUG=$(/usr/bin/python3 - "$SEED_FILE" "$FIRST_VISIT_TOKEN" <<'PY'
+import json, re, sys
+path, token = sys.argv[1], sys.argv[2]
+try:
+    seed = json.load(open(path, encoding="utf-8"))
+except (OSError, ValueError) as exc:
+    raise SystemExit("install-stack: the seed is not JSON: %s" % exc)
+if not isinstance(seed, dict):
+    raise SystemExit("install-stack: the seed is not a JSON object")
+slug = seed.get("slug")
+if not isinstance(slug, str) or not re.match(r"^[a-z0-9][a-z0-9-]{1,62}$", slug):
+    raise SystemExit("install-stack: the seed has no valid slug")
+for key in ("instance_id", "near_api_key", "model", "hermes_version"):
+    if not isinstance(seed.get(key), str) or not seed[key].strip():
+        raise SystemExit("install-stack: the seed has no %s" % key)
+for key in ("password", "passphrase", "private_key", "ssh_private_key", "luks"):
+    if key in seed:
+        raise SystemExit("install-stack: the seed carries a forbidden %s" % key)
+print(slug)
+PY
+)
+    install -d -m 0755 /etc/odile /usr/local/lib/odile
+
+    if cmp -s "$SEED_FILE" /etc/odile/seed.json; then
+        say same "/etc/odile/seed.json (0600)"
+    else
+        install -m 0600 "$SEED_FILE" /etc/odile/seed.json
+        say write "/etc/odile/seed.json (0600, tenant $SEED_SLUG)"
+    fi
+
+    # The state is written once. A re-run must not re-open a page the user has
+    # already spent; that is the one thing an idempotent apply must not repair.
+    if [ -f /etc/odile/first-visit.json ]; then
+        say same "/etc/odile/first-visit.json (written; a spent page stays spent)"
+    else
+        state_tmp=$(mktemp)
+        /usr/bin/python3 - "$FIRST_VISIT_TOKEN" > "$state_tmp" <<'PY'
+import hashlib, json, sys
+from datetime import datetime, timezone
+
+print(json.dumps({
+    "version": 1,
+    "token_sha256": hashlib.sha256(sys.argv[1].encode("ascii")).hexdigest(),
+    "created_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+    "used_at": None,
+    "signin_set_at": None,
+    "recovery_hash": None,
+    "recovery_issued_at": None,
+    "recovery_used_at": None,
+}, indent=2, sort_keys=True))
+PY
+        install -m 0600 "$state_tmp" /etc/odile/first-visit.json
+        rm -f "$state_tmp"
+        say write "/etc/odile/first-visit.json (token sha256 only, no plaintext)"
+    fi
+
+    if [ ! -f "$HERE/first_visit.py" ] || [ ! -f "$HERE/first-visit.html" ]; then
+        # A tree where ODL-457 has not merged: the seed is stored and the
+        # state written, but there is no page to install. The first boot says
+        # so in its one line instead of failing the machine.
+        say skip "the first-visit page (ODL-457 is not in this image)"
+    else
+    install_file "$HERE/first_visit.py" /usr/local/lib/odile/first_visit.py 0755
+    install_file "$HERE/first-visit.html" /usr/local/lib/odile/first-visit.html 0644
+    # ODL-332 round 7: the done page offers the recovery file, and the file
+    # must exist before the page can be answered; the release installer writes
+    # it only near the end of its run. The unit's ExecStartPre writes it first.
+    install_file "$HERE/recovery-seed.py" /usr/local/lib/odile/recovery-seed.py 0755
+
+    unit_tmp=$(mktemp)
+    sed -e "s|__TENANT_USER__|$TENANT_USER|g" \
+        -e "s|__TENANT_HOME__|$TENANT_HOME|g" \
+        -e "s|__FIRST_VISIT_PORT__|$FIRST_VISIT_PORT|g" \
+        -e "s|__UNIT__|$SERVICE_NAME|g" \
+        "$HERE/odile-first-visit.service" > "$unit_tmp"
+    if cmp -s "$unit_tmp" /etc/systemd/system/odile-first-visit.service; then
+        say same "/etc/systemd/system/odile-first-visit.service"
+        rm -f "$unit_tmp"
+    else
+        chmod 0644 "$unit_tmp"
+        mv "$unit_tmp" /etc/systemd/system/odile-first-visit.service
+        say write "/etc/systemd/system/odile-first-visit.service"
+    fi
+    systemctl enable odile-first-visit.service >/dev/null
+    say same "odile-first-visit.service enabled at boot"
+    # In the guest (the first boot) start it now; the first-boot program then
+    # proves the page answers before it writes its state. In a build chroot
+    # there is no PID 1 to ask.
+    if [ -d /run/systemd/system ]; then
+        systemctl restart odile-first-visit.service
+        say start "odile-first-visit.service (127.0.0.1:$FIRST_VISIT_PORT)"
+    fi
+    fi
+fi
+
+say ready "Hermes $VERSION_LINE for $TENANT_USER; Webapp $WEBAPP_HOST:$WEBAPP_PORT"

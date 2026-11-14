@@ -1,0 +1,25 @@
+# Odile bench attestation stand-in — write the boot report envelope.
+#
+# The QEMU bench has no /dev/sev-guest and no AMD PSP, so Servury's bb-seed
+# never runs and /run/blackbox/attest.json never exists. This oneshot writes
+# the same envelope from the image's own pinned measurement (the UKI pin at
+# /etc/odile/tenant-image.pin) and the running command line; the real
+# attest.py transform (odile-attest-boot.service) then writes the served
+# /var/lib/odile/attestation.json from it.
+#
+# It runs before odile-attest-boot.service and only exists in the QEMU bench
+# image. On a Blackbox, bb-seed has already written the file and this unit is
+# not installed.
+[Unit]
+Description=Odile image bench — boot report stand-in
+After=local-fs.target
+Before=odile-attest-boot.service
+ConditionPathExists=/usr/local/lib/odile/bench_attest.py
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/bin/python3 /usr/local/lib/odile/bench_attest.py --pin /etc/odile/tenant-image.pin --out /run/blackbox/attest.json
+
+[Install]
+WantedBy=multi-user.target

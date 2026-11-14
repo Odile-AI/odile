@@ -1,0 +1,145 @@
+# Odile — the Webapp skin (ODL-240).
+#
+# The installer carries this file byte-for-byte and writes it to
+# $HERMES_HOME/skins/odile.yaml; `display.skin: odile` in the tenant config
+# makes the gateway resolve it. It is a Hermes skin, not a bundle fork: the
+# palette is the engine's, and `customCSS` is the seam the engine documents for
+# the few things a palette cannot say (heading face, the wordmark's clear
+# space, the developer status bar).
+#
+# Palette: BRAND.md §Palette. Paper #F6F0E4, ink #1C1813, soft #4A4136, the
+# structural line composited on paper #CFC9BE, and the error red #8F3418 as
+# the only saturated colour. There is no accent hue: every accent role is ink,
+# so nothing default-Hermes gold survives the conversion.
+name: odile
+description: Paper and ink — Odile's quiet Webapp skin
+
+colors:
+  background: "#F6F0E4"
+  ui_text: "#1C1813"
+  banner_text: "#1C1813"
+  banner_title: "#1C1813"
+  banner_dim: "#4A4136"
+  ui_label: "#4A4136"
+  ui_accent: "#1C1813"
+  banner_accent: "#1C1813"
+  ui_border: "#CFC9BE"
+  banner_border: "#CFC9BE"
+  ui_ok: "#4A4136"
+  ui_warn: "#4A4136"
+  ui_error: "#8F3418"
+  ui_tool: "#1C1813"
+  ui_thinking: "#4A4136"
+  prompt: "#1C1813"
+  input_rule: "#CFC9BE"
+  response_border: "#CFC9BE"
+  session_label: "#1C1813"
+  session_border: "#CFC9BE"
+  status_bar_bg: "#FBF6EA"
+  status_bar_text: "#1C1813"
+  status_bar_strong: "#1C1813"
+  status_bar_dim: "#4A4136"
+  status_bar_good: "#4A4136"
+  status_bar_warn: "#4A4136"
+  status_bar_bad: "#8F3418"
+  status_bar_critical: "#8F3418"
+  completion_menu_bg: "#FBF6EA"
+  completion_menu_current_bg: "#E0DACF"
+  selection_bg: "#CFC9BE"
+  shell_dollar: "#4A4136"
+  voice_status_bg: "#FBF6EA"
+  diff_added: "#4A4136"
+  diff_removed: "#8F3418"
+  syntax_string: "#1C1813"
+  syntax_number: "#1C1813"
+  syntax_keyword: "#1C1813"
+  syntax_comment: "#4A4136"
+
+branding:
+  agent_name: Odile
+  response_label: " · Odile "
+  goodbye: "Goodbye."
+  help_header: "Commands"
+
+tool_prefix: "·"
+
+customCSS: |
+  /* Odile — paper and ink (ODL-240).
+   *
+   * The skin engine paints the palette; this block reaches the few things a
+   * palette cannot say. Every value is BRAND.md's, and no font host is
+   * contacted: the stack below is system-local, the closest available serif on
+   * the machine. BRAND.md §Typography allows the fallback stack to carry the
+   * page when the embedded face cannot.
+   */
+  :root {
+    --odile-serif: "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, "DejaVu Serif", serif;
+  }
+
+  /* Headings: the closest available serif, at the sheet's weight. Body stays
+   * the bundle's quiet sans. */
+  h1, h2, h3, h4, h5, h6,
+  [role="heading"] {
+    font-family: var(--odile-serif) !important;
+    font-weight: 500 !important;
+    letter-spacing: -0.02em !important;
+  }
+
+  /* The empty state's wordmark: the brand face at the 32 px floor, ink, one
+   * line, .88 line height, -.03em tracking, and 16 px (0.5 x 32 px) of clear
+   * space below. `!important` beats the vendor's fit-text inline size and its
+   * `text-midground` + `mix-blend-plus-lighter` utility, which would otherwise
+   * turn ink into a white smudge on paper. */
+  p.wordmark {
+    display: block !important;
+    font-family: var(--odile-serif) !important;
+    font-size: 32px !important;
+    font-weight: 500 !important;
+    line-height: 0.88 !important;
+    letter-spacing: -0.03em !important;
+    text-transform: none !important;
+    color: #1C1813 !important;
+    mix-blend-mode: normal !important;
+    margin-block-end: 16px !important;
+    text-align: center;
+  }
+  p.wordmark span {
+    font: inherit !important;
+    letter-spacing: inherit !important;
+    color: inherit !important;
+    mix-blend-mode: inherit !important;
+  }
+
+  /* The status bar is developer chrome — backend state, workspace, density and
+   * the client version. BRAND.md §Product surfaces: a panel has one job. */
+  footer[data-slot="statusbar"] {
+    display: none !important;
+  }
+
+  /* Success is not a colour. BRAND.md §Palette: the only saturated colour is
+   * the error red, and colour never carries meaning alone. applyTheme writes
+   * --ui-success inline, so the stylesheet needs !important to settle it. */
+  :root {
+    --ui-success: #4A4136 !important;
+  }
+
+  /* The About update check is a hard-coded emerald utility in the bundle;
+   * success is ink, like --ui-success. */
+  [class*="text-emerald-"] {
+    color: #4A4136 !important;
+  }
+
+  /* BRAND.md §Accessibility tokens: ::selection is paper on ink. */
+  ::selection {
+    background: #1C1813 !important;
+    color: #F6F0E4 !important;
+  }
+
+  /* The About credit line the brand script adds ("Powered by Hermes"):
+   * quiet, 12.5 px, soft — the open-source core is a trust feature. */
+  .odile-powered-by {
+    margin: 4px 0 0;
+    font-size: 12.5px;
+    line-height: 1.5;
+    color: #4A4136;
+  }

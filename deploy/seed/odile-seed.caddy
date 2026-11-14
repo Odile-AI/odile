@@ -1,0 +1,31 @@
+# BEGIN odile-seed
+# ODL-204/ODL-332: POST /seed is the one route to the seed service; the
+# signed heartbeat receiver (ODL-216) is the second, and the catch-all below is
+# everything else. The token travels in the body, never in the URL, so no proxy
+# log sees it. Committed source of truth for the live block in
+# /etc/caddy/Caddyfile; ./scripts/deploy.sh splices it (deploy/seed/deploy_seed.py).
+# The heartbeat route lives in this fragment because this is the one committed
+# block inside the odile.fyi site: a rebuilt HQ gets it from a deploy, and the
+# guest's default https://odile.fyi/heartbeat answers (ODL-215 follow-up).
+# Edit this file, then run ./scripts/deploy.sh — never edit the live Caddyfile by hand.
+# Caddy runs with `admin off`, so a change here needs `systemctl restart caddy`.
+@seed path /seed
+handle @seed {
+	reverse_proxy 127.0.0.1:8081
+}
+
+@odile_heartbeat path /heartbeat
+handle @odile_heartbeat {
+	reverse_proxy 127.0.0.1:8099
+}
+
+@odile_heartbeat_health path /heartbeat/health
+handle @odile_heartbeat_health {
+	rewrite * /health
+	reverse_proxy 127.0.0.1:8099
+}
+
+handle {
+	reverse_proxy 127.0.0.1:8080
+}
+# END odile-seed

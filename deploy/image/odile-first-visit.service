@@ -1,0 +1,40 @@
+# Odile first visit — set the sign-in on the guest (ODL-457), installed into
+# the measured image by install-stack.sh --first-visit-token (ODL-456).
+#
+# One page, one job: set the Odile sign-in on this machine. It runs as root
+# because it writes the tenant's 0600 .env and restarts the agent unit, binds
+# loopback only, and the bench's socket-proxyd stand-in (Caddy on a tenant) is
+# the only listener that reaches it. The token is spent on the POST; after that
+# the page answers 410 for good.
+[Unit]
+Description=Odile first visit — set the sign-in on the guest
+After=network-online.target
+Wants=network-online.target
+# The agent's .env is read at start; the first-visit POST restarts it itself.
+# Only Before= is set: After=__UNIT__.service as well would be an ordering cycle.
+Before=__UNIT__.service
+
+[Service]
+Type=simple
+User=root
+# ODL-332 round 7: the done page offers the recovery file, so the file must
+# exist before the page can be answered. The release installer writes it near
+# the end of its run, after Caddy is live, and a user who set the sign-in in
+# that window got a done page with "The recovery file is not available on this
+# machine" and no download. This writes the same file first (a password made on
+# this machine, certificate pending); the installer keeps the password and the
+# page's download fills the certificate line.
+ExecStartPre=/usr/bin/python3 /usr/local/lib/odile/recovery-seed.py --path /etc/odile/recovery.txt --cmdline /proc/cmdline
+ExecStart=/usr/bin/python3 /usr/local/lib/odile/first_visit.py --bind 127.0.0.1 --port __FIRST_VISIT_PORT__ --state /etc/odile/first-visit.json --env-file __TENANT_HOME__/.hermes/.env --page /usr/local/lib/odile/first-visit.html --verify-page /usr/local/lib/odile/verify.html --report-file /var/lib/odile/access-report.txt --attest-file /var/lib/odile/attestation.json --report-command 'systemctl restart --no-block odile-access-report.service' --reload-command 'systemctl restart __UNIT__'
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+# The .env is rewritten through a sibling temp file, so the directory is the
+# writable path; the state and its lock live in /etc/odile.
+ReadWritePaths=__TENANT_HOME__ /etc/odile
+
+[Install]
+WantedBy=multi-user.target

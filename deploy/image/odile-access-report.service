@@ -1,0 +1,36 @@
+# Odile access report — write the machine's own /verify report (ODL-473).
+#
+# /verify shows this machine's five lines, not a bench block. This oneshot runs
+# the strict bar's report as root at boot, writes
+# /var/lib/odile/access-report.txt 0644, and the first-visit service renders it
+# at /verify. It runs again after the first visit (the first-visit POST starts
+# this unit when the tenant's hash replaces the placeholder).
+#
+# The pin the wrapper passes to --expect is the image's own: the UKI pin at
+# /etc/odile/tenant-image.pin, else the installer's boot record, else the boot
+# report the machine produced. Read-only on the machine: the reporter reads
+# /proc/cmdline, the attestation document, every authorized_keys and the
+# tenant .env; it writes only the report file.
+[Unit]
+Description=Odile access report — write the machine's own /verify report
+After=local-fs.target odile-attest-boot.service
+Wants=odile-attest-boot.service
+Before=odile-agent.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+# systemd sets no HOME for a system service; the reporter reads it at startup.
+Environment=HOME=/root
+# The image's tenant account is `tenant`; a real tenant's unit (installed by
+# odile-install) omits this and the wrapper's default, `odile`, is the user.
+Environment=ODILE_ACCESS_USER=tenant
+ExecStart=/usr/local/lib/odile/access_report.sh
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/var/lib/odile
+
+[Install]
+WantedBy=multi-user.target

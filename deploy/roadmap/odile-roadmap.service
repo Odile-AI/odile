@@ -1,0 +1,26 @@
+# Odile — the roadmap page generator. ODL-490.
+#
+# Committed source of truth for /etc/systemd/system/odile-roadmap.service.
+# scripts/deploy.sh installs it; odile-roadmap.timer runs it every fifteen minutes.
+#
+# Root, because the board's SQLite file lives under /root/.hermes and the state
+# file lives in /var/lib/odile. The generator reads the board through a
+# `mode=ro` connection and writes exactly one file, atomically, so a failed run
+# leaves the previous page in place.
+[Unit]
+Description=Odile roadmap page — regenerate from docs/backlog.yaml and the board
+Documentation=https://odile.fyi/roadmap
+After=odile.service
+
+[Service]
+Type=oneshot
+User=root
+WorkingDirectory=/opt/odile
+ExecStart=/usr/bin/python3 /opt/odile/tools/roadmap_page.py --backlog /opt/odile/docs/backlog.yaml --out /var/lib/odile/roadmap.html --source-file /var/lib/odile/roadmap-source
+Nice=10
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+# The board database lives in root's home; read is all this unit needs there.
+ProtectHome=read-only
+ReadWritePaths=/var/lib/odile

@@ -1,0 +1,25 @@
+{
+  "release": "2026.11.2",
+  "built": "2026-11-09T22:33:09Z",
+  "artifacts": {
+    "OVMF.amdsev.fd": "8731846cdbcbb6aa5c624238b839544b1553f4c5af874450f043321b3ef8958b",
+    "vmlinuz": "96758c40859c94163e5cf81399a107d679e984e251cb4e13aba4e7d92f5d14f2",
+    "initrd.img": "f045406ea60e1b24cd4790dccf1bf96b7528b2fd9266b4449277ce9220395092"
+  },
+  "inputs": {
+    "debian_snapshot": "20261103T000000Z",
+    "edk2": "edk2 edk2-stable202505 unknown",
+    "edk2_platform": "OvmfPkg/AmdSev/AmdSevX64.dsc",
+    "edk2_flags": "-a X64 -t GCC5 -b RELEASE -D FD_SIZE_4MB",
+    "kernel_package": "linux-image-6.12.115+deb13.1-amd64_6.12.115-2_amd64.deb",
+    "kernel_package_sha256": "6aa130b0864e58c7102b53ab9c2be4071fae62394f57c80bf4e1912f4c9b3b2a",
+    "kernel_version": "6.12.115+deb13.1-amd64",
+    "source_date_epoch": "1748736000"
+  },
+  "measurement_parameters": {
+    "vcpu_type": "EPYC-v4",
+    "guest_features": "0x1",
+    "policy": "0x30000",
+    "vmm": "QEMU"
+  }
+}

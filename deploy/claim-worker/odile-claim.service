@@ -1,0 +1,32 @@
+# Odile — the claim worker: one oneshot run of the paid queue. ODL-220 follow-up.
+#
+# Committed source of truth for /etc/systemd/system/odile-claim.service.
+# scripts/deploy.sh installs it; odile-claim.timer starts it every five minutes.
+#
+# Root, because the worker reads /root/.odile/config.yaml (0600) and the
+# provider and Cloudflare credentials beside it. Everything it writes is under
+# /var/lib/odile: the queue, the ready outbox and the recovery kits.
+[Unit]
+Description=Odile claim worker — provision every paid, claimed, keyed tenant
+Documentation=https://odile.fyi
+# The queue lives in the web service's database. A queue file created by root
+# would be root-owned, and SQLite copies the database owner onto -wal/-shm, so
+# uid odile would then fail with "attempt to write a readonly database".
+ConditionPathExists=/var/lib/odile/waitlist.db
+After=odile.service
+
+[Service]
+Type=oneshot
+User=root
+WorkingDirectory=/opt/odile
+ExecStart=/usr/bin/python3 -m odilectl.claim run --apply --json
+# claim polls a machine for up to 900 s per tenant (DEFAULT_TIMEOUT); systemd's
+# default oneshot start timeout is 90 s and would kill a first provision
+# mid-poll, leaving a machine the next tick has to adopt.
+TimeoutStartSec=1800
+Nice=10
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/var/lib/odile

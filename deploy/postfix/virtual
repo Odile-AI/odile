@@ -1,0 +1,13 @@
+# Postfix virtual aliases — source of truth: deploy/postfix/virtual.
+# Applied with postmap by ./deploy/postfix/apply.py --apply.
+#
+# Bounce mailbox: every VERP sender and every unmatched address under
+# mail.odile.fyi lands here. scripts/mail_dsn.py reads the Maildir and
+# ignores anything that is not a delivery report (DMARC aggregate reports
+# arrive here too, by design).
+@mail.odile.fyi      dsn
+
+# Human mailbox: replies to an invite, and anything sent to the apex.
+help@odile.fyi       help
+help@mail.odile.fyi  help
+invite@mail.odile.fyi help

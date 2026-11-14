@@ -1,0 +1,3 @@
+odile._domainkey	IN	TXT	( "v=DKIM1; h=sha256; k=rsa; "
+	  "p=MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAtCZD39Vwkfbve1kLAWOxzk++GH8PoKIf3Hs3jF1JwbT4T7h3wdFsmi3O/NsorJvKVX9r9zn5Hy7Xkg3NpbUKM6nkzruIPM8AH7ms4pcL+x41NC0cwaFFZtLkflUELVRkMtw5fX1HIinjCxiL8ARXC/cGz4nEfgJYjgubfNScUp4bPlDKCB5wRA5Vp7MxM2affokOjqnYGUiBsT"
+	  "nT5MFwhrjLL8s2gnAqRay+RPRao6d8iqzQ24MvU7/hwRQVVTFHWteoJMmwM95pXoVSkfK9M35aMDJnl1egKKfgsK2XERo8fM10T4SfyTqvKwxDy7v5moY9FF5YVoz8/tpBg3Dw4QIDAQAB" )  ; ----- DKIM key odile for mail.odile.fyi

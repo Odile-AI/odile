@@ -1,0 +1,36 @@
+[Unit]
+Description=odile waitlist (no JS, no cookies, no access logs)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=odile
+Group=odile
+WorkingDirectory=/opt/odile
+StateDirectory=odile
+StateDirectoryMode=0700
+Environment=ODILE_PORT=8080
+Environment=ODILE_BIND=127.0.0.1
+Environment=ODILE_DB=/var/lib/odile/waitlist.db
+Environment=ODILE_ATTEST=/var/lib/odile/attestation.json
+Environment=PYTHONUNBUFFERED=1
+# runs as root (the + prefix) because /dev/sev-guest is 0600
+ExecStartPre=+/usr/bin/python3 /opt/odile/attest.py /var/lib/odile/attestation.json
+ExecStart=/usr/bin/python3 /opt/odile/app.py
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=yes
+LockPersonality=yes
+Restart=always
+RestartSec=2
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

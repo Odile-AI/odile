@@ -1,0 +1,27 @@
+# Odile boot report — write the served /attestation document (ODL-397).
+#
+# Servury's bb-seed copies the boot report to /run/blackbox/attest.json 0644
+# before switch-root. The report is per boot and does not change while the
+# machine runs, so one oneshot at boot writes the served copy; a reboot writes
+# a new one. There is no timer and no listener: Caddy serves the file, and the
+# bench's socket-proxyd stand-in does the same for the QEMU guest.
+#
+# The same unit and the same transformer are installed by the classic
+# installer (installer/odile_install.py); this file is the image's copy.
+[Unit]
+Description=Odile boot report — write the served /attestation document
+After=local-fs.target odile-bench-attest.service
+Before=odile-agent.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/bin/python3 /usr/local/lib/odile/attest.py --boot-report /run/blackbox/attest.json /var/lib/odile/attestation.json
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/lib/odile
+
+[Install]
+WantedBy=multi-user.target

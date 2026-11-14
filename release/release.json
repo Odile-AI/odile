@@ -1,0 +1,27 @@
+{
+  "artifacts": {
+    "installer": {
+      "sha256": "fc723909051a0d589bc6738b0901561b5eef1f47116100830ac8b9954814120b",
+      "size": 616368,
+      "url": "odile_install.py"
+    },
+    "skills": {
+      "sha256": "09be3cd1bd0556a9a8e9da0adbfd9c50dbf09607418f6a78fc7c97f3a3450722",
+      "size": 851865,
+      "url": "skills.tar.gz"
+    }
+  },
+  "boot": {
+    "kernel": "6.12.115+deb13.1-amd64"
+  },
+  "generated_at": "2026-11-14T09:32:15Z",
+  "manifest": {
+    "sha256": "fcf0bc61b310bd3fb05af1503bd127b0a107763374a158b5d4b151ab70e67765",
+    "signature_url": "manifest.json.sig",
+    "url": "manifest.json"
+  },
+  "notes": "t_9c2d31f1 on top of the 2026.11.14-3 vendor re-pin: web/verify.html drops the retired demo-reset note (the public demo moved to the tenant at ODL-503; CLAIMS v3.8b says there is no nightly reset), so the installer re-embeds the page and this cut names the merged bytes. installer_sha256, the installer size, the manifest hash and this document's hash move; the vendor pin c73dad4d, the skills artifact and the meter-free manifest rows are -3's.",
+  "product": "odile",
+  "release": "2026.11.14-4",
+  "schema": 1
+}

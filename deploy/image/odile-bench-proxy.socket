@@ -1,0 +1,28 @@
+# Odile image bench — the guest's stand-in for Caddy.
+#
+# On a real tenant the Webapp binds 127.0.0.1:9130 and Caddy is the only
+# process that accepts a connection from off the machine. The bench guest has
+# no Caddy, so this socket accepts the host-forwarded connection on QEMU's
+# slirp address and systemd-socket-proxyd pipes it to loopback. The Webapp
+# keeps its loopback bind, which is the property under test.
+#
+# install-stack.sh --guest-smoke writes this file (substituting the port) and
+# enables the socket. 10.0.2.15 is QEMU user-mode networking's guest address;
+# it does not exist on a Blackbox, so this unit is bench-only.
+[Unit]
+Description=Odile image bench — loopback stand-in for Caddy
+Wants=network-online.target
+After=network-online.target
+
+[Socket]
+ListenStream=10.0.2.15:__WEBAPP_PORT__
+# The address is static in /etc/systemd/network/20-odile.network; networkd
+# may still be applying it when the socket starts. FreeBind lets the bind
+# succeed early, and a failed bind retries instead of leaving the port closed.
+FreeBind=yes
+Restart=always
+RestartSec=2
+Accept=no
+
+[Install]
+WantedBy=sockets.target

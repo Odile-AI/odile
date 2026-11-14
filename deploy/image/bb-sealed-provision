@@ -1,0 +1,355 @@
+#!/bin/sh
+# bb-sealed-provision: give this guest its own volume key and seal it to this
+# guest, once, from the booted system.
+#
+# ODL-332 production copy of spike/sealed-unlock/initramfs/bb-sealed-provision.
+# ODL-454 added the first-boot hook; this revision (the ODL-454 follow-up)
+# adds the re-key that makes the seal the only door: a disk written from the
+# published image is opened on its first boot with the build-time keyslot, and
+# that keyslot wraps the build-time volume key -- so the publicly downloadable
+# image, plus the bootstrap key it publishes beside the blob, opens the live
+# volume. Adding a second keyslot (ODL-332) does not change that: LUKS keeps
+# the volume key across luksAddKey and luksKillSlot.
+#
+# The whole "seal" half of the design, in order:
+#   1. a random 64-byte keyslot key V (never chosen by a human, never escrowed);
+#   2. V added to the LUKS2 header as a new keyslot, so the re-key has a proven
+#      way in before it starts;
+#   3. the blob V will be sealed into is written and proved: snpreport --unseal
+#      must reproduce V and cryptsetup must accept it, before anything
+#      irreversible happens;
+#   4. **the volume is re-keyed**: `cryptsetup reencrypt` (without --keep-key)
+#      generates a new volume (master) key on this guest and re-encrypts the
+#      data in place -- online, with the root filesystem mounted -- and removes
+#      every other keyslot when it commits. The build keyslot dies there, so
+#      after this step only V opens the volume. The script reads the volume
+#      key's fingerprint before and after and refuses to continue unless it
+#      changed, and it asks LUKS whether the build key still opens the volume;
+#   5. V sealed by snpreport to SNP_GET_DERIVED_KEY(VCEK, policy|measurement);
+#   6. the blob stored on /dev/sda2, the unencrypted partition the guest never
+#      boots from (Servury already keeps its sealed SSH host key there);
+#   7. the plaintext V and the build-time bootstrap key shredded.
+#
+# The keyslot dance is the fallback only. A volume that no longer carries the
+# build key (a --rotate after a first boot) gets a new V in a new keyslot, is
+# proved, and the previous V keyslot is killed; the volume key is unchanged
+# then, which is correct -- it is already this guest's.
+#
+# Idempotent: when the blob unseals, its key opens the volume and the build key
+# no longer does, a run exits 0 (`already provisioned`) and only finishes the
+# last step if it is still owed (the bootstrap file shredded, seal.json
+# written). A run interrupted during the re-key leaves the header in
+# `Requirements: online-reencrypt-*` with the new volume key already wrapped by
+# V's keyslot: the build key does not open that volume any more, V does -- and V
+# is in the blob the interrupted run wrote before it started re-keying. So the
+# next boot opens the volume with V and the next run repairs the re-encryption
+# metadata if a hard kill left it inconsistent (`cryptsetup repair`), then
+# finishes the pass (`reencrypt --resume-only --key-file V --key-slot <sidecar>`)
+# before it decides -- re-key if the build key still works, finalize if not.
+#
+# What a reboot can and cannot recover: the data pass rewrites the volume one
+# segment at a time, so a crash *during* it leaves the data a mix of the build
+# and the guest volume keys. The part the pass already rewrote (the ext4
+# superblock and the start of the volume) opens with V, which is how the seal
+# unit gets to run at all, but the not-yet-rewritten part is still under the
+# build key -- mounting the whole root read-only is not trustworthy there. A
+# crash at or after the data pass (the finalize and the metadata commit) leaves
+# the whole volume under V and is recovered on the next boot by the repair and
+# resume above.
+#
+# The paths are overridable for the test harness (test-bb-sealed-provision.sh);
+# in the image the defaults are the real ones.
+set -eu
+
+ROOT_PART=${ROOT_PART:-/dev/sda3}
+BOOT_PART=${BOOT_PART:-/dev/sda2}
+BOOT_MNT=${BOOT_MNT:-/run/bb/boot}
+SEAL_DIR=${SEAL_DIR:-/odile}
+WORKDIR=${WORKDIR:-/run/bb}
+SNPREPORT=${SNPREPORT:-/usr/bin/snpreport}
+MOUNTS=${MOUNTS:-/proc/mounts}
+STATE=${STATE:-/var/lib/odile/seal.json}
+BLOB=$SEAL_DIR/luks-vol.key.sealed
+SLOT_FILE=$SEAL_DIR/luks-vol.keyslot
+BOOTSTRAP=$SEAL_DIR/luks-bootstrap.key
+KEY=$WORKDIR/luks-vol.key
+SEALED=$WORKDIR/luks-vol.key.sealed
+CHECK=$WORKDIR/luks-vol.key.check
+OLD=$WORKDIR/luks-vol.key.old
+ROTATE=0
+[ "${1:-}" = "--rotate" ] && ROTATE=1
+
+die() { echo "bb-sealed-provision: $*" >&2; exit 1; }
+has_slot() { cryptsetup luksDump "$ROOT_PART" | grep -qx "  $1: luks2"; }
+keyslots() { cryptsetup luksDump "$ROOT_PART" | sed -n 's/^  \([0-9][0-9]*\): luks2$/\1/p'; }
+
+# The volume (master) key's fingerprint, read through a key that unwraps it.
+# A re-key must change it; the keyslot dance must not. The fingerprint is the
+# SHA-256 of the 64 key bytes -- the form ODL-466 published, where the
+# published image's volume key is `74f2552b…`. The key itself is never logged
+# or stored.
+master_key_sha() {
+    mk=$(cryptsetup --batch-mode luksDump --dump-master-key --key-file "$1" "$ROOT_PART" 2>/dev/null |
+        sed -n '/^MK dump:/,$p' | sed 's/^MK dump:[[:space:]]*//' | tr -d '[:space:]')
+    [ -n "$mk" ] || return 1
+    printf '%s' "$mk" |
+        /usr/bin/python3 -c 'import hashlib, sys; print(hashlib.sha256(bytes.fromhex(sys.stdin.read())).hexdigest())'
+}
+
+# Does the as-built keyslot still open the volume? The bootstrap file is the
+# only copy of that passphrase, so once it is shredded this is false by file --
+# and after a successful re-key it is false while the file is still there.
+build_key_opens() {
+    [ -f "$BOOT_MNT$BOOTSTRAP" ] || return 1
+    cryptsetup luksOpen --test-passphrase --key-file "$BOOT_MNT$BOOTSTRAP" "$ROOT_PART" 2>/dev/null
+}
+
+# 0. One way in is enough; refuse to strand the disk with no usable keyslot.
+cryptsetup isLuks "$ROOT_PART" || die "$ROOT_PART is not LUKS"
+
+MOUNTED=0
+mkdir -p "$BOOT_MNT"
+if ! grep -qs " $BOOT_MNT " "$MOUNTS"; then
+    mount -t ext4 "$BOOT_PART" "$BOOT_MNT"
+    MOUNTED=1
+fi
+
+COMMITTED=0
+ADDED_SLOT=""
+cleanup() {
+    # A run that added a keyslot but did not commit its blob must not leave an
+    # orphan keyslot behind; the new V still opens the volume here. Once the
+    # re-key has started the keyslots belong to the reencryption (it keeps the
+    # build key until it commits), so ADDED_SLOT is cleared before that call.
+    if [ "$COMMITTED" != 1 ] && [ -n "$ADDED_SLOT" ] && [ -f "$KEY" ]; then
+        cryptsetup luksKillSlot --key-file "$KEY" "$ROOT_PART" "$ADDED_SLOT" 2>/dev/null || true
+    fi
+    rm -f "$CHECK" "$SEALED" 2>/dev/null || true
+    if [ -f "$KEY" ]; then
+        shred -u "$KEY" 2>/dev/null || rm -f "$KEY"
+    fi
+    if [ -f "$OLD" ]; then
+        shred -u "$OLD" 2>/dev/null || rm -f "$OLD"
+    fi
+    if [ "$MOUNTED" = 1 ]; then
+        umount "$BOOT_MNT" 2>/dev/null || true
+    fi
+    return 0
+}
+trap cleanup EXIT
+# A stop (systemd TERMs every process of the unit's cgroup, and a person on the
+# console may Ctrl-C) must end the run, not just clean up after it: the EXIT
+# trap does the cleanup, and without this exit a trapped TERM would unmount the
+# boot partition under the still-running cryptsetup and the script would carry
+# on to write the sidecar into a directory that is no longer there.
+trap 'exit 143' HUP INT TERM
+
+umask 077
+mkdir -p "$WORKDIR"
+
+old_slot=""
+[ -f "$BOOT_MNT$SLOT_FILE" ] && old_slot=$(cat "$BOOT_MNT$SLOT_FILE")
+
+# The blob's own proof: unseal it with this boot's derived key, then ask LUKS
+# whether that key opens the volume. A file that exists is not enough.
+verify_blob() {
+    "$SNPREPORT" --unseal "$BOOT_MNT$BLOB" "$CHECK" || return 1
+    cryptsetup luksOpen --test-passphrase --key-file "$CHECK" "$ROOT_PART" || return 1
+}
+
+# The end of every successful path, first run or re-run: the bootstrap key was
+# the first boot's way in and must not survive it -- its LUKS keyslot is gone by
+# now (the re-key removed every other keyslot) and the file is the only other
+# copy of a key that is not bound to this chip. Shred it while the boot
+# partition is mounted, then record the state /verify reads. `$NEW_SLOT` names
+# the keyslot the blob's key occupies.
+finalize() {
+    BOOTSTRAP_REMOVED=false
+    if [ -f "$BOOT_MNT$SEAL_DIR/luks-bootstrap.key" ]; then
+        shred -u "$BOOT_MNT$SEAL_DIR/luks-bootstrap.key" 2>/dev/null \
+            || rm -f "$BOOT_MNT$SEAL_DIR/luks-bootstrap.key"
+        [ ! -f "$BOOT_MNT$SEAL_DIR/luks-bootstrap.key" ] \
+            || die "the bootstrap key survived shred"
+        BOOTSTRAP_REMOVED=true
+        echo "shredded the first-boot bootstrap key"
+    fi
+    # A second run on a finished machine writes nothing: no bootstrap file and a
+    # seal.json is the state this function produces, and rewriting it would only
+    # move its timestamp.
+    if [ "$BOOTSTRAP_REMOVED" = false ] && [ -f "$STATE" ]; then
+        echo "state already final: $STATE"
+        return 0
+    fi
+    mkdir -p "${STATE%/*}"
+    printf '{"sealed":true,"keyslot":%s,"blob_sha256":"%s","bootstrap_removed":%s,"at":"%s"}\n' \
+        "$NEW_SLOT" "$(sha256sum "$BOOT_MNT$BLOB" | cut -d' ' -f1)" "$BOOTSTRAP_REMOVED" \
+        "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$STATE.new"
+    mv -f "$STATE.new" "$STATE"
+    chmod 0644 "$STATE"
+}
+
+# 1. Finish an interrupted re-encryption first: until it finalizes the header
+#    says `Requirements: online-reencrypt-*` and the volume's new key is wrapped
+#    by V's keyslot -- not by the build key, which no longer opens the volume.
+#    V is in the blob the re-key wrote before it started, and the sidecar names
+#    its keyslot, so both are read before anything else is decided. `repair` is
+#    the recovery cryptsetup demands after a hard kill (it left the segment it
+#    was rewriting flagged in-reencryption); on a crash between segments it only
+#    re-verifies the re-encryption digest and writes nothing, so the resume
+#    below still applies. A failed repair or resume dies before finalize(), so
+#    the bootstrap file and seal.json are never settled on a half-finished
+#    re-encryption.
+reencrypt_requirement() {
+    cryptsetup luksDump "$ROOT_PART" 2>&1 | grep -q 'online-reencrypt'
+}
+
+if reencrypt_requirement; then
+    if [ ! -f "$BOOT_MNT$BLOB" ] || [ ! -f "$BOOT_MNT$SLOT_FILE" ]; then
+        die "the re-encryption of $ROOT_PART is unfinished but $BLOB or its keyslot sidecar is missing"
+    fi
+    "$SNPREPORT" --unseal "$BOOT_MNT$BLOB" "$OLD" \
+        || die "could not unseal the guest volume key for the interrupted re-encryption"
+    RESUME_SLOT=$(cat "$BOOT_MNT$SLOT_FILE")
+    echo "resuming the interrupted re-encryption of $ROOT_PART (keyslot $RESUME_SLOT)"
+    cryptsetup --batch-mode repair --key-file "$OLD" "$ROOT_PART" \
+        || die "could not repair the interrupted re-encryption of $ROOT_PART"
+    if reencrypt_requirement; then
+        cryptsetup --batch-mode reencrypt --resume-only \
+            --key-file "$OLD" --key-slot "$RESUME_SLOT" "$ROOT_PART" \
+            || die "could not finish the interrupted re-encryption of $ROOT_PART"
+    else
+        echo "the re-encryption metadata was repaired; nothing left to resume"
+    fi
+fi
+
+# 2. The blob is only "already provisioned" if the volume has also been
+#    re-keyed. A disk written from the published image can have a blob that
+#    opens (the bench stand-in derives from the command line; a real Blackbox
+#    unseals rc 6) while the build key still opens the volume -- that disk is
+#    the published image, and it must be re-keyed now. The finalize step (the
+#    bootstrap file's death and the state /verify reads) runs on this path too:
+#    a run killed after the re-key committed would otherwise leave the
+#    bootstrap file on the boot partition for ever.
+if [ -f "$BOOT_MNT$BLOB" ] && verify_blob; then
+    rm -f "$CHECK"
+    if build_key_opens; then
+        echo "the blob opens $ROOT_PART but the build keyslot still does; re-keying"
+    elif [ "$ROTATE" = 1 ]; then
+        echo "rotating: the blob opens $ROOT_PART (keyslot ${old_slot:-unknown}); the volume key stays"
+    else
+        SURVIVOR=${old_slot:-}
+        if [ -z "$SURVIVOR" ] || ! has_slot "$SURVIVOR"; then
+            SURVIVOR=$(keyslots | head -n 1)
+        fi
+        [ -n "$SURVIVOR" ] || die "the blob opens $ROOT_PART but no keyslot survived"
+        echo "already provisioned: $BLOB opens $ROOT_PART (keyslot $SURVIVOR)"
+        echo "sealed: $BOOT_MNT$BLOB (keyslot $SURVIVOR)"
+        NEW_SLOT=$SURVIVOR
+        finalize
+        exit 0
+    fi
+elif [ -f "$BOOT_MNT$BLOB" ]; then
+    rm -f "$CHECK"
+    echo "existing blob does not open $ROOT_PART; reprovisioning" >&2
+fi
+
+# 3. V, and a second way in while the volume is re-keyed.
+NEW_SLOT=0
+while has_slot "$NEW_SLOT"; do
+    NEW_SLOT=$((NEW_SLOT + 1))
+done
+
+head -c 64 /dev/urandom > "$KEY"
+# The key that authorizes the new keyslot: the harness's explicit file first,
+# then the image's bootstrap key. If neither is there, the blob's own V (an
+# old provision whose build keyslot is already gone) is the way in.
+if [ -n "${EXISTING_KEY_FILE:-}" ] && [ -f "$EXISTING_KEY_FILE" ]; then
+    cryptsetup luksAddKey --key-file "$EXISTING_KEY_FILE" --key-slot "$NEW_SLOT" "$ROOT_PART" "$KEY"
+elif [ -f "$BOOT_MNT$BOOTSTRAP" ]; then
+    cryptsetup luksAddKey --key-file "$BOOT_MNT$BOOTSTRAP" --key-slot "$NEW_SLOT" "$ROOT_PART" "$KEY"
+elif [ -f "$BOOT_MNT$BLOB" ] \
+        && "$SNPREPORT" --unseal "$BOOT_MNT$BLOB" "$OLD" \
+        && cryptsetup luksOpen --test-passphrase --key-file "$OLD" "$ROOT_PART"; then
+    cryptsetup luksAddKey --key-file "$OLD" --key-slot "$NEW_SLOT" "$ROOT_PART" "$KEY"
+else
+    die "no key opens $ROOT_PART; cannot authorize a new keyslot"
+fi
+ADDED_SLOT=$NEW_SLOT
+
+# 4. Seal V and write the blob before the irreversible step, then prove the
+#    round trip through the final blob.
+"$SNPREPORT" --seal "$KEY" "$SEALED"
+mkdir -p "$BOOT_MNT$SEAL_DIR"
+cp "$SEALED" "$BOOT_MNT$BLOB.new"
+chmod 600 "$BOOT_MNT$BLOB.new"
+mv -f "$BOOT_MNT$BLOB.new" "$BOOT_MNT$BLOB"
+printf '%s\n' "$NEW_SLOT" > "$BOOT_MNT$SLOT_FILE.new"
+chmod 600 "$BOOT_MNT$SLOT_FILE.new"
+mv -f "$BOOT_MNT$SLOT_FILE.new" "$BOOT_MNT$SLOT_FILE"
+sync
+
+"$SNPREPORT" --unseal "$BOOT_MNT$BLOB" "$CHECK"
+cmp -s "$KEY" "$CHECK" || die "seal round trip failed"
+cryptsetup luksOpen --test-passphrase --key-file "$CHECK" "$ROOT_PART" \
+    || die "the new keyslot $NEW_SLOT does not open $ROOT_PART"
+
+# 5. The re-key. A volume that still carries the build keyslot has the
+#    build-time volume key, and the published image holds it; reencrypt with a
+#    new volume key (the default: no --keep-key) and let it drop every other
+#    keyslot. This is the step that makes the seal the only door.
+REKEYED=0
+if build_key_opens; then
+    MK_BEFORE=$(master_key_sha "$BOOT_MNT$BOOTSTRAP") \
+        || die "could not fingerprint the volume key before the re-key"
+    echo "re-keying $ROOT_PART: the build volume key must not survive the first boot"
+    ADDED_SLOT=""
+    # --progress-frequency puts the data pass on the serial console every
+    # 30 s: it is the only progress a 7.3 GiB re-encryption reports, and a
+    # stuck run is visible in the boot transcript instead of looking like a
+    # hung boot.
+    cryptsetup --batch-mode reencrypt --progress-frequency 30 \
+        --key-file "$KEY" --key-slot "$NEW_SLOT" "$ROOT_PART" \
+        || die "the volume re-key did not complete on $ROOT_PART; the next run resumes it"
+    # cryptsetup reencrypt creates the keyslot that wraps the new volume key and
+    # removes the others; the sidecar must name what survived, not what we asked
+    # for.
+    SURVIVOR=$(keyslots | head -n 1)
+    [ -n "$SURVIVOR" ] || die "no keyslot survived the re-key"
+    [ "$(keyslots | wc -l)" -eq 1 ] \
+        || die "the re-key left more than one keyslot: $(keyslots | tr '\n' ' ')"
+    NEW_SLOT=$SURVIVOR
+    printf '%s\n' "$NEW_SLOT" > "$BOOT_MNT$SLOT_FILE.new"
+    chmod 600 "$BOOT_MNT$SLOT_FILE.new"
+    mv -f "$BOOT_MNT$SLOT_FILE.new" "$BOOT_MNT$SLOT_FILE"
+    sync
+    cryptsetup luksOpen --test-passphrase --key-file "$KEY" "$ROOT_PART" \
+        || die "the guest key stopped opening $ROOT_PART after the re-key"
+    MK_AFTER=$(master_key_sha "$KEY") || die "could not fingerprint the volume key after the re-key"
+    [ "$MK_BEFORE" != "$MK_AFTER" ] \
+        || die "the volume key did not change ($MK_AFTER); the published image would still open this disk"
+    if build_key_opens; then
+        die "the build key still opens $ROOT_PART after the re-key"
+    fi
+    echo "re-keyed: volume key $MK_BEFORE -> $MK_AFTER, keyslot $NEW_SLOT, only the guest key remains"
+    REKEYED=1
+fi
+
+# 6. The fallback: a volume that is already this guest's gets a new V and the
+#    previous V keyslot killed; the volume key stays.
+if [ "$REKEYED" = 0 ] && [ -n "$old_slot" ] && [ "$old_slot" != "$NEW_SLOT" ]; then
+    if has_slot "$old_slot"; then
+        cryptsetup luksKillSlot --key-file "$KEY" "$ROOT_PART" "$old_slot" \
+            || die "could not kill the previous keyslot $old_slot"
+        cryptsetup luksOpen --test-passphrase --key-file "$KEY" "$ROOT_PART" \
+            || die "the new key stopped opening $ROOT_PART after killing $old_slot"
+        echo "killed the previous keyslot $old_slot"
+    else
+        echo "previous keyslot $old_slot was already absent"
+    fi
+fi
+
+COMMITTED=1
+echo "sealed: $BOOT_MNT$BLOB (keyslot $NEW_SLOT)"
+
+# 7. The bootstrap file's death and the state /verify reads.
+finalize

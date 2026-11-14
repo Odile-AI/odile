@@ -1,0 +1,16 @@
+#!/usr/bin/python3
+"""The installed name: symlink this file to /usr/local/bin/odilectl.
+
+`realpath` follows the symlink, so the package is imported from this repo even
+when the command is run through /usr/local/bin. A copy works too, if the copy
+sits next to its parent directory.
+"""
+
+import os
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.realpath(__file__))))
+
+from odilectl.cli import main
+
+raise SystemExit(main())

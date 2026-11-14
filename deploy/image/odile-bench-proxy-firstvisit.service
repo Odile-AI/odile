@@ -1,0 +1,14 @@
+# Odile image bench — pipe the first-visit socket to the loopback page.
+#
+# One process per connection (Accept=no in the socket unit);
+# systemd-socket-proxyd is part of systemd, so the bench adds no package.
+[Unit]
+Description=Odile image bench — loopback proxy for host-forwarded first-visit traffic
+Requires=odile-bench-proxy-firstvisit.socket
+After=odile-bench-proxy-firstvisit.socket odile-first-visit.service
+StartLimitIntervalSec=0
+StartLimitBurst=0
+
+[Service]
+ExecStart=/lib/systemd/systemd-socket-proxyd 127.0.0.1:__FIRST_VISIT_PORT__
+PrivateTmp=true

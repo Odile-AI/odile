@@ -1,0 +1,86 @@
+# Odile mail transport — main.cf
+#
+# This file is the source of truth. Do not edit /etc/postfix/main.cf by hand:
+# edit here, then run
+#
+#     ./deploy/postfix/apply.py --apply
+#
+# and prove the result with `./deploy/postfix/apply.py --check` (exit 1 on
+# drift). See docs/runbooks/email.md.
+
+compatibility_level = 3.9
+
+# Identity ------------------------------------------------------------------
+myhostname = mail.odile.fyi
+mydomain = mail.odile.fyi
+myorigin = $myhostname
+mydestination = $myhostname, localhost
+
+# Both families: mail.odile.fyi has an A and an AAAA, each with a
+# forward-confirmed PTR. A v4-only listener contradicts the AAAA.
+inet_interfaces = all
+inet_protocols = all
+
+smtpd_banner = $myhostname ESMTP $mail_name (Odile)
+smtpd_helo_required = yes
+disable_vrfy_command = yes
+
+# Local delivery -------------------------------------------------------------
+home_mailbox = Maildir/
+mailbox_size_limit = 0
+mailbox_command =
+recipient_delimiter = +
+biff = no
+
+alias_maps = hash:/etc/aliases
+alias_database = hash:/etc/aliases
+
+# Relay policy ---------------------------------------------------------------
+# The box itself may relay without authenticating. Tenants authenticate on
+# submission (587) and nowhere else.
+mynetworks_style = host
+mynetworks = 127.0.0.0/8 [::1]/128
+smtpd_relay_restrictions = permit_mynetworks permit_sasl_authenticated defer_unauth_destination
+
+# Domains accepted here ------------------------------------------------------
+# mail.odile.fyi is local (mydestination). odile.fyi is a virtual alias
+# domain so that help@odile.fyi lands in a local mailbox and every other
+# apex address is rejected rather than relayed.
+virtual_alias_domains = odile.fyi
+virtual_alias_maps = hash:/etc/postfix/virtual
+
+# TLS ------------------------------------------------------------------------
+# Self-signed for mail.odile.fyi (CN and SAN). A tenant pins it; replacing it
+# with a public certificate is a follow-up, not a correctness gap.
+smtpd_tls_cert_file = /etc/ssl/certs/mail.odile.fyi.crt
+smtpd_tls_key_file = /etc/ssl/private/mail.odile.fyi.key
+smtpd_tls_security_level = may
+smtpd_tls_protocols = >=TLSv1.2
+smtpd_tls_mandatory_protocols = >=TLSv1.2
+smtp_tls_CAfile = /etc/ssl/certs/ca-certificates.crt
+smtp_tls_security_level = may
+smtp_tls_session_cache_database = btree:${data_directory}/smtp_scache
+
+# DKIM -----------------------------------------------------------------------
+# Every message — smtpd and locally injected — goes through OpenDKIM. If the
+# milter is down the message waits (tempfail) rather than leaving unsigned.
+milter_protocol = 6
+milter_default_action = tempfail
+smtpd_milters = unix:/var/spool/postfix/opendkim/opendkim.sock
+non_smtpd_milters = $smtpd_milters
+
+# SASL -----------------------------------------------------------------------
+# Enabled per service in master.cf (submission only). Accounts live in
+# /etc/sasldb2, created with saslpasswd2 — never in git. The Cyrus config
+# file is /etc/postfix/sasl/smtpd.conf.
+cyrus_sasl_config_path = /etc/postfix/sasl
+smtpd_sasl_type = cyrus
+smtpd_sasl_path = smtpd
+smtpd_sasl_security_options = noanonymous
+smtpd_sasl_tls_security_options = noanonymous
+smtpd_tls_auth_only = yes
+
+# An authenticated tenant may only use an envelope sender on our signing
+# domain. Per-tenant ownership (one login per From address) arrives with the
+# tenant table in M1; today the map names the single test account.
+smtpd_sender_login_maps = pcre:/etc/postfix/sender_login.pcre

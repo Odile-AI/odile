@@ -1,0 +1,7 @@
+# smtpd_sender_login_maps — source of truth: deploy/postfix/sender_login.pcre
+#
+# An authenticated submission client may only use an envelope sender on
+# mail.odile.fyi (which is also the only domain OpenDKIM signs). The value is
+# the SASL login that owns it. There is one account today; M1 replaces this
+# line with one row per tenant.
+/^[^@]+@mail\.odile\.fyi$/   odile-test

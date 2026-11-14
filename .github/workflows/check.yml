@@ -1,0 +1,258 @@
+# The gate — every push and pull request to main runs the commands a developer
+# runs before a commit. A red run means a broken tree, not a missing runner.
+#
+# Five jobs, one per surface:
+#   check            make check — prereqs, tree secret scan, tests, the
+#                    installer's self-test, compile, shellcheck, claims, brand
+#   fresh-check      clone HEAD and run the same gate inside the clone
+#   demo-check       the local demo's headless acceptance run, no network
+#   publish-lint     the publication gate over the built tree: leak_scan --tree
+#                    with the tree's own allowlist, read-only, no push
+#   history-secrets  scan every commit, not the one-commit shallow default
+#
+# This file is a shipped path. The build copies `.github/` out of the source
+# revision (tools/build_public_tree.py), so the workflow that runs on the
+# published tree is the one edited on HQ; there is no overlay copy to drift.
+#
+# The roadmap check is not a job. tools/roadmap_page.py and docs/backlog.yaml
+# are private, so a runner on the public tree cannot render the page; the check
+# lives in `make check` on HQ (two renders at one --now, byte-identical, no
+# unfilled slot) and the target skips itself where the private inputs are absent.
+#
+# The host. The runner is ubuntu-24.04, but the gate runs inside a pinned
+# Ubuntu 26.04 container — the release HQ runs (26.04.1: OpenSSL 3.5.5,
+# cryptsetup 2.8.4, Python 3.14.4) — because the tree's scripts and tests
+# assume this host: OpenSSL 3.5 for `openssl dgst -sign` with an Ed25519 key
+# (3.0 refuses it), cryptsetup 2.8's re-encryption resume semantics, root for
+# the loop-mount builds, the `odile` service user, and
+# postfix/caddy/restic/debootstrap for the tests that drive them. On a bare
+# ubuntu-24.04 runner 146 tests fail on those host assumptions alone; in a
+# Debian 13 container the interrupted-rekey test fails because cryptsetup 2.7.5
+# cannot finish the state 2.8.4 leaves. The image is pinned by digest;
+# `--privileged` is for the build test that re-execs under
+# `unshare -m --propagation private`.
+#
+# The compiler. Two classes in tests/test_sealed_image.py — FirstBootReKeyTests
+# (4 tests) and SnpreportTests (8) — skip when `gcc` is absent, so the first
+# green run of this workflow printed `Ran 1627 tests ... OK (skipped=8)` while a
+# break in the LUKS re-key or the SNP report would have passed. `build-essential`
+# is in both toolchain installs, so the gate runs those 12 tests instead of
+# skipping them. In the pinned container the published tree measures `Ran 1215
+# tests`, `OK (skipped=2)` — the Hermes checkout and the HQ Maildir are absent
+# there, and HQ runs those two; round 2 measured `Ran 1648 tests`,
+# `OK (skipped=6)` on the tree published then.
+#
+# There is no secret in this file, no job writes to the repository, every action
+# is pinned to a full commit SHA (the comment names the release), the base image
+# is pinned by digest, and the shellcheck binary by SHA-256. The checkout is
+# credential-free; see docs/ops/PUBLISH-REMOTE.md.
+name: check
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions: {}
+
+jobs:
+  check:
+    name: check
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    container:
+      image: ubuntu:26.04@sha256:065aa8626841f16057b78b027b464cd59c4fac36c204c72dcbf48d66f5fa8a96
+      options: --privileged
+    steps:
+      - name: Install the gate's toolchain
+        run: |
+          set -euo pipefail
+          export DEBIAN_FRONTEND=noninteractive
+          apt-get -o Acquire::Retries=3 update -qq
+          apt-get -o Acquire::Retries=3 install -y -qq git python3 python3-yaml openssl ca-certificates procps debconf sudo make build-essential systemd fdisk e2fsprogs curl xz-utils
+          echo "postfix postfix/main_mailer_type select Internet Site" | debconf-set-selections
+          echo "postfix postfix/mailname string ci.invalid" | debconf-set-selections
+          apt-get -o Acquire::Retries=3 install -y -qq restic caddy postfix debootstrap cryptsetup squashfs-tools qemu-utils ovmf openssh-client gnupg rsync sqlite3 jq
+          curl -fsSL -o /tmp/shellcheck.tar.xz https://github.com/koalaman/shellcheck/releases/download/v0.11.0/shellcheck-v0.11.0.linux.x86_64.tar.xz
+          echo "8c3be12b05d5c177a04c29e3c78ce89ac86f1595681cab149b65b97c4e227198  /tmp/shellcheck.tar.xz" | sha256sum -c -
+          tar -xJf /tmp/shellcheck.tar.xz -C /tmp
+          install -m 0755 /tmp/shellcheck-v0.11.0/shellcheck /usr/local/bin/shellcheck
+          id -u odile >/dev/null 2>&1 || useradd --system --user-group --create-home --home-dir /home/odile --shell /usr/sbin/nologin odile
+          echo "gate host: $(sed -n 's/^PRETTY_NAME=//p' /etc/os-release) | $(openssl version) | $(python3 --version) | shellcheck $(shellcheck --version | sed -n 's/^version: //p')"
+      - name: Check out the tree
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+        with:
+          persist-credentials: false
+      # The checkout is written by the runner's user and read by root inside the
+      # container, which git refuses as "dubious ownership" without this.
+      - name: Trust this checkout
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+      - name: make check
+        run: make check
+
+  fresh-check:
+    name: fresh-check
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    container:
+      image: ubuntu:26.04@sha256:065aa8626841f16057b78b027b464cd59c4fac36c204c72dcbf48d66f5fa8a96
+      options: --privileged
+    steps:
+      - name: Install the gate's toolchain
+        run: |
+          set -euo pipefail
+          export DEBIAN_FRONTEND=noninteractive
+          apt-get -o Acquire::Retries=3 update -qq
+          apt-get -o Acquire::Retries=3 install -y -qq git python3 python3-yaml openssl ca-certificates procps debconf sudo make build-essential systemd fdisk e2fsprogs curl xz-utils
+          echo "postfix postfix/main_mailer_type select Internet Site" | debconf-set-selections
+          echo "postfix postfix/mailname string ci.invalid" | debconf-set-selections
+          apt-get -o Acquire::Retries=3 install -y -qq restic caddy postfix debootstrap cryptsetup squashfs-tools qemu-utils ovmf openssh-client gnupg rsync sqlite3 jq
+          curl -fsSL -o /tmp/shellcheck.tar.xz https://github.com/koalaman/shellcheck/releases/download/v0.11.0/shellcheck-v0.11.0.linux.x86_64.tar.xz
+          echo "8c3be12b05d5c177a04c29e3c78ce89ac86f1595681cab149b65b97c4e227198  /tmp/shellcheck.tar.xz" | sha256sum -c -
+          tar -xJf /tmp/shellcheck.tar.xz -C /tmp
+          install -m 0755 /tmp/shellcheck-v0.11.0/shellcheck /usr/local/bin/shellcheck
+          id -u odile >/dev/null 2>&1 || useradd --system --user-group --create-home --home-dir /home/odile --shell /usr/sbin/nologin odile
+          echo "gate host: $(sed -n 's/^PRETTY_NAME=//p' /etc/os-release) | $(openssl version) | $(python3 --version) | shellcheck $(shellcheck --version | sed -n 's/^version: //p')"
+      - name: Check out the tree
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+        with:
+          persist-credentials: false
+      # The checkout is written by the runner's user and read by root inside the
+      # container, which git refuses as "dubious ownership" without this.
+      - name: Trust this checkout
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+      # actions/checkout leaves a pull_request run on a detached merge commit.
+      # make fresh-check clones HEAD, and a clone of a detached commit with no
+      # branch pointing at it has an unborn HEAD and no tree, so make the
+      # checkout clonable first. On a push to main this is a no-op.
+      - name: Make HEAD a branch so the fresh clone has a tree
+        run: |
+          set -euo pipefail
+          git checkout --quiet -B main HEAD
+          echo "fresh-check source branch: $(git symbolic-ref --short HEAD) at $(git rev-parse --short HEAD)"
+      - name: make fresh-check
+        run: make fresh-check
+
+  demo-check:
+    name: demo-check
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    container:
+      image: ubuntu:26.04@sha256:065aa8626841f16057b78b027b464cd59c4fac36c204c72dcbf48d66f5fa8a96
+    steps:
+      - name: Install git, python3 and make
+        run: |
+          set -euo pipefail
+          export DEBIAN_FRONTEND=noninteractive
+          apt-get -o Acquire::Retries=3 update -qq
+          apt-get -o Acquire::Retries=3 install -y -qq git python3 ca-certificates make
+          echo "demo-check host: $(sed -n 's/^PRETTY_NAME=//p' /etc/os-release) | $(python3 --version)"
+      - name: Check out the tree
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+        with:
+          persist-credentials: false
+      # The checkout is written by the runner's user and read by root inside the
+      # container, which git refuses as "dubious ownership" without this.
+      - name: Trust this checkout
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+      - name: make demo-check
+        run: make demo-check
+
+  publish-lint:
+    name: publish-lint
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    container:
+      image: ubuntu:26.04@sha256:065aa8626841f16057b78b027b464cd59c4fac36c204c72dcbf48d66f5fa8a96
+    steps:
+      - name: Install git and python3
+        run: |
+          set -euo pipefail
+          export DEBIAN_FRONTEND=noninteractive
+          apt-get -o Acquire::Retries=3 update -qq
+          apt-get -o Acquire::Retries=3 install -y -qq git python3 ca-certificates
+          echo "publish-lint host: $(sed -n 's/^PRETTY_NAME=//p' /etc/os-release) | $(python3 --version)"
+      - name: Check out the tree
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+        with:
+          persist-credentials: false
+      # The checkout is written by the runner's user and read by root inside the
+      # container, which git refuses as "dubious ownership" without this.
+      - name: Trust this checkout
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+      # The gate that ships: no public address, mailbox, home path, account id,
+      # credential assignment or private literal in the built tree. Every
+      # exception is one row of the tree's own leak-allow.tsv (reason and
+      # expiry), which the scanner loads from the root of this checkout. The
+      # job is read-only: it opens no PR and pushes nothing.
+      - name: Scan the built tree with its own allowlist
+        run: /usr/bin/python3 tools/leak_scan.py --tree
+
+  history-secrets:
+    name: history-secrets
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    permissions:
+      contents: read
+    container:
+      image: ubuntu:26.04@sha256:065aa8626841f16057b78b027b464cd59c4fac36c204c72dcbf48d66f5fa8a96
+    steps:
+      - name: Install git and python3
+        run: |
+          set -euo pipefail
+          export DEBIAN_FRONTEND=noninteractive
+          apt-get -o Acquire::Retries=3 update -qq
+          apt-get -o Acquire::Retries=3 install -y -qq git python3 ca-certificates
+          echo "history host: $(sed -n 's/^PRETTY_NAME=//p' /etc/os-release) | $(python3 --version)"
+      # actions/checkout defaults to depth 1; on a one-commit clone the history
+      # scan reads one commit and prints PASS, which is worse than no gate. The
+      # full history is the subject of this job.
+      - name: Check out the full history
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      # The checkout is written by the runner's user and read by root inside the
+      # container, which git refuses as "dubious ownership" without this.
+      - name: Trust this checkout
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+      - name: Prove the clone is not shallow
+        run: |
+          set -euo pipefail
+          shallow=$(git rev-parse --is-shallow-repository)
+          echo "is-shallow-repository: $shallow"
+          test "$shallow" = "false"
+      - name: Scan every commit and assert the scanned count
+        run: |
+          set -euo pipefail
+          report=/tmp/secret-scan.txt
+          /usr/bin/python3 tools/secret_scan.py --history | tee "$report"
+          scanned=$(sed -n 's/^  commits scanned: \([0-9][0-9,]*\) (git rev-list --all)$/\1/p' "$report" | tr -d ',')
+          expected=$(git rev-list --count --all)
+          echo "scanned ${scanned} commits; git rev-list --count --all = ${expected}"
+          test -n "$scanned"
+          test "$scanned" -eq "$expected"
+          echo "scanned ${scanned} commits; matches git rev-list --count --all"
+      # The repository is one root commit of the built tree, replaced never
+      # appended. On a push to main that invariant is the assertion: a second
+      # commit on main is a red run, not a new history. (A pull request is a
+      # branch, so its own commits are what the scan above reads.)
+      - name: On a push to main, assert the one-root invariant
+        if: github.event_name == 'push'
+        run: |
+          set -euo pipefail
+          count=$(git rev-list --count origin/main)
+          parents=$(git cat-file -p origin/main | grep -c '^parent ' || true)
+          echo "git rev-list --count origin/main = ${count}; parents of origin/main = ${parents}"
+          test "$count" -eq 1
+          test "$parents" -eq 0
+          echo "the repository is one root commit: rev-list --count origin/main = 1, no parent"

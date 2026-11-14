@@ -1,0 +1,19 @@
+{
+  "job": {
+    "name": "Watch: <label>",
+    "schedule": "every 6h",
+    "no_agent": true,
+    "script": "watch-<slug>.py",
+    "deliver": "local",
+    "note": "local: the script writes the alert to the watch log and the job's run output keeps it. The Webapp/API session is stateless, so origin delivery can mark a good alert as failed."
+  },
+  "watch_config": {
+    "version": 1,
+    "url": "<url>",
+    "label": "<label>",
+    "match": "<regex with one capture group, or null>",
+    "group": 1,
+    "max_failures": 3,
+    "log": "~/workspace/watchdog/<slug>.md"
+  }
+}

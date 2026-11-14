@@ -1,0 +1,45 @@
+# Odile image bench — the tenant Hermes gateway.
+#
+# install-stack.sh substitutes __TENANT_USER__ and __TENANT_HOME__ and installs
+# this file as /etc/systemd/system/odile-agent.service (the release installer's
+# own unit name, so the release converges on it instead of starting a second
+# gateway on the same port). It is the retired demo host's unit
+# (`odile-demo.service`) with the demo user and paths
+# replaced; the sandboxing is the same minimum that still lets Hermes run tools
+# and the Webapp terminal.
+[Unit]
+Description=Odile tenant — unprivileged Hermes Webapp (bench image)
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=__TENANT_USER__
+Group=__TENANT_USER__
+Environment=HOME=__TENANT_HOME__
+Environment=HERMES_HOME=__TENANT_HOME__/.hermes
+Environment=PATH=__TENANT_PATH__:/usr/local/bin:/usr/bin:/bin
+WorkingDirectory=__TENANT_HOME__
+ExecStart=__TENANT_HOME__/.hermes/hermes-agent/.hermes/bin/hermes gateway run
+Restart=always
+RestartSec=3
+# Hermes drains cron (30 s) before exit; outwait it or the gateway is
+# SIGKILLed mid-drain.
+TimeoutStopSec=90
+KillMode=mixed
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=__TENANT_HOME__
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+
+[Install]
+WantedBy=multi-user.target

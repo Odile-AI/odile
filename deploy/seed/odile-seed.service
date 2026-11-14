@@ -1,0 +1,33 @@
+[Unit]
+Description=Odile seed service (one-time token -> signed tenant config)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=odile
+Group=odile
+WorkingDirectory=/opt/odile
+StateDirectory=odile
+StateDirectoryMode=0700
+Environment=ODILE_DB=/var/lib/odile/waitlist.db
+Environment=ODILE_SEED_BIND=127.0.0.1
+Environment=ODILE_SEED_PORT=8081
+Environment=PYTHONUNBUFFERED=1
+LoadCredential=seed-config:/root/.odile/seed-config.json
+LoadCredential=seed-key:/root/.odile/seed-signing.pem
+ExecStart=/usr/bin/python3 /opt/odile/seed/seed.py serve
+Restart=always
+RestartSec=2
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=yes
+LockPersonality=yes
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

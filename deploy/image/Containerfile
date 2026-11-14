@@ -1,0 +1,57 @@
+# Odile image bench — the tenant stack as a container.
+#
+# Build from the repository root:
+#   podman build -t localhost/odile-tenant:v0.23.0 -f deploy/image/Containerfile deploy/image
+#
+# The Containerfile is the first of the bench's three artefacts; mkdisk.sh
+# installs the same stack with the same install-stack.sh, so the container and
+# the QEMU guest cannot drift.
+#
+# Run it with systemd as PID 1 (the unit file is the same one the image uses):
+#   podman run -d --name odile-bench --systemd=always \
+#     -p 127.0.0.1:19131:9130 localhost/odile-tenant:v0.23.0
+#   podman exec odile-bench /usr/local/lib/odile-bench/smoke.sh local
+#
+# No secret is baked in: the .env holds a scrypt hash and a per-build signing
+# secret, and the bench password is the public fixture in install-stack.sh.
+FROM debian:13
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    LANG=C.UTF-8
+
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends \
+        ca-certificates \
+        curl \
+        dbus \
+        git \
+        iproute2 \
+        libatomic1 \
+        libstdc++6 \
+        passwd \
+        procps \
+        python3 \
+        systemd \
+        systemd-sysv \
+        util-linux \
+        xz-utils \
+ && rm -rf /var/lib/apt/lists/*
+
+COPY install-stack.sh config.yaml tenant.service bench-heartbeat.sh \
+     bench.py smoke.sh odile-bench-smoke.service \
+     odile-bench-proxy.service odile-bench-proxy.socket \
+     odile-webapp-brand.py odile-webapp-brand.service odile-webapp-brand.path \
+     odile-webapp-brand.conf webapp-brand.js /usr/local/lib/odile-image/
+
+# The container's network namespace is the boundary, so the Webapp binds all
+# interfaces *inside* the namespace; podman publishes it on 127.0.0.1 only.
+# A real tenant binds 127.0.0.1 behind Caddy, and the QEMU image keeps that.
+RUN chmod 0755 /usr/local/lib/odile-image/install-stack.sh \
+                /usr/local/lib/odile-image/bench-heartbeat.sh \
+                /usr/local/lib/odile-image/bench.py \
+                /usr/local/lib/odile-image/smoke.sh \
+ && /usr/local/lib/odile-image/install-stack.sh --webapp-host 0.0.0.0
+
+EXPOSE 9130
+STOPSIGNAL SIGRTMIN+3
+CMD ["/sbin/init"]

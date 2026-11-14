@@ -1,0 +1,41 @@
+# Odile signed app-layer manifest listener (ODL-472).
+#
+# Caddy proxies the tenant's `/manifest` and `/manifest.sig` here; this unit
+# is loopback-only and reads the signed release pair the first boot placed at
+# /etc/odile/manifest.json and /etc/odile/manifest.json.sig.
+#
+# The gate is `ExecStartPre`: the same checker the first boot ran before it
+# installed the pair (ODL-472). It decodes the release's base64 signature and
+# verifies it over the exact manifest bytes with the image's key, so a tampered
+# pair makes the unit fail instead of serving a document that looks signed.
+# The listener itself (the release's `scripts/manifest.py serve`) serves the
+# file's bytes without re-serialising them and answers `cache-control: no-store`.
+[Unit]
+Description=Odile signed app-layer manifest
+After=network.target
+ConditionPathExists=/etc/odile/manifest.json
+ConditionPathExists=/etc/odile/manifest.json.sig
+ConditionPathExists=/etc/odile/odile-signing-key.pub
+ConditionPathExists=/usr/local/lib/odile/manifest.py
+
+[Service]
+Type=simple
+ExecStartPre=/usr/bin/python3 /usr/local/lib/odile/odile-manifest.py --check --manifest /etc/odile/manifest.json --signature /etc/odile/manifest.json.sig --pubkey /etc/odile/odile-signing-key.pub
+ExecStart=/usr/bin/python3 /usr/local/lib/odile/odile-manifest.py serve --manifest /etc/odile/manifest.json --signature /etc/odile/manifest.json.sig --pubkey /etc/odile/odile-signing-key.pub --program /usr/local/lib/odile/manifest.py --bind 127.0.0.1 --port 8012
+# The release installer sets /etc/odile to 0750 root:odile-manifest (the
+# directory hides its names; key.env and seed.json inside stay 0600 root). A
+# DynamicUser with no supplementary group cannot traverse it, so the listener
+# answered 503 "manifest unavailable" on the finished tenant (ODL-332 round 7).
+# The group is created by install-stack.sh in this image, so it exists before
+# this unit starts.
+SupplementaryGroups=odile-manifest
+DynamicUser=yes
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,52 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Virtualenvs
+.venv/
+venv/
+
+# Secrets — a key, a token or a local config never enters the tree
+.env
+.env.*
+!.env.example
+.odile/
+*.key
+*-signing.pem
+
+# Runtime state
+*.db
+*.db-wal
+*.db-shm
+*.log
+attestation.json
+demo/local/state/
+
+# Build products — a clone can recompute every one of these
+deploy/image/out/
+*.img
+*.qcow2
+*.iso
+*.efi
+*.tar.gz
+*.zip
+!release/skills.tar.gz
+kms_ed25519_facts.json
+verify_facts.json
+
+# Editors and operating systems
+.DS_Store
+*.swp
+*.orig
+*.rej
+
+# Local-only state and throwaway checkouts
+state/
+node_modules/
+.trunk/
+.worktrees/
+.fresh-clone/

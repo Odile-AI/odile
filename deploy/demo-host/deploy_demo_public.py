@@ -1,0 +1,645 @@
+#!/usr/bin/python3
+"""Move demo.odile.fyi onto Odile's tenant machine — ODL-503.
+
+One command, idempotent, with a dry run. It does four things in order and
+prints one line per fact:
+
+  1. **DNS.** `demo.odile.fyi` A → 203.0.113.87, DNS-only, through
+     `deploy/demo-host/create_dns.py` (the Cloudflare token is read at run
+     time and never printed).
+  2. **The tenant's surface.** The files the machine needs are uploaded over
+     its own Webapp socket — Odile holds no SSH key to a tenant — and
+     `apply_demo_public.py` runs there as root: Odile's sign-in page, the
+     `demo.odile.fyi` Caddy block, Near AI direct with one key, the judge
+     account, and the one seeded "Start here — Odile demo" session, written
+     only if it is not already there. The machine's current release-setup
+     script is installed too: it converges the release installer once (a done
+     marker under `/var/lib/odile`), so a boot cannot rewrite the config the
+     owner changed.
+  3. **The gate over HTTPS**, from HQ: `/login` is Odile's page, anonymous `/`
+     is a 302 to it, the judge signs in, and `/verify` is the tenant's own
+     report whose measurement is the one `/attestation` carries.
+  4. **The DNS record.** The HQ demo copy is retired (2026-11-13), so the
+     program prints the one-line command that moves the record; a switch back
+     also needs an HQ demo restored, which this tree no longer carries.
+
+The first run signs in to the tenant with the account it already has
+(`--access-user tenant --access-password-file PATH`); every later run signs in
+as `judge` with the published password, which this program reads from
+README.md's judge table unless `--judge-password-file` is given.
+
+    ./deploy/demo-host/deploy_demo_public.py --dry-run
+    ./deploy/demo-host/deploy_demo_public.py
+
+Exit codes: 0 converged, 1 a failed apply or verification, 2 bad input.
+"""
+
+from __future__ import annotations
+
+import argparse
+from http.cookiejar import CookieJar
+import hashlib
+import importlib.util
+import json
+import re
+import secrets
+import socket
+import sys
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+from pathlib import Path
+
+HERE = Path(__file__).resolve().parent
+REPO = HERE.parents[1]
+sys.path.insert(0, str(HERE))
+
+import create_dns  # noqa: E402
+import tenant_console  # noqa: E402
+
+LIB_REMOTE = "/usr/local/lib/odile-demo-public"
+PASSWORD_REMOTE = "/run/odile-demo-secret"
+DEMO_HOST = "demo.odile.fyi"
+TENANT_BASE = tenant_console.DEFAULT_BASE
+TARGET_IP = create_dns.TENANT_IP
+MACHINE_HOST = "odl-7971a8.odile.fyi"
+NEAR_BASE_URL = "https://cloud-api.near.ai/v1"
+NEAR_KEY_ENV = "HERMES_CUSTOM_CLOUD_API_NEAR_AI_API_KEY"
+COMMITTED_BLOCK = REPO / "deploy/caddy/demo-tenant-site.caddy"
+
+#: Files the tenant needs, by name. The apply program checks the sign-in page
+#: for its markers before installing it; the others are data. `login.html` is
+#: skipped with `--no-login`: a newer sign-in page (t_9896a577) is live, and a
+#: deploy from a tree that has not merged it must not revert the artwork.
+UPLOADS = (
+    ("apply_demo_public.py", 0o755),
+    ("demo-tenant-site.caddy", 0o644),
+    ("login.html", 0o644),
+    ("verify-lede.html", 0o644),
+    ("start-here.md", 0o644),
+    ("session-receipt.json", 0o644),
+)
+#: The receipt template lives in the reviewed demo seed (moved here from the
+#: retired demo workspace tree, t_9d7ee536).
+RECEIPT_SOURCE = REPO / "deploy/demo-host/seed/session-receipt.json"
+#: The image's release-setup script. It is installed on the machine so the
+#: release installer converges once instead of every boot (t_ee5aac66): the
+#: script writes a done marker under /var/lib/odile, so a boot cannot rewrite
+#: a config key the owner changed.
+RELEASE_SETUP_SOURCE = REPO / "deploy/image/odile-release-setup.sh"
+RELEASE_SETUP_REMOTE = "/usr/local/lib/odile-image/odile-release-setup.sh"
+
+LOGIN_MARKERS = (
+    "<title>Sign in — Odile</title>",
+    'data-provider="basic"',
+    "This is an Odile demo instance.",
+    'aria-label="Sign in"',
+)
+#: The demo machine's /verify lede. One committed file: the apply uploads and
+#: injects it, and this program asserts the served page opens with it.
+VERIFY_LEDE = HERE / "verify-lede.html"
+CUSTOMER_SENTENCE = "No one at Odile can log in to a tenant machine."
+SECURITY_HEADERS = ("strict-transport-security:", "x-robots-tag:")
+MEASUREMENT = re.compile(r"\b([0-9a-f]{96})\b")
+
+#: Every session this deploy's console opened, in order. A console's own
+#: `shell.exec` session is a row in the judge's sidebar, so each one is
+#: deleted before the deploy returns (t_ee5aac66): a deploy changes no
+#: session, and it leaves none of its own behind either.
+OPENED: list[str] = []
+#: What the cleanup needs after `_run` returns or raises.
+CLEANUP = {"password": "", "base": f"https://{DEMO_HOST}"}
+
+
+def open_console_session(console: tenant_console.Console) -> None:
+    """Open the console's one session and remember it for the cleanup."""
+    console.open_session()
+    if console.session_id:
+        OPENED.append(console.session_id)
+    CLEANUP["base"] = console.base
+
+
+def delete_session(cookie: str, base: str, session_id: str, *,
+                   attempts: int = 3) -> bool:
+    """Delete one session with Hermes's fence — what the SPA sends.
+
+    The revision and generation are read back from `/api/sessions`; a storage
+    hiccup (503, measured 2026-11-14) is retried.
+    """
+    for attempt in range(attempts):
+        _, body, _ = http(base + "/api/sessions", cookie=cookie)
+        row: dict = {}
+        try:
+            row = next((item for item in json.loads(body).get("sessions", [])
+                        if isinstance(item, dict) and item.get("id") == session_id), {})
+        except ValueError:
+            pass
+        query = (f"?request_id={secrets.token_hex(16)}"
+                 f"&expected_revision={row.get('runtime_revision')}"
+                 f"&expected_generation={row.get('runtime_generation')}")
+        code, body, _ = http(base + "/api/sessions/" + session_id + query,
+                             method="DELETE", cookie=cookie)
+        try:
+            if code == 200 and json.loads(body).get("ok") is True:
+                return True
+        except ValueError:
+            pass
+        if attempt + 1 < attempts:
+            time.sleep(2)
+    return False
+
+
+def cleanup_console_sessions() -> None:
+    """Delete every session this deploy opened; never mask the deploy's result."""
+    if not OPENED or not CLEANUP["password"]:
+        return
+    base = CLEANUP["base"]
+    cookie = sign_in(base, CLEANUP["password"])
+    if not cookie:
+        print(f"cleanup      cannot sign in to delete {len(OPENED)} console session(s)",
+              file=sys.stderr)
+        return
+    sessions = list(dict.fromkeys(OPENED))
+    failed = [session_id for session_id in sessions
+              if not delete_session(cookie, base, session_id)]
+    print(f"cleanup      {len(sessions) - len(failed)} console session(s) deleted"
+          + (f"; {len(failed)} survived (another account owns them?)" if failed else ""))
+
+
+def published_password(repo: Path = REPO) -> str:
+    """The demo password README.md publishes in its judge table.
+
+    The deploy must not carry a second copy of a public value that README
+    already owns; if the table moves, this fails loudly instead of guessing.
+    """
+    text = (repo / "README.md").read_text(encoding="utf-8")
+    match = re.search(r"^\|\s*Password\s*\|\s*`([^`]+)`\s*\|", text, re.MULTILINE)
+    if not match:
+        raise SystemExit("error: no `| Password |` row in README.md's judge table")
+    return match.group(1)
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """Return the 3xx itself: the card's DoD is about the 302, not its target."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+#: Readings of the gate must see the 302; urllib's default opener follows it.
+READER = urllib.request.build_opener(_NoRedirect)
+
+
+def http(url: str, *, method: str = "GET", body: bytes | None = None,
+         headers: dict[str, str] | None = None, cookie: str = "") -> tuple[int, bytes, dict]:
+    request = urllib.request.Request(url, data=body, method=method,
+                                     headers=headers or {})
+    if cookie:
+        request.add_header("Cookie", cookie)
+    try:
+        with READER.open(request, timeout=20) as response:
+            return response.status, response.read(), dict(response.headers)
+    except urllib.error.HTTPError as exc:
+        return exc.code, exc.read(), dict(exc.headers)
+
+
+def sign_in(base: str, password: str) -> str:
+    """Sign in as judge; return the cookie header, or '' on a refusal."""
+    cookies = CookieJar()
+    opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(cookies))
+    body = json.dumps({"provider": "basic", "username": "judge", "password": password}).encode()
+    request = urllib.request.Request(base + "/auth/password-login", data=body,
+                                     headers={"Content-Type": "application/json"})
+    try:
+        with opener.open(request, timeout=20) as response:
+            if response.status != 200:
+                return ""
+    except urllib.error.HTTPError:
+        return ""
+    return "; ".join(f"{cookie.name}={cookie.value}" for cookie in cookies)
+
+
+def wait_for_dns(name: str, address: str, seconds: float = 900.0) -> bool:
+    deadline = time.monotonic() + seconds
+    while time.monotonic() < deadline:
+        try:
+            answers = {info[4][0] for info in socket.getaddrinfo(name, 443)}
+        except socket.gaierror:
+            answers = set()
+        if address in answers:
+            print(f"dns          {name} -> {', '.join(sorted(answers))}")
+            return True
+        print(f"dns          {name} -> {', '.join(sorted(answers)) or 'no answer'}; "
+              "waiting for the record")
+        time.sleep(5)
+    return False
+
+
+def lede_problem(body: str, lede: str = "") -> str:
+    """Why the served /verify does not open with the demo lede; '' when it does."""
+    expected = (lede or VERIFY_LEDE.read_text(encoding="utf-8")).strip()
+    match = re.search(r'<p class="lede">.*?</p>', body, re.S)
+    if match is None:
+        return "the page has no lede paragraph"
+    if match.group(0).strip() != expected:
+        return "the first lede is %r" % match.group(0)[:160]
+    if CUSTOMER_SENTENCE in body:
+        return "the page still carries the customer-tenant row"
+    return ""
+
+
+def verify_public(judge_password: str) -> tuple[bool, list[str]]:
+    """Assert the card's definition of done over HTTPS, from HQ."""
+    base = f"https://{DEMO_HOST}"
+    lines: list[str] = []
+    ok = True
+
+    def record(good: bool, text: str) -> None:
+        nonlocal ok
+        ok = ok and good
+        lines.append(("ok   " if good else "FAIL ") + text)
+
+    code, body, headers = http(base + "/login")
+    text = body.decode("utf-8", "replace")
+    missing = [marker for marker in LOGIN_MARKERS if marker not in text]
+    header_blob = "\n".join(f"{k.lower()}: {v}" for k, v in headers.items()).lower()
+    missing_headers = [name for name in SECURITY_HEADERS if name not in header_blob]
+    record(code == 200 and not missing and not missing_headers,
+           f"GET /login -> {code}" + (f", missing {missing!r}" if missing else "")
+           + (f", missing headers {missing_headers!r}" if missing_headers else ""))
+
+    code, _, headers = http(base + "/")
+    location = headers.get("Location") or headers.get("location") or ""
+    record(code == 302 and "/login" in location,
+           f"GET / anonymously -> {code} {location or '-'}")
+
+    code, _, _ = http(base + "/api/sessions")
+    record(code == 401, f"GET /api/sessions anonymously -> {code}")
+
+    machine = f"https://{MACHINE_HOST}"
+    code, _, _ = http(machine + "/verify")
+    record(code == 200,
+           f"GET {MACHINE_HOST}/verify -> {code} (the machine's own block survived)")
+    code, _, _ = http(machine + "/manifest")
+    record(code == 200, f"GET {MACHINE_HOST}/manifest -> {code}")
+    code, _, _ = http(machine + "/first-visit")
+    record(code in (200, 302, 404),
+           f"GET {MACHINE_HOST}/first-visit -> {code} (the route answers)")
+
+    cookie = sign_in(base, judge_password)
+    record(bool(cookie), "POST /auth/password-login as judge -> 200 with a session cookie")
+    if cookie:
+        code, body, _ = http(base + "/", cookie=cookie)
+        record(code == 200 and b'id="root"' in body,
+               f"GET / with the judge session -> {code} (the Webapp shell)")
+        code, body, _ = http(base + "/api/sessions", cookie=cookie)
+        titles: set[str] = set()
+        try:
+            titles = {row.get("title") or "" for row in json.loads(body).get("sessions", [])
+                      if isinstance(row, dict)}
+        except ValueError:
+            titles = set()
+        record(code == 200 and "Start here — Odile demo" in titles,
+               f"GET /api/sessions with the judge session -> {code}; the seeded "
+               "'Start here — Odile demo' session is the one it lands in")
+        code, body, _ = http(base + "/verify", cookie=cookie)
+        verify_text = body.decode("utf-8", "replace")
+        page_measurement = MEASUREMENT.search(verify_text)
+        problem = lede_problem(verify_text)
+        record(code == 200 and page_measurement is not None and problem == "",
+               f"GET /verify -> {code} (the machine's access report, the demo lede)"
+               + (f" — {problem}" if problem else ""))
+        code, body, _ = http(base + "/attestation")
+        try:
+            report_measurement = str(json.loads(body).get("measurement") or "")
+        except ValueError:
+            report_measurement = ""
+        record(code == 200 and bool(report_measurement),
+               f"GET /attestation -> {code} (the CPU's report)")
+        record(bool(page_measurement) and page_measurement.group(1) == report_measurement,
+               "/verify's measurement is /attestation's: "
+               f"{(page_measurement.group(1) if page_measurement else '-')[:24]}… vs "
+               f"{report_measurement[:24]}…")
+    return ok, lines
+
+
+def tenant_assertions(console) -> bool:
+    """Assert the tenant's own bytes: the two Caddy copies and the provider row.
+
+    The live repair after review: `/usr/local/lib/odile-demo-public/
+    demo-tenant-site.caddy` had become a copy of the whole Caddyfile and the
+    live file carried a console banner after `# END`. The apply re-uploads the
+    block and strips the banner; this reads the result back and fails loudly if
+    either came back.
+    """
+    command = ("sudo /usr/bin/python3 /usr/local/lib/odile-demo-public/"
+               "apply_demo_public.py --report")
+    result = console.run(command, check=False)
+    try:
+        state = json.loads((result.get("stdout") or "").strip() or "{}")
+    except ValueError:
+        print(f"error: apply --report returned no JSON: "
+              f"{(result.get('stdout') or '')[:300]}", file=sys.stderr)
+        return False
+    committed = hashlib.sha256(COMMITTED_BLOCK.read_bytes()).hexdigest()
+    caddy = state.get("caddy") or {}
+    provider = state.get("provider") or {}
+    ok = True
+
+    def record(good: bool, text: str) -> None:
+        nonlocal ok
+        ok = ok and good
+        print(("ok   " if good else "FAIL ") + text)
+
+    record(caddy.get("installed_sha256") == committed,
+           f"installed demo-tenant-site.caddy == the committed block ({committed[:16]}…)")
+    record(caddy.get("live_block_sha256") == committed,
+           "the live /etc/caddy/Caddyfile block == the committed block")
+    record(caddy.get("markers") == [1, 1],
+           f"exactly one marker pair: {caddy.get('markers')}")
+    names = caddy.get("matchers")
+    record(isinstance(names, list) and not {"mutation", "update"} & set(names),
+           f"the live block has no mutation or self-update matcher: {names}")
+    record(caddy.get("residue_lines") == 0,
+           f"no console residue after END: {caddy.get('residue_lines')}")
+    record(caddy.get("active") == "active", f"caddy is {caddy.get('active')}")
+    record(provider.get("name") == "Near AI",
+           f"the provider row is named Near AI: {provider.get('name')!r}")
+    record(provider.get("base_url") == NEAR_BASE_URL,
+           f"the provider route is Near AI direct: {provider.get('base_url')!r}")
+    record(provider.get("key_env") == NEAR_KEY_ENV,
+           f"the provider row names the one key: {provider.get('key_env')!r}")
+    return ok
+
+
+def ensure_release_setup(console, dry: bool) -> bool:
+    """Install this tree's release-setup script on the machine, once.
+
+    The script is the image's second install half. It used to re-run the
+    signed installer at every boot, which rewrote the config's managed blocks
+    (back to the meter) and the .env allowlist. It now writes a done marker
+    under ``/var/lib/odile`` after its first run and exits `same` on every
+    later boot, so the owner's config survives a reboot. This deploy is how a
+    running machine gets those bytes; a fresh image build gets them from
+    ``deploy/image/``.
+    """
+    local = RELEASE_SETUP_SOURCE.read_bytes()
+    digest = hashlib.sha256(local).hexdigest()
+    remote = console.run(f"sudo sha256sum {RELEASE_SETUP_REMOTE}", check=False)
+    current = (remote.get("stdout") or "").split(" ")[0].strip()
+    if current == digest:
+        print(f"same         {RELEASE_SETUP_REMOTE} (release setup, converges once)")
+        return False
+    print(f"{'would upload' if dry else 'upload'}       "
+          f"odile-release-setup.sh -> {RELEASE_SETUP_REMOTE}")
+    if not dry:
+        console.put(str(RELEASE_SETUP_SOURCE), RELEASE_SETUP_REMOTE, mode="0755")
+        check = console.run(f"sudo sha256sum {RELEASE_SETUP_REMOTE}", check=False)
+        installed = (check.get("stdout") or "").split(" ")[0].strip()
+        if installed != digest:
+            raise SystemExit(f"error: {RELEASE_SETUP_REMOTE} is not the uploaded bytes")
+    return True
+
+
+def self_test() -> int:
+    """The pure parts, plus the tenant program's own self-test."""
+    failures = 0
+
+    def check(ok: bool, label: str) -> None:
+        nonlocal failures
+        print(f"{'ok  ' if ok else 'FAIL'} {label}")
+        failures += 0 if ok else 1
+
+    password = published_password()
+    check(len(password) >= 16 and " " not in password,
+          "README.md's judge table carries the published password")
+    check(create_dns.switch_back() == "./deploy/demo-host/create_dns.py --target 203.0.113.139",
+          "the DNS record's way-back line names HQ's address")
+    check(TARGET_IP == "203.0.113.87", "the baseline target is the tenant")
+    def source_of(name: str) -> Path:
+        if name == "session-receipt.json":
+            return RECEIPT_SOURCE
+        if name == "demo-tenant-site.caddy":
+            return REPO / "deploy/caddy" / name
+        if name == "start-here.md":
+            return HERE / "seed/start-here-tenant.md"
+        return HERE / name
+
+    check(all(source_of(name).is_file() for name, _ in UPLOADS),
+          "every uploaded file exists in the tree")
+    lede = VERIFY_LEDE.read_text(encoding="utf-8").strip()
+    check(lede.startswith('<p class="lede">') and lede.endswith("</p>")
+          and "\n" not in lede and "{{" not in lede,
+          "the demo lede is one paragraph with no page slot")
+    check(lede_problem("<main>%s</main>" % lede) == "",
+          "the demo page passes the lede check")
+    check(bool(lede_problem('<main><p class="lede">%s</p></main>' % CUSTOMER_SENTENCE)),
+          "a page that opens with the customer row fails the lede check")
+    check(RELEASE_SETUP_SOURCE.is_file()
+          and "release-setup.done" in RELEASE_SETUP_SOURCE.read_text(encoding="utf-8"),
+          "the release setup script this deploy installs writes its done marker once")
+
+    spec = importlib.util.spec_from_file_location("apply_demo_public",
+                                                  HERE / "apply_demo_public.py")
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(module)
+    print("-- the tenant program's own self-test --")
+    failures += module.self_test()
+    return 0 if failures == 0 else 1
+
+
+def cleanup_dry_run(console) -> None:
+    """Remove the dry run's scratch files; `rm -f` on relative paths is the
+    one form the Webapp's command guard allows (no `rm -rf`, no `find -delete`,
+    and the uploaded files are root-owned)."""
+    names = ("apply_demo_public.py", "demo-tenant-site.caddy", "login.html",
+             "verify-lede.html", "start-here.md", "session-receipt.json")
+    quoted = " ".join(f"odile-demo-public-dryrun/{name}" for name in names)
+    console.run(f"cd /tmp && sudo rm -f {quoted}", check=False)
+    console.run("cd /tmp && sudo rmdir odile-demo-public-dryrun", check=False)
+    console.run("cd /tmp && sudo rm -f odile-demo-secret-dryrun", check=False)
+
+
+def main(argv: list[str] | None = None) -> int:
+    """Run the deploy, then delete every session its console opened."""
+    try:
+        return _run(argv)
+    finally:
+        cleanup_console_sessions()
+
+
+def _run(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="Move demo.odile.fyi onto the tenant.")
+    parser.add_argument("-n", "--dry-run", action="store_true", help="show the plan, change nothing")
+    parser.add_argument("--self-test", action="store_true", help="run the pure-function tests")
+    parser.add_argument("--target", default=TARGET_IP, help=f"the A record (default {TARGET_IP})")
+    parser.add_argument("--base", default="",
+                        help="force one console base (default: the demo host, then the machine's own name)")
+    parser.add_argument("--access-user", default="judge", help="the account that opens the console")
+    parser.add_argument("--access-password-file", default="",
+                        help="the console account's password (first run: the tenant's own)")
+    parser.add_argument("--no-login", action="store_true",
+                        help="keep the live sign-in page (a newer page is installed by another card)")
+    parser.add_argument("--judge-password-file", default="",
+                        help="the published judge password (default: README.md's table)")
+    args = parser.parse_args(argv)
+
+    if args.self_test:
+        return self_test()
+
+    judge_password = (Path(args.judge_password_file).read_text(encoding="utf-8").strip()
+                      if args.judge_password_file else published_password())
+    access_password = (Path(args.access_password_file).read_text(encoding="utf-8").strip()
+                       if args.access_password_file else judge_password)
+    CLEANUP["password"] = judge_password
+
+    # 1. DNS
+    code = create_dns.ensure(args.target, args.dry_run)
+    if code != 0:
+        return code
+    if not args.dry_run and not wait_for_dns(DEMO_HOST, args.target):
+        print(f"error: {DEMO_HOST} never answered with {args.target}", file=sys.stderr)
+        return 1
+
+    # 2. the tenant's surface
+    bases = (args.base,) if args.base else ()
+    try:
+        console = tenant_console.connect_any(args.access_user, access_password, bases)
+    except tenant_console.ConsoleError as exc:
+        print(f"error: cannot open the tenant console as {args.access_user!r}: {exc}",
+              file=sys.stderr)
+        return 1
+    print(f"console      {console.base} as {args.access_user} "
+          f"({(console.ready.get('params') or {}).get('type', 'ready')})")
+    open_console_session(console)
+    # A dry run must leave the tenant as it found it: the program and the
+    # password go to a scratch directory that is removed before the return.
+    # /tmp is the tenant's own directory: a dry run needs no root mkdir and
+    # its cleanup is a relative `rm`, which the Webapp's command guard allows.
+    remote_dir = "/tmp/odile-demo-public-dryrun" if args.dry_run else LIB_REMOTE
+    password_remote = "/tmp/odile-demo-secret-dryrun" if args.dry_run else PASSWORD_REMOTE
+    if args.dry_run:
+        cleanup_dry_run(console)
+        console.run(f"mkdir -p {remote_dir}")
+    else:
+        console.run(f"sudo mkdir -p {remote_dir}")
+    for name, mode in UPLOADS:
+        if name == "login.html" and args.no_login:
+            print("keep         login.html (the live sign-in page is newer; --no-login)")
+            continue
+        if name == "start-here.md":
+            source = HERE / "seed/start-here-tenant.md"
+        elif name == "session-receipt.json":
+            source = RECEIPT_SOURCE
+        elif name == "demo-tenant-site.caddy":
+            source = COMMITTED_BLOCK
+        else:
+            source = HERE / name
+        console.put(str(source), f"{remote_dir}/{name}", mode=f"{mode:04o}")
+        print(f"upload       {source.name} -> {remote_dir}/{name}")
+    login_flag = " --no-login" if args.no_login else ""
+    if args.judge_password_file:
+        console.put(str(Path(args.judge_password_file)), password_remote, mode="0600")
+    else:
+        console.run(f"printf %s {judge_password} > /tmp/odile-judge-password")
+        console.run(f"sudo install -m 0600 -o root -g root /tmp/odile-judge-password {password_remote}")
+        console.run("cd /tmp && rm -f odile-judge-password")
+
+    dry = console.run(
+        f"sudo PYTHONDONTWRITEBYTECODE=1 /usr/bin/python3 {remote_dir}/apply_demo_public.py --dry-run"
+        f" --password-file {password_remote}{login_flag}", check=False)
+    print("-- tenant dry run --")
+    print((dry.get("stdout") or "").strip() or "(no output)")
+    if dry.get("code") != 0:
+        print(f"error: the tenant dry run failed: {(dry.get('stderr') or '').strip()[-600:]}",
+              file=sys.stderr)
+        cleanup_dry_run(console)
+        if not args.dry_run:
+            console.run("cd /run && sudo rm -f odile-demo-secret")
+        return 1
+    if args.dry_run:
+        ensure_release_setup(console, dry=True)
+        cleanup_dry_run(console)
+        print("dry run: DNS planned, the tenant's own dry run above; nothing applied")
+        return 0
+    # The apply restarts Caddy, which drops the very Webapp socket it runs
+    # over: its output goes to a file on the machine, and the deploy reads it
+    # back after reconnecting. The exit code rides the same file.
+    log = "/tmp/odile-demo-apply.log"
+    apply_command = (
+        f"cd /tmp && rm -f odile-demo-apply.log && "
+        f"sudo /usr/bin/python3 {LIB_REMOTE}/apply_demo_public.py --write --no-restart"
+        f" --password-file {PASSWORD_REMOTE}{login_flag} > odile-demo-apply.log 2>&1; "
+        f"echo \"rc=$?\" >> odile-demo-apply.log")
+    try:
+        console.run(apply_command, check=False)
+    except tenant_console.ConsoleError as exc:
+        print(f"apply        the socket closed under Caddy's restart ({exc})")
+    time.sleep(4)
+    console = tenant_console.connect_any(args.access_user, access_password, bases)
+    open_console_session(console)
+    output = console.run(f"cat {log}", check=False).get("stdout", "")
+    print("-- tenant apply --")
+    print(output.strip() or "(no output)")
+    console.run("cd /run && sudo rm -f odile-demo-secret")
+    if "rc=0" not in output:
+        print("error: the tenant apply did not exit 0", file=sys.stderr)
+        return 1
+
+    # The apply's repairs are asserted from the machine's own report: the
+    # installed block copy is the committed bytes, and the live block carries
+    # no mutation matcher and no console residue behind it.
+    print("-- tenant state --")
+    if not tenant_assertions(console):
+        print("error: the tenant's Caddy copies are not the committed block",
+              file=sys.stderr)
+        return 1
+
+    # The release setup converges once, so the next boot cannot rewrite the
+    # config this deploy just converged.
+    print("-- release setup --")
+    ensure_release_setup(console, dry=False)
+
+    # 3. restart the gateway the new settings need, then reconnect as judge
+    print("-- restart --")
+    try:
+        console.run(f"sudo {LIB_REMOTE}/restart-agent", check=False)
+    except tenant_console.ConsoleError as exc:
+        print(f"restart      {exc} (the restart closes the socket it runs over)")
+    # The gateway takes a few seconds to answer again; retry rather than race it.
+    for attempt in range(15):
+        time.sleep(4)
+        try:
+            console = tenant_console.connect_any("judge", judge_password)
+            print(f"console      reconnected as judge on {console.base} "
+                  f"(after {4 * (attempt + 1)}s)")
+            open_console_session(console)
+            break
+        except tenant_console.ConsoleError as exc:
+            if attempt == 14:
+                print(f"console      reconnected as judge: {exc}", file=sys.stderr)
+                return 1
+
+    # 4. the gate over HTTPS, from HQ
+    print("-- verify --")
+    for _ in range(24):
+        ok, lines = verify_public(judge_password)
+        if ok:
+            break
+        time.sleep(5)
+    for line in lines:
+        print(line)
+    if not ok:
+        print("error: the demo did not pass its own definition of done", file=sys.stderr)
+        return 1
+
+    # 5. the fallback
+    print(f"fallback     {create_dns.switch_back()}")
+    print("demo public: PASS")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

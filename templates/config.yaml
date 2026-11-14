@@ -1,0 +1,46 @@
+# Odile tenant profile — written by odile-install (ODL-203); never hand-edited.
+#
+# The installer carries this file byte-for-byte and renders the model, the
+# Webapp port and the public URL from the seed and the layout.
+# `--self-test` fails if the embedded copy and this file differ.
+#
+# Five managed blocks. Everything else in the written file belongs to Hermes
+# and survives a re-run: the installer merges these blocks in place.
+#   * model            — provider "custom" needs base_url to resolve.
+#   * agent            — this model rejects Hermes's default reasoning effort.
+#   * custom_providers — inference goes straight to NEAR AI with this machine's
+#                        own key; there is no local proxy.
+#   * webapp           — loopback bind, public_url so the sign-in gate is on.
+#   * onboarding       — Hermes's own first-run chat is off; Odile's ritual is
+#                        the first run, and no profile-build offer is made.
+#
+# The display block is not managed the same way: it carries the Odile skin
+# (ODL-240), whose file the installer writes beside this config at
+# skins/odile.yaml. `ensure_skin` merges `skin: odile` and keeps every other
+# display key Hermes or the owner adds.
+model:
+  default: "{model}"
+  provider: "custom"
+  base_url: "https://cloud-api.near.ai/v1"
+
+agent:
+  reasoning_effort: "high"
+
+custom_providers:
+  - name: Near AI
+    base_url: https://cloud-api.near.ai/v1
+    key_env: HERMES_CUSTOM_CLOUD_API_NEAR_AI_API_KEY
+    model: {model}
+
+webapp:
+  enabled: true
+  host: 127.0.0.1
+  port: {webapp_port}
+  public_url: "{public_url}"
+
+onboarding:
+  run: false
+  profile_build: "off"
+
+display:
+  skin: odile

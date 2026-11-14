@@ -1,0 +1,14 @@
+# Odile image bench — pipe the manifest socket to the loopback listener.
+#
+# One process per connection (Accept=no in the socket unit);
+# systemd-socket-proxyd is part of systemd, so the bench adds no package.
+[Unit]
+Description=Odile image bench — loopback proxy for host-forwarded manifest traffic
+Requires=odile-bench-proxy-manifest.socket
+After=odile-bench-proxy-manifest.socket odile-manifest.service
+StartLimitIntervalSec=0
+StartLimitBurst=0
+
+[Service]
+ExecStart=/lib/systemd/systemd-socket-proxyd 127.0.0.1:__MANIFEST_PORT__
+PrivateTmp=true

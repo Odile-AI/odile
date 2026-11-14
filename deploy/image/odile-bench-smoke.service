@@ -1,0 +1,32 @@
+# Odile image bench — run the five smoke checks inside the booted guest and
+# print the result to the serial console. install-stack.sh --guest-smoke
+# installs this unit; mkdisk.sh passes that flag.
+#
+# It is a oneshot with no RemainAfterExit, so its stdout is captured once and
+# the unit goes inactive. The host-side smoke.sh reads the ODILE-BENCH lines
+# from the QEMU serial log.
+[Unit]
+Description=Odile image bench — guest smoke checks
+After=odile-agent.service network-online.target
+Wants=odile-agent.service network-online.target
+
+[Service]
+Type=oneshot
+User=root
+Environment=ODILE_TENANT_USER=__TENANT_USER__
+Environment=ODILE_TENANT_HOME=__TENANT_HOME__
+Environment=ODILE_BENCH_PASSWORD=__BENCH_PASSWORD__
+Environment=PYTHONUNBUFFERED=1
+# The port is substituted by install-stack.sh. bench.py also defaults
+# `local` to 9130, so a raw template still checks the right port; stating it
+# here is the second lock on the same door.
+ExecStart=/usr/local/lib/odile-bench/smoke.sh local --guest --port __WEBAPP_PORT__ --cron-wait 420
+# ttyS1, not the console: measured 2026-11-08, a unit writing to ttyS0 printed
+# one line and then nothing once agetty took the console (the unit exited 1 and
+# the host saw 1 of 5 checks). QEMU gives the bench its own serial channel.
+StandardOutput=append:/dev/ttyS1
+StandardError=append:/dev/ttyS1
+TimeoutStartSec=1800
+
+[Install]
+WantedBy=multi-user.target

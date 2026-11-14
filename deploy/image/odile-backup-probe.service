@@ -1,0 +1,18 @@
+# Odile backup probe — the ODL-215 follow-up proof, run once inside a bench
+# guest. deploy/image/backup-probe.sh installs this unit into a sealed bench
+# disk; the next boot runs the release installer as root and asserts what it
+# left (the nightly program, the two units, the enabled timer, one unit run and
+# the accepted heartbeat). It is a bench unit, never part of a release image.
+[Unit]
+Description=Odile backup probe — the release installer and the nightly unit
+After=odile-firstboot.service network-online.target
+Wants=network-online.target
+ConditionPathExists=/etc/odile/seed.json
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/lib/odile/backup-probe.sh
+TimeoutStartSec=2400
+
+[Install]
+WantedBy=multi-user.target

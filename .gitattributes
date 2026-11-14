@@ -1,0 +1,15 @@
+# One line ending, one diff, whoever checks out.
+* text=auto eol=lf
+
+*.png   binary
+*.webp  binary
+*.jpg   binary
+*.woff2 binary
+*.sig   binary
+*.pem   binary
+*.tar.gz binary
+
+# Keep the syntax highlighting honest on the file types a reader opens most.
+*.py    diff=python
+*.sh    diff=shell
+Makefile diff=make

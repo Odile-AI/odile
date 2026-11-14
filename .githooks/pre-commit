@@ -1,0 +1,19 @@
+#!/bin/sh
+# Odile pre-commit gate: no commit lands on a tree that fails `make check`.
+#
+# Git does not version hook installation, so enable it once per clone:
+#
+#     make hooks
+#
+# Bypass it only when the commit is deliberately intermediate:
+#
+#     git commit --no-verify
+set -eu
+
+cd "$(git rev-parse --show-toplevel)"
+
+if ! "${MAKE:-make}" check; then
+    printf '\npre-commit: make check failed; the commit was not made.\n' >&2
+    printf 'pre-commit: fix the tree, or bypass with: git commit --no-verify\n' >&2
+    exit 1
+fi

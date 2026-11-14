@@ -1,0 +1,23 @@
+[Unit]
+# ODL-332: the production image's second install half. odile-firstboot brings
+# the page up from the seed with the image's own installer; this oneshot then
+# runs the release installer (the bytes ODL-472 places) so the machine
+# converges on the signed release's Caddy/ACME, /verify and manifest surface.
+# After the first boot, never before: the page answers first, and the
+# tenant-mode installer may wait up to 15 minutes for DNS and the certificate.
+Description=Odile: converge on the signed release (Caddy, /verify, manifest)
+Documentation=file:///usr/local/lib/odile-image/odile-release-setup.sh
+After=odile-firstboot.service
+ConditionPathExists=/etc/odile/production
+ConditionPathExists=/usr/local/bin/odile-install.sh
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/lib/odile-image/odile-release-setup.sh
+TimeoutStartSec=3600
+StandardOutput=journal+console
+StandardError=journal+console
+
+[Install]
+WantedBy=multi-user.target

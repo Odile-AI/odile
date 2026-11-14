@@ -1,0 +1,19 @@
+# Odile — run the claim worker every five minutes. ODL-220 follow-up.
+#
+# Committed source of truth for /etc/systemd/system/odile-claim.timer;
+# scripts/deploy.sh installs it and `systemctl enable --now odile-claim.timer` links it
+# into timers.target. The [Install] section is the boot path: without it the
+# timer can be started by hand and does not come back after a reboot.
+[Unit]
+Description=Odile claim worker — every five minutes
+
+[Timer]
+OnCalendar=*:0/5
+AccuracySec=15s
+RandomizedDelaySec=0
+# A missed run (host down, deploy restart) is caught up once after boot.
+Persistent=true
+Unit=odile-claim.service
+
+[Install]
+WantedBy=timers.target

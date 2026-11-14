@@ -1,0 +1,35 @@
+[Unit]
+# ODL-503 follow-up: a Webapp rebuild is the vendor's again.
+#
+# `hermes update` and `hermes webapp --build-only` rewrite
+# apps/desktop/dist-webapp from the vendor package: index.html becomes the
+# vendor's shell and odile-brand.js is gone with it. This oneshot is what
+# `odile-webapp-brand.path` starts when that happens, and it puts the Odile
+# name back with the installer's own bytes and tag format (ODL-240).
+#
+# It is a oneshot started by a change, never enabled at boot: a converged
+# bundle prints `same` and writes nothing, so a boot would be one no-op per
+# machine (the owner's no-boot-re-assert decision, t_ee5aac66).
+Description=Odile: re-assert the Webapp brand after a rebuild
+Documentation=file:///usr/local/lib/odile/odile-webapp-brand.py
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /usr/local/lib/odile/odile-webapp-brand.py --home __TENANT_HOME__
+TimeoutStartSec=120
+Nice=10
+StandardOutput=journal
+StandardError=journal
+
+# The bundle lives in the tenant's home; everything else is read-only. The
+# owner of index.html is preserved by the helper, not reset to root.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=__TENANT_HOME__
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+LockPersonality=true
+RestrictSUIDSGID=true

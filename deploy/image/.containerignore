@@ -1,0 +1,8 @@
+# Build context hygiene for the image bench.
+#
+# mkdisk.sh writes the disk, kernels and logs under out/ — tens of gigabytes.
+# They are build artefacts, not inputs: the Containerfile's COPY lists every
+# file it needs explicitly, and this keeps the context small even when a disk
+# build has just run.
+out/
+__pycache__/

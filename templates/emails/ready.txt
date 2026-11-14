@@ -1,0 +1,10 @@
+URL {{URL}}
+Measurement {{MEASUREMENT}}
+
+Set your sign-in: {{FIRST_VISIT}}
+
+Open the first-visit guide: {{GUIDE}}
+
+— Odile
+
+Founding alpha · 10 machines · $49/month

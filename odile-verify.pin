@@ -1,0 +1,66 @@
+{
+  "schema": 2,
+  "provision_release": "2026.11.1",
+  "measurement": "e99728efbbf23ae517bde68b7667448aa98ed8905e48cddae037ff1742cd10f3116f98b3ece36aad2e4c8b9e72643fbc",
+  "report_version": 5,
+  "policy": "0x30000",
+  "fetched_at": "2026-11-13T01:55:04Z",
+  "pinned_at": "2026-11-13",
+  "source": "https://odile.fyi/attestation",
+  "commit": "9678eb3ae28d736a975d24ac685efa29a1cce6ae",
+  "releases": {
+    "2026.11.1": {
+      "release_url": "https://servury.com/downloads/blackbox/2026.11.1/",
+      "release_json_sha256": "aa37e4ade903aa933eb702f9d9d2191fc4861a1c723ae6e7e0e986e1d4eb9a65",
+      "artifacts": {
+        "OVMF.amdsev.fd": "8731846cdbcbb6aa5c624238b839544b1553f4c5af874450f043321b3ef8958b",
+        "vmlinuz": "96758c40859c94163e5cf81399a107d679e984e251cb4e13aba4e7d92f5d14f2",
+        "initrd.img": "8c2aff57573c4af11289553fa185c8f13613acca688a52c2e579d4ea9c2beaf7"
+      },
+      "measurement_parameters": {
+        "vcpu_type": "EPYC-v4",
+        "guest_features": "0x1",
+        "policy": "0x30000",
+        "vmm": "QEMU"
+      },
+      "vcpu_counts": [
+        4
+      ],
+      "inputs": {
+        "kernel_version": "6.12.115+deb13.1-amd64",
+        "kernel_package_sha256": "6aa130b0864e58c7102b53ab9c2be4071fae62394f57c80bf4e1912f4c9b3b2a",
+        "debian_snapshot": "20261103T000000Z",
+        "edk2": "edk2 edk2-stable202505 unknown"
+      },
+      "pinned_at": "2026-11-08",
+      "evidence": "docs/runbooks/verify.md §Evidence at pin time"
+    },
+    "2026.11.2": {
+      "release_url": "https://servury.com/downloads/blackbox/2026.11.2/",
+      "release_json_sha256": "0e5ca12f5254430fe6b2387e424bc8820a0e2134a89851aa3cf04aecfa3e98f0",
+      "artifacts": {
+        "OVMF.amdsev.fd": "8731846cdbcbb6aa5c624238b839544b1553f4c5af874450f043321b3ef8958b",
+        "vmlinuz": "96758c40859c94163e5cf81399a107d679e984e251cb4e13aba4e7d92f5d14f2",
+        "initrd.img": "f045406ea60e1b24cd4790dccf1bf96b7528b2fd9266b4449277ce9220395092"
+      },
+      "measurement_parameters": {
+        "vcpu_type": "EPYC-v4",
+        "guest_features": "0x1",
+        "policy": "0x30000",
+        "vmm": "QEMU"
+      },
+      "vcpu_counts": [
+        4,
+        6
+      ],
+      "inputs": {
+        "kernel_version": "6.12.115+deb13.1-amd64",
+        "kernel_package_sha256": "6aa130b0864e58c7102b53ab9c2be4071fae62394f57c80bf4e1912f4c9b3b2a",
+        "debian_snapshot": "20261103T000000Z",
+        "edk2": "edk2 edk2-stable202505 unknown"
+      },
+      "pinned_at": "2026-11-13",
+      "evidence": "docs/runbooks/verify.md §The tenant release pin"
+    }
+  }
+}

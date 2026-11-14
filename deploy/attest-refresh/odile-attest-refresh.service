@@ -1,0 +1,15 @@
+[Unit]
+# Refresh the cached SEV-SNP report for /attestation and /verify.
+# Root, because /dev/sev-guest is 0600.
+Description=Refresh the cached SEV-SNP attestation report
+ConditionPathExists=/dev/sev-guest
+
+[Service]
+Type=oneshot
+ExecStart=/opt/odile/deploy/attest-refresh/refresh.sh
+Nice=10
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ReadWritePaths=/var/lib/odile

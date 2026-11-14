@@ -1,0 +1,25 @@
+# BEGIN odile-releases
+# /releases/* — the tenant image the Servury panel downloads (ODL-332).
+#
+# The panel's Boot image and Disk image fields take an https URL plus a
+# SHA-256; the node downloads the file, checks the declared hash and re-hashes
+# it at every start. Caddy streams the file: no application in the path, Range
+# and large bodies are Caddy's, and the stdlib app server never holds 3 GB in
+# memory. The directory is /srv/odile-releases (outside the repo: the
+# image is a build artefact, named by its hash in the panel and in
+# docs/evidence/m1-tenant.md, never committed).
+#
+# handle_path strips /releases, so /releases/m1/odile-tenant.efi is the file
+# /srv/odile-releases/m1/odile-tenant.efi. `no-store`: the URL is stable
+# per card but the bytes change when an image is rebuilt, and a cached copy
+# would fail the panel's hash check in a way nobody can see.
+#
+# This block must stay before the site's catch-all `handle` (it is: the seed
+# block it sits beside is spliced after it). A change here needs
+# `systemctl restart caddy` — Caddy runs with `admin off`.
+handle_path /releases/* {
+	root * /srv/odile-releases
+	header Cache-Control "no-store"
+	file_server
+}
+# END odile-releases

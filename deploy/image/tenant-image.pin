@@ -1,0 +1,56 @@
+{
+  "boot_key": "SHA256:1mRGsPrQ4d8QQlvRTKTpOFrtIhfXpcGCYqq0Kv4qAGs",
+  "boot_key_private_half": "shredded",
+  "card": "ODL-456",
+  "cmdline": "root=/dev/mapper/root_crypt ro console=tty0 console=ttyS0,115200 consoleblank=0 systemd.show_status=1 ip=203.0.113.87::203.0.113.1:255.255.255.0:odl-7971a8:ens18:off bb.release=2026.11.2 bb.host=odl-7971a8 bb.iid=31a63bbb bb.key=c3NoLWVkMjU1MTkgQUFBQUMzTnphQzFsWkRJMU5URTVBQUFBSU9rNU9zS0pOSzJzZWV4VXZWZ3QzU0sxRHR2VHRIdkpyb1I3WUNZSjE2VnYgb2RpbGUtYmVuY2ggdGhyb3dhd2F5IGJvb3Qga2V5Cg== seal_id=37fa4c5d5fd74163 odile.token=9b5fa901ceab53df7103e7d1d67fdc1a1381c19f21d666d421c23f6c5171a586 odile.seed_url=https://odile.fyi/seed",
+  "guest_features": "0x1",
+  "hook_sha256": "949adeb23145a0f25f5b018bd1d86a0030b32e8e355f67a1d68f2c7f2ea4803c",
+  "initrd_sha256": "3f4ebc5203dd681762e854a82638ef38310d0118f8616470a12ed353134c260f",
+  "kernel_release": "6.12.115+deb13.1-amd64",
+  "kernel_sha256": "96758c40859c94163e5cf81399a107d679e984e251cb4e13aba4e7d92f5d14f2",
+  "loose_measurement": "2023baac3d0d09d7d7e7244700232b9dc02d13c74e3c77e636f5b3ace94a59ef9a6b41da4fca368973a8efebda1a1e9c",
+  "order": [
+    "/scripts/init-premount/bb-attest \"$@\"",
+    "/scripts/init-premount/dropbear \"$@\"",
+    "/scripts/init-premount/bb-wait \"$@\"",
+    "/scripts/init-premount/bb-sealed-unlock \"$@\""
+  ],
+  "ovmf_sha256": "8731846cdbcbb6aa5c624238b839544b1553f4c5af874450f043321b3ef8958b",
+  "raw_image_sha256": "7dec352c19724814f2f235dcd864b9138f815388fa4ce37e22a915cd86621715",
+  "release": "2026.11.1",
+  "runs": {
+    "loose": [
+      "2023baac3d0d09d7d7e7244700232b9dc02d13c74e3c77e636f5b3ace94a59ef9a6b41da4fca368973a8efebda1a1e9c",
+      "2023baac3d0d09d7d7e7244700232b9dc02d13c74e3c77e636f5b3ace94a59ef9a6b41da4fca368973a8efebda1a1e9c"
+    ],
+    "uki_signed": [
+      "5d2df17bb4e3b99088bf8ab421b89653c6c7a5404861a54c32bd9d18e58aaeb55ac5c4ad3280961ae930e3ff339ead4b",
+      "5d2df17bb4e3b99088bf8ab421b89653c6c7a5404861a54c32bd9d18e58aaeb55ac5c4ad3280961ae930e3ff339ead4b"
+    ],
+    "uki_unsigned": [
+      "2bb1908fc33b2092b2663bd0730294e231e7cf25eeb93cc1fe52c1605f0a3d452f02e462503bef15bd5feec48ea002f0",
+      "2bb1908fc33b2092b2663bd0730294e231e7cf25eeb93cc1fe52c1605f0a3d452f02e462503bef15bd5feec48ea002f0"
+    ]
+  },
+  "schema": 1,
+  "seal_blob_sha256": "64c994436378abdeb13d273223de2b855fe4b55a7474dd0d597b10981700c6c5",
+  "seal_id": "37fa4c5d5fd74163",
+  "seal_key_id": "key_sha256=3461070ef08003753718b09d879970e980814cc26425d77717d6c2a9e39433b0",
+  "signature": {
+    "cert_fingerprint_sha256": "5A:21:B4:7F:D5:26:B6:E0:21:15:B1:E6:23:78:16:B1:D1:E5:63:67:CC:B5:B2:E8:22:F2:70:A7:7F:47:75:C0",
+    "cert_sha256": "aea9052cf8d2d0f404c5320848eb0f5402cea090248f05a51bbb5cfdbd2b1a06",
+    "tool": "sbsign (through ukify)",
+    "verified": true
+  },
+  "stub_sha256": "e3b63f011902bc1b31d6a00bdb5b0dac72526aae882a4807e85a45d49f6e2306",
+  "uki_signed": {
+    "measurement": "5d2df17bb4e3b99088bf8ab421b89653c6c7a5404861a54c32bd9d18e58aaeb55ac5c4ad3280961ae930e3ff339ead4b",
+    "sha256": "0dd001df2c3e88266158258f994974d9325ab999aae6c1edb44b3b829f4ff04c"
+  },
+  "uki_unsigned": {
+    "measurement": "2bb1908fc33b2092b2663bd0730294e231e7cf25eeb93cc1fe52c1605f0a3d452f02e462503bef15bd5feec48ea002f0",
+    "sha256": "98f26ec7f12839872f83ea9e2f5f886f5f9728e0d4a5e36cf492fcea0d974e6e"
+  },
+  "vcpu_type": "EPYC-v4",
+  "vcpus": 2
+}

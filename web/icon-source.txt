@@ -1,0 +1,16 @@
+source: Lucas Cranach the Elder, "Saints Christina and Ottilia", 1506.
+        Reverse of the right wing of the Katharinenaltar, Dresden
+        (Galerie Alte Meister). Public domain. The head on the right is
+        Saint Ottilia.
+reproduction: https://commons.wikimedia.org/wiki/File:Lucas_Cranach_the_Elder_-_Saints_Christina_and_Ottilia_-_Google_Art_Project.jpg
+reproduction sha256: d8ef03238bacabd1c7b244bad98e85f5053a980e29eab4741a10002bf0b4f421
+reproduction size: 2210x4231, 3077468 bytes, JPEG
+crop: (1436, 521) to (1911, 996) of the reproduction — 475x475,
+      resampled to 475x475, JPEG quality 95, 4:4:4
+crop sha256: edfb8555dcdca744568166dd8d26b9008e8e04d464be5db3194c64ac20de5167
+supplied: web/icon-source-supplied.jpg — the 480x480 JPEG Savio supplied on
+          2026-11-13, byte-identical, sha256
+          d24274d49c92445f6ca2849efeb919e2cd16714cde073b20da9f871f9025636d.
+          It is a 5.2x upscale of the same 475 px detail; the hi-res crop above
+          is the build source because it carries the real pixels.
+built by: tools/icon_build.py (Pillow, dev-side only)

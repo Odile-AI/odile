@@ -1,0 +1,27 @@
+# Leak-scan allowlist — every row is one exception, with its reason and its expiry.
+#
+#   rule <TAB> path-glob <TAB> sha256:<12> <TAB> reason <TAB> expires YYYY-MM-DD
+#
+# Rules: a row matches one rule, one path glob, and one VALUE digest. A different
+# value at the same path is still a finding. There is no path-wide row.
+#
+# An expired row is a finding, so a debt cannot outlive its date. Delete the row
+# when the value is gone; do not move the date forward without a reason here.
+public-ip	scripts/send_test.py	sha256:6694f83c9f47	documentation address in a smoke-test recipient, never dialled	2027-12-31
+credential-assignment	deploy/demo-host/login.html	sha256:b2132046eb76	the published demo password: public by design, and the page is the judge's one button	2027-12-31
+credential-assignment	deploy/image/tenant-image.pin	sha256:417b28e44772	a measured image hash recorded as a bench fixture, not a credential	2027-12-31
+credential-assignment	tests/test_first_visit.py	sha256:f4a39f182031	test fixture: a password the first-visit form must reject	2027-12-31
+credential-assignment	tests/test_first_visit.py	sha256:92d152347635	test fixture: base64 of the literal 'secret-placeholder'	2027-12-31
+credential-assignment	tests/test_first_visit.py	sha256:e024fef88814	test fixture: a backup password, never used to encrypt anything	2027-12-31
+high-entropy	*	sha256:bdcaa7157457	base64 of a public SSH key inside a measured command line or a recorded report	2027-12-31
+high-entropy	tests/test_first_visit.py	sha256:9468ffd30a44	an environment-variable name, not a value	2027-12-31
+high-entropy	tests/test_secret_scan.py	sha256:d30742eb5af9	the scanner's own planted-token fixture, which a test asserts it reports	2027-12-31
+private-key	tests/test_claim.py	sha256:a47672cb25d2	the redacted fixture: the marker pair itself is the test's subject, and a real key here is still a finding	2027-12-31
+email	*	sha256:fa5fbf8a030b	placeholder mailbox in a mail-transport test	2027-12-31
+email	*	sha256:4ca7ba89f38c	Google's public DMARC aggregate-report mailbox, in a fixture	2027-12-31
+email	*	sha256:29550d488ba9	Google's public DMARC reporting address, in a fixture	2027-12-31
+email	*	sha256:c85f24609dc4	placeholder address on the reserved .example domain	2027-12-31
+email	*	sha256:6ebcb1903fb0	a deliberately non-existent test mailbox, quoted in the email runbook	2027-12-31
+email	*	sha256:4bd2d9476b80	port25's public authentication verifier, quoted in the email runbook	2027-12-31
+home-path	*	sha256:e50425b752fd	`/home/tenant/` is the generic account a benchmark names, not a person	2027-12-31
+home-path	*	sha256:e78fb33ae4ec	`/home/odiletest387/` is a throwaway account in an install transcript	2027-12-31
