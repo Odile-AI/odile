@@ -83,6 +83,14 @@
  * opened from), watches the body for a dialog leaving the DOM, and puts focus
  * back on that element when the vendor has not. Radix still owns the trap, the
  * Escape key and the close animation; this only repairs the landing spot.
+ *
+ * The remembered opener needs two doors. A keyboard-opened menu focuses the
+ * trigger, so `focusin` sees it; a pointer-opened menu does not (Radix opens
+ * on `pointerdown`, prevents the default focus, and moves focus to the menu
+ * container), so the trigger under the pointer is recorded from the capture
+ * phase of `pointerdown` itself. Measured 2026-11-14 on a fresh page: without
+ * the pointer listener, Cancel left focus on the composer at 1440 and on
+ * "Hide sidebar" at 390 — never the trigger the user clicked.
  */
 ;(() => {
   'use strict'
@@ -143,6 +151,10 @@
   // `Session actions` trigger.
   const DIALOG = '[role="dialog"], [role="alertdialog"]'
   const MENU = '[role="menu"]'
+  // The row's kebab. Radix's trigger opens the menu on pointerdown without
+  // focusing itself, so a pointer-opened overlay has to remember this button
+  // from the event under the cursor (see `rememberPointer`).
+  const ROW_KEBAB = 'button[aria-label="Session actions"]'
   let themeFontGuard = false
   let lastFocusOutside = null
 
@@ -436,6 +448,24 @@
     lastFocusOutside = target
   }
 
+  // A pointer-opened menu never focuses its trigger (Radix opens on
+  // `pointerdown`, calls preventDefault and moves focus to the menu container),
+  // so `rememberFocus` never sees the button the user actually pressed. Record
+  // it here, on the capture phase, before Radix's handler mounts the menu. The
+  // trigger is the only element taken from a pointer event; clicks on the
+  // overlay or the dialog's own buttons must not replace it.
+  function rememberPointer(event) {
+    const target = event.target
+    if (!target || target.nodeType !== 1 || typeof target.closest !== 'function') {
+      return
+    }
+    const trigger = target.closest(ROW_KEBAB)
+    if (!trigger || !trigger.isConnected) {
+      return
+    }
+    lastFocusOutside = trigger
+  }
+
   // After Cancel, Close or Escape the vendor leaves activeElement on <body>;
   // Radix sometimes restores the opener itself. Only move focus when the
   // vendor has not, and only to an element that is still connected and still
@@ -523,6 +553,7 @@
     scan()
     stripThemeFonts()
     document.addEventListener('focusin', rememberFocus, true)
+    document.addEventListener('pointerdown', rememberPointer, true)
     window.addEventListener('resize', positionVerifyLink)
     const observer = new MutationObserver((records) => {
       for (const record of records) {

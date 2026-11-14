@@ -639,6 +639,25 @@ class KeyboardAccessTests(unittest.TestCase):
             self.assertIn(guard, self.js,
                           f"restoreOpener can focus a re-rendered-away opener ({guard})")
 
+    def test_a_pointer_opened_dialog_remembers_the_trigger_under_the_pointer(self):
+        # Radix opens the menu on pointerdown, prevents the trigger's default
+        # focus and moves focus to the menu container, so `focusin` never sees
+        # the button a pointer user pressed. Measured 2026-11-14 on a fresh
+        # page: Cancel / Close / Escape left focus on the composer at 1440 and
+        # on "Hide sidebar" at 390, never the row's `Session actions` trigger.
+        # The capture-phase pointerdown listener records that trigger as the
+        # same remembered opener the keyboard path uses.
+        self.assertIn("const ROW_KEBAB = 'button[aria-label=\"Session actions\"]'",
+                      self.js)
+        self.assertIn("document.addEventListener('pointerdown', rememberPointer, true)",
+                      self.js,
+                      "a pointer-opened overlay has no focusin on its trigger")
+        self.assertIn("const trigger = target.closest(ROW_KEBAB)", self.js)
+        self.assertIn("lastFocusOutside = trigger", self.js,
+                      "the pointer listener does not feed restoreOpener's opener")
+        self.assertIn("typeof target.closest !== 'function'", self.js,
+                      "a non-element pointer target would throw in closest")
+
 
 class ChromeSpliceTests(unittest.TestCase):
     """One tag per asset, one convergence, the vendor shell underneath."""
