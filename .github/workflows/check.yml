@@ -246,13 +246,18 @@ jobs:
       # appended. On a push to main that invariant is the assertion: a second
       # commit on main is a red run, not a new history. (A pull request is a
       # branch, so its own commits are what the scan above reads.)
-      - name: On a push to main, assert the one-root invariant
+      - name: On a push to main, assert the history shape
         if: github.event_name == 'push'
         run: |
           set -euo pipefail
+          # The first commit is a cut of the tree, and every commit after it is
+          # an ordinary commit on top. So: exactly one root, no merges, and the
+          # head is what was pushed.
+          roots=$(git rev-list --max-parents=0 origin/main | wc -l | tr -d ' ')
+          merges=$(git rev-list --merges origin/main | wc -l | tr -d ' ')
           count=$(git rev-list --count origin/main)
-          parents=$(git cat-file -p origin/main | grep -c '^parent ' || true)
-          echo "git rev-list --count origin/main = ${count}; parents of origin/main = ${parents}"
-          test "$count" -eq 1
-          test "$parents" -eq 0
-          echo "the repository is one root commit: rev-list --count origin/main = 1, no parent"
+          echo "commits=${count} roots=${roots} merges=${merges} head=$(git rev-parse --short origin/main)"
+          test "$roots" -eq 1
+          test "$merges" -eq 0
+          test "$(git rev-parse origin/main)" = "${GITHUB_SHA}"
+          echo "one root, linear history, head is the pushed commit"
