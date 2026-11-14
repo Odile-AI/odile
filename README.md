@@ -8,6 +8,20 @@ Odile is an AI agent that gets things done with privacy. Every Odile agent runs 
 
 Live demo: https://demo.odile.fyi/login
 
+The machine's own report is at <https://demo.odile.fyi/verify>. It prints the one-line verifier command with the measurement it serves; a tenant run needs `--expect`.
+
+| Field | Value |
+|---|---|
+| Username | `judge` |
+| Password | `odile-demo-kestrel-2026` |
+
+The password is public by design: one shared workspace on Odile's own tenant machine.
+
+## How NEAR fits in
+
+Inference runs on NEAR AI's confidential cloud, inside a hardware enclave.
+In this demo your prompts go from the browser to Odile's tenant machine and then to the NEAR AI enclave.
+
 ## Core components
 
 - **`app.py`** — the workspace server: sessions, files, jobs, and the terminal, in front of a Hermes agent.
