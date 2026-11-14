@@ -1,4 +1,4 @@
-# Odile — claims deck (v3.9c, the strict bar: no user SSH key, no passphrase, sealed boot, sign-in at first visit; one NEAR key per user, no meter)
+# Odile — claims deck (v3.9d, the strict bar: no user SSH key, no passphrase, sealed boot, sign-in at first visit; one NEAR key per user, no meter)
 
 **Rule:** no public sentence about privacy, security or reliability ships unless it is in this file. If a sentence is not here, it is not approved. `docs/MVP-V0.1.md` §7 is the rationale; this is the copy.
 
@@ -19,6 +19,7 @@ Use these verbatim, or a subset that does not change the meaning. Anything stron
 - "A real Linux machine, not a chat window."
 - "One machine per person. Nothing is shared."
 - "It keeps working when you close the tab."
+- "Full agent with full privacy. Always-on agents running on confidential computers and powered by confidential models."
 - "V0.1 is ten people, each with a machine built by hand. The waitlist hears first."
 
 ### Access — the core claim
@@ -218,7 +219,11 @@ math no longer carries an owner-wait bucket. `templates/status.html` and
 | "your data never leaves the machine" | It goes to inference | "Prompts go only to the inference enclave" |
 | "fully audited" | One external audit, scoped | "Audited for X; findings published" |
 
-Lint list: `unhackable`, `zero-knowledge`, `zero knowledge`, `trustless`, `military-grade`, `provably private`, `we hold your keys`, `we can log in`, `operator access`, `no one can access`, `can't see your data`, `cannot see your data`, `never leaves`, `full privacy`.
+Lint list: `unhackable`, `zero-knowledge`, `zero knowledge`, `trustless`, `military-grade`, `provably private`, `we hold your keys`, `we can log in`, `operator access`, `no one can access`, `can't see your data`, `cannot see your data`, `never leaves`.
+
+Retired from this list on 2026-11-14: `full privacy` — it was banned because no
+row carried it. Savio made it his own landing sentence (v3.9d), so the row now
+approves it verbatim and a generic ban would only flag the page the deck allows.
 
 <!-- claims-lint:on -->
 
@@ -459,3 +464,4 @@ the machine.
 | 2026-11-13 | v3.9a: the two status rows re-cut for the sealed boot (ODL-467) — the reliability row drops "with owner-waiting counted separately" and the status-page row becomes "The status page counts uptime and names no tenant." The uptime math changes with them: `status/status.py` counts `ready` time only, a legacy `waiting_for_owner` segment is neither up nor down and gets no bucket, and the incidents list is `down` only. `templates/status.html` and `web/terms.html` carry the decided rows verbatim; `app.py` serves the page at `/status`; `odilectl/health.py` raises `down` for a stopped heartbeat and sends no unlock email. Evidence: `tests/test_status.py`, `tests/test_heartbeat.py`, `tests/test_flow.py`, `make check`. Decided under the ODL-467 card (the re-cut table in `docs/product/CLAIMS-RECUT-STRICT.md` §2 assigns both rows to it); verifier review. | Product lead |
 | 2026-11-13 | v3.9b: the demo sign-in page's copy is Savio's boundary sentence, verbatim — "This is an Odile demo instance. Despite that it runs on confidential compute and inference, access is open to public. Everyone could see everything on this machine. Refrain from uploading personal and sensitive details." The page loses the demo-machine, reset and public-password lines and the Hermes version credit; one **Sign in** button posts the published `judge` credential. The three older demo rows stay in the deck because `web/judge.html` and `README.md` still carry them. Savio's instruction of 2026-11-13, card t_3d717ffc: a record of his sentence, not a new claim (Product lead approval requested on that card; verifier review). | Savio via t_3d717ffc |
 | 2026-11-14 | v3.9c: **the meter is retired from the product record** (ODL-205; card t_7f339817, from Savio's 2026-11-13 instruction "Remove everything meter in our project codebase… simply deploy a new Near AI API key for each new individual user, even in production"). The data-inventory meter row is replaced by the machine's own NEAR AI key — one per user, written at install, read by the agent, the only inference credential; §1 Money and place records the path and the cost model: no meter, no proxy, no per-request ledger, the key's prepaid credit is the allowance, Odile tops up at the billing anchor, and at zero the provider refuses and the agent reports it. The public "hard-capped" money row is unchanged — the key's balance is what makes it true — and ODL-242 proves the zero-balance message. History is not rewritten: the ODL-391/ODL-501/ODL-503 meter-and-cap records stay in `docs/backlog.yaml` with a retirement note, and `docs/security/CLAIMS-VERDICT-strict.md` carries one dated note at its meter rows. Code: `f884184` (merged `0a4b726`). By the Product lead under `docs/AGENT-ORG.md` §3; verifier review. | Product lead |
+| 2026-11-14 | v3.9d: the landing description is Savio's own sentence, verbatim — "Full agent with full privacy. Always-on agents running on confidential computers and powered by confidential models." It replaces the v3.8 landing sentence on `web/index.html` (the visible lede, `<meta name=description>` and `og:description`), and the machine section gains it as one row: `always-on` and `confidential models` are approved as written, the second being the plain form of §1 *Inference*'s NEAR AI enclave row. `full privacy` leaves §2's lint list for the same reason it was on it — no row carried it, and now one does. Savio's instruction, 2026-11-14 16:05Z. | Savio |
