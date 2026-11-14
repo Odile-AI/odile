@@ -28,13 +28,18 @@ from __future__ import annotations
 import argparse
 from http.cookiejar import CookieJar
 import hashlib
+import html
+import io
 import json
+import os
 import re
 import secrets
 import socket
 import ssl
 import subprocess
 import sys
+import tarfile
+import tempfile
 import time
 import urllib.error
 import urllib.request
@@ -59,6 +64,12 @@ COMMITTED_BLOCK = HERE.parent / "caddy" / "demo-tenant-site.caddy"
 VERIFY_LEDE = HERE / "verify-lede.html"
 CUSTOMER_SENTENCE = "No one at Odile can log in to a tenant machine."
 MEASUREMENT = re.compile(r"\b([0-9a-f]{96})\b")
+#: The verifier a judge downloads: the check runs the page's own line out of
+#: these bytes, not out of this checkout, so the guard covers the published
+#: program too.
+VERIFIER_BUNDLE = "https://odile.fyi/odile-verify.tar.gz"
+PASS_LINE = ("PASS — the CPU signed this report and the launch measurement "
+             "matches the pin.")
 #: The seeded session's identity is frozen: the id is a hash over the profile
 #: and principal the row was minted with on the retired HQ demo, and app.py's
 #: /judge deep link carries the same id. The retired account name is spelled in
@@ -98,6 +109,71 @@ def lede_problem(body: str, lede: str = "") -> str:
     if CUSTOMER_SENTENCE in body:
         return "the page still carries the customer-tenant row"
     return ""
+
+
+def page_command(page: str) -> str:
+    """The one verifier line the page prints, prompts stripped; '' if not one.
+
+    A judge selects the line in the terminal block and pastes it. The line is
+    the whole shell line (``cd odile-verify && ./odile-verify …``) because
+    that is what the browser copies; a page with two such lines is refused
+    rather than guessing which one the judge took.
+    """
+    found: list[str] = []
+    for block in re.finditer(r"<pre[^>]*>\s*<code[^>]*>(.*?)</code>\s*</pre>", page, re.S):
+        text = html.unescape(re.sub(r"<[^>]+>", "", block.group(1)))
+        for line in text.splitlines():
+            line = line.strip()
+            if line.startswith("$ "):
+                line = line[2:].strip()
+            if "./odile-verify" in line:
+                found.append(line)
+    return found[0] if len(found) == 1 else ""
+
+
+def page_command_problem(page: str, measurement: str) -> str:
+    """Why the page does not print the judge's exact --expect line; '' when it does."""
+    command = page_command(page)
+    if not command:
+        return "the page prints no single ./odile-verify command"
+    expected = ("cd odile-verify && ./odile-verify https://demo.odile.fyi"
+                " --expect %s" % measurement)
+    if command != expected:
+        return "the page's command is %r, expected %r" % (command, expected)
+    return ""
+
+
+def command_script(command: str) -> str:
+    """Refuse anything that is not the page's exact line before running it."""
+    pattern = (r"^cd odile-verify && \./odile-verify https://demo\.odile\.fyi"
+               r" --expect [0-9a-f]{96}$")
+    if not re.match(pattern, command):
+        raise ValueError("not the page's ./odile-verify command: %r" % command)
+    return command
+
+
+def run_page_command(command: str, *, timeout: int = 240) -> tuple[int, str]:
+    """Download the published verifier bundle and run the page's own line.
+
+    The bundle is the judge's copy, not this checkout's: a page that names a
+    flag the published verifier does not have fails here, which is the drift
+    the card guards against. The shell is the judge's own paste; the line is
+    pinned by ``command_script`` before it reaches it.
+    """
+    command_script(command)
+    code, body, _ = http(VERIFIER_BUNDLE)
+    if code != 200:
+        raise RuntimeError("%s -> HTTP %d" % (VERIFIER_BUNDLE, code))
+    with tempfile.TemporaryDirectory(prefix="odile-page-command-") as tmp:
+        with tarfile.open(fileobj=io.BytesIO(body), mode="r:gz") as archive:
+            archive.extractall(tmp, filter="data")
+        script = Path(tmp) / "odile-verify" / "odile-verify"
+        if not script.is_file():
+            raise RuntimeError("the bundle carries no odile-verify")
+        os.chmod(script, 0o755)
+        result = subprocess.run(["/bin/sh", "-c", command], cwd=tmp,
+                                capture_output=True, text=True, timeout=timeout)
+    return result.returncode, result.stdout + result.stderr
 
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -320,13 +396,6 @@ def public_checks(password: str) -> str:
         check(code == 200, f"GET /api/sessions with the judge session -> {code} (the control)")
 
     print("== the machine")
-    code, body, _ = http(DEMO + "/verify", cookie=cookie)
-    page = body.decode("utf-8", "replace")
-    page_measurement = MEASUREMENT.search(page)
-    problem = lede_problem(page)
-    check(code == 200 and page_measurement is not None and problem == "",
-          f"GET /verify -> {code} (the machine's own access report, the demo lede)"
-          + (f" — {problem}" if problem else ""))
     code, body, _ = http(DEMO + "/attestation")
     report_measurement = ""
     try:
@@ -334,10 +403,33 @@ def public_checks(password: str) -> str:
     except ValueError:
         report_measurement = ""
     check(code == 200 and bool(report_measurement), f"GET /attestation -> {code}")
+    code, body, _ = http(DEMO + "/verify", cookie=cookie)
+    page = body.decode("utf-8", "replace")
+    page_measurement = MEASUREMENT.search(page)
+    problem = lede_problem(page)
+    check(code == 200 and page_measurement is not None and problem == "",
+          f"GET /verify -> {code} (the machine's own access report, the demo lede)"
+          + (f" — {problem}" if problem else ""))
     check(page_measurement is not None and page_measurement.group(1) == report_measurement,
           "the /verify measurement is the CPU's: "
           f"{(page_measurement.group(1) if page_measurement else '-')[:24]}… = "
           f"{report_measurement[:24]}…")
+
+    print("== the judge's own command")
+    command = page_command(page)
+    command_problem = page_command_problem(page, report_measurement)
+    check(command_problem == "",
+          "the /verify page prints one verifier command with this machine's "
+          "measurement" + (f" — {command_problem}" if command_problem else ""))
+    if command_problem == "":
+        try:
+            command_code, output = run_page_command(command)
+        except (ValueError, RuntimeError, OSError, subprocess.SubprocessError) as exc:
+            check(False, f"the page's command ran: {exc}")
+        else:
+            last = output.strip().splitlines()[-1] if output.strip() else "(no output)"
+            check(command_code == 0 and PASS_LINE in output,
+                  f"the page's command exits {command_code}: {last[:160]}")
     return cookie
 
 
@@ -405,10 +497,13 @@ def tenant_checks(console, password: str = "") -> tenant_console.Console:
     check("HERMES_CUSTOM_CLOUD_API_NEAR_AI_API_KEY" in keys,
           "the .env carries the one Near AI key")
 
-    print("== the /verify lede (this machine's)")
+    print("== the /verify page (this machine's)")
     verify = state.get("verify") or {}
     check(bool(verify.get("demo_lede")),
           "the tenant's /verify template carries the demo lede (boot key, shared judge)")
+    check(bool(verify.get("demo_command")),
+          "the tenant's /verify template carries the one-line --expect command "
+          "with its measurement")
     check(not verify.get("customer_lede"),
           "the tenant's /verify template no longer carries the customer-tenant row")
     check(bool(verify.get("rollback")), "the release page is kept for a rollback")

@@ -5,6 +5,12 @@ A judge opens <https://demo.odile.fyi>, meets Odile's sign-in page, signs in as
 measured image (`odl-7971a8`, `203.0.113.87`, measurement `9f01725a…`), one
 shared workspace, no nightly reset and no meter. Card: ODL-503.
 
+`https://odile.fyi/judge` was retired on 2026-11-14: ODL-901 answers it with a
+301 to <https://demo.odile.fyi/login>, the address the posted cut prints. The
+judge path is login → the seeded session → `/verify`; `README.md` names the
+login entry and the page prints the verifier line (a tenant run needs
+`--expect`).
+
 This is **Odile's tenant machine**: Odile holds the boot key and can log in,
 the judge password is published on purpose, and the machine's `/verify` is the
 page a judge should be sent to. It does not demonstrate a user-held key.
@@ -81,10 +87,21 @@ paragraph never reaches a browser. Re-cutting the release to change that would
 change what every customer machine verifies. Instead:
 
 - `deploy/demo-host/verify-lede.html` is the demo's one paragraph, assembled
-  from `docs/CLAIMS.md` §"The demo machine" rows and `web/judge.html`;
+  from `docs/CLAIMS.md` §"The demo machine" rows; `web/judge.html`, the
+  second source until ODL-901 retired the page, is gone;
+- `deploy/demo-host/verify-command.html` is the demo's one-line command
+  section: the terminal block's last line is
+  `cd odile-verify && ./odile-verify https://demo.odile.fyi --expect …`, and
+  the first-visit renderer fills `{{MEASUREMENT}}` from the report it serves.
+  A tenant URL is not the pin's `source`, so the verifier's own rule needs
+  `--expect`; the page is where a judge copies the number. `README.md` names
+  the same form and sends the reader to the page for the live value;
+  `check_demo_public.py` extracts that line and runs it out of the published
+  tarball, so the page and the verifier cannot drift;
 - `apply_demo_public.py` replaces the tenant block's one lede in
   `/usr/local/lib/odile/verify.html` — the template the first-visit service
-  reads per request — and keeps the release page at
+  reads per request — adds the command section inside the same block, and keeps
+  the release page at
   `/usr/local/lib/odile-demo-public/verify.html.release` for the rollback;
 - the deploy's `apply --write` is the only writer. `odile-release-setup.service`
   converges **once** (t_ee5aac66 writes a done marker under `/var/lib/odile`),
@@ -106,8 +123,8 @@ sudo install -m 0644 /usr/local/lib/odile-demo-public/verify.html.release \
 ```
 
 The template is read per request, so no restart is needed. `--report` prints a
-`verify` object with the template's hash, `demo_lede`, `customer_lede` and
-whether the rollback copy is present.
+`verify` object with the template's hash, `demo_lede`, `demo_command`,
+`customer_lede` and whether the rollback copy is present.
 
 ### The meter is gone
 
@@ -385,6 +402,15 @@ transcript.
 | The gate, before the merge | `deploy/demo-host/evidence/odl-503-followup-check-2026-11-14.txt`: PASS 44/44 |
 | The gate, after merging main | `deploy/demo-host/evidence/odl-503-followup-check-2026-11-14T0405.txt`: 46 passed, 1 failed — the failure is the 25-turn cap t_ee5aac66 removes; every `/verify` line and the measurement pass |
 | Screenshots | `odl-503-followup-verify-1440.png`, `-390.png` (viewport) and `-1440-full.png`, `-390-full.png`; at both widths `scrollWidth == clientWidth`, 0 `<img>`, body `rgb(234,223,196)`, lede `rgb(74,65,54)` |
+
+### Evidence for the verifier command (2026-11-14)
+
+| What | Where |
+|---|---|
+| The page's line | `https://demo.odile.fyi/verify` 200, sha256 `6c6fe7aa…`, 43,082 B at 20:15Z; its `<!--demo-check-->` section is `deploy/demo-host/verify-command.html` (sha256 `46c95b39…`) with the measurement it serves, `9f01725a…f137` = `/attestation` |
+| The line in a judge's shell | `check_demo_public.py` extracts it and runs it from the published bundle: `expected PASS matches --expect …` / `PASS — the CPU signed this report and the launch measurement matches the pin.`, exit 0 |
+| The plain form is the defect | `./odile-verify https://demo.odile.fyi` prints `a tenant run needs --expect <measurement>`, exit 2 — the pin's `source` is the HQ record |
+| The pages that hand it over | `README.md` (a `/verify` pointer, no bare command) and the demo page; `/judge` is a 301 since ODL-901, so `web/judge.html` no longer ships |
 
 ### The published password's reach (2026-11-14)
 

@@ -62,6 +62,27 @@ demo.odile.fyi {
 		file_server
 	}
 
+	# The five tab-icon paths (ODL-505): the machine's own page server serves
+	# the reviewed set, so /login, /verify and the Webapp carry Odile's icon
+	# first-party. No Cache-Control header here — the service sends a one-year
+	# immutable on a 200 and no-store on its 404, and Caddy must not remember a
+	# missing icon as if it were the icon.
+	handle /favicon.ico {
+		reverse_proxy 127.0.0.1:8091
+	}
+	handle /icon-32.png {
+		reverse_proxy 127.0.0.1:8091
+	}
+	handle /icon-192.png {
+		reverse_proxy 127.0.0.1:8091
+	}
+	handle /icon-512.png {
+		reverse_proxy 127.0.0.1:8091
+	}
+	handle /apple-touch-icon.png {
+		reverse_proxy 127.0.0.1:8091
+	}
+
 	# The API browser is the operator's map of the surface; the Webapp never
 	# loads it. 404, so it does not advertise what is left.
 	@apidocs path /openapi.json /docs /redoc /api/openapi.json

@@ -17,10 +17,13 @@ down; that is the recovery path in docs/runbooks/demo-public.md.
 
 What it owns, each step idempotent and printed as `same` / `write` / `restart`:
 
-  0. the demo machine's /verify lede: the release template's one tenant-block
+  0. the demo machine's /verify page: the release template's one tenant-block
      paragraph is replaced by `verify-lede.html`, because on this machine Odile
-     holds the boot key and the sign-in is shared. A customer machine never
-     runs this program and keeps the general row;
+     holds the boot key and the sign-in is shared, and the one-line `--expect`
+     verifier command is added after it from `verify-command.html`, with the
+     measurement the page serves filled in by the first-visit renderer. A
+     customer machine never runs this program and keeps the general row and no
+     demo command;
   1. the sign-in page at /srv/odile-demo/login.html;
   2. the `demo.odile.fyi` block in /etc/caddy/Caddyfile — spliced between its
      markers, whole file backed up, `caddy validate`, then `systemctl restart
@@ -90,6 +93,20 @@ VERIFY_TEMPLATE = Path("/usr/local/lib/odile/verify.html")
 #: paragraph inside the template's tenant block; a customer machine never runs
 #: this program, so its page keeps the general row.
 VERIFY_LEDE = LIB / "verify-lede.html"
+#: The demo's /verify command section: the one-line --expect run a judge
+#: copies, with the live measurement filled by the first-visit renderer. The
+#: release template's tenant block has no command (a customer's page is not the
+#: public demo and its machine name is its own), so this is injected here,
+#: exactly as the lede is: a demo-only page, not a release re-cut (ODL-503
+#: finding 1's route).
+VERIFY_COMMAND = LIB / "verify-command.html"
+#: The page's one line, before the renderer fills the slot. A judge's browser
+#: copies it verbatim; check_demo_public.py runs exactly that line.
+COMMAND_BEGIN = "<!--demo-check-->"
+COMMAND_END = "<!--/demo-check-->"
+COMMAND_RE = re.compile(r"<!--demo-check-->.*?<!--/demo-check-->", re.S)
+PAGE_COMMAND = ("./odile-verify https://demo.odile.fyi"
+                " --expect {{MEASUREMENT}}")
 #: The release page as the boot left it, kept for the runbook's rollback.
 VERIFY_BACKUP = LIB / "verify.html.release"
 TENANT_BLOCK_RE = re.compile(r"(<!--tenant-->)(.*?)(<!--/tenant-->)", re.S)
@@ -321,18 +338,126 @@ def ensure_verify_lede(dry: bool) -> bool:
     return True
 
 
+def command_source() -> Path:
+    """The uploaded command section beside this program, else the installed one.
+
+    Same resolution as lede_source(): the deploy's dry run runs the uploaded
+    program from /tmp and must read the uploaded section, not an older one.
+    """
+    beside = Path(__file__).resolve().parent / VERIFY_COMMAND.name
+    return beside if beside.is_file() else VERIFY_COMMAND
+
+
+def command_problem(markup: str) -> str:
+    """Why *markup* is not one injectable command section; '' when it is.
+
+    The section is the judge's one line: one marked block, one
+    ``{{MEASUREMENT}}`` slot for the renderer, no script and no image (a
+    tenant's page server carries no static route for the painting), and the
+    command the page promises. A release template re-cut that moves the block
+    is an error, not a silently half-rendered page.
+    """
+    text = markup.strip()
+    if not (text.startswith(COMMAND_BEGIN) and text.endswith(COMMAND_END)):
+        return "the command block is not one marked section"
+    if text.count(COMMAND_BEGIN) != 1 or text.count(COMMAND_END) != 1:
+        return "the command block carries more than one marker pair"
+    if "<section" not in text or text.count("<section") != 1:
+        return "the command block is not one section"
+    if "<script" in text:
+        return "the command block carries a script"
+    if "<img" in text:
+        return "the command block carries an image"
+    if text.count("{{MEASUREMENT}}") != 1:
+        return "the command block needs exactly one {{MEASUREMENT}} slot"
+    if "{{" in text.replace("{{MEASUREMENT}}", ""):
+        return "the command block carries another page slot"
+    if PAGE_COMMAND not in text:
+        return "the command block does not carry the demo's --expect command"
+    return ""
+
+
+def inject_command(page: str, command: str) -> str:
+    """Return *page* with the demo's command section inside its tenant block.
+
+    The first apply appends the section after the tenant block's lede; a later
+    apply replaces the marked block in place, so a changed command converges
+    and a second run is byte-identical. The rest of the page — the demo block,
+    the report card, the CSS — is untouched, and a customer machine never runs
+    this program.
+    """
+    problem = command_problem(command)
+    if problem:
+        raise ValueError(problem)
+    matches = tenant_blocks(page)
+    if len(matches) != 1:
+        raise ValueError("the verify page has %d tenant blocks, expected 1" % len(matches))
+    match = matches[0]
+    body = match.group(2)
+    existing = list(COMMAND_RE.finditer(body))
+    if len(existing) > 1:
+        raise ValueError("the tenant block has %d command blocks, expected at most 1"
+                         % len(existing))
+    wanted = command.strip()
+    if existing:
+        replaced = body[:existing[0].start()] + wanted + body[existing[0].end():]
+    else:
+        replaced = body.rstrip() + "\n" + wanted + "\n"
+    return page[:match.start(2)] + replaced + page[match.end(2):]
+
+
+def ensure_verify_command(dry: bool) -> bool:
+    """Put the demo's verifier command on this machine's /verify template.
+
+    The demo's page is the only public tenant /verify, so the command lives in
+    the demo layer: the release template's tenant block stays the customer's
+    page (no command, no demo hostname). The write goes to the same file the
+    first-visit service reads per request; the lede's update wrote the backup,
+    so this step must not overwrite it with a half-injected page.
+    """
+    source = command_source()
+    if not source.is_file():
+        raise SystemExit(f"error: missing {source}")
+    if not VERIFY_TEMPLATE.is_file():
+        raise SystemExit(f"error: missing {VERIFY_TEMPLATE}")
+    try:
+        command = source.read_text(encoding="utf-8")
+        page = VERIFY_TEMPLATE.read_text(encoding="utf-8")
+        wanted = inject_command(page, command)
+    except (OSError, ValueError) as exc:
+        raise SystemExit(f"error: cannot inject {source} into {VERIFY_TEMPLATE}: {exc}") from exc
+    if wanted == page:
+        say("same", f"{VERIFY_TEMPLATE} (the demo command)")
+        return False
+    say("would write" if dry else "write",
+        f"{VERIFY_TEMPLATE} (the demo command; rollback {VERIFY_BACKUP.name})")
+    if not dry and not VERIFY_BACKUP.is_file():
+        write_atomic(VERIFY_BACKUP, page.encode("utf-8"), 0o644, 0, 0)
+    if not dry:
+        write_atomic(VERIFY_TEMPLATE, wanted.encode("utf-8"), 0o644, 0, 0)
+    return True
+
+
 def verify_state() -> dict:
-    """The template's lede and the rollback copy, as the report states them."""
+    """The template's lede, command and the rollback copy, as the report states them."""
     page = VERIFY_TEMPLATE.read_text(encoding="utf-8") if VERIFY_TEMPLATE.is_file() else ""
     source = lede_source()
     lede = source.read_text(encoding="utf-8").strip() if source.is_file() else ""
+    command_source_path = command_source()
+    command = (command_source_path.read_text(encoding="utf-8").strip()
+               if command_source_path.is_file() else "")
     try:
         block = tenant_block(page)
     except ValueError:
         block = ""
+    first_lede = LEDE_RE.search(block)
+    section = COMMAND_RE.search(block)
     return {
         "template_sha256": hashlib.sha256(page.encode("utf-8")).hexdigest() if page else "",
-        "demo_lede": bool(block) and block.strip() == lede and bool(lede),
+        "demo_lede": bool(block) and first_lede is not None
+                     and first_lede.group(0).strip() == lede and bool(lede),
+        "demo_command": section is not None and section.group(0).strip() == command
+                        and bool(command),
         "customer_lede": "No one at Odile can log in to a tenant machine." in block,
         "rollback": VERIFY_BACKUP.is_file(),
     }
@@ -1595,12 +1720,27 @@ def self_test() -> int:
     check("boot key" in lede and "judge" in lede.lower()
           and "No one at Odile can log in" not in lede,
           "the demo lede names the boot key and the shared judge sign-in, never the customer row")
+    command = _source(VERIFY_COMMAND.name).read_text(encoding="utf-8")
+    check(command_problem(command) == "", "the demo command is one injectable section")
+    check(command.count("{{MEASUREMENT}}") == 1 and PAGE_COMMAND in command
+          and "--expect" in command,
+          "the demo command carries the --expect line and one live measurement slot")
     release = "<!--tenant-->\n<p class=\"lede\">No one at Odile can log in to a tenant machine.</p>\n<!--/tenant-->\n"
+    check(COMMAND_BEGIN not in release, "the release tenant block carries no demo command")
     demo = inject_lede(release, lede)
     check(tenant_block(demo).strip() == lede.strip()
           and "No one at Odile can log in" not in demo
           and inject_lede(demo, lede) == demo,
           "the injection replaces the tenant lede once and is idempotent")
+    with_command = inject_command(demo, command)
+    block = tenant_block(with_command)
+    check(block.strip().startswith(lede.strip()) and PAGE_COMMAND in block,
+          "the command lands in the tenant block after the lede")
+    check(inject_command(with_command, command) == with_command
+          and with_command.count(COMMAND_BEGIN) == 1,
+          "the command injection is idempotent")
+    check(bool(command_problem(command.replace("--expect {{MEASUREMENT}}", ""))),
+          "a command without --expect is refused")
 
     check(len(SESSION_ID) == 70 and SESSION_ID.startswith("local-"),
           "the seeded id is app.py's 64-hex session id")
@@ -1658,6 +1798,7 @@ def main(argv: list[str] | None = None) -> int:
 
     dry = not args.write or args.dry_run
     changed = ensure_verify_lede(dry)
+    changed |= ensure_verify_command(dry)
     if not args.no_login:
         changed |= ensure_login_page(dry)
     changed |= ensure_caddy_block(dry)
