@@ -1,8 +1,8 @@
 {
   "artifacts": {
     "installer": {
-      "sha256": "6b42f8ef13f0352ba2cc6cb7d10635f0f29f1bcbf245bda6debd686125b7017c",
-      "size": 616370,
+      "sha256": "49f90a3c00015451f9737d7330b6e1a7b1e4f07b48a1a44f79cb0ef6f68e510a",
+      "size": 616403,
       "url": "odile_install.py"
     },
     "skills": {
@@ -14,14 +14,14 @@
   "boot": {
     "kernel": "6.12.115+deb13.1-amd64"
   },
-  "generated_at": "2026-11-14T09:32:15Z",
+  "generated_at": "2026-11-14T15:12:51Z",
   "manifest": {
-    "sha256": "65ac178cb89f353f2bc2da22344bbee7396658220be737e42d952e1cd9b1ef81",
+    "sha256": "f6dea119632629c9e805352d398f4af2d7dd94b9b673d4c9aa74dfed0babb11c",
     "signature_url": "manifest.json.sig",
     "url": "manifest.json"
   },
-  "notes": "t_9c2d31f1 on top of the 2026.11.14-3 vendor re-pin: web/verify.html drops the retired demo-reset note (the public demo moved to the tenant at ODL-503; CLAIMS v3.8b says there is no nightly reset), so the installer re-embeds the page and this cut names the merged bytes. installer_sha256, the installer size, the manifest hash and this document's hash move; the vendor pin c73dad4d, the skills artifact and the meter-free manifest rows are -3's.",
+  "notes": "t_781fc5cb: HQ's /verify demo block stops saying the demo is not a tenant machine. It now quotes the v3.8b deck row verbatim (Odile's tenant machine, one shared workspace, Odile holds this machine's boot key and can log in) and its two back links go to https://demo.odile.fyi/login, which Savio made the judge's entry surface on 2026-11-14; /judge is retired to a 301 by ODL-901. The installer re-embeds web/verify.html, so installer_sha256, the installer size, the manifest hash and this document's hash move; the vendor pin c73dad4d, the skills artifact and the meter-free manifest rows are -4's.",
   "product": "odile",
-  "release": "2026.11.14-4",
+  "release": "2026.11.14-6",
   "schema": 1
 }
