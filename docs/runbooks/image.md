@@ -880,13 +880,18 @@ The build ran at `git rev-parse HEAD` = `1629b14ed71888bc9c398ac47b341dcba606452
 this section changes only `docs/runbooks/image.md`, so the installer, the
 release documents and the image bytes measured below are the ones that head
 built. `main` then added `055709d` (one `docs/runbooks/demo-public.md` row) and
-the branch merged it at `4ca0e01`; the diff below prints nothing, so the
-handoff tree's build inputs are the head's:
+the branch merged it at `4ca0e01`. The review rounds after that tree moved only
+the two runbooks and `tests/test_sealed_image.py` (round 2 makes six
+HQ-only-fixture tests skip in a public checkout; `deploy/image/sealed-initrd.sh`
+is byte-identical to the head's). At the last code head
+`bf75c93eaa96c79bf1ae2c286c23cb7d807201d7` the diff below prints nothing, so
+the handoff tree's build inputs are still the head's:
 
 ```sh
-$ git diff --stat 1629b14..4ca0e01 -- deploy installer release skills update \
+$ git diff --stat 1629b14..bf75c93 -- deploy installer release skills update \
       scripts web/first-visit.html web/verify.html attest.py
-$ # (no output: the only moved file is docs/runbooks/demo-public.md)
+$ # (no output: outside those inputs the branch moves only docs/runbooks/*.md
+  and tests/test_sealed_image.py)
 ```
 
 The build also places the image's own pin inside the sealed root
