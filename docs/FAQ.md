@@ -103,7 +103,7 @@ machine. While the machine is still running, the agent can show it again." ·
 
 **Reply:**
 
-> $49 a month, founding price, month-to-month. The $12 inference allowance is
+> $49 a month, month-to-month. The $12 inference allowance is
 > included and hard-capped; at the cap the agent stops and tells you. Stripe
 > holds the card; we hold the customer id, the subscription id and whether it is
 > paid. Reply here for anything on the charge; it is read by a person, and the
@@ -113,7 +113,7 @@ machine. While the machine is still running, the agent can show it again." ·
 the agent stops and tells you." · "Stripe holds the card; Odile holds the
 customer id, the subscription id and whether it is paid." · "Support and abuse
 mail goes to help@odile.fyi and is read by a person; the target is an answer
-within 24 hours." Price: `docs/MVP-V0.1.md` §0, $49/month founding price.
+within 24 hours." Price: `docs/MVP-V0.1.md` §0, $49/month.
 
 Do not promise a refund, a credit or a discount. Refunds are Savio's; forward
 the message and say the target is an answer within 24 hours.
