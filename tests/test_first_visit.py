@@ -23,6 +23,7 @@ import json
 import os
 import re
 import secrets
+import shutil
 import socket
 import ssl
 import stat
@@ -38,6 +39,16 @@ ROOT = Path(__file__).resolve().parent.parent
 SERVICE = ROOT / "installer" / "first_visit.py"
 PAGE = ROOT / "web" / "first-visit.html"
 INSTALLER = ROOT / "installer" / "odile_install.py"
+# The five files the installer pins and the page server answers (ODL-505), in
+# the order the tenant route table names them.
+ICON_FILES = (
+    ("favicon.ico", "image/x-icon"),
+    ("icon-32.png", "image/png"),
+    ("icon-192.png", "image/png"),
+    ("icon-512.png", "image/png"),
+    ("apple-touch-icon.png", "image/png"),
+)
+ICON_CACHE = "public, max-age=31536000, immutable"
 
 sys.path.insert(0, str(ROOT / "installer"))
 import first_visit as fv  # noqa: E402
@@ -203,6 +214,12 @@ class FirstVisitHarness:
         if recovery is not None:
             self.recovery.write_text(recovery, encoding="utf-8")
             self.recovery.chmod(0o600)
+        # The icon root the installer writes (ODL-505), seeded from the
+        # committed files so the route serves the bytes the release pins.
+        self.icons = self.root / "usr" / "local" / "lib" / "odile" / "icons"
+        self.icons.mkdir(parents=True)
+        for name, _ctype in ICON_FILES:
+            shutil.copyfile(ROOT / "web" / name, self.icons / name)
         self.reload_log = self.root / "reload.log"
         self.port = free_port()
         command = [
@@ -210,6 +227,7 @@ class FirstVisitHarness:
             "--bind", "127.0.0.1", "--port", str(self.port),
             "--state", str(self.state), "--env-file", str(self.env),
             "--page", str(PAGE), "--recovery-file", str(self.recovery),
+            "--icons", str(self.icons),
         ]
         for store in caddy_stores or []:
             command += ["--caddy-store", str(store)]
@@ -254,6 +272,16 @@ class FirstVisitHarness:
         return self.call("POST", "/first-visit",
                          {"t": self.token, "password": password, "password2": password},
                          headers=headers)
+
+    def fetch(self, method: str, path: str) -> tuple[int, dict, bytes]:
+        """One request whose body is bytes, not text: the icon route (ODL-505)."""
+        connection = http.client.HTTPConnection("127.0.0.1", self.port, timeout=20)
+        try:
+            connection.request(method, path)
+            response = connection.getresponse()
+            return response.status, dict(response.getheaders()), response.read()
+        finally:
+            connection.close()
 
     def download(self, code: str, headers: dict[str, str] | None = None):
         return self.call("GET", "/first-visit/recovery?c=" + code, headers=headers)
@@ -1122,6 +1150,65 @@ class PageTests(unittest.TestCase):
         self.assertIn(".error{margin:8px 0 0;font-size:.94rem;font-style:italic", text)
 
 
+class IconRouteTests(unittest.TestCase):
+    """The tenant's own tab icon (ODL-505): five paths, first-party, immutable."""
+
+    def setUp(self):
+        self.harness = FirstVisitHarness()
+        self.addCleanup(self.harness.close)
+
+    def test_each_path_is_the_committed_file_with_its_type_and_a_year_of_cache(self):
+        for name, ctype in ICON_FILES:
+            with self.subTest(name=name):
+                status, headers, body = self.harness.fetch("GET", "/" + name)
+                self.assertEqual(status, 200)
+                self.assertEqual(headers["Content-Type"], ctype)
+                self.assertEqual(headers["Cache-Control"], ICON_CACHE)
+                self.assertNotIn("Pragma", headers)
+                self.assertEqual(body, (ROOT / "web" / name).read_bytes())
+                self.assertEqual(headers["Content-Length"], str(len(body)))
+
+    def test_head_answers_with_the_headers_and_no_body(self):
+        for name, ctype in ICON_FILES:
+            with self.subTest(name=name):
+                status, headers, body = self.harness.fetch("HEAD", "/" + name)
+                self.assertEqual(status, 200)
+                self.assertEqual(headers["Content-Type"], ctype)
+                self.assertEqual(headers["Cache-Control"], ICON_CACHE)
+                self.assertEqual(headers["Content-Length"],
+                                 str((ROOT / "web" / name).stat().st_size))
+                self.assertEqual(body, b"")
+
+    def test_a_missing_file_is_a_404_and_is_not_cached(self):
+        (self.harness.icons / "icon-192.png").unlink()
+        status, headers, body = self.harness.fetch("GET", "/icon-192.png")
+        self.assertEqual(status, 404)
+        self.assertEqual(headers["Content-Type"], "text/plain; charset=utf-8")
+        self.assertEqual(headers["Cache-Control"], "no-store")
+        self.assertIn(b"not found", body)
+
+    def test_no_path_outside_the_table_reaches_a_file(self):
+        # The request path is a key in the table; nothing is joined, so these
+        # are plain 404s and the icons dir is never walked.
+        for path in ("/ICON-32.PNG", "/icon-32.png/", "/icons/icon-32.png",
+                     "/../favicon.ico", "/icon-32.png%00", "/..%2f..%2fetc%2fpasswd"):
+            with self.subTest(path=path):
+                status, headers, _body = self.harness.fetch("GET", path)
+                self.assertEqual(status, 404)
+                self.assertEqual(headers["Cache-Control"], "no-store")
+
+    def test_the_pages_link_the_five_paths_and_never_a_data_uri(self):
+        for page in (PAGE, ROOT / "web" / "verify.html"):
+            with self.subTest(page=page.name):
+                text = page.read_text(encoding="utf-8")
+                self.assertIn('<link rel="icon" href="/favicon.ico"', text)
+                self.assertIn('href="/icon-32.png"', text)
+                self.assertIn('rel="apple-touch-icon"', text)
+                self.assertIn('href="/apple-touch-icon.png"', text)
+                self.assertNotIn("data:image", text)
+                self.assertIn("Public", text)
+
+
 class RenderTests(unittest.TestCase):
     def test_a_pasted_code_is_escaped_and_never_read_back_as_a_slot(self):
         template = PAGE.read_text(encoding="utf-8")
@@ -1203,13 +1290,21 @@ class InstallerIntegrationTests(unittest.TestCase):
         block = self.installer.CADDY_SITE_TEMPLATE.format(
             begin="odile-odl-test", fqdn="odl-test.odile.fyi", user="odile",
             webapp_port=9120, var=Path("/var/lib/odile"),
-            first_visit_handle=self.installer.CADDY_FIRST_VISIT_HANDLE.format(port=8091))
+            first_visit_handle=(self.installer.CADDY_FIRST_VISIT_HANDLE.format(port=8091)
+                                + self.installer.CADDY_ICON_HANDLE.format(port=8091)))
         self.assertIn("handle /first-visit* {", block)
         self.assertIn("reverse_proxy 127.0.0.1:8091", block)
         self.assertLess(block.index("handle /first-visit*"),
                         block.index("handle {\n\t\treverse_proxy 127.0.0.1:9120"))
         self.assertLess(block.index("handle /attestation"),
                         block.index("handle /first-visit*"))
+        # The five tab-icon paths are the page server's (ODL-505); the Webapp
+        # catch-all never answers them with the vendor's horse.
+        for path in ("/favicon.ico", "/icon-32.png", "/icon-192.png",
+                     "/icon-512.png", "/apple-touch-icon.png"):
+            self.assertIn(f"handle {path} {{", block)
+        self.assertLess(block.index("handle /apple-touch-icon.png"),
+                        block.index("handle {\n\t\treverse_proxy 127.0.0.1:9120"))
         self.assertNotIn("http://", block)
         self.assertNotIn("https://", block)
 
@@ -1220,6 +1315,7 @@ class InstallerIntegrationTests(unittest.TestCase):
             env_file=Path("/home/odile/.hermes/.env"),
             page=Path("/usr/local/lib/odile/first-visit.html"),
             verify_page=Path("/usr/local/lib/odile/verify.html"),
+            icons=Path("/usr/local/lib/odile/icons"),
             report=Path("/var/lib/odile/access-report.txt"),
             attest=Path("/var/lib/odile/attestation.json"),
             recovery=Path("/etc/odile/recovery.txt"),
@@ -1228,6 +1324,7 @@ class InstallerIntegrationTests(unittest.TestCase):
         self.assertIn("User=root", unit)
         self.assertIn("--bind 127.0.0.1", unit)
         self.assertIn("--port 8091", unit)
+        self.assertIn("--icons /usr/local/lib/odile/icons", unit)
         self.assertIn("--recovery-file /etc/odile/recovery.txt", unit)
         self.assertIn("--reload-command 'systemctl restart odile-agent'", unit)
         self.assertIn("NoNewPrivileges=true", unit)

@@ -1,8 +1,8 @@
 {
   "artifacts": {
     "installer": {
-      "sha256": "49f90a3c00015451f9737d7330b6e1a7b1e4f07b48a1a44f79cb0ef6f68e510a",
-      "size": 616403,
+      "sha256": "730278bba13f28b1fe70a16d5f03b65aa7feab6b289597cd64bc63b91b9ed6c5",
+      "size": 1355057,
       "url": "odile_install.py"
     },
     "skills": {
@@ -14,14 +14,14 @@
   "boot": {
     "kernel": "6.12.115+deb13.1-amd64"
   },
-  "generated_at": "2026-11-14T15:12:51Z",
+  "generated_at": "2026-11-14T19:46:44Z",
   "manifest": {
-    "sha256": "f6dea119632629c9e805352d398f4af2d7dd94b9b673d4c9aa74dfed0babb11c",
+    "sha256": "ffe35c32866129ce1849bd009f0e9fce9fd4bba598488b8c86667acbc6d42bd0",
     "signature_url": "manifest.json.sig",
     "url": "manifest.json"
   },
-  "notes": "t_781fc5cb: HQ's /verify demo block stops saying the demo is not a tenant machine. It now quotes the v3.8b deck row verbatim (Odile's tenant machine, one shared workspace, Odile holds this machine's boot key and can log in) and its two back links go to https://demo.odile.fyi/login, which Savio made the judge's entry surface on 2026-11-14; /judge is retired to a 301 by ODL-901. The installer re-embeds web/verify.html, so installer_sha256, the installer size, the manifest hash and this document's hash move; the vendor pin c73dad4d, the skills artifact and the meter-free manifest rows are -4's.",
+  "notes": "ODL-505: the website icon is the tab on the machine's own surfaces, ported onto the one-root tree and cut on its head. The five reviewed icon files (ODL-504 round 3: 8f5f9976, 28bedf61, 623f75f5, 35df8e7b, dd5386a9) travel inside the signed installer as base64, each pinned by sha256, and the installer writes them to /usr/local/lib/odile/icons; the first-visit service answers the five site paths with image/x-icon or image/png and cache-control public, max-age=31536000, immutable, HEAD with no body, a missing file as 404, and a table keyed by the request path so no filename comes from the request. Caddy splices the five exact handles before the Webapp catch-all only on a machine with the page server. The Webapp's tab is Odile's too: the installer copies odile-favicon.ico and odile-apple-touch-icon.png into the built bundle and repoints the shell's three tab links, strip-then-write, so a second run prints same and a rebuilt bundle converges on the next run; the vendor's apple-touch-icon.png is untouched, and the rebuild re-assert carries the name, the ODL-500 chrome and the tab together. Both embedded pages are re-cut on this head: web/verify.html bf4dda17 (t_781fc5cb's demo lede) and web/first-visit.html 4d7c4960. The manifest is a fresh-root build from an install that ran --first-visit: run 1 exit 0 (tenant: provisioned, install.sh c73dad4d matches the pin), run 2 tenant: same with 0 write lines; audit 539e205f, 48 skills, 9 packages. The id is -8: -5 was cut twice (this card on the replaced tree and odl/ODL-521 here), -6 is t_781fc5cb's and already on main, -7 is odl/ODL-521's; the live cut at the cut's own measurement (2026-11-14T19:46Z) was 2026.11.14-4 (6b42f8ef, 616,370 bytes; by 20:05Z it was -6, 49f90a3c), and the next deploy publishes this cut. The vendor pin c73dad4d, the skills artifact and the meter-free rows are unchanged.",
   "product": "odile",
-  "release": "2026.11.14-6",
+  "release": "2026.11.14-8",
   "schema": 1
 }
