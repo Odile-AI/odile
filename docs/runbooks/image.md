@@ -844,7 +844,7 @@ Three writers, in order, and one state key.
 
 ### 13.3 The build: a discarded hash and the marker
 
-The production build, at head `cf05e31f0309b6d118b6618b1ce0dfeafc9a662c`, with the fixture seed the boot will
+The production build, at head `1629b14ed71888bc9c398ac47b341dcba606452d`, with the fixture seed the boot will
 use (`prepare` prints the one-time token once and stores it 0600):
 
 ```sh
@@ -854,8 +854,8 @@ $ ./deploy/image/firstboot-fixture.py prepare --dir "$FX" \
       --instance 45445445-0000-4000-8000-000000000454
 tenant     odl-bench
 instance   45445445-0000-4000-8000-000000000454
-expires    2026-11-15T15:28:20Z
-token      15c13082a9fbb0e7536d4cc183c3af1ab9f068a7d869c7235c582f817cb313f9 (minted)
+expires    2026-11-15T17:47:49Z
+token      f635b2fa63169bbac54cb9e445f347e69d69f5f70d1fece35f5e4bec44b35851 (minted)
 $ ./deploy/image/sealed-initrd.sh --out "$OUT" --force
 $ ODILE_GUEST_NAME=odl-bench \
   ODILE_IP_TOKEN="ip=dhcp bb.ip4=10.0.2.15/24 bb.gw4=10.0.2.2 bb.dns=10.0.2.3" \
@@ -867,16 +867,16 @@ $ ./deploy/image/uki.sh --in "$OUT" --sign --pin "$OUT/tenant-image.pin" --vcpus
 $ ./deploy/image/place-pin.sh --disk "$OUT/odile-tenant-sealed.raw" \
       --pin "$OUT/tenant-image.pin"
 write
-pin raw_image_sha256 -> 05177404cd75 (as built, pin inside)
-release      installer 10a38b68681f…, manifest daa8340f566c…, listener manifest.py, unit odile-manifest.service
+pin raw_image_sha256 -> a17894cf0da9 (as built, pin inside)
+release      installer ae2c839dabe4…, manifest 4caad797a75c…, listener manifest.py, unit odile-manifest.service
 write        /home/tenant/.hermes/.env (mode 0600, tenant; a discarded sign-in, no usable password)
 same         /home/tenant/.hermes/.env (a discarded sign-in, no usable password)
-=== production build rc=0 at 2026-11-14T15:36:46Z
+=== production build rc=0 at 2026-11-14T17:54:47Z
 $ sha256sum "$OUT/odile-tenant-sealed.raw"
-05177404cd7596fd590a54ef605b2a0239d9326f8aa32ba78a1d7bb856e03817  /var/tmp/odile-odl521-prod/odile-tenant-sealed.raw
+a17894cf0da9f083e5375156f48814098512e34cebf492c03677078747c9a278  /var/tmp/odile-odl521-prod/odile-tenant-sealed.raw
 ```
 
-The build ran at `git rev-parse HEAD` = `cf05e31f0309b6d118b6618b1ce0dfeafc9a662c`. The commit that adds
+The build ran at `git rev-parse HEAD` = `1629b14ed71888bc9c398ac47b341dcba606452d`. The commit that adds
 this section changes only `docs/runbooks/image.md`, so the installer, the
 release documents and the image bytes measured below are the ones that head
 built.
@@ -893,9 +893,9 @@ for the unit — and the first boot of the merged image stopped at
 `Failed to update dynamic user credentials: User or group with specified name
 already exists`. Without that line no boot reaches the sign-in evidence below.
 
-The image embeds the release pair this tree cuts: installer `10a38b68681ff62f67c799626f52154a801df53e0a4d54cec8055c8d56f1e6df`
-(617829 bytes), manifest `daa8340f566ca645bf8e2845e6a29ffcee6d5a0c6074592ed71b699dc075978e`, skills
-`09be3cd1bd0556a9a8e9da0adbfd9c50dbf09607418f6a78fc7c97f3a3450722` (release `2026.11.14-5`). A re-cut moves the installer bytes
+The image embeds the release pair this tree cuts: installer `ae2c839dabe457a1ec17674a0f13290ab81c2b99735c2e6f1798193f6e148244`
+(617862 bytes), manifest `4caad797a75c3585fba914f5f115451bbe8257f8370740f972dbac5e025b069b`, skills
+`09be3cd1bd0556a9a8e9da0adbfd9c50dbf09607418f6a78fc7c97f3a3450722` (release `2026.11.14-7`). A re-cut moves the installer bytes
 and the image with them, so every value in this section is measured from the
 build above, not copied from an earlier cut.
 
@@ -904,23 +904,23 @@ the boot partition, `cryptsetup open --readonly`, `mount -o ro,noload`:
 
 ```sh
 $ losetup -fP --show -r "$OUT/odile-tenant-sealed.raw"
-/dev/loop85
-$ mount -o ro,noload /dev/loop85p2 /mnt/odl521boot
+/dev/loop86
+$ mount -o ro,noload /dev/loop86p2 /mnt/odl521boot
 $ install -m600 /mnt/odl521boot/odile/luks-bootstrap.key /tmp/v.key
 $ umount /mnt/odl521boot
-$ cryptsetup open --readonly --key-file /tmp/v.key /dev/loop85p3 odl521
+$ cryptsetup open --readonly --key-file /tmp/v.key /dev/loop86p3 odl521
 $ mount -o ro,noload /dev/mapper/odl521 /mnt/odl521root
 $ grep -n 'odile-signin-placeholder\|^HERMES_DASHBOARD_BASIC_AUTH_' \
       /mnt/odl521root/home/tenant/.hermes/.env
 4:# odile-signin-placeholder: 1
 5:HERMES_DASHBOARD_BASIC_AUTH_USERNAME=tenant
-6:HERMES_DASHBOARD_BASIC_AUTH_PASSWORD_HASH=scrypt$16384$8$1$2hHZ31uuLshJHEFo6z14Zw==$<44 base64 chars, the derived key>
+6:HERMES_DASHBOARD_BASIC_AUTH_PASSWORD_HASH=scrypt$16384$8$1$Uz+SYj0LUVvRQdKc24UlpA==$<44 base64 chars, the derived key>
 7:HERMES_DASHBOARD_BASIC_AUTH_SECRET=<redacted>
 $ sha256sum /mnt/odl521root/home/tenant/.hermes/.env
-1d411e1b3d76d47c297d94d4538e4418a749818bf1f8da0dade365a068bc55b8  /mnt/odl521root/home/tenant/.hermes/.env
+da9af6678a9ad04745540d98f7b39834be822d97de73e87378bfa0a9b5702466  /mnt/odl521root/home/tenant/.hermes/.env
 $ awk -F= '/^HERMES_DASHBOARD_BASIC_AUTH_SECRET=/{print $2}' \
       /mnt/odl521root/home/tenant/.hermes/.env | tr -d '\n' | sha256sum
-6b5b57499b538890057c7ee221272b833e413cde412da6829efe9aafe50ede38  -
+47affc386e765ef8361de64985a215caffbae877042ede1707829a6358f4ce63  -
 $ ls /mnt/odl521root/var/lib/odile-bench/password
 ls: cannot access '/mnt/odl521root/var/lib/odile-bench/password': No such file or directory
 $ ls /mnt/odl521root/etc/odile/production
@@ -948,7 +948,7 @@ print("is scrypt      ", algorithm == "scrypt")
 print("accepts bench  ", accepts("odile-bench-not-a-secret"))
 print("accepts owner  ", accepts("the-owner-password-2026-odl521"))
 PY
-hash prefix     scrypt$16384$8$1$2hHZ31uuLshJHEF…
+hash prefix     scrypt$16384$8$1$Uz+SYj0LUVvRQdK…
 is scrypt       True
 accepts bench   False
 accepts owner   False
@@ -960,7 +960,7 @@ tree's bench stand-in and the boot partition's measured command line:
 
 ```sh
 $ sha256sum /var/tmp/odile-odl521-bench/odile-tenant-sealed.raw
-f68c4d26078a103aa81c19862be7e3c27e7c0b65300f89f3edfd67cb28648d5a  /var/tmp/odile-odl521-bench/odile-tenant-sealed.raw
+dd2e2bf6d7ef3e82b73a67e730fbd2d223d7ee4f6b5ce179e3e5c0f92a5c367a  /var/tmp/odile-odl521-bench/odile-tenant-sealed.raw
 $ losetup -fP --show -r /var/tmp/odile-odl521-bench/odile-tenant-sealed.raw
 /dev/loop85
 $ mount -o ro,noload /dev/loop85p2 /mnt/odl521boot
@@ -974,7 +974,7 @@ $ grep -n 'bench-password-sha256\|^HERMES_DASHBOARD_BASIC_AUTH_' \
       /mnt/odl521root/home/tenant/.hermes/.env
 4:# bench-password-sha256: 47f758a4ad12daa47780a9d887c02a7a415324d58220856c85fa8d393e4ddaed
 5:HERMES_DASHBOARD_BASIC_AUTH_USERNAME=tenant
-6:HERMES_DASHBOARD_BASIC_AUTH_PASSWORD_HASH=scrypt$16384$8$1$ZS64PWRHOSoXmyR8DhPNTQ==$<44 base64 chars, the derived key>
+6:HERMES_DASHBOARD_BASIC_AUTH_PASSWORD_HASH=scrypt$16384$8$1$mDjFllG9gYppA08l3B0f9Q==$<44 base64 chars, the derived key>
 7:HERMES_DASHBOARD_BASIC_AUTH_SECRET=<redacted>
 $ ls /mnt/odl521root/var/lib/odile-bench/password
 /mnt/odl521root/var/lib/odile-bench/password
@@ -1002,11 +1002,11 @@ $ /usr/bin/python3 /var/tmp/odile-odl521-build/boot-probe.py --phase pre \
       --disk "$FINAL/A/odile-tenant-sealed.raw" \
       --uki "$OUT/odile-tenant.efi" --token "$(cat "$FX/token")" --out "$FINAL/bootA"
 phase        pre
-disk         /var/tmp/odile-odl521-final/A/odile-tenant-sealed.raw sha256 05177404cd7596fd590a54ef605b2a0239d9326f8aa32ba78a1d7bb856e03817
-uki          /var/tmp/odile-odl521-prod/odile-tenant.efi sha256 6a586575d5d2b2dd0f353dbac1ee6b902ad9d72ab179d9fe830903c8d6b3f18a
+disk         /var/tmp/odile-odl521-final/A/odile-tenant-sealed.raw sha256 a17894cf0da9f083e5375156f48814098512e34cebf492c03677078747c9a278
+uki          /var/tmp/odile-odl521-prod/odile-tenant.efi sha256 4f41c3145637fa7a2fc1e78653dd02c18cdf24d6d80407fbf2f996a932efa551
 sealed       PASS bb-sealed-unlock opened root_crypt before cryptroot ran
-firstboot    PASS installed odl-bench (instance 45445445-0000-4000-8000-000000000454) · first-visit 200 · record 2026.11.1 pending key SHA256:/JPc7HpmYB6NS3NA6sZW9m4k936IrH+k8aJwDrWErNI (hq first_visit, first_boot -> first_visit) �� 401s
-boot         513s wall
+firstboot    PASS installed odl-bench (instance 45445445-0000-4000-8000-000000000454) �� first-visit 200 · record 2026.11.1 pending key SHA256:AGm5bfXbyCyXoUlAh59QTE13HHqcl0PYSfIlcgE4sV0 (hq first_visit, first_boot -> first_visit) · 239s
+boot         339s wall
 probes       in the guest's own loopback:
   gate up -> 302
   GET / -> 302 /login?next=%2F
@@ -1036,15 +1036,15 @@ prints the values below with `check-disk.py --disk "$FINAL/A/…"`, which runs
 exactly that mount and the hash test above):
 
 ```sh
-disk            after the first boot /var/tmp/odile-odl521-final/A/odile-tenant-sealed.raw sha256 7d3789d93ac75fb7e5fd0d0f6f81b04f28e3984676afb4d9f900c14b289cfdb2
+disk            after the first boot /var/tmp/odile-odl521-final/A/odile-tenant-sealed.raw sha256 d717f76d89e83679668e794ee0d305a6d7ecd02404f7b4cdae72993959fb0ae5
 key             bootstrap key
-.env            home/tenant/.hermes/.env 537 bytes sha256 1d411e1b3d76d47c297d94d4538e4418a749818bf1f8da0dade365a068bc55b8
+.env            home/tenant/.hermes/.env 537 bytes sha256 da9af6678a9ad04745540d98f7b39834be822d97de73e87378bfa0a9b5702466
 marker          ['# odile-signin-placeholder: 1']
-hash prefix     scrypt$16384$8$1$2hHZ31uuLshJHEF…
+hash prefix     scrypt$16384$8$1$Uz+SYj0LUVvRQdK…
 hash is scrypt  True
 accepts bench   False
 accepts owner   False
-secret sha256   6b5b57499b538890057c7ee221272b833e413cde412da6829efe9aafe50ede38
+secret sha256   47affc386e765ef8361de64985a215caffbae877042ede1707829a6358f4ce63
 state           "signin_set_at": null,
 state           "used_at": null,
 plaintext file  absent
@@ -1064,11 +1064,11 @@ $ /usr/bin/python3 /var/tmp/odile-odl521-build/boot-probe.py --phase pre2 \
       --disk "$FINAL/A/odile-tenant-sealed.raw" \
       --uki "$OUT/odile-tenant.efi" --token "$(cat "$FX/token")" --out "$FINAL/bootA2"
 phase        pre2
-disk         /var/tmp/odile-odl521-final/A/odile-tenant-sealed.raw sha256 7d3789d93ac75fb7e5fd0d0f6f81b04f28e3984676afb4d9f900c14b289cfdb2
-uki          /var/tmp/odile-odl521-prod/odile-tenant.efi sha256 6a586575d5d2b2dd0f353dbac1ee6b902ad9d72ab179d9fe830903c8d6b3f18a
+disk         /var/tmp/odile-odl521-final/A/odile-tenant-sealed.raw sha256 d717f76d89e83679668e794ee0d305a6d7ecd02404f7b4cdae72993959fb0ae5
+uki          /var/tmp/odile-odl521-prod/odile-tenant.efi sha256 4f41c3145637fa7a2fc1e78653dd02c18cdf24d6d80407fbf2f996a932efa551
 sealed       PASS bb-sealed-unlock opened root_crypt before cryptroot ran
 firstboot    PASS same
-boot         116s wall
+boot         113s wall
 probes       in the guest's own loopback:
   gate up -> 302
   GET / -> 302 /login?next=%2F
@@ -1086,15 +1086,15 @@ installer's own log on the disk records the same line for the `.env` (the
 same `.env` sha256 as §13.4:
 
 ```sh
-disk            after the second boot /var/tmp/odile-odl521-final/A/odile-tenant-sealed.raw sha256 fcff92151279a58426d97cfa4d571abeca09931fbe4fa0de12908cb882148a52
+disk            after the second boot /var/tmp/odile-odl521-final/A/odile-tenant-sealed.raw sha256 0e718cedfa5e604f9dd4fb21cd5bb2efb3d9e3a4b67c47e76e6451a7c680e431
 key             bootstrap key
-.env            home/tenant/.hermes/.env 537 bytes sha256 1d411e1b3d76d47c297d94d4538e4418a749818bf1f8da0dade365a068bc55b8
+.env            home/tenant/.hermes/.env 537 bytes sha256 da9af6678a9ad04745540d98f7b39834be822d97de73e87378bfa0a9b5702466
 marker          ['# odile-signin-placeholder: 1']
-hash prefix     scrypt$16384$8$1$2hHZ31uuLshJHEF…
+hash prefix     scrypt$16384$8$1$Uz+SYj0LUVvRQdK…
 hash is scrypt  True
 accepts bench   False
 accepts owner   False
-secret sha256   6b5b57499b538890057c7ee221272b833e413cde412da6829efe9aafe50ede38
+secret sha256   47affc386e765ef8361de64985a215caffbae877042ede1707829a6358f4ce63
 state           "signin_set_at": null,
 state           "used_at": null,
 plaintext file  absent
@@ -1114,19 +1114,19 @@ $ ./installer/odile_install.py --root /mnt/odl521root --user tenant --first-visi
       --signature ./installer/odile_install.py.sig \
       --pubkey ./installer/odile-signing-key.pub \
       --slug odl-bench --port 9130 --public-url https://odl-bench.odile.fyi --json
-env before       1d411e1b3d76d47c297d94d4538e4418a749818bf1f8da0dade365a068bc55b8
+env before       da9af6678a9ad04745540d98f7b39834be822d97de73e87378bfa0a9b5702466
 state            "signin_set_at": null
 fixture          /mnt/odl521root/etc/odile/smoke.ok (a recorded smoke; the paid smoke is skipped)
 === shipped installer --first-visit: run 1 (before the visit)
 write        /mnt/odl521root/etc/odile/key.env (the only inference credential; root-only)
 rewrite      /mnt/odl521root/home/tenant/.hermes/.env (the sign-in hash is a placeholder until first visit)
 write        the sign-in hash is a placeholder until first visit
-env after run 1  c557b8e2aaca9ee01fe674a1eb7978fad3f8e0cd2117cc88c86a70e7a3a35b2b
+env after run 1  26080b0dc62d3f554343e4047b4716e67bab5f5cf494c8e22774c78198907dc9
 === shipped installer --first-visit: run 2 (before the visit)
 same         /mnt/odl521root/etc/odile/key.env
 rewrite      /mnt/odl521root/home/tenant/.hermes/.env (the sign-in hash is a placeholder until first visit)
 write        the sign-in hash is a placeholder until first visit
-env after run 2  cfa4e82079e8e397da153e5d1063ad48c86f1449ebe81b27735579185e3501eb
+env after run 2  0f04dd3326d5cb9f813edd93883f05250bafff745cc00edfbf92b280e8cc684b
 ```
 
 Two different hashes, both of a password nobody knows: the allowlist was
@@ -1144,15 +1144,15 @@ smoke is one the machine already recorded, not one this run repeats. The `.env`
 path under test runs before both, and the two run hashes below are its output.
 
 ```sh
-disk            after the installer runs /var/tmp/odile-odl521-final/A/odile-tenant-sealed.raw sha256 f6208a7cb132e0814be9ac64608a4d60ff15b3e0e2cf85984409e4b43d4d8bed
+disk            after the installer runs /var/tmp/odile-odl521-final/A/odile-tenant-sealed.raw sha256 5057b4fd6589b88f86bad4d6483037554921c9aa304fdffcd3e5b1667087c39e
 key             bootstrap key
-.env            home/tenant/.hermes/.env 858 bytes sha256 cfa4e82079e8e397da153e5d1063ad48c86f1449ebe81b27735579185e3501eb
+.env            home/tenant/.hermes/.env 858 bytes sha256 0f04dd3326d5cb9f813edd93883f05250bafff745cc00edfbf92b280e8cc684b
 marker          (none)
-hash prefix     scrypt$16384$8$1$2d6Q+rQKCWmOVGN…
+hash prefix     scrypt$16384$8$1$CB5OWGFX3oEwRlL…
 hash is scrypt  True
 accepts bench   False
 accepts owner   False
-secret sha256   6b5b57499b538890057c7ee221272b833e413cde412da6829efe9aafe50ede38
+secret sha256   47affc386e765ef8361de64985a215caffbae877042ede1707829a6358f4ce63
 state           "signin_set_at": null,
 state           "used_at": null,
 plaintext file  absent
@@ -1180,16 +1180,16 @@ $ /usr/bin/python3 /var/tmp/odile-odl521-build/boot-probe.py --phase visit \
       --disk "$FINAL/B/odile-tenant-sealed.raw" \
       --uki "$OUT/odile-tenant.efi" --token "$(cat "$FX/token")" --out "$FINAL/bootB"
 phase        visit
-disk         /var/tmp/odile-odl521-final/B/odile-tenant-sealed.raw sha256 05177404cd7596fd590a54ef605b2a0239d9326f8aa32ba78a1d7bb856e03817
-uki          /var/tmp/odile-odl521-prod/odile-tenant.efi sha256 6a586575d5d2b2dd0f353dbac1ee6b902ad9d72ab179d9fe830903c8d6b3f18a
+disk         /var/tmp/odile-odl521-final/B/odile-tenant-sealed.raw sha256 a17894cf0da9f083e5375156f48814098512e34cebf492c03677078747c9a278
+uki          /var/tmp/odile-odl521-prod/odile-tenant.efi sha256 4f41c3145637fa7a2fc1e78653dd02c18cdf24d6d80407fbf2f996a932efa551
 sealed       PASS bb-sealed-unlock opened root_crypt before cryptroot ran
-firstboot    PASS installed odl-bench (instance 45445445-0000-4000-8000-000000000454) �� first-visit 200 · record 2026.11.1 pending key SHA256:/JPc7HpmYB6NS3NA6sZW9m4k936IrH+k8aJwDrWErNI (hq first_visit) · 470s
-boot         593s wall
+firstboot    PASS installed odl-bench (instance 45445445-0000-4000-8000-000000000454) · first-visit 200 �� record 2026.11.1 pending key SHA256:AGm5bfXbyCyXoUlAh59QTE13HHqcl0PYSfIlcgE4sV0 (hq first_visit) · 252s
+boot         356s wall
 probes       in the guest's own loopback:
   gate up -> 302
   POST first-visit -> 200 bytes 37893 done yes
   POST auth owner -> 200 cookie yes
-  GET / with cookie -> 302 bytes 0
+  GET / with cookie -> 200 bytes 3317 -
   GET /verify -> 200
   verify row: sign-in hash   PASS  scrypt hash present in /home/tenant/.hermes/.env; no plaintext password
 shutdown     guest sync, then SIGTERM (clean)
@@ -1203,17 +1203,17 @@ The `# odile-signin-placeholder: 1` line is a comment the page leaves in
 place; the hash beside it is the owner's, which is what the check proves:
 
 ```sh
-disk            after the visit /var/tmp/odile-odl521-final/B/odile-tenant-sealed.raw sha256 a9f61e776e5153302b77c04a32b0dbfdbc68142f57ae7459bc0b2364284f086a
+disk            after the visit /var/tmp/odile-odl521-final/B/odile-tenant-sealed.raw sha256 46a5ec2979852a3b4f12f739726f41d68ca67a3ce9dc9132d2e22a46075591c1
 key             bootstrap key
-.env            home/tenant/.hermes/.env 537 bytes sha256 0f10559448e673c435657173e0edaca094df2af4fdd48fff0cdc4f18b3bed434
+.env            home/tenant/.hermes/.env 537 bytes sha256 873f43ab0ff31db63641e5ed3e36663b42f10354139c9df19a259db96ef8b617
 marker          ['# odile-signin-placeholder: 1']
-hash prefix     scrypt$16384$8$1$kkmI96h3Ugl8uAE…
+hash prefix     scrypt$16384$8$1$2m+EqB1rnfAgnED…
 hash is scrypt  True
 accepts bench   False
 accepts owner   True
-secret sha256   6b5b57499b538890057c7ee221272b833e413cde412da6829efe9aafe50ede38
-state           "signin_set_at": "2026-11-14T16:28:41Z",
-state           "used_at": "2026-11-14T16:28:41Z",
+secret sha256   47affc386e765ef8361de64985a215caffbae877042ede1707829a6358f4ce63
+state           "signin_set_at": "2026-11-14T18:35:07Z",
+state           "used_at": "2026-11-14T18:35:07Z",
 plaintext file  absent
 boot marker     present
 firstboot log   same         /home/tenant/.hermes/.env (a discarded sign-in, no usable password)
@@ -1226,15 +1226,15 @@ $ /usr/bin/python3 /var/tmp/odile-odl521-build/boot-probe.py --phase reboot \
       --disk "$FINAL/B/odile-tenant-sealed.raw" \
       --uki "$OUT/odile-tenant.efi" --token "$(cat "$FX/token")" --out "$FINAL/bootC"
 phase        reboot
-disk         /var/tmp/odile-odl521-final/B/odile-tenant-sealed.raw sha256 a9f61e776e5153302b77c04a32b0dbfdbc68142f57ae7459bc0b2364284f086a
-uki          /var/tmp/odile-odl521-prod/odile-tenant.efi sha256 6a586575d5d2b2dd0f353dbac1ee6b902ad9d72ab179d9fe830903c8d6b3f18a
+disk         /var/tmp/odile-odl521-final/B/odile-tenant-sealed.raw sha256 46a5ec2979852a3b4f12f739726f41d68ca67a3ce9dc9132d2e22a46075591c1
+uki          /var/tmp/odile-odl521-prod/odile-tenant.efi sha256 4f41c3145637fa7a2fc1e78653dd02c18cdf24d6d80407fbf2f996a932efa551
 sealed       PASS bb-sealed-unlock opened root_crypt before cryptroot ran
 firstboot    PASS same
-boot         102s wall
+boot         96s wall
 probes       in the guest's own loopback:
   gate up -> 302
   POST auth owner -> 200 cookie yes
-  GET / with cookie -> 302 bytes 0
+  GET / with cookie -> 200 bytes 3317 -
   GET /verify -> 200
   verify row: sign-in hash   PASS  scrypt hash present in /home/tenant/.hermes/.env; no plaintext password
 shutdown     guest sync, then SIGTERM (clean)
@@ -1247,34 +1247,34 @@ byte. The post-visit installer runs last, after the reboot, because in
 reboot is taken on the clean units the first boot installed.
 
 ```sh
-env before       0f10559448e673c435657173e0edaca094df2af4fdd48fff0cdc4f18b3bed434
-state            "signin_set_at": "2026-11-14T16:28:41Z"
+env before       873f43ab0ff31db63641e5ed3e36663b42f10354139c9df19a259db96ef8b617
+state            "signin_set_at": "2026-11-14T18:35:07Z"
 fixture          /mnt/odl521root/etc/odile/smoke.ok (a recorded smoke; the paid smoke is skipped)
 === shipped installer --first-visit: run 1 (after the visit)
 write        /mnt/odl521root/etc/odile/key.env (the only inference credential; root-only)
 same         /mnt/odl521root/home/tenant/.hermes/.env (mode 0600, 3 allowlisted keys, allowlist ok)
-env after run 1  0f10559448e673c435657173e0edaca094df2af4fdd48fff0cdc4f18b3bed434
+env after run 1  873f43ab0ff31db63641e5ed3e36663b42f10354139c9df19a259db96ef8b617
 === shipped installer --first-visit: run 2 (after the visit)
 same         /mnt/odl521root/etc/odile/key.env
 same         /mnt/odl521root/home/tenant/.hermes/.env (mode 0600, 3 allowlisted keys, allowlist ok)
-env after run 2  0f10559448e673c435657173e0edaca094df2af4fdd48fff0cdc4f18b3bed434
+env after run 2  873f43ab0ff31db63641e5ed3e36663b42f10354139c9df19a259db96ef8b617
 ```
 
 The read-only check after the reboot shows the same `.env` sha256 as after the
 visit, and `signin_set_at` still names the visit:
 
 ```sh
-disk            after the reboot /var/tmp/odile-odl521-final/B/odile-tenant-sealed.raw sha256 50a503b8403f3ef5f2a04a37375a64b9d9d856270492d81da42c0d903f0e0729
+disk            after the reboot /var/tmp/odile-odl521-final/B/odile-tenant-sealed.raw sha256 167e02f7436677c8cd5b5395d59dd9abc15bb3a8c8d5d1ec09f381edba2e857e
 key             bootstrap key
-.env            home/tenant/.hermes/.env 537 bytes sha256 0f10559448e673c435657173e0edaca094df2af4fdd48fff0cdc4f18b3bed434
+.env            home/tenant/.hermes/.env 537 bytes sha256 873f43ab0ff31db63641e5ed3e36663b42f10354139c9df19a259db96ef8b617
 marker          ['# odile-signin-placeholder: 1']
-hash prefix     scrypt$16384$8$1$kkmI96h3Ugl8uAE…
+hash prefix     scrypt$16384$8$1$2m+EqB1rnfAgnED…
 hash is scrypt  True
 accepts bench   False
 accepts owner   True
-secret sha256   6b5b57499b538890057c7ee221272b833e413cde412da6829efe9aafe50ede38
-state           "signin_set_at": "2026-11-14T16:28:41Z",
-state           "used_at": "2026-11-14T16:28:41Z",
+secret sha256   47affc386e765ef8361de64985a215caffbae877042ede1707829a6358f4ce63
+state           "signin_set_at": "2026-11-14T18:35:07Z",
+state           "used_at": "2026-11-14T18:35:07Z",
 plaintext file  absent
 boot marker     present
 firstboot log   same         /home/tenant/.hermes/.env (a discarded sign-in, no usable password)
@@ -1283,13 +1283,13 @@ firstboot log   same         /home/tenant/.hermes/.env (a discarded sign-in, no 
 ### 13.9 The session secret is ODL-522's
 
 `HERMES_DASHBOARD_BASIC_AUTH_SECRET` is byte-identical in the built image
-(`6b5b57499b538890057c7ee221272b833e413cde412da6829efe9aafe50ede38`), after the first boot (`6b5b57499b538890057c7ee221272b833e413cde412da6829efe9aafe50ede38`) and after the
-visit (`6b5b57499b538890057c7ee221272b833e413cde412da6829efe9aafe50ede38`); the sha256 is of the value, not of the line:
+(`47affc386e765ef8361de64985a215caffbae877042ede1707829a6358f4ce63`), after the first boot (`47affc386e765ef8361de64985a215caffbae877042ede1707829a6358f4ce63`) and after the
+visit (`47affc386e765ef8361de64985a215caffbae877042ede1707829a6358f4ce63`); the sha256 is of the value, not of the line:
 
 ```sh
 $ awk -F= '/^HERMES_DASHBOARD_BASIC_AUTH_SECRET=/{print $2}' <each .env> \
       | tr -d '\n' | sha256sum
-6b5b57499b538890057c7ee221272b833e413cde412da6829efe9aafe50ede38  -
+47affc386e765ef8361de64985a215caffbae877042ede1707829a6358f4ce63  -
 ```
 
 Every image built from this tree therefore shares one session secret, which is
