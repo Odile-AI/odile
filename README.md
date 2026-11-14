@@ -1,32 +1,14 @@
 # Odile
 
-Odile gives you a personal Linux computer with an AI agent living inside it, reachable from any browser. Each machine runs on an AMD SEV-SNP confidential VM whose boot is measured, so a stranger can check what is running without trusting us. One agent per subscriber, provisioned from a signed image, updated in place, and still working when the tab is closed.
+A full agent, privately.
+
+Odile is an AI agent that gets things done with privacy. Every Odile agent runs on its own AMD SEV-SNP confidential virtual machine and uses confidential inference, protecting your agent from outsider access at the hardware level.
 
 ## Demo
 
-A live demo workspace runs at <https://demo.odile.fyi/login> — sign in with the public demo password, ask the agent to write a file, close the tab, and the file is still there.
+Live demo: https://demo.odile.fyi/login
 
-## Demo account
-
-| Field | Value |
-|---|---|
-| Username | `judge` |
-| Password | `odile-demo-kestrel-2026` |
-
-The password is public by design: one shared workspace on Odile's own tenant machine.
-
-1. Open the demo and sign in. The Start here session is already open.
-2. Ask: `Write a note in notes/ called hello.md and show me the file`, then open
-   Artifacts → Files. Close the tab and come back: it is still there.
-3. Check the machine at <https://demo.odile.fyi/verify>. The page prints the
-   command for this machine with the measurement it serves; fetch the verifier,
-   then run that line (a tenant run needs `--expect`):
-
-```sh
-curl -sSLO https://odile.fyi/odile-verify.tar.gz
-tar xzf odile-verify.tar.gz
-cd odile-verify && ./odile-verify https://demo.odile.fyi --expect <the measurement on the page>
-```
+The machine's own report is at <https://demo.odile.fyi/verify>. It prints the one-line verifier command with the measurement it serves; a tenant run needs `--expect`.
 
 ## How NEAR fits in
 
