@@ -914,7 +914,7 @@ $ grep -n 'odile-signin-placeholder\|^HERMES_DASHBOARD_BASIC_AUTH_' \
       /mnt/odl521root/home/tenant/.hermes/.env
 4:# odile-signin-placeholder: 1
 5:HERMES_DASHBOARD_BASIC_AUTH_USERNAME=tenant
-6:HERMES_DASHBOARD_BASIC_AUTH_PASSWORD_HASH=scrypt$16384$8$1$2hHZ31uuLshJHEFo6z14Zw==$QtCbhsRcenhUwYaGKYMWx4HZHFbJ2dhJkBRX0r4+a6M=
+6:HERMES_DASHBOARD_BASIC_AUTH_PASSWORD_HASH=scrypt$16384$8$1$2hHZ31uuLshJHEFo6z14Zw==$<44 base64 chars, the derived key>
 7:HERMES_DASHBOARD_BASIC_AUTH_SECRET=<redacted>
 $ sha256sum /mnt/odl521root/home/tenant/.hermes/.env
 1d411e1b3d76d47c297d94d4538e4418a749818bf1f8da0dade365a068bc55b8  /mnt/odl521root/home/tenant/.hermes/.env
@@ -974,7 +974,7 @@ $ grep -n 'bench-password-sha256\|^HERMES_DASHBOARD_BASIC_AUTH_' \
       /mnt/odl521root/home/tenant/.hermes/.env
 4:# bench-password-sha256: 47f758a4ad12daa47780a9d887c02a7a415324d58220856c85fa8d393e4ddaed
 5:HERMES_DASHBOARD_BASIC_AUTH_USERNAME=tenant
-6:HERMES_DASHBOARD_BASIC_AUTH_PASSWORD_HASH=scrypt$16384$8$1$ZS64PWRHOSoXmyR8DhPNTQ==$/OTtydst/6WmuGZPr8zRxiThttbb+Im1X2QJdTP8NvY=
+6:HERMES_DASHBOARD_BASIC_AUTH_PASSWORD_HASH=scrypt$16384$8$1$ZS64PWRHOSoXmyR8DhPNTQ==$<44 base64 chars, the derived key>
 7:HERMES_DASHBOARD_BASIC_AUTH_SECRET=<redacted>
 $ ls /mnt/odl521root/var/lib/odile-bench/password
 /mnt/odl521root/var/lib/odile-bench/password
