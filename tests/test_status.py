@@ -369,8 +369,7 @@ class StatusTestCase(unittest.TestCase):
         # Six past incidents plus the fresh one: only five rows make the page.
         self.assertEqual(body.count('<td class="when">'), 5)
         self.assertIn("50 min", body)
-        self.assertIn("99.0% uptime", body)
-        self.assertIn("99.5%", body)
+        self.assertIn("Uptime is published on the status page.", body)
 
     def test_the_page_and_its_meta_copy_carry_the_two_deck_rows_verbatim(self) -> None:
         """The two rows that used to say 'waiting for owner' are now the deck's.
@@ -381,8 +380,7 @@ class StatusTestCase(unittest.TestCase):
         """
         deck = (ROOT / "docs" / "CLAIMS.md").read_text(encoding="utf-8")
         rows = (
-            "Runs around the clock. V0.1 target: 99.0% uptime; V0.1.1 target: 99.5%. "
-            "Both published on the status page.",
+            "Runs around the clock. Uptime is published on the status page.",
             "The status page counts uptime and names no tenant.",
         )
         for row in rows:

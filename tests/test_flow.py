@@ -1382,8 +1382,7 @@ class StatusPage(unittest.TestCase):
         self.assertEqual(res.status, 200)
         self.assertTrue((res.getheader("Content-Type") or "").startswith("text/html"))
         for row in (
-            "Runs around the clock. V0.1 target: 99.0% uptime; V0.1.1 target: 99.5%. "
-            "Both published on the status page.",
+            "Runs around the clock. Uptime is published on the status page.",
             "The status page counts uptime and names no tenant.",
         ):
             self.assertIn(row, body)
@@ -1431,8 +1430,7 @@ class StatusPage(unittest.TestCase):
                       "the terms page names a status page it does not link")
         text = body.decode("utf-8") if isinstance(body, bytes) else body
         self.assertIn(
-            "Runs around the clock. V0.1 target: 99.0% uptime; V0.1.1 target: 99.5%. "
-            "Both published on the status page.",
+            "Runs around the clock. Uptime is published on the status page.",
             re.sub(r"<[^>]+>", "", text),
         )
 

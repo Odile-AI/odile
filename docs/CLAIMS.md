@@ -20,7 +20,7 @@ Use these verbatim, or a subset that does not change the meaning. Anything stron
 - "One machine per person. Nothing is shared."
 - "It keeps working when you close the tab."
 - "Full agent with full privacy. Always-on agents running on confidential computers and powered by confidential models."
-- "V0.1 is ten people, each with a machine built by hand. The waitlist hears first."
+- "The waitlist hears first."
 
 ### Access — the core claim
 
@@ -142,7 +142,7 @@ column in any store is missing from `web/privacy.html`.
 
 ### Reliability
 
-- "Runs around the clock. V0.1 target: 99.0% uptime; V0.1.1 target: 99.5%. Both published on the status page."
+- "Runs around the clock. Uptime is published on the status page."
 - "Backed up nightly. Rebuildable in under an hour — without a key."
 
 ## 1a. Held from the public pages — the row is approved, its proof or its landing has not run
@@ -435,8 +435,6 @@ the machine.
 **"Do you track me?"** No cookies, no trackers, no third-party requests.
 
 **"Do you train on my data?"** No — per our inference provider's terms. (Do not publish until the written confirmation is on file.)
-
-**"Why only ten people?"** Because each one is a machine we provision by hand, and we want ten people who will tell us the truth.
 
 ---
 
