@@ -475,6 +475,7 @@ for f in config.yaml tenant.service odile-bench-smoke.service \
          odile-firstboot.service odile-first-visit.service \
          odile-webapp-brand.service odile-webapp-brand.path \
          odile-webapp-brand.conf webapp-brand.js \
+         webapp-chrome.css webapp-chrome.js \
          odile-access-report-user.conf; do
     install -m 0644 "$HERE/$f" "$MNT/usr/local/lib/odile-image/$f"
 done
