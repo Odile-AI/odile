@@ -16,11 +16,14 @@ tested here and by the brand lint.
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import http.client
 import importlib.util
+import io
 import json
 import os
+import pwd
 import re
 import secrets
 import socket
@@ -324,6 +327,116 @@ class HashFormatTests(unittest.TestCase):
         state = fv.validate_state(json.loads(body))
         self.assertEqual(state["token_sha256"], hashlib.sha256(token.encode()).hexdigest())
         self.assertIsNone(state["used_at"])
+
+
+class FirstVisitEnvTests(unittest.TestCase):
+    """ODL-521: the boot's hash is a placeholder until the visit.
+
+    The published image ships no usable sign-in, and the release installer runs
+    with ``--first-visit`` on every boot. Before the page has set the owner's
+    sign-in (``signin_set_at`` in the state) the hash is replaced by one nobody
+    knows; after it, the owner's hash is kept byte for byte. The session secret
+    is not this card's: it must be identical before and after every run.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        spec = importlib.util.spec_from_file_location("odile_install_521", INSTALLER)
+        assert spec is not None and spec.loader is not None
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[spec.name] = module
+        spec.loader.exec_module(module)
+        cls.installer = module
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory(prefix="odl521-")
+        self.addCleanup(self.tmp.cleanup)
+        self.user = pwd.getpwuid(os.getuid()).pw_name
+        self.layout = self.installer.Layout.scratch(
+            root=Path(self.tmp.name), user=self.user, webapp_port=9130,
+            public_url="https://odl-test.odile.fyi")
+        self.layout.hermes_home.mkdir(parents=True)
+        self.env = self.layout.hermes_home / ".env"
+        self.secret = "bm90LXRoZS1pbWFnZS1zZWNyZXQ="
+
+    def write_env(self, password_hash: str) -> None:
+        self.env.write_text(
+            "# Odile tenant .env — the bench image's bytes\n"
+            "# odile-signin-placeholder: 1\n"
+            "HERMES_DASHBOARD_BASIC_AUTH_USERNAME=%s\n"
+            "HERMES_DASHBOARD_BASIC_AUTH_PASSWORD_HASH=%s\n"
+            "HERMES_DASHBOARD_BASIC_AUTH_SECRET=%s\n"
+            % (self.user, password_hash, self.secret), encoding="utf-8")
+        self.env.chmod(0o600)
+
+    def write_state(self, signin_set_at: str | None) -> None:
+        self.layout.first_visit_state.parent.mkdir(parents=True, exist_ok=True)
+        self.layout.first_visit_state.write_text(json.dumps({
+            "version": 1, "token_sha256": "0" * 64,
+            "created_at": "2026-11-13T00:00:00Z", "used_at": signin_set_at,
+            "signin_set_at": signin_set_at, "recovery_hash": None,
+            "recovery_issued_at": None, "recovery_used_at": None,
+        }), encoding="utf-8")
+
+    def stored(self) -> dict[str, str]:
+        return self.installer.env_values(self.env.read_text(encoding="utf-8"))
+
+    def ensure(self, dry: bool = False):
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            result = self.installer.ensure_env(
+                self.layout, None, self.user, dry, first_visit=True)
+        self.output = output.getvalue()
+        return result
+
+    def test_the_images_bench_hash_is_replaced_before_the_visit(self):
+        self.write_env(self.installer.hash_password("odile-bench-not-a-secret"))
+        self.write_state(None)
+        changed, password = self.ensure()
+        self.assertTrue(changed)
+        self.assertIsNone(password)
+        stored = self.stored()
+        self.assertFalse(self.installer.verify_password(
+            "odile-bench-not-a-secret",
+            stored["HERMES_DASHBOARD_BASIC_AUTH_PASSWORD_HASH"]))
+        self.assertIn("placeholder until first visit", self.output)
+        self.assertEqual(self.env.stat().st_mode & 0o777, 0o600)
+
+    def test_every_boot_before_the_visit_rewrites_the_placeholder(self):
+        self.write_env(self.installer.hash_password("odile-bench-not-a-secret"))
+        self.write_state(None)
+        self.ensure()
+        first = self.stored()["HERMES_DASHBOARD_BASIC_AUTH_PASSWORD_HASH"]
+        self.ensure()
+        second = self.stored()["HERMES_DASHBOARD_BASIC_AUTH_PASSWORD_HASH"]
+        self.assertNotEqual(first, second,
+                            "a boot before the visit must not keep an earlier placeholder")
+        self.assertFalse(self.installer.verify_password("odile-bench-not-a-secret", second))
+
+    def test_the_session_secret_is_kept(self):
+        """ODL-521's boundary: the session secret is ODL-522's, not this card's."""
+        self.write_env(self.installer.hash_password("odile-bench-not-a-secret"))
+        self.write_state(None)
+        self.ensure()
+        self.assertEqual(self.stored()["HERMES_DASHBOARD_BASIC_AUTH_SECRET"], self.secret)
+
+    def test_the_owners_hash_survives_the_next_boot(self):
+        owner = self.installer.hash_password("the-owner-password-0001")
+        self.write_env(owner)
+        self.write_state("2026-11-13T00:10:00Z")
+        changed, password = self.ensure()
+        self.assertFalse(changed)
+        self.assertIsNone(password)
+        self.assertEqual(self.stored()["HERMES_DASHBOARD_BASIC_AUTH_PASSWORD_HASH"], owner)
+
+    def test_a_dry_run_says_it_would_rewrite_and_changes_nothing(self):
+        self.write_env(self.installer.hash_password("odile-bench-not-a-secret"))
+        self.write_state(None)
+        before = self.env.read_text(encoding="utf-8")
+        changed, _ = self.ensure(dry=True)
+        self.assertTrue(changed)
+        self.assertIn("would rewrite", self.output)
+        self.assertEqual(self.env.read_text(encoding="utf-8"), before)
 
 
 class LeafDerTests(unittest.TestCase):

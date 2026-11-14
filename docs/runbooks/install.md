@@ -493,10 +493,11 @@ t_9c2d31f1 then dropped the retired demo-reset note from `web/verify.html`
 is no nightly reset), re-embedded the page on that merged installer and cut
 `2026.11.14-4` (installer `fc723909…`, 616,368 bytes; §12.6). t_781fc5cb's
 v3.9f demo-lede re-embed then cut `2026.11.14-6` (installer `49f90a3c…`,
-616,403 bytes; §12.6), which `./deploy.sh` published; `-7` is carried by the
-open `odl/ODL-521` branch and `-8` by `port/odl-505`. ODL-474's v3.10 landing,
-ported onto the one-root tree, re-embeds every surface on the merged head and
-cuts `2026.11.14-9` (installer `9aded116…`, 672,942 bytes; §12.6).
+616,403 bytes; §12.6), which `./deploy.sh` published. ODL-521 then cut `-7`
+on its branch (installer `ae2c839d…`, 617,862 bytes; §12.6) and merged it;
+`-8` is carried by the open `port/odl-505`. ODL-474's v3.10 landing, ported
+onto the one-root tree, re-embeds every surface on the merged head and cuts
+`2026.11.14-9` (installer `e47ae718…`, 674,401 bytes; §12.6).
 
 The order is proved on a machine with no network: `--self-test` points
 `ensure_install` at a local `file://` script and asserts that a mismatched one
@@ -1136,7 +1137,7 @@ builder command with a transcript; everything after it is the image.
 | 5 | the signed measured UKI and the pre-sealed disk | **yes, round 8 at 10:28Z, saved 14:42:53Z and booted 14:43:54Z** — UKI `5cb31808…`, disk `c1278242…`, measurement `9f01725a…`, 4-vCPU pin, published 10:29Z; the earlier builds and the defect each exposed are in `docs/evidence/m1-tenant.md` §9–§9.8 and `docs/evidence/m1-image.md` |
 | 6 | a fresh setup token bound to `31a63bbb` | **yes** — ledger `67de1ba9…`, live until 2026-11-13T10:23Z; its plaintext is the `odile.token=` of the sealed line |
 | 7 | the owner's boot key, a passphrase, any operator key | **none** — the image's `bb.key` is a throwaway public key whose private half is shredded |
-| 8 | a signed installer a stranger can obtain (independent of the image) | **yes** — on 2026-11-11 the served release `2026.11.11-5` shipped the strict-bar installer `fde7a48f…`, its `.sig`, the published key and a skills tarball carrying `odile-recipes` (§12.6); the repository's cut is `2026.11.14-9` (`9aded116…` installer, 672,942 bytes, `b9ac1264…` manifest, §12.6), and the served URL serves `2026.11.14-6` (`49f90a3c…` installer, 616,403 bytes, manifest `f6dea119…` — generated 2026-11-14T15:12:51Z, measured 2026-11-14T21:31Z) until the next deploy; that live cut carries the `c73dad4d…` vendor pin, and an image a build of this tree makes carries the `-9` pair in its `release/` directory, so the machine's `/manifest` and `/usr/local/bin/odile-install.sh` agree with each other. The live tenant's image is still `2026.11.11-8` (`4aee80c5…`, `1ed9dcad…`) until it is re-provisioned |
+| 8 | a signed installer a stranger can obtain (independent of the image) | **yes** — on 2026-11-11 the served release `2026.11.11-5` shipped the strict-bar installer `fde7a48f…`, its `.sig`, the published key and a skills tarball carrying `odile-recipes` (§12.6); the repository's cut is `2026.11.14-9` (`e47ae718…` installer, 674,401 bytes, `6457af75…` manifest, §12.6), and the served URL serves `2026.11.14-6` (`49f90a3c…` installer, 616,403 bytes, manifest `f6dea119…` — generated 2026-11-14T15:12:51Z, measured 2026-11-14T21:55Z) until the next deploy; that live cut carries the `c73dad4d…` vendor pin, and an image a build of this tree makes carries the `-9` pair in its `release/` directory, so the machine's `/manifest` and `/usr/local/bin/odile-install.sh` agree with each other. The live tenant's image is still `2026.11.11-8` (`4aee80c5…`, `1ed9dcad…`) until it is re-provisioned |
 
 ### 12.2 The builder's half (everything before the panel)
 
@@ -1634,42 +1635,69 @@ verify against `installer/odile-signing-key.pub`. The cut was made at
 carried by the ODL-505 icon branch (`legacy/wt505`), so `-6` is the next free
 id.
 
+**The `2026.11.14-7` cut (ODL-521, the image's sign-in).** This tree merges
+`main`'s `-6` demo-lede cut into ODL-521's sign-in slice and cuts `-7` on the
+merged head. The installer carries both: the published image's `.env` holds a
+discarded scrypt hash behind `# odile-signin-placeholder: 1`, the first boot
+leaves it alone, and `ensure_env(first_visit=True)` rewrites the hash on every
+boot until the first-visit page records `signin_set_at`. The merged installer
+is `ae2c839d…` (617,862 bytes); `installer/embed_verify.py`'s new page pin
+`bf4dda17…` and the sign-in rule travel in the same bytes. The manifest is the
+`-6` document with only `installer_sha256` moved — `4caad797…`; its
+`generated_at` stays `2026-11-14T15:12:51Z`, the `-6` cut's value. The vendor
+pin `c73dad4d…`, the skills artifact `09be3cd1…`
+(851,865 bytes, the canonical `<home>/workspace` cut) and the meter-free rows
+are unchanged. `release/release.json` names installer `ae2c839d…` and manifest
+`4caad797…` (`822ce724…`). Both JSON signatures verify against
+`installer/odile-signing-key.pub`, and `tools/recut_release.py --check` prints
+`ok` for the installer, its release copy, the manifest, the release document
+and the pin's hook (`949adeb2…`). The branch's pre-merge cut was
+`2026.11.14-5` (installer `10a38b68…`), superseded here because `-6` landed on
+`main` first. It is **committed, not deployed**: measured 2026-11-14T20:20Z,
+`https://odile.fyi/release.json` serves `2026.11.14-6` (installer `49f90a3c…`,
+616,403 bytes; manifest `f6dea119…`), byte-identical to
+`/opt/odile/release/release.json` (mtime 2026-11-14T17:20:27Z); the next
+`./deploy.sh` from a `main` that carries this merge publishes `-7`.
+
 **The `2026.11.14-9` cut (ODL-474's v3.10 landing, ported onto the one-root
 tree).** The v3.10 landing was built on the legacy history (`4896ddb`, base
 `52141b9`); the Chief of Staff ported it as `05887d6` onto the public `main`
-`55ec2c1`, and this branch merges `main`'s `73bd8726` head into it — the
-`83eefd2` v3.9f `/verify` page and `/judge`'s retirement to a 301, the `-6`
-pair, and the demo verifier-command port — before the cut. All five embed tools re-ran on the merged sources: the tenant bundle
+`55ec2c1`, and this branch merges `main`'s `d0597e2` head into it — `-7`
+(ODL-521's first-visit sign-in rule), `73bd8726`'s demo verifier-command port,
+the `83eefd2` v3.9f `/verify` page and `/judge`'s retirement to a 301 — before
+the cut. All five embed tools re-ran on the merged sources: the tenant bundle
 (`odile-help` source `b726ca8c…`), the backup (`d9c4278a…`), the support
 program (`0460f6ea…`), the first-visit page (pin `4d7c4960…`, unchanged) and
 the `/verify` page (`bf4dda17…`, main's v3.9f bytes). The installer is
-`9aded116…` (672,942 bytes), up from `main`'s `49f90a3c…` (616,403 bytes): the
-support block and the v3.10 skill are the delta. The manifest was built from
-`/var/tmp/odile-474-merge-cand-port`, the fresh scratch root this installer
-itself made: `sim_tenant.py --reset --apply` ran 24/24, run 1 exited 0 in 4m17s,
+`e47ae718…` (674,401 bytes), up from `main`'s `-7` installer `ae2c839d…`
+(617,862 bytes): ODL-521's sign-in rule and this card's support block and
+v3.10 skill are both in the bytes. The manifest was built from
+`/var/tmp/odile-474-merge-cand-port2`, the fresh scratch root this installer
+itself made: `sim_tenant.py --reset --apply` ran 24/24, run 1 exited 0 in 4m23s,
 run 2 read `tenant: same` with 0 writes, and run 1 printed `install.sh 68015
 bytes, sha256 c73dad4d… matches the pin`. That root carries
 `/usr/local/sbin/odile-support` (0755, 51,565 bytes, `0460f6ea…`) and
-`/usr/local/bin/odile-diag` linking to it, so the A10 answer's two commands exist on a fresh
-tenant; the installer's own `ensure_verify_surface` then wrote the `/verify`
-page and the three programs (`c85b4c37…`, `7cff6f47…`, `539e205f…`) on the same
-root before the manifest was built. The manifest is `b9ac1264…` (48 skills,
-audit `539e205f…`); `scripts/manifest.py diff` against `main`'s `-6` document
-prints exactly `installer_sha256` and the `odile-help` row (`b5184e2f…` →
-`960f61ae…`) — the tool ignores `generated_at`, which is
-2026-11-14T21:40:00Z. The skills tarball is `9d82653f…` (851,945 bytes).
-`release/release.json` names installer `9aded116…` and manifest `b9ac1264…`;
+`/usr/local/bin/odile-diag` linking to it, so the A10 answer's two commands
+exist on a fresh tenant; the installer's own `ensure_verify_surface` then wrote
+the `/verify` page and the three programs (`c85b4c37…`, `7cff6f47…`,
+`539e205f…`) on the same root before the manifest was built. The manifest is
+`6457af75…` (48 skills, audit `539e205f…`); `scripts/manifest.py diff` against
+`main`'s `-7` document prints exactly `installer_sha256` and the `odile-help`
+row (`b5184e2f…` → `960f61ae…`) — the tool ignores `generated_at`, which is
+2026-11-14T22:00:00Z. The skills tarball is `9d82653f…` (851,945 bytes).
+`release/release.json` names installer `e47ae718…` and manifest `6457af75…`;
 `release/odile_install.py` is the checkout's installer and
 `release/odile_install.py.sig` its detached signature, and both JSON signatures
 verify against `installer/odile-signing-key.pub`. A second cut into
-`/var/tmp/odile-474-cut-port/again` reproduced all eight names byte for byte.
-It is committed, not deployed: measured 2026-11-14T21:31Z,
+`/var/tmp/odile-474-cut-port2/again` reproduced all eight names byte for byte.
+It is committed, not deployed: measured 2026-11-14T21:55Z,
 `https://odile.fyi/release.json` serves the deployed `2026.11.14-6` (installer
 `49f90a3c…`, 616,403 bytes; manifest `f6dea119…`), and the next `./deploy.sh`
 from a `main` that carries this merge publishes `-9`. The release id must not
-be reused: `-6` is `main`'s t_781fc5cb cut, `-7` is carried by the open
-`odl/ODL-521` branch and `-8` by the open `port/odl-505`, so `-9` was the next
-free id at 2026-11-14T21:40:00Z, later than every cut by `generated_at`.
+be reused: `-6` is `main`'s t_781fc5cb cut, `-7` is `main`'s ODL-521 cut and
+`-8` is carried by the open `port/odl-505`, so `-9` was the next free id at
+2026-11-14T22:00:00Z, later than every cut by `generated_at`.
+
 
 The clock starts at the build's `uki.sh --sign` and stops when
 `https://<slug>.odile.fyi/login` answers 200 over TLS. The gate is 30 minutes.

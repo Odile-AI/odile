@@ -489,7 +489,7 @@ clause); the DoD grep over both pages is empty.
 
 The decision was taken on 13 November 2026; the landing commit is 14 November
 2026. It was built on the legacy history (`4896ddb`), ported as `05887d6` onto
-the public `main` `55ec2c1`, and merged with `main`'s `73bd8726` head before
+the public `main` `55ec2c1`, and merged with `main`'s `d0597e2` head before
 the release was re-cut at the converged head.
 
 The five sentences §6 held were published as **v3.10** after both M2 drills
@@ -519,8 +519,8 @@ quote them.
   reviewed file, places it at `/usr/local/sbin/odile-support` (0755 root) and
   links `/usr/local/bin/odile-diag` beside it, so the A10 answer's two commands
   exist on a fresh tenant. The installer is re-signed and the release cut from
-  the converged tree is `2026.11.14-9` (installer `9aded116…`, manifest
-  `b9ac1264…`), from a fresh scratch root the merged installer made (24/24,
+  the converged tree is `2026.11.14-9` (installer `e47ae718…`, manifest
+  `6457af75…`), from a fresh scratch root the merged installer made (24/24,
   run 2 `tenant: same`); `docs/runbooks/install.md` §12.6 carries the full
   record.
 

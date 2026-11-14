@@ -1,6 +1,6 @@
 {
   "audit_sha256": "539e205f7d26e1c0757a4cdabbcae444c98df10f6e68eff92b4c147604cf4e4e",
-  "generated_at": "2026-11-14T21:40:00Z",
+  "generated_at": "2026-11-14T22:00:00Z",
   "hermes": {
     "commit": "2bd378ed1b8d6bf2192cb26e0a55ff3091e6bd19",
     "commit_source": "git",
@@ -1339,7 +1339,7 @@
       "source_sha256": "1faeb5281c0b84c0d235e64dcebf8709a497e48dcb573181b46b2e959f27b0ca"
     }
   },
-  "installer_sha256": "9aded116bfbb54f2d5c0c75c0460b81fca93dca07f8c7f980f10c398d149f9a7",
+  "installer_sha256": "e47ae7182da52fb116b52c31ba412a80772708e0646caea44f6210e4c1844459",
   "mode": "scratch",
   "model": "deepseek-ai/DeepSeek-V4.1-Flash-1017-abliterated",
   "packages": {
