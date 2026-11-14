@@ -7,8 +7,9 @@ shared workspace, no nightly reset and no meter. Card: ODL-503.
 
 `https://odile.fyi/judge` was retired on 2026-11-14: ODL-901 answers it with a
 301 to <https://demo.odile.fyi/login>, the address the posted cut prints. The
-judge path is login → the seeded session → `/verify` — the three steps in
-`README.md`.
+judge path is login → the seeded session → `/verify`; `README.md` names the
+login entry and the page prints the verifier line (a tenant run needs
+`--expect`).
 
 This is **Odile's tenant machine**: Odile holds the boot key and can log in,
 the judge password is published on purpose, and the machine's `/verify` is the

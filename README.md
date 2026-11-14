@@ -10,6 +10,13 @@ Live demo: https://demo.odile.fyi/login
 
 The machine's own report is at <https://demo.odile.fyi/verify>. It prints the one-line verifier command with the measurement it serves; a tenant run needs `--expect`.
 
+| Field | Value |
+|---|---|
+| Username | `judge` |
+| Password | `odile-demo-kestrel-2026` |
+
+The password is public by design: one shared workspace on Odile's own tenant machine.
+
 ## How NEAR fits in
 
 Inference runs on NEAR AI's confidential cloud, inside a hardware enclave.

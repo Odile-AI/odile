@@ -74,23 +74,25 @@ class CopyTests(unittest.TestCase):
     """The page a judge reads first.
 
     ``web/judge.html`` is retired with ``/judge`` (ODL-901: a 301 to
-    <https://demo.odile.fyi/login>), so the README is the only shipped page
-    that still hands a judge a command. The file stays as main has it.
+    <https://demo.odile.fyi/login>), and the public README points at the
+    demo's own ``/verify`` instead of printing the command (Savio's
+    2026-11-14 simplification). So: any demo command that *does* appear in
+    the README must carry ``--expect``, and the README must send the reader
+    to the page that prints the live line. ``web/judge.html`` stays as main
+    has it.
     """
 
     def test_every_demo_verifier_command_carries_expect(self):
         for path in (README,):
             with self.subTest(path=path.name):
                 text = path.read_text(encoding="utf-8")
-                found = []
                 for line in text.splitlines():
-                    found.extend(re.findall(
-                        r"\./odile-verify https://demo\.odile\.fyi(.*)", line))
-                self.assertTrue(found, f"{path.name} names no demo verifier command")
-                for rest in found:
-                    cleaned = rest.strip().replace("&lt;", "<").replace("&gt;", ">")
+                    if "./odile-verify https://demo.odile.fyi" not in line:
+                        continue
+                    cleaned = line.replace("&lt;", "<").replace("&gt;", ">")
+                    rest = cleaned.split("./odile-verify https://demo.odile.fyi", 1)[1]
                     self.assertTrue(
-                        cleaned.startswith("--expect"),
+                        rest.strip().startswith("--expect"),
                         f"{path.name}: the demo command has no --expect: {rest!r}")
 
     def test_each_page_sends_the_judge_to_verify_for_the_number(self):
@@ -102,7 +104,7 @@ class CopyTests(unittest.TestCase):
         """`/judge` is retired (ODL-901 answers it with a 301); the README's
         entry must name the page the posted cut prints."""
         text = README.read_text(encoding="utf-8")
-        self.assertIn("<https://demo.odile.fyi/login>", text)
+        self.assertIn("https://demo.odile.fyi/login", text)
         self.assertNotIn("odile.fyi/judge", text)
 
     def test_the_readme_names_near_with_deck_verbatim_sentences(self):
