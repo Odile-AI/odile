@@ -1035,9 +1035,10 @@ phase report is what is pasted here and in §13.5, §13.7 and §13.8.
 
 `GET /` is 302 to the gate, `GET /login` is 200, the bench fixture's sign-in
 is 401, and `/first-visit?t=` is the only page that answers 200 with a form.
-`/verify` answers 302 to the gate before the visit; after the visit (§13.7) it
-prints `sign-in hash PASS`, so the image is a real tenant image, not an open
-one.
+`/verify` is world-readable: it answers 200 before the visit as well as after
+it (§13.4 and §13.7), and its sign-in row prints `sign-in hash PASS` on a
+production image — a scrypt hash in `/home/tenant/.hermes/.env` and no
+plaintext password — so the image is a real tenant image, not an open one.
 
 The same disk, read-only after the boot (the commands of §13.3; the harness
 prints the values below with `check-disk.py --disk "$FINAL/A/…"`, which runs

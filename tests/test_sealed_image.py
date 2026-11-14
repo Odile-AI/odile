@@ -48,6 +48,15 @@ SOURCE = ROOT / "deploy" / "image" / "bench-snpreport.c"
 SEAL_REF = ROOT / "spike" / "sealed-unlock" / "seal_ref.py"
 PIN = ROOT / "deploy" / "image" / "tenant-image.pin"
 HOOK = ROOT / "spike" / "sealed-unlock" / "initramfs" / "bb-sealed-unlock"
+# The spike tree (the sealed-unlock hook, its stub harness and the reference
+# decoder) is HQ-only: `/spike/` is in .git/info/exclude and is not part of the
+# published tree. Tests that drive those bytes skip here, with this reason,
+# instead of failing a public checkout's `make check`; at HQ they run.
+SPIKE_MISSING = (
+    "spike/sealed-unlock is HQ-only (excluded in .git/info/exclude) and absent "
+    "from this checkout; the hook, its stub harness and the reference decoder "
+    "are exercised at HQ"
+)
 SEED = b"odile-bench-vcek-NOT-a-secret-32"
 IMAGE = ROOT / "deploy" / "image"
 # A real ed25519 public key line; the measured `bb.key=` is its base64.
@@ -212,6 +221,7 @@ class SnpreportTests(unittest.TestCase):
         result = self.run_tool("--unseal", str(blob), str(self.dir / "nope"), cmdline="seal_id=t")
         self.assertEqual(result.returncode, 6, result.stderr)
 
+    @unittest.skipUnless(SEAL_REF.is_file(), SPIKE_MISSING)
     def test_the_spike_reference_unseals_our_blob(self) -> None:
         plain = self.dir / "ref.key"
         plain.write_bytes(bytes(range(64)))
@@ -226,6 +236,7 @@ class SnpreportTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertEqual(out.read_bytes(), plain.read_bytes())
 
+    @unittest.skipUnless(SEAL_REF.is_file(), SPIKE_MISSING)
     def test_we_unseal_the_spike_reference_blob(self) -> None:
         plain = self.dir / "back.key"
         plain.write_bytes(bytes(range(64)))
@@ -634,6 +645,7 @@ class PinTests(unittest.TestCase):
         self.assertTrue(pin["signature"]["verified"])
         self.assertRegex(pin["signature"]["cert_sha256"], r"^[0-9a-f]{64}$")
 
+    @unittest.skipUnless(HOOK.is_file(), SPIKE_MISSING)
     def test_the_pin_carries_the_hook_at_the_end_of_the_order(self) -> None:
         pin = json.loads(PIN.read_text())
         hooks = [line for line in pin["order"] if "bb-sealed-unlock" in line]
@@ -2204,6 +2216,7 @@ class HookBootstrapHarnessTests(unittest.TestCase):
 
     HARNESS = ROOT / "spike" / "sealed-unlock" / "initramfs" / "test-bb-sealed-unlock.sh"
 
+    @unittest.skipUnless(HARNESS.is_file(), SPIKE_MISSING)
     def test_the_hook_opens_with_the_bootstrap_key_and_the_harness_passes(self) -> None:
         result = subprocess.run(["sh", str(self.HARNESS)],
                                 capture_output=True, text=True, timeout=120)

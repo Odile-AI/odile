@@ -1636,8 +1636,9 @@ leaves it alone, and `ensure_env(first_visit=True)` rewrites the hash on every
 boot until the first-visit page records `signin_set_at`. The merged installer
 is `ae2c839d…` (617,862 bytes); `installer/embed_verify.py`'s new page pin
 `bf4dda17…` and the sign-in rule travel in the same bytes. The manifest is the
-`-6` document with only `installer_sha256` and `generated_at` moved —
-`4caad797…`; the vendor pin `c73dad4d…`, the skills artifact `09be3cd1…`
+`-6` document with only `installer_sha256` moved — `4caad797…`; its
+`generated_at` stays `2026-11-14T15:12:51Z`, the `-6` cut's value. The vendor
+pin `c73dad4d…`, the skills artifact `09be3cd1…`
 (851,865 bytes, the canonical `<home>/workspace` cut) and the meter-free rows
 are unchanged. `release/release.json` names installer `ae2c839d…` and manifest
 `4caad797…` (`822ce724…`). Both JSON signatures verify against
@@ -1645,10 +1646,11 @@ are unchanged. `release/release.json` names installer `ae2c839d…` and manifest
 `ok` for the installer, its release copy, the manifest, the release document
 and the pin's hook (`949adeb2…`). The branch's pre-merge cut was
 `2026.11.14-5` (installer `10a38b68…`), superseded here because `-6` landed on
-`main` first. It is **committed, not deployed**: measured 2026-11-14T17:46Z,
-`https://odile.fyi/release.json` still serves `2026.11.14-4` (installer
-`6b42f8ef…`, 616,370 bytes; manifest `65ac178c…`); the next `./deploy.sh` from
-a `main` that carries this merge publishes `-7`.
+`main` first. It is **committed, not deployed**: measured 2026-11-14T20:20Z,
+`https://odile.fyi/release.json` serves `2026.11.14-6` (installer `49f90a3c…`,
+616,403 bytes; manifest `f6dea119…`), byte-identical to
+`/opt/odile/release/release.json` (mtime 2026-11-14T17:20:27Z); the next
+`./deploy.sh` from a `main` that carries this merge publishes `-7`.
 
 The clock starts at the build's `uki.sh --sign` and stops when
 `https://<slug>.odile.fyi/login` answers 200 over TLS. The gate is 30 minutes.
