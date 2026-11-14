@@ -5,6 +5,11 @@ A judge opens <https://demo.odile.fyi>, meets Odile's sign-in page, signs in as
 measured image (`odl-7971a8`, `203.0.113.87`, measurement `9f01725a…`), one
 shared workspace, no nightly reset and no meter. Card: ODL-503.
 
+`https://odile.fyi/judge` was retired on 2026-11-14: ODL-901 answers it with a
+301 to <https://demo.odile.fyi/login>, the address the posted cut prints. The
+judge path is login → the seeded session → `/verify` — the three steps in
+`README.md`.
+
 This is **Odile's tenant machine**: Odile holds the boot key and can log in,
 the judge password is published on purpose, and the machine's `/verify` is the
 page a judge should be sent to. It does not demonstrate a user-held key.
@@ -82,9 +87,19 @@ change what every customer machine verifies. Instead:
 
 - `deploy/demo-host/verify-lede.html` is the demo's one paragraph, assembled
   from `docs/CLAIMS.md` §"The demo machine" rows and `web/judge.html`;
+- `deploy/demo-host/verify-command.html` is the demo's one-line command
+  section: the terminal block's last line is
+  `cd odile-verify && ./odile-verify https://demo.odile.fyi --expect …`, and
+  the first-visit renderer fills `{{MEASUREMENT}}` from the report it serves.
+  A tenant URL is not the pin's `source`, so the verifier's own rule needs
+  `--expect`; the page is where a judge copies the number. `README.md` and
+  `web/judge.html` name the same form and send the reader to the page for the
+  live value; `check_demo_public.py` extracts that line and runs it out of the
+  published tarball, so the page and the verifier cannot drift;
 - `apply_demo_public.py` replaces the tenant block's one lede in
   `/usr/local/lib/odile/verify.html` — the template the first-visit service
-  reads per request — and keeps the release page at
+  reads per request — adds the command section inside the same block, and keeps
+  the release page at
   `/usr/local/lib/odile-demo-public/verify.html.release` for the rollback;
 - the deploy's `apply --write` is the only writer. `odile-release-setup.service`
   converges **once** (t_ee5aac66 writes a done marker under `/var/lib/odile`),
@@ -106,8 +121,8 @@ sudo install -m 0644 /usr/local/lib/odile-demo-public/verify.html.release \
 ```
 
 The template is read per request, so no restart is needed. `--report` prints a
-`verify` object with the template's hash, `demo_lede`, `customer_lede` and
-whether the rollback copy is present.
+`verify` object with the template's hash, `demo_lede`, `demo_command`,
+`customer_lede` and whether the rollback copy is present.
 
 ### The meter is gone
 

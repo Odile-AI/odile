@@ -35,6 +35,7 @@ DEFAULT_PATHS = (
     "docs/CLAIMS.md",
     "docs/FAQ.md",
     "deploy/demo-host/login.html",
+    "deploy/demo-host/verify-command.html",
 )
 
 SKIP_DIRS = {".git", "__pycache__", "node_modules", "shots"}
