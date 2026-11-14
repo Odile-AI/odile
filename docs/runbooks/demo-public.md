@@ -16,7 +16,7 @@ page a judge should be sent to. It does not demonstrate a user-held key.
 | Webapp | `127.0.0.1:9130`, the `tenant` gateway; `webapp.public_url` is `https://demo.odile.fyi` |
 | Host check | Hermes refuses a Host header that is not the bound host or `webapp.public_url` (`400 Invalid Host header`); the demo host *is* the public_url, so the machine's own name `odl-7971a8.odile.fyi` still answers `/verify`, `/first-visit` and `/manifest`, but its Webapp path is refused |
 | Gate | Hermes dashboard basic-auth provider (`HERMES_DASHBOARD_BASIC_AUTH_*` in `/home/tenant/.hermes/.env`, mode 0600) |
-| Account | `judge`; the password is published in `README.md`'s judge table, never here |
+| Account | `judge`; the password is carried by the sign-in page's form (`deploy/demo-host/login.html`), never here |
 | Sign-in page | `/srv/odile-demo/login.html`, Caddy's `handle /login*`. Committed and live are **one file**: sha256 `94a22b03748f40ae…` (167,426 B), t_9896a577's artwork page ("The demo machine" + the inlined Ruysch band; cards t_3d717ffc, t_330cea5c, t_9896a577), installed from `deploy/demo-host/login.html`. `--no-login` remains for a deploy that must keep the machine's current page |
 | Caddy block | `deploy/caddy/demo-tenant-site.caddy`, sha256 `64fd9d64e9e3a1309b0c214512b104b3e15c30824edc85d5cac049869f99d1f4`, 3,213 B; no mutation matcher and no self-update matcher — every write reaches Hermes (§4) |
 | Seeded session | `Start here — Odile demo`, pinned, two messages, id `local-931d9e32…` (the constant `/judge` deep-links); written **once**, when the row is absent, and never rewritten |
