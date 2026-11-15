@@ -2,12 +2,16 @@
 """Tests for the brand sheet gate.
 
 `BRAND.md` is the build contract; `tools/brand_lint.py` fails when a required
-section disappears or a placeholder is left behind. These tests prove the gate
-against the shipped sheet and two broken fixtures.
+section disappears or a placeholder is left behind, and it holds each surface
+to the colours that surface is allowed to paint. These tests prove the gate
+against the shipped sheet, a broken sheet fixture, and the legacy-token rule
+the sheet states in §Legacy surfaces.
 """
 
 from __future__ import annotations
 
+import contextlib
+import io
 import sys
 import tempfile
 import unittest
@@ -17,6 +21,13 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from tools import brand_lint  # noqa: E402
+
+LEGACY_TOKENS = {
+    "paper-v0": "#f6f0e4",
+    "card-v0": "#fbf6ea",
+    "error-v0": "#8f3418",
+    "placeholder-v0": "#776b5a",
+}
 
 
 def write_sheet(directory: str, body: str) -> Path:
@@ -58,6 +69,79 @@ class BrandSheetTests(unittest.TestCase):
             any("unfinished marker 'TBD'" in finding for finding in findings),
             findings,
         )
+
+
+def surface(directory: str, name: str, body: str) -> Path:
+    """Write a surface fixture under a temporary root and return it."""
+    path = Path(directory) / name
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(body, encoding="utf-8")
+    return path
+
+
+class LegacyTokenTests(unittest.TestCase):
+    """§Legacy surfaces: the four v0 values belong to two surfaces only."""
+
+    def setUp(self) -> None:
+        self.palette = brand_lint.brand_palette(ROOT / "BRAND.md")
+        self.legacy = brand_lint.legacy_palette(ROOT / "BRAND.md")
+
+    def test_the_sheet_marks_exactly_the_four_v0_tokens_legacy(self) -> None:
+        self.assertEqual(self.legacy, LEGACY_TOKENS)
+
+    def test_a_web_page_painting_a_v0_token_names_the_token_and_the_surface(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            page = surface(directory, "web/claim.html",
+                           ":root{--paper:#F6F0E4;--card:#FBF6EA}\n")
+            findings = brand_lint.check_surface(
+                page, self.palette, self.legacy, name="web/claim.html")
+        self.assertEqual(len(findings), 2, findings)
+        self.assertIn("web/claim.html:1", findings[0])
+        self.assertIn("#f6f0e4", findings[0])
+        self.assertIn("--paper-v0", findings[0])
+        self.assertIn("--card-v0", findings[1])
+
+    def test_the_prototype_and_the_demo_template_may_paint_them(self) -> None:
+        body = ":root{--paper:#F6F0E4;--card:#FBF6EA;--error:#8F3418;" \
+               "--placeholder:#776B5A}\n"
+        with tempfile.TemporaryDirectory() as directory:
+            prototype = surface(directory, "prototype/userflow.html", body)
+            template = surface(directory, "demo/local/template.html", body)
+            for path, written in ((Path("prototype/userflow.html"), prototype),
+                                  (Path("demo/local/template.html"), template)):
+                findings = brand_lint.check_surface(
+                    written, self.palette, self.legacy, name=path.as_posix())
+                self.assertEqual(findings, [], path.as_posix())
+
+    def test_a_v0_token_on_another_product_surface_is_a_finding(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            page = surface(directory, "templates/status.html",
+                           "<style>:root{--error:#8F3418}</style>\n")
+            findings = brand_lint.check_surface(
+                page, self.palette, self.legacy, name="templates/status.html")
+        self.assertEqual(len(findings), 1, findings)
+        self.assertIn("templates/status.html:1", findings[0])
+        self.assertIn("--error-v0", findings[0])
+
+    def test_the_ok_line_counts_the_allowed_set_and_the_legacy_only_part(self) -> None:
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            rc = brand_lint.main(["--root", str(ROOT)])
+        self.assertEqual(rc, 0, out.getvalue())
+        self.assertIn("21 allowed colours, 4 legacy-only", out.getvalue())
+
+    def test_the_root_flag_reads_surfaces_outside_the_working_directory(self) -> None:
+        """`--root` names the tree to read; the process may stand anywhere."""
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "BRAND.md").write_bytes((ROOT / "BRAND.md").read_bytes())
+            surface(directory, "prototype/userflow.html",
+                    ":root{--paper:#F6F0E4}\n")
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                rc = brand_lint.main(["--root", str(root)])
+        self.assertEqual(rc, 0, out.getvalue())
+        self.assertIn("1 surface(s), 21 allowed colours, 4 legacy-only", out.getvalue())
 
 
 if __name__ == "__main__":
