@@ -7,7 +7,10 @@
 # arrive here too, by design).
 @mail.odile.fyi      dsn
 
-# Human mailbox: replies to an invite, and anything sent to the apex.
+# Support spool: replies to an invite, and anything sent to the apex or to a
+# conventional complaint address. No reader consumes it yet.
 help@odile.fyi       help
+abuse@odile.fyi      help
+postmaster@odile.fyi help
 help@mail.odile.fyi  help
 invite@mail.odile.fyi help

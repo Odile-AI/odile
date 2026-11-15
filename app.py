@@ -641,12 +641,13 @@ def render_faq() -> str:
 
 
 def render_legal(name: str, title: str) -> str:
-    """The paperwork: privacy, terms and abuse, in the same voice.
+    """The paperwork: privacy and terms, in the same voice.
 
     Static pages with no JavaScript. The privacy page's inventory is bound to
     the live schema by tests/test_legal.py; its prose is bound to CLAIMS.md by
-    tests/test_claims.py. Terms and abuse make no privacy or security claim
-    that is not also a deck row.
+    tests/test_claims.py. Terms makes no privacy or security claim that is not
+    also a deck row. `/abuse` is retired to a 301 at `/terms` (ODL-903): every
+    sentence it carried lives on one of these two pages.
     """
     return page(name, TITLE="%s \u2014 Odile" % title, ROBOTS="index")
 
@@ -781,7 +782,13 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/terms":
             return self._send(200, render_legal("terms.html", "Terms"), head=head)
         if path == "/abuse":
-            return self._send(200, render_legal("abuse.html", "Abuse"), head=head)
+            # The page is retired, the address is not: a conventional abuse
+            # report belongs in the same spool as every other message, and
+            # every sentence the page carried lives on privacy or terms.
+            # 301, not the signup flow's 303, because the move is permanent —
+            # and no query string is carried, or the redirect would become a
+            # second front door into this service.
+            return self._permanent_redirect("/terms")
         if path == "/judge":
             # The page is retired, the address is not: both cards of the posted
             # demo cut print it. A judge who types it lands on the tenant's own

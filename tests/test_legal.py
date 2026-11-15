@@ -8,7 +8,7 @@ Three checks that make "paperwork that matches the machine" mechanical:
   without a page row is a bug; a page row without a column is a stale page);
 * every access-model sentence on the privacy page is a row in
   `docs/CLAIMS.md`, verbatim;
-* the three pages carry no JavaScript, no third-party request and no cookie
+* the legal pages carry no JavaScript, no third-party request and no cookie
   banner.
 
 The stores are the same schema strings the services execute, read through an
@@ -35,7 +35,6 @@ import seed.seed as seed  # noqa: E402
 PAGES = {
     "privacy": ROOT / "web" / "privacy.html",
     "terms": ROOT / "web" / "terms.html",
-    "abuse": ROOT / "web" / "abuse.html",
 }
 
 # Rows that name a data item of the system but not a column in these five
@@ -199,17 +198,19 @@ class AccessModelTests(unittest.TestCase):
         # The demo is an Odile machine whose key Odile holds; an unscoped
         # "Odile cannot read the disk" is false there. v3.5 scoped the tenant
         # access row for exactly this reason. v3.9 keeps the row in the deck
-        # and holds it from the abuse page until the disk re-key (t_28dda3b7):
+        # and holds it from the privacy page until the disk re-key (t_28dda3b7):
         # the image's key still opens the tenant disk (ODL-466 §0.1), so the
-        # page publishes A1's operator sentence instead.
+        # page publishes A1's operator sentence instead. ODL-903 retired the
+        # abuse page this check used to read; privacy carries the same
+        # operator sentence twice.
         deck = (ROOT / "docs" / "CLAIMS.md").read_text(encoding="utf-8")
-        page = PAGES["abuse"].read_text(encoding="utf-8")
+        page = PAGES["privacy"].read_text(encoding="utf-8")
         row = (
             "On a tenant machine, Odile cannot read the disk, the prompts or the "
             "files; a support grant can."
         )
         self.assertIn(row, deck)
-        self.assertNotIn(row, page, "the abuse page quotes a row held until t_28dda3b7")
+        self.assertNotIn(row, page, "the privacy page quotes a row held until t_28dda3b7")
         self.assertIn("No one at Odile can log in to a tenant machine.", page)
         self.assertNotIn('- "Odile cannot read the disk', deck)
         self.assertNotIn("<li>Odile cannot read the disk", page)
@@ -238,6 +239,6 @@ class NoScriptTests(unittest.TestCase):
 
     def test_the_pages_are_served_by_the_app(self):
         source = (ROOT / "app.py").read_text(encoding="utf-8")
-        for route, page in (("/privacy", "privacy.html"), ("/terms", "terms.html"), ("/abuse", "abuse.html")):
+        for route, page in (("/privacy", "privacy.html"), ("/terms", "terms.html")):
             self.assertIn('if path == "%s":' % route, source)
             self.assertIn('"%s"' % page, source)
