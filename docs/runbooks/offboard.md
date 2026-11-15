@@ -337,7 +337,11 @@ it has two halves.
 ### The mechanics, measured
 
 After a destroy, `odilectl provision <slug> --key <user.pub> --pin
-odile-verify.pin --apply` orders the machine and writes the row. The drill's
+odile-verify.pin --backup-password-file <the user's old
+odile-recovery-<slug>.txt> --apply` orders the machine and writes the row.
+Without the flag the rebuilt machine mints a new repository password (Drill 2's
+C); with it the guest's own recovery file carries the old password and
+`backup.py init` says `same` (`docs/runbooks/backup.md` §5.2, §9). The drill's
 order was **plan 120 / 7 days** — the drill config's `default_plan_id: 120` and
 `default_days: 7`, the panel's Blackbox Core (the Netherlands; $9.49 per 31 days,
 billed $2.15 for the drill's 7 days), invoice `e0e6fbce` (§3). The live rebuild
@@ -377,7 +381,10 @@ out of `destroyed`, or a new slug as the rule, with the URL consequence
 written down). Until it lands, the re-provision is:
 
 1. `odilectl provision <new-slug> --key <the user's public key> --pin
-   odile-verify.pin --apply` — the order, the row, the release from the pin.
+   odile-verify.pin --backup-password-file <the user's old
+   odile-recovery-<old-slug>.txt> --apply` — the order, the row, the release
+   from the pin; the flag above keeps the old password, so the rebuilt machine
+   does not mint a second one.
 2. `/usr/bin/python3 -m odilectl.dns create <new-slug> --ip <the machine's
    address> --apply` — the A record the claim path would have written (`dns`
    is a module entry point, not a `cli.MODULES` subcommand, until

@@ -150,10 +150,11 @@ SEED_KEYS = (
     "slug", "instance_id", "near_api_key", "model", "support_public_key",
     "backup_repo_url", "mail_relay", "hermes_version",
 )
-# Optional: a rebuild carries the tenant's old repository password sealed under
-# the setup token. The writer's half of this construction is
-# seed/seed.py `seal_backup_password`; tests/test_seed.py proves the two agree.
-SEED_OPTIONAL = ("rebuild",)
+# `rebuild` is deliberately not in SEED_KEYS: only a rebuild carries the
+# tenant's old repository password sealed under the setup token, and
+# `validate_seed` validates it when it is present. The writer's half of this
+# construction is seed/seed.py `seal_backup_password`; tests/test_seed.py
+# proves the two agree.
 REBUILD_KDF = "hmac-sha256-ctr-v1"
 REBUILD_KEYSTREAM_LABEL = b"odile-rebuild-v1/keystream"
 REBUILD_TAG_LABEL = b"odile-rebuild-v1/tag"
