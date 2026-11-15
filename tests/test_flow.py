@@ -479,7 +479,6 @@ class Flow(unittest.TestCase):
         for path, title in (
             ("/privacy", "Privacy \u2014 Odile"),
             ("/terms", "Terms \u2014 Odile"),
-            ("/abuse", "Abuse \u2014 Odile"),
         ):
             with self.subTest(path=path):
                 res, body = self.request(path)
@@ -493,16 +492,32 @@ class Flow(unittest.TestCase):
                 self.assertNotIn("{{", body)
                 self.assertNotIn("}}", body)
 
-    def test_the_list_links_to_privacy_terms_and_abuse_in_both_states(self):
-        for path in ("/privacy", "/terms", "/abuse"):
+    def test_the_list_links_to_privacy_and_terms_in_both_states(self):
+        for path in ("/privacy", "/terms"):
             with self.subTest(path=path):
                 _, body = self.request("/")
                 self.assertIn('href="%s"' % path, body,
                               "the landing page does not offer %s" % path)
         _, done = self.request(self.signup("legal@example.com"))
-        for path in ("/privacy", "/terms", "/abuse"):
+        for path in ("/privacy", "/terms"):
             self.assertIn('href="%s"' % path, done,
                           "the confirmation does not offer %s" % path)
+
+    def test_abuse_is_a_permanent_redirect_to_the_terms(self):
+        # ODL-903 retires the page: it repeated privacy and terms in a
+        # police-blotter tone, and Savio asked for it gone (2026-11-14). The
+        # address stays, so a 301 — not a 404, and not the signup flow's 303.
+        # The query string is not carried; HEAD matters as much as GET.
+        for path in ("/abuse", "/abuse?x=1"):
+            with self.subTest(path=path):
+                res, body = self.request(path)
+                self.assertEqual(res.status, 301)
+                self.assertEqual(res.getheader("Location"), "/terms")
+                self.assertEqual(body, "")
+        res, body = self.request("/abuse", "HEAD")
+        self.assertEqual(res.status, 301)
+        self.assertEqual(res.getheader("Location"), "/terms")
+        self.assertEqual(body, "")
 
 
     # -- the judge page and the verifier bundle -------------------------

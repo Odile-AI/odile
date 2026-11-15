@@ -2,8 +2,9 @@
 # runs before a commit. A red run means a broken tree, not a missing runner.
 #
 # Five jobs, one per surface:
-#   check            make check — prereqs, tree secret scan, tests, the
-#                    installer's self-test, compile, shellcheck, claims, brand
+#   check            make check — prereqs, tree secret scan, publication scan,
+#                    tests, the installer's self-test, compile, shellcheck,
+#                    claims, brand, roadmap
 #   fresh-check      clone HEAD and run the same gate inside the clone
 #   demo-check       the local demo's headless acceptance run, no network
 #   publish-lint     the publication gate over the built tree: leak_scan --tree
