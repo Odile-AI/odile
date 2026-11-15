@@ -212,6 +212,51 @@ The other four readings are identical at every probe: the shell is `tenant`,
 published password can read; the only cap is the provider's own balance (§3),
 because there is no meter to mask or start.
 
+### Egress: no `nft` or `iptables` ruleset
+
+This machine has no loaded `nft` or `iptables` ruleset, and the demo shell is
+its owner's: `tenant` reaches the public internet like any tenant would. Those
+are the two shapes the check below tests; an eBPF or container-network filter
+is not measured (verdict §5). Measured 2026-11-15 through `tenant_console.py`:
+
+```sh
+$ command -v nft || echo nft-absent
+nft-absent
+$ command -v iptables iptables-legacy || echo iptables-absent
+iptables-absent
+$ sudo -n nft list ruleset
+sudo: nft: command not found
+$ curl -s -o /dev/null -w '%{http_code}\n' https://odile.fyi/
+200
+$ curl -s -o /dev/null -w '%{http_code}\n' https://example.com/
+200
+$ head -2 /etc/resolv.conf
+nameserver 1.1.1.1
+nameserver 9.9.9.9
+```
+
+The HQ demo had a filter, and its own header said what it was: *"Everything
+else to 127.0.0.0/8 and ::1 is rejected. Internet traffic is untouched."* It
+was a **loopback** filter — the demo shared the box with HQ, so the rule kept
+the demo uid off `127.0.0.1` — not an egress control. So the sentence ODL-501
+was asked to prove, "the demo profile cannot reach the internet except the meter
+and DNS", was false as written: measured 2026-11-13, the demo profile fetched
+`https://odile.fyi/` with a 200. The exact property, and the only one the rule
+bought, is **the demo profile cannot reach any other loopback listener on the
+box**. A service bound to `0.0.0.0` stayed reachable through the host's own
+address under that rule — measured 2026-11-15 by loading the retired rule
+shape, templated to an unprivileged uid: `127.0.0.1:8080` → connection refused,
+`203.0.113.139:2222` (sshd, bound `0.0.0.0`) → open, `1.1.1.1:443` → open.
+
+The profile and the filter are gone with the HQ demo (`1257777`, 2026-11-14),
+and the meter is removed product-wide (t_e237e261), so the sentence is retired
+rather than re-cut: the demo's exposure is the published password and the root
+shell behind it, not the network. The egress block in `check_demo_host.sh`
+fails if a loaded `nft` or `iptables` ruleset appears here, and records the
+internet leg, so this paragraph cannot drift from the machine unnoticed. A
+filter outside those two shapes — an eBPF program, or a container network that
+does not program nft/iptables — would pass the block (verdict §5).
+
 ## 4. Verify
 
 ```sh
