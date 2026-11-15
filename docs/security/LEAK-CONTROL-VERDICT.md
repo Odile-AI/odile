@@ -5,7 +5,7 @@
 hardening), `24ee323` (the tree cut once), and the publication at
 2026-11-14T14:54:56Z (repository recreated 16:52:19Z).
 **Tree reviewed:** local `main` `1876e99` plus this card — 318 files,
-9,337,253 bytes, 101 allowlisted values, `tools/leak_scan.py --tree` **PASS**.
+9,339,996 bytes, 103 allowlisted values, `tools/leak_scan.py --tree` **PASS**.
 `main` is 36 commits ahead of `origin/main` `55ec2c1` (311 files, 74 allowlisted,
 PASS), so this is a review of the **next** publish.
 **Status:** **published.** Round 1 could say "every fix is free". It cannot now:
@@ -24,7 +24,7 @@ the second is *for every row now, after this card's amendments*.
 | C1 | The class list fits what Odile actually holds | **block** | Add the classes in §1; several of the values are already in the tree, so this is not speculative |
 | C2 | Every allowlist row is true | **block** | Five rows misdescribed their value; reasons amended here, three structural defects carded (§2) |
 | C3 | The strategy is sound | **pass, amended** | Keep value scoping and the frozen pair; fix expiry, binary coverage, and the gate's own tests (§3) |
-| C4 | The platform layer is complete | **block** | `harden_repo.sh` reads two of the four scanning fields it sets; nine controls off, several of them org-level and now possible (§4) |
+| C4 | The platform layer is complete | **block** | `harden_repo.sh` reads two of the four scanning fields it sets; eight controls off (two scanning fields, `enforce_admins`, signatures, the tag ruleset, CodeQL, the Actions policy, retention), several of them org-level and now possible (§4) |
 | C5 | The gate fails when it cannot run | **block** | The `forbid` class is dead (no list in the tree, a missing list is silent) **and the gate is not in `make check`**, so `main` was already red on it (§5) |
 | C6 | The drill passes | **pass** | Transcript in §5 — but the card's `make leak` target no longer exists |
 
@@ -61,7 +61,7 @@ which the gate passes clean:
 - The `sha(256|512)|digest|checksum|partuuid` suppression is too wide: it is
   there to stop reporting hashes and it also stops reporting fingerprints.
 - `leak-allow.tsv`'s header says "There is no wildcard rule", but **9 of 21**
-  rows use `*` (rows 7, 11–19). They are value-pinned, so it is not a hole — it
+  rows use `*` (rows 7, 11–18). They are value-pinned, so it is not a hole — it
   is a contradiction that misleads the next reviewer. The sentence to keep is
   `tools/leak_scan.py:39`'s: "no wildcard rule, and no path-wide row" is what
   the *code* does not enforce either.
@@ -81,7 +81,7 @@ never used), macOS/Windows home paths, basic-auth-url, phone,
 
 Reviewed against the code and the live machine, not against the reasons. 21 rows
 after this card (18 at the reviewed head), all live on 2027-12-31, all matched at
-least once (101 allowlisted values in the tree). The card said 22 rows and two debt rows;
+least once (103 allowlisted values in the tree). The card said 22 rows and two debt rows;
 `93a73a7` created 22, `75a21aa` removed the four address rows by re-cutting the
 signed pair with TEST-NET-3, and this card adds three: one fixture value the boot
 test needs, and two for the drill transcript below.
@@ -106,9 +106,9 @@ test needs, and two for the drill transcript below.
 | 16 | email · `*` | port25's verifier | **agree.** A public authentication checker quoted in the email runbook. |
 | 17 | home-path · `*` | `/home/tenant/` × 51 | **agree, re-cut.** It is the tenant account the product creates (uid 1000) — the demo machine's **real** home, not "a generic account a benchmark names". Reason amended. |
 | 18 | home-path · `*` | `/home/odiletest387/` × 5 | **agree.** A throwaway simulation account under `/var/tmp`. |
-| 19 | credential-assignment · `tests/test_first_visit.py` | base64 of `not-the-image-secret` | **added by this card.** The value arrived with the ODL-521 merge and made `main` red on its own gate (`FINDING … :360`); it is the bench image's placeholder session secret and the boot test asserts it survives. |
-| 20 | public-ip · `docs/security/LEAK-CONTROL-VERDICT.md` | the drill's probe address | **added by this card.** The card's Definition of Done requires the drill transcript pasted; the transcript carries the probe values it proves the gate rejects. Path-scoped, so another address in the doc is still a finding. |
-| 21 | email · same | the drill's probe mailbox | **added by this card.** Same row pair; the mailbox is a deliberate non-existent address at a real provider. |
+| 19 | credential-assignment · `tests/test_first_visit.py` | base64 of `not-the-image-secret` | **agree (added by this card).** The value arrived with the ODL-521 merge and made `main` red on its own gate (`FINDING … :360`); it is the bench image's placeholder session secret and the boot test asserts it survives. |
+| 20 | public-ip · `docs/security/LEAK-CONTROL-VERDICT.md` | the drill's probe address | **agree (added by this card).** The card's Definition of Done requires the drill transcript pasted; the transcript carries the probe values it proves the gate rejects. Path-scoped, so another address in the doc is still a finding. |
+| 21 | email · same | the drill's probe mailbox | **agree (added by this card).** Same row pair; the mailbox is a deliberate non-existent address at a real provider. |
 
 **Structural defects in the allowlist as a record** (carded, not fixed here):
 
@@ -155,7 +155,7 @@ test needs, and two for the drill transcript below.
 
 ## 4. The platform layer
 
-Measured on the real repository (`Odile-AI/odile`), 2026-11-15T00:50Z, read-only:
+Measured on the real repository (`Odile-AI/odile`), 2026-11-15T02:45Z, read-only:
 
 | Control | State |
 |---|---|
@@ -173,7 +173,7 @@ Measured on the real repository (`Odile-AI/odile`), 2026-11-15T00:50Z, read-only
 | CodeQL default setup | **not-configured** |
 | Actions | `allowed_actions: all`, `sha_pinning_required: false` |
 | artifact + log retention | 90 days (the maximum) |
-| fork-PR approval | API 404 — fork workflows run without approval |
+| fork-PR approval | **on, weakest policy** — `actions/permissions/fork-pr-contributor-approval` → `{"approval_policy":"first_time_contributors"}`: a first-time contributor needs approval, a returning contributor's workflows run. `all` is the strict setting. (Round 2 read a 404 from `…/fork-pr`, a route that does not exist.) |
 | repo/webhooks/deploy keys | 1 repo, 0 webhooks, 0 deploy keys |
 | collaborators | two accounts: the agent (`member`) and the owner |
 | org policy | `Odile-AI` is an **Organization** (free): members may create, delete and change the visibility of repositories |
@@ -202,6 +202,14 @@ What this means:
 7. **A push-protection bypass is one click for any writer**, and nothing narrows
    who may use it. `enforce_admins: false` means the owner can also push to
    `main` past all five checks.
+8. **Fork-PR approval is on, at the weakest setting.** A first-time
+   contributor's workflow waits for approval; a returning contributor's runs
+   without one. `all` is the strict setting and is one `PATCH` away — the right
+   choice for a public repository that takes patches. The org-level default is
+   not readable with a member token (`403`). The round-2 row read a `404` from
+   `…/fork-pr`, a route that does not exist: a 404 is ambiguous between *no such
+   setting* and *no such route*, so a platform row is only as good as the
+   endpoint it was read from.
 
 ## 5. The drill, the probes, and the two ways the gate does not run
 
@@ -220,21 +228,44 @@ $ printf 'host 45.33.32.156\nmail real.person@fastmail.com\n' > probe.md
 $ /usr/bin/python3 tools/leak_scan.py --tree
 leak scan: tree
   files scanned:  319
-  bytes scanned:  9,337,301
-  allowlisted:    101
+  bytes scanned:  9,340,044
+  allowlisted:    103
 FINDING public-ip              probe.md:1 sha256:6c4a9f5f0de6 len=12
 FINDING email                  probe.md:2 sha256:8d38531c89cb len=24  (fastmail.com)
 FAIL: 2 finding(s) in the tree
 $ rm probe.md && /usr/bin/python3 tools/leak_scan.py --tree
 leak scan: tree
   files scanned:  318
-  bytes scanned:  9,337,253
-  allowlisted:    101
-PASS: nothing to leak in 318 files, 9,337,253 bytes scanned
+  bytes scanned:  9,339,996
+  allowlisted:    103
+PASS: nothing to leak in 318 files, 9,339,996 bytes scanned
 ```
 
-(The byte count is the run's own; this page's size moves it by a few bytes. The
-file count and the two findings are the evidence.)
+(The byte count is the run's own; a later re-cut of this page moves it. The file
+count and the two findings are the evidence.)
+
+The card's Definition of Done says **in a public-tree checkout**. `make leak` is
+absent there too; the published gate at `origin/main` `55ec2c1`
+(a real `git clone https://github.com/Odile-AI/odile`) gives the same verdict:
+
+```console
+$ printf 'host 45.33.32.156\nmail real.person@fastmail.com\n' > probe.md && make leak
+make: *** No rule to make target 'leak'.  Stop.                       # exit 2
+$ /usr/bin/python3 tools/leak_scan.py --tree
+leak scan: tree
+  files scanned:  312
+  bytes scanned:  8,899,225
+  allowlisted:    74
+FINDING public-ip              probe.md:1 sha256:6c4a9f5f0de6 len=12
+FINDING email                  probe.md:2 sha256:8d38531c89cb len=24  (fastmail.com)
+FAIL: 2 finding(s) in the tree                                        # exit 1
+$ rm probe.md && /usr/bin/python3 tools/leak_scan.py --tree
+leak scan: tree
+  files scanned:  311
+  bytes scanned:  8,899,177
+  allowlisted:    74
+PASS: nothing to leak in 311 files, 8,899,177 bytes scanned           # exit 0
+```
 
 **Fail-open #1 — the forbid class is dead.** There is no `leak-forbid.txt` in
 the tree (the list lives only in the private `docs/ops/`), the default
@@ -242,26 +273,32 @@ the tree (the list lives only in the private `docs/ops/`), the default
 skip — for the default *and* for an explicitly named file:
 
 ```console
-$ printf 'vendor box <box-id> account <account-id>\n' > probe-forbid.txt
+$ printf 'vendor box <box-id> account <account-id>\n' > probe-forbid.txt   # 37 bytes, ids elided
 $ /usr/bin/python3 tools/leak_scan.py --tree
-PASS: nothing to leak in 319 files, 9,337,119 bytes scanned      # exit 0
+leak scan: tree
+  files scanned:  319
+  bytes scanned:  9,340,033
+  allowlisted:    103
+PASS: nothing to leak in 319 files, 9,340,033 bytes scanned      # exit 0
 $ /usr/bin/python3 tools/leak_scan.py --tree --forbid-file /nonexistent-forbid.txt
-PASS: nothing to leak in 319 files, 9,337,119 bytes scanned      # exit 0
-$ /usr/bin/python3 tools/leak_scan.py --tree --forbid-file docs/ops/leak-forbid.txt
-# the private list copied into the checkout, run before this commit's fix:
+PASS: nothing to leak in 319 files, 9,340,033 bytes scanned      # exit 0
+$ /usr/bin/python3 tools/leak_scan.py --tree --forbid-file <checkout>/docs/ops/leak-forbid.txt
+FINDING forbidden-value        probe-forbid.txt:1 sha256:3e5275784e44 len=8  (servury-box-id)
+FINDING forbidden-value        probe-forbid.txt:1 sha256:4014bb9b4e56 len=8  (servury-dev-account)
+FAIL: 2 finding(s) in the tree
+# the same list on the base 1876e99, its own allowlist, before this branch's deploy.md fix:
 FINDING forbidden-value        docs/runbooks/deploy.md:69 sha256:18b74e4c8911 len=11  (checkout-path)
 FINDING forbidden-value        probe-forbid.txt:1 sha256:3e5275784e44 len=8  (servury-box-id)
 FINDING forbidden-value        probe-forbid.txt:1 sha256:4014bb9b4e56 len=8  (servury-dev-account)
-FAIL: 3 finding(s) in the tree
-# the same run after the fix (the list on, the probe still present):
-FAIL: 2 finding(s) in the tree      (the two probe values only)
+FINDING credential-assignment  tests/test_first_visit.py:360 sha256:7d6c1d64963a len=28
+FAIL: 4 finding(s) in the tree   (318 files, 9,304,714 bytes, 89 allowlisted)
 ```
 
 The prohibited literals are elided here on purpose: this page is in the tree the
 forbid list is meant to police, so writing them out would make the verdict the
 next finding. The labels and the digests are the evidence.
 
-That middle finding is the point: the tree this card reviews **carried the
+That `checkout-path` finding is the point: the tree this card reviews **carried the
 operator's checkout path at `docs/runbooks/deploy.md:69`**, and the only class
 that can see it is the one that never runs. The tree is fixed in this commit
 (the operator's checkout path → `<checkout>`); the class stays off until F1 lands.
@@ -424,16 +461,17 @@ One decision is Savio's, not a card's: whether the attestation fixtures ship raw
 (signed, therefore not redactable) or are replaced by a synthetic report with a
 synthetic KDS chain. It trades test fidelity against publishing a silicon id.
 
-## 10. Round 1's findings, at this head
+## 10. Rounds 1 and 2's findings, at this head
 
-| Round-1 item | Status here |
+| Item | Status here |
 |---|---|
 | Must 1 — row 2's blast radius was the retired HQ copy | **fixed.** Reason, §6 and §8 re-cut with the tenant facts measured above; the demo host is `odl-7971a8`, the shell is `tenant`, `sudo` reaches root, the live Near AI key is readable, the meter is removed, there is no filter and no reset. The two stale public sentences are named in §6. |
+| Round-2 must — the fork-PR row read a 404 as "no control" | **fixed.** `…/actions/permissions/fork-pr` is not a route (404); `…/fork-pr-contributor-approval` answers `{"approval_policy":"first_time_contributors"}`. The control is on at its weakest setting; the count is **eight**, not nine. A platform row is only as good as the endpoint it was read from. |
 | Must 2 — no acceptance stamp | run after this commit; the stamp names this head. The card's body names two private `docs/ops/` files, so the stamp is taken from a worktree that carries them untracked-and-excluded; the public tree cannot carry them. |
-| Nit 1 — `4869bbe`/`75a21aa` row history | corrected: `93a73a7` created 22; `75a21aa` removed the four debt rows; this card adds one. |
-| Nit 2 — `31a63bbb` in 16 files | corrected: 15 at `87a0f75`, **17** here (the allowlist's own text excluded). |
+| Nit 1 — `4869bbe`/`75a21aa` row history | corrected: `93a73a7` created 22; `75a21aa` removed the four debt rows; this card adds three (19–21). |
+| Nit 2 — `31a63bbb` in 16 files | corrected: 15 at `87a0f75`; **19** here, **17** excluding this page and the allowlist. |
 | Nit 3 — the sslip value is not in the built tree | corrected: it is a probe (P02), not a tree value. |
-| Nit 4 — 9 not 8 `*` rows; the sentence lives in the scanner | corrected: 9 of 19 here; the header's claim is the contradiction. |
+| Nit 4 — 9 not 8 `*` rows; the sentence lives in the scanner | corrected: 9 of 21 here (rows 7, 11–18); the header's claim is the contradiction. |
 | Nit 5 — the password has four copies | corrected: **three files** now (`README.md`, `login.html`, `apply_demo_public.py` ×2); `web/judge.html`, `DEMO-THREAT-NOTE.md` and `tests/test_flow.py` copies are gone. |
 | C5 — the token blocked publication | closed: spent 2026-11-14T14:54:27Z, 29 s before the repository went public; live probe 410. |
 | `make leak` | gone from the Makefile; the gate is CI-only. §5. |
