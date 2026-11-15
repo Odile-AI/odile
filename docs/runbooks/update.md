@@ -883,29 +883,29 @@ signature: OK (sha256 13863f6c04f22a798137933a7a75904693367d9147b375ee6579231421
 1,356,516 bytes; manifest `3a532eff…`), and the next `./scripts/deploy.sh` from
 a `main` that carries this merge publishes it.
 
-**The `2026.11.15-2` cut (ODL-474's v3.10 landing, ported onto the one-root
-tree and merged with ODL-505's icon-aware first-visit page).** The v3.10
-landing was built on the legacy history (`4896ddb`) and ported as `05887d6`
-onto the public `main` `55ec2c1`; this branch merged `main`'s `7ef4175` head
-(ODL-503's Webapp chrome, `-7` — ODL-521's first-visit sign-in rule — plus
-the demo verifier-command port and the v3.9f `/verify` page), then the type
-re-cut `d9ff00f` and the README rows `ae77466`, and finally `fcc87b2` —
-ODL-505's `-8`, whose first-visit page server serves the five icon routes —
-and re-embeds every surface before cutting. `install.md` §12.6 has the full
-record: installer `fad35b94…` (1,413,055 bytes), manifest `3d81c8ae…`
+**The `2026.11.15-2` cut (ODL-474's v3.10 landing, on the ODL-505 and
+t_ae833f3f head).** The v3.10 landing was built on the legacy history
+(`4896ddb`) and ported as `05887d6` onto the public `main` `55ec2c1`; this
+branch merged `main`'s `7ef4175` head (ODL-503's Webapp chrome, `-7`,
+the demo verifier-command port and the v3.9f `/verify` page), the type re-cut
+`d9ff00f`, the README rows `ae77466`, ODL-505's `-8` (`fcc87b2`: the icons,
+the tenant routes and the icon-aware first-visit server) and t_ae833f3f's
+`2026.11.15-1` branch (`d927239`: the two embedded tenant pages on the text
+face), and re-embeds every surface before cutting. `install.md` §12.6 has the
+full record: installer `7900e62d…` (1,413,180 bytes), manifest `270f462a…`
 (49,957 bytes, 48 skills, audit `539e205f…`), skills `9d82653f…` (851,945
-bytes), built from `/var/tmp/odile-474-r6-root`, the fresh scratch root the
+bytes), built from `/var/tmp/odile-474-r6b-root`, the fresh scratch root the
 merged installer made (`sim_tenant.py --reset --apply`, 24/24; run 2
 `tenant: same`, 0 writes; `install.sh` 68015 bytes, sha256 `c73dad4d…`
 matches the pin), and a second cut byte-identical on all eight names. It is
-committed, not deployed: measured 2026-11-15T02:45Z, the URL serves the
+committed, not deployed: measured 2026-11-15T03:44Z, the URL serves the
 deployed `2026.11.14-8` (installer `0c53a722…`, 1,356,516 bytes; manifest
 `3a532eff…`), which is ODL-505's cut. The id ledger: `-8` is `main`'s
-ODL-505 cut; `2026.11.15-1` is carried by the open
-`odl/ODL-503-tenant-verify-type` branch; `-2` was the next free id at
-`2026-11-15T02:52:00Z`, later than every cut by `generated_at`. The
+ODL-505 cut; `2026.11.15-1` is t_ae833f3f's cut on this branch's ancestry
+(generated 2026-11-15T02:50:19Z); `-2` was the next free id at
+`2026-11-15T03:45:00Z`, later than every cut by `generated_at`. The
 `2026.11.14-5`, `-7` and `2026.11.15-1` ids are still carried by open
-branches and are not reused.
+branches (or this branch) and are not reused.
 
 ## 6. The guest: check, apply, rollback
 

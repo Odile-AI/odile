@@ -520,7 +520,7 @@ quote them.
   links `/usr/local/bin/odile-diag` beside it, so the A10 answer's two commands
   exist on a fresh tenant. The installer is re-signed and the release cut from
   the converged tree (which includes ODL-505's icon-aware first-visit page) is
-  `2026.11.15-2` (installer `fad35b94…`, manifest `3d81c8ae…`), from a fresh
+  `2026.11.15-2` (installer `7900e62d…`, manifest `270f462a…`), from a fresh
   scratch root the merged installer made (24/24, run 2 `tenant: same`);
   `docs/runbooks/install.md` §12.6 carries the full record.
 
