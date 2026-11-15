@@ -93,11 +93,15 @@ curl -sS -X POST -H "X-Reseller-Key: $KEY" -H 'Content-Type: application/json' \
   -d '{"action": "restart"}' 'https://servury.com/api/reseller.php?action=power&id=<id>'
 curl -sS -H "X-Reseller-Key: $KEY" \
   'https://servury.com/api/reseller.php?action=serial&id=<id>&bytes=65536'
+# off: empties the transcript on the host — read it before this call
+curl -sS -X POST -H "X-Reseller-Key: $KEY" -H 'Content-Type: application/json' \
+  -d '{"log": false}' 'https://servury.com/api/reseller.php?action=serial&id=<id>'
 ```
 
 The restart call may answer `504` after 30 s and still power-cycle the machine
-about two minutes later; the initramfs ignores ACPI and the node cuts power
-(`provision.md` §4). Do not restart twice.
+roughly 90 s to two minutes later; the initramfs ignores ACPI and the node cuts
+power (`provision.md` §4, whose provider table records `~90s`). Do not restart
+twice.
 
 Two `odilectl` habits that bite:
 
@@ -354,7 +358,7 @@ incident.
 first-visit page answers `200`, the ready email's link is unused, and the
 machine heartbeats (or, if it does not, this is §4.1). `waiting_for_owner` is a
 legacy state: the sealed image boots without a passphrase, so the poll no longer
-parks a tenant there (`odilectl/state.py`, ODL-467).
+parks a tenant there (`odilectl/health.py`, ODL-467).
 
 **Blast radius.** None technically. The user paid for a machine they have not
 opened; the setup token dies after 24 hours and the link stops working.
@@ -629,7 +633,7 @@ not the tenants).
 ```
 
 `reconcile` returns findings, not guesses: `missing_vm`, `expired_vm`,
-`unknown_vm`, `state_drift` (`odilectl/state.py`). An `unknown_vm` with no
+`unknown_vm`, `zombie_vm` (`odilectl/state.py`). An `unknown_vm` with no
 tenant row is HQ's own machine, not a lost tenant.
 
 **What the user is told.** C-9.
@@ -776,9 +780,8 @@ key, driven by `curl` and by the shipping installer
 
 **What it changed.** v1 said the refusal exits 2 and gave
 `odilectl rotate-token --apply` as the rotation command. The refusal exits 1, the
-command is `seed.py token rotate` (the `odilectl` wrapper is `NotWired` until
-the wrapper still raises `NotWired`), and the cache-first rule is the fastest
-way out. See §6.3, rows 4–7.
+command is `seed.py token rotate` (the `odilectl` wrapper still raises
+`NotWired`), and the cache-first rule is the fastest way out. See §6.3, rows 4–7.
 
 ### 6.3 Every line the drills changed
 
@@ -792,13 +795,14 @@ way out. See §6.3, rows 4–7.
 | 6 | an expired token blocks the install | cache-first: a machine that already fetched never re-exchanges | the cache is a way out |
 | 7 | `/manifest` is the manifest URL | `404`; `/manifest.json` is `200` | `/manifest.json` |
 | 8 | `status --json` proves a slug exists | exits 0, `ok: true`, `machines: []` | read `count` |
-| 9 | a stopped heartbeat means the machine is down | the demo tenant's heartbeat is 2 d 7 h stale while `/verify` answers `200` with `PASS — five checks`; the poll plans `down` and `backup` alerts (15 Nov 10:37Z) | `/verify` first, then the heartbeat job |
+| 9 | a stopped heartbeat means the machine is down | the demo tenant's heartbeat is 2 d 7 h stale while `/verify` answers `200` with `PASS — five checks`; the poll plans `down` and `backup` alerts (15 Nov 10:51:05Z) | `/verify` first, then the heartbeat job |
 
 ### 6.4 A live measurement beside the drills
 
 While the drills ran, the poll's own view of the demo tenant was recorded: its
 last heartbeat is `2026-11-13 03:01:14Z` (`odilectl health --json`:
-`heartbeat_age_seconds: 200,991`, classification `down`, brief missed), while
+`heartbeat_age_seconds: 200,991` when the poll ran at `10:51:05Z`,
+classification `down`, brief missed), while
 `/verify` answers `200` with `measurement 9f01725a…` and `PASS — five checks`.
 The poll plans a `down` alert ("heartbeat stopped 2d 7h ago; port 22 answers
 host key …") and a `backup` alert ("last backup 2d 7h ago (threshold 1d 12h)").
@@ -806,7 +810,7 @@ The machine is up; the heartbeat job is what stopped — on the day the demo was
 reinstalled (13 November). The public `/status` page counts it: `Downtime 3,421
 min` against `In-service time 2.4 machine-days`. That is the discriminator §4.1
 now puts second, it is why "down" in this page means *the heartbeat stopped*,
-and it is a live defect ODL-561 owns (§7.6).
+and it is a live defect ODL-561 owns (§7, limit 6).
 
 ## 7. Limits
 
@@ -816,8 +820,8 @@ and it is a live defect ODL-561 owns (§7.6).
    the shipping installer. Neither drill powers off a tenant; the live
    stopped-VM check is ODL-332's.
 2. **`waiting_for_owner` is legacy.** The state remains in the machine; the
-   poll no longer parks a tenant there (ODL-467). §4.2 is about the sign-in,
-   not about a parked boot.
+   poll no longer parks a tenant there (`odilectl/health.py`, ODL-467). §4.2 is
+   about the sign-in, not about a parked boot.
 3. **The `spend` alert is dormant** until a heartbeat carries `facts.spend`;
    ODL-242 owns the per-user key and the zero-balance message. §4.8 says what
    to read instead.
