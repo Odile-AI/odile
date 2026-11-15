@@ -33,7 +33,9 @@
 #
 # The published image carries no password a stranger can use (ODL-521): its
 # .env holds a scrypt hash of a discarded password, and the first-visit page is
-# the only writer of a usable sign-in.
+# the only writer of a usable sign-in. It carries no SSH host private key either
+# (ODL-523): the build removes debootstrap's /etc/ssh/ssh_host_* and fails if a
+# private one survives; the first boot makes this machine's own.
 #
 # Exit codes: 0 ok, 1 an apply failed, 2 bad input or a missing prerequisite.
 set -euo pipefail
@@ -383,6 +385,71 @@ else
         "$(fresh_secret)" "the bench fixture password"
 fi
 install -d -o "$TENANT_USER" -g "$TENANT_USER" -m 0700 "$HERMES_HOME/scripts" "$HERMES_HOME/cron"
+
+# --------------------------------------------------------------------------
+# 4b. SSH host keys — generated on the machine, never shipped in the image.
+#
+#    ODL-523: debootstrap's openssh-server postinst writes
+#    /etc/ssh/ssh_host_*_key at build time, so every disk built from the image
+#    presented the same private host keys. The build removes them and asserts
+#    none is left; the first boot makes this machine's own with `ssh-keygen -A`.
+#
+#    Debian's sshd-keygen.service is the unit meant to do that, but it carries
+#    ConditionFirstBoot=yes and this image ships a machine-id, so on a cloned
+#    disk the condition is false and it never fires. The drop-in clears the
+#    condition: ssh-keygen -A leaves existing keys alone, and the unit is
+#    ordered before ssh.service, so sshd -t never runs against a keyless
+#    /etc/ssh.
+#
+#    `--seed` is the first boot (odile-firstboot.py has already run
+#    ssh-keygen -A through ensure_host_keys, so this prints `same`); without it
+#    this is the build, which removes and then asserts.
+
+SSH_KEYGEN_DROPIN=/etc/systemd/system/sshd-keygen.service.d/10-odile-hostkeys.conf
+install -d -m 0755 "${SSH_KEYGEN_DROPIN%/*}"
+dropin_tmp=$(mktemp)
+cat > "$dropin_tmp" <<'EOF'
+# Odile: the image ships no private SSH host keys (ODL-523). The first boot
+# generates this machine's own; there is no first boot left for
+# ConditionFirstBoot to detect once the image is cloned, so clear it.
+# ssh-keygen -A leaves existing keys alone, and this unit is Before=ssh.service.
+[Unit]
+ConditionFirstBoot=
+EOF
+if cmp -s "$dropin_tmp" "$SSH_KEYGEN_DROPIN"; then
+    say same "$SSH_KEYGEN_DROPIN"
+    rm -f "$dropin_tmp"
+else
+    chmod 0644 "$dropin_tmp"
+    mv "$dropin_tmp" "$SSH_KEYGEN_DROPIN"
+    say write "$SSH_KEYGEN_DROPIN (ssh-keygen -A before sshd -t)"
+fi
+
+if [ -n "$SEED_FILE" ]; then
+    if [ -f /etc/ssh/ssh_host_ed25519_key ]; then
+        say same "the SSH host keys (this machine's own)"
+    elif ssh-keygen -A >/dev/null 2>&1; then
+        say create "the SSH host keys (ssh-keygen -A)"
+    else
+        say warn "ssh-keygen -A failed; sshd-keygen.service retries it at the next ssh start"
+    fi
+else
+    shipped=0
+    for key in /etc/ssh/ssh_host_*; do
+        [ -e "$key" ] || continue
+        rm -f "$key"
+        shipped=1
+    done
+    if [ "$shipped" = 1 ]; then
+        say remove "the debootstrap SSH host keys (/etc/ssh/ssh_host_*)"
+    else
+        say same "no SSH host key in the image"
+    fi
+    if compgen -G "/etc/ssh/ssh_host_*_key" >/dev/null; then
+        echo "install-stack: the image still carries an SSH host private key" >&2
+        exit 1
+    fi
+fi
 
 # --------------------------------------------------------------------------
 # 5. one cron job, no agent: the demo's `demo-heartbeat`, every minute so the

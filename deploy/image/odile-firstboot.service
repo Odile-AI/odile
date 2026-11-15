@@ -2,8 +2,10 @@
 #
 # One oneshot per boot, before the tenant gateway. It prints exactly one
 # `odile-firstboot:` line to the serial console (`installed`, `same`, or
-# `fail-closed: <reason>`) and writes nothing else there; the installer it
-# runs logs to /var/log/odile-firstboot.log.
+# `fail-closed: <reason>`), and — on a boot that runs the first-boot steps —
+# one `odile-hostkeys:` line in front of it (the SSH host key this boot
+# generated or kept, ODL-523). Nothing else goes there; the installer it runs
+# logs to /var/log/odile-firstboot.log.
 #
 # It runs as root because its whole job is privileged and one-time: read the
 # measured command line, exchange the one-time setup token at the seed
