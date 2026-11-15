@@ -64,6 +64,22 @@ COMMITTED_BLOCK = HERE.parent / "caddy" / "demo-tenant-site.caddy"
 VERIFY_LEDE = HERE / "verify-lede.html"
 CUSTOMER_SENTENCE = "No one at Odile can log in to a tenant machine."
 MEASUREMENT = re.compile(r"\b([0-9a-f]{96})\b")
+#: The sign-in page's three tab files (t_6b25f6e5), as committed: the same
+#: bytes the site's pages link. A served file must hash to these, carry this
+#: type, and answer with the one-year immutable cache the block promises.
+COMMITTED_ICONS = (
+    ("favicon.ico",
+     "8f5f997684f2d8eb2336eef46ef8e100776ecaa35c0375faadd4bb7e1ab17fba", "image/x-icon"),
+    ("icon-32.png",
+     "28bedf61e9f5bad25d9a7b874bab788634299eb1e08a9bd99f614a09f9f904bc", "image/png"),
+    ("apple-touch-icon.png",
+     "dd5386a9c772a5d67702f35fd22eed649783a8575d54f4cbd641111434123773", "image/png"),
+)
+#: BRAND.md §Name and mark: the credit sits in the HTML comment beside the
+#: link on every page. The sign-in page is a page.
+CREDIT_COMMENT = ("<!-- Icon: Lucas Cranach the Elder, Saints Christina and Ottilia "
+                  "(Katharinenaltar, Dresden). Public domain. Source: Wikimedia Commons. -->")
+
 #: The verifier a judge downloads: the check runs the page's own line out of
 #: these bytes, not out of this checkout, so the guard covers the published
 #: program too.
@@ -96,6 +112,28 @@ def check(ok: bool, text: str) -> bool:
     FAILED += 0 if ok else 1
     print(("ok   " if ok else "FAIL ") + text)
     return ok
+
+
+def icon_problem(name: str, status: int, headers: dict, body: bytes) -> str:
+    """Why one served tab icon is not the committed file; '' when it is."""
+    pin = next((pin for candidate, pin, _type in COMMITTED_ICONS if candidate == name), "")
+    content_type = next((kind for candidate, _pin, kind in COMMITTED_ICONS
+                         if candidate == name), "")
+    if not pin:
+        return f"no committed pin for {name}"
+    if status != 200:
+        return f"status {status}"
+    lowered = {key.lower(): str(value) for key, value in headers.items()}
+    served_type = lowered.get("content-type", "").split(";")[0].strip()
+    if served_type != content_type:
+        return f"type {served_type!r}"
+    cache = lowered.get("cache-control", "")
+    if not ("public" in cache and "max-age=31536000" in cache and "immutable" in cache):
+        return f"cache {cache!r}"
+    digest = hashlib.sha256(body).hexdigest()
+    if digest != pin:
+        return f"body {digest[:16]}… is not {pin[:16]}…"
+    return ""
 
 
 def lede_problem(body: str, lede: str = "") -> str:
@@ -338,6 +376,27 @@ def public_checks(password: str) -> str:
     check(code == 302 and "/login" in location, f"GET / anonymously -> {code} {location or '-'}")
     check(http(DEMO + "/api/sessions")[0] == 401, "GET /api/sessions anonymously -> 401")
     check(http(DEMO + "/openapi.json")[0] == 404, "GET /openapi.json -> 404 (no operator map)")
+
+    print("== the tab icon")
+    for name, pin, content_type in COMMITTED_ICONS:
+        code, body, headers = http(DEMO + "/" + name)
+        problem = icon_problem(name, code, headers, body)
+        check(problem == "",
+              f"GET /{name} -> {code} {content_type} {pin[:16]}…, immutable"
+              + (f" — {problem}" if problem else ""))
+        code, body, _ = http(DEMO + "/" + name, method="HEAD")
+        check(code == 200 and body == b"",
+              f"HEAD /{name} -> {code}, {len(body)} body bytes")
+    code, body, _ = http(DEMO + "/login")
+    head = body.decode("utf-8", "replace").split("</head>", 1)[0]
+    missing = [name for name, _pin, _type in COMMITTED_ICONS
+               if f'href="./{name}"' not in head]
+    check(not missing and CREDIT_COMMENT in head and "data:image/svg+xml" not in head,
+          "the sign-in page's head carries the three links and the credit comment, "
+          "and no data: favicon" + (f" — missing {missing!r}" if missing else ""))
+    for probe in ("/favicon.ico/../../etc/passwd", "/..%2f..%2fetc%2fpasswd"):
+        code, body, _ = http(DEMO + probe)
+        check(b"root:" not in body, f"GET {probe} -> {code}, no /etc/passwd")
 
     print("== the machine's own name (the tenant block survived)")
     check(http(MACHINE + "/verify")[0] == 200,

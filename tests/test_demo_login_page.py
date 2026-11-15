@@ -74,6 +74,17 @@ class LoginPageTests(unittest.TestCase):
                       'href="./apple-touch-icon.png">', LOGIN_HTML)
         self.assertNotIn("data:image/svg+xml", LOGIN_HTML)
 
+    def test_the_icon_links_carry_the_credit_comment(self) -> None:
+        # BRAND.md §Name and mark: "The credit sits in the HTML comment beside
+        # the link on every page." REVIEW.md §2: every page carries the three
+        # links and the credit comment, and no `data:` favicon remains. The
+        # demo's front door is a page like any other (t_6b25f6e5).
+        credit = ("<!-- Icon: Lucas Cranach the Elder, Saints Christina and Ottilia "
+                  "(Katharinenaltar, Dresden). Public domain. Source: Wikimedia Commons. -->")
+        self.assertIn(credit, LOGIN_HTML)
+        self.assertLess(LOGIN_HTML.index(credit), LOGIN_HTML.index('rel="icon"'))
+        self.assertLess(LOGIN_HTML.index('rel="icon"'), LOGIN_HTML.index("</head>"))
+
     def test_the_boundary_sentence_is_the_copy(self) -> None:
         self.assertIn(BOUNDARY_SENTENCE, LOGIN_HTML)
         # The sentences the card removes, and the version credit with them.

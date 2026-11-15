@@ -24,7 +24,8 @@ What it owns, each step idempotent and printed as `same` / `write` / `restart`:
      measurement the page serves filled in by the first-visit renderer. A
      customer machine never runs this program and keeps the general row and no
      demo command;
-  1. the sign-in page at /srv/odile-demo/login.html;
+  1. the sign-in page at /srv/odile-demo/login.html, and the three tab files
+     it links beside it (pinned to the committed web/ renditions);
   2. the `demo.odile.fyi` block in /etc/caddy/Caddyfile — spliced between its
      markers, whole file backed up, `caddy validate`, then `systemctl restart
      caddy` (the machine runs Caddy with `admin off`), rolled back on failure;
@@ -117,6 +118,20 @@ BEGIN = "# BEGIN odile-demo-public"
 END = "# END odile-demo-public"
 SITE_ROOT = Path("/srv/odile-demo")
 LOGIN_TARGET = SITE_ROOT / "login.html"
+#: The sign-in page's three tab files (t_6b25f6e5). The deploy uploads the
+#: committed `web/` bytes and this program puts them beside the page; the pins
+#: are checked at both hops, so neither can install a different picture under
+#: the same name. Caddy answers them from this root (the block's one static
+#: handle), so the tab does not depend on the page server being up.
+ICONS = (
+    ("favicon.ico",
+     "8f5f997684f2d8eb2336eef46ef8e100776ecaa35c0375faadd4bb7e1ab17fba", "image/x-icon"),
+    ("icon-32.png",
+     "28bedf61e9f5bad25d9a7b874bab788634299eb1e08a9bd99f614a09f9f904bc", "image/png"),
+    ("apple-touch-icon.png",
+     "dd5386a9c772a5d67702f35fd22eed649783a8575d54f4cbd641111434123773", "image/png"),
+)
+
 
 HERMES_HOME = Path("/home/tenant/.hermes")
 CONFIG_FILE = HERMES_HOME / "config.yaml"
@@ -478,6 +493,45 @@ def ensure_login_page(dry: bool) -> bool:
     if not dry:
         write_atomic(LOGIN_TARGET, source, 0o644, 0, 0)
     return True
+
+
+def icon_source(name: str) -> Path:
+    """The uploaded copy beside this program, else the installed one.
+
+    The deploy's dry run executes the uploaded program from its `/tmp` scratch
+    directory, before the installed copy exists; the same resolution
+    `lede_source` uses keeps one file. In a checkout this falls through to
+    `LIB`, which a test points at its own scratch copy.
+    """
+    beside = Path(__file__).resolve().parent / name
+    return beside if beside.is_file() else LIB / name
+
+
+def ensure_icons(dry: bool) -> bool:
+    """Put the three tab files beside the page, byte-pinned (t_6b25f6e5).
+
+    Caddy answers them from this root (the block's one static handle), so the
+    sign-in page's tab does not depend on the page server. A file that is not
+    the reviewed bytes is refused before anything is written.
+    """
+    changed = False
+    for name, pin, _content_type in ICONS:
+        source = icon_source(name)
+        if not source.is_file():
+            raise SystemExit(f"error: missing {source}")
+        data = source.read_bytes()
+        digest = hashlib.sha256(data).hexdigest()
+        if digest != pin:
+            raise SystemExit(f"error: {source} is {digest}, not the reviewed {pin}")
+        target = SITE_ROOT / name
+        if target.is_file() and target.read_bytes() == data:
+            say("same", f"{target} (tab icon)")
+            continue
+        say("would write" if dry else "write", f"{target} (tab icon)")
+        if not dry:
+            write_atomic(target, data, 0o644, 0, 0)
+        changed = True
+    return changed
 
 
 # ---------------------------------------------------------------------------
@@ -1343,10 +1397,11 @@ def restart_agent(dry: bool) -> None:
 def matchers(block: str) -> list[str]:
     """Every named matcher the block defines, in file order.
 
-    Named so a reader can see the live shape: the demo's own `@apidocs` 404 is
-    the only one left, and the freeze's deny-by-default matcher is gone
-    (t_69f1a5f3). Counting names rather than grepping one literal also catches
-    a matcher reintroduced under different whitespace.
+    Named so a reader can see the live shape: the demo's own `@tabicons`
+    static route (t_6b25f6e5) and `@apidocs` 404 are the only names left, and
+    the freeze's deny-by-default matcher is gone (t_69f1a5f3). Counting names
+    rather than grepping one literal also catches a matcher reintroduced under
+    different whitespace.
     """
     return re.findall(r"^\s*@([A-Za-z_][\w-]*)", block, re.M)
 
@@ -1472,6 +1527,11 @@ def report(session_id: str = "") -> int:
         "provider": provider_row(config),
         "env_keys": env_keys,
         "verify": verify_state(),
+        "icons": {
+            name: (hashlib.sha256((SITE_ROOT / name).read_bytes()).hexdigest()
+                   if (SITE_ROOT / name).is_file() else None)
+            for name, _pin, _content_type in ICONS
+        },
         "caddy": caddy_state(),
         "session": session,
         "session_count": session_count,
@@ -1790,6 +1850,7 @@ def main(argv: list[str] | None = None) -> int:
     changed |= ensure_verify_command(dry)
     if not args.no_login:
         changed |= ensure_login_page(dry)
+    changed |= ensure_icons(dry)
     changed |= ensure_caddy_block(dry)
     config_changed = ensure_config(dry)
     env_changed, hash_changed = ensure_env(password, dry=dry)

@@ -62,24 +62,32 @@ demo.odile.fyi {
 		file_server
 	}
 
-	# The five tab-icon paths (ODL-505): the machine's own page server serves
-	# the reviewed set, so /login, /verify and the Webapp carry Odile's icon
-	# first-party. No Cache-Control header here — the service sends a one-year
-	# immutable on a 200 and no-store on its 404, and Caddy must not remember a
-	# missing icon as if it were the icon.
-	handle /favicon.ico {
-		reverse_proxy 127.0.0.1:8091
+	# Odile's three tab files (t_6b25f6e5): the sign-in page's own three
+	# links, beside the page in its root, answered by Caddy's file server so
+	# the tab is Odile's even while the first-visit service is down. The bytes
+	# are the committed `web/` renditions, pinned by the deploy and the check;
+	# one year, immutable. One named matcher for the three exact paths.
+	@tabicons path /favicon.ico /icon-32.png /apple-touch-icon.png
+	handle @tabicons {
+		root * /srv/odile-demo
+		header Cache-Control "public, max-age=31536000, immutable"
+		# Go's mime table calls .ico `image/vnd.microsoft.icon`; the page's
+		# link and the site's `image/x-icon` are the type a judge's browser and
+		# the check expect, so set it for the one file.
+		@favicon path /favicon.ico
+		header @favicon Content-Type image/x-icon
+		file_server
 	}
-	handle /icon-32.png {
-		reverse_proxy 127.0.0.1:8091
-	}
+
+	# The two sizes only the Webapp's shell links (ODL-505): the machine's own
+	# page server serves the reviewed set at its icon root. No Cache-Control
+	# header here — the service sends a one-year immutable on a 200 and
+	# no-store on its 404, and Caddy must not remember a missing icon as if it
+	# were the icon.
 	handle /icon-192.png {
 		reverse_proxy 127.0.0.1:8091
 	}
 	handle /icon-512.png {
-		reverse_proxy 127.0.0.1:8091
-	}
-	handle /apple-touch-icon.png {
 		reverse_proxy 127.0.0.1:8091
 	}
 
