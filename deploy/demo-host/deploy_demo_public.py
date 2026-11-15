@@ -122,6 +122,14 @@ VERIFY_LEDE = HERE / "verify-lede.html"
 CUSTOMER_SENTENCE = "No one at Odile can log in to a tenant machine."
 SECURITY_HEADERS = ("strict-transport-security:", "x-robots-tag:")
 MEASUREMENT = re.compile(r"\b([0-9a-f]{96})\b")
+#: The demo command section's own markers; `apply_demo_public.py` inserts the
+#: section (and replaces it in place). The deploy asserts the marker itself so
+#: a stale template cannot pass: a page with no section serves no command, and
+#: two sections give a judge two lines to choose from.
+COMMAND_BEGIN = "<!--demo-check-->"
+COMMAND_END = "<!--/demo-check-->"
+COMMAND_RE = re.compile(re.escape(COMMAND_BEGIN) + r".*?" + re.escape(COMMAND_END), re.S)
+DEMO_COMMAND = "./odile-verify https://demo.odile.fyi --expect"
 
 #: Every session this deploy's console opened, in order. A console's own
 #: `shell.exec` session is a row in the judge's sidebar, so each one is
@@ -269,6 +277,24 @@ def lede_problem(body: str, lede: str = "") -> str:
     return ""
 
 
+def demo_check_problem(body: str) -> str:
+    """Why the served /verify is not the demo's one marked command section.
+
+    The demo's promise is a section present once, holding the one-line
+    ``--expect`` command a judge copies. A stale page (no section) and a
+    doubled page (two lines to copy) both fail; the deploy records a FAIL, so
+    a run that leaves either behind cannot print PASS (ODL-563).
+    """
+    opens, closes = body.count(COMMAND_BEGIN), body.count(COMMAND_END)
+    if (opens, closes) != (1, 1):
+        return (f"the page carries {opens} {COMMAND_BEGIN!r} marker(s) and "
+                f"{closes} {COMMAND_END!r} closer(s), expected one of each")
+    section = COMMAND_RE.search(body)
+    if section is None or DEMO_COMMAND not in section.group(0):
+        return "the demo-check section prints no ./odile-verify --expect command"
+    return ""
+
+
 def verify_public(judge_password: str) -> tuple[bool, list[str]]:
     """Assert the card's definition of done over HTTPS, from HQ."""
     base = f"https://{DEMO_HOST}"
@@ -355,6 +381,11 @@ def verify_public(judge_password: str) -> tuple[bool, list[str]]:
         record(code == 200 and page_measurement is not None and problem == "",
                f"GET /verify -> {code} (the machine's access report, the demo lede)"
                + (f" — {problem}" if problem else ""))
+        section_problem = demo_check_problem(verify_text)
+        record(section_problem == "",
+               "the /verify page carries exactly one demo-check section with its "
+               "one-line --expect command"
+               + (f" — {section_problem}" if section_problem else ""))
         code, body, _ = http(base + "/attestation")
         try:
             report_measurement = str(json.loads(body).get("measurement") or "")
@@ -506,6 +537,10 @@ def self_test() -> int:
           and "./odile-verify https://demo.odile.fyi --expect {{MEASUREMENT}}" in command
           and "<script" not in command and "<img" not in command,
           "the demo command is one marked section with one measurement slot")
+    check(demo_check_problem("<main>%s</main>" % command.strip()) == ""
+          and bool(demo_check_problem("<main>%s</main>" % lede)),
+          "the served-page demo-check assertion passes the committed section and "
+          "fails a page that lacks it")
     check(RELEASE_SETUP_SOURCE.is_file()
           and "release-setup.done" in RELEASE_SETUP_SOURCE.read_text(encoding="utf-8"),
           "the release setup script this deploy installs writes its done marker once")

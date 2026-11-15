@@ -120,7 +120,11 @@ class LedeSourceTests(unittest.TestCase):
         text = flatten(self.markup)
         self.assertIn("odile holds this machine's boot key and can log in", text)
         self.assertIn("the demo password is public by design", text)
-        self.assertIn("every judge who signs in lands in the same workspace", text)
+        # ODL-563: the deck row (docs/CLAIMS.md §The demo machine), verbatim.
+        # "Every judge who signs in lands in the same workspace." was coined for
+        # the demo and was in no row; it must not come back.
+        self.assertIn("every judge sees these sessions and files", text)
+        self.assertNotIn("lands in the same workspace", text)
         self.assertNotIn(flatten(CUSTOMER_SENTENCE), text)
 
 
@@ -284,6 +288,20 @@ class DeployAndCheckTests(unittest.TestCase):
         self.assertIn(CUSTOMER_SENTENCE, check.lede_problem(body.replace(
             LEDE.read_text(encoding="utf-8").strip(),
             '<p class="lede">%s The only sign-in is yours.</p>' % CUSTOMER_SENTENCE)))
+
+    def test_the_deploy_refuses_a_page_without_exactly_one_demo_check_section(self):
+        """The deploy's own verify gate (ODL-563): the marker, not just the line.
+
+        A page with no section passes "some text" checks and serves a stale
+        demo; a page with two sections is ambiguous about which line a judge
+        copies. The deploy records a FAIL for either.
+        """
+        deploy = load(DEMO / "deploy_demo_public.py", "demo_deploy_marker_test")
+        section = (DEMO / "verify-command.html").read_text(encoding="utf-8").strip()
+        page = '<main><p class="lede">%s</p></main>' % LEDE.read_text(encoding="utf-8").strip()
+        self.assertIn("demo-check", deploy.demo_check_problem(page))
+        self.assertEqual(deploy.demo_check_problem(page + section), "")
+        self.assertIn("2", deploy.demo_check_problem(page + section + section))
 
 
 if __name__ == "__main__":
