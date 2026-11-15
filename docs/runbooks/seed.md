@@ -573,6 +573,7 @@ PY
 | Symptom | Likely cause | Fix |
 |---|---|---|
 | `410 used` on the first attempt | the installer retried or reused an old token | use the cached `/etc/odile/seed.json`; otherwise `rotate` and re-email |
+| `410 used` on a **reinstall** of an image already built | the token baked into that image's command line was spent by its first boot | un-end that row (§6a) — `rotate` mints a plaintext the sealed command line does not carry |
 | `410 expired` | more than 24 h between email and install | `rotate`; the ready email's token is dead by design |
 | `403 wrong_instance` | token minted for another instance (rebuild, swap) | `rotate --instance <new id>` |
 | `404 unknown_token` | typo, or a token from before a rotation | `token list --tenant <slug>`; rotate |
@@ -583,6 +584,110 @@ PY
 
 A refused exchange never consumes the token, so the fix is usually "correct the
 request and retry"; only `used`/`expired` need a rotation.
+
+### 6a. Reinstalling a machine re-presents a spent token
+
+`odile-firstboot` reads `odile.token=` from the measured command line and
+exchanges it once per fresh install. A machine rebuilt from the same image wipes
+`/etc/odile/seed.json`, so it exchanges again — with the same token, because the
+plaintext is baked into the image it has just booted. The ledger marked that
+token used at the first boot, so the second exchange answers `410 used`. The
+release installer says so and offers the one instruction that cannot work here:
+
+> error: seed exchange refused with 410 (used) and no cached seed exists.
+> The setup token is single-use; ask Odile for a new one, or restore
+> `/etc/odile/seed.json` and `/etc/odile/seed.sig` from the first run.
+
+A token minted by `rotate` goes nowhere near a command line already sealed into
+the image, so "a new one" is not available to a built image. `odile-firstboot`
+prints `odile-firstboot: fail-closed: seed token used` on the serial console and
+exits **0** by design (fail-closed is "not installed", never "failed boot"). The
+release-setup run behind it installs nothing and logs `=== rc=1` — and writes its
+done marker anyway, carrying `rc=1`, so every later boot prints
+`already converged` and the failure is sticky: `--force` is the only re-run
+([`demo-public.md`](demo-public.md) §6). The box comes up with the tenant's own
+Caddy block only and serves nothing.
+
+The repair is to un-end the row of the token that image carries, **before** the
+reinstall and in the same maintenance window:
+
+```sh
+# 1. a copy you can put back. The database is WAL, so a plain cp of the .db
+#    alone can miss rows that are committed but still only in the -wal
+sudo sqlite3 /var/lib/odile/waitlist.db \
+  ".backup '/root/.odile/waitlist.db.bak-$(date -u +%Y%m%dT%H%M%SZ)'"
+
+# 2. the token the image carries, and its row's hash (only the hash is stored)
+objcopy -O binary --only-section=.cmdline odile-tenant.efi /tmp/cmdline
+TOKEN=$(tr -d '\0' < /tmp/cmdline | tr ' ' '\n' | sed -n 's/^odile.token=//p')
+HASH=$(printf '%s' "$TOKEN" | sha256sum | awk '{print $1}')
+
+# 3. clear used_at and push the expiry out; the only rules are later than
+#    created_at (the table's CHECK) and later than the install
+sudo -u odile sqlite3 /var/lib/odile/waitlist.db \
+  "update seed_tokens set used_at = NULL,
+     expires_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now', '+30 days')
+   where token_hash = '$HASH';"
+
+# 4. read it back: no used_at, the new expiry
+sudo -u odile sqlite3 /var/lib/odile/waitlist.db \
+  "select substr(token_hash,1,8), used_at, expires_at
+     from seed_tokens where token_hash = '$HASH';"
+```
+
+`token list --tenant <slug>` shows the same row `live` again. Without the image
+in hand the blunt form names the instance instead of the hash:
+
+```sh
+sudo -u odile sqlite3 /var/lib/odile/waitlist.db \
+  "update seed_tokens set used_at = NULL,
+     expires_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now', '+30 days')
+   where instance_id = '<servury id>';"
+```
+
+That one un-ends **every** token the instance ever held, including the ones
+`rotate` and `bind` ended. Each still redeems only this tenant's own seed (§7),
+so it is not a cross-tenant hole — it is a wider set of plaintexts that can
+replay the seed, some of them in old ready emails. Name the hash when you can.
+
+What the reset does and does not move:
+
+- **Copy with `.backup`, not `cp`.** Measured 2026-11-15 on this schema: a row
+  a live writer had committed was in `/var/lib/odile/waitlist.db` and absent
+  from a plain `cp` of that one file, because WAL keeps it in the `-wal` until
+  the next checkpoint; `sqlite3 .backup` carried it. A `cp` is not a backup of
+  this database.
+- **Run the update as `odile`**, the user that owns `/var/lib/odile` (0700) and
+  runs the service. Root writes it too — SQLite gives the `-wal`/`-shm` it
+  creates the database file's owner, measured after a `kill -9` — but `odile`
+  is the one user the state directory is meant for.
+- **Reset and reinstall in one window.** While `used_at` is NULL the
+  *still-running* machine's boot-record POST is refused `409 not_redeemed`
+  (`record_for_token` requires a spent token). The **log** line says so — on a
+  converged boot the console is exactly `odile-firstboot: same` — the machine
+  keeps serving, and the reinstall's own exchange spends the row again.
+- **An expired row does not break a running machine, but it silences the boot
+  record.** The exchange installs once; the same token is also the bearer for
+  the boot-record POST on every boot, and `record_for_token` answers an expired
+  row `410 expired`. That is non-fatal (the console still says `same`), but the
+  ledger's boot record (`boot_release`, `recorded_at`, `first_visit`) stops
+  refreshing. Nothing on the box changes until the next reinstall, and a reset
+  re-arms the record along with the token.
+- **A replay hands over machine credentials.** The seed carries the NEAR key and
+  the mail relay secret, and a tenant provisioned as a rebuild also gets its
+  `rebuild` block, sealed under this same token (`/var/lib/odile/seed-rebuilds.json`,
+  the restic repository password). The reset re-arms a machine's credentials,
+  not just its install: whoever holds that image holds the token.
+
+A machine booted from an image **built with someone else's `bb.iid`** answers
+`403 wrong_instance` only while that token is unspent; once the token has been
+spent, the exchange answers `410 used` first (`redeem` checks `used_at` before
+`instance_id`). The exchange posts the `bb.iid` baked into the image, not the
+hardware's id, so staging the same image on a new Servury instance is still this
+case — the reset follows the id in the command line (or the token hash), never
+the new server id. A rebuild mints a fresh token bound to the new id
+(`odilectl provision`, or `token rotate --tenant <slug> --instance <new id>`)
+and builds a new line carrying it.
 
 ## 7. Security notes
 
