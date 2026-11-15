@@ -35,10 +35,13 @@ SH_FILES = $(shell find . $(PRUNE) -o \( -name '*.sh' -o -path './.githooks/pre-
 # exercise the mechanism: a distinct path stops serializing the host.
 CHECK_LOCK ?= /var/lock/odile-check.lock
 CHECK_LOCK_WAIT ?= 3600
+# `$(MAKE)` in a recipe is executed even under `make -n`, and would take the
+# real lock during a dry run. An alias keeps the recursion but lets -n print.
+MAKE_BIN := $(MAKE)
 CHECK_LOCK_PY := $(PYTHON) tools/check_lock.py --lock "$(CHECK_LOCK)" --wait "$(CHECK_LOCK_WAIT)" --
 
 check:
-	@$(CHECK_LOCK_PY) $(MAKE) --no-print-directory check-inner
+	@$(CHECK_LOCK_PY) $(MAKE_BIN) --no-print-directory check-inner
 
 # The gate proper. Separate from `check` so the lock spans every step -- the
 # light linters as well as `test` and `self-test` -- and two runs cannot
