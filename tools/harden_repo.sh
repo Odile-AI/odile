@@ -14,9 +14,12 @@
 #     tools/harden_repo.sh Odile-AI/odile --dry-run
 #
 # It is idempotent: every call is a PUT/PATCH/POST of the same target state,
-# and the verify step reads every control back from the API. Exit 0 means every
-# control that this plan makes available answered as asked. A control the plan
-# cannot provide, or one deferred by a documented decision, is printed as a
+# and the verify step reads every field this script sets back from the API —
+# including the ones a 200 can leave unchanged (the two GHAS-only scanning
+# fields), and the ones a parser could skip (has_wiki/has_projects, Actions
+# enabled, the tag ruleset's conditions, CodeQL's query suite). Exit 0 means
+# every control that this plan makes available answered as asked. A control the
+# plan cannot provide, or one deferred by a documented decision, is printed as a
 # `gap` and counted — never silently claimed as on. A `FAIL` exits 1.
 #
 # Profiles:
@@ -76,22 +79,27 @@ run() {
 }
 get() { gh api "$@"; }
 # A read that may legitimately fail: a route a free plan does not serve, or an
-# org endpoint a member token cannot see. Empty on failure; the caller decides
-# whether that is a gap or a failure. `gh api` writes the API's error body to
-# stdout on a 403/404, so the exit code — not the text — decides.
+# org endpoint a member token cannot see. It prints the body on success and
+# returns 1 on failure, so a boolean caller gets the truth and a body caller
+# writes `|| true`. `gh api` writes the API's error body to stdout on a 403/404,
+# so the exit code — not the text — decides. Before this, an `if` around a
+# failed read fell through its empty true-branch and exited 0, which is how a
+# 404ing Dependabot endpoint printed `ok`.
 tryget() {
     if out=$(gh api "$@" 2>/dev/null); then
         printf '%s' "$out"
+    else
+        return 1
     fi
 }
 
-VISIBILITY=$(tryget "repos/$REPO" --jq '.visibility')
+VISIBILITY=$(tryget "repos/$REPO" --jq '.visibility' || true)
 [ -n "$VISIBILITY" ] || { say "harden: cannot read $REPO (gh auth status?)"; exit 2; }
-OWNER_TYPE=$(tryget "repos/$REPO" --jq '.owner.type')
+OWNER_TYPE=$(tryget "repos/$REPO" --jq '.owner.type' || true)
 OWNER=${REPO%%/*}
 ORG_PLAN=
 if [ "$OWNER_TYPE" = "Organization" ]; then
-    ORG_PLAN=$(tryget "orgs/$OWNER" --jq '.plan.name')
+    ORG_PLAN=$(tryget "orgs/$OWNER" --jq '.plan.name' || true)
 fi
 say "harden: $REPO ($VISIBILITY, owner $OWNER_TYPE${ORG_PLAN:+, plan $ORG_PLAN}, profile $PROFILE)"
 
@@ -213,7 +221,7 @@ TAG_RULESET='release tags are immutable'
 if [ "$MODE" = "--dry-run" ]; then
     say "would: POST/PUT repos/$REPO/rulesets  tag=$TAG_RULESET rules=deletion,update,non_fast_forward,required_signatures"
 else
-    RULESET_ID=$(tryget "repos/$REPO/rulesets" --jq ".[] | select(.name == \"$TAG_RULESET\") | .id")
+    RULESET_ID=$(tryget "repos/$REPO/rulesets" --jq ".[] | select(.name == \"$TAG_RULESET\") | .id" || true)
     if [ -n "$RULESET_ID" ]; then
         run -X PUT "repos/$REPO/rulesets/$RULESET_ID" --input - <<JSON
 {
@@ -281,9 +289,9 @@ check "secret_scanning_push_protection" "enabled" \
 # (GHAS); the PATCH answers 200 without it and leaves them disabled, so the
 # read-back is the only honest source. With GHAS present a disabled field is a
 # failure; without it, a named gap.
-GHAS=$(tryget "repos/$REPO" --jq '.security_and_analysis.advanced_security.status')
+GHAS=$(tryget "repos/$REPO" --jq '.security_and_analysis.advanced_security.status' || true)
 for field in secret_scanning_non_provider_patterns secret_scanning_validity_checks; do
-    got=$(tryget "repos/$REPO" --jq ".security_and_analysis.$field.status")
+    got=$(tryget "repos/$REPO" --jq ".security_and_analysis.$field.status" || true)
     if [ "$got" = "enabled" ] || [ "$GHAS" = "enabled" ]; then
         check "$field" "enabled" "$got"
     else
@@ -304,6 +312,8 @@ check "allow_merge_commit" "false" "$(tryget "repos/$REPO" --jq '.allow_merge_co
 check "allow_rebase_merge" "false" "$(tryget "repos/$REPO" --jq '.allow_rebase_merge')"
 check "delete_branch_on_merge" "true" "$(tryget "repos/$REPO" --jq '.delete_branch_on_merge')"
 check "allow_update_branch" "true" "$(tryget "repos/$REPO" --jq '.allow_update_branch')"
+check "has_wiki" "false" "$(tryget "repos/$REPO" --jq '.has_wiki')"
+check "has_projects" "false" "$(tryget "repos/$REPO" --jq '.has_projects')"
 if tryget "repos/$REPO/vulnerability-alerts" >/dev/null; then
     check "dependabot_alerts" "enabled" "enabled"
 else
@@ -339,7 +349,7 @@ fi
 # commits made before signing was configured. The signing path itself is proven
 # (an SSH signing key plus commit.gpgsign); the requirement moves on once those
 # branches have drained.
-SIGNED=$(tryget "repos/$REPO/branches/main/protection" --jq '.required_signatures.enabled')
+SIGNED=$(tryget "repos/$REPO/branches/main/protection" --jq '.required_signatures.enabled' || true)
 if [ "$SIGNED" = "true" ]; then
     check "required_signatures.main" "true" "$SIGNED"
 else
@@ -347,6 +357,8 @@ else
 fi
 fi
 
+check "actions_enabled" "true" \
+    "$(tryget "repos/$REPO/actions/permissions" --jq '.enabled')"
 check "allowed_actions" "selected" \
     "$(tryget "repos/$REPO/actions/permissions" --jq '.allowed_actions // empty')"
 check "sha_pinning_required" "true" \
@@ -361,13 +373,20 @@ check "fork_pr_contributor_approval" "all_external_contributors" \
     "$(tryget "repos/$REPO/actions/permissions/fork-pr-contributor-approval" --jq '.approval_policy')"
 check "codeql_default_setup" "configured" \
     "$(tryget "repos/$REPO/code-scanning/default-setup" --jq '.state')"
+check "codeql_query_suite" "default" \
+    "$(tryget "repos/$REPO/code-scanning/default-setup" --jq '.query_suite')"
 
-RULESET=$(tryget "repos/$REPO/rulesets" --jq ".[] | select(.name == \"$TAG_RULESET\") | .id")
+RULESET=$(tryget "repos/$REPO/rulesets" --jq ".[] | select(.name == \"$TAG_RULESET\") | .id" || true)
 if [ -n "$RULESET" ]; then
     check "tag_ruleset.target" "tag" \
         "$(tryget "repos/$REPO/rulesets/$RULESET" --jq '.target // empty')"
     check "tag_ruleset.enforcement" "active" \
         "$(tryget "repos/$REPO/rulesets/$RULESET" --jq '.enforcement // empty')"
+    # The conditions are the difference between a rule that covers every tag and
+    # one with an escape hatch: `~ALL` with no exclude is the target state, and a
+    # ruleset carrying an exclude must not pass as "on".
+    check "tag_ruleset.conditions" "include=~ALL exclude=none" \
+        "$(tryget "repos/$REPO/rulesets/$RULESET" --jq '"include=" + ((.conditions.ref_name.include // []) | join(",")) + " exclude=" + (if ((.conditions.ref_name.exclude // []) | length) == 0 then "none" else ((.conditions.ref_name.exclude // []) | join(",")) end)')"
     for rule in deletion update non_fast_forward required_signatures; do
         check "tag_ruleset.$rule" "true" \
             "$(tryget "repos/$REPO/rulesets/$RULESET" --jq "any(.rules[]?; .type == \"$rule\") | tostring")"
@@ -389,7 +408,7 @@ if [ "$OWNER_TYPE" = "Organization" ]; then
         "org_sha_pinning|orgs/$OWNER/actions/permissions|.sha_pinning_required"
     do
         label=${probe%%|*}; rest=${probe#*|}; endpoint=${rest%%|*}; query=${rest#*|}
-        value=$(tryget "$endpoint" --jq "$query")
+        value=$(tryget "$endpoint" --jq "$query" || true)
         if [ -n "$value" ] && [ "$value" != "null" ]; then
             gap "org.$label" "$value" "read with a member token; set at org level"
         else

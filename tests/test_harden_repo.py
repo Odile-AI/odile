@@ -94,6 +94,8 @@ def base_state(owner: str = "savio-agent") -> dict:
             "allow_rebase_merge": False,
             "delete_branch_on_merge": True,
             "allow_update_branch": True,
+            "has_wiki": False,
+            "has_projects": False,
         },
         f"{repo}/private-vulnerability-reporting": {"enabled": True},
         f"{repo}/vulnerability-alerts": 204,
@@ -128,11 +130,12 @@ def base_state(owner: str = "savio-agent") -> dict:
             "days": 7, "maximum_allowed_days": 90},
         f"{repo}/actions/permissions/fork-pr-contributor-approval": {
             "approval_policy": "all_external_contributors"},
-        f"{repo}/code-scanning/default-setup": {"state": "configured"},
+        f"{repo}/code-scanning/default-setup": {"state": "configured", "query_suite": "default"},
         f"{repo}/rulesets": [{"id": 1, "name": "release tags are immutable"}],
         f"{repo}/rulesets/1": {
             "target": "tag",
             "enforcement": "active",
+            "conditions": {"ref_name": {"include": ["~ALL"], "exclude": []}},
             "rules": [{"type": t} for t in
                       ("deletion", "update", "non_fast_forward", "required_signatures")],
         },
@@ -202,14 +205,41 @@ class HardenRepoScript(unittest.TestCase):
     def test_tag_ruleset_and_codeql_are_read_back(self):
         result = self.run_script(base_state(), "--profile=public-open")
         for label in ("tag_ruleset.target = tag", "tag_ruleset.enforcement = active",
+                      "tag_ruleset.conditions = include=~ALL exclude=none",
                       "tag_ruleset.deletion = true", "tag_ruleset.update = true",
                       "tag_ruleset.non_fast_forward = true",
                       "tag_ruleset.required_signatures = true",
                       "codeql_default_setup = configured",
+                      "codeql_query_suite = default",
+                      "actions_enabled = true",
+                      "has_wiki = false", "has_projects = false",
                       "artifact_and_log_retention_days = 7",
                       "fork_pr_contributor_approval = all_external_contributors",
                       "selected_actions.checkout = true", "selected_actions.codeql = true"):
             self.assertIn(label, result.stdout)
+
+    # -- the other row that printed an ok it did not read --------------------
+    def test_missing_dependabot_route_is_a_failure(self):
+        state = base_state()
+        del state["repos/savio-agent/odile-probe/vulnerability-alerts"]
+        result = self.run_script(state, "--profile=public-open")
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("FAIL  dependabot_alerts = not enabled (want enabled)", result.stdout)
+        self.assertNotIn("every control is on", result.stdout)
+
+    def test_a_ruleset_with_an_exclude_is_a_failure(self):
+        state = base_state()
+        state["repos/savio-agent/odile-probe/rulesets/1"]["conditions"]["ref_name"]["exclude"] = ["refs/tags/nightly-*"]
+        result = self.run_script(state, "--profile=public-open")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("FAIL  tag_ruleset.conditions", result.stdout)
+
+    def test_a_non_default_codeql_query_suite_is_a_failure(self):
+        state = base_state()
+        state["repos/savio-agent/odile-probe/code-scanning/default-setup"]["query_suite"] = "extended"
+        result = self.run_script(state, "--profile=public-open")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("FAIL  codeql_query_suite = extended (want default)", result.stdout)
 
     # -- static: every field the script sets is read back --------------------
     def test_verify_block_reads_all_four_scanning_fields(self):
@@ -218,6 +248,13 @@ class HardenRepoScript(unittest.TestCase):
         for field in ("secret_scanning", "secret_scanning_push_protection",
                       "secret_scanning_non_provider_patterns",
                       "secret_scanning_validity_checks"):
+            self.assertIn(field, verify, f"the verify block does not read {field}")
+
+    def test_verify_block_reads_the_five_set_but_unread_fields(self):
+        text = SCRIPT.read_text(encoding="utf-8")
+        verify = text.split("harden: verifying", 1)[1]
+        for field in ("has_wiki", "has_projects", "actions_enabled",
+                      "tag_ruleset.conditions", "codeql_query_suite"):
             self.assertIn(field, verify, f"the verify block does not read {field}")
 
     def test_the_two_ignored_fields_are_patched_and_verified(self):
