@@ -70,3 +70,10 @@ ssh-fingerprint	*	sha256:74853506a072	constant	no	a host-key fingerprint in a bo
 credential-assignment	deploy/demo-host/apply_demo_public.py	sha256:8902d6757a1e	constant	yes	the retired demo session seed: a public constant, and the id is a uuid5 over it	never
 home-path	docs/*	sha256:2ba89d6fdadd	constant	no	the retired HQ demo account home in a dated architecture/runbook record; the fence forbids the mechanism, history keeps the record	never
 ssh-fingerprint	*	sha256:faa8e4b1225f	constant	no	the 2026-11-10 boot record's boot-key fingerprint in a dated image transcript; public key	never
+ssh-fingerprint	*	sha256:6c7ee9e61621	constant	no	the bench disk A's ed25519 SSH host-key fingerprint in image.md section 13.11; the public half generated on A's first boot, not a private key	never
+ssh-fingerprint	*	sha256:e4ed3a568cc9	constant	no	the bench disk A's rsa SSH host-key fingerprint in image.md section 13.11; the public half generated on A's first boot	never
+ssh-fingerprint	*	sha256:c696abba9bb8	constant	no	the bench disk A's ecdsa SSH host-key fingerprint in image.md section 13.11; the public half generated on A's first boot	never
+ssh-fingerprint	*	sha256:4a06410661a1	constant	no	the bench disk B's ed25519 SSH host-key fingerprint in image.md section 13.11; the public half of a second machine booted from the same image	never
+ssh-fingerprint	*	sha256:9dc5452993d1	constant	no	the bench disk B's rsa SSH host-key fingerprint in image.md section 13.11; the public half of a second machine booted from the same image	never
+ssh-fingerprint	*	sha256:e16a77fdc93e	constant	no	the bench disk B's ecdsa SSH host-key fingerprint in image.md section 13.11; the public half of a second machine booted from the same image	never
+ssh-fingerprint	*	sha256:dc2ac0dce274	constant	no	the measured boot key's fingerprint in image.md section 13.11.5's boot-record line; a public key in the measured command line	never
