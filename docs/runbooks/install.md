@@ -921,7 +921,7 @@ Verify (this is also step 2 of the ritual):
 ```sh
 $ ./installer/odile_install.py --verify-signature --pubkey installer/odile-signing-key.pub
 signing key  sha256 13e8c2aee8263f550033448c8193a82b89498f533f52943e09c14d22e5b036e2 · SHA256:ZyFEbkw2oetDml63XaHTix0kUrR2kAVGZaaeDAHvXu8
-signature: OK (sha256 fc723909051a0d589bc6738b0901561b5eef1f47116100830ac8b9954814120b)
+signature: OK (sha256 a15d560e36c8c041b83e131fbd2a7911bacc2e6878e412560c82098181b0ef92)
 ```
 
 The first value is `sha256sum` of the exact PEM file the run used — here the
@@ -942,19 +942,19 @@ A one-byte edit anywhere — including a change made after a valid signature was
 issued — fails against the same detached signature:
 
 ```sh
-$ cp installer/odile_install.py /tmp/edited.py
-$ printf 'x' >> /tmp/edited.py
-$ sha256sum /tmp/edited.py
-95e66fa9b5adc35fef58b20357843b1629cc629d6079bb784a031538dd6b58ae  /tmp/edited.py
-$ /usr/bin/python3 /tmp/edited.py --verify-signature \
+$ cp installer/odile_install.py /var/tmp/odile-t_ae833f3f-edited.py
+$ printf 'x' >> /var/tmp/odile-t_ae833f3f-edited.py
+$ sha256sum /var/tmp/odile-t_ae833f3f-edited.py
+2e9cebf3658acd82272e86c8546995e04e1e55c5e99cd60c42841b3d992d8036  /var/tmp/odile-t_ae833f3f-edited.py
+$ /usr/bin/python3 /var/tmp/odile-t_ae833f3f-edited.py --verify-signature \
       --pubkey installer/odile-signing-key.pub --signature installer/odile_install.py.sig
 signing key  sha256 13e8c2aee8263f550033448c8193a82b89498f533f52943e09c14d22e5b036e2 · SHA256:ZyFEbkw2oetDml63XaHTix0kUrR2kAVGZaaeDAHvXu8
-signature: BAD (sha256 95e66fa9b5adc35fef58b20357843b1629cc629d6079bb784a031538dd6b58ae)
+signature: BAD (sha256 2e9cebf3658acd82272e86c8546995e04e1e55c5e99cd60c42841b3d992d8036)
 $ echo $?
 3
 ```
 
-Recorded on 2026-11-14 from the merged installer that carries the handoff audit
+Recorded on 2026-11-15 from the merged installer that carries the handoff audit
 (ODL-208's `/usr/local/bin/odile-audit`, re-cut by the follow-up that reads
 `authorized_keys2` and scans `/root` for the boot key's private half) beside
 the strict-bar help surface (ODL-470's five answers), ODL-457's first-visit
@@ -973,8 +973,12 @@ follow-up's backup placement (`scripts/backup.py` at
 and ODL-504's re-embed of `/verify` and the first-visit page with the website
 icon links on the merged head that also carries `main`'s re-signed `-4` pair
 (`75a21aa`) and ODL-514's seed-certificate chain (the release key certifies the
-seed key; the first boot and the installer both walk it), sha256 `fc723909…`
-(616,368 bytes, `--verify-signature` OK); the edited copy above is 616,369
+seed key; the first boot and the installer both walk it), and t_ae833f3f's
+re-cut of the two embedded tenant pages and the skin onto BRAND.md's type
+roles (`/verify` and the first-visit form on the text serif, the display face
+only on the wordmark and h1/h2/h3; `templates/skin.yaml` names the display
+face on headings), sha256 `a15d560e…`
+(617,987 bytes, `--verify-signature` OK); the edited copy above is 617,988
 bytes. The BAD line
 prints the edited copy's own sha256 — the `sha256sum` above — so the hex moves
 whenever the installer's bytes do; `signature: BAD` and exit 3 are the
@@ -1651,6 +1655,27 @@ and the pin's hook (`949adeb2…`). The branch's pre-merge cut was
 616,403 bytes; manifest `f6dea119…`), byte-identical to
 `/opt/odile/release/release.json` (mtime 2026-11-14T17:20:27Z); the next
 `./deploy.sh` from a `main` that carries this merge publishes `-7`.
+
+**The `2026.11.15-1` cut (t_ae833f3f, the tenant pages' type).** ODL-503 moved
+public prose onto the platform text serif but left the two tenant pages and the
+skin on Cormorant: they ship byte-embedded in the signed installer, so that card
+deferred them. This cut re-embeds `web/verify.html` (page pin `00552a5c…`) and
+`web/first-visit.html` (`810a596d…`) with the roles BRAND.md §Typography names —
+18 px / 1.6 prose, 16 px / 1.6 notes, Cormorant only on the wordmark and
+h1/h2/h3 — and re-cuts `templates/skin.yaml` so its headings name the display
+face while body prose stays the bundle's UI sans. The installer is `a15d560e…`
+(617,987 bytes); `--self-test` PASS and `--verify-signature` OK.
+`release/manifest.json` is the `-7` document with only `installer_sha256` moved
+(`ccb8733a…`, `generated_at` 2026-11-14T15:12:51Z): `scripts/manifest.py diff`
+prints that one line, and the vendor pin `c73dad4d…`, the skills artifact
+`09be3cd1…` and the meter-free rows are unchanged. `release/release.json` names
+release `2026.11.15-1` at `2026-11-15T01:26:21Z`, installer `a15d560e…` and
+manifest `ccb8733a…` (`ed8b1db8…`). `tools/recut_release.py --check` prints
+`ok` for the installer, its release copy, both JSON documents and the pin's
+hook. It is committed, not deployed: measured 2026-11-15T01:28Z,
+`https://odile.fyi/release.json` still serves `2026.11.14-7` (installer
+`ae2c839d…`, 617,862 bytes; manifest `4caad797…`); the next `./deploy.sh` from
+a `main` that carries this merge publishes `2026.11.15-1`.
 
 The clock starts at the build's `uki.sh --sign` and stops when
 `https://<slug>.odile.fyi/login` answers 200 over TLS. The gate is 30 minutes.

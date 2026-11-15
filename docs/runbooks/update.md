@@ -652,9 +652,10 @@ which `main` re-signed in place when the live addresses left the tree, and
 ODL-514 took and deployed `2026.11.13-5` from its own branch. ODL-504 re-cut
 `2026.11.13-6` on top of the re-signed pair, and ODL-514 merged that head and
 cut and deployed `2026.11.13-7` (`install.md` §12.6). The release id must not be
-reused: `-8` and `-9` are carried by open branches and `2026.11.14-2` was
-taken and deployed by t_9c2d31f1, so the next cut in this tree takes
-`2026.11.14-3` (below).
+reused: `-8` and `-9` were carried by open branches and `2026.11.14-2` was
+taken and deployed by t_9c2d31f1, so the next cut at this head took
+`2026.11.14-3` (below); the tree has since cut `-4` through `-7` and
+`2026.11.15-1` (below).
 
 ```sh
 $ date -u +%Y-%m-%dT%H:%M:%SZ
@@ -819,6 +820,62 @@ committed, not deployed: measured 2026-11-14T07:58Z, the URL serves
 `2026.11.14-2` (installer `bac5e058…`, 616,145 bytes; manifest `0bcc735d…`),
 which still pins the old script, so the next `./scripts/deploy.sh` from a `main` that
 carries this merge publishes the new cut.
+
+### The cut that moves only the installer (2026-11-15)
+
+`tools/recut_release.py` is the cutter for a change that moves the installer and
+nothing else in the app layer: it re-derives the four hashes from the tree and
+re-signs them with the HQ key, so the manifest keeps the document a fresh root
+produced and only `installer_sha256` moves. t_ae833f3f re-embedded the two
+tenant pages and the skin onto BRAND.md's type roles, which is exactly that
+shape, so no scratch root was rebuilt.
+
+The release id is not invented by the tool: it reads `release/release.json`,
+so the id and `generated_at` were set there first, from the next free id read
+off the live document immediately before the cut (`2026.11.14-7`), and the
+timestamp is later than that cut's:
+
+```sh
+$ date -u +%Y-%m-%dT%H:%M:%SZ
+2026-11-15T01:26:21Z
+$ curl -fsSL https://odile.fyi/release.json | python3 -c 'import json,sys;d=json.load(sys.stdin);print(d["release"],d["generated_at"])'
+2026.11.14-7 2026-11-14T17:45:39Z
+$ /usr/bin/python3 tools/recut_release.py
+signed release/odile_install.py
+signed release/manifest.json
+signed release/release.json
+signed installer/odile_install.py
+installer a15d560e36c8c041b83e131fbd2a7911bacc2e6878e412560c82098181b0ef92
+manifest  ccb8733a3e90bae6c0de2a04a5155203bfd83cdacd3f57701ba042ce0d61225a
+--- verify ---
+  ok    installer a15d560e36c8c041…
+  ok    installer a15d560e36c8c041…
+  ok    installer size 617987…
+  ok    manifest ccb8733a3e90bae6…
+  ok    installer copy a15d560e36c8c041…
+  ok    signature installer/odile_install.py: signature: OK (sha256 a15d560e36c8c041…
+  ok    signature release/odile_install.py: signature: OK (sha256 a15d560e36c8c041…
+  ok    signature release/manifest.json: signature: OK (sha256 ccb8733a3e90bae6…
+  ok    signature release/release.json: signature: OK (sha256 ed8b1db8bef7a1ea…
+```
+
+The document that moved is one line, and the embedded installer still runs its
+own pins and its own signature:
+
+```sh
+$ git diff main -- release/manifest.json
+-  "installer_sha256": "ae2c839dabe457a1ec17674a0f13290ab81c2b99735c2e6f1798193f6e148244",
++  "installer_sha256": "a15d560e36c8c041b83e131fbd2a7911bacc2e6878e412560c82098181b0ef92",
+$ ./installer/odile_install.py --self-test | tail -1
+self-test: PASS
+$ ./installer/odile_install.py --verify-signature --pubkey installer/odile-signing-key.pub | tail -1
+signature: OK (sha256 a15d560e36c8c041b83e131fbd2a7911bacc2e6878e412560c82098181b0ef92)
+```
+
+`2026.11.15-1` is committed, not deployed: measured 2026-11-15T01:28Z,
+`https://odile.fyi/release.json` still serves `2026.11.14-7` (installer
+`ae2c839d…`, 617,862 bytes; manifest `4caad797…`), and the next
+`./scripts/deploy.sh` from a `main` that carries this merge publishes it.
 
 ## 6. The guest: check, apply, rollback
 
