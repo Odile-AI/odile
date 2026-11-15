@@ -13,12 +13,14 @@ from __future__ import annotations
 
 import base64
 import io
+import os
 import subprocess
 import sys
 import tarfile
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "tools"))
@@ -239,27 +241,73 @@ class OpaquePayloads(unittest.TestCase):
         self.assertEqual(found, [("bundle.tar.gz!member.txt", [])])
 
 
+def git_env() -> dict[str, str]:
+    """A clean environment: a fixture repo must never inherit GIT_DIR.
+
+    `.githooks/pre-commit` runs the suite with GIT_DIR / GIT_INDEX_FILE
+    pointing at the real repository, and in a linked worktree — every card
+    worktree — both are absolute. An inherited GIT_DIR makes `git init` in the
+    fixture commit *into* the caller's worktree and the scanner's `git ls-files`
+    walk read the outer tree instead of the fixture (the ODL-101 incident). Every
+    child this file spawns gets this environment: the fixture's own git call and
+    both scanner calls, because the scanner shells out to git itself.
+    """
+    env = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
+    env["GIT_CONFIG_NOSYSTEM"] = "1"
+    env["GIT_CONFIG_GLOBAL"] = os.devnull
+    env.update(
+        {
+            "GIT_AUTHOR_NAME": "Probe",
+            "GIT_AUTHOR_EMAIL": "probe@example.test",
+            "GIT_COMMITTER_NAME": "Probe",
+            "GIT_COMMITTER_EMAIL": "probe@example.test",
+        }
+    )
+    return env
+
+
+def run_drill(root: Path) -> tuple[subprocess.CompletedProcess[str], subprocess.CompletedProcess[str]]:
+    """Plant a probe, scan, delete it, scan again; the caller asserts the pair."""
+    subprocess.run(["git", "-C", str(root), "init", "-q"], check=True, env=git_env())
+    probe = root / "probe.txt"
+    probe.write_text(f"host {PUBLIC_IP}\nmail {EMAIL_REAL}\n", encoding="utf-8")
+    scanner = str(ROOT / "tools" / "leak_scan.py")
+    first = subprocess.run([sys.executable, scanner, "--tree", "--root", str(root)],
+                           capture_output=True, text=True, timeout=60, env=git_env())
+    probe.unlink()
+    second = subprocess.run([sys.executable, scanner, "--tree", "--root", str(root)],
+                            capture_output=True, text=True, timeout=60, env=git_env())
+    return first, second
+
+
 class Drill(unittest.TestCase):
     """The gate fails on a probe file, then passes once the probe is removed."""
 
     def test_fail_then_pass(self):
         with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            subprocess.run(["git", "-C", str(root), "init", "-q"], check=True)
-            probe = root / "probe.txt"
-            probe.write_text(f"host {PUBLIC_IP}\nmail {EMAIL_REAL}\n", encoding="utf-8")
-            scanner = str(ROOT / "tools" / "leak_scan.py")
-            first = subprocess.run([sys.executable, scanner, "--tree", "--root", str(root)],
-                                   capture_output=True, text=True, timeout=60)
+            first, second = run_drill(Path(tmp))
             self.assertEqual(first.returncode, 1, first.stdout + first.stderr)
             self.assertIn("FAIL:", first.stdout)
             self.assertIn("public-ip", first.stdout)
             self.assertIn("email", first.stdout)
-            probe.unlink()
-            second = subprocess.run([sys.executable, scanner, "--tree", "--root", str(root)],
-                                    capture_output=True, text=True, timeout=60)
             self.assertEqual(second.returncode, 0, second.stdout + second.stderr)
             self.assertIn("PASS:", second.stdout)
+
+    def test_the_drill_survives_an_inherited_git_dir(self):
+        # The pre-commit hook runs the suite from the real checkout with
+        # GIT_DIR / GIT_INDEX_FILE set; in a linked worktree both are absolute.
+        # The child environment must be scrubbed, or `git init` and the
+        # scanner's `git ls-files` read the outer tree and the probe is never
+        # seen (the ODL-101 incident F1 fixed in tests/test_leak_scan.py).
+        inherited = {
+            "GIT_DIR": str(ROOT / ".git"),
+            "GIT_INDEX_FILE": str(ROOT / ".git" / "index"),
+        }
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.dict(os.environ, inherited):
+            first, second = run_drill(Path(tmp))
+            self.assertEqual(first.returncode, 1, first.stdout + first.stderr)
+            self.assertIn("public-ip", first.stdout)
+            self.assertEqual(second.returncode, 0, second.stdout + second.stderr)
 
 
 if __name__ == "__main__":

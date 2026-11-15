@@ -42,10 +42,11 @@ Classes:
                          account the product ships.
 * ``basic-auth-url``     a URL that carries a username and a password.
 * ``phone``              an E.164 or national-format telephone number.
-* ``archive-member``     text or binary inside a tar / zip / gzip member.
-* ``forbidden-value``    a literal from the private list (``--forbid-file``),
-                         which is the one file a public tree must not carry: the
-                         vendor account ids and box ids.
+* ``forbidden-value``    a literal from the list named by ``--forbid-file``: the
+                         vendor account ids, box ids and checkout path that must
+                         never appear in a published tree. The list itself is the
+                         one file that carries them, so it is not scanned for its
+                         own literals.
 
 Opaque payloads. A base64 run longer than 128 characters is decoded and
 scanned; a UTF-16 payload is decoded before the text rules run; a DER
@@ -54,12 +55,32 @@ member is scanned at its own ``archive!member`` path.
 
 Allowlist discipline. Every exception is one line of ``leak-allow.tsv``:
 
-    rule<TAB>path-glob<TAB>sha256:<12><TAB>reason<TAB>expires YYYY-MM-DD
+    rule<TAB>path-glob<TAB>sha256:<12><TAB>class<TAB>credential<TAB>reason<TAB>expires
 
 The digest is over the matched value, so a row cannot hide a *different* value at
-the same path. A path glob may use ``*``; the row is still value-pinned, and
-there is no row without a digest. A row past its expiry is itself a finding. A
-row without a reason is itself a finding.
+the same path; a ``*`` path-glob is allowed because the digest still pins the one
+value, so there is no path-wide row.
+
+``class`` is either ``constant`` — a value that is permanent (a published
+password, a public key, a reserved-domain address, a test fixture) — and then
+expiry does not apply, so it reads ``never`` (a date is accepted and never
+expires); or ``debt`` — an allowance a card will clear — and then ``expires`` is
+that card's date (``YYYY-MM-DD``). A debt row past its date is a finding; a
+constant row never expires. A debt row carrying ``never`` is a format finding.
+
+``credential`` is ``yes`` when the value is a secret a person could present to a
+live system, and ``no`` otherwise. Every run prints the count beside the row
+count, so a reviewer sees how many secrets the allowlist waives.
+
+A row without a reason is itself a finding, and so is a row whose reason contains
+its own value: that row matches itself, so "every row matched" would prove
+nothing.
+
+The forbid list. The default is ``leak-forbid.txt`` at the root of the tree, and
+the public tree carries one (``tools/build_public_tree.py`` copies it). A missing
+default is printed in the header, so a skip is never silent; an explicitly named
+``--forbid-file`` that does not exist is a finding and exit 2, because the caller
+asked for that list and did not get it.
 
 Usage:
 
@@ -204,6 +225,9 @@ PHONE_NATIONAL = re.compile(
     r"(?<![\d])(?:\+?1[\s.-]?)?\([0-9]{3}\)\s*[0-9]{3}[-.][0-9]{4}(?![\d])"
     r"|(?<![\d])\b[0-9]{3}[-.][0-9]{3}[-.][0-9]{4}\b")
 PRINTABLE = re.compile(rb"[ -~]{6,}")
+ALLOW_CLASSES = ("constant", "debt")
+ALLOW_CREDENTIAL = ("yes", "no")
+ALLOW_DIGEST = re.compile(r"sha256:[0-9a-f]{12}$")
 
 # Machine identity: a silicon id, a volume id, a host's own ids.
 CHIP_ID = re.compile(r"(?<![0-9A-Fa-f])[0-9A-Fa-f]{128}(?![0-9A-Fa-f])")
@@ -258,10 +282,14 @@ class Allow:
     rule: str
     path: str
     digest: str
+    klass: str
+    credential: str
     reason: str
     expires: str
 
     def live(self, today: date) -> bool:
+        if self.klass == "constant":
+            return True
         try:
             return date.fromisoformat(self.expires) >= today
         except ValueError:
@@ -308,6 +336,31 @@ def shannon(value: str) -> float:
     return -sum(n / total * math.log2(n / total) for n in counts.values())
 
 
+def allow_problem(row: Allow, number: int) -> str:
+    """One format finding for a row that cannot mean what it says, else ''."""
+    where = f"{ALLOW_FILE}:{number}"
+    if row.klass not in ALLOW_CLASSES:
+        return (f"{where}: class must be {' or '.join(ALLOW_CLASSES)}, "
+                f"not {row.klass!r}")
+    if row.credential not in ALLOW_CREDENTIAL:
+        return (f"{where}: credential must be {' or '.join(ALLOW_CREDENTIAL)}, "
+                f"not {row.credential!r}")
+    if not ALLOW_DIGEST.match(row.digest):
+        return f"{where}: digest must read sha256:<12 lowercase hex>, not {row.digest!r}"
+    if not row.reason:
+        return f"{where}: a row without a reason is a finding"
+    # `class` decides what the expiry means: a constant never expires, so a date
+    # on one is accepted and ignored; a debt must carry the date that clears it.
+    if row.expires != "never":
+        try:
+            date.fromisoformat(row.expires)
+        except ValueError:
+            return f"{where}: expires must be never or YYYY-MM-DD, not {row.expires!r}"
+    if row.klass == "debt" and row.expires == "never":
+        return f"{where}: a debt row needs the date of the card that clears it, not 'never'"
+    return ""
+
+
 def load_allow(root: Path) -> tuple[list[Allow], list[str]]:
     path = root / ALLOW_FILE
     rows: list[Allow] = []
@@ -318,10 +371,16 @@ def load_allow(root: Path) -> tuple[list[Allow], list[str]]:
         if not line.strip() or line.startswith("#"):
             continue
         parts = line.split("\t")
-        if len(parts) != 5:
-            problems.append(f"{ALLOW_FILE}:{number}: expected 5 tab-separated fields")
+        if len(parts) != 7:
+            problems.append(f"{ALLOW_FILE}:{number}: expected 7 tab-separated fields "
+                            f"(rule, path-glob, sha256, class, credential, reason, expires)")
             continue
-        rows.append(Allow(*(p.strip() for p in parts)))
+        row = Allow(*(p.strip() for p in parts))
+        problem = allow_problem(row, number)
+        if problem:
+            problems.append(problem)
+            continue
+        rows.append(row)
     return rows, problems
 
 
@@ -756,7 +815,12 @@ def apply(report: Report, root: Path, allows: list[Allow], today: date,
         if hit is not None:
             if not hit.live(today):
                 report.findings.append(Finding("stale-allow", path, line, value,
-                                               note=f"expired {hit.expires}"))
+                                               note=f"expired {hit.expires} (debt)"))
+            elif value.strip() and value.strip() in hit.reason:
+                # The reason quotes the value it waives, so the row matches its
+                # own evidence and "every row matched" proves nothing.
+                report.findings.append(Finding("self-satisfying", path, line, value,
+                                               note="the row's reason contains its own value"))
             else:
                 report.allowed += 1
             continue
@@ -894,6 +958,9 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     allows, problems = load_allow(root)
+    credentials = sum(1 for row in allows if row.credential == "yes")
+    debt = sum(1 for row in allows if row.klass == "debt")
+    print(f"allowlist:       {len(allows)} rows, {credentials} credentials, {debt} debt")
     forbid: list[tuple[str, re.Pattern[str]]] = []
     forbid_problems: list[str] = []
     named = args.forbid_file is not None
@@ -914,9 +981,13 @@ def main(argv: list[str] | None = None) -> int:
             labels += 1
         print(f"forbid list:     {forbid_name} ({labels} labels)")
     elif named:
+        # The caller asked for this list; a scan without it would silently skip a
+        # whole class, so this is a finding, not a note.
         print(f"FINDING allow-file  --forbid-file {forbid_name}: no such file")
         return 2
     else:
+        # The default is absent in the private checkout, where the list lives
+        # under docs/ops/. Say so, so a skip is never silent.
         print(f"forbid list:     absent ({forbid_name}) — the forbidden-value class did not run")
     skip: set[str] = set()
     try:
