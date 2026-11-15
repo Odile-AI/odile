@@ -519,10 +519,10 @@ quote them.
   reviewed file, places it at `/usr/local/sbin/odile-support` (0755 root) and
   links `/usr/local/bin/odile-diag` beside it, so the A10 answer's two commands
   exist on a fresh tenant. The installer is re-signed and the release cut from
-  the converged tree is `2026.11.14-9` (installer `e47ae718…`, manifest
-  `6457af75…`), from a fresh scratch root the merged installer made (24/24,
-  run 2 `tenant: same`); `docs/runbooks/install.md` §12.6 carries the full
-  record.
+  the converged tree (which includes ODL-505's icon-aware first-visit page) is
+  `2026.11.15-2` (installer `fad35b94…`, manifest `3d81c8ae…`), from a fresh
+  scratch root the merged installer made (24/24, run 2 `tenant: same`);
+  `docs/runbooks/install.md` §12.6 carries the full record.
 
 Still held, and named in `docs/CLAIMS.md` §1a: the 30-day retention row (its
 page is `web/privacy.html`, outside this card's `touches`) and "Backups are

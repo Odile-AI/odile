@@ -1,27 +1,27 @@
 {
   "artifacts": {
     "installer": {
-      "sha256": "0c53a722240020464f7761940ef36158d61c2deb3bb92d05bf75fb22439e1983",
-      "size": 1356516,
+      "sha256": "fad35b9417534a0af0f8387483089717e9ace8d334b0186a86cb7ba1875d7d3c",
+      "size": 1413055,
       "url": "odile_install.py"
     },
     "skills": {
-      "sha256": "09be3cd1bd0556a9a8e9da0adbfd9c50dbf09607418f6a78fc7c97f3a3450722",
-      "size": 851865,
+      "sha256": "9d82653f88504fd9391fffaeb68b59d0e943651336efb7ccc1026dacba2730c8",
+      "size": 851945,
       "url": "skills.tar.gz"
     }
   },
   "boot": {
     "kernel": "6.12.115+deb13.1-amd64"
   },
-  "generated_at": "2026-11-14T22:50:20Z",
+  "generated_at": "2026-11-15T02:52:00Z",
   "manifest": {
-    "sha256": "3a532effcb977ad46f092d49d33669841c4c71f94158de07d854ba95cc9e5451",
+    "sha256": "3d81c8ae7370d16cdfe46cf66e03afe790d8a106bd44151c6a2a7a229367a4a4",
     "signature_url": "manifest.json.sig",
     "url": "manifest.json"
   },
-  "notes": "ODL-505: the website icon is the tab on the machine's own surfaces, re-cut at the merged head after ODL-521 (-7, the image's sign-in) and ODL-503-chrome landed on main. The five reviewed icon files (ODL-504 round 3: 8f5f9976, 28bedf61, 623f75f5, 35df8e7b, dd5386a9) travel inside the signed installer as base64, each pinned by sha256, and the installer writes them to /usr/local/lib/odile/icons; the first-visit service answers the five site paths with image/x-icon or image/png and cache-control public, max-age=31536000, immutable, HEAD with no body, a missing file as 404, and a table keyed by the request path so no filename comes from the request. Caddy splices the five exact handles before the Webapp catch-all only on a machine with the page server. The Webapp's tab is Odile's too: the installer copies odile-favicon.ico and odile-apple-touch-icon.png into the built bundle and repoints the shell's three tab links, strip-then-write, so a second run prints same and a rebuilt bundle converges on the next run; the vendor's apple-touch-icon.png is untouched, and the rebuild re-assert carries the name, the ODL-500 chrome and the tab together. Both embedded pages are re-cut on this head: web/verify.html bf4dda17 (t_781fc5cb's demo lede) and web/first-visit.html 4d7c4960. The manifest is a fresh-root build from an install that ran --first-visit: run 1 exit 0 (tenant: provisioned, install.sh c73dad4d matches the pin); after the first-visit page recorded signin_set_at, a further run read tenant: same with 0 write lines (before the visit, ODL-521's rule rewrites the placeholder sign-in hash by design); audit 539e205f, 48 skills, 9 packages. The id is -8: -5 was cut twice, -6 is t_781fc5cb's, -7 is odl/ODL-521's and on main; the live cut at this cut's measurement was 2026.11.14-6 (49f90a3c, 616,403 bytes), and the next deploy publishes this cut. The vendor pin c73dad4d, the skills artifact and the meter-free rows are unchanged.",
+  "notes": "ODL-474: the v3.10 held access sentences land after the M2 drills, on the ODL-505 merged head",
   "product": "odile",
-  "release": "2026.11.14-8",
+  "release": "2026.11.15-2",
   "schema": 1
 }
