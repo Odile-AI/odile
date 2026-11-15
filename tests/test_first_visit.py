@@ -442,7 +442,12 @@ class FirstVisitEnvTests(unittest.TestCase):
         self.assertFalse(self.installer.verify_password("odile-bench-not-a-secret", second))
 
     def test_the_session_secret_is_kept(self):
-        """ODL-521's boundary: the session secret is ODL-522's, not this card's."""
+        """ODL-522: the machine's secret survives every --first-visit run.
+
+        The first boot generates this machine's secret (install-stack.sh); the
+        release installer runs with --first-visit on every boot and must keep
+        it byte for byte, before and after the page sets the owner's sign-in.
+        """
         self.write_env(self.installer.hash_password("odile-bench-not-a-secret"))
         self.write_state(None)
         self.ensure()
@@ -456,6 +461,8 @@ class FirstVisitEnvTests(unittest.TestCase):
         self.assertFalse(changed)
         self.assertIsNone(password)
         self.assertEqual(self.stored()["HERMES_DASHBOARD_BASIC_AUTH_PASSWORD_HASH"], owner)
+        self.assertEqual(self.stored()["HERMES_DASHBOARD_BASIC_AUTH_SECRET"], self.secret,
+                         "the post-visit boot rotated the machine's session secret")
 
     def test_a_dry_run_says_it_would_rewrite_and_changes_nothing(self):
         self.write_env(self.installer.hash_password("odile-bench-not-a-secret"))
@@ -731,6 +738,49 @@ class SignInTests(unittest.TestCase):
         self.assertEqual((after.st_uid, after.st_gid), (before.st_uid, before.st_gid))
         self.assertNotIn(PASSWORD, page)
         self.assertEqual(headers.get("Cache-Control"), "no-store")
+
+    def test_the_post_keeps_the_machines_secret(self):
+        """ODL-522: setting the sign-in must not rotate the session secret.
+
+        Every session cookie the owner ever holds is signed with this value, so
+        a POST that regenerated it would sign the owner out of every browser on
+        the machine the moment they set their password. Only the hash line
+        moves.
+        """
+        before = [line for line in self.harness.env_text().splitlines()
+                  if line.startswith(fv.SECRET_KEY + "=")]
+        self.assertEqual(len(before), 1)
+        status, _, _ = self.harness.set_signin()
+        self.assertEqual(status, 200)
+        after = [line for line in self.harness.env_text().splitlines()
+                 if line.startswith(fv.SECRET_KEY + "=")]
+        self.assertEqual(after, before, "the POST rotated the machine's session secret")
+
+    def test_the_post_refuses_an_env_with_no_secret(self):
+        """A tenant with no signing key gets no password-only file.
+
+        The first boot generates this machine's secret; a .env without one
+        cannot sign a cookie, so the page refuses before it writes, leaves the
+        token unspent and the file untouched, and the retry that restores the
+        line succeeds. The refusal is a 500 the user can retry, not a silent
+        write of a dead sign-in.
+        """
+        without = "\n".join(
+            line for line in self.harness.env_text().splitlines()
+            if not line.startswith(fv.SECRET_KEY + "=")) + "\n"
+        self.harness.env.write_text(without, encoding="utf-8")
+        status, _, body = self.harness.set_signin()
+        self.assertEqual(status, 500)
+        self.assertIn("The sign-in was not set. Try again.", body)
+        self.assertIsNone(self.harness.load_state()["used_at"],
+                          "a refused write must leave the token unspent")
+        self.assertEqual(self.harness.env_text(), without,
+                         "a refused write must leave the .env exactly as it was")
+        # The token is still good: restoring the line and retrying works.
+        self.harness.env.write_text(tenant_env(), encoding="utf-8")
+        status, _, _ = self.harness.set_signin()
+        self.assertEqual(status, 200)
+        self.assertTrue(fv.verify_password(PASSWORD, self.harness.stored_hash()))
 
     def test_the_recovery_code_is_shown_once_and_stored_hashed(self):
         status, _, page = self.harness.set_signin()

@@ -2,8 +2,9 @@
 # runs before a commit. A red run means a broken tree, not a missing runner.
 #
 # Five jobs, one per surface:
-#   check            make check — prereqs, tree secret scan, tests, the
-#                    installer's self-test, compile, shellcheck, claims, brand
+#   check            make check — prereqs, tree secret scan, publication scan,
+#                    tests, the installer's self-test, compile, shellcheck,
+#                    claims, brand, roadmap
 #   fresh-check      clone HEAD and run the same gate inside the clone
 #   demo-check       the local demo's headless acceptance run, no network
 #   publish-lint     the publication gate over the built tree: the BASE
@@ -199,7 +200,10 @@ jobs:
       # A PR that needs a new allowlist row therefore cannot grant it to itself;
       # a maintainer lands the row on main first. The second step still runs the
       # tree's own scanner, so the pair catches both a weakened scanner and a
-      # widened allowlist.
+      # widened allowlist. The forbid list is named explicitly on the tree's
+      # own scan: it is carried into the tree at the root by the build, and a
+      # named file that is missing is a finding and exit 2, not a silently
+      # skipped class. The job is read-only: it opens no PR and pushes nothing.
       - name: Gate the tree with the base branch's scanner, not the PR's
         env:
           BASE_REF: ${{ github.base_ref }}
@@ -229,7 +233,7 @@ jobs:
           /usr/bin/python3 /tmp/base-leak_scan.py --tree --root "$PWD"
           cp /tmp/pr-leak-allow.tsv leak-allow.tsv
       - name: Scan the built tree with its own allowlist
-        run: /usr/bin/python3 tools/leak_scan.py --tree
+        run: /usr/bin/python3 tools/leak_scan.py --tree --forbid-file leak-forbid.txt
 
   history-secrets:
     name: history-secrets
