@@ -601,6 +601,19 @@ the Architect's, and this card edits no claim text. Card `t_bf99b807` asks the
 Product Lead to reconcile the rows; if it is a formal V0.1 scope change, the
 authority matrix sends it to Savio.
 
+**Product Lead ruling, 15 November 2026 (card `t_bf99b807`).** Recorded as
+**V0.1**, and not a formal scope change: D27 made the custom measured image the
+live V0.1 branch, R5 requires the sealed keyless boot (M1's exit criterion is
+that the seal boots), and ODL-454 — an M1 card — built the disk
+(`deploy/image/sealed-image.sh`) beside the UKI. What stays V0.2 is the row's
+other half: an appliance image that removes the installer step, because the
+installer still runs on the first boot. The dated corrections sit beside
+`docs/MVP-V0.1.md` §5's *Prebuilt appliance image* row (the row is §5, not §3)
+and in its decision log at D25 and D6; the deck's gap-3 sentence is unchanged
+(the v3.10c note records why). The keyholder property still waits on
+`t_51ebf972` publishing the re-keyed image — `t_28dda3b7` is the code, and the
+served image still carries the old keyslot seal.
+
 ### 15.3 What this annex does not change
 
 - **No access-model change.** Still user-only: no operator key, no root
