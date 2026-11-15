@@ -500,17 +500,28 @@ class DemoEgressTests(unittest.TestCase):
     def test_the_check_measures_the_egress_position(self) -> None:
         text = (ROOT / "deploy" / "demo-host" / "check_demo_host.sh").read_text(
             encoding="utf-8")
-        self.assertIn("command -v nft", text)
-        self.assertIn("the demo shell reaches the public internet", text)
+        # The two filter shapes the block proves, and the internet leg. A later
+        # change that drops one of them leaves the runbook claiming more than
+        # the check measures (verifier, round 1, t_d969339e).
+        for line in ("command -v nft",
+                     "for IPT in iptables iptables-legacy",
+                     '"$IPT" -S',
+                     "no loaded nft or iptables ruleset",
+                     "the demo shell reaches the public internet"):
+            with self.subTest(line=line):
+                self.assertIn(line, text)
 
     def test_the_runbook_records_it(self) -> None:
         text = (ROOT / "docs" / "runbooks" / "demo-public.md").read_text(
             encoding="utf-8")
-        for line in ("### Egress: no packet filter",
+        for line in ("### Egress: no `nft` or `iptables` ruleset",
                      "Internet traffic is untouched",
-                     "cannot reach any other loopback listener"):
+                     "cannot reach any other loopback listener",
+                     "fails if a loaded `nft` or `iptables` ruleset appears here"):
             with self.subTest(line=line):
                 self.assertIn(line, text)
+        # The paragraph must not widen the claim past what the block proves.
+        self.assertNotIn("fails if a packet filter appears", text)
 
 
 def free_port() -> int:

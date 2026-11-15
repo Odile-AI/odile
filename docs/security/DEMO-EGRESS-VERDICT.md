@@ -8,7 +8,8 @@ the HQ demo on 2026-11-13.
 the card recommends ("cannot reach any other service on this box") is also false
 for one class of listener. The true property, and the only one the shipped rule
 bought, is *the demo profile cannot reach any other loopback listener on the
-box*. The demo today — Odile's tenant machine — has no packet filter at all.
+box*. The demo today — Odile's tenant machine — has no loaded `nft` or
+`iptables` ruleset; what the check proves, and what it does not, is §4–§5.
 
 ## Verdict, per claim
 
@@ -16,7 +17,7 @@ box*. The demo today — Odile's tenant machine — has no packet filter at all.
 |---|---|---|---|---|
 | E1 | The demo profile cannot reach the internet except the meter and DNS | **block** | `sudo -u odiledemo curl … https://odile.fyi/` → 200 (2026-11-13, ODL-501); the filter file's own header: *"Internet traffic is untouched"* | Retire the sentence; do not re-cut it as an egress claim |
 | E2 | Reword: "cannot reach any other service on this box" | **block** | the rule matches only `ip daddr 127.0.0.0/8` and `ip6 daddr ::1`; a `0.0.0.0` listener stays reachable through the host's own address — measured here: `203.0.113.139:2222` open from the filtered uid | Say **loopback**: "cannot reach any other loopback listener on the box" |
-| E3 | Today's demo machine is egress-restricted | **block** | measured on `demo.odile.fyi` as `tenant`: `command -v nft` → absent, `https://odile.fyi/` → 200, `https://example.com/` → 200 | Record the position; the runbook paragraph and the check's egress block do |
+| E3 | Today's demo machine is egress-restricted | **block** | measured on `demo.odile.fyi` as `tenant`: `command -v nft` → absent, `command -v iptables iptables-legacy` → absent, `nft list ruleset` → not found, `https://odile.fyi/` → 200, `https://example.com/` → 200 | Record the position; the runbook paragraph and the check's egress block do |
 | E4 | Option 2 — close the internet on the demo | **rejected** | it is now a *tenant* machine: NEAR AI, backups and updates need egress; it changes the access surface, so it needs Savio's line; and an egress rule still says nothing about loopback | Do not do it |
 
 ## 1. What the rule did
@@ -86,6 +87,8 @@ tenant
 root
 $ command -v nft || echo nft-absent
 nft-absent
+$ command -v iptables iptables-legacy || echo iptables-absent
+iptables-absent
 $ sudo -n nft list ruleset
 sudo: nft: command not found
 $ curl -s -o /dev/null -w '%{http_code}\n' https://odile.fyi/
@@ -97,25 +100,27 @@ nameserver 1.1.1.1
 nameserver 9.9.9.9
 ```
 
-`iptables` is absent too. The same `/etc/odile-demo` directory, `odiledemo`
-uid, `odile-demo*` units and `inet odile_demo` table are gone from HQ — checked
-on 2026-11-15 (`getent passwd odiledemo` → nothing; `nft list ruleset | grep -c
-odile_demo` → 0; `systemctl list-unit-files 'odile-demo*'` → 0 units).
+`iptables` is absent too (`command -v iptables iptables-legacy` → nothing, so
+the block's `-S` legs do not run). The same `/etc/odile-demo` directory,
+`odiledemo` uid, `odile-demo*` units and `inet odile_demo` table are gone from
+HQ — checked on 2026-11-15 (`getent passwd odiledemo` → nothing; `nft list
+ruleset | grep -c odile_demo` → 0; `systemctl list-unit-files 'odile-demo*'` →
+0 units).
 
 The check's new egress block ran in place later the same day
-(`check_demo_host.sh --tenant`): `== egress` → *no nft on the demo machine (no
-packet filter)* and *the demo shell reaches the public internet: 200*. The run
-finished **98 passed, 1 failed**; the failure is the unrelated `odile timers on
-this machine` line, which ODL-561 is restoring on this tenant as this card is
-written.
+(`check_demo_host.sh --tenant`, script sha256 `ce834592…`): `== egress` → *no
+loaded nft or iptables ruleset on the demo machine* and *the demo shell reaches
+the public internet: 200*. The run finished **98 passed, 1 failed**; the
+failure is the unrelated `odile timers on this machine` line, which ODL-561 is
+restoring on this tenant as this card is written.
 
 ## 4. What changed
 
 | File | Change |
 |---|---|
-| `docs/runbooks/demo-public.md` §3 | new *Egress: no packet filter* paragraph: today's transcript, the retired filter's own header, the exact loopback wording, and the `0.0.0.0` blind spot |
-| `deploy/demo-host/check_demo_host.sh` §3b | the egress block: `nft` absent, and `sudo -u tenant curl https://odile.fyi/` → 200 — a filter appearing fails the check, which forces the paragraph's re-cut |
-| `tests/test_no_retired_demo_code.py` | `DemoEgressTests` pins the pair (the check's two facts, the runbook's three lines) so one cannot be dropped without the other |
+| `docs/runbooks/demo-public.md` §3 | new *Egress: no `nft` or `iptables` ruleset* paragraph: today's transcript, the retired filter's own header, the exact loopback wording, and the `0.0.0.0` blind spot |
+| `deploy/demo-host/check_demo_host.sh` §3b | the egress block: no loaded `nft` or `iptables` ruleset, and `sudo -u tenant curl https://odile.fyi/` → 200 — a filter of either shape appearing fails the check, which forces the paragraph's re-cut. A filter outside those shapes is §5 |
+| `tests/test_no_retired_demo_code.py` | `DemoEgressTests` pins the pair (the check's three facts, the runbook's four lines) so one cannot be dropped without the other |
 | `docs/backlog.yaml` (private writeback) | ODL-501's sentence re-cut to the loopback property and its `retired:` note extended with this card's measurement and the HQ-demo deletion |
 
 No public page sentence changed and no `CLAIMS.md` row was added: the paragraph
@@ -126,9 +131,10 @@ not a security one.
 
 ## 5. Residual
 
-- The check looks for `nft`. A filter that is not `nft` — an eBPF program, a
-  container network, `iptables` (also absent today) — would pass it. Adding one
-  is a card, and the runbook paragraph would be re-cut with it.
+- The check proves `nft` and `iptables` only. A filter outside them — an eBPF
+  program, a container network that does not program nft or iptables — would
+  pass it, and the runbook paragraph says so. Closing that is a card: it needs
+  a measurement of what the filter programs, not a binary's presence.
 - Full egress is the *tenant* design, not a demo defect: a tenant machine must
   reach NEAR AI, the backup target and the release channel. The demo's exposure
   is the published password and the root shell behind it, which the deck states.

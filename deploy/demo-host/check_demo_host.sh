@@ -389,16 +389,29 @@ else
     ok "no hermes process holds a public listener"
 fi
 
-# 3b. Egress: no packet filter, and the demo shell reaches the public internet.
-# The HQ demo's rule was loopback-only — its own header: "Internet traffic is
-# untouched" — and it retired with the HQ demo (t_9d7ee536). A filter added
-# here makes the runbook's "Egress: no packet filter" paragraph false, so this
-# block fails first and the paragraph is re-cut with it (t_d969339e).
+# 3b. Egress: no loaded nft/iptables ruleset, and the demo shell reaches the
+# public internet. The HQ demo's rule was loopback-only — its own header:
+# "Internet traffic is untouched" — and it retired with the HQ demo (t_9d7ee536).
+# A loaded ruleset added here makes the runbook's "Egress: no nft or iptables
+# ruleset" paragraph false, so this block fails first and the paragraph is
+# re-cut with it (t_d969339e). It proves those two shapes — the ones a later
+# change would plausibly install. An eBPF or non-nft container-network filter
+# would pass it; that is the verdict's residual, docs/security/DEMO-EGRESS-VERDICT.md §5.
 echo "== egress"
-if command -v nft >/dev/null 2>&1; then
-    bad "nft is installed on the demo machine (a packet filter exists; re-cut the runbook's egress paragraph)"
+FILTER=""
+if command -v nft >/dev/null 2>&1 && [ -n "$(nft list ruleset 2>/dev/null)" ]; then
+    FILTER="nft ruleset"
+fi
+for IPT in iptables iptables-legacy; do
+    command -v "$IPT" >/dev/null 2>&1 || continue
+    if "$IPT" -S 2>/dev/null | grep -Eq '^-A |^-P [A-Z]+ (DROP|REJECT)$'; then
+        FILTER="${FILTER:+$FILTER + }$IPT rule or non-ACCEPT policy"
+    fi
+done
+if [ -n "$FILTER" ]; then
+    bad "a ruleset is loaded on the demo machine ($FILTER; re-cut the runbook's egress paragraph)"
 else
-    ok "no nft on the demo machine (no packet filter)"
+    ok "no loaded nft or iptables ruleset on the demo machine"
 fi
 expect "the demo shell reaches the public internet" "200" \
     "$(sudo -u "$DEMO_USER" curl -s -o /dev/null -w '%{http_code}' --max-time 10 https://odile.fyi/)"
