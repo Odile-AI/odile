@@ -663,11 +663,16 @@ What the reset does and does not move:
   is the one user the state directory is meant for.
 - **Reset and reinstall in one window.** While `used_at` is NULL the
   *still-running* machine's boot-record POST is refused `409 not_redeemed`
-  (`record_for_token` requires a spent token). The console line says so, the
-  machine keeps serving, and the reinstall's own exchange spends the row again.
-- **Expiry never breaks a running machine.** The token is read at install and
-  nowhere else, so an expired row costs nothing until the next reinstall — this
-  one included.
+  (`record_for_token` requires a spent token). The **log** line says so — on a
+  converged boot the console is exactly `odile-firstboot: same` — the machine
+  keeps serving, and the reinstall's own exchange spends the row again.
+- **An expired row does not break a running machine, but it silences the boot
+  record.** The exchange installs once; the same token is also the bearer for
+  the boot-record POST on every boot, and `record_for_token` answers an expired
+  row `410 expired`. That is non-fatal (the console still says `same`), but the
+  ledger's boot record (`boot_release`, `recorded_at`, `first_visit`) stops
+  refreshing. Nothing on the box changes until the next reinstall, and a reset
+  re-arms the record along with the token.
 - **A replay hands over machine credentials.** The seed carries the NEAR key and
   the mail relay secret, and a tenant provisioned as a rebuild also gets its
   `rebuild` block, sealed under this same token (`/var/lib/odile/seed-rebuilds.json`,
