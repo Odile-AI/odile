@@ -2,8 +2,9 @@
 #
 #   rule <TAB> path-glob <TAB> sha256:<12> <TAB> reason <TAB> expires YYYY-MM-DD
 #
-# Rules: a row matches one rule, one path glob, and one VALUE digest. A different
-# value at the same path is still a finding. There is no path-wide row.
+# Rules: a row matches one rule, one path glob, and one VALUE digest. A path glob may
+# use `*`; the row is still value-pinned. A different value at the same path is still a
+# finding, and there is no row without a digest.
 #
 # An expired row is a finding, so a debt cannot outlive its date. Delete the row
 # when the value is gone; do not move the date forward without a reason here.
@@ -15,7 +16,6 @@ credential-assignment	tests/test_first_visit.py	sha256:92d152347635	test fixture
 credential-assignment	tests/test_first_visit.py	sha256:e024fef88814	test fixture: a backup password, never used to encrypt anything	2027-12-31
 credential-assignment	tests/test_first_visit.py	sha256:7d6c1d64963a	test fixture: base64 of the literal 'not-the-image-secret', the bench image's placeholder session secret the boot must keep	2027-12-31
 high-entropy	*	sha256:bdcaa7157457	base64 of a public SSH key inside a measured command line or a recorded report	2027-12-31
-high-entropy	tests/test_first_visit.py	sha256:9468ffd30a44	the scanner's TOKEN rule swallows `NAME=value`, so this is row 5's session-secret placeholder with its variable name attached — a name AND a value	2027-12-31
 high-entropy	tests/test_secret_scan.py	sha256:d30742eb5af9	a literal in secret_scan's own allowlist; the test asserts secret_scan allowlists it, not that leak_scan reports it	2027-12-31
 private-key	tests/test_claim.py	sha256:a47672cb25d2	the redacted fixture: the marker pair itself is the test's subject, and a real key here is still a finding	2027-12-31
 email	*	sha256:fa5fbf8a030b	a fixture recipient in the mail-transport and DSN tests; a real Gmail address standing in as the stranger's mailbox	2027-12-31
@@ -28,3 +28,31 @@ home-path	*	sha256:e50425b752fd	`/home/tenant/` is the tenant account the produc
 home-path	*	sha256:e78fb33ae4ec	`/home/odiletest387/` is a throwaway account in an install transcript	2027-12-31
 public-ip	docs/security/LEAK-CONTROL-VERDICT.md	sha256:6c4a9f5f0de6	the card's drill transcript, verbatim: the probe address the gate must reject	2027-12-31
 email	docs/security/LEAK-CONTROL-VERDICT.md	sha256:8d38531c89cb	the card's drill transcript, verbatim: the probe mailbox the gate must reject	2027-12-31
+vendor-resource-id	*	sha256:3890f50e6844	the live tenant slug; the public build replaces it with odl-fake01, and the forbid list names it as a backstop	2027-12-31
+vendor-resource-id	*	sha256:eaf6312fa1f2	the live tenant's Servury instance id; the public build replaces it with 0badc0de, and the forbid list names it	2027-12-31
+vendor-resource-id	*	sha256:bbd2e45d545b	the bench machine's instance id in two recorded reports; the public build replaces it with cafebabe	2027-12-31
+vendor-resource-id	*	sha256:421fe1d07ee8	the HQ host name in two recorded reports; the public build replaces it with hostfake	2027-12-31
+machine-identity	tests/fixtures/verify/*	sha256:4368780a2f64	the HQ chip id in three recorded SEV-SNP reports; the report signature covers 0x1A0, so the bytes cannot be redacted without invalidating it. Synthetic-report fixture proposed in ODL-906-F3's note	2027-12-31
+machine-identity	tests/fixtures/verify/*	sha256:01eea00bcaf2	the tenant chip id in its recorded report and in the VCEK HWID; both are AMD-signed, so the bytes cannot be redacted. Synthetic report/VCEK proposed in ODL-906-F3's note	2027-12-31
+machine-identity	tests/fixtures/verify/tenant-vcek.der	sha256:afd46d61bb03	the AMD-issued VCEK certificate serial; the certificate signature covers it, so it cannot be redacted. Synthetic VCEK proposed in ODL-906-F3's note	2027-12-31
+machine-identity	docs/runbooks/image-bench.md	sha256:64a777ff70aa	the real volume's PARTUUID inside a recorded measured command line; redaction would invalidate the recorded measurement	2027-12-31
+credential-assignment	tests/test_first_visit.py	sha256:87cbebfeebc0	test fixture: a passphrase with no digit, now visible to the extended name list	2027-12-31
+credential-literal	README.md	sha256:b2132046eb76	the published demo password in the README table; public by design, the same value as the login page row	2027-12-31
+phone	docs/security/LEAK-CONTROL-VERDICT.md	sha256:086a44ba587b	the card's drill transcript, verbatim: the national-format probe number the gate must reject	2027-12-31
+ssh-fingerprint	*	sha256:cdb5c8d85d05	the image's boot-key fingerprint in a pin; public key, no private half in the tree	2027-12-31
+ssh-fingerprint	*	sha256:f3aa8305f166	the recorded attestation's boot-key fingerprint in an architecture note; public key	2027-12-31
+ssh-fingerprint	*	sha256:8918b57a32f7	the tenant's host-key fingerprint in the ceremony runbook; a public host identity, already published	2027-12-31
+ssh-fingerprint	*	sha256:6fe16e81f405	the owner's boot-key fingerprint in the ceremony runbook; public key	2027-12-31
+ssh-fingerprint	*	sha256:b893471b6982	the measured boot-key fingerprint in an image runbook; public key	2027-12-31
+ssh-fingerprint	*	sha256:fa4d52173913	a first-boot record's boot-key fingerprint in an image transcript; public key	2027-12-31
+ssh-fingerprint	*	sha256:5e91f6aa5b50	the release signing key's fingerprint; public by design in every signed-release transcript	2027-12-31
+ssh-fingerprint	*	sha256:7c017970c6eb	the initramfs host-key fingerprint in the provision runbook; a public host identity	2027-12-31
+ssh-fingerprint	*	sha256:b0bde43128ce	a support-grant key fingerprint in the support runbook; public key	2027-12-31
+ssh-fingerprint	*	sha256:feba186340a4	a support-grant key fingerprint in the support runbook; public key	2027-12-31
+ssh-fingerprint	*	sha256:3b760e9b1bbb	a pending support key's fingerprint in the support runbook; public key	2027-12-31
+ssh-fingerprint	*	sha256:597b04219c69	the measured boot-key fingerprint in the strict-claims verdict; public key	2027-12-31
+ssh-fingerprint	*	sha256:3b6d12d33f64	the measured boot-key fingerprint printed by the installer's access report; public key	2027-12-31
+ssh-fingerprint	*	sha256:5aac542ccbea	the boot-key fingerprint asserted by the provision script; public key	2027-12-31
+ssh-fingerprint	*	sha256:d013dbd86272	a boot-key fingerprint in an audit fixture; public key	2027-12-31
+ssh-fingerprint	*	sha256:74853506a072	a host-key fingerprint in a boot-record fixture; public host identity	2027-12-31
+credential-assignment	deploy/demo-host/apply_demo_public.py	sha256:8902d6757a1e	the retired demo session seed: a public constant, and the id is a uuid5 over it	2027-12-31
