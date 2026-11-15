@@ -1262,6 +1262,35 @@ class PageTests(unittest.TestCase):
         self.assertIn("border-bottom:1px solid var(--edge)", text)
         self.assertIn(".error{margin:8px 0 0;font-size:.94rem;font-style:italic", text)
 
+    def test_the_page_reads_in_the_text_face_and_keeps_the_display_roles(self):
+        """The first-visit form is the same type roles as the public pages.
+
+        ODL-503 re-cut prose onto the platform text serif; this page ships
+        byte-embedded in the signed installer, so it was left on Cormorant at
+        1.55 leading. The prose is 18 px / 1.6, notes 16 px / 1.6, the small
+        caps labels stay 10 px but on the text face, and Cormorant is named
+        only by the @font-face and the --serif token (the h1 and wordmark).
+        """
+        text = PAGE.read_text(encoding="utf-8")
+        self.assertIn(':root{--serif:"Cormorant Garamond","Iowan Old Style",'
+                      '"Palatino Linotype",Palatino,Georgia,serif;'
+                      '--text:"Iowan Old Style","Palatino Linotype",Palatino,Georgia,'
+                      '"DejaVu Serif",serif;', text)
+        self.assertIn("font:400 18px/1.6 var(--text);", text)
+        self.assertIn(".lede{margin:0 0 24px;font-size:18px;line-height:1.6;", text)
+        self.assertIn(".note{margin:0;font-size:16px;line-height:1.6;", text)
+        self.assertIn("h1,h2,h3,.brand,.mark,.wordmark,.focus{font-family:var(--serif)}", text)
+        self.assertNotIn("font:400 18px/1.55", text,
+                         "the prose is back on the display face at display leading")
+        self.assertNotIn("font-size:.92rem;line-height:1.5", text,
+                         "the note is back at the pre-re-cut size")
+        self.assertEqual(text.count('"Cormorant Garamond"'), 2,
+                         "the display face is set on a prose or label selector")
+        self.assertEqual(text.count("font:600 10px/1 var(--text);"), 4,
+                         "a small caps label is not on the text face")
+        self.assertIn("max-width:60ch", text, "the reading measure moved")
+        self.assertIn("max-width:54ch", text, "the note measure moved")
+
 
 class IconRouteTests(unittest.TestCase):
     """The tenant's own tab icon (ODL-505): five paths, first-party, immutable."""

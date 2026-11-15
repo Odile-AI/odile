@@ -983,11 +983,15 @@ class AccessReportTests(unittest.TestCase):
         five access lines as that machine's. The heading names the machine;
         the caption keeps the method and the date.
         """
-        page = (ROOT / "web" / "verify-public.html").read_text(encoding="utf-8")
-        self.assertIn('<h2 id="access">The access report, from a test machine</h2>', page)
-        self.assertIn('<p class="caption">Read from the machine, 10 November 2026</p>', page)
-        self.assertNotIn("Bench report", page)
-        self.assertNotIn("odl458", page, "the page still carries the internal card id")
+        for name in ("verify.html", "verify-public.html"):
+            with self.subTest(page=name):
+                page = (ROOT / "web" / name).read_text(encoding="utf-8")
+                self.assertIn('<h2 id="access">The access report, from a test machine</h2>', page)
+                self.assertIn('<p class="caption">Read from the machine, 10 November 2026</p>',
+                              page)
+                self.assertNotIn("Bench report", page)
+                self.assertNotIn("odl458", page,
+                                 "the page still carries the internal card id")
 
     def test_the_page_uses_the_sheet_shell_scale(self) -> None:
         """The shell's two roles, not the /faq scale this page inherited.
@@ -996,16 +1000,18 @@ class AccessReportTests(unittest.TestCase):
         row; the 4 px pass moved the blocks around them. These are the exact
         declarations the brand review measured on the rendered page.
         """
-        page = (ROOT / "web" / "verify-public.html").read_text(encoding="utf-8")
-        style = page.split("<style>", 1)[1].split("</style>", 1)[0]
-        self.assertIn("font-size:2rem;font-weight:500;letter-spacing:-.03em", style)
-        self.assertIn(
-            "h2{margin:0 0 16px;font-size:clamp(1.9rem,3vw,2.6rem);"
-            "line-height:1.04;letter-spacing:-.02em;font-weight:500}", style)
-        self.assertIn("section{margin:48px 0 0;padding-top:24px", style)
-        self.assertIn("section{margin-top:32px;padding-top:24px}", style)
-        self.assertIn(".gaps li{display:grid;grid-template-columns:2.2rem minmax(0,1fr);"
-                      "gap:0 12px;margin:0 0 24px", style)
+        for name in ("verify.html", "verify-public.html"):
+            with self.subTest(page=name):
+                page = (ROOT / "web" / name).read_text(encoding="utf-8")
+                style = page.split("<style>", 1)[1].split("</style>", 1)[0]
+                self.assertIn("font-size:2rem;font-weight:500;letter-spacing:-.03em", style)
+                self.assertIn(
+                    "h2{margin:0 0 16px;font-size:clamp(1.9rem,3vw,2.6rem);"
+                    "line-height:1.04;letter-spacing:-.02em;font-weight:500}", style)
+                self.assertIn("section{margin:48px 0 0;padding-top:24px", style)
+                self.assertIn("section{margin-top:32px;padding-top:24px}", style)
+                self.assertIn(".gaps li{display:grid;grid-template-columns:2.2rem minmax(0,1fr);"
+                              "gap:0 12px;margin:0 0 24px", style)
 
     def test_the_terminal_selection_is_a_visible_pair(self) -> None:
         """Selecting the fingerprint in the terminal must show a highlight.
@@ -1014,32 +1020,69 @@ class AccessReportTests(unittest.TestCase):
         black panel that paints ink on ink (1.05:1) and the highlight vanishes
         while a reader copies the fingerprint or the measurement.
         """
-        page = (ROOT / "web" / "verify-public.html").read_text(encoding="utf-8")
-        style = page.split("<style>", 1)[1].split("</style>", 1)[0]
-        rule = re.search(
-            r"pre code::selection\{background:var\(--([a-z-]+)\);color:var\(--([a-z-]+)\)\}",
-            style)
-        self.assertIsNotNone(rule, "no terminal ::selection pair in the page")
-        assert rule is not None
+        for name in ("verify.html", "verify-public.html"):
+            with self.subTest(page=name):
+                page = (ROOT / "web" / name).read_text(encoding="utf-8")
+                style = page.split("<style>", 1)[1].split("</style>", 1)[0]
+                rule = re.search(
+                    r"pre code::selection\{background:var\(--([a-z-]+)\);color:var\(--([a-z-]+)\)\}",
+                    style)
+                self.assertIsNotNone(rule, "no terminal ::selection pair in the page")
+                if rule is None:  # pragma: no cover - the assertion above failed
+                    continue
 
-        def colour(name: str) -> str:
-            found = re.search(r"--%s:(#[0-9a-f]{6})" % re.escape(name), style)
-            self.assertIsNotNone(found, "no --%s token" % name)
-            return found.group(1)
+                def colour(token: str) -> str:
+                    found = re.search(r"--%s:(#[0-9a-f]{6})" % re.escape(token), style)
+                    self.assertIsNotNone(found, "no --%s token" % token)
+                    return found.group(1)
 
-        def luminance(value: str) -> float:
-            channels = []
-            for index in (1, 3, 5):
-                channel = int(value[index:index + 2], 16) / 255
-                channels.append(channel / 12.92 if channel <= 0.04045
-                                else ((channel + 0.055) / 1.055) ** 2.4)
-            return 0.2126 * channels[0] + 0.7152 * channels[1] + 0.0722 * channels[2]
+                def luminance(value: str) -> float:
+                    channels = []
+                    for index in (1, 3, 5):
+                        channel = int(value[index:index + 2], 16) / 255
+                        channels.append(channel / 12.92 if channel <= 0.04045
+                                        else ((channel + 0.055) / 1.055) ** 2.4)
+                    return 0.2126 * channels[0] + 0.7152 * channels[1] + 0.0722 * channels[2]
 
-        background, foreground = rule.groups()
-        first, second = luminance(colour(background)), luminance(colour(foreground))
-        ratio = (max(first, second) + 0.05) / (min(first, second) + 0.05)
-        self.assertGreaterEqual(ratio, 7.0,
-                                "the terminal selection pair is only %.2f:1" % ratio)
+                background, foreground = rule.groups()
+                first, second = luminance(colour(background)), luminance(colour(foreground))
+                ratio = (max(first, second) + 0.05) / (min(first, second) + 0.05)
+                self.assertGreaterEqual(ratio, 7.0,
+                                        "the terminal selection pair is only %.2f:1" % ratio)
+
+    def test_both_pages_read_in_the_text_face_and_keep_the_display_roles(self) -> None:
+        """The tenant page and the public page carry the same type roles.
+
+        ODL-503 re-cut the prose onto the platform text serif, but the tenant
+        /verify ships byte-embedded in the signed installer, so it was left on
+        Cormorant at 18 px / 1.55 with a 14.72 px note. Both pages now name
+        the display face twice only (the @font-face and the --serif token) and
+        set body prose at 18 px / 1.6 and notes at 16 px / 1.6, so the page a
+        tenant reads is the page the brand review measured.
+        """
+        for name in ("verify.html", "verify-public.html"):
+            with self.subTest(page=name):
+                text = (ROOT / "web" / name).read_text(encoding="utf-8")
+                self.assertIn(':root{--serif:"Cormorant Garamond","Iowan Old Style",'
+                              '"Palatino Linotype",Palatino,Georgia,serif;'
+                              '--text:"Iowan Old Style","Palatino Linotype",Palatino,Georgia,'
+                              '"DejaVu Serif",serif;', text)
+                self.assertIn("font:400 18px/1.6 var(--text);", text)
+                self.assertIn(".lede{font-size:18px;line-height:1.6;color:var(--soft)}", text)
+                self.assertIn(".note{margin:0 0 12px;font-size:16px;line-height:1.6;", text)
+                self.assertIn("h1,h2,h3,.brand,.mark,.wordmark,.focus{font-family:var(--serif)}",
+                              text)
+                self.assertNotIn("font:400 18px/1.55", text,
+                                 "the prose is back on the display face at display leading")
+                self.assertNotIn("font-size:.92rem;line-height:1.5", text,
+                                 "the note is back at the pre-re-cut size")
+                # Cormorant is named by the @font-face and the --serif token,
+                # and by no prose selector.
+                self.assertEqual(text.count('"Cormorant Garamond"'), 2,
+                                 "the display face is set on a prose selector")
+                self.assertEqual(text.count("font:600 10px/1 var(--text);"), 1,
+                                 "the small caps label is not on the text face")
+                self.assertIn("max-width:66ch", text, "the reading measure moved")
 
 
 class OwnReportTests(unittest.TestCase):
@@ -1200,7 +1243,7 @@ class OwnReportTests(unittest.TestCase):
                 state=state, env=env, page=ROOT / "web" / "first-visit.html",
                 recovery=tmp_path / "recovery.txt", reload_command=[],
                 bind="127.0.0.1", port=0, caddy_stores=(),
-                verify_page=ROOT / "web" / "verify-public.html", report=report,
+                verify_page=ROOT / "web" / "verify.html", report=report,
                 attest=attest, report_command=[])
             server = ThreadingHTTPServer(("127.0.0.1", 0), first_visit.build_handler(service))
             port = server.server_address[1]
