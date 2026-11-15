@@ -8398,9 +8398,10 @@ TENANT_CONFIG_TEMPLATE = """\
 #   * agent            — this model rejects Hermes's default reasoning effort.
 #   * custom_providers — inference goes straight to NEAR AI with this machine's
 #                        own key; there is no local proxy.
-#   * dashboard        — the public host Hermes's Host/Origin check reads when
-#                        the listener has not declared its own (t_d95b8c13).
-#   * webapp           — loopback bind, public_url so the sign-in gate is on.
+#   * dashboard        — the dashboard surface's public host; the Webapp reads
+#                        webapp.public_url, not this one (t_d95b8c13).
+#   * webapp           — loopback bind, and the public_url the sign-in gate
+#                        checks every Host and Origin against.
 #   * onboarding       — Hermes's own first-run chat is off; Odile's ritual is
 #                        the first run, and no profile-build offer is made.
 #
@@ -8422,12 +8423,14 @@ custom_providers:
     key_env: HERMES_CUSTOM_CLOUD_API_NEAR_AI_API_KEY
     model: {model}
 
-# The same public name as webapp.public_url. Hermes's Webapp listener checks
-# Host and Origin against webapp.public_url; a listener that started without
-# that state falls back to dashboard.public_url
-# (hermes_cli/web_server_boundary.py::_dashboard_public_hosts), and with
-# neither set every public Host answers `400 Invalid Host header` — the
-# tenant's 13 November outage (t_d95b8c13). Both keys name the machine.
+# The public name of this machine. Hermes's Webapp listener reads
+# `webapp.public_url` below, sets its own `listener_public_url` from it and
+# checks every Host and Origin on the sign-in gate against that name; with it
+# empty or absent every public Host answers `400 Invalid Host header` — the
+# tenant's 13 November outage (t_d95b8c13). `dashboard.public_url` names the
+# same host for the dashboard surface, and is NOT a fallback for the Webapp:
+# measured 2026-11-15 on the pinned Hermes, removing `webapp.public_url`
+# while keeping this block still answered 400. Both keys name the machine.
 dashboard:
   public_url: "{public_url}"
 
@@ -12533,6 +12536,9 @@ def login_table(layout: Layout, username: str, password: str) -> list[tuple[str,
             if "=" in pair:
                 cookies.append(pair)
     cookie = "; ".join(cookies)
+    secure = [pair for pair in cookies if pair.startswith("__Host-")]
+    results.append(("the sign-in sets four session cookies (__Host- over HTTPS, bare over HTTP)",
+                    len(cookies) == 4, f"{len(cookies)} cookie(s), {len(secure)} __Host-"))
     status, _, page = http_call(host, port, "GET", "/", headers={**base, "Cookie": cookie})
     shell = b'<title>Hermes</title>' in page and b'id="root"' in page
     session_status = status
@@ -12757,10 +12763,10 @@ def self_test() -> int:
         _, blocks = split_blocks(desired)
         check.ok("the template carries every managed block",
                  all(key in blocks for key in MANAGED_KEYS))
-        check.ok("the template declares the Host check's trusted public host",
+        check.ok("the template declares the dashboard's public host",
                  "public_url: http://odile-sim.test:9140"
                  in [setting_line(line).strip() for line in settings(blocks["dashboard"])])
-        check.ok("the template's webapp public_url is the same host",
+        check.ok("the template's webapp public_url is the host the gate checks",
                  "public_url: http://odile-sim.test:9140"
                  in [setting_line(line).strip() for line in settings(blocks["webapp"])])
         check.ok("the onboarding block pins run false and profile_build off",

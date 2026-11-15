@@ -940,6 +940,27 @@ deployed `2026.11.14-8` (installer `0c53a722…`, 1,356,516 bytes; manifest
 t_ae833f3f's, `-4` is ODL-474's, `-5` is t_ab95ec2a's open cut; `-6` is
 later than every cut by `generated_at`.
 
+**The `2026.11.15-8` cut (t_d95b8c13's boot-install fix).** The tenant
+template's public-host comment now states the truth the pin measures — the
+Webapp listener reads `webapp.public_url`, and `dashboard.public_url` is not
+its fallback — and `login_table` asserts the four session cookies the sign-in sets
+(`__Host-` over HTTPS, bare over the simulation's HTTP), so the scratch proof
+prints them instead of only using them.
+`installer/embed_tenant.py` was not needed (the config template is embedded
+verbatim and `--self-test` compares it to `templates/config.yaml`); the
+installer was re-signed; `install.md` §12.4 and §12.4.1 carry the live record.
+Installer `3cbbaae2…` (1,419,888 bytes), manifest `33f00dc5…` (49,957 bytes;
+its only move against `-6` is `installer_sha256`, so it is a surgical re-cut and
+not a root rebuild), skills `9d82653f…` unchanged, `--self-test` PASS,
+`--verify-signature` OK and `tools/recut_release.py --check` green. It is
+committed, not deployed: measured 2026-11-15T22:41Z, the URL serves the
+deployed `2026.11.14-8` (installer `0c53a722…`, 1,356,516 bytes; manifest
+`3a532eff…`). The id ledger: `-8` on this date is this branch's cut
+(`generated_at` 2026-11-15T22:45:00Z, later than every cut); `-7` is
+t_ab95ec2a's open cut and `-6` is t_afb081be's. The branch's earlier revision
+of this cut (20:00Z) was never merged or deployed, and this re-cut supersedes it
+with a later `generated_at`, so no guest can read it as a downgrade.
+
 ## 6. The guest: check, apply, rollback
 
 The machine's v1 tree is its identity: `manifest.py build` is

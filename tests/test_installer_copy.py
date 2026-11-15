@@ -6,9 +6,11 @@ between them is a tenant whose backup unit differs from the one the program
 writes. It also holds the behaviours the live tenant's 400 paid for
 (t_d95b8c13):
 
-* the tenant config declares the public host Hermes's Host check reads even
-  when the Webapp listener has not declared its own — ``dashboard.public_url``
-  in ``hermes_cli/web_server_boundary.py::_dashboard_public_hosts``;
+* the tenant config names the machine's public host in the `webapp` block the
+  Webapp listener reads (`webapp.public_url` sets its `listener_public_url`)
+  and in the `dashboard` block — which is not the Webapp's fallback: measured
+  2026-11-15 on the pinned Hermes, `dashboard.public_url` alone answers 400
+  `Invalid Host header`;
 * a failed optional oneshot (``odile-access-report``) does not abort the run
   before the agent restart that makes a rewritten config live;
 * the boot-time release setup passes the recovery confirmation and the
@@ -93,7 +95,7 @@ class BackupUnitParityTest(TempRoot):
 
 
 class TenantConfigTrustedHostTest(TempRoot):
-    """`dashboard.public_url` is the host Hermes's Host check reads."""
+    """Both blocks name the host; the Webapp reads `webapp.public_url`."""
 
     def setUp(self) -> None:
         super().setUp()

@@ -1,8 +1,8 @@
 {
   "artifacts": {
     "installer": {
-      "sha256": "2bbc70c78888c1e01ea153ad55d8b615005c5a560c2235a8974bae197e110323",
-      "size": 1419392,
+      "sha256": "3cbbaae2559f489d571533ba04d314ecea637a3cc6089f62073edca2a86c5b02",
+      "size": 1419888,
       "url": "odile_install.py"
     },
     "skills": {
@@ -14,13 +14,13 @@
   "boot": {
     "kernel": "6.12.115+deb13.1-amd64"
   },
-  "generated_at": "2026-11-15T20:00:00Z",
+  "generated_at": "2026-11-15T22:45:00Z",
   "manifest": {
-    "sha256": "e71edfb97aeaa8a54f927e07b6f3d53f696bcace93c4169a7a920d9bab79c2ba",
+    "sha256": "33f00dc50e701d00b2d83d59d202e84f73665331d5f1710968f5012aa112b6ce",
     "signature_url": "manifest.json.sig",
     "url": "manifest.json"
   },
-  "notes": "t_d95b8c13: the boot release install leaves the tenant one boot away from `400 Invalid Host header`. Two ends are fixed in the installer. (1) The tenant config now carries a `dashboard:` managed block whose `public_url` is the same host as `webapp.public_url` \u2014 the fallback Hermes's Host/Origin check reads when the Webapp listener did not declare its own (hermes_cli/web_server_boundary._dashboard_public_hosts) \u2014 and `--self-test` fails if either block stops naming it. (2) `ensure_systemd_services` starts `odile-agent` even when the optional `odile-access-report` oneshot fails, and restarts it when any file the gateway reads at start changed (config, .env, unit, skin), not only when a unit file did: on 2026-11-13 the report failed at 49.7 s and the abort left the listener the boot had started with, so every public Host answered 400 for five hours. The boot half (deploy/image/odile-release-setup.sh) now passes `--i-have-copied-it` (the installer's recovery gate exited 4 on a machine with no TTY, measured 2026-11-13T10:29:14Z) and `ODILE_RELEASE_PUBLIC_URL`, so a forced re-run keeps the demo host the owner declared. release/manifest.json is -6's fresh-root document with only installer_sha256 re-derived by tools/recut_release.py, so this is a surgical re-cut, not a root rebuild; the skills artifact, the vendor pin and the meter-free rows are unchanged. The id is -8: -7 is t_ab95ec2a's (odile-help first person) and -6 is t_afb081be's; the live cut at this cut's measurement was 2026.11.14-8 (0c53a722\u2026, 1,356,516 bytes).",
+  "notes": "t_d95b8c13: the boot release install left the tenant one boot away from `400 Invalid Host header`. (1) The config now tells the truth the pin measures: Hermes v0.23.0's Webapp listener reads `webapp.public_url` and sets its own `listener_public_url` from it, and `dashboard.public_url` is declared beside it for the dashboard surface but is NOT a fallback for the Webapp \\u2014 measured 2026-11-15, `webapp.public_url` removed with the dashboard block kept still answers 400 (2bd378ed:tests/gateway/test_webapp_public_url.py). The fix that matters is `webapp.public_url` plus the restart that makes a rewritten config live: `ensure_systemd_services` restarts `odile-agent` when any file the gateway reads at start changed (config, .env, unit, skin), not only when a unit file did. On 2026-11-13 the optional `odile-access-report` oneshot failed at 49.7 s, the install aborted before that restart, and the listener the boot had started with answered 400 for five hours. (2) `ensure_systemd_services` now also starts `odile-agent` when the optional oneshot fails \\u2014 a stale `/verify` is not a dead page. (3) The boot half (deploy/image/odile-release-setup.sh) passes `--i-have-copied-it` (the recovery gate exited 4 on a machine with no TTY, measured 2026-11-13T10:29:14Z) and `ODILE_RELEASE_PUBLIC_URL`, so a forced re-run keeps the host the owner declared. (4) `login_table` now asserts the four session cookies the sign-in sets (bare names over the simulation's HTTP, `__Host-` over the tenant's HTTPS), so the scratch proof prints them instead of only using them. release/manifest.json is -6's fresh-root document with only installer_sha256 re-derived by tools/recut_release.py, so this is a surgical re-cut, not a root rebuild; the skills artifact, the vendor pin and the meter-free rows are unchanged. The id is -8: -7 is t_ab95ec2a's (odile-help first person) and -6 is t_afb081be's; the live cut at this cut's measurement is 2026.11.14-8 (0c53a722\\u2026, 1,356,516 bytes).",
   "product": "odile",
   "release": "2026.11.15-8",
   "schema": 1

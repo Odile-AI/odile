@@ -960,7 +960,7 @@ Verify (this is also step 2 of the ritual):
 ```sh
 $ ./installer/odile_install.py --verify-signature --pubkey installer/odile-signing-key.pub
 signing key  sha256 13e8c2aee8263f550033448c8193a82b89498f533f52943e09c14d22e5b036e2 · SHA256:ZyFEbkw2oetDml63XaHTix0kUrR2kAVGZaaeDAHvXu8
-signature: OK (sha256 e8a33d47166fad6989e5c6e1115e5c36d439bae1aa247a0b969fba898b2b4cea)
+signature: OK (sha256 3cbbaae2559f489d571533ba04d314ecea637a3cc6089f62073edca2a86c5b02)
 ```
 
 The first value is `sha256sum` of the exact PEM file the run used — here the
@@ -984,11 +984,11 @@ issued — fails against the same detached signature:
 $ cp installer/odile_install.py /tmp/edited.py
 $ printf 'x' >> /tmp/edited.py
 $ sha256sum /tmp/edited.py
-be40206a88dd4d89178b236096507b3171bf8251f990b7e950e941d075d69eeb  /tmp/edited.py
+39d81113bde98f524ffa75299c13c2a0b063c71e2e0350c98ddd0d74f2fd2924  /tmp/edited.py
 $ /usr/bin/python3 /tmp/edited.py --verify-signature \
       --pubkey installer/odile-signing-key.pub --signature installer/odile_install.py.sig
 signing key  sha256 13e8c2aee8263f550033448c8193a82b89498f533f52943e09c14d22e5b036e2 · SHA256:ZyFEbkw2oetDml63XaHTix0kUrR2kAVGZaaeDAHvXu8
-signature: BAD (sha256 be40206a88dd4d89178b236096507b3171bf8251f990b7e950e941d075d69eeb)
+signature: BAD (sha256 39d81113bde98f524ffa75299c13c2a0b063c71e2e0350c98ddd0d74f2fd2924)
 $ echo $?
 3
 ```
@@ -1029,8 +1029,11 @@ only on the wordmark and h1/h2/h3; `templates/skin.yaml` names the display
 face on headings), the simulation's
 page server started with the layout's own icon root (§12.6), t_afb081be's
 re-embed of the support program with the session wrapper's signal-window fix,
-and the self-test's whole-bundle hash (`8ea15e2`), sha256 `e8a33d47…` (1,416,049
-bytes, `--verify-signature` OK); the edited copy above is 1,416,050 bytes. The BAD line
+t_d95b8c13's tenant-config wording (the Webapp reads `webapp.public_url`;
+`dashboard.public_url` is not its fallback) and the `login_table` row that
+asserts the four `__Host-` cookies,
+and the self-test's whole-bundle hash (`8ea15e2`), sha256 `3cbbaae2…` (1,419,888
+bytes, `--verify-signature` OK); the edited copy above is 1,419,889 bytes. The BAD line
 prints the edited copy's own sha256 — the `sha256sum` above — so the hex moves
 whenever the installer's bytes do; `signature: BAD` and exit 3 are the
 invariant. The edited copy is a different `INSTALLER_PATH`, so this runs the
@@ -1307,18 +1310,24 @@ What the tree does now, and what `--self-test` asserts:
    `ODILE_RELEASE_PUBLIC_URL` (default `https://<slug>.odile.fyi`), so a
    converged install ends `=== rc=0` and a machine whose owner moved its public
    name keeps it.
-3. The tenant config carries `dashboard.public_url` beside
-   `webapp.public_url`. Hermes v0.23.0 checks Host and Origin against the
-   Webapp listener's `webapp.public_url`; a listener started without that state
-   falls back to `dashboard.public_url`
-   (`hermes_cli/web_server_boundary.py::_dashboard_public_hosts`), and with
-   neither set every public Host is refused. Both keys name the machine, and
-   `--self-test` fails if the rendered template stops naming either one.
+3. The tenant config names the machine in both blocks: `webapp.public_url`,
+   which Hermes v0.23.0's Webapp listener reads to set its own
+   `listener_public_url` and checks every Host and Origin against, and
+   `dashboard.public_url`, the dashboard surface's own name. The dashboard key
+   is **not** a fallback for the Webapp: measured 2026-11-15 on the pin's own
+   scratch root, removing `webapp.public_url` while keeping
+   `dashboard.public_url` still answered `400 Invalid Host header`, and the
+   pin's `tests/gateway/test_webapp_public_url.py` says the Webapp uses "its
+   own public URL, `webapp.public_url`, and never `dashboard.public_url`".
+   The fix that matters is `webapp.public_url` plus the restart in item 1;
+   `--self-test` fails if the rendered template stops naming either key.
 
 The scratch proof is `installer/sim_tenant.py`: its `assert_login` speaks the
-public FQDN as the Host and Origin, prints the 302/401/200 gate and the four
-`__Host-` cookies, and now also asserts the written config carries that host in
-both blocks. The live proof is §12.4.1 below.
+public FQDN as the Host and Origin, prints the 302/401/200 gate and a row for
+the four session cookies `login_table` parses (bare names over the sim's HTTP;
+the tenant's HTTPS gets the same four with the `__Host-` prefix), and also
+asserts the written config carries that host in both blocks. The live proof is
+§12.4.1 below.
 
 #### 12.4.1 The live tenant's 13 November tail, and the recovery
 
@@ -1367,6 +1376,30 @@ HQ immediately after: `GET https://demo.odile.fyi/login?next=%2F` 200,
 four `__Host-` cookies (`{"ok":true,"next":"/"}`). The machine's own name
 `odl-7971a8.odile.fyi` still answers 400 by design (`demo-public.md` §Host
 check): `webapp.public_url` is the demo host.
+
+**The boot half on the machine is the deployer's, not the recovery run's.** The
+recovery above ran the fixed script (`deploy/image/odile-release-setup.sh`,
+sha256 `348794a3…`) as a transient unit, but the file that unit executes is
+owned by `deploy/demo-host/deploy_demo_public.py` (`RELEASE_SETUP_REMOTE`,
+`:92-93`), which re-placed `main`'s copy over it. Measured on the tenant
+2026-11-15T22:37:32Z:
+
+```
+$ date -u +%FT%TZ; sha256sum /usr/local/lib/odile-image/odile-release-setup.sh; stat -c "%s %y" /usr/local/lib/odile-image/odile-release-setup.sh; sudo -n systemctl cat odile-release-setup.service | grep ExecStart; sudo -n cat /var/lib/odile/release-setup.done; grep -n "i-have-copied-it\|ODILE_RELEASE_PUBLIC_URL\|public-url" /usr/local/lib/odile-image/odile-release-setup.sh
+2026-11-15T22:37:32Z
+036ac2b87ebace27bce2a41ba88b5b0ffb7ffdd8cd3480dd57eacf21ffdf9c81  /usr/local/lib/odile-image/odile-release-setup.sh
+8438 2026-11-15 20:15:54.184000000 +0000
+ExecStart=/usr/local/lib/odile-image/odile-release-setup.sh
+ran 2026-11-15T20:12:42Z · odl-7971a8 · instance 31a63bbb · rc=0
+155:        --public-url "https://$HOST.odile.fyi" --json 2>&1
+```
+
+So a *forced* re-run today would pass `main`'s slug URL and no recovery
+confirmation, and would rewrite both config blocks to `odl-7971a8.odile.fyi`
+(400 on the demo host). The next boot is a no-op instead, because
+`/var/lib/odile/release-setup.done` carries the recovery's own record. The
+fixed boot half reaches the machine with the first deploy from a `main` that
+carries this branch; until then, do not force the unit.
 
 **The zero-touch image needs neither `scp` nor a passphrase.** On a tenant
 image built from `release/` (ODL-456/ODL-472) the first boot places the
@@ -2032,25 +2065,31 @@ later than every cut by `generated_at`.
 
 This tree cuts `2026.11.15-8` on the merged head for t_d95b8c13 (the boot
 release install left the tenant one boot away from `400 Invalid Host header`).
-The installer moves from `e8a33d47…` (1,416,049 bytes) to `2bbc70c7…`
-(1,419,392 bytes): a `dashboard:` managed block whose `public_url` is the same
-host as `webapp.public_url`; an `ensure_systemd_services` that starts the agent
-even when the optional `odile-access-report` oneshot fails, and restarts it when
-any file the gateway reads at start changed; `--self-test` assertions for both
-blocks and for the five-block upgrade; and the boot half's `--i-have-copied-it`
-and `ODILE_RELEASE_PUBLIC_URL`. `release/manifest.json` is `-6`'s fresh-root
-document whose only move is `installer_sha256` (`e8a33d47…` → `2bbc70c7…`), so
-no root rebuild is claimed; the skills artifact (`9d82653f…`, 851,945 bytes) and
-the `539e205f…` audit row are unchanged. Manifest `e71edfb9…` (49,957 bytes),
-`--self-test` PASS, `--verify-signature` OK, `tools/recut_release.py --check`
-prints `ok` for the installer, its release copy and both documents;
-`release/release.json` (`2ae9c5ee…`) names `2026.11.15-8` at
-`2026-11-15T20:00:00Z`. It is committed, not deployed: the URL still serves
-`2026.11.14-8` (`0c53a722…`, 1,356,516 bytes; manifest `3a532eff…`). The id
-ledger: `-7` is t_ab95ec2a's open cut, `-6` is t_afb081be's, and `-8` is later
-than every cut by `generated_at`. The live tenant carries this installer pair
-(`2bbc70c7…` / `e88576ef…`) at `/usr/local/bin/odile-install.sh` and
-`/usr/local/lib/odile-image/odile_install.py.sig`, and its 2026-11-15T20:12Z
+The installer moves from `e8a33d47…` (1,416,049 bytes) to `3cbbaae2…`
+(1,419,888 bytes): a `dashboard:` managed block whose `public_url` is the same
+host as `webapp.public_url` — declared beside the key the Webapp actually
+reads, with the template comment stating the measured truth that the dashboard
+key is not its fallback; an `ensure_systemd_services` that starts the agent
+even when the optional `odile-access-report` oneshot fails, and restarts it
+when any file the gateway reads at start changed; `--self-test` assertions for
+both blocks and for the five-block upgrade; a `login_table` row that asserts
+the four session cookies the sign-in sets (`__Host-` over HTTPS, bare over the
+simulation's HTTP); and the boot half's `--i-have-copied-it` and
+`ODILE_RELEASE_PUBLIC_URL`. `release/manifest.json` is `-6`'s fresh-root
+document whose only move is `installer_sha256` (`e8a33d47…` → `3cbbaae2…`), so
+no root rebuild is claimed; the skills artifact (`9d82653f…`, 851,945 bytes)
+and the `539e205f…` audit row are unchanged. Manifest `33f00dc5…` (49,957
+bytes), `--self-test` PASS, `--verify-signature` OK,
+`tools/recut_release.py --check` prints `ok` for the installer, its release
+copy and both documents; `release/release.json` (`26596bee…`) names
+`2026.11.15-8` at `2026-11-15T22:45:00Z`. It is committed, not deployed: the
+URL still serves `2026.11.14-8` (`0c53a722…`, 1,356,516 bytes; manifest
+`3a532eff…`). The id ledger: `-7` is t_ab95ec2a's open cut, `-6` is
+t_afb081be's, and `-8` is later than every cut by `generated_at`; an earlier
+revision of this cut (20:00Z) was never merged or deployed. The live tenant
+carries that earlier installer pair (`2bbc70c7…` / `e88576ef…`) at
+`/usr/local/bin/odile-install.sh` and
+`/usr/local/lib/odile-image/odile_install.py.sig`; its 2026-11-15T20:12Z
 release setup ended `=== rc=0` (§12.4.1).
 
 The clock starts at the build's `uki.sh --sign` and stops when
