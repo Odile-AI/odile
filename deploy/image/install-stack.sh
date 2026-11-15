@@ -27,8 +27,9 @@
 # Idempotency: a second run prints `same` for every piece and changes
 # nothing. The generated .env keeps its scrypt hash and signing secret because
 # a marker records what produced them (the bench password, or the fact that a
-# discarded one did). A published image's first boot leaves the file alone:
-# the hash is already a placeholder and the session secret does not move.
+# discarded one did). A published image's first boot replaces both once: this
+# machine's own session secret and a fresh discarded hash, until the first-visit
+# page sets the owner's sign-in; after that the file is kept (ODL-521/ODL-522).
 #
 # The published image carries no password a stranger can use (ODL-521): its
 # .env holds a scrypt hash of a discarded password, and the first-visit page is
@@ -247,10 +248,16 @@ fi
 #    (sealed-image.sh --production writes /etc/odile/production before this
 #    script runs) writes a scrypt hash of a password generated here and
 #    discarded, with the marker that says so; the bench build keeps the
-#    documented fixture password its QEMU smoke signs in with. The first boot
-#    of a published image leaves the file alone: the placeholder already
-#    rejects every password, and the session secret must be byte-identical
-#    before and after the boot (the per-machine secret is ODL-522's card).
+#    documented fixture password its QEMU smoke signs in with.
+#
+#    ODL-522: the session-signing secret is the machine's, not the image's. A
+#    build has to write *some* secret, and every disk built from one image
+#    would then sign its cookies with the same value; so the first boot of a
+#    published image (the run that carries --seed) replaces it with a secret
+#    generated on this machine, together with a fresh discarded hash. Once the
+#    first-visit page has written the owner's sign-in (signin_set_at in
+#    /etc/odile/first-visit.json) the file is kept byte for byte: a reboot
+#    must not rotate the secret, or every session cookie the owner holds dies.
 #
 #    The marker is what makes a rerun idempotent with a random value: the
 #    bench marker records which bench password produced the hash, and the
@@ -356,7 +363,14 @@ if [ -f /etc/odile/production ]; then
         write_env "# odile-signin-placeholder: 1" "$(discarded_scrypt_hash)" \
             "$(fresh_secret)" "a discarded sign-in, no usable password"
     elif first_visit_signin_set; then
-        say same "$env_file (the owner's sign-in)"
+        say same "$env_file (the owner's sign-in; this machine's own secret)"
+    elif [ -n "$SEED_FILE" ]; then
+        # ODL-522: the first boot of a published image. The build's secret is
+        # shared by every disk built from that image, so this machine generates
+        # its own (a retried first boot before the visit mints again; no
+        # session can exist yet, because the page has not set the sign-in).
+        write_env "# odile-signin-placeholder: 1" "$(discarded_scrypt_hash)" \
+            "$(fresh_secret)" "first boot: a discarded sign-in, this machine's own secret"
     else
         say same "$env_file (a discarded sign-in, no usable password)"
     fi
