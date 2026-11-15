@@ -674,10 +674,15 @@ What the reset does and does not move:
   the restic repository password). The reset re-arms a machine's credentials,
   not just its install: whoever holds that image holds the token.
 
-A reinstall onto a **new** Servury instance is not this case: the row is bound
-to `instance_id`, so the baked token answers `403 wrong_instance`. A rebuild
-mints a fresh token bound to the new id (`odilectl provision`, or
-`token rotate --tenant <slug> --instance <new id>`).
+A machine booted from an image **built with someone else's `bb.iid`** answers
+`403 wrong_instance` only while that token is unspent; once the token has been
+spent, the exchange answers `410 used` first (`redeem` checks `used_at` before
+`instance_id`). The exchange posts the `bb.iid` baked into the image, not the
+hardware's id, so staging the same image on a new Servury instance is still this
+case — the reset follows the id in the command line (or the token hash), never
+the new server id. A rebuild mints a fresh token bound to the new id
+(`odilectl provision`, or `token rotate --tenant <slug> --instance <new id>`)
+and builds a new line carrying it.
 
 ## 7. Security notes
 
