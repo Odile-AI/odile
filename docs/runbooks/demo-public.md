@@ -23,8 +23,9 @@ page a judge should be sent to. It does not demonstrate a user-held key.
 | Host check | Hermes refuses a Host header that is not the bound host or `webapp.public_url` (`400 Invalid Host header`); the demo host *is* the public_url, so the machine's own name `odl-7971a8.odile.fyi` still answers `/verify`, `/first-visit` and `/manifest`, but its Webapp path is refused |
 | Gate | Hermes dashboard basic-auth provider (`HERMES_DASHBOARD_BASIC_AUTH_*` in `/home/tenant/.hermes/.env`, mode 0600) |
 | Account | `judge`; the password is carried by the sign-in page's form (`deploy/demo-host/login.html`), never here |
-| Sign-in page | `/srv/odile-demo/login.html`, Caddy's `handle /login*`. Committed and live are **one file**: sha256 `94a22b03748f40ae…` (167,426 B), t_9896a577's artwork page ("The demo machine" + the inlined Ruysch band; cards t_3d717ffc, t_330cea5c, t_9896a577), installed from `deploy/demo-host/login.html`. `--no-login` remains for a deploy that must keep the machine's current page |
-| Caddy block | `deploy/caddy/demo-tenant-site.caddy`, sha256 `64fd9d64e9e3a1309b0c214512b104b3e15c30824edc85d5cac049869f99d1f4`, 3,213 B; no mutation matcher and no self-update matcher — every write reaches Hermes (§4) |
+| Sign-in page | `/srv/odile-demo/login.html`, Caddy's `handle /login*`. Committed and live are **one file**: sha256 `077f47d541b8a9daab33cf7e607f1a2e7e03c561342230f62fa5f25437b89253` (167,642 B), t_9896a577's artwork page with ODL-504's icon head (three links + the credit comment) and ODL-505's three paths (t_6b25f6e5), installed from `deploy/demo-host/login.html`. `--no-login` remains for a deploy that must keep the machine's current page |
+| Tab icon | three files beside the page — `web/favicon.ico` 11,790 B, `web/icon-32.png` 2,302 B, `web/apple-touch-icon.png` 47,543 B — put in `/srv/odile-demo` by the apply and answered by Caddy's `@tabicons` handle (`image/x-icon` for the `.ico`; one-year immutable). `/icon-192.png` and `/icon-512.png` stay the page server's, for the Webapp shell (§4) |
+| Caddy block | `deploy/caddy/demo-tenant-site.caddy`, sha256 `a38c22658436965126d9b234cdc422e1cf48d303c19f6c8f5d1124e1f7a5c0c6`, 4,465 B; no mutation matcher and no self-update matcher — every write reaches Hermes (§4) |
 | Seeded session | `Start here — Odile demo`, pinned, two messages, id `local-931d9e32…` (the constant `/judge` deep-links); written **once**, when the row is absent, and never rewritten |
 | Sessions | every session a judge opens persists across deploys and reboots; a deploy writes no session and deletes none |
 | Meter | none in the path: model route is Near AI direct, `.env` carries one key; on this machine the meter is **removed** (unit not installed, no key file, user gone — t_e237e261), so nothing masks or starts it |
@@ -40,6 +41,7 @@ page a judge should be sent to. It does not demonstrate a user-held key.
 | `deploy/demo-host/check_demo_public.py` | the card's DoD over HTTPS plus the tenant's own report; `--persistence`, `--sessions` |
 | `deploy/demo-host/create_dns.py` | the one Cloudflare record; idempotent; `--target 203.0.113.139` moves it to HQ's address (no demo there since 2026-11-13) |
 | `deploy/demo-host/login.html` | Odile's sign-in page |
+| `web/favicon.ico`, `web/icon-32.png`, `web/apple-touch-icon.png` | the three tab files the sign-in page links; the deploy ships them under pinned hashes and the apply puts them beside the page (t_6b25f6e5) |
 | `deploy/demo-host/verify-lede.html` | the demo machine's `/verify` lede, one paragraph; the apply injects it into the release template's tenant block on this machine only (finding 1) |
 | `deploy/demo-host/seed/session-receipt.json` | the reviewed receipt template the seeded session's row is minted from (cwd, route and caps rewritten for this machine) |
 | `deploy/demo-host/seed/start-here-tenant.md` | the seeded session's answer |
@@ -310,9 +312,22 @@ sudo -u tenant env HOME=/home/tenant HERMES_HOME=/home/tenant/.hermes \
     hermes sessions delete --yes <id>
 ```
 
-`--report` lists the live block's matcher names (`caddy.matchers`); the only one
-left is `@apidocs`. A block that names a `mutation` or `update` matcher fails
-both the deploy and the check.
+`--report` lists the live block's matcher names (`caddy.matchers`); the three
+left are `@tabicons` (the sign-in page's three tab files), `@favicon` (the
+`.ico`-only `Content-Type` matcher inside that handle) and `@apidocs`. A
+block that names a `mutation` or `update` matcher fails both the deploy and the
+check.
+
+The three tab files are answered by the block itself, from the page root:
+`@tabicons path /favicon.ico /icon-32.png /apple-touch-icon.png`,
+`root * /srv/odile-demo`, one-year immutable, with `image/x-icon` set
+explicitly for the `.ico` (Go's mime table would call it
+`image/vnd.microsoft.icon`). The bytes are pinned in
+`deploy/demo-host/deploy_demo_public.py`, `apply_demo_public.py` and
+`check_demo_public.py`; the check asserts each served body's sha256, its type,
+its cache and a HEAD with no body, probes two traversal paths, and the apply's
+`--report` carries an `icons` object with the same pins, so the machine's own
+copies are checked, not only the bytes at the edge.
 
 The check also asserts the two Caddy copies by hash: the installed
 `/usr/local/lib/odile-demo-public/demo-tenant-site.caddy` and the live block in
@@ -430,7 +445,7 @@ transcript.
 | What | Where |
 |---|---|
 | DNS record | `create_dns.py` output: `same A demo.odile.fyi -> 203.0.113.87 (proxied=False)` |
-| The Caddy block | `deploy/caddy/demo-tenant-site.caddy` sha256 `64fd9d64…` (3,213 B, no mutation or self-update matcher); `deploy/demo-host/evidence/odl-503-tenant-report-2026-11-13T1710.json` shows the installed copy and the live block both hash to the block as it stood then (`18b98297…`), one marker pair, `residue_lines: 0`, caddy `active` |
+| The Caddy block | At the time, `deploy/caddy/demo-tenant-site.caddy` sha256 `64fd9d64…` (3,213 B, no mutation or self-update matcher); `deploy/demo-host/evidence/odl-503-tenant-report-2026-11-13T1710.json` shows the installed copy and the live block both hash to the block as it stood then (`18b98297…`), one marker pair, `residue_lines: 0`, caddy `active`. The current block and hashes are in the table at the top |
 | Signed-in screenshots | `deploy/demo-host/evidence/odl-503-login-1440.png`, `odl-503-login-390.png` (the committed and live page, t_9896a577's artwork build, 94a22b03…), `odl-503-signed-in-1440.png`, `odl-503-signed-in-390.png` (the pinned "Start here — Odile demo" transcript with the check's turn); the judge page: `odl-503-judge-1440.png`, `odl-503-judge-390.png` |
 | The gate, measured | `odl-503-check-2026-11-13T2238.txt`: PASS 43/43 at the rebased head (base `87a0f75`) — the 302, the judge sign-in, the seed's reply, the write probes (422 / 422 / 401, control 200), the two Caddy hashes, `/verify` = `/attestation`; earlier `odl-503-check-2026-11-13T1709.txt` was PASS 43/43; `odl-503-deploy-2026-11-13T1706.txt`: PASS, installed == live == committed |
 | The tenant's own report | `https://demo.odile.fyi/verify`, measurement `9f01725afd71968f74e6dec5…`, equal to `/attestation`'s |
@@ -465,9 +480,10 @@ transcript.
 |---|---|
 | The shell, the root and the key | The six-command block in §3, with its outputs: `id -un` → `tenant`, `sudo -n id -un` → `root`, the `0600` 348-byte `.env` owned by `tenant` with one `HERMES_CUSTOM_CLOUD_API_NEAR_AI_API_KEY` (`grep -c` → 1), the meter (`masked` at 01:4xZ, `not-found` after t_e237e261), `/var/lib/odile` (`odile-meter` at 01:4xZ, `root` at 17:54Z) and no `nft`; measured 2026-11-14 01:39–01:46Z, re-checked 15:05–15:35Z and re-measured 17:54:57Z through `tenant_console.py` with the published password. The threat note that carried these facts as prose is deleted history (t_9d7ee536, commit `1257777`); this row and the §3 block are their surviving record. |
 
-**The freeze removal (t_69f1a5f3, 2026-11-14).** The committed block is
-`deploy/caddy/demo-tenant-site.caddy` sha256 `64fd9d64…` (3,213 B, matchers
-`['apidocs']`). Rendered into the machine's own 6,962-byte Caddyfile it comes
+**The freeze removal (t_69f1a5f3, 2026-11-14).** At that head the committed
+block was `deploy/caddy/demo-tenant-site.caddy` sha256 `64fd9d64…` (3,213 B,
+matchers `['apidocs']`); the current block and matcher list are in the table at
+the top and §4. Rendered into the machine's own 6,962-byte Caddyfile it came
 out at 6,228 B with the same block bytes, and `caddy validate` prints
 `Valid configuration`. The check's write probes pass on the live deploy —
 `PUT /api/config` 422, `POST /api/cron/jobs` 422, unauthenticated `PUT` and
@@ -477,6 +493,22 @@ run still fails its three byte assertions, because the machine serves the
 pre-freeze-removal block (`18b98297…`) and the installed `apply_demo_public.py`
 predates `caddy.matchers`: `41 passed, 3 failed`, and the three are named in the
 `== the Caddy block` section.
+
+### The sign-in page's tab (t_6b25f6e5, 2026-11-15)
+
+Finding 9 of the brand record: the demo's front door showed the retired ring as
+a `data:image/svg+xml` favicon while every `web/` page carried the painted
+head. At this head the page carries ODL-504's head — the three links and the
+credit comment, no `data:` favicon — and the three files sit beside it in
+`/srv/odile-demo`, answered by the block's `@tabicons` handle. The two blobs:
+block `a38c2265…` (4,465 B), `login.html` `077f47d5…` (167,642 B).
+`caddy validate` on the rendered block prints `Valid configuration`;
+`tests/test_demo_tenant_caddy.py` starts that block over a scratch root and
+measures each path 200 with the committed bytes, `image/x-icon` / `image/png`,
+the one-year immutable cache, a HEAD with no body, and no request that reaches
+a file outside the root. Not deployed by this card: the deploy is the demo
+deploy card's, and the live proof is its post-deploy `check_demo_public.py`
+(the `== the tab icon` section of §4).
 
 **The judge's data (t_ee5aac66, 2026-11-14).** A deploy now changes no
 session and deletes none: a session created before the deploy (2 messages) and
