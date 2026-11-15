@@ -29,6 +29,7 @@ Every test runs the real scanner against a throwaway git repository, so the
 from __future__ import annotations
 
 import hashlib
+import os
 import subprocess
 import sys
 import tempfile
@@ -46,13 +47,40 @@ PROBE_IP = ".".join(["45", "33", "32", "156"])
 PROBE_IP_2 = ".".join(["45", "33", "32", "157"])
 
 
+def git_env() -> dict[str, str]:
+    """A clean environment: a fixture repo must never inherit GIT_DIR.
+
+    `.githooks/pre-commit` runs the suite with GIT_DIR / GIT_INDEX_FILE
+    pointing at the real repository, and in a linked worktree — every card
+    worktree — both are absolute. An inherited GIT_DIR makes `git init` in
+    the fixture commit *into the caller's worktree* and the scanner's
+    `git ls-files` walk read the outer tree instead of the fixture (the
+    ODL-101 bare-worktree incident). Every child this file spawns gets this
+    environment: the fixture git calls and both scanner calls, because the
+    scanner shells out to git itself.
+    """
+    env = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
+    env["GIT_CONFIG_NOSYSTEM"] = "1"
+    env["GIT_CONFIG_GLOBAL"] = os.devnull
+    env.update(
+        {
+            "GIT_AUTHOR_NAME": "Probe",
+            "GIT_AUTHOR_EMAIL": "probe@example.test",
+            "GIT_COMMITTER_NAME": "Probe",
+            "GIT_COMMITTER_EMAIL": "probe@example.test",
+        }
+    )
+    return env
+
+
+
 class ForbidClass(unittest.TestCase):
     """A git repo with one clean file; each test adds the list and the probe."""
 
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
         self.repo = Path(self.temp.name)
-        subprocess.run(["git", "init", "-q"], cwd=self.repo, check=True)
+        subprocess.run(["git", "init", "-q"], cwd=self.repo, env=git_env(), check=True)
         (self.repo / "leak-allow.tsv").write_text(
             "# no exceptions in this fixture\n", encoding="utf-8")
         (self.repo / "keep.txt").write_text("nothing private here\n", encoding="utf-8")
@@ -63,14 +91,14 @@ class ForbidClass(unittest.TestCase):
     def scan(self, *args: str) -> subprocess.CompletedProcess[str]:
         return subprocess.run(
             [sys.executable, str(SCANNER), "--tree", *args],
-            cwd=self.repo, capture_output=True, text=True, timeout=120)
+            cwd=self.repo, env=git_env(), capture_output=True, text=True, timeout=120)
 
     def commit(self, message: str = "fixture") -> None:
-        subprocess.run(["git", "add", "-A"], cwd=self.repo, check=True)
+        subprocess.run(["git", "add", "-A"], cwd=self.repo, env=git_env(), check=True)
         subprocess.run(
             ["git", "-c", "user.email=probe@example.test", "-c", "user.name=probe",
              "commit", "-qm", message],
-            cwd=self.repo, check=True)
+            cwd=self.repo, env=git_env(), check=True)
 
     def write_list(self) -> None:
         (self.repo / "leak-forbid.txt").write_text(
@@ -125,7 +153,7 @@ class ForbidClass(unittest.TestCase):
         self.commit()
         result = subprocess.run(
             [sys.executable, str(SCANNER), "--history"],
-            cwd=self.repo, capture_output=True, text=True, timeout=120)
+            cwd=self.repo, env=git_env(), capture_output=True, text=True, timeout=120)
         self.assertEqual(result.returncode, 1, result.stdout)
         findings = [line for line in result.stdout.splitlines()
                     if line.startswith("FINDING forbidden-value")]
@@ -139,7 +167,7 @@ class AllowlistRecord(unittest.TestCase):
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
         self.repo = Path(self.temp.name)
-        subprocess.run(["git", "init", "-q"], cwd=self.repo, check=True)
+        subprocess.run(["git", "init", "-q"], cwd=self.repo, env=git_env(), check=True)
         (self.repo / "leak-allow.tsv").write_text("# no exceptions in this fixture\n",
                                                    encoding="utf-8")
         (self.repo / "keep.txt").write_text("nothing private here\n", encoding="utf-8")
@@ -150,7 +178,7 @@ class AllowlistRecord(unittest.TestCase):
     def scan(self) -> subprocess.CompletedProcess[str]:
         return subprocess.run(
             [sys.executable, str(SCANNER), "--tree"],
-            cwd=self.repo, capture_output=True, text=True, timeout=120)
+            cwd=self.repo, env=git_env(), capture_output=True, text=True, timeout=120)
 
     def write_probe(self, *values: str) -> None:
         (self.repo / "probe.txt").write_text(

@@ -15,6 +15,9 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
+import shlex
+import subprocess
 import sys
 import tempfile
 import types
@@ -25,6 +28,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 APPLY = ROOT / "deploy" / "demo-host" / "apply_demo_public.py"
 CHECK = ROOT / "deploy" / "demo-host" / "check_demo_public.py"
+CHECK_HOST = ROOT / "deploy" / "demo-host" / "check_demo_host.sh"
 
 
 def apply_module():
@@ -43,6 +47,39 @@ def check_module():
     sys.modules[spec.name] = module
     spec.loader.exec_module(module)
     return module
+
+
+def host_report_fields(report: dict) -> str:
+    """Run check_demo_host.sh's own field generator over one report object.
+
+    The text is cut from the script, not copied: a copy would keep passing
+    after the script's generator and its case arms drifted apart (round 2).
+    """
+    text = CHECK_HOST.read_text(encoding="utf-8")
+    marker = """FIELDS=$(REPORT="$REPORT" python3 - <<'PY'"""
+    start = text.index(marker)
+    start = text.index("\n", start) + 1
+    end = text.index("\nPY\n)", start)
+    source = text[start:end]
+    out = subprocess.run([sys.executable, "-c", source],
+                         env=dict(os.environ, REPORT=json.dumps(report)),
+                         capture_output=True, text=True, check=True)
+    return out.stdout.strip()
+
+
+def meter_verdict(fields: str) -> str:
+    """The check's meter case arm, run against one ``FIELDS`` line: ok or bad."""
+    text = CHECK_HOST.read_text(encoding="utf-8")
+    hit = text.index('*"meter_object=False"*')
+    start = text.rindex('case "$FIELDS" in', 0, hit)
+    end = text.index("\nesac", hit)
+    block = text[start:end]
+    script = ("ok() { echo ok; }\n"
+              "bad() { echo bad; }\n"
+              f"FIELDS={shlex.quote(fields)}\n{block}\nesac\n")
+    out = subprocess.run(["bash", "-c", script], capture_output=True,
+                         text=True, check=True)
+    return out.stdout.strip()
 
 
 class SeedTests(unittest.TestCase):
@@ -150,9 +187,9 @@ class ConfigTests(unittest.TestCase):
 
     def test_a_config_without_limits_gains_none(self) -> None:
         bare = ("model:\n  provider: custom\n"
-                "custom_providers:\n  - name: Odile Meter\n"
-                "    base_url: http://127.0.0.1:8010/v1\n"
-                "    key_env: METER_API_KEY\n"
+                "custom_providers:\n  - name: Old Provider\n"
+                "    base_url: http://127.0.0.1:8099/v1\n"
+                "    key_env: OLD_PROVIDER_API_KEY\n"
                 "webapp:\n  port: 9130\n")
         tuned, changed = self.module.tune_config(bare)
         self.assertNotIn("max_turns", tuned)
@@ -174,6 +211,39 @@ class ConfigTests(unittest.TestCase):
         self.assertIn("exits = max_iterations_lines()", text)
 
 
+class HostReportFieldTests(unittest.TestCase):
+    """The machine-side check accepts the old report too (round 2's defect).
+
+    ``--tenant`` uploads *this* check and reads the tenant's installed
+    ``apply_demo_public.py --report``; until the next deploy that installed
+    apply prints the old meter object. The generator must therefore print the
+    old enabled/active/installed triple, and the case arm must accept the
+    absent values while still failing a live meter. Without this test the
+    generator can print one shape and the case arm match another — which is
+    exactly what round 2 found.
+    """
+
+    def test_the_new_report_without_a_meter_object_passes(self) -> None:
+        fields = host_report_fields({"config": {"near_ai_direct": True}})
+        self.assertIn("meter_object=False", fields)
+        self.assertEqual(meter_verdict(fields), "ok")
+
+    def test_the_old_report_with_an_absent_meter_passes(self) -> None:
+        fields = host_report_fields(
+            {"meter": {"enabled": "not-found", "active": "inactive",
+                       "unit_installed": False}})
+        self.assertIn("meter_object=True", fields)
+        self.assertIn("meter=not-found/inactive/False", fields)
+        self.assertEqual(meter_verdict(fields), "ok")
+
+    def test_the_old_report_with_a_live_meter_still_fails(self) -> None:
+        fields = host_report_fields(
+            {"meter": {"enabled": "enabled", "active": "active",
+                       "unit_installed": True}})
+        self.assertIn("meter=enabled/active/True", fields)
+        self.assertEqual(meter_verdict(fields), "bad")
+
+
 class NoBootReassertTests(unittest.TestCase):
     """The boot re-assert machinery is gone, and a leftover unit is removed."""
 
@@ -187,6 +257,18 @@ class NoBootReassertTests(unittest.TestCase):
         self.assertFalse(hasattr(self.module, "ensure_no_meter"))
         self.assertFalse(hasattr(self.module, "prune"))
         self.assertEqual(self.module.DEMO_UNIT, "odile-demo-public")
+
+    def test_the_meter_adoption_shim_is_gone(self) -> None:
+        """2026-11-14 13:55Z: the adoption was dead code, so it was deleted."""
+        for name in ("METER_UNIT", "METER_KEY", "METER_UNIT_FILE",
+                     "METER_URL_MARKERS", "_looks_like_meter"):
+            with self.subTest(name=name):
+                self.assertFalse(hasattr(self.module, name))
+        report = APPLY.read_text(encoding="utf-8")
+        self.assertNotIn('"meter":', report)
+        # The key is the profile's own, with the installer's root-only store
+        # as the one fallback on a rebuilt machine.
+        self.assertIn("KEY_STORE = Path(\"/etc/odile/key.env\")", report)
 
     def test_the_old_boot_flags_are_not_cli_options(self) -> None:
         parser = self.module.argparse.ArgumentParser()
