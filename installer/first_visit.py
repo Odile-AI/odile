@@ -130,6 +130,7 @@ DEFAULT_CADDY_STORES = (
 # (the cookie secret) is preserved exactly.
 PASSWORD_KEY = "HERMES_DASHBOARD_BASIC_AUTH_PASSWORD_HASH"
 USERNAME_KEY = "HERMES_DASHBOARD_BASIC_AUTH_USERNAME"
+SECRET_KEY = "HERMES_DASHBOARD_BASIC_AUTH_SECRET"
 DEFAULT_USERNAME = "odile"
 
 STATE_VERSION = 1
@@ -546,7 +547,14 @@ def render_env(text: str, password_hash: str) -> str:
 
 
 def write_env_hash(env_path: Path, password_hash: str) -> str:
-    """Write the hash into the tenant .env; return the username it names."""
+    """Write the hash into the tenant .env; return the username it names.
+
+    Only the hash line moves: the session-signing secret the first boot
+    generated for this machine (``HERMES_DASHBOARD_BASIC_AUTH_SECRET``) is kept
+    byte for byte, or every session cookie the owner had would be invalidated
+    by setting a password. A file without a secret is refused rather than
+    written: the tenant would come back with no way to sign a cookie.
+    """
     try:
         original = env_path.read_text(encoding="utf-8")
         stat = env_path.stat()
@@ -554,6 +562,10 @@ def write_env_hash(env_path: Path, password_hash: str) -> str:
         raise SystemExit("error: %s does not exist; run the installer first" % env_path)
     except OSError as exc:
         raise SystemExit("error: cannot read %s: %s" % (env_path, exc))
+    if not (env_values(original).get(SECRET_KEY) or "").strip():
+        raise SystemExit(
+            "error: %s has no %s; the first-visit write would leave the tenant "
+            "with no session secret" % (env_path, SECRET_KEY))
     owner = (stat.st_uid, stat.st_gid)
     updated = render_env(original, password_hash)
     if updated != original:

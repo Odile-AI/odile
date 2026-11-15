@@ -2189,6 +2189,36 @@ class FirstbootScriptTests(unittest.TestCase):
         self.assertIn("first_visit and not signin_set", installer)
         self.assertIn("placeholder until first visit", installer)
 
+    def test_the_first_boot_generates_the_machines_own_secret(self) -> None:
+        """ODL-522: the image's session secret never signs a tenant's cookie.
+
+        The build writes a random secret into the image, so every disk built
+        from one image shared it. The first boot (`--seed` is in the argv) of a
+        published image must replace it with a secret generated on this
+        machine, and must leave the file alone once the first-visit page has
+        set the owner's sign-in (`signin_set_at`), so a reboot keeps the secret
+        byte for byte. Both halves live in install-stack.sh's production
+        branch; the boot behaviour is measured in docs/runbooks/image.md §13.
+        """
+        installer = (IMAGE / "install-stack.sh").read_text(encoding="utf-8")
+        self.assertIn("fresh_secret", installer)
+        self.assertIn("first_visit_signin_set", installer)
+        production = installer.index("if [ -f /etc/odile/production ]; then")
+        bench = installer.index("elif [ -f \"$env_file\" ] && grep -qx")
+        branch = installer[production:bench]
+        # The first boot is the run that carries --seed; the build has none.
+        self.assertIn('[ -n "$SEED_FILE" ]', branch)
+        self.assertIn("this machine's own secret", branch)
+        # Keep once the sign-in exists: that check must come before the
+        # rewrite, or a reboot after the visit would rotate the secret and
+        # invalidate every session cookie the owner holds.
+        self.assertLess(branch.index("first_visit_signin_set"),
+                        branch.index("this machine's own secret"),
+                        "the first boot must keep the secret once signin_set_at exists")
+        # And the rewrite must be a fresh value, never the image's.
+        self.assertIn("$(fresh_secret)", branch)
+        self.assertIn("$(discarded_scrypt_hash)", branch)
+
     def test_every_shell_script_parses(self) -> None:
         # The seal script has no .sh suffix (it is installed as a program), so
         # it is named here: a syntax error in it is a first boot that never

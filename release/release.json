@@ -1,8 +1,8 @@
 {
   "artifacts": {
     "installer": {
-      "sha256": "ae2c839dabe457a1ec17674a0f13290ab81c2b99735c2e6f1798193f6e148244",
-      "size": 617862,
+      "sha256": "c78eccf006809ad1398f9129669f37514cfd03d8213550d80f828566048971f0",
+      "size": 618527,
       "url": "odile_install.py"
     },
     "skills": {
@@ -14,14 +14,14 @@
   "boot": {
     "kernel": "6.12.115+deb13.1-amd64"
   },
-  "generated_at": "2026-11-14T17:45:39Z",
+  "generated_at": "2026-11-15T00:35:00Z",
   "manifest": {
-    "sha256": "4caad797a75c3585fba914f5f115451bbe8257f8370740f972dbac5e025b069b",
+    "sha256": "808d662622d330aaeb9cb145046113561b32acf25b1713e423f67ce1567bea91",
     "signature_url": "manifest.json.sig",
     "url": "manifest.json"
   },
-  "notes": "ODL-521: the published image ships no usable sign-in \u2014 install-stack.sh --production writes a discarded scrypt hash carrying '# odile-signin-placeholder: 1', the first boot leaves it, and the release installer's --first-visit write replaces any hash that is not the owner's on every run until POST /first-visit records signin_set_at. Cut on top of 2026.11.14-6 (t_781fc5cb's demo-lede re-embed): installer_sha256, the installer size, the manifest hash and this document's hash move; the vendor pin c73dad4d, the skills artifact and the meter-free rows are -6's. The branch's pre-merge cut was 2026.11.14-5 (installer 10a38b68\u2026), superseded here.",
+  "notes": "ODL-522: the session-signing secret is the machine's. On a published image the first boot (install-stack.sh --seed) replaces the build's HERMES_DASHBOARD_BASIC_AUTH_SECRET with one generated on that machine, and keeps the file once the first-visit page has written signin_set_at; the first-visit POST keeps the secret and refuses an .env that has none. The first-visit program inside this installer is the reviewed one (FIRST_VISIT_SHA256 b047a42dac09\u2026). Cut on top of 2026.11.14-7 (ODL-521's discarded sign-in hash); the id is -10 because port/odl-474 cut -9 at 22:00Z and this branch re-cut rather than share it. installer_sha256, the installer size, the manifest hash and this document's hash move; the vendor pin, the skills artifact and the meter-free rows are -7's. Committed, not deployed.",
   "product": "odile",
-  "release": "2026.11.14-7",
+  "release": "2026.11.14-10",
   "schema": 1
 }
