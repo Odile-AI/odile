@@ -63,6 +63,28 @@ not upload the tree's copy. Since t_9896a577's artwork page merged (main
 deploy from `main` installs it and the flag is not needed. The deploy asserts
 the live page's markers either way, so a stale page still fails the gate check.
 
+**The DNS step and the redacted address (ODL-563).** The tree names the tenant
+`203.0.113.87` (§5) and the live zone's record holds the machine's real address,
+so the bare command above would *update* the record to the redaction. Pass the
+live address; on a converged zone the step then prints `same`:
+
+```sh
+./deploy/demo-host/create_dns.py --dry-run --target "$(dig +short demo.odile.fyi)"  # must print `same`
+./deploy/demo-host/deploy_demo_public.py --target "$(dig +short demo.odile.fyi)" \
+    --judge-password-file /path/to/judge-password
+```
+
+**A second writer to the `/verify` template (measured 2026-11-15).**
+`deploy/demo-host/deploy_demo_icons.py` (t_6b25f6e5) uploads `web/verify.html`
+as the release template, and `apply_demo_icons.py` re-injects only the lede —
+so an icons deploy drops the demo's `<!--demo-check-->` section. The journal
+shows the 2026-11-15T01:09:17Z run installing `/tmp/verify.html` over
+`/usr/local/lib/odile/verify.html`; `apply_demo_public.py --report` read
+`"demo_command": false` until this card's deploy restored it. Run the
+demo-public deploy after an icons deploy: its verify step now records a FAIL
+for a `/verify` that does not carry exactly one `<!--demo-check-->` section
+(ODL-563), so a stale page cannot print PASS.
+
 A converged machine prints `same` for every piece and still runs the restart
 and the verify. The apply restarts Caddy (which drops the socket it is talking
 over) and then `odile-agent`; the gateway takes ~35 s to answer again, and its
@@ -78,8 +100,7 @@ account. `demo.odile.fyi/verify` therefore opens with
 
 > This is Odile's tenant machine: one shared workspace on our measured AMD
 > SEV-SNP machine. Odile holds this machine's boot key and can log in. The demo
-> password is public by design. Every judge who signs in lands in the same
-> workspace.
+> password is public by design. Every judge sees these sessions and files.
 
 **The route (ODL-503 finding 1): a demo-only page, not a release re-cut.** The
 signed installer's page already carries both paragraphs — the demo one in a
@@ -105,10 +126,13 @@ change what every customer machine verifies. Instead:
   reads per request — adds the command section inside the same block, and keeps
   the release page at
   `/usr/local/lib/odile-demo-public/verify.html.release` for the rollback;
-- the deploy's `apply --write` is the only writer. `odile-release-setup.service`
-  converges **once** (t_ee5aac66 writes a done marker under `/var/lib/odile`),
-  so after the first boot the release installer no longer rewrites the
-  template; there is no boot unit and no `--tune` re-assert;
+- the deploy's `apply --write` is the only writer of this paragraph.
+  `odile-release-setup.service` converges **once** (t_ee5aac66 writes a done
+  marker under `/var/lib/odile`), so after the first boot the release
+  installer no longer rewrites the template; there is no boot unit and no
+  `--tune` re-assert. The one other writer to the template is the t_6b25f6e5
+  icons deploy, which installs `web/verify.html` and re-injects only the lede
+  (§2, measured 2026-11-15); run the demo-public deploy after it;
 - a customer machine never runs `apply_demo_public.py`, so its `/verify` keeps
   the general row. `tests/test_demo_public.py` renders both pages through the
   release renderer and pins the sentence each one shows. The same test runs
@@ -473,6 +497,16 @@ transcript.
 | The line in a judge's shell | `check_demo_public.py` extracts it and runs it from the published bundle: `expected PASS matches --expect …` / `PASS — the CPU signed this report and the launch measurement matches the pin.`, exit 0 |
 | The plain form is the defect | `./odile-verify https://demo.odile.fyi` prints `a tenant run needs --expect <measurement>`, exit 2 — the pin's `source` is the HQ record |
 | The pages that hand it over | `README.md` (a `/verify` pointer, no bare command) and the demo page; `/judge` is a 301 since ODL-901, so `web/judge.html` no longer ships |
+
+### Evidence for the restored command (ODL-563, 2026-11-15)
+
+| What | Where |
+|---|---|
+| The page's line | `https://demo.odile.fyi/verify` 200, 43,071 B, sha256 `ef24385c…`; exactly one `<!--demo-check-->` / `<!--/demo-check-->` pair; the section is `deploy/demo-host/verify-command.html` with the measurement it serves, `9f01725a…f137` = `/attestation` |
+| The lede | the deck row verbatim — `Every judge sees these sessions and files.` — `grep -c 'lands in the same workspace'` = 0 and `grep -c 'No one at Odile can log in'` = 0 |
+| The check, before and after | public half before the deploy: 20 passed / 4 failed (no command section, the sign-in page's missing credit comment, the two DNS rows); after: 23 passed / 2 failed — both are the DNS rows, which compare the tree's redacted `203.0.113.87` to the live A record (`dig +short demo.odile.fyi`). The command row prints `ok` and the page's own line, run out of the published bundle, exits 0 |
+| The second run | `deploy_demo_public.py` prints `same` for `/usr/local/lib/odile/verify.html (the demo lede)` and `(the demo command)`, the login page, the icons, the Caddyfile block, the config, the `.env` and `state.db`; the page's sha256 is unchanged and the seeded session `local-931d9e32…` keeps its 22 messages, `messages_sha256 870fa53c…` and its two timestamps across both runs |
+| The cause | journal 2026-11-15T01:09:17Z: `install … /tmp/verify.html /usr/local/lib/odile/verify.html` from `deploy_demo_icons.py`; `apply_demo_public.py --report` then read `"demo_lede": true, "demo_command": false` (§2). The deploy's verify now fails a page without exactly one `<!--demo-check-->` section |
 
 ### The published password's reach (2026-11-14)
 
