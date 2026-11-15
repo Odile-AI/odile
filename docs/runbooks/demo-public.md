@@ -135,9 +135,11 @@ machine**: on `odl-7971a8` the unit is not installed
 gone and the `odile-meter` user is deleted (t_e237e261, merged into `main` at
 `0a4b726`; the installer no longer installs the meter product-wide). The
 `.env` carries the machine's one Near AI key, and `apply_demo_public.py` reads
-it from there (falling back to `/etc/odile/meter.key` only on a machine that
-still has the meter). `apply_demo_public.py --report` prints the unit's state;
-the check no longer asserts on it.
+it from there; the old `/etc/odile/meter.key` fallback is deleted (t_dd815e89,
+the CoS's 2026-11-14 13:55Z directive), and a machine rebuilt from the release
+reads `/etc/odile/key.env` instead. `apply_demo_public.py --report` no longer
+prints the unit's state; the check asserts the report carries no meter object
+and that `systemctl is-enabled odile-meter` is `not-found`.
 
 ## 3. The spend risk, stated plainly
 
@@ -283,7 +285,7 @@ sudo /usr/bin/python3 /usr/local/lib/odile-demo-public/apply_demo_public.py --re
 ```
 
 It prints the config flags (`near_ai_direct`, `public_url`), the provider row
-it actually uses, the `.env` key *names*, the meter's state, the `verify` object
+it actually uses, the `.env` key *names*, the `verify` object
 (template hash, `demo_lede`, `customer_lede`, rollback copy), the Caddy block's
 hashes and residue count, the seeded session's row and the last runs' turn
 counts. The check also reads the served `/verify` and fails if its first
