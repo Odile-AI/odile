@@ -288,7 +288,10 @@ class AllowlistRecord(unittest.TestCase):
         spec.loader.exec_module(module)
         rows, problems = module.load_allow(ROOT)
         self.assertEqual(problems, [])
-        self.assertEqual(sum(1 for row in rows if row.credential == "yes"), 2)
+        # Four credentials at the merged head: the published demo password (its
+        # login-page row and the README copy of the same value) and the two
+        # demo secrets (the spent image seed token, the retired session seed).
+        self.assertEqual(sum(1 for row in rows if row.credential == "yes"), 4)
 
 
 if __name__ == "__main__":

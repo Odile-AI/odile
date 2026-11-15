@@ -29,7 +29,7 @@ from odilectl.core import Context  # noqa: E402
 from odilectl.errors import ConfigError, ProviderError, UsageError  # noqa: E402
 
 ZONE = "odile.fyi"
-ZONE_ID = "39068d3335075ff795829e024ff34e00"
+ZONE_ID = "fixture-zone-id-not-real"
 TOKEN = "fixture-dns-token-not-a-secret"
 NAME = "_odile-test.odile.fyi"
 SLUG = "_odile-test"

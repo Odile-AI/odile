@@ -15,22 +15,43 @@ Classes:
                          Google, Slack, Stripe, SendGrid, Anthropic, OpenAI,
                          Cloudflare, NEAR, and a generic JWT).
 * ``credential-assignment``  a literal value assigned to a name ending in
-                         SECRET, TOKEN, PASSWORD, API_KEY, ACCESS_KEY.
+                         SECRET, TOKEN, PASSWORD, API_KEY, ACCESS_KEY, or to a
+                         PASSPHRASE / MNEMONIC / SEED / SECRET_KEY / CREDENTIAL
+                         name. A passphrase need not contain a digit.
+* ``credential-literal`` a credential written as a Markdown table cell under a
+                         label that names one (README's published demo password).
+* ``machine-identity``   a silicon or machine id: a 64-byte SEV-SNP chip id (in
+                         text, in a decoded report, or in a VCEK's HWID), the
+                         VCEK certificate serial, a PARTUUID, a machine-id, a MAC
+                         address, or a hardware serial.
+* ``vendor-resource-id`` a provider's server / box / account id, a tenant slug,
+                         or a host name.
+* ``dns-resource-id``    a DNS zone or record id (32 hex).
+* ``ssh-fingerprint``    a ``SHA256:`` / ``MD5:`` key fingerprint. Unlike the
+                         high-entropy rule, this class is not blinded by the
+                         ``sha256`` / ``partuuid`` suppression.
 * ``high-entropy``       an unbroken 32-128 character mixed-case token whose
                          Shannon entropy is at least 4.5 bits per character.
 * ``public-ip``          an IPv4 address outside the loopback, private,
-                         link-local and documentation ranges.
+                         link-local, CGNAT, benchmarking and documentation
+                         ranges, including an address dashed into a hostname.
 * ``public-ipv6``        an IPv6 address outside ``2001:db8::/32`` and ``::1``.
 * ``email``              an address whose domain is not a placeholder domain.
-* ``home-path``          ``/root/…`` or ``/home/<name>/…`` where the name is not
-                         the service account the product ships.
+* ``home-path``          ``/root/…``, ``/home/<name>/…``, ``/Users/<name>/…`` or
+                         ``C:\\Users\\<name>\\…`` where the name is not a service
+                         account the product ships.
 * ``basic-auth-url``     a URL that carries a username and a password.
-* ``phone``              an E.164 number.
+* ``phone``              an E.164 or national-format telephone number.
 * ``forbidden-value``    a literal from the list named by ``--forbid-file``: the
                          vendor account ids, box ids and checkout path that must
                          never appear in a published tree. The list itself is the
                          one file that carries them, so it is not scanned for its
                          own literals.
+
+Opaque payloads. A base64 run longer than 128 characters is decoded and
+scanned; a UTF-16 payload is decoded before the text rules run; a DER
+certificate is read for its serial and HWID; an archive is opened and every
+member is scanned at its own ``archive!member`` path.
 
 Allowlist discipline. Every exception is one line of ``leak-allow.tsv``:
 
@@ -73,13 +94,18 @@ Exit codes: 0 clean, 1 a finding, 2 the scan could not run.
 from __future__ import annotations
 
 import argparse
+import base64
 import fnmatch
+import gzip
 import hashlib
+import io
 import ipaddress
 import math
 import re
 import subprocess
 import sys
+import tarfile
+import zipfile
 from collections import Counter
 from dataclasses import dataclass, field
 from datetime import date
@@ -92,13 +118,16 @@ SKIP_DIRS = (".git", ".worktrees", ".fresh-clone", ".venv", "__pycache__", "node
 ALLOW_FILE = "leak-allow.tsv"
 DEFAULT_FORBID = "leak-forbid.txt"
 
-# Addresses that are never a leak: loopback, private, link-local, documentation.
+# Addresses that are never a leak: loopback, private, link-local, CGNAT,
+# benchmarking, documentation and the public resolvers the product names.
 IP_ALLOW = (
     ipaddress.ip_network("127.0.0.0/8"),
     ipaddress.ip_network("10.0.0.0/8"),
     ipaddress.ip_network("172.16.0.0/12"),
     ipaddress.ip_network("192.168.0.0/16"),
     ipaddress.ip_network("169.254.0.0/16"),
+    ipaddress.ip_network("100.64.0.0/10"),      # RFC 6598 CGNAT / Tailscale
+    ipaddress.ip_network("198.18.0.0/15"),      # RFC 2544 benchmarking
     ipaddress.ip_network("0.0.0.0/32"),
     ipaddress.ip_network("255.255.255.255/32"),
     ipaddress.ip_network("203.0.113.0/24"),
@@ -128,9 +157,25 @@ EMAIL_DOMAIN_ALLOW = {
     "odile.fyi", "mail.odile.fyi", "backup.odile.fyi", "odile.test",
     "users.noreply.github.com", "openssh.com", "localhost",
 }
+# Example mailboxes in the bundled skill docs: a role, not a person.
+EMAIL_ALLOW = {
+    "you@gmail.com", "you@icloud.com", "git@github.com", "work@company.com",
+    "boss@company.com", "alice@co.com", "bob@co.com", "accounting@company.com",
+    "hermes@agent.ai", "hello@cocoon-ai.com",
+}
 # The service accounts the product ships — including the retired HQ demo's,
 # whose home path dated records still name; every other /home/<name>/ is a person.
-HOME_ALLOW = {"odile", "odile" "demo", "runner", "linuxbrew", "ubuntu"}
+HOME_ALLOW = {"me", "user", "odile", "runner", "linuxbrew", "ubuntu"}
+# /root/ is the service root's home, so its product-owned paths are not a person
+# either. The operator checkout path is deliberately absent: it names this
+# operator's working copy and the public build replaces it with <checkout>.
+ROOT_ALLOW = {
+    ".odile", ".hermes", ".ssh", ".local", ".config", ".npm", ".cache",
+    ".gitconfig", "AGENTS.md", "bin", "tmp", "usr", "boot-key", "kit.json",
+    "backups", "servury-blackbox-verification.md",
+}
+MAC_HOME_ALLOW = {"Shared", "Public", "Default", "Default User", "All Users"}
+WIN_HOME_ALLOW = {"Public", "Default", "Default User", "All Users"}
 
 PEM_BEGIN = re.compile(r"-----BEGIN ([A-Z0-9][A-Z0-9 ]*)-----")
 PEM_END = re.compile(r"-----END ([A-Z0-9][A-Z0-9 ]*)-----")
@@ -153,26 +198,83 @@ TOKENS = (
     ("near-secret", re.compile(r"\bed25519:[1-9A-HJ-NP-Za-km-z]{80,}\b")),
     ("jwt", re.compile(r"\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b")),
 )
-CRED_NAME = re.compile(r"(?i)^[A-Za-z0-9_.-]*(?:SECRET|TOKEN|PASSWORD|PASSWD|API_?KEY|ACCESS_?KEY|PRIVATE_?KEY)$")
+CRED_NAME = re.compile(
+    r"(?i)^[A-Za-z0-9_.-]*(?:SECRET|TOKEN|PASSWORD|PASSWD|PASSPHRASE|MNEMONIC|"
+    r"SEED|SECRET_?KEY|API_?KEY|ACCESS_?KEY|PRIVATE_?KEY|CREDENTIAL)$")
 ASSIGNMENT = re.compile(r"(?i)\b([A-Za-z_][A-Za-z0-9_.-]{0,60})\s*[:=]\s*[\"']?([A-Za-z0-9+/=_.\-]{16,})[\"']?")
+QUOTED_ASSIGNMENT = re.compile(r"(?i)\b([A-Za-z_][A-Za-z0-9_.-]{0,60})\s*[:=]\s*[\"']([^\"'\n]{16,})[\"']")
+ASSIGN_PREFIX = re.compile(r"^([A-Za-z_][A-Za-z0-9_.-]{0,48})[:=](.+)$")
 PLACEHOLDER = re.compile(
     r"(?i)^(?:redacted.*|.*redacted|<.*>|\$\{.*\}|\$\(.*\)|%.*|x{4,}|\.{3,}|\*+|-+|=+|"
-    r"changeme|example.*|your[-_].*|placeholder.*|dummy.*|fake.*|none|null|true|false|todo|same|"
-    r"test.*|demo.*|local.*)$")
+    r"changeme|example.*|fixture.*|your[-_].*|placeholder.*|dummy.*|fake.*|none|null|true|false|todo|same|"
+    r"test.*|demo.*|local.*|.*not[-_]a[-_]secret.*)$")
 TOKEN = re.compile(r"(?<![A-Za-z0-9+/=_-])([A-Za-z0-9+/=_-]{32,128})(?![A-Za-z0-9+/=_-])")
 B64 = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/="
 B58 = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
-IPV4 = re.compile(r"(?<![\d.])((?:\d{1,3}\.){3}\d{1,3})(?![\d.])")
+B64_RUN = re.compile(r"(?<![A-Za-z0-9+/=])([A-Za-z0-9+/]{129,}={0,2})(?![A-Za-z0-9+/=])")
+IPV4 = re.compile(r"(?<![\d.])((?:[0-9]{1,3}\.){3}[0-9]{1,3})(?![\d.])")
 IPV6 = re.compile(r"(?<![\w:.])([0-9A-Fa-f:]{6,39})(?![\w:.])")
 EMAIL = re.compile(r"[A-Za-z0-9._%+-]+@([A-Za-z0-9.-]+\.[A-Za-z]{2,})")
 HOME_PATH = re.compile(r"(?<![\w.])/home/([a-z][a-z0-9_-]{0,31})/")
-ROOT_PATH = re.compile(r"(?<![\w.])/root/(?=[A-Za-z0-9_-])")
+ROOT_PATH = re.compile(r"(?<![\w.])/root/([A-Za-z0-9_.-]+)")
+MAC_HOME = re.compile(r"(?<![\w.])/Users/([A-Za-z0-9._-]+)/")
+WIN_HOME = re.compile(r"(?i)\b[A-Z]:\\Users\\([A-Za-z0-9._ -]+)\\")
 BASIC_AUTH = re.compile(r"\b[a-z][a-z0-9+.-]*" + "://" + r"[^/\s:@]+:[^/\s@]+@[a-z0-9.-]+", re.I)
 PHONE = re.compile(r"(?<![\d+])\+[1-9]\d{7,14}(?![\d])")
+PHONE_NATIONAL = re.compile(
+    r"(?<![\d])(?:\+?1[\s.-]?)?\([0-9]{3}\)\s*[0-9]{3}[-.][0-9]{4}(?![\d])"
+    r"|(?<![\d])\b[0-9]{3}[-.][0-9]{3}[-.][0-9]{4}\b")
 PRINTABLE = re.compile(rb"[ -~]{6,}")
 ALLOW_CLASSES = ("constant", "debt")
 ALLOW_CREDENTIAL = ("yes", "no")
 ALLOW_DIGEST = re.compile(r"sha256:[0-9a-f]{12}$")
+
+# Machine identity: a silicon id, a volume id, a host's own ids.
+CHIP_ID = re.compile(r"(?<![0-9A-Fa-f])[0-9A-Fa-f]{128}(?![0-9A-Fa-f])")
+PARTUUID = re.compile(
+    r"(?i)\bpartuuid\s*[=:]\s*([0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-"
+    r"[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12})\b")
+MACHINE_ID = re.compile(r"(?i)\bmachine[-_ ]?id\b\D{0,24}([0-9A-Fa-f]{32})\b")
+MAC = re.compile(r"(?<![0-9A-Fa-f:])(?:[0-9A-Fa-f]{2}[:-]){5}[0-9A-Fa-f]{2}(?![0-9A-Fa-f:])")
+SERIAL_VALUE = re.compile(
+    r"(?i)\b(?:(?:hardware|chassis|system|board|product|device)[ _-]?serial"
+    r"(?:[ _-]?(?:number|no))?|serial[ _-]?number)\s*[=:]\s*"
+    r"[\"']?([A-Za-z0-9][A-Za-z0-9._-]{7,31})\b")
+
+# Vendor resource ids: how the provider names a machine or an account.
+INSTANCE_ID = re.compile(
+    r"(?i)\b(?:bb\.iid|iid|instance[_-]?id|server[_-]?id|box[_-]?id|account[_-]?id)\b"
+    r"\s*[=:]\s*[\"']?([0-9A-Fa-f]{8})\b")
+HOST_NAME = re.compile(
+    r"(?i)\b(?:bb\.host|host[_-]?name)\b\s*[=:]\s*[\"']?([a-z][a-z0-9]{5,11})\b")
+HOST_NAME_ALLOW = {"hostfake", "hostname", "localhost", "machine", "odlukitest", "scratch", "tokens"}
+# Synthetic instance ids the tests use; a fixture is not a provider's machine.
+INSTANCE_ID_ALLOW = {"01494715", "0badc0de", "45445445", "7448afca", "abc12345", "cafebabe", "fbf0f1f0"}
+TENANT_SLUG = re.compile(r"\bodl-[0-9]{4}[a-z0-9]{2,4}\b")
+TENANT_SLUG_ALLOW = {"odl-000000"}
+
+# DNS resource ids: Cloudflare zone and record ids are 32 hex.
+ZONE_ID = re.compile(r"(?i)\bzone(?:[_-]?id)?\b\D{0,24}([0-9A-Fa-f]{32})\b")
+RECORD_ID = re.compile(r"(?i)\brecord(?:[_-]?id)?\b\D{0,24}([0-9A-Fa-f]{32})\b")
+
+# Key fingerprints, deliberately outside the sha256 suppression.
+SSH_FINGERPRINT = re.compile(r"\bSHA256:[A-Za-z0-9+/]{43}\b")
+MD5_FINGERPRINT = re.compile(r"\bMD5:(?:[0-9A-Fa-f]{2}:){15}[0-9A-Fa-f]{2}\b")
+
+# A dotted quad dashed into a hostname, e.g. 203-0-113-10.sslip.io.
+DASHED_HOST = re.compile(r"(?<![\w.-])((?:[0-9]{1,3}-){3}[0-9]{1,3})(?=\.(?:[A-Za-z0-9-]+\.)+[A-Za-z]{2,})")
+# A version quadruple is not an address.
+VERSION_BEFORE = re.compile(r"(?i)\b(?:version|release|build|firmware|kernel|api|protocol|v)\s*[:=]?\s*$")
+VERSION_LINE = re.compile(r"(?i)\b(?:version|release|build|firmware|kernel)\b")
+
+# A credential in a Markdown table cell, e.g. README's published demo password.
+TABLE_CREDENTIAL = re.compile(
+    r"(?im)^\s*\|\s*(?:\*\*)?(?:password|passphrase|secret|token|credential|api[ _-]?key)"
+    r"(?:\*\*)?\s*\|\s*`([^`\n]{8,})`\s*\|")
+
+ARCHIVE_SUFFIXES = (".tar", ".tar.gz", ".tgz", ".tar.bz2", ".tbz2", ".tar.xz", ".txz", ".zip", ".gz")
+MAX_ARCHIVE_MEMBERS = 500
+MAX_ARCHIVE_MEMBER_BYTES = 8 * 1024 * 1024
 
 
 @dataclass
@@ -314,48 +416,119 @@ def high_entropy(value: str) -> bool:
     return shannon(value) >= MIN_ENTROPY
 
 
+def token_value(token: str) -> str:
+    """Strip a leading NAME= / NAME: from a token, when a value follows."""
+    match = ASSIGN_PREFIX.match(token)
+    if match and match.group(2):
+        return match.group(2)
+    return token
+
+
 def secret_assignment(name: str, value: str) -> bool:
     if not CRED_NAME.match(name) or len(value) < MIN_ASSIGNMENT_LENGTH:
         return False
-    if not (re.search(r"[0-9]", value) and re.search(r"[A-Za-z]", value)):
+    if not re.search(r"[A-Za-z]", value):
         return False
     if PLACEHOLDER.match(value) or looks_like_path(value):
         return False
+    if " " in value:
+        words = value.split()
+        if len(words) < 2 or not all(re.fullmatch(r"[a-z]+", word) for word in words):
+            return False    # a phrase, but not a mnemonic or passphrase
+    if re.match(r"^[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)+$", value):
+        return False        # a dotted expression, not a value
+    if re.match(r"^_?[a-z][a-z0-9]*(?:_[a-z0-9]+)+$", value):
+        return False        # a snake_case identifier, not a value
+    if re.fullmatch(r"[A-Z][A-Z0-9_]+", value):
+        return False        # an environment-variable name, not a value
     return shannon(value) >= MIN_ASSIGNMENT_ENTROPY
 
 
 def text_candidates(line: str, number: int) -> list[tuple[str, str, str]]:
     """(rule, value, note) for one line of text."""
-    if "base64," in line or "data:image" in line or "data:font" in line:
-        return []
+    data_uri = "base64," in line or "data:image" in line or "data:font" in line
     found: list[tuple[str, str, str]] = []
     seen: set[str] = set()
+
+    def add(rule: str, value: str, note: str = "") -> None:
+        if value and value not in seen:
+            found.append((rule, value, note))
+            seen.add(value)
+
+    # Machine identity first: a silicon id is the strongest fingerprint there is.
+    digest_line = bool(re.search(r"(?i)sha(256|512)|digest|checksum", line))
+    for match in CHIP_ID.finditer(line):
+        if not digest_line:
+            add("machine-identity", match.group(0), "chip id")
+    for match in PARTUUID.finditer(line):
+        add("machine-identity", match.group(1), "partuuid")
+    for match in MACHINE_ID.finditer(line):
+        add("machine-identity", match.group(1), "machine-id")
+    for match in MAC.finditer(line):
+        add("machine-identity", match.group(0), "MAC")
+    for match in SERIAL_VALUE.finditer(line):
+        add("machine-identity", match.group(1), "hardware serial")
+
+    # Vendor resource ids, then DNS resource ids.
+    for match in INSTANCE_ID.finditer(line):
+        value = match.group(1)
+        if value.lower() not in INSTANCE_ID_ALLOW:
+            add("vendor-resource-id", value, "instance id")
+    for match in HOST_NAME.finditer(line):
+        value = match.group(1)
+        if value.lower() not in HOST_NAME_ALLOW:
+            add("vendor-resource-id", value, "host name")
+    for match in TENANT_SLUG.finditer(line):
+        if match.group(0) not in TENANT_SLUG_ALLOW:
+            add("vendor-resource-id", match.group(0), "tenant slug")
+    for match in ZONE_ID.finditer(line):
+        add("dns-resource-id", match.group(1), "zone id")
+    for match in RECORD_ID.finditer(line):
+        add("dns-resource-id", match.group(1), "record id")
+
+    # Key fingerprints run before high-entropy and are not blinded by sha256.
+    for match in SSH_FINGERPRINT.finditer(line):
+        add("ssh-fingerprint", match.group(0), "SHA256 fingerprint")
+    for match in MD5_FINGERPRINT.finditer(line):
+        add("ssh-fingerprint", match.group(0), "MD5 fingerprint")
+
     for name, pattern in TOKENS:
         for match in pattern.finditer(line):
-            value = match.group(0)
-            if value not in seen:
-                found.append((f"provider-token/{name}", value, ""))
-                seen.add(value)
-    for match in ASSIGNMENT.finditer(line):
-        name, value = match.group(1), match.group(2)
-        if value not in seen and secret_assignment(name, value):
-            found.append(("credential-assignment", value, ""))
-            seen.add(value)
-    for match in TOKEN.finditer(line):
+            add(f"provider-token/{name}", match.group(0), "")
+    for pattern in (QUOTED_ASSIGNMENT, ASSIGNMENT):
+        for match in pattern.finditer(line):
+            name, value = match.group(1), match.group(2).strip()
+            if secret_assignment(name, value):
+                add("credential-assignment", value, "")
+    for match in TABLE_CREDENTIAL.finditer(line):
         value = match.group(1)
-        if value in seen or looks_like_path(value):
-            continue
-        if (high_entropy(value)
-                and not value.startswith(("AAAAC3", "AAAAB3", "c3NoLWVk"))
-                and not re.match(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-", value)
-                and not re.search(r"(?i)sha(256|512)|digest|checksum|partuuid", line)):
-            found.append(("high-entropy", value, ""))
-            seen.add(value)
+        if not PLACEHOLDER.match(value):
+            add("credential-literal", value, "Markdown table credential")
+    if not data_uri:
+        for match in TOKEN.finditer(line):
+            value = token_value(match.group(1))
+            if value in seen or looks_like_path(value):
+                continue
+            if (high_entropy(value)
+                    and not value.startswith(("AAAAC3", "AAAAB3", "c3NoLWVk"))
+                    and not re.match(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-", value)
+                    and not re.search(r"(?i)sha(256|512)|digest|checksum|partuuid", line)):
+                add("high-entropy", value, "")
     for match in IPV4.finditer(line):
         value = match.group(1)
-        if value not in seen and not is_doc_ip(value):
-            found.append(("public-ip", value, ""))
-            seen.add(value)
+        if value in seen or is_doc_ip(value):
+            continue
+        if VERSION_BEFORE.search(line[:match.start()]) or VERSION_LINE.search(line):
+            continue
+        add("public-ip", value, "")
+    for match in DASHED_HOST.finditer(line):
+        value = match.group(1)
+        octets = value.split("-")
+        if len(octets) != 4 or not all(part.isdigit() and int(part) <= 255 for part in octets):
+            continue
+        if is_doc_ip(".".join(octets)):
+            continue
+        add("public-ip", value, "dashed into a hostname")
     for match in IPV6.finditer(line):
         value = match.group(1)
         if value in seen or value.count(":") < 2:
@@ -365,25 +538,159 @@ def text_candidates(line: str, number: int) -> list[tuple[str, str, str]]:
         except ValueError:
             continue
         if not is_doc_ipv6(value):
-            found.append(("public-ipv6", value, ""))
-            seen.add(value)
+            add("public-ipv6", value, "")
     for match in EMAIL.finditer(line):
         domain = match.group(1).lower()
         if re.search(r"\.(service|timer|target|socket|mount|path)$", domain):
             continue
-        if domain not in EMAIL_DOMAIN_ALLOW and not domain.endswith(".odile.test"):
-            found.append(("email", match.group(0), domain))
+        address = match.group(0)
+        if (address.lower() not in EMAIL_ALLOW
+                and domain not in EMAIL_DOMAIN_ALLOW
+                and not domain.endswith(".odile.test")):
+            add("email", address, domain)
     for match in HOME_PATH.finditer(line):
         if match.group(1) not in HOME_ALLOW:
-            found.append(("home-path", match.group(0), match.group(1)))
+            add("home-path", match.group(0), match.group(1))
+    for match in ROOT_PATH.finditer(line):
+        segment = match.group(1).rstrip(".")
+        if segment and segment not in ROOT_ALLOW:
+            add("home-path", "/root/" + segment, segment)
+    for match in MAC_HOME.finditer(line):
+        if match.group(1) not in MAC_HOME_ALLOW:
+            add("home-path", match.group(0), match.group(1))
+    for match in WIN_HOME.finditer(line):
+        name = match.group(1).strip()
+        if name not in WIN_HOME_ALLOW:
+            add("home-path", match.group(0), name)
     for match in BASIC_AUTH.finditer(line):
-        found.append(("basic-auth-url", match.group(0), ""))
-    for match in PHONE.finditer(line):
-        found.append(("phone", match.group(0), ""))
+        value = match.group(0)
+        if "<" not in value and ">" not in value:
+            add("basic-auth-url", value, "")
+    for pattern in (PHONE, PHONE_NATIONAL):
+        for match in pattern.finditer(line):
+            value = match.group(0)
+            if value.replace("+", "").replace("(", "").replace(")", "").replace("-", "").replace(" ", "") not in {
+                    "14155551212", "1555123456"}:
+                add("phone", value, "")
     return found
 
 
-def scan_text(text: str) -> list[tuple[str, int, str, str]]:
+def _der_tlv(data: bytes, offset: int) -> tuple[int, int, int] | None:
+    """(tag, value offset, value length) for one DER TLV, or None."""
+    if offset + 2 > len(data):
+        return None
+    tag, length = data[offset], data[offset + 1]
+    header = 2
+    if length & 0x80:
+        count = length & 0x7F
+        if count == 0 or offset + 2 + count > len(data):
+            return None
+        length = int.from_bytes(data[offset + 2:offset + 2 + count], "big")
+        header = 2 + count
+    start = offset + header
+    if start + length > len(data):
+        return None
+    return tag, start, length
+
+
+def der_identifiers(data: bytes) -> list[tuple[str, str, str]]:
+    """A certificate's serial number and its AMD VCEK HWID, when DER."""
+    if len(data) < 64 or data[0] != 0x30:
+        return []
+    outer = _der_tlv(data, 0)
+    if outer is None:
+        return []
+    tbs = _der_tlv(data, outer[1])
+    if tbs is None or tbs[0] != 0x30:
+        return []
+    offset = tbs[1]
+    first = _der_tlv(data, offset)
+    if first is not None and first[0] == 0xA0:
+        offset = first[1] + first[2]
+    serial = _der_tlv(data, offset)
+    found: list[tuple[str, str, str]] = []
+    if serial is not None and serial[0] == 0x02 and 8 <= serial[2] <= 32:
+        value = data[serial[1]:serial[1] + serial[2]]
+        found.append(("machine-identity", value.hex(), "VCEK certificate serial"))
+    oid = bytes.fromhex("2b060104019c780104")  # 1.3.6.1.4.1.3704.1.4 (HWID)
+    position = data.find(oid)
+    if position >= 0:
+        octets = data.find(b"\x04\x40", position + len(oid), position + len(oid) + 64)
+        if octets >= 0:
+            hwid = data[octets + 2:octets + 66]
+            if len(hwid) == 64 and any(hwid):
+                found.append(("machine-identity", hwid.hex(), "VCEK HWID (chip id)"))
+    return found
+
+
+def report_identifiers(data: bytes) -> list[tuple[str, str, str]]:
+    """A byte string that is an SEV-SNP report: its chip id at 0x1A0."""
+    if len(data) < 0x2A0:
+        return []
+    version = int.from_bytes(data[0:4], "little")
+    if version not in (2, 3, 4, 5):
+        return []
+    if not any(data[0x90:0xC0]):        # the measurement is never all zero
+        return []
+    chip = data[0x1A0:0x1E0]
+    if not any(chip):
+        return []
+    return [("machine-identity", chip.hex(), "chip id in SEV-SNP report")]
+
+
+def payload_identifiers(data: bytes) -> list[tuple[str, str, str]]:
+    return report_identifiers(data) or der_identifiers(data)
+
+
+def utf16_text(data: bytes) -> str | None:
+    """Decode a UTF-16 payload, with or without a BOM."""
+    if data[:2] == b"\xff\xfe":
+        return data[2:].decode("utf-16-le", "replace")
+    if data[:2] == b"\xfe\xff":
+        return data[2:].decode("utf-16-be", "replace")
+    sample = data[:4096]
+    if len(sample) < 8 or sample.count(0) < len(sample) // 4:
+        return None
+    candidates = []
+    for encoding in ("utf-16-le", "utf-16-be"):
+        try:
+            text = data.decode(encoding, "replace")
+        except UnicodeError:
+            continue
+        printable = sum(1 for char in text if char.isprintable() or char in "\r\n\t")
+        candidates.append((printable / max(len(text), 1), text))
+    if not candidates:
+        return None
+    ratio, text = max(candidates)
+    return text if ratio >= 0.85 else None
+
+
+def decoded_candidates(raw: bytes, line: int, depth: int) -> list[tuple[str, int, str, str]]:
+    """Scan what a base64 run decodes to: a report, a certificate, or text."""
+    found: list[tuple[str, int, str, str]] = []
+    payload = payload_identifiers(raw)
+    for rule, value, note in payload:
+        found.append((rule, line, value, note + " (base64)"))
+    if payload:
+        return found
+    text = utf16_text(raw)
+    if text is None and raw:
+        try:
+            text = raw.decode("utf-8")
+        except UnicodeDecodeError:
+            text = None
+    if text is not None:
+        printable = sum(1 for char in text if char.isprintable() or char in "\r\n\t")
+        if len(text) >= 8 and printable / len(text) >= 0.9:
+            for rule, number, value, note in scan_text(text, depth + 1):
+                found.append((rule, line, value, ("base64: " + note).strip()))
+    elif raw:
+        for rule, number, value, note in scan_bytes(raw, depth + 1):
+            found.append((rule, line, value, "base64 binary"))
+    return found
+
+
+def scan_text(text: str, depth: int = 0) -> list[tuple[str, int, str, str]]:
     lines = text.splitlines()
     out: list[tuple[str, int, str, str]] = []
     index = 0
@@ -406,14 +713,89 @@ def scan_text(text: str) -> list[tuple[str, int, str, str]]:
                 continue
         for rule, value, note in text_candidates(line, index + 1):
             out.append((rule, index + 1, value, note))
+        if depth < 2 and not any(part in line for part in ("data:image", "data:font", "base64,")):
+            for match in B64_RUN.finditer(line):
+                run = match.group(1)
+                if len(run) % 4:
+                    run += "=" * (-len(run) % 4)
+                try:
+                    raw = base64.b64decode(run, validate=False)
+                except ValueError:
+                    continue
+                if len(raw) >= 32:
+                    out.extend(decoded_candidates(raw, index + 1, depth))
         index += 1
     return out
 
 
-def scan_bytes(data: bytes) -> list[tuple[str, int, str, str]]:
-    """A binary: run the text rules over its printable runs."""
-    text = "\n".join(m.group(0).decode("ascii", "replace") for m in PRINTABLE.finditer(data))
-    return scan_text(text)
+def scan_bytes(data: bytes, depth: int = 0) -> list[tuple[str, int, str, str]]:
+    """A binary: its payload ids, a UTF-16 payload, and its printable runs."""
+    out: list[tuple[str, int, str, str]] = []
+    for rule, value, note in payload_identifiers(data):
+        out.append((rule, 1, value, note))
+    text = utf16_text(data)
+    if text is not None:
+        out.extend(scan_text(text, depth))
+    printable = "\n".join(m.group(0).decode("ascii", "replace") for m in PRINTABLE.finditer(data))
+    out.extend(scan_text(printable, depth + 1))
+    return out
+
+
+def scan_archive(name: str, data: bytes) -> list[tuple[str, list[tuple[str, int, str, str]]]]:
+    """Every member of a tar / zip / gzip archive, at archive!member paths."""
+    out: list[tuple[str, list[tuple[str, int, str, str]]]] = []
+    members = 0
+
+    def take(member: str, blob: bytes) -> None:
+        nonlocal members
+        members += 1
+        if members > MAX_ARCHIVE_MEMBERS or len(blob) > MAX_ARCHIVE_MEMBER_BYTES:
+            return
+        path = f"{name}!{member}"
+        if is_binary(blob):
+            out.append((path, scan_bytes(blob)))
+        else:
+            out.append((path, scan_text(blob.decode("utf-8", "replace"))))
+
+    if zipfile.is_zipfile(io.BytesIO(data)):
+        with zipfile.ZipFile(io.BytesIO(data)) as archive:
+            for info in archive.infolist():
+                if info.is_dir():
+                    continue
+                try:
+                    blob = archive.read(info)
+                except (OSError, RuntimeError, zipfile.BadZipFile):
+                    continue
+                take(info.filename, blob)
+        return out
+    try:
+        with tarfile.open(fileobj=io.BytesIO(data), mode="r:*") as archive:
+            for member in archive.getmembers():
+                if not member.isfile():
+                    continue
+                handle = archive.extractfile(member)
+                if handle is None:
+                    continue
+                take(member.name, handle.read(MAX_ARCHIVE_MEMBER_BYTES + 1))
+        return out
+    except (tarfile.TarError, OSError):
+        pass
+    if name.endswith(".gz") or data[:2] == b"\x1f\x8b":
+        try:
+            blob = gzip.decompress(data)
+        except OSError:
+            return out
+        take(name[:-3] if name.endswith(".gz") else "member", blob)
+    return out
+
+
+def scan_data(relative: str, data: bytes) -> list[tuple[str, list[tuple[str, int, str, str]]]]:
+    """(path, candidates) for one file; archives fan out to their members."""
+    if relative.endswith(ARCHIVE_SUFFIXES):
+        return scan_archive(relative, data)
+    if is_binary(data):
+        return [(relative, scan_bytes(data))]
+    return [(relative, scan_text(data.decode("utf-8", "replace")))]
 
 
 def is_binary(data: bytes) -> bool:
@@ -477,14 +859,11 @@ def scan_tree(root: Path, allows: list[Allow], today: date,
             continue
         report.files += 1
         report.bytes_scanned += len(data)
-        if is_binary(data):
-            text = data.decode("latin-1")
-            apply(report, root, allows, today, relative, scan_bytes(data))
+        for scanned_path, candidates in scan_data(relative, data):
+            apply(report, root, allows, today, scanned_path, candidates)
+        if not relative.endswith(ARCHIVE_SUFFIXES):
+            text = data.decode("latin-1") if is_binary(data) else data.decode("utf-8", "replace")
             report.findings.extend(scan_forbidden(text, relative, forbid))
-            continue
-        text = data.decode("utf-8", "replace")
-        apply(report, root, allows, today, relative, scan_text(text))
-        report.findings.extend(scan_forbidden(text, relative, forbid))
     return report
 
 
@@ -530,9 +909,10 @@ def scan_history(root: Path, allows: list[Allow], today: date,
                 continue
             text = data.decode("latin-1") if is_binary(data) else data.decode("utf-8", "replace")
             before = len(report.findings)
-            apply(report, root, allows, today, path,
-                  scan_bytes(data) if is_binary(data) else scan_text(text))
-            report.findings.extend(scan_forbidden(text, path, forbid))
+            for scanned_path, candidates in scan_data(path, data):
+                apply(report, root, allows, today, scanned_path, candidates)
+            if not path.endswith(ARCHIVE_SUFFIXES):
+                report.findings.extend(scan_forbidden(text, path, forbid))
             for finding in report.findings[before:]:
                 finding.commit = commit[:7]
     finally:

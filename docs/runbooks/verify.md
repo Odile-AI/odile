@@ -841,8 +841,8 @@ $ ./odile-verify --expect 9f01725afd71968f74e6dec5f7768b9dfaf52a46cbcfe8a49e106b
   source           https://odl-7971a8.odile.fyi/attestation
   fetched_at       2026-11-13T01:13:51Z
   measurement      9f01725afd71968f74e6dec5f7768b9dfaf52a46cbcfe8a49e106b5cff94028080a47c3d7f56dd7c5c49e6781517f137
-  kds              https://kdsintf.amd.com/vcek/v1/Milan/3fa18b1ede…9931?blSPL=4&teeSPL=0&snpSPL=23&ucodeSPL=213
-  vcek        PASS  fetched the report's own VCEK from AMD KDS for chip 3fa18b1ede10a53e… TCB bl=4 tee=0 snp=23 ucode=213 (sha256 <per-fetch digest>); the chain is checked against the pinned ARK
+  kds              https://kdsintf.amd.com/vcek/v1/Milan/<chip-id>?blSPL=4&teeSPL=0&snpSPL=23&ucodeSPL=213
+  vcek        PASS  fetched the report's own VCEK from AMD KDS for chip <chip-id> TCB bl=4 tee=0 snp=23 ucode=213 (sha256 <per-fetch digest>); the chain is checked against the pinned ARK
   chain       PASS  VCEK -> ASK -> ARK verifies; ARK SHA-256 69:d0:63:b4:…:9a:54:0b:cd
   cpu binding PASS  the VCEK names this chip and TCB (bl=4 tee=0 snp=23 ucode=213)
   signature   PASS  ECDSA P-384 over the 672-byte report verifies with the VCEK

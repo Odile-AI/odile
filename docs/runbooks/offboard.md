@@ -188,7 +188,7 @@ $ odilectl destroy odl-7971a8 --export odile-export-odl-7971a8-20261113T032107Z.
 destroy: dry run (pass --apply to execute)
   1. export.verify: file="odile-export-odl-7971a8-20261113T032107Z.tar.gz", sha256="478890ecf75a…", bytes=1429556, entries=702, members="ok"
   2. support.check: url="https://odl-7971a8.odile.fyi/verify", result="none", line="operator key PASS none (authorized_keys: 1 line(s), the measured throwaway)"
-  3. dns.delete: zone="odile.fyi", name="odl-7971a8.odile.fyi", type="A", record_id="1138329c45071c6ea5c7d121fb34b6c0", result="present"
+  3. dns.delete: zone="odile.fyi", name="odl-7971a8.odile.fyi", type="A", record_id="fixture-record-id-1", result="present"
   4. provider.terminate: hostname="odl-7971a8", server_id="31a63bbb", ipv4="203.0.113.87"
   5. provider.absent: server_id="31a63bbb", until="not listed by ?action=servers", timeout_seconds=120.0
   6. state.destroy: slug="odl-7971a8", from="ready", detail="bundle, grant, DNS, machine and retention"
@@ -232,7 +232,7 @@ this card, on the host account, at $2.15 each:
 | order | invoice `b473060c`, Blackbox Core, **7 days, $2.15** | invoice `e0e6fbce`, same |
 | machine | `0b3234a2`, `odl-218a1b`, 203.0.113.182 | `fbf0f1f0`, `odl-218c1d`, 203.0.113.182 |
 | row | `invited → claimed → provisioning`, release `2026.11.1` | same |
-| DNS record | `882f002bd01c6e5cd4221c441462c916` → the address, TTL 120 | `73be9b296ef8d3778136977b025f690a` |
+| DNS record | `fixture-record-id-2` → the address, TTL 120 | `fixture-record-id-3` |
 | destroy | `destroyed: true`, `absent_at 2026-11-13T03:28:51Z`, DNS `deleted`, `keep_until 2026-12-13T03:28:40Z` | `destroyed: true`, `absent_at 03:31:50Z`, DNS `deleted`, `keep_until 2026-12-13T03:31:39Z` |
 | provider after | `?action=server&id=0b3234a2` → **HTTP 404** `{"success":false,"error":"Server not found."}` | `?action=server&id=fbf0f1f0` → **HTTP 404**, the same body |
 | zone after | `GET dns_records?type=A&name=odl-218a1b.odile.fyi` → `success true, result_count 0` | the same for `odl-218c1d` |
@@ -249,7 +249,7 @@ state: destroyed | server_id: fbf0f1f0 | release: 2026.11.1
 detail: {"absent_at": "2026-11-13T03:31:50Z",
          "backup": {"days": 30, "keep_until": "2026-12-13T03:31:39Z", "repo": null, "snapshot": null},
          "dns": {"action": "deleted", "name": "odl-218c1d.odile.fyi",
-                 "record_id": "73be9b296ef8d3778136977b025f690a", "zone": "odile.fyi"},
+                 "record_id": "fixture-record-id-3", "zone": "odile.fyi"},
          "export": {"skipped": true},
          "grant": {"source": "https://odl-218c1d.odile.fyi/verify", "status": "unknown"},
          "machine": {"ipv4": "203.0.113.182", "server_id": "fbf0f1f0"},

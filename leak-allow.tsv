@@ -28,7 +28,6 @@ credential-assignment	tests/test_first_visit.py	sha256:92d152347635	constant	no	
 credential-assignment	tests/test_first_visit.py	sha256:e024fef88814	constant	no	test fixture: a backup password, never used to encrypt anything	never
 credential-assignment	tests/test_first_visit.py	sha256:7d6c1d64963a	constant	no	test fixture: base64 of the literal 'not-the-image-secret', the bench image's placeholder session secret the boot must keep	never
 high-entropy	*	sha256:bdcaa7157457	constant	no	base64 of a public SSH key inside a measured command line or a recorded report	never
-high-entropy	tests/test_first_visit.py	sha256:9468ffd30a44	constant	no	the scanner's TOKEN rule swallows `NAME=value`, so this is the session-secret placeholder with its variable name attached — a name AND a value	never
 high-entropy	tests/test_secret_scan.py	sha256:d30742eb5af9	constant	no	a literal in secret_scan's own allowlist; the test asserts secret_scan allowlists it, not that leak_scan reports it	never
 private-key	tests/test_claim.py	sha256:a47672cb25d2	constant	no	the redacted fixture: the marker pair itself is the test's subject, and a real key here is still a finding	never
 email	*	sha256:fa5fbf8a030b	constant	no	a fixture recipient in the mail-transport and DSN tests; a real Gmail address standing in as the stranger's mailbox	never
@@ -41,3 +40,33 @@ home-path	*	sha256:e50425b752fd	constant	no	the tenant account the product creat
 home-path	*	sha256:e78fb33ae4ec	constant	no	a throwaway account in an install transcript, not a person	never
 public-ip	docs/security/LEAK-CONTROL-VERDICT.md	sha256:6c4a9f5f0de6	constant	no	the card's drill transcript, verbatim: the probe address the gate must reject	never
 email	docs/security/LEAK-CONTROL-VERDICT.md	sha256:8d38531c89cb	constant	no	the card's drill transcript, verbatim: the probe mailbox the gate must reject	never
+vendor-resource-id	*	sha256:3890f50e6844	constant	no	the live tenant slug; the public build replaces it with odl-fake01, and the forbid list names it as a backstop	never
+vendor-resource-id	*	sha256:eaf6312fa1f2	constant	no	the live tenant's Servury instance id; the public build replaces it with 0badc0de, and the forbid list names it	never
+vendor-resource-id	*	sha256:bbd2e45d545b	constant	no	the bench machine's instance id in two recorded reports; the public build replaces it with cafebabe	never
+vendor-resource-id	*	sha256:421fe1d07ee8	constant	no	the HQ host name in two recorded reports; the public build replaces it with hostfake	never
+machine-identity	tests/fixtures/verify/*	sha256:4368780a2f64	constant	no	the HQ chip id in three recorded SEV-SNP reports; the report signature covers 0x1A0, so the bytes cannot be redacted without invalidating it. Synthetic-report fixture proposed in ODL-906-F3's note	never
+machine-identity	tests/fixtures/verify/*	sha256:01eea00bcaf2	constant	no	the tenant chip id in its recorded report and in the VCEK HWID; both are AMD-signed, so the bytes cannot be redacted. Synthetic report/VCEK proposed in ODL-906-F3's note	never
+machine-identity	tests/fixtures/verify/tenant-vcek.der	sha256:afd46d61bb03	constant	no	the AMD-issued VCEK certificate serial; the certificate signature covers it, so it cannot be redacted. Synthetic VCEK proposed in ODL-906-F3's note	never
+machine-identity	docs/runbooks/image-bench.md	sha256:64a777ff70aa	constant	no	the real volume's PARTUUID inside a recorded measured command line; redaction would invalidate the recorded measurement	never
+credential-assignment	tests/test_first_visit.py	sha256:87cbebfeebc0	constant	no	test fixture: a passphrase with no digit, now visible to the extended name list	never
+credential-literal	README.md	sha256:b2132046eb76	constant	yes	the published demo password in the README table; public by design, the same value as the login page row	never
+phone	docs/security/LEAK-CONTROL-VERDICT.md	sha256:086a44ba587b	constant	no	the card's drill transcript, verbatim: the national-format probe number the gate must reject	never
+ssh-fingerprint	*	sha256:cdb5c8d85d05	constant	no	the image's boot-key fingerprint in a pin; public key, no private half in the tree	never
+ssh-fingerprint	*	sha256:f3aa8305f166	constant	no	the recorded attestation's boot-key fingerprint in an architecture note; public key	never
+ssh-fingerprint	*	sha256:8918b57a32f7	constant	no	the tenant's host-key fingerprint in the ceremony runbook; a public host identity, already published	never
+ssh-fingerprint	*	sha256:6fe16e81f405	constant	no	the owner's boot-key fingerprint in the ceremony runbook; public key	never
+ssh-fingerprint	*	sha256:b893471b6982	constant	no	the measured boot-key fingerprint in an image runbook; public key	never
+ssh-fingerprint	*	sha256:fa4d52173913	constant	no	a first-boot record's boot-key fingerprint in an image transcript; public key	never
+ssh-fingerprint	*	sha256:5e91f6aa5b50	constant	no	the release signing key's fingerprint; public by design in every signed-release transcript	never
+ssh-fingerprint	*	sha256:7c017970c6eb	constant	no	the initramfs host-key fingerprint in the provision runbook; a public host identity	never
+ssh-fingerprint	*	sha256:b0bde43128ce	constant	no	a support-grant key fingerprint in the support runbook; public key	never
+ssh-fingerprint	*	sha256:feba186340a4	constant	no	a support-grant key fingerprint in the support runbook; public key	never
+ssh-fingerprint	*	sha256:3b760e9b1bbb	constant	no	a pending support key's fingerprint in the support runbook; public key	never
+ssh-fingerprint	*	sha256:597b04219c69	constant	no	the measured boot-key fingerprint in the strict-claims verdict; public key	never
+ssh-fingerprint	*	sha256:3b6d12d33f64	constant	no	the measured boot-key fingerprint printed by the installer's access report; public key	never
+ssh-fingerprint	*	sha256:5aac542ccbea	constant	no	the boot-key fingerprint asserted by the provision script; public key	never
+ssh-fingerprint	*	sha256:d013dbd86272	constant	no	a boot-key fingerprint in an audit fixture; public key	never
+ssh-fingerprint	*	sha256:74853506a072	constant	no	a host-key fingerprint in a boot-record fixture; public host identity	never
+credential-assignment	deploy/demo-host/apply_demo_public.py	sha256:8902d6757a1e	constant	yes	the retired demo session seed: a public constant, and the id is a uuid5 over it	never
+home-path	docs/*	sha256:2ba89d6fdadd	constant	no	the retired HQ demo account home in a dated architecture/runbook record; the fence forbids the mechanism, history keeps the record	never
+ssh-fingerprint	*	sha256:faa8e4b1225f	constant	no	the 2026-11-10 boot record's boot-key fingerprint in a dated image transcript; public key	never
