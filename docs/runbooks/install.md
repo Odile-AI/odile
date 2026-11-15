@@ -1801,14 +1801,15 @@ cut time: `2026.11.15-1` was carried by this branch only and the live cut was
 1,356,516 bytes; manifest `3a532eff…`), and the next `./deploy.sh` from a
 `main` that carries this merge publishes `2026.11.15-1`.
 
-**The `2026.11.15-3` cut (ODL-522, the session secret is the machine's, re-cut at the merged head).** While this card was in
-review `main` took ODL-505's `-8` and t_ae833f3f's `-1`, so the branch merged
-`main` `842006b` — the installer/release conflicts resolved by taking `main`'s
-side whole, then `installer/embed_first_visit.py` re-embedded the merged
-`installer/first_visit.py` (`d1c761f0…`: ODL-505's five icons, t_ae833f3f's page
-re-cut and this card's `SECRET_KEY` + `write_env_hash` refusal), the installer
-was re-signed and `tools/recut_release.py` re-cut the chain after demoting the
-conflicting id. The installer is `e0cec88a…` (1,357,306 bytes);
+**The `2026.11.15-3` cut (ODL-522, the session secret is the machine's, re-cut
+at the merged head).** While this card was in review `main` took ODL-505's
+`-8` and t_ae833f3f's `-1`, so the branch merged `main` `842006b` — the
+installer/release conflicts resolved by taking `main`'s side whole, then
+`installer/embed_first_visit.py` re-embedded the merged
+`installer/first_visit.py` (`d1c761f0…`: ODL-505's five icons, t_ae833f3f's
+page re-cut and this card's `SECRET_KEY` + `write_env_hash` refusal), the
+installer was re-signed and `tools/recut_release.py` re-cut the chain after
+demoting the conflicting id. The installer is `e0cec88a…` (1,357,306 bytes);
 `release/odile_install.py` is the same bytes; `release/manifest.json` is the
 merged head's fresh-root document with `installer_sha256` re-derived
 (`4f0e3ef9…`); `release/release.json` is `d132f7c7…` and names the `-3` cut.
