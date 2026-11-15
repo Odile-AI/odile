@@ -78,7 +78,7 @@ tenant.
 /usr/bin/python3 -m odilectl health --json             # classification + planned alerts
 /usr/bin/python3 -m odilectl reconcile --json          # tenant rows vs provider
 /usr/bin/python3 -m odilectl restore <slug> --verify --password-file <file>
-/usr/bin/python3 -m odilectl support <slug>            # report only; see §2.4
+/usr/bin/python3 -m odilectl support <slug>            # the support.status plan; §2.4
 ```
 
 The provider calls, from `provision.md` §2–§4:
