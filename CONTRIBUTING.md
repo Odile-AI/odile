@@ -9,7 +9,8 @@ that run on a machine.
 
 ```sh
 make hooks     # enable the committed pre-commit gate
-make check     # prereqs, secret scan, tests, compile, lint, claims
+make check     # prereqs, secret scan, publication scan, tests, self-test,
+               # compile, lint, claims, brand, roadmap
 ```
 
 `make check` is the gate. A pull request is ready when it is green on a clean
