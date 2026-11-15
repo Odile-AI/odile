@@ -126,13 +126,33 @@ and the lexicon: `docs/brand/ST-ODILE.md`.
   `icon-192.png` and `icon-512.png` (the same rendition), `apple-touch-icon.png`
   (180: the head on an opaque paper mount, 12 px of paper on every side).
   Served first-party with `cache-control: public, max-age=31536000, immutable`.
-  `tools/icon_build.py` regenerates every one from the source.
+  On a tenant machine the same five files are carried inside the signed
+  installer, written to the machine's own icon root and answered there by its
+  page server at `/favicon.ico`, `/icon-32.png`, `/icon-192.png`,
+  `/icon-512.png` and `/apple-touch-icon.png` — the paths `/verify` and the
+  first-visit page link — with the same types and the same immutable cache, so
+  neither page asks HQ for its tab. `tools/icon_build.py` regenerates every one
+  from the source.
 - **Use:** the browser icon only. It appears in `rel=icon` and
   `rel=apple-touch-icon` links, never as an `<img>`, never in a page body,
-  never as a `data:` favicon, never in an email or a video card. The credit
-  sits in the HTML comment beside the link on every page: "Lucas Cranach the
-  Elder, Saints Christina and Ottilia (Katharinenaltar, Dresden). Public
-  domain. Source: Wikimedia Commons."
+  never as a `data:` favicon, never in an email or a video card. The tab is
+  Odile's on every surface this sheet paints: the pages under `web/`, a
+  tenant's `/verify` and first-visit page, the demo host's own sign-in page,
+  and the Hermes Webapp the owner lands on after signing in. The gateway's
+  server-rendered `GET /login` is the one screen that still shows the vendor's
+  tab icon, because v0.23.0 exposes no seam for it
+  (`docs/runbooks/install.md`, *What is not themed*). The Website icon is the
+  Webapp's tab too: the installer copies `odile-favicon.ico` and
+  `odile-apple-touch-icon.png` into the built bundle and points the shell's
+  three tab links at them, so the vendor's Nous mark is no longer what the tab
+  shows. The vendor's `apple-touch-icon.png` stays in the bundle as a vendor
+  file, and the About hero (`Powered by Hermes`) is the remaining vendor
+  credit. Savio, 2026-11-13: "Could the favicon also apply on the Hermes agent
+  web interface page after logging in (e.g. https://demo.odile.fyi/ logged
+  in)? Currently it shows the Hermes favicon." The credit sits in the HTML
+  comment beside the link on every page: "Lucas Cranach the Elder, Saints
+  Christina and Ottilia (Katharinenaltar, Dresden). Public domain. Source:
+  Wikimedia Commons."
 - **Clear space:** the 16/32/48 tab canvas is edge-to-edge; the 180 touch
   icon carries a 12 px paper mount. Do not crop closer than the chin.
 - **Minimum size:** 16 px. Never recoloured, outlined, rounded, given a
@@ -1076,6 +1096,7 @@ names the `docs/CLAIMS.md` row that moved with it.
 | 2026-11-13 | **The website icon.** Savio: "use the attached image as the Odile website icon." The ring is retired as the favicon; every page under `web/` carries `favicon.ico`, `icon-32.png` and an opaque-paper `apple-touch-icon.png`, served first-party with an immutable cache, with `icon-192.png` and `icon-512.png` in the set. The mark is Saint Ottilia's head from Lucas Cranach the Elder, *Saints Christina and Ottilia* (Katharinenaltar, Dresden), 1506 — public domain, Wikimedia Commons; `web/icon-source.txt` records the reproduction's URL, its sha256 and the crop box, and `web/icon-source-supplied.jpg` keeps Savio's 480×480 attachment byte-identical. **One rendition, every size.** Savio, 2026-11-13: "Why create the 16 px sign? Simply shrinking seems to keep branding more consistent and easier to maintain, rather than spinning up a weirdly different looking sign. I personally think simply shrinking looks fine." The 16 px sign and the four-ink cut are both retired: the crop is warm-graded once at 512 px and downsampled with LANCZOS to 16/32/48/180/192/512, so the ICO's three entries are the same master and the 16 px entry is the 512 px render at 16 (a test asserts it). The grade is measured on the master — saturation 0.34, hue 41°, R−B 12/29/56 across the luminance bands — and so is the 16 px read: face 172 luminance against 59 in the corners, skin R−B 64, no eye-band cell below 140, the eyes a shadow about 20 levels under the cheek. The four-ink cut had given up the skin hue the face needs at 16 px and read as a skull; the warm grade keeps it. §Name and mark, §Iconography and §Art direction name the one exception: a painted saint in browser chrome, never on a page. `/verify` and the first-visit page are re-embedded, the installer is re-signed (`ef559548…`) and the release re-cut (`2026.11.13-6`, manifest `881bc481…`; the icon-only rebuild moves no embedded page blob). The cut is `-6`, not `-5`: `main` re-signed the `-4` pair after the three live addresses left the tree, and ODL-514 took and deployed `2026.11.13-5`. **Also re-cut in the same change:** `docs/brand/ST-ODILE.md` (intro, §9, §10, §12, §13), `docs/brand/st-odile.html` (the story paragraph and the colophon icon row) and `docs/brand/REVIEW.md` (the art test's icon bullet) — the retired no-saint rule, the one-painting line, the ring-as-mark bullet and the two-rendition sentence now mirror this sheet. `docs/brand/GAP-2026-11-07.md` and `docs/brand/REVIEW-demo-entry.md` are dated records and keep the ring where they quote it. No public sentence in `docs/CLAIMS.md` changed. | Designer | verifier, ODL-504 |
 | 2026-11-14 | **Voice, the lexicon**: *NEAR AI key* is recorded — the machine's one inference credential, one per user, written at install and read by the agent, named in full on first use. It is the term `docs/CLAIMS.md` v3.9c and `web/privacy.html` already carry as the meter's replacement (ODL-205, card t_7f339817), so the sheet names the shipped word instead of leaving it outside the reserved table. The `token` row drops the retired *metering token*. No palette, face, artwork or public sentence changed. | Designer | verifier, t_7f339817 |
 | 2026-11-14 | **Typography re-cut into roles.** Cormorant Garamond is the **display face** — wordmark, h1/h2/h3 and the demo sign-in's h1 — and never sets a sentence at reading size. Public prose moves to the platform's **text serif** (Iowan Old Style / Palatino Linotype / Georgia / DejaVu Serif) at 18 px / 400 / 1.6; notes 16 px; the landing description stays 36ch, product prose 60–72ch. The Webapp's `--dt-font-sans` resolves to the bundle's own UI sans stack (OpenDyslexic first, then the platform sans) at the vendor's sizes, with chat prose 16 px / 1.6 and a 60–72ch measure; `p.wordmark` and the h1/h2/h3 heading selector are the only Cormorant left in the chrome. No new colour, no new image, no public sentence: this supersedes the type clause of ODL-503 (t_0127daed) and the type decision of t_dc4559ee. | Designer | verifier, t_99262fa2 |
+| 2026-11-14 | **The website icon reaches the machine's own surfaces.** Savio, 2026-11-13: "Could the favicon also apply on the Hermes agent web interface page after logging in (e.g. https://demo.odile.fyi/ logged in)? Currently it shows the Hermes favicon." The five reviewed files now travel inside the signed installer; the machine writes them to its own icon root and its page server answers the five site paths — `/favicon.ico`, `/icon-32.png`, `/icon-192.png`, `/icon-512.png`, `/apple-touch-icon.png` — with the reviewed types and the immutable cache, HEAD with no body and a missing file a 404, so a tenant's `/verify` and first-visit page carry the tab first-party. The Webapp's tab is Odile's too: the installer copies `odile-favicon.ico` and `odile-apple-touch-icon.png` into the bundle root and points the shell's three tab links (`rel=icon`, `rel=apple-touch-icon`, `rel=shortcut icon`) at them, strip-then-write the way the brand script is written, so a rebuild is repaired on the next run and a second run changes nothing; the re-assert helper a rebuild triggers (`deploy/image/odile-webapp-brand.py`) carries the same three links, so an update puts the tab back with the name. The vendor's `apple-touch-icon.png` stays in the bundle as a vendor file; the About hero's "Powered by Hermes" is the remaining vendor credit, and the gateway's server-rendered `GET /login` is the one surface that still shows the vendor's, because v0.23.0 exposes no seam for it. The demo host's own sign-in page drops the retired ring's `data:` favicon for the same three links, and its Caddy block carries the five exact icon routes, so `/login`, `/verify` and the Webapp are Odile's tab on the machine a judge sees. §Name and mark's Files and Use bullets record both, `docs/runbooks/install.md`'s What is not themed is re-cut to that one screen, and `docs/brand/ST-ODILE.md` §12's browser-chrome row names the tenant path and the Webapp tab. No new colour, face or artwork; no public sentence in `docs/CLAIMS.md` changed. | Designer | verifier, ODL-505 |
 
 
 ## Do / Don't
