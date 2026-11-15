@@ -620,3 +620,40 @@ and open `/first-visit?t=<token>`; setting the sign-in with the published
 password lets the deploy in as `tenant`. The deploy then writes the `judge`
 account, the demo block and the seed (when the row is absent), and the demo is
 back without a reboot (measured 2026-11-13: deploy PASS in 48 s).
+
+### A reinstall burns the seed token — reset it first
+
+The same command line carries `odile.token=`, the **single-use** setup token
+this instance's image was built with. A Servury reinstall replaces the disk and
+comes back on the vendor release, so the burn lands on the next boot of the
+tenant's own image — re-staged and booted as §9 describes, with no
+`/etc/odile/seed.json` and the same spent token. The exchange answers `410 used`:
+`odile-firstboot` prints `fail-closed: seed token used`, the release-setup run
+installs nothing, logs `=== rc=1` and still writes its done marker — so every
+later boot prints `already converged` (§6's `--force` is the only re-run) — and
+the machine lands in exactly the state above: tenant Caddy block only, nothing
+installed. `token rotate` is not the fix: a fresh plaintext never reaches a
+command line already sealed into the image.
+
+Reset **before** the reinstall and that boot installs cleanly, with no marker to
+clear. Reset afterwards and the failed boot's marker is already written: remove
+it (`rm -f /var/lib/odile/release-setup.done`, then `--force`) as §6 says, or the
+machine keeps answering `already converged` with nothing installed.
+
+Before a reinstall of instance `31a63bbb`, un-end that instance's rows in the
+seed ledger. The recipe, the hash-vs-instance choice and the rest of the traps
+(the copy is `.backup`, not `cp`; do the reset and the reinstall in one window)
+are [`seed.md`](seed.md) §6a; on this machine the instance-wide form is:
+
+```sh
+sudo sqlite3 /var/lib/odile/waitlist.db \
+  ".backup '/root/.odile/waitlist.db.bak-$(date -u +%Y%m%dT%H%M%SZ)'"
+sudo -u odile sqlite3 /var/lib/odile/waitlist.db \
+  "update seed_tokens set used_at = NULL,
+     expires_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now', '+30 days')
+   where instance_id = '31a63bbb';"
+```
+
+It re-arms only this tenant's own seed — the rows stay bound to tenant **and**
+instance — and with it that seed's secrets (the NEAR key, the mail relay) for
+whoever holds the image.

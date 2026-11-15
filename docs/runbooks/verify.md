@@ -290,6 +290,8 @@ tar xzf odile-verify.tar.gz
 cd odile-verify && ./odile-verify --expect <measurement from your ready email> https://<slug>.odile.fyi
 ```
 
+On macOS, `shasum -a 256 -c -` reads the same hash line.
+
 `sha256sum -c` prints `odile-verify.tar.gz: OK`; the tarball hash moves only
 with the reviewed files inside it (the verifier, `tools/snp_report.py`, the pin
 and the AMD chain), never with the second the service built it. The number is
