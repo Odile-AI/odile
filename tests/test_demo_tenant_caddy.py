@@ -93,11 +93,22 @@ class ShapeTests(unittest.TestCase):
         for keep in ("handle /login*", "handle /verify", "handle /attestation",
                      f"reverse_proxy {GATEWAY}", "@apidocs path /openapi.json"):
             self.assertIn(keep, text, f"the block lost {keep!r}")
-        # ODL-505: the five icon paths belong to the machine's own page server,
-        # exact, with no Cache-Control of Caddy's own — the service sends the
-        # immutable on a 200 and the no-store on its 404.
-        for icon in ("/favicon.ico", "/icon-32.png", "/icon-192.png",
-                     "/icon-512.png", "/apple-touch-icon.png"):
+        # t_6b25f6e5: the sign-in page's three tab files sit beside the page,
+        # so one exact handle serves them from Caddy's own file server with the
+        # committed immutable cache. The two sizes only the Webapp's shell links
+        # stay ODL-505's page-server routes, exact, with no Cache-Control of
+        # Caddy's own — the service sends the immutable on a 200 and the
+        # no-store on its 404.
+        self.assertIn("@tabicons path /favicon.ico /icon-32.png /apple-touch-icon.png\n"
+                      "\thandle @tabicons {", text)
+        handle = ("\thandle @tabicons {\n"
+                  "\t\troot * /srv/odile-demo\n"
+                  '\t\theader Cache-Control "public, max-age=31536000, immutable"\n')
+        self.assertIn(handle, text, "the block lost the three static tab-icon routes")
+        self.assertIn("\t\t@favicon path /favicon.ico\n"
+                      "\t\theader @favicon Content-Type image/x-icon\n"
+                      "\t\tfile_server", text)
+        for icon in ("/icon-192.png", "/icon-512.png"):
             self.assertIn(f"handle {icon} {{\n\t\treverse_proxy 127.0.0.1:8091",
                           text, f"the block lost the {icon} route")
             self.assertNotIn(f"handle {icon} {{\n\t\theader", text)
@@ -146,40 +157,55 @@ class _StubGateway(http.server.BaseHTTPRequestHandler):
         pass
 
 
+def start_caddy(case: unittest.TestCase,
+                site_root: Path | None = None
+                ) -> tuple[subprocess.Popen[bytes], int, tempfile.TemporaryDirectory[str], int]:
+    """Start the real Caddy on the rendered block; return it and its port.
+
+    `site_root` rewrites the block's page root to a scratch directory, so a
+    test can serve the committed sign-in page and the committed tab files
+    without touching `/srv/odile-demo`. The gateway is a stub that answers 401
+    with its own marker.
+    """
+    stub_port = free_port()
+    stub = http.server.HTTPServer(("127.0.0.1", stub_port), _StubGateway)
+    threading.Thread(target=stub.serve_forever, daemon=True).start()
+    case.addCleanup(stub.shutdown)
+    child: subprocess.Popen[bytes] | None = None
+    for _ in range(5):
+        port = free_port()
+        config = rendered().replace("demo.odile.fyi {", f"http://127.0.0.1:{port} {{", 1)
+        config = config.replace(GATEWAY, f"127.0.0.1:{stub_port}")
+        if site_root is not None:
+            config = config.replace("root * /srv/odile-demo", f"root * {site_root}")
+        tmp = tempfile.TemporaryDirectory()
+        path = Path(tmp.name) / "Caddyfile"
+        path.write_text(config, encoding="utf-8")
+        child = subprocess.Popen(
+            ["caddy", "run", "--config", str(path), "--adapter", "caddyfile"],
+            stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
+        )
+        for _ in range(40):
+            try:
+                with socket.create_connection(("127.0.0.1", port), timeout=0.2):
+                    return child, port, tmp, stub_port
+            except OSError:
+                if child.poll() is not None:
+                    break
+                time.sleep(0.1)
+        child.terminate()
+        child.wait(timeout=10)
+        tmp.cleanup()
+    detail = child.stderr.read()[-2000:] if child and child.stderr else b""
+    raise AssertionError(f"caddy did not start: {detail!r}")
+
+
 @unittest.skipUnless(shutil.which("caddy"), "caddy is not installed")
 class CaddyForwardsWritesTests(unittest.TestCase):
     """Start the real Caddy on the rendered block and probe the writes."""
 
     def start(self) -> tuple[subprocess.Popen[bytes], int, tempfile.TemporaryDirectory[str], int]:
-        stub_port = free_port()
-        stub = http.server.HTTPServer(("127.0.0.1", stub_port), _StubGateway)
-        threading.Thread(target=stub.serve_forever, daemon=True).start()
-        self.addCleanup(stub.shutdown)
-        child: subprocess.Popen[bytes] | None = None
-        for _ in range(5):
-            port = free_port()
-            config = rendered().replace("demo.odile.fyi {", f"http://127.0.0.1:{port} {{", 1)
-            config = config.replace(GATEWAY, f"127.0.0.1:{stub_port}")
-            tmp = tempfile.TemporaryDirectory()
-            path = Path(tmp.name) / "Caddyfile"
-            path.write_text(config, encoding="utf-8")
-            child = subprocess.Popen(
-                ["caddy", "run", "--config", str(path), "--adapter", "caddyfile"],
-                stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
-            )
-            for _ in range(40):
-                try:
-                    with socket.create_connection(("127.0.0.1", port), timeout=0.2):
-                        return child, port, tmp, stub_port
-                except OSError:
-                    if child.poll() is not None:
-                        break
-                    time.sleep(0.1)
-            child.terminate()
-            child.wait(timeout=10)
-            tmp.cleanup()
-        detail = child.stderr.read()[-2000:] if child and child.stderr else b""
-        raise AssertionError(f"caddy did not start: {detail!r}")
+        return start_caddy(self)
 
     def probe(self, port: int, method: str, path: str, body: bytes | None = None):
         request = urllib.request.Request(
@@ -220,6 +246,102 @@ class CaddyForwardsWritesTests(unittest.TestCase):
         child, port, tmp, _ = self.start()
         try:
             self.assertEqual(self.probe(port, "GET", "/openapi.json")[0], 404)
+        finally:
+            child.terminate()
+            child.wait(timeout=10)
+            tmp.cleanup()
+
+
+@unittest.skipUnless(shutil.which("caddy"), "caddy is not installed")
+class CaddyServesTheTabIconsTests(unittest.TestCase):
+    """The rendered block itself answers the three tab files, first-party.
+
+    This is t_6b25f6e5's DoD executed, not parsed: the committed block runs
+    over a scratch root holding the committed sign-in page and the committed
+    three files, and the routes are probed the way a browser and a HEAD do.
+    """
+
+    ICONS = ("favicon.ico", "icon-32.png", "apple-touch-icon.png")
+
+    def setUp(self) -> None:
+        self.root = Path(tempfile.mkdtemp(prefix="odile-demo-tab-"))
+        self.addCleanup(shutil.rmtree, self.root)
+        for name in self.ICONS:
+            shutil.copyfile(ROOT / "web" / name, self.root / name)
+        shutil.copyfile(ROOT / "deploy" / "demo-host" / "login.html",
+                        self.root / "login.html")
+        # A file outside the served set: no request may reach it.
+        (self.root / "secret.txt").write_text(
+            "root:x:0:0:root:/root:/bin/sh\n", encoding="utf-8")
+
+    def probe(self, port: int, method: str, path: str):
+        request = urllib.request.Request(f"http://127.0.0.1:{port}{path}", method=method)
+        try:
+            with urllib.request.urlopen(request, timeout=10) as response:
+                return response.status, dict(response.headers), response.read()
+        except urllib.error.HTTPError as exc:
+            return exc.code, dict(exc.headers), exc.read()
+
+    def test_a_get_answers_the_committed_bytes_with_their_types(self) -> None:
+        child, port, tmp, _ = start_caddy(self, site_root=self.root)
+        try:
+            for name in self.ICONS:
+                expected = (ROOT / "web" / name).read_bytes()
+                status, headers, body = self.probe(port, "GET", f"/{name}")
+                self.assertEqual(status, 200, name)
+                self.assertEqual(headers.get("Content-Type", "").split(";")[0],
+                                 "image/x-icon" if name.endswith(".ico") else "image/png",
+                                 name)
+                self.assertEqual(body, expected, name)
+                cache = headers.get("Cache-Control", "")
+                self.assertIn("public", cache, name)
+                self.assertIn("max-age=31536000", cache, name)
+                self.assertIn("immutable", cache, name)
+        finally:
+            child.terminate()
+            child.wait(timeout=10)
+            tmp.cleanup()
+
+    def test_a_head_answers_with_no_body(self) -> None:
+        child, port, tmp, _ = start_caddy(self, site_root=self.root)
+        try:
+            for name in self.ICONS:
+                status, headers, body = self.probe(port, "HEAD", f"/{name}")
+                self.assertEqual(status, 200, name)
+                self.assertEqual(body, b"", name)
+                self.assertEqual(int(headers.get("Content-Length", "0")),
+                                 len((ROOT / "web" / name).read_bytes()), name)
+        finally:
+            child.terminate()
+            child.wait(timeout=10)
+            tmp.cleanup()
+
+    def test_the_sign_in_page_is_one_page_with_the_three_links(self) -> None:
+        child, port, tmp, _ = start_caddy(self, site_root=self.root)
+        try:
+            status, _headers, body = self.probe(port, "GET", "/login")
+            page = body.decode("utf-8", "replace")
+            self.assertEqual(status, 200)
+            for name in self.ICONS:
+                self.assertIn(f'href="./{name}"', page)
+            self.assertIn("Icon: Lucas Cranach the Elder", page)
+            self.assertNotIn("data:image/svg+xml", page)
+        finally:
+            child.terminate()
+            child.wait(timeout=10)
+            tmp.cleanup()
+
+    def test_no_path_reaches_a_file_outside_the_served_set(self) -> None:
+        child, port, tmp, _ = start_caddy(self, site_root=self.root)
+        try:
+            self.assertEqual(self.probe(port, "GET", "/secret.txt")[0], 401,
+                             "an unsuffixed path is the gateway's, not the root's")
+            for path in ("/favicon.ico/../../secret.txt",
+                         "/..%2f..%2fsecret.txt",
+                         "/icon-32.png/%2e%2e/secret.txt",
+                         "/favicon.ico%2f..%2fsecret.txt"):
+                _status, _headers, body = self.probe(port, "GET", path)
+                self.assertNotIn(b"root:x:", body, path)
         finally:
             child.terminate()
             child.wait(timeout=10)

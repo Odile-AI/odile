@@ -8,8 +8,10 @@ to `apply_demo_public.py`'s surface and nothing else:
 
   * the demo lede on `/usr/local/lib/odile/verify.html` (the page was replaced
     with the release's own copy, which carries the icon links);
-  * the sign-in page at `/srv/odile-demo/login.html`;
-  * the `demo.odile.fyi` Caddy block, with the five exact icon routes.
+  * the sign-in page at `/srv/odile-demo/login.html`, and the three tab files
+    beside it (`ensure_icons`, t_6b25f6e5);
+  * the `demo.odile.fyi` Caddy block, with the three static tab routes and the
+    two page-server routes.
 
 It does **not** touch the model, provider, judge account, sessions or `.env`:
 those are `apply_demo_public.py`'s `--write` run, and this card does not need
@@ -64,9 +66,11 @@ def main(argv: list[str] | None = None) -> int:
     dry = args.dry_run
     changed = demo.ensure_verify_lede(dry)
     changed = demo.ensure_login_page(dry) or changed
+    changed = demo.ensure_icons(dry) or changed
     changed = demo.ensure_caddy_block(dry) or changed
     print(("would write" if dry else "write") if changed else "same",
-          "demo icon surface (/verify lede, /login page, Caddy block)", flush=True)
+          "demo icon surface (/verify lede, /login page, tab icons, Caddy block)",
+          flush=True)
     if dry:
         return 0
     if args.restart:
