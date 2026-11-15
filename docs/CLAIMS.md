@@ -1,4 +1,4 @@
-# Odile — claims deck (v3.9e, the strict bar: no user SSH key, no passphrase, sealed boot, sign-in at first visit; one NEAR key per user, no meter)
+# Odile — claims deck (v3.9g, the strict bar: no user SSH key, no passphrase, sealed boot, sign-in at first visit; one NEAR key per user, no meter)
 
 **Rule:** no public sentence about privacy, security or reliability ships unless it is in this file. If a sentence is not here, it is not approved. `docs/MVP-V0.1.md` §7 is the rationale; this is the copy.
 
@@ -21,6 +21,30 @@ Use these verbatim, or a subset that does not change the meaning. Anything stron
 - "It keeps working when you close the tab."
 - "Full agent with full privacy. Always-on agents running on confidential computers and powered by confidential models."
 - "The waitlist hears first."
+
+### The README opening (Savio's words, 14 November 2026)
+
+Savio rewrote `README.md` on the public tree (`2d8999d`, `a5c3428`) while
+`t_781fc5cb` ran. A visitor reads these three first, so they are rows here.
+
+- "A full agent, privately."
+- "Odile is an AI agent that gets things done with privacy."
+- "Every Odile agent runs on its own AMD SEV-SNP confidential virtual machine, with memory encrypted by the CPU and NEAR AI inference inside a hardware enclave."
+
+The first two are his headline and his lede sentence, recorded verbatim: they
+name no mechanism, and they are the short form of the v3.9d landing row. The
+third is his sentence with its last clause re-cut. As he wrote it, it ended
+"protecting your agent from outsider access at the hardware level" — the
+absolute §2 forbids in the row whose reason reads "The host console exists" —
+and it is false against the machine on three measured counts: the console
+passes through the host (§3 gap 2), Odile keeps stop, DNS and the boot-image
+choice (gap 3), and the served image's disk key is still the published build
+key until `t_51ebf972`. The re-cut states the two mechanisms the deck proves:
+"Memory is encrypted by the CPU." (§1 *Confidential computing*) and "Inference
+runs on NEAR AI's confidential cloud, inside a hardware enclave." (§1
+*Inference*). It claims no access property. "Its own machine" is one VM per
+agent; the demo's agent is Odile's, on Odile's tenant machine, and the demo
+rows below scope that machine.
 
 ### Access — the core claim
 
@@ -471,3 +495,4 @@ the machine.
 | 2026-11-14 | v3.9d: the landing description is Savio's own sentence, verbatim — "Full agent with full privacy. Always-on agents running on confidential computers and powered by confidential models." It replaces the v3.8 landing sentence on `web/index.html` (the visible lede, `<meta name=description>` and `og:description`), and the machine section gains it as one row: `always-on` and `confidential models` are approved as written, the second being the plain form of §1 *Inference*'s NEAR AI enclave row. `full privacy` leaves §2's lint list for the same reason it was on it — no row carried it, and now one does. Savio's instruction, 2026-11-14 16:05Z. | Savio |
 | 2026-11-14 | v3.9e: the public site drops V0.1, version labels and the ten-person count — Savio's instruction of 2026-11-14 ("remove all mentioning of V0.1 and/or versioning, ten testers, etc. We'll define such details later"). §1's ten-people row becomes "The waitlist hears first."; the Reliability row becomes "Runs around the clock. Uptime is published on the status page."; §5 loses the "Why only ten people?" answer. `web/index.html`, `web/faq.html`, `web/terms.html` (which also loses its whole "The machine and the price" section under Savio's separate decision), `web/claim.html` and `templates/status.html` carry no V0.1/alpha/ten-people wording; live-verified, `make check` OK. Commits `b0b7186`, `4b09cac`. | Chief of Staff |
 | 2026-11-14 | v3.9f: the last public copy that contradicted the demo rows. `web/verify.html`'s `<!--demo-->` lede is re-cut to the v3.8b tenant row **verbatim** — "This is Odile's tenant machine: one shared workspace on our measured AMD SEV-SNP machine. Odile holds this machine's boot key and can log in." — and its two `/judge` links (header and foot) go to `https://demo.odile.fyi/login`, which Savio made the judge's entry surface on 2026-11-14; `/judge` retires to a 301 (ODL-901). The note under §1 now names the surfaces that carry the demo rows after `web/judge.html`: the tenant's own `/verify` and the `web/verify.html` demo block, with `README.md` simplified to a login link (`9083922`, 2026-11-14T15:24Z) and the login page carrying only the v3.9b boundary row. **No approved sentence changed.** The page is byte-embedded in the signed installer, so this cut re-embeds and re-signs it as `2026.11.14-6` (installer `49f90a3c…`, 616,403 B; manifest `f6dea119…`; `docs/runbooks/install.md` §12.6). Measured 2026-11-14T16:40Z: `https://odile.fyi/verify` answered 200 with the old sentence (live is still `-4`: installer `6b42f8ef…`, 616,370 bytes, manifest `65ac178c…`, the 15:16Z deploy), and `https://demo.odile.fyi/login` answered 200 with one **Sign in** button; the next deploy publishes `-6`. Card t_781fc5cb; by the Product lead under `docs/AGENT-ORG.md` §3; verifier review. | Product lead |
+| 2026-11-15 | v3.9g: **the README opening enters the deck.** Savio rewrote `README.md` on the public tree while `t_781fc5cb` ran (`2d8999d`, `a5c3428`); its headline, its lede and one closing clause were privacy sentences no row carried, and the lint sees a forbidden phrase, not an unapproved sentence. Two rows are recorded **verbatim** and are his — "A full agent, privately." and "Odile is an AI agent that gets things done with privacy." — both the short form of the v3.9d landing row, naming no mechanism. The third is his sentence with its last clause re-cut: "protecting your agent from outsider access at the hardware level" restates §2's "The host console exists" row and is false on three measured counts (the console passes through the host, §3 gap 2; Odile keeps stop, DNS and the boot-image choice, gap 3; the served image's disk key is still the published build key, `t_51ebf972`). The re-cut states two rows the deck already proves — "Memory is encrypted by the CPU." and "Inference runs on NEAR AI's confidential cloud, inside a hardware enclave." — and claims no access property. `README.md` carries it; `tests/test_claims.py::ReadmeTests` now maps the README's opening block to this deck, as the FAQ and the privacy page already are, so a hand rewrite fails the gate instead of a read-through. No new claim, no access-model change. Card `t_0d4ebfd8`; by the Product lead under `docs/AGENT-ORG.md` §3; verifier review. **Numbering:** v3.9g now; if ODL-474's v3.10 merges first, this row is v3.10a and the header stays v3.10 — the rows' content does not change. | Product lead |
