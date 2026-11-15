@@ -165,8 +165,8 @@ sudo systemctl list-timers --all
 ```
 
 The user runs these, or asks the agent to. They are the incident-runbook form of
-`support.md` §5 and `CLAIMS.md` A10. `alerting.md` §7 still shows the older
-first command `ssh -i ~/.ssh/odile …`; that key does not exist in v0.1, so this
+`support.md` §5 and `CLAIMS.md` A10. `alerting.md` §2 and §7 still show the
+older first command `ssh -i ~/.ssh/odile …`; that key does not exist in v0.1, so this
 page uses the agent or the grant instead.
 
 ### 2.5 What no door can do
@@ -666,7 +666,7 @@ is intact and encrypted; nothing is written during the loop.
 
 The measurement in the log must equal the one in the ready email and on
 `/verify`; a different image or firmware breaks the seal and the disk stays
-locked. No shell fixes that; `image.md` §8 says so.
+locked. No shell fixes that; `image.md` §7 says so.
 
 **What the user is told.** C-10.
 
@@ -825,7 +825,7 @@ and it is a live defect ODL-561 owns (§7.6).
    sees what it left (`CLAIMS.md` A10).
 5. **The provider console is a door we do not control.** It shows the boot and
    can restart or power off; it is not a shell and it does not decrypt anything
-   (`image.md` §11.5, gap 2).
+   (`CLAIMS.md` §3, gap 2).
 6. **The demo tenant is the counter-example in §6.4.** Its heartbeat stopped on
    13 November (2 d 7 h stale at the time of writing) while the machine serves
    `/verify`, so the poll reports the demo `down`, its backup stale, and the
