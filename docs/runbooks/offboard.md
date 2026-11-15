@@ -48,34 +48,53 @@ runtime is not the user's data, and a rebuilt guest gets it back from the
 installer and `odile-update`.
 
 The script is `odilectl/offboard.py`'s `EXPORT_PROGRAM`, printed byte-for-byte
-by `odilectl export <slug> --script` (a test pins the two). The installer does
-not place guest commands yet — the same gap `support/odile_support.py` records —
-so until **t_2efbd6e3** lands the embed, it is placed by hand:
+by `odilectl export <slug> --script` (a test pins the two). The signed
+installer carries those exact bytes — `installer/embed_export.py` embeds the
+program, `--self-test` pins it and fails on a one-byte edit — and places it at
+`/usr/local/bin/odile-export`, 0755 root, on every install (ODL-218 follow-up).
+There is no hand placement.
 
-```sh
-sudo install -m 0755 odile-export /usr/local/bin/odile-export
-sha256sum /usr/local/bin/odile-export
+The scratch install proves the placement and the bytes independently: the
+root's copy and `--script`'s output are hashed separately and compared.
+
+```
+$ /usr/bin/python3 installer/sim_tenant.py --root /var/tmp/odile-218f-sim \
+      --user odile218f --port 9346 --seed-port 9347 --reset --apply
+== the guest export program (ODL-218 follow-up)
+export       /var/tmp/odile-218f-sim/usr/local/bin/odile-export mode 0o755 sha256 864604aefc785d3a7e0f8dd7f7c5523fdcacc538ec21c47ccea1cf74036cdf96
+odilectl export odl-sim-203 --script | sha256sum -> 864604aefc785d3a7e0f8dd7f7c5523fdcacc538ec21c47ccea1cf74036cdf96
+ok   the installer places /usr/local/bin/odile-export
+ok   the placed odile-export is 0755: 0o755
+ok   the placed odile-export is byte-identical to `odilectl export <slug> --script`: 3897 vs 3897 bytes
 ```
 
-The copy placed on the live tenant for the drill is
-`f128a3c95bf25e9290fb607b8f5cd4df00403618bab890ae2ead950fad060f49`, equal to the
-checkout's `odilectl export odl-7971a8 --script | sha256sum` at the time. The
-checkout now prints
-`c635c4323ef404b4532e1cbb95bd9a80f1e69357b88c4e11fc598c6493132dae`: the review
-added two fixes to the program — the staging tar is a file, not a pipe (so a
-tar that exits 2 stops the run instead of letting `tar | tar` print "wrote"),
-and `kanban.db` is copied through SQLite's backup API with its `-wal`/`-shm`
-excluded, the same way as `state.db`. Both are pinned by
-`tests/test_offboard.py` (a stub tar that exits 2; a task board whose row is
-only in the WAL at copy time). The checkout's program run on a fixture home is
-`evidence/program-current.txt`: its printed program is the same bytes as
-`export --script` (`c635c432…`), and its bundle — 722 bytes, 13 entries, no
-`kanban.db-wal`/`-shm` members — passes `export --verify` as complete. The live
-tenant still holds the earlier copy: at
-2026-11-13T05:33Z its Webapp began refusing `/login` with `400 Invalid Host
-header` after a boot-time release install (§6), so the new program reaches a
-tenant with the next placement or with **t_2efbd6e3**. The quoted run below is
-the placed copy's; the data it carries is the same.
+The first run prints the write and the second reads `same`:
+
+```
+write        /var/tmp/odile-218f-sim/usr/local/bin/odile-export (sha256 864604aefc78…)
+same         /var/tmp/odile-218f-sim/usr/local/bin/odile-export
+```
+
+The bytes the installer now carries are `864604ae…`, the checkout's current
+`--script` output. At ODL-218 the reviewed program was `c635c432…`: the review
+made the staging tar a file instead of a `tar | tar` pipe (so a tar that exits
+2 stops the run instead of letting the pipe print "wrote"), and copied
+`kanban.db` through SQLite's backup API with its `-wal`/`-shm` excluded, the
+same way as `state.db`; `tests/test_offboard.py` pins both. After that review
+the tree changed one comment in the program — "(the meter key)" became
+`/etc/odile/key.env` — so `--script` prints `864604ae…` today; the algorithm is
+identical, and `installer/embed_export.py` pins whatever the checkout prints at
+embed time. The live tenant still holds the drill's hand-placed copy,
+`f128a3c9…`, which predates both review fixes: at 2026-11-13T05:33Z its Webapp
+began refusing `/login` with `400 Invalid Host header` after a boot-time release
+install (§6), and the installer-placed program reaches it when it is
+re-provisioned (**t_8d50106b**). The quoted run below is the hand-placed
+copy's; the data it carries is the same.
+
+The first argument is the bundle's name (`name=${1:-$(hostname)}`), so `-h` and
+`--help` are not special: `odile-export --help` writes a bundle named
+`odile-export---help-<stamp>.tar.gz` rather than printing usage. Pass a name
+only: `odile-export odl-7971a8`.
 
 The first drill run failed because the staging directory landed in `TMPDIR`
 (`${HOME}/.hermes/cache/scratch` on a tenant) and `tar .hermes` then copied a
@@ -425,7 +444,6 @@ tenant is §2 — complete, with the record id, the server id and the backup dat
 
 | Gap | Why it is not here | Card |
 |---|---|---|
-| the installer does not place `odile-export` | the hand placement is the same gap `support/odile_support.py` records; the embed is an installer card with a re-sign and a release cut | **t_2efbd6e3** |
 | a destroyed slug cannot come back | `TRANSITIONS["destroyed"]` is empty; the decision and its URL consequence belong to the state machine | **t_ce52bb8d** |
 | the live tenant's destroy + rebuild | $18.99 and the panel's disk image — a real-world action | **t_8d50106b** |
 | the live tenant's Webapp refuses `/login` (`400 Invalid Host header`) | measured 2026-11-13T05:33Z after a boot-time release install; the same boot's release setup ended `rc=1` at `odile-access-report` — installer/release work, not the offboard path | **t_d95b8c13** |
@@ -439,7 +457,13 @@ tenant is §2 — complete, with the record id, the server id and the backup dat
 Every command and its raw output quoted in this page is in `/var/tmp/odile-218-run`
 (the card's scratch root, left in place for the reviewer; the disk-care sweeper
 removes it an hour after the card is done), and the files marked **attached**
-are in the copy attached to the card. `odilectl` in the blocks is
+are in the copy attached to the card. The ODL-218 follow-up's placement
+evidence is in `/var/tmp/odile-218f-evidence/` (this card's scratch root,
+attached to the card): `self-test.txt` (PASS), `one-byte.txt` (a copy with one
+byte flipped inside the embedded program: `FAIL the embedded odile-export
+matches its pinned hash`, `FAIL this installer's shipped signature verifies`,
+exit 1), `sim.txt` (the scratch install's placement and the SHA-256 pair) and
+`release.txt` (`tools/recut_release.py`, its `--check`, and the manifest pair). `odilectl` in the blocks is
 `/usr/bin/python3 -m odilectl` run from the checkout; the name is not installed
 as a console script. `dns` is the one exception: it runs as
 `/usr/bin/python3 -m odilectl.dns` (the module's own entry point), because
@@ -475,7 +499,7 @@ meter tests, OK**, self-test PASS, claims 21/14, brand 17/21.
 
 | Piece | Path | Mode |
 |---|---|---|
-| the guest program | `/usr/local/bin/odile-export` | 0755, root (placed by hand until t_2efbd6e3) |
+| the guest program | `/usr/local/bin/odile-export` | 0755, root — placed by the signed installer (`installer/embed_export.py`; a re-run reads `same`) |
 | the bundle (guest) | `/home/tenant/odile-export-<name>-<UTC>.tar.gz` | 0644, the tenant |
 | the offboard path | `odilectl/offboard.py` | — |
 | the command | `odilectl destroy <slug>` | — |
