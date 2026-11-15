@@ -102,7 +102,7 @@ QUERIES = {
         "SELECT slug, kind, first_seen_at, resolved_at FROM health_alerts"
         f" WHERE kind IN ({', '.join(repr(kind) for kind in INCIDENT_KINDS)})"
         " AND (resolved_at IS NULL OR resolved_at >= :since)"
-        " ORDER BY first_seen_at DESC, id DESC LIMIT 5"
+        " ORDER BY first_seen_at DESC, id DESC LIMIT :limit"
     ),
 }
 
@@ -442,8 +442,16 @@ def collect(
         beats = _rows(
             connection, QUERIES["heartbeats"], since=start - HEARTBEAT_STOP_SECONDS, now=moment
         )
+        # The demo's rows are dropped after the query (it is a code decision,
+        # not a slug in the published SQL), so the SQL has to fetch more than
+        # five: otherwise a demo incident newer than five tenant incidents
+        # pushes the fifth tenant incident off the page and "the last five"
+        # becomes four.  One extra row per excluded slug is enough.
         incident_rows = _rows(
-            connection, QUERIES["incidents"], since=start
+            connection,
+            QUERIES["incidents"],
+            since=start,
+            limit=INCIDENT_LIMIT + len(exclude),
         )
     finally:
         connection.close()

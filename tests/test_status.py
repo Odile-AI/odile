@@ -468,6 +468,36 @@ class StatusTestCase(unittest.TestCase):
         self.assertEqual(payload["totals"]["tenants"], 0)
         self.assertEqual(payload["inputs"]["excluded_tenants"], 1)
 
+    def test_a_newer_demo_incident_does_not_take_a_tenant_incident_s_slot(self) -> None:
+        """The demo is filtered after the query, so the query fetches one extra.
+
+        Five tenant `down` incidents and a demo incident newer than all five:
+        the page must still show five tenant incidents.  Filtering after a
+        plain `LIMIT 5` returned four — the demo's row took the fifth slot —
+        which is the bug this pins.
+        """
+        for index in range(5):
+            self.fixture.alert(
+                f"odl-inc{index:02d}",
+                "down",
+                at=NOW - (index + 1) * HOUR,
+                resolved_at=NOW - (index + 1) * HOUR + 20 * 60,
+            )
+        self.fixture.alert(
+            "odl-7971a8", "down", at=NOW - 10 * 60, resolved_at=NOW - 5 * 60
+        )
+
+        totals = self.collect()
+
+        self.assertEqual(len(totals.incidents), 5)
+        self.assertEqual(
+            [incident.start for incident in totals.incidents],
+            [NOW - (index + 1) * HOUR for index in range(5)],
+        )
+
+        body, _ = self.page()
+        self.assertEqual(body.count('<td class="when">'), 5)
+
     def test_page_numbers_are_computed_from_the_history_not_typed(self) -> None:
         """The same template, two histories, two different numbers."""
         start = NOW - 10 * HOUR

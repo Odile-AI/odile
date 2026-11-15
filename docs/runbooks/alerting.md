@@ -266,7 +266,21 @@ The HQ half then finishes what only HQ can:
 3. **One backup.**  When the last success is older than twelve hours the check
    starts `odile-backup-tenant.service` (through a transient unit, so the
    Webapp's 30-second command ceiling cannot cut it) and waits for a fresh
-   `last_success_at` and snapshot in `/var/lib/odile/backup.json`.
+   `last_success_at` and snapshot in `/var/lib/odile/backup.json`.  The wait is
+   `BACKUP_WAIT_SECONDS` (default 900 s) because a first backup of a full home
+   is a minutes-scale job; the demo's first successful snapshot (2026-11-15,
+   47 MB / 635 files) took 1.5 s of restic time, but only after the repository
+   answered.  If the budget ends with the unit still running, the check prints a
+   `note` — the timer finishes it and the next run reads the record — but if
+   the unit is `failed` or `inactive`, that is a `FAIL` carrying the unit's
+   state and the last journal lines.
+
+   The old 300 s wait reported a timeout for the 2026-11-15 seed, which had
+   actually failed in under a second: the journal shows `Starting
+   odile-backup-tenant.service` and `Fatal: wrong password or no key found` in
+   the same second, and the successful run after the repository was repaired
+   came 18m42s after the first start.  The unit's state and journal are now
+   what the check reports, so the cause can never again be a timeout.
 4. **The beat.**  It starts `odile-heartbeat.service` and reads `MAX(at)` for
    the slug out of HQ's own `heartbeats` table; a beat newer than ten minutes
    is the line `HQ holds a signed heartbeat for odl-7971a8 at <epoch>`.
@@ -278,7 +292,9 @@ sealed password (a first install mints one)" (`odilectl/provision.py`), and the
 old password lives only in the user's recovery file.  Measured on the demo,
 2026-11-15: the machine's recovery file (`2026-11-13T10:29:12Z`) did not open
 the repository created `2026-11-12T19:01Z`.  The check reports the failure and
-the remedy; doing it keeps the bytes:
+the remedy — the `FAIL` line carries the error from `backup.json`, or, when the
+unit died before writing one, `systemctl show`'s state and the journal tail —
+and doing it keeps the bytes:
 
 ```sh
 # HQ, root: keep the unreadable repository, then let the machine make a new one

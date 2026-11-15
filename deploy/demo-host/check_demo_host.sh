@@ -121,7 +121,10 @@ REMOTE_FILES = ("odile-check-demo-host.sh odile-check-demo-host.pass"
                 " odile-backup.py odile-check-demo-host.log")
 #: The whole drive: sign-in, upload, the detached run (which restarts the
 #: gateway) and the read-back. Past this the transport gives up with exit 2.
-DEADLINE = time.monotonic() + 1200
+#: It has to outlast the inner first-backup wait (BACKUP_WAIT_SECONDS, 900 s
+#: by default) plus the check's other legs, which take a couple of minutes
+#: including the gateway restart.  Forty minutes leaves room for both.
+DEADLINE = time.monotonic() + 2400
 #: The wait between sign-in attempts while the gateway restarts.
 RETRY = 5.0
 
@@ -175,6 +178,69 @@ def read_remote(path: str) -> str:
         return ""
 
 
+#: How long the seed waits for a first backup.  Five minutes was short enough
+#: to fail a healthy seed on 2026-11-15, and — worse — the failure printed
+#: "did not finish within 300 s" while the cause (a wrong repository password)
+#: sat in the unit's journal.  A full first backup is a minutes-scale job: the
+#: demo's first successful snapshot (47 MB / 635 files) took 1.5 s of restic
+#: time once the repository answered, but a cold repository and a slower link
+#: are not five-second jobs.  The wait is a budget; a run still going when it
+#: ends is a note, and a unit that died is a failure with its journal.
+#: BACKUP_WAIT_SECONDS shortens the budget for a test of that branch on a
+#: machine whose repository is already warm.
+try:
+    BACKUP_WAIT = max(1, int(os.environ.get("BACKUP_WAIT_SECONDS") or 900))
+except ValueError:
+    BACKUP_WAIT = 900
+
+#: The wrong-password remedy the runbook (§6) describes; printed beside the
+#: failure so the operator does not have to read the journal to learn it.
+REMEDY = (
+    "the repository was initialised with another password (a rebuild without"
+    " the old recovery file): move the old repository aside and run backup.py"
+    " init with /etc/odile/recovery.txt before starting the service"
+)
+
+
+def backup_record() -> dict:
+    """The machine's status record, or `{}` when there is none yet."""
+    try:
+        result = client.run("sudo cat /var/lib/odile/backup.json", check=False)
+        value = json.loads((result.get("stdout") or "").strip() or "{}")
+        return value if isinstance(value, dict) else {}
+    except (tenant_console.ConsoleError, OSError, ValueError, TypeError):
+        return {}
+
+
+def backup_unit_state() -> tuple[str, str]:
+    """What systemd says about the backup unit, and the tail of its journal.
+
+    `backup.json` carries the program's own failure record, but a unit can die
+    before writing one (an unreadable repository password is one way).  The
+    unit is the surface the operator reads, so the seed asks it directly.
+    """
+    try:
+        shown = client.run(
+            "systemctl show -p ActiveState -p SubState -p Result -p ExecMainStatus"
+            " odile-backup-tenant.service",
+            check=False,
+        )
+        journal = client.run(
+            "sudo journalctl -u odile-backup-tenant.service -n 20 --no-pager",
+            check=False,
+        ).get("stdout") or ""
+    except (tenant_console.ConsoleError, OSError) as error:
+        return "unknown", str(error)
+    text = (shown.get("stdout") or "").strip()
+    fields = dict(line.split("=", 1) for line in text.splitlines() if "=" in line)
+    state = fields.get("ActiveState") or "unknown"
+    detail = " ".join(
+        f"{key}={value}" for key, value in fields.items() if key != "ActiveState"
+    )
+    tail = " | ".join(line for line in journal.strip().splitlines()[-4:])
+    return state, (detail + (" | " + tail if tail else "")).strip()
+
+
 def seed_hq() -> tuple[bool, str]:
     """The half only HQ can do after a rebuild, and it is idempotent.
 
@@ -213,7 +279,10 @@ def seed_hq() -> tuple[bool, str]:
         if blob in existing:
             print("same         the backup box authorizes this machine's SFTP key")
         else:
-            line = " ".join(parts[:3])
+            # The whole line, comment included: `ssh-keygen -C "odile-backup
+            # $SLUG"` names the machine, and the comment is how a stale key is
+            # later told apart from a live one.
+            line = " ".join(parts)
             try:
                 with open(authorized, "a", encoding="utf-8") as handle:
                     if existing and not existing.endswith("\n"):
@@ -251,15 +320,9 @@ def seed_hq() -> tuple[bool, str]:
 
     # 3. One backup when the last success is stale, then read it back.
     now = int(time.time())
-    last = 0
-    snapshot = ""
-    try:
-        result = client.run("sudo cat /var/lib/odile/backup.json", check=False)
-        record = json.loads((result.get("stdout") or "").strip() or "{}")
-        last = int(record.get("last_success_at") or 0)
-        snapshot = str(record.get("snapshot") or "")
-    except (tenant_console.ConsoleError, OSError, ValueError, TypeError):
-        record = {}
+    record = backup_record()
+    last = int(record.get("last_success_at") or 0)
+    snapshot = str(record.get("snapshot") or "")
     if last and now - last < 12 * 3600:
         print(f"same         the last backup is {now - last}s old "
               f"(snapshot {snapshot[:12]}…)")
@@ -273,33 +336,63 @@ def seed_hq() -> tuple[bool, str]:
             print(f"started      odile-backup-tenant.service ({unit})")
         except (tenant_console.ConsoleError, OSError) as error:
             failures.append(f"cannot start the backup: {error}")
-        deadline = time.monotonic() + 300
+        started = time.monotonic()
+        deadline = started + BACKUP_WAIT
+        fresh = False
         while not failures and time.monotonic() < deadline:
-            time.sleep(8)
-            try:
-                result = client.run("sudo cat /var/lib/odile/backup.json", check=False)
-                record = json.loads((result.get("stdout") or "").strip() or "{}")
-                last = int(record.get("last_success_at") or 0)
-                if last >= now - 120:
-                    snapshot = str(record.get("snapshot") or "")
-                    print(f"ok           a fresh backup at {last} "
-                          f"(snapshot {snapshot[:12]}…)")
-                    break
-                if record.get("status") == "failed":
-                    error = str(record.get("error") or "")[:200]
-                    failures.append(f"the backup failed: {error}")
-                    if "wrong password" in error:
-                        failures.append(
-                            "the repository was initialised with another password "
-                            "(a rebuild without the old recovery file): move the "
-                            "old repository aside and run backup.py init with "
-                            "/etc/odile/recovery.txt before starting the service")
-                    break
-            except (tenant_console.ConsoleError, OSError, ValueError, TypeError):
-                continue
-        else:
-            if not failures:
-                failures.append("the backup did not finish within 300 s")
+            # Sleep no longer than the budget: a short BACKUP_WAIT_SECONDS
+            # must reach the end of the budget, not overshoot it by a poll.
+            time.sleep(min(8.0, max(1.0, deadline - time.monotonic())))
+            record = backup_record()
+            last = int(record.get("last_success_at") or 0)
+            if last >= now - 120:
+                snapshot = str(record.get("snapshot") or "")
+                print(f"ok           a fresh backup at {last} "
+                      f"(snapshot {snapshot[:12]}…) after "
+                      f"{int(time.monotonic() - started)}s")
+                fresh = True
+                break
+            if record.get("status") == "failed":
+                error = str(record.get("error") or "")[:200]
+                failures.append(f"the backup failed: {error}")
+                if "wrong password" in error or "no key found" in error:
+                    failures.append(REMEDY)
+                state, detail = backup_unit_state()
+                if detail:
+                    print(f"unit         odile-backup-tenant.service: "
+                          f"{state} {detail}")
+                break
+        if not failures and not fresh:
+            # The unit may have finished between the last poll and the
+            # deadline: one last read before asking systemd.
+            record = backup_record()
+            last = int(record.get("last_success_at") or 0)
+            if last >= now - 120:
+                snapshot = str(record.get("snapshot") or "")
+                print(f"ok           a fresh backup at {last} "
+                      f"(snapshot {snapshot[:12]}…) after "
+                      f"{int(time.monotonic() - started)}s")
+                fresh = True
+        if not failures and not fresh:
+            # Either the backup is still running or the unit died before it
+            # wrote a record.  Ask systemd which one: a wrong password kills
+            # the unit, and "did not finish within N s" would hide the remedy.
+            state, detail = backup_unit_state()
+            elapsed = int(time.monotonic() - started)
+            if detail:
+                print(f"unit         odile-backup-tenant.service: {state} {detail}")
+            if state in ("failed", "inactive", "unknown"):
+                failures.append(
+                    f"odile-backup-tenant.service is {state} after {elapsed}s"
+                    f" and /var/lib/odile/backup.json has no fresh success"
+                    + (f": {detail}" if detail else ""))
+                if "wrong password" in detail or "no key found" in detail:
+                    failures.append(REMEDY)
+            else:
+                print(f"note         the first backup is still running after "
+                      f"{elapsed}s (a first backup is a minutes-scale job; the "
+                      "budget is BACKUP_WAIT_SECONDS); the timer finishes it "
+                      "and the next check reads last_success_at")
 
     # 4. The beat itself, read from HQ's own store.
     try:
@@ -341,10 +434,17 @@ try:
     # refuses `nohup`/`&`, and systemd-run is how a detached job is started on
     # this machine (the same way a tenant service runs).
     unit = "odile-check-demo-host-%d" % int(time.time())
+    # The runbook's documented override has to reach the machine: the local
+    # half reads BACKUP_REPO_URL, and the console transport is the only way a
+    # run from HQ can set it (a real storage box, or a drill's decoy repo).
+    repo_override = os.environ.get("BACKUP_REPO_URL", "").strip()
+    repo_env = (
+        f" --setenv=BACKUP_REPO_URL={repo_override}" if repo_override else ""
+    )
     launch = (
         f"sudo systemd-run --unit={unit} --collect"
         f" --setenv=CHECK_LOG={REMOTE_LOG} --setenv=DEMO_PASSWORD_FILE={REMOTE_PW}"
-        f" --setenv=LOGIN_SHA={login_sha} --setenv=BACKUP_SHA={backup_sha}"
+        f" --setenv=LOGIN_SHA={login_sha} --setenv=BACKUP_SHA={backup_sha}{repo_env}"
         f" bash {REMOTE_SCRIPT} --local"
     )
     started = client.run(launch)
