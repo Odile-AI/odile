@@ -34,11 +34,26 @@ Classes:
 
 Allowlist discipline. Every exception is one line of ``leak-allow.tsv``:
 
-    rule<TAB>path-glob<TAB>sha256:<12><TAB>reason<TAB>expires YYYY-MM-DD
+    rule<TAB>path-glob<TAB>sha256:<12><TAB>class<TAB>credential<TAB>reason<TAB>expires
 
 The digest is over the matched value, so a row cannot hide a *different* value at
-the same path. A row past its expiry is itself a finding. A row without a reason
-is itself a finding. There is no wildcard rule, and no path-wide row.
+the same path; a ``*`` path-glob is allowed because the digest still pins the one
+value, so there is no path-wide row.
+
+``class`` is either ``constant`` — a value that is permanent (a published
+password, a public key, a reserved-domain address, a test fixture) — and then
+``expires`` is ``never``; or ``debt`` — an allowance a card will clear — and then
+``expires`` is that card's date (``YYYY-MM-DD``). A debt row past its date is a
+finding; a constant row never expires. A constant carrying a date, or a debt
+carrying ``never``, is a format finding.
+
+``credential`` is ``yes`` when the value is a secret a person could present to a
+live system, and ``no`` otherwise. Every run prints the count beside the row
+count, so a reviewer sees how many secrets the allowlist waives.
+
+A row without a reason is itself a finding, and so is a row whose reason contains
+its own value: that row matches itself, so "every row matched" would prove
+nothing.
 
 The forbid list. The default is ``leak-forbid.txt`` at the root of the tree, and
 the public tree carries one (``tools/build_public_tree.py`` copies it). A missing
@@ -155,6 +170,9 @@ ROOT_PATH = re.compile(r"(?<![\w.])/root/(?=[A-Za-z0-9_-])")
 BASIC_AUTH = re.compile(r"\b[a-z][a-z0-9+.-]*" + "://" + r"[^/\s:@]+:[^/\s@]+@[a-z0-9.-]+", re.I)
 PHONE = re.compile(r"(?<![\d+])\+[1-9]\d{7,14}(?![\d])")
 PRINTABLE = re.compile(rb"[ -~]{6,}")
+ALLOW_CLASSES = ("constant", "debt")
+ALLOW_CREDENTIAL = ("yes", "no")
+ALLOW_DIGEST = re.compile(r"sha256:[0-9a-f]{12}$")
 
 
 @dataclass
@@ -162,10 +180,14 @@ class Allow:
     rule: str
     path: str
     digest: str
+    klass: str
+    credential: str
     reason: str
     expires: str
 
     def live(self, today: date) -> bool:
+        if self.klass == "constant":
+            return True
         try:
             return date.fromisoformat(self.expires) >= today
         except ValueError:
@@ -212,6 +234,33 @@ def shannon(value: str) -> float:
     return -sum(n / total * math.log2(n / total) for n in counts.values())
 
 
+def allow_problem(row: Allow, number: int) -> str:
+    """One format finding for a row that cannot mean what it says, else ''."""
+    where = f"{ALLOW_FILE}:{number}"
+    if row.klass not in ALLOW_CLASSES:
+        return (f"{where}: class must be {' or '.join(ALLOW_CLASSES)}, "
+                f"not {row.klass!r}")
+    if row.credential not in ALLOW_CREDENTIAL:
+        return (f"{where}: credential must be {' or '.join(ALLOW_CREDENTIAL)}, "
+                f"not {row.credential!r}")
+    if not ALLOW_DIGEST.match(row.digest):
+        return f"{where}: digest must read sha256:<12 lowercase hex>, not {row.digest!r}"
+    if not row.reason:
+        return f"{where}: a row without a reason is a finding"
+    if row.klass == "constant":
+        if row.expires != "never":
+            return (f"{where}: a constant row expires never, not {row.expires!r} "
+                    f"— a date on a constant is the cliff this column removed")
+        return ""
+    if row.expires == "never":
+        return f"{where}: a debt row needs the date of the card that clears it, not 'never'"
+    try:
+        date.fromisoformat(row.expires)
+    except ValueError:
+        return f"{where}: expires must be never or YYYY-MM-DD, not {row.expires!r}"
+    return ""
+
+
 def load_allow(root: Path) -> tuple[list[Allow], list[str]]:
     path = root / ALLOW_FILE
     rows: list[Allow] = []
@@ -222,10 +271,16 @@ def load_allow(root: Path) -> tuple[list[Allow], list[str]]:
         if not line.strip() or line.startswith("#"):
             continue
         parts = line.split("\t")
-        if len(parts) != 5:
-            problems.append(f"{ALLOW_FILE}:{number}: expected 5 tab-separated fields")
+        if len(parts) != 7:
+            problems.append(f"{ALLOW_FILE}:{number}: expected 7 tab-separated fields "
+                            f"(rule, path-glob, sha256, class, credential, reason, expires)")
             continue
-        rows.append(Allow(*(p.strip() for p in parts)))
+        row = Allow(*(p.strip() for p in parts))
+        problem = allow_problem(row, number)
+        if problem:
+            problems.append(problem)
+            continue
+        rows.append(row)
     return rows, problems
 
 
@@ -380,7 +435,12 @@ def apply(report: Report, root: Path, allows: list[Allow], today: date,
         if hit is not None:
             if not hit.live(today):
                 report.findings.append(Finding("stale-allow", path, line, value,
-                                               note=f"expired {hit.expires}"))
+                                               note=f"expired {hit.expires} (debt)"))
+            elif value.strip() and value.strip() in hit.reason:
+                # The reason quotes the value it waives, so the row matches its
+                # own evidence and "every row matched" proves nothing.
+                report.findings.append(Finding("self-satisfying", path, line, value,
+                                               note="the row's reason contains its own value"))
             else:
                 report.allowed += 1
             continue
@@ -520,6 +580,9 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     allows, problems = load_allow(root)
+    credentials = sum(1 for row in allows if row.credential == "yes")
+    debt = sum(1 for row in allows if row.klass == "debt")
+    print(f"allowlist:       {len(allows)} rows, {credentials} credentials, {debt} debt")
     forbid: list[tuple[str, re.Pattern[str]]] = []
     forbid_problems: list[str] = []
     named = args.forbid_file is not None

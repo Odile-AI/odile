@@ -1,29 +1,42 @@
-# Leak-scan allowlist — every row is one exception, with its reason and its expiry.
+# Leak-scan allowlist — every row is one exception, with its class, its credential,
+# its reason and its expiry.
 #
-#   rule <TAB> path-glob <TAB> sha256:<12> <TAB> reason <TAB> expires YYYY-MM-DD
+#   rule <TAB> path-glob <TAB> sha256:<12> <TAB> class <TAB> credential <TAB> reason <TAB> expires
 #
 # Rules: a row matches one rule, one path glob, and one VALUE digest. A different
-# value at the same path is still a finding. There is no path-wide row.
+# value at the same path is still a finding. A `*` path glob is allowed because the
+# digest still pins the one value, so there is no path-wide row.
 #
-# An expired row is a finding, so a debt cannot outlive its date. Delete the row
-# when the value is gone; do not move the date forward without a reason here.
-credential-assignment	deploy/demo-host/login.html	sha256:b2132046eb76	the published demo password: public by design (CLAIMS); with it the Webapp shell runs as `tenant` and `sudo -n` reaches root on Odile's tenant machine (odl-7971a8), where the tenant's live Near AI key is readable (0600 tenant)	2027-12-31
-credential-assignment	deploy/image/tenant-image.pin	sha256:417b28e44772	the one-time seed token for bench tenant odl-7971a8 (instance 31a63bbb), spent 2026-11-14; kept so the pin cmdline stays byte-identical	2027-12-31
-credential-assignment	tests/test_first_visit.py	sha256:f4a39f182031	test fixture: the password the recovery reset ACCEPTS and stores (verify_password is True for it) — not a value the form rejects	2027-12-31
-credential-assignment	tests/test_first_visit.py	sha256:92d152347635	test fixture: base64 of the literal 'secret-placeholder'	2027-12-31
-credential-assignment	tests/test_first_visit.py	sha256:e024fef88814	test fixture: a backup password, never used to encrypt anything	2027-12-31
-credential-assignment	tests/test_first_visit.py	sha256:7d6c1d64963a	test fixture: base64 of the literal 'not-the-image-secret', the bench image's placeholder session secret the boot must keep	2027-12-31
-high-entropy	*	sha256:bdcaa7157457	base64 of a public SSH key inside a measured command line or a recorded report	2027-12-31
-high-entropy	tests/test_first_visit.py	sha256:9468ffd30a44	the scanner's TOKEN rule swallows `NAME=value`, so this is row 5's session-secret placeholder with its variable name attached — a name AND a value	2027-12-31
-high-entropy	tests/test_secret_scan.py	sha256:d30742eb5af9	a literal in secret_scan's own allowlist; the test asserts secret_scan allowlists it, not that leak_scan reports it	2027-12-31
-private-key	tests/test_claim.py	sha256:a47672cb25d2	the redacted fixture: the marker pair itself is the test's subject, and a real key here is still a finding	2027-12-31
-email	*	sha256:fa5fbf8a030b	a fixture recipient in the mail-transport and DSN tests; a real Gmail address standing in as the stranger's mailbox	2027-12-31
-email	*	sha256:4ca7ba89f38c	Google's public DMARC aggregate-report mailbox, in a fixture	2027-12-31
-email	*	sha256:29550d488ba9	a Message-Id right-hand side in the DMARC fixture, not a reporting mailbox	2027-12-31
-email	*	sha256:c85f24609dc4	placeholder address on the reserved .example domain	2027-12-31
-email	*	sha256:6ebcb1903fb0	a deliberately non-existent test mailbox, quoted in the email runbook	2027-12-31
-email	*	sha256:4bd2d9476b80	port25's public authentication verifier, quoted in the email runbook	2027-12-31
-home-path	*	sha256:e50425b752fd	`/home/tenant/` is the tenant account the product creates (uid 1000) — the demo machine's real home, not a person's name	2027-12-31
-home-path	*	sha256:e78fb33ae4ec	`/home/odiletest387/` is a throwaway account in an install transcript	2027-12-31
-public-ip	docs/security/LEAK-CONTROL-VERDICT.md	sha256:6c4a9f5f0de6	the card's drill transcript, verbatim: the probe address the gate must reject	2027-12-31
-email	docs/security/LEAK-CONTROL-VERDICT.md	sha256:8d38531c89cb	the card's drill transcript, verbatim: the probe mailbox the gate must reject	2027-12-31
+# class: `constant` for a value that is permanent (a published password, a public
+# key, a reserved-domain address, a test fixture) — it expires `never`; or `debt`
+# for an allowance a card will clear — it carries that card's date (YYYY-MM-DD). A
+# debt row past its date is a finding; a constant row never expires. A constant
+# carrying a date, or a debt carrying `never`, is a format finding.
+#
+# credential: `yes` when the value is a secret a person could present to a live
+# system, `no` otherwise. Every scan prints the count next to the row count, so a
+# reviewer sees how many secrets the allowlist waives.
+#
+# A row's reason must not contain the row's own value: that row matches itself,
+# and "every row matched at least once" would prove nothing. Delete the row when
+# the value is gone; do not change its class or date without a reason here.
+credential-assignment	deploy/demo-host/login.html	sha256:b2132046eb76	constant	yes	the published demo password: public by design (CLAIMS); with it the Webapp shell runs as `tenant` and `sudo -n` reaches root on Odile's tenant machine (odl-7971a8), where the tenant's live Near AI key is readable (0600 tenant)	never
+credential-assignment	deploy/image/tenant-image.pin	sha256:417b28e44772	constant	yes	the one-time seed token for bench tenant odl-7971a8 (instance 31a63bbb), spent 2026-11-14; kept so the pin cmdline stays byte-identical	never
+credential-assignment	tests/test_first_visit.py	sha256:f4a39f182031	constant	no	test fixture: the password the recovery reset ACCEPTS and stores (verify_password is True for it) — not a value the form rejects	never
+credential-assignment	tests/test_first_visit.py	sha256:92d152347635	constant	no	test fixture: base64 of the literal 'secret-placeholder'	never
+credential-assignment	tests/test_first_visit.py	sha256:e024fef88814	constant	no	test fixture: a backup password, never used to encrypt anything	never
+credential-assignment	tests/test_first_visit.py	sha256:7d6c1d64963a	constant	no	test fixture: base64 of the literal 'not-the-image-secret', the bench image's placeholder session secret the boot must keep	never
+high-entropy	*	sha256:bdcaa7157457	constant	no	base64 of a public SSH key inside a measured command line or a recorded report	never
+high-entropy	tests/test_first_visit.py	sha256:9468ffd30a44	constant	no	the scanner's TOKEN rule swallows `NAME=value`, so this is the session-secret placeholder with its variable name attached — a name AND a value	never
+high-entropy	tests/test_secret_scan.py	sha256:d30742eb5af9	constant	no	a literal in secret_scan's own allowlist; the test asserts secret_scan allowlists it, not that leak_scan reports it	never
+private-key	tests/test_claim.py	sha256:a47672cb25d2	constant	no	the redacted fixture: the marker pair itself is the test's subject, and a real key here is still a finding	never
+email	*	sha256:fa5fbf8a030b	constant	no	a fixture recipient in the mail-transport and DSN tests; a real Gmail address standing in as the stranger's mailbox	never
+email	*	sha256:4ca7ba89f38c	constant	no	Google's public DMARC aggregate-report mailbox, in a fixture	never
+email	*	sha256:29550d488ba9	constant	no	a Message-Id right-hand side in the DMARC fixture, not a reporting mailbox	never
+email	*	sha256:c85f24609dc4	constant	no	placeholder address on the reserved .example domain	never
+email	*	sha256:6ebcb1903fb0	constant	no	a deliberately non-existent test mailbox, quoted in the email runbook	never
+email	*	sha256:4bd2d9476b80	constant	no	port25's public authentication verifier, quoted in the email runbook	never
+home-path	*	sha256:e50425b752fd	constant	no	the tenant account the product creates (uid 1000) — the demo machine's real home, not a person's name	never
+home-path	*	sha256:e78fb33ae4ec	constant	no	a throwaway account in an install transcript, not a person	never
+public-ip	docs/security/LEAK-CONTROL-VERDICT.md	sha256:6c4a9f5f0de6	constant	no	the card's drill transcript, verbatim: the probe address the gate must reject	never
+email	docs/security/LEAK-CONTROL-VERDICT.md	sha256:8d38531c89cb	constant	no	the card's drill transcript, verbatim: the probe mailbox the gate must reject	never
