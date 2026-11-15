@@ -19,9 +19,11 @@ import json
 import os
 import re
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
+import textwrap
 import time
 import unittest
 from datetime import datetime, timedelta, timezone
@@ -29,6 +31,50 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 SCRIPT = ROOT / "support" / "odile_support.py"
+
+# Loads the program under test and holds its `Popen` until the test has sent
+# SIGTERM, so the signal lands in the window between the start line and a live
+# handler — the window a loaded `make check` was losing the end line in.
+WINDOW_HARNESS = textwrap.dedent(
+    """
+    import importlib.util
+    import sys
+    import time
+    from pathlib import Path
+
+    spec = importlib.util.spec_from_file_location("odile_support_window", sys.argv[1])
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+
+    release = Path(sys.argv[3])
+
+
+    class FakeProcess:
+        def wait(self, timeout=None):
+            return 0
+
+        def terminate(self):
+            pass
+
+        def kill(self):
+            pass
+
+
+    def fake_popen(argv, **kwargs):
+        deadline = time.monotonic() + 20
+        while not release.exists() and time.monotonic() < deadline:
+            time.sleep(0.01)
+        return FakeProcess()
+
+
+    module.subprocess.Popen = fake_popen
+    root = Path(sys.argv[2])
+    args = module.build_parser().parse_args(
+        ["--root", str(root), "session", "--shell", "/bin/sh"])
+    raise SystemExit(module.cmd_session(args, module.Paths(root)))
+    """
+)
 
 # Public halves of throwaway keys generated for these tests. The private halves
 # were discarded; a public key is not a secret.
@@ -241,6 +287,17 @@ class SupportTestCase(unittest.TestCase):
     def assert_no_support_line(self) -> None:
         self.assertEqual([line for line in self.fake.authorized().splitlines()
                           if "odile-support" in line], [])
+
+    def wait_for_log(self, needle: str, timeout: float = 10.0) -> str:
+        """Return the log text once `needle` appears, or fail with what it held."""
+        log = self.fake.root / "var/log/odile-support.log"
+        end = time.monotonic() + timeout
+        while time.monotonic() < end:
+            text = log.read_text(encoding="utf-8") if log.exists() else ""
+            if needle in text:
+                return text
+            time.sleep(0.05)
+        self.fail(f"{needle} never reached {log}: {log.read_text() if log.exists() else ''}")
 
 
 class StatusTests(SupportTestCase):
@@ -739,7 +796,6 @@ class SessionTests(SupportTestCase):
 
     def test_session_logs_an_end_line_when_the_open_session_is_killed(self) -> None:
         self.grant()
-        log = self.fake.root / "var/log/odile-support.log"
         process = subprocess.Popen(
             [sys.executable, str(SCRIPT), "--root", str(self.fake.root), "session",
              "--shell", "/bin/sh"],
@@ -747,21 +803,65 @@ class SessionTests(SupportTestCase):
             env=self.fake.env(now=self.now), text=True)
         self.addCleanup(lambda: process.poll() is None and process.kill())
 
-        def wait_for(needle: str, timeout: float = 10.0) -> str:
-            end = time.monotonic() + timeout
-            while time.monotonic() < end:
-                text = log.read_text(encoding="utf-8") if log.exists() else ""
-                if needle in text:
-                    return text
-                time.sleep(0.05)
-            self.fail(f"{needle} never reached {log}: {log.read_text() if log.exists() else ''}")
-
-        wait_for("event=start")
+        self.wait_for_log("event=start")
         process.terminate()
-        process.wait(timeout=10)
-        text = wait_for("event=end")
+        process.communicate(timeout=10)
+        text = self.wait_for_log("event=end")
         self.assertIn("rc=143", text)
         self.assertIn("signal=SIGTERM", text)
+
+    def test_a_sigterm_before_the_shell_exists_still_writes_the_end_line(self) -> None:
+        """The signal lands after the start line and before a shell could exist.
+
+        The harness holds `Popen` until the test has sent SIGTERM, so the signal
+        is delivered exactly in the window the loaded gate was losing the end
+        line in: the start line is on disk, the shell has not been started, and
+        no handler is live yet. The wrapper must still write `event=end` with
+        `signal=SIGTERM` and `rc=143`.
+        """
+        self.grant()
+        log = self.fake.root / "var/log/odile-support.log"
+        release = self.fake.dir / "let-popen-return"
+        harness = self.fake.dir / "window_harness.py"
+        harness.write_text(WINDOW_HARNESS, encoding="utf-8")
+        process = subprocess.Popen(
+            [sys.executable, str(harness), str(SCRIPT), str(self.fake.root), str(release)],
+            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            env=self.fake.env(now=self.now), text=True)
+        self.addCleanup(lambda: process.poll() is None and process.kill())
+
+        self.wait_for_log("event=start")
+        process.terminate()          # inside Popen: no shell exists yet
+        release.write_text("go\n", encoding="utf-8")
+        process.wait(timeout=20)
+        stdout, stderr = process.communicate()
+        text = log.read_text(encoding="utf-8")
+        self.assertEqual(process.returncode, 143, f"{stdout}{stderr}\n{text}")
+        self.assertRegex(text, r"(?m)^.*event=end .* rc=143 .*signal=SIGTERM")
+        self.assertEqual(text.count("event=start"), 1, text)
+        self.assertEqual(text.count("event=end"), 1, text)
+
+    def test_the_shell_does_not_inherit_the_blocked_signals(self) -> None:
+        """A blocked mask survives exec, so the wrapper must restore it.
+
+        If the shell starts with SIGTERM blocked, `pkill -t pts/N` — the way the
+        docs end a session — stops working. The probe prints its own `SigBlk`.
+        """
+        self.grant()
+        probe = self.fake.dir / "mask-probe"
+        probe.write_text(
+            f"#!{sys.executable}\n"
+            "for line in open('/proc/self/status'):\n"
+            "    if line.startswith('SigBlk:'):\n"
+            "        print(line.split()[1])\n",
+            encoding="utf-8")
+        probe.chmod(0o755)
+        out = self.fake.run("session", "--shell", str(probe), now=self.now)
+        self.assertEqual(out.returncode, 0, out.stdout + out.stderr)
+        mask = int(out.stdout.strip().splitlines()[0], 16)
+        for signum in (signal.SIGTERM, signal.SIGHUP, signal.SIGINT):
+            self.assertFalse(mask & (1 << (signum - 1)),
+                             f"{signal.Signals(signum).name} is blocked in the shell: {mask:#x}")
 
 
 class DiagTests(SupportTestCase):

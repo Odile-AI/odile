@@ -851,65 +851,109 @@ def cmd_session(args, paths: Paths) -> int:
     connection = os.environ.get("SSH_CONNECTION", "").split()
     remote = f"{connection[0]}:{connection[1]}" if len(connection) >= 2 else "-"
     original = os.environ.get("SSH_ORIGINAL_COMMAND", "").strip() or "-"
-    log_event(paths, state, "start", key=state.get("key_fingerprint", "-"), remote=remote,
-              command=original[:200])
     started = time.monotonic()
-    shell = args.shell or os.environ.get("SHELL") or "/bin/bash"
-    if not os.path.isabs(shell) or not os.access(shell, os.X_OK):
-        shell = "/bin/sh"
-    argv = [shell, "-l"] if Path(shell).name in ("bash", "zsh", "sh", "dash") else [shell]
 
     # The user ends a session with `pkill -t pts/N`, which sends SIGTERM to
     # everything on the terminal, this wrapper included. A start line without an
     # end line is an audit gap, so the wrapper catches the signal, stops the
     # shell and writes the end line with the signal name and 128+signum.
+    #
+    # The handlers have to exist before the start line can be read, or a signal
+    # that arrives while the shell is being forked hits the default disposition
+    # and the wrapper dies with no end line (measured under load: the start line
+    # was the last line of the log). So block the three signals, write the start
+    # line, install the handlers, start the shell and only then unblock: a
+    # signal that arrives in between stays pending and is delivered to `catch`
+    # with `process` already bound, even when no shell exists yet.
+    signals = (signal.SIGTERM, signal.SIGHUP, signal.SIGINT)
 
     class SessionSignal(Exception):
         def __init__(self, number: int) -> None:
             super().__init__(number)
             self.number = number
 
+    delivered = 0
+    closing = False
+
     def catch(signum: int, frame) -> None:
-        raise SessionSignal(int(signum))
+        nonlocal delivered
+        # The first signal decides the end line. A second one — a duplicate
+        # `pkill`, or a SIGHUP while the end line is being written — must not
+        # cut that line in half.
+        if closing or delivered:
+            return
+        delivered = int(signum)
+        raise SessionSignal(delivered)
+
+    def child_unblock() -> None:
+        # exec keeps the blocked mask, and a shell that starts with SIGTERM
+        # blocked cannot be stopped by `pkill -t pts/N`; restore it in the child
+        # after the fork and before exec.
+        signal.pthread_sigmask(signal.SIG_UNBLOCK, signals)
 
     handlers = {}
-    delivered = 0
+    masked = False
+    process = None
     code = 0
     try:
         try:
-            process = subprocess.Popen(argv)
+            signal.pthread_sigmask(signal.SIG_BLOCK, signals)
+            masked = True
+        except (AttributeError, OSError, ValueError):
+            masked = False
+        log_event(paths, state, "start", key=state.get("key_fingerprint", "-"), remote=remote,
+                  command=original[:200])
+        shell = args.shell or os.environ.get("SHELL") or "/bin/bash"
+        if not os.path.isabs(shell) or not os.access(shell, os.X_OK):
+            shell = "/bin/sh"
+        argv = [shell, "-l"] if Path(shell).name in ("bash", "zsh", "sh", "dash") else [shell]
+        for signum in signals:
+            try:
+                handlers[signum] = signal.signal(signum, catch)
+            except (ValueError, OSError):
+                pass
+        try:
+            process = subprocess.Popen(argv, preexec_fn=child_unblock if masked else None)
         except OSError as exc:
             print(f"odile-support: cannot start {shell}: {exc}", file=sys.stderr)
             code = 127
-        else:
-            for signum in (signal.SIGTERM, signal.SIGHUP, signal.SIGINT):
-                try:
-                    handlers[signum] = signal.signal(signum, catch)
-                except (ValueError, OSError):
-                    pass
-            try:
+        if masked:
+            signal.pthread_sigmask(signal.SIG_UNBLOCK, signals)
+            masked = False
+        try:
+            if process is not None:
                 code = process.wait()
-            except SessionSignal as exc:
-                # The shell may still be alive if the wrapper alone was signalled.
-                delivered = exc.number
-                try:
-                    process.terminate()
-                except OSError:
-                    pass
-                try:
-                    process.wait(timeout=5)
-                except subprocess.TimeoutExpired:
-                    process.kill()
-                    process.wait()
-                code = 128 + delivered
-            if code < 0:
-                code = 128 - code
+        except SessionSignal:
+            pass
+        if delivered:
+            code = 128 + delivered
+        elif code < 0:
+            code = 128 - code
+    except SessionSignal:
+        # Delivered at the unblock, before `process.wait()`: the shell may be
+        # alive, or still be the one being forked. Either way it is stopped in
+        # the finally below; the signal and 128+signum are what the log needs.
+        code = 128 + delivered
     finally:
-        for signum, handler in handlers.items():
+        if masked:
             try:
-                signal.signal(signum, handler)
-            except (ValueError, OSError):
+                signal.pthread_sigmask(signal.SIG_UNBLOCK, signals)
+            except (AttributeError, OSError, ValueError):
                 pass
+        # Keep `catch` installed, agreeing to ignore further signals, until the
+        # end line is on disk.
+        closing = True
+        if delivered and process is not None:
+            # The shell may still be alive if the wrapper alone was signalled.
+            try:
+                process.terminate()
+            except OSError:
+                pass
+            try:
+                process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait()
     seconds = int(round(time.monotonic() - started))
     fields: dict[str, object] = {"rc": code, "seconds": seconds}
     if delivered:
@@ -917,7 +961,14 @@ def cmd_session(args, paths: Paths) -> int:
             fields["signal"] = signal.Signals(delivered).name
         except ValueError:
             fields["signal"] = str(delivered)
-    log_event(paths, state, "end", **fields)
+    try:
+        log_event(paths, state, "end", **fields)
+    finally:
+        for signum, handler in handlers.items():
+            try:
+                signal.signal(signum, handler)
+            except (ValueError, OSError):
+                pass
     return code
 
 
