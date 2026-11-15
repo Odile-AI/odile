@@ -486,6 +486,33 @@ class TenantShapeTests(unittest.TestCase):
         self.assertEqual(text.count("# END odile-demo-public"), 1)
 
 
+class DemoEgressTests(unittest.TestCase):
+    """The egress sentence is retired, and the machine still proves the position.
+
+    The HQ filter was a loopback filter — its own header said "Internet traffic
+    is untouched" — so ODL-501's sentence ("the demo profile cannot reach the
+    internet except the meter and DNS") was false and is retired (t_d969339e).
+    The surviving record is the runbook paragraph plus the check's egress block;
+    this pins the pair so a later card cannot quietly drop one of them and leave
+    the other claiming the network is closed.
+    """
+
+    def test_the_check_measures_the_egress_position(self) -> None:
+        text = (ROOT / "deploy" / "demo-host" / "check_demo_host.sh").read_text(
+            encoding="utf-8")
+        self.assertIn("command -v nft", text)
+        self.assertIn("the demo shell reaches the public internet", text)
+
+    def test_the_runbook_records_it(self) -> None:
+        text = (ROOT / "docs" / "runbooks" / "demo-public.md").read_text(
+            encoding="utf-8")
+        for line in ("### Egress: no packet filter",
+                     "Internet traffic is untouched",
+                     "cannot reach any other loopback listener"):
+            with self.subTest(line=line):
+                self.assertIn(line, text)
+
+
 def free_port() -> int:
     with socket.socket() as probe:
         probe.bind(("127.0.0.1", 0))
