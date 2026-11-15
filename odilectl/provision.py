@@ -212,8 +212,9 @@ def _write_rebuild_entry(ctx: Context, seed, slug: str, issued: dict,
                          backup_password: str | None) -> str:
     """Seal the old password under this token, or clear the slug's entry.
 
-    Returns "sealed" or "none" for the report. The file holds the ciphertext,
-    never the password; a stale entry cannot be opened by a later token.
+    Returns "sealed" or "none" for the report.
+    `/var/lib/odile/seed-rebuilds.json` holds the ciphertext, never the
+    password; a stale entry cannot be opened by a later token.
     """
     path = _seed_rebuilds_path(ctx, seed)
     if backup_password is None:
