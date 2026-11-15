@@ -1,0 +1,195 @@
+# ADR-004 — A destroyed tenant comes back on its own slug: `destroyed -> claimed`
+
+**Status:** Accepted · 15 November 2026 · Architect · card `t_ce52bb8d` (ODL-218
+follow-up). Implemented in the same commit: `odilectl/state.py`,
+`odilectl/provision.py`, `tests/test_state.py`, `tests/test_odilectl.py`,
+`docs/runbooks/backup.md` §9 and `docs/runbooks/offboard.md` §5.
+**Answers:** ODL-218 follow-up — "which way does a tenant come back after a
+destroy, and what happens to its URL?"
+**Short answer:** an edge back. `destroyed -> claimed` is in `TRANSITIONS`, and
+the named move `StateStore.reopen(reason)` takes it: it keeps every earlier
+event, appends one `claimed` event whose detail carries the reason, and clears
+the dead machine's columns. The slug survives, and with it
+`https://<slug>.odile.fyi`, the recovery file's name and the backup repository
+path. A new slug per machine is rejected: it would change all three on every
+rebuild and make an approved public sentence false.
+**Related:** `docs/CLAIMS.md` §1 ("Your slug is yours for the life of the
+tenant, so the URL and the recovery file's name stay the same."; the
+machine-record and append-only-log rows), §4.9, §5; `docs/MVP-V0.1.md` §6.2
+(provisioning), §6.7 (backups), §12 D11 (random subdomains), D14 (the access
+model, untouched); `docs/runbooks/backup.md` §5.2 and §9;
+`docs/runbooks/offboard.md` §5.1–§5.5.
+**Decision owner:** Architect. This ADR adds no provider, network path,
+standing credential or trust boundary, and it strengthens no claim: it makes
+the code match a sentence `docs/CLAIMS.md` already publishes. Savio is not
+escalated.
+
+---
+
+## 1. The invariant at risk
+
+**The published sentence.** `docs/CLAIMS.md` §1: *"Your slug is yours for the
+life of the tenant, so the URL and the recovery file's name stay the same."*
+The slug is a random, semi-private public identifier (D11); it is the URL, the
+recovery file's name (`odile-recovery-<slug>.txt`), the DNS record, the ready
+email and the backup repository path (`tenants/<slug>`). A rebuild that changes
+it changes every one of those.
+
+**The state machine's promise.** `StateStore.transition()` writes the row and
+one append-only event in the same transaction, "so a state that changed without
+a record is not representable". `destroyed` was a sink: the machine was gone,
+and the row could never move again. That is true of the **machine**. It is not
+true of the **tenant**, who may come back after a provider wipe, a failed
+upgrade or a cancellation.
+
+**The order/record promise.** A `provision` run must not place a paid order
+that the row cannot record. Before this ADR it did: `provider.create` was
+called first, the seed token was bound and the machine was polled to active,
+and only then did `_record` raise. That is the failure the builder measured and
+the reason this card exists.
+
+## 2. What broke, measured
+
+On 2026-11-13, against the ODL-218 drill slug:
+
+```
+StateError: odl-218a1b is destroyed; its release cannot be recorded
+```
+
+The path is not only offboard:
+
+- `odilectl reconcile --apply` (ODL-212) marks a *missing* machine
+  `destroyed`; the crash victim's rebuild then hits the same wall.
+- `provision --apply` on a destroyed slug orders and bills the machine before
+  it discovers the row cannot record it — a machine no row names.
+- The offboard drill rebuilt under a **new slug**, so the URL changed, the
+  recovery file's name changed and `backup-repo.txt` named a new repository.
+  The drill's own runbook records that compromise.
+
+The state machine had one answer, and it was the expensive one.
+
+## 3. Options
+
+| | A — an edge back (chosen) | B — a new slug per machine (rejected) |
+|---|---|---|
+| `destroyed` | Not terminal; one outgoing edge to `claimed` | Stays terminal |
+| Slug / URL | Survive | Change on every rebuild |
+| Recovery file name | Survives | Changes |
+| Backup repository | `tenants/<same-slug>` survives; the old password is sealed under the new token | New repository; old data must be restored by hand or the old repo URL carried as a special case |
+| DNS | Same name; the A record is deleted at destroy and re-created for the same slug | New record, new name |
+| Public sentence | True | False unless CLAIMS §1 is weakened |
+| Cost | One edge (18 → 19), one named move, one `claimed`-clears-machine rule, tests, two runbooks | A precheck, a slug-allocation rule for rebuilds, new DNS/recovery/repo plumbing, and a claim cut |
+| Failure mode | A rebuild is a new machine under an old name — the old machine must really be gone | Every rebuild is a new identity; the person's bookmark, certificate fingerprint and repository move |
+
+A third shape — a new state or a `reprovision` event kind — was rejected as
+schema cost for a word: the event-kind `CHECK` would need a v4 table rebuild,
+while `claimed` with `detail.reprovision` and `detail.reason` already carries
+the fact.
+
+## 4. Decision
+
+1. **`TRANSITIONS["destroyed"] = ("claimed",)`.** The flow is now 19 edges.
+   `destroyed` is the end of a *machine*, not of the tenant; its only outgoing
+   edge is the reopen.
+2. **`StateStore.reopen(slug, *, reason)`** is the named move. It:
+   - refuses any state except `destroyed` (and is a no-op on an already
+     `claimed` row, so a retried rebuild writes one event);
+   - appends one `claimed` event with `from_state='destroyed'` and
+     `detail={"reason": …, "reprovision": true}`;
+   - keeps every earlier event — the log still proves the machine died.
+3. **Entering `claimed` clears the machine columns** (`server_id`, `hostname`,
+   `ipv4`, `plan_id`, `release`, `expires_at`, `initramfs_host_key`,
+   `last_heartbeat`). A claim is *before* the order; a row at `claimed` names
+   no machine. This is what makes the edge a rebuild rather than a relabel, and
+   it keeps a dead `server_id` out of the unique column and out of reconcile's
+   matches.
+4. **`provision` reopens before the first provider call.** `_reopen_destroyed`
+   moves the row to `claimed` before `provider.list`/`provider.create`, so the
+   order lands on a row that can record it; a failed create leaves a retryable
+   claim, not a paid orphan. The dry run lists `state.reopen` as its first
+   action (read through SQLite's read-only URI mode) and says the URL and the
+   recovery file keep their names. The report carries `reopened: true`. The
+   `--backup-password-file` flag and the `tenants/<slug>` repository are
+   unchanged.
+5. **`reconcile --apply`** still marks a missing machine `destroyed`; its
+   finding now names the same-slug rebuild (`provision <slug>: same slug,
+   destroyed -> claimed (reopen)`), so the operator sees the way back in the
+   same output that applied the destroy.
+6. **The URL consequence.** The name does not change. The Cloudflare A record
+   *is* deleted when the machine is destroyed (offboard §3), so a rebuild
+   re-creates the record for the same slug — the name and the recovery file are
+   stable, the address is not. `docs/runbooks/offboard.md` §5 carries the step.
+7. **The runbooks agree.** `docs/runbooks/backup.md` §9 no longer says the
+   live rebuild takes a new slug; `docs/runbooks/offboard.md` §5 no longer
+   documents the "new slug until the decision" compromise.
+
+## 5. Failure modes and the order of operations
+
+- **Order placed, record failed.** Fixed by reopening *before* the order. If
+  `provider.create` fails, the row is `claimed` and the next run retries; if
+  `_record` fails after an order, the existing `provider.list` reuse path finds
+  the machine by hostname and records it rather than ordering a second one.
+- **Two machines, one name.** `provision` refuses two provider rows with the
+  same hostname; a reused active/pending row is recorded, not re-ordered.
+- **Double charge on a retry.** `provider.list` first; `create` only when the
+  hostname is absent; a queued preorder is reused.
+- **Old seed token / old rebuild password.** `seed.bind` ends the previous
+  token for the slug; `_write_rebuild_entry` overwrites or clears the slug's
+  entry. Only ciphertext is stored.
+- **Late boot record from the dead machine.** `bootrecord` refuses a destroyed
+  row, checks the measured instance id against `server_id`, and refuses a
+  `claimed`/`provisioning` row; after reopen the old instance id no longer
+  matches the new order.
+- **Old machine still running.** `reconcile` reports it while the row is
+  `destroyed` (`zombie_vm`); after the reopen the old `server_id` is cleared,
+  so it is reported as an unknown machine for a human to terminate. The
+  provision path reuses it if it is still named for the slug.
+- **DNS.** The record is deleted at destroy and re-created for the same slug
+  after the new address exists (offboard §5 step 2).
+- **Heartbeats.** A beat from the old machine can still refresh the slug's
+  `last_heartbeat` while the row is `claimed`; it cannot move the state. The
+  next order overwrites the machine facts. This is pre-existing behaviour and
+  not changed here.
+
+## 6. Reversibility
+
+**Two-way in code.** Removing the tuple and the named move restores the old
+terminality in one commit; the data added by a reopen is an ordinary
+`destroyed -> claimed` event pair that the existing schema already accepts (no
+migration, `STATE_SCHEMA_VERSION` stays 3).
+
+**One-way in product identity.** "The slug is yours for the life of the
+tenant" is already published in `docs/CLAIMS.md` §1. This ADR makes the code
+honour it; choosing the other way would have required weakening that sentence.
+The point after which the decision stops being cheap is the **first live
+same-slug rebuild** (`t_8d50106b`'s destroy-and-rebuild of `odl-7971a8`):
+after that, the tenant's history contains the edge and a second rebuild needs
+it back.
+
+## 7. Evidence
+
+Hermetic, no order and no money:
+
+```
+/usr/bin/python3 -m unittest tests.test_state -v
+  Ran 64 tests … OK
+/usr/bin/python3 -m unittest tests.test_odilectl.FixtureFlowTest -v
+  Ran 13 tests … OK
+make check
+  Ran 1644 tests in 397.439s … OK (skipped=7); self-test: PASS;
+  claims lint: OK; brand lint: OK; make check: OK
+```
+
+The end-to-end test builds a tenant to `ready`, destroys it, runs
+`odilectl provision <slug> --apply` against the recorded provider, and asserts
+the same slug, the new `server_id`, and the event sequence
+`destroyed → claimed → provisioning`; the dry-run test asserts that
+`state.reopen` is listed and that the row is still `destroyed` afterwards. The
+18 → 19 edge count, the reopen's field clearing, its idempotency, its refusal
+of a live tenant and the reconcile finding are in `ReprovisionTest`.
+
+**Mutation.** With `destroyed` changed back to `()` (and the edge count left at
+19), `tests.test_state` fails on
+`test_every_state_is_reachable_from_invited_and_destroyed_reopens` and on the
+edge loop's count (2 failures), and the four `ReprovisionTest` cases error (4
+errors). The new edge is not decorative: remove it and the suite goes red.

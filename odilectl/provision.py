@@ -25,6 +25,14 @@ print the fresh token). If the slug has no tenant row yet, the claim worker
 mints the token when the claim exists (ODL-220) — the fallback, and the report
 names it instead of inventing a tenant row.
 
+**A destroyed tenant is reopened, not replaced (ODL-218 follow-up, ADR-004).**
+`destroyed -> claimed` is the one edge back: `_reopen_destroyed` moves the row
+before the first provider call, so the order always lands on a row that can
+record it. The slug — and therefore `https://<slug>.odile.fyi`, the recovery
+file's name and the `tenants/<slug>` repository — does not change; the reopen
+is one `claimed` event whose detail carries the reason, and the dead machine's
+columns are cleared. Running the command on a live tenant does nothing extra.
+
 **A rebuild keeps the repository (ODL-215 follow-up).** The user's old recovery
 file already opens the repository; a new machine that mints a new password
 meets that repository with a key it cannot use. With `--backup-password-file`
@@ -67,6 +75,11 @@ DEFAULT_TIMEOUT = 900.0
 DEFAULT_INTERVAL = 10.0
 DEFAULT_PIN = Path(__file__).resolve().parent.parent / "odile-verify.pin"
 SETUP_TOKEN_TTL_HOURS = 24
+# Written to the `claimed` event when provision brings a destroyed tenant back
+# (ADR-004). The slug, and therefore the URL, does not change.
+REPROVISION_REASON = (
+    "odilectl provision: a destroyed machine is replaced under the same slug"
+)
 
 
 @lru_cache(maxsize=1)
@@ -240,6 +253,14 @@ def _write_rebuild_entry(ctx: Context, seed, slug: str, issued: dict,
     return "sealed"
 
 
+def _reopen_line(slug: str) -> str:
+    """The one line a rebuild adds: same slug, same URL (ADR-004)."""
+    return (
+        f"  reprovision: destroyed -> claimed (same slug, {slug}); "
+        "the URL and the recovery file keep their names"
+    )
+
+
 def _seed_lines(binding: SeedBinding) -> list[str]:
     if not binding.bound:
         return [f"  setup token: not minted ({binding.reason})"]
@@ -371,6 +392,60 @@ def pinned_release(pin: str | Path | None = None, *, prefix: str = "provision") 
     return chosen
 
 
+def _state_of(ctx: Context, slug: str) -> str | None:
+    """The tenant's state, read without creating or writing the database.
+
+    The dry run must list the reopen it would take, and `StateStore.open`
+    writes the schema (and creates the file), so this peeks at an existing file
+    in SQLite's read-only URI mode instead. A missing file or table is `None`:
+    a new tenant has no row yet.
+    """
+    path = ctx.config.path_value("state_db", DEFAULT_STATE_DB) or Path(DEFAULT_STATE_DB)
+    if not Path(path).exists():
+        return None
+    try:
+        con = sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=5.0)
+        try:
+            row = con.execute(
+                "SELECT state FROM tenant_state WHERE slug = ?", (slug,)
+            ).fetchone()
+        finally:
+            con.close()
+    except sqlite3.Error:
+        return None
+    return row[0] if row else None
+
+
+def _reopen_destroyed(ctx: Context, slug: str) -> bool:
+    """Move a destroyed row to `claimed` before the order (ADR-004).
+
+    The order must land on a row that can record it. A destroyed row is
+    reopened first, so a failed `create` leaves a retryable claim rather than a
+    paid machine no row names. The reason is in the event log; the slug, the
+    URL and the repository keep their names.
+    """
+    db_path = (
+        ctx.config.path_value("state_db", DEFAULT_STATE_DB) or Path(DEFAULT_STATE_DB)
+    )
+    try:
+        store = StateStore.open(db_path)
+    except StateError as error:
+        raise ProviderError(f"provision: cannot open the state database: {error}") from None
+    try:
+        try:
+            tenant = store.get(slug)
+        except UnknownTenant:
+            return False
+        if tenant.state != "destroyed":
+            return False
+        store.reopen(slug, reason=REPROVISION_REASON)
+        return True
+    except StateError as error:
+        raise ProviderError(f"provision: {slug} could not be reopened: {error}") from None
+    finally:
+        store.close()
+
+
 def _record_machine(
     ctx: Context, spec: CreateSpec, machine: Machine, release: str
 ) -> dict[str, object]:
@@ -407,7 +482,8 @@ def _record_machine(
             return {"recorded": True, "tenant_state": tenant.state, "release": tenant.release}
         if tenant.state == "destroyed":
             raise StateError(
-                f"{spec.hostname} is destroyed; its release cannot be recorded"
+                f"{spec.hostname} is destroyed; reopen it (run this command, which "
+                "reopens it before the order) before recording a machine"
             )
         before = tenant.release
         tenant = store.record_release(spec.hostname, release)
@@ -456,7 +532,21 @@ def run(ctx: Context, args) -> Report:
     except ValueError as error:
         raise UsageError(f"provision: {error}") from None
 
-    actions = [
+    state_before = _state_of(ctx, spec.hostname)
+    reprovision = state_before == "destroyed"
+
+    actions = []
+    if reprovision:
+        actions.append(
+            {
+                "action": "state.reopen",
+                "slug": spec.hostname,
+                "from": "destroyed",
+                "to": "claimed",
+                "reason": REPROVISION_REASON,
+            }
+        )
+    actions += [
         {
             "action": "provider.list",
             "provider": configured_name(ctx.config),
@@ -509,6 +599,13 @@ def run(ctx: Context, args) -> Report:
         "under the token; `/var/lib/odile/seed-rebuilds.json` holds ciphertext, "
         "never the password)",
     ]
+    if reprovision:
+        notes.insert(
+            0,
+            "the destroyed tenant is reopened (destroyed -> claimed) under the same "
+            f"slug before the order: https://{spec.hostname}.odile.fyi and "
+            f"odile-recovery-{spec.hostname}.txt keep their names",
+        )
 
     if not ctx.mutate:
         return plan(
@@ -528,6 +625,10 @@ def run(ctx: Context, args) -> Report:
             "provision --apply needs --key PATH until the tenant record holds the key"
         )
 
+    # Before the first provider call: a destroyed row is reopened, so every
+    # order this run places has a row that can record it (ADR-004).
+    reopened = _reopen_destroyed(ctx, spec.hostname)
+
     existing = [machine for machine in ctx.provider.list() if machine.hostname == spec.hostname]
     if len(existing) > 1:
         raise ProviderError(
@@ -538,7 +639,10 @@ def run(ctx: Context, args) -> Report:
         if _is_queued(machine):
             seed = _bind_seed_token(ctx, spec.hostname, machine.server_id,
                                     backup_password=backup_password)
-            return _queued_report(ctx, machine, created=False, release=release, seed=seed)
+            return _queued_report(
+                ctx, machine, created=False, release=release, seed=seed,
+                reopened=reopened,
+            )
         if machine.state == "active" and machine.ipv4:
             seed = _bind_seed_token(ctx, spec.hostname, machine.server_id,
                                     backup_password=backup_password)
@@ -548,6 +652,7 @@ def run(ctx: Context, args) -> Report:
                 ctx,
                 [
                     f"  {machine.server_id} ({machine.hostname}) is already active",
+                    *([_reopen_line(spec.hostname)] if reopened else []),
                     f"  release:   {record['release']} (from the pin, recorded with the tenant)",
                     *_seed_lines(seed),
                 ],
@@ -555,6 +660,7 @@ def run(ctx: Context, args) -> Report:
                 machine=machine.to_dict(),
                 created=False,
                 recorded=record["recorded"],
+                reopened=reopened,
                 release=record["release"],
                 tenant_state=record["tenant_state"],
                 seed=seed.to_dict(),
@@ -575,7 +681,10 @@ def run(ctx: Context, args) -> Report:
         seed = _bind_seed_token(ctx, spec.hostname, machine.server_id,
                                 backup_password=backup_password)
         if _is_queued(machine):
-            return _queued_report(ctx, machine, created=True, release=release, seed=seed)
+            return _queued_report(
+                ctx, machine, created=True, release=release, seed=seed,
+                reopened=reopened,
+            )
         # `create` may answer active before the address is filled in; the poll
         # is what guarantees the tenant actually has somewhere to connect.
         if machine.state != "active" or not machine.ipv4:
@@ -588,6 +697,7 @@ def run(ctx: Context, args) -> Report:
     lines = [
         f"  server_id: {machine.server_id}",
         f"  hostname:  {machine.hostname}",
+        *([_reopen_line(spec.hostname)] if reopened else []),
         f"  state:     {machine.state} ({machine.raw_status or 'no raw status'})",
         f"  ipv4:      {machine.ipv4 or '-'}",
         f"  expires:   {render_datetime(machine.expires_at)}",
@@ -601,6 +711,7 @@ def run(ctx: Context, args) -> Report:
         machine=machine.to_dict(),
         created=created,
         recorded=record["recorded"],
+        reopened=reopened,
         release=record["release"],
         tenant_state=record["tenant_state"],
         seed=seed.to_dict(),
@@ -613,13 +724,20 @@ def _is_queued(machine: Machine) -> bool:
 
 
 def _queued_report(
-    ctx: Context, machine: Machine, *, created: bool, release: str, seed: SeedBinding
+    ctx: Context,
+    machine: Machine,
+    *,
+    created: bool,
+    release: str,
+    seed: SeedBinding,
+    reopened: bool = False,
 ) -> Report:
     """A queued preorder is a success: the money left, the order exists."""
     position = machine.detail.get("queue_position")
     lines = [
         f"  server_id: {machine.server_id}",
         f"  hostname:  {machine.hostname}",
+        *([_reopen_line(machine.hostname)] if reopened else []),
         f"  state:     {machine.state} (queued)",
         f"  queue:     {position if position is not None else 'position not reported'}",
         f"  release:   {release} (from the pin; recorded when the machine is active)",
@@ -641,6 +759,7 @@ def _queued_report(
         queued=True,
         queue_position=position,
         recorded=False,
+        reopened=reopened,
         release=release,
         note="the release is recorded when the machine becomes active",
         seed=seed.to_dict(),

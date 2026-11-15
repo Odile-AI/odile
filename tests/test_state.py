@@ -290,12 +290,13 @@ class StateMachineTest(TempStoreMixin):
             ),
         )
 
-    def test_every_state_is_reachable_from_invited_and_only_destroyed_is_terminal(self):
+    def test_every_state_is_reachable_from_invited_and_destroyed_reopens(self):
         for target in state.STATES:
             with self.subTest(state=target):
                 path = path_to(target)
                 self.assertEqual(path[-1] if path else "invited", target)
-        self.assertEqual(state.TRANSITIONS["destroyed"], ())
+        # The one edge back: destroyed is the end of a machine, not the tenant.
+        self.assertEqual(state.TRANSITIONS["destroyed"], ("claimed",))
 
     def test_every_declared_transition_is_allowed_and_writes_one_event(self):
         """The edge list is the test: an edge without an event is not a transition."""
@@ -304,7 +305,7 @@ class StateMachineTest(TempStoreMixin):
             for source, targets in state.TRANSITIONS.items()
             for target in targets
         ]
-        self.assertEqual(len(edges), 18)
+        self.assertEqual(len(edges), 19)
         for source, target in edges:
             with self.subTest(edge=f"{source} -> {target}"):
                 store_dir = tempfile.mkdtemp(prefix="odile-edge-")
@@ -445,6 +446,20 @@ class StateMachineTest(TempStoreMixin):
         with self.assertRaises(state.StateError):
             self.store.invite(SLUG)
 
+    def test_a_claim_keeps_the_invite_detail(self):
+        """Entering claimed clears machine facts, not the invite's own detail."""
+        self.store.invite(SLUG, detail={"owner_email": "ada@example.com"})
+        claimed = self.store.claim(SLUG)
+        self.assertEqual(claimed.state, "claimed")
+        self.assertEqual(claimed.detail["owner_email"], "ada@example.com")
+
+    def test_a_claim_cannot_carry_machine_fields(self):
+        """A claim is before the order; a machine id on it is a bug, not a write."""
+        self.store.invite(SLUG)
+        with self.assertRaises(TypeError):
+            self.store.transition(SLUG, "claimed", server_id="srv-too-early")
+        self.assertEqual(self.store.get(SLUG).state, "invited")
+
     def test_provision_records_the_machine_fields_and_the_host_key(self):
         self.store.invite(SLUG)
         self.store.claim(SLUG)
@@ -534,6 +549,126 @@ class StateMachineTest(TempStoreMixin):
         tenant = self.store.invite(SLUG)
         self.assertRegex(tenant.created_at, r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$")
         self.assertEqual(tenant.created_at, tenant.updated_at)
+
+
+# ---------------------------------------------------------------- reprovision
+
+
+class ReprovisionTest(TempStoreMixin):
+    """The one edge back: a destroyed slug comes back under the same slug.
+
+    ADR-004 / ODL-218 follow-up. `destroyed` is the end of a machine, not of
+    the tenant: the reopen keeps every earlier event, writes one `claimed`
+    event with the reason, clears the dead machine's columns, and leaves the
+    slug — and therefore the URL, the recovery file's name and the repository
+    path — untouched.
+    """
+
+    FIELDS = (
+        "server_id",
+        "hostname",
+        "ipv4",
+        "plan_id",
+        "release",
+        "expires_at",
+        "initramfs_host_key",
+        "last_heartbeat",
+    )
+
+    def test_a_destroyed_tenant_reopens_to_claimed_and_clears_the_machine(self):
+        self.active_tenant()
+        self.store.destroy(SLUG, reason="owner cancelled")
+        before = self.store.events(SLUG)
+        reopened = self.store.reopen(
+            SLUG, reason="reprovision: the provider lost the machine"
+        )
+        self.assertEqual(reopened.state, "claimed")
+        self.assertEqual(reopened.slug, SLUG)
+        for name in self.FIELDS:
+            self.assertIsNone(getattr(reopened, name), name)
+        self.assertTrue(reopened.detail["reprovision"])
+        self.assertEqual(
+            reopened.detail["reason"], "reprovision: the provider lost the machine"
+        )
+        events = self.store.events(SLUG)
+        self.assertEqual(len(events), len(before) + 1)
+        self.assertEqual(
+            [event.kind for event in events[:-1]],
+            [event.kind for event in before],
+            "the reopen keeps every earlier event",
+        )
+        event = events[-1]
+        self.assertEqual(
+            (event.kind, event.from_state, event.to_state),
+            ("claimed", "destroyed", "claimed"),
+        )
+        self.assertTrue(event.detail["reprovision"])
+        self.assertEqual(
+            event.detail["reason"], "reprovision: the provider lost the machine"
+        )
+
+    def test_a_destroyed_tenant_is_provisioned_again_under_the_same_slug(self):
+        self.active_tenant()
+        self.store.destroy(SLUG, reason="provider wipe")
+        self.store.reopen(SLUG, reason="reprovision after a provider wipe")
+        tenant = self.store.provision(
+            SLUG,
+            server_id="srv-new-0001",
+            hostname=SLUG,
+            ipv4="203.0.113.99",
+            plan_id=113,
+            release="2026.12.0",
+            expires_at=NOW + 31 * DAY,
+            initramfs_host_key="SHA256:new-machine-key",
+        )
+        self.assertEqual(tenant.slug, SLUG)
+        self.assertEqual(tenant.server_id, "srv-new-0001")
+        self.assertEqual(tenant.release, "2026.12.0")
+        self.store.await_boot(SLUG)
+        self.store.start_first_visit(SLUG)
+        ready = self.store.ready(SLUG)
+        self.assertEqual(ready.state, "ready")
+        self.assertEqual(ready.slug, SLUG, "the slug survives the rebuild")
+        # The URL is derived from the slug; it cannot have changed.
+        self.assertEqual(f"https://{ready.slug}.odile.fyi", f"https://{SLUG}.odile.fyi")
+        kinds = [event.kind for event in self.store.events(SLUG)]
+        self.assertEqual(
+            kinds[-6:],
+            ["destroyed", "claimed", "provisioning", "first_boot", "first_visit", "ready"],
+        )
+        reopened = [event for event in self.store.events(SLUG) if event.kind == "claimed"][-1]
+        self.assertEqual(reopened.from_state, "destroyed")
+        self.assertEqual(reopened.detail["reason"], "reprovision after a provider wipe")
+
+    def test_reopening_twice_writes_one_event(self):
+        self.active_tenant()
+        self.store.destroy(SLUG, reason="owner cancelled")
+        before = self.count_events(SLUG)
+        self.store.reopen(SLUG, reason="rebuild")
+        again = self.store.reopen(SLUG, reason="rebuild")
+        self.assertEqual(again.state, "claimed")
+        self.assertEqual(self.count_events(SLUG), before + 1)
+
+    def test_reopen_refuses_a_live_tenant(self):
+        self.active_tenant()
+        with self.assertRaises(state.InvalidTransition):
+            self.store.reopen(SLUG, reason="rebuild")
+        self.assertEqual(self.store.get(SLUG).state, "ready")
+
+    def test_reconcile_apply_marks_missing_destroyed_and_names_the_same_slug(self):
+        self.active_tenant()
+        report = state.reconcile(self.store, StubProvider([]), now=NOW)
+        finding = report.drift[0]
+        self.assertEqual(finding.fix, "destroy")
+        self.assertIn(SLUG, finding.detail["rebuild"])
+        self.assertIn("same slug", finding.detail["rebuild"])
+        applied = state.reconcile(self.store, StubProvider([]), apply=True, now=NOW)
+        self.assertEqual(applied.fixed, (SLUG,))
+        self.assertEqual(self.store.get(SLUG).state, "destroyed")
+        # And the way back the finding names works from here.
+        self.store.reopen(SLUG, reason="reprovision after reconcile")
+        self.assertEqual(self.store.get(SLUG).state, "claimed")
+        self.assertEqual(self.store.get(SLUG).slug, SLUG)
 
 
 # ------------------------------------------------------------- waiting for owner

@@ -334,61 +334,60 @@ checkable in the meantime.
 This is the step that `docs/runbooks/backup.md` §9 calls "ODL-218's path", and
 it has two halves.
 
-### The mechanics, measured
+### The mechanics — the same slug comes back (ADR-004)
 
 After a destroy, `odilectl provision <slug> --key <user.pub> --pin
 odile-verify.pin --backup-password-file <the user's old
-odile-recovery-<slug>.txt> --apply` orders the machine and writes the row.
-Without the flag the rebuilt machine mints a new repository password (Drill 2's
-C); with it the guest's own recovery file carries the old password and
-`backup.py init` says `same` (`docs/runbooks/backup.md` §5.2, §9). The drill's
-order was **plan 120 / 7 days** — the drill config's `default_plan_id: 120` and
-`default_days: 7`, the panel's Blackbox Core (the Netherlands; $9.49 per 31 days,
-billed $2.15 for the drill's 7 days), invoice `e0e6fbce` (§3). The live rebuild
-orders the live config's default, **plan 113 / 31 days**: `/root/.odile/config.yaml`
-carries `default_plan_id: 113` and `default_days: 31`, and the live tenant itself
-is on plan 113 (`?action=server&id=31a63bbb` → `plan_id: 113`, Blackbox Plus,
+odile-recovery-<slug>.txt> --apply` reopens the row and orders the machine.
+The reopen is the one edge back (`destroyed -> claimed`, `odilectl/state.py`);
+it appends one `claimed` event with the reason, keeps every earlier event and
+clears the dead machine's columns, so the order records `provisioning` on the
+same row. **The slug does not change**: the URL, the recovery file's name and
+the `tenants/<slug>` repository survive (ADR-004; `docs/CLAIMS.md` §1). A dry
+run on a destroyed slug lists `state.reopen` as its first action and writes
+nothing. Without the `--backup-password-file` flag the rebuilt machine mints a
+new repository password (Drill 2's C); with it the guest's own recovery file
+carries the old password and `backup.py init` says `same`
+(`docs/runbooks/backup.md` §5.2, §9). The drill's order was **plan 120 / 7
+days** — the drill config's `default_plan_id: 120` and `default_days: 7`, the
+panel's Blackbox Core (the Netherlands; $9.49 per 31 days, billed $2.15 for
+the drill's 7 days), invoice `e0e6fbce` (§3). The live rebuild orders the live
+config's default, **plan 113 / 31 days**: `/root/.odile/config.yaml` carries
+`default_plan_id: 113` and `default_days: 31`, and the live tenant itself is
+on plan 113 (`?action=server&id=31a63bbb` → `plan_id: 113`, Blackbox Plus,
 Canada, $18.99 reseller / $19.99 retail per 31 days, active to 2026-12-10;
 `evidence/plans.txt`). Plan 121 is also Blackbox Plus at $18.99 per 31 days,
 but in the Netherlands — it is not what the live config orders. The flags
-differ, the path does not: drill 2 ordered `fbf0f1f0` after drill 1's destroy,
-and the row went `invited → claimed → provisioning` with release `2026.11.1` from the
-pin, the machine came up active with its address, and a DNS-only A record was
-written for the slug (drill 1's `882f002b…` in §3, TTL 120; the destroy deleted
-it). The command is `/usr/bin/python3 -m odilectl.dns create <slug> --ip <addr>
---apply`: `dns` is not a `cli.MODULES` subcommand yet, so `odilectl dns …`
-exits 2 (`invalid choice: 'dns'`) and the module is the entry point —
-**t_1520be38** registers it. The command was replayed on 2026-11-13T08:03Z
-with drill 1's own slug and address: dry run → applied (record `83269c0c…`) →
-one A record read back → deleted → `result_count 0`; `evidence/dns-create.txt`
-(§7). The route works; what it cannot do is keep the **slug**:
+differ, the path does not: a same-slug rebuild orders a new machine, the row
+reopens and moves `claimed → provisioning` with release `2026.11.1` from the
+pin, and a DNS-only A record is written for the **same** slug
+(`/usr/bin/python3 -m odilectl.dns create <slug> --ip <addr> --apply`; `dns`
+is not a `cli.MODULES` subcommand yet, so `odilectl dns …` exits 2 — **t_1520be38**
+registers it). The command was replayed on 2026-11-13T08:03Z (dry run → applied,
+record `83269c0c…` → one A record read back → deleted → `result_count 0`;
+`evidence/dns-create.txt`, §7).
+
+The old behaviour was the fork this card closed. On 2026-11-13, a destroyed
+slug refused in `_record` **after** the order had been placed and billed:
 
 ```
 $ python3 -c '… provision._record_machine(ctx, spec, machine, "2026.11.1")'
 StateError: odl-218a1b is destroyed; its release cannot be recorded
 ```
 
-The refusal is not free on the normal path: `provision --apply` orders the
-machine (`provider.create`) and binds the seed token *before* `_record` raises
-(`odilectl/provision.py`), so `provision <destroyed-slug> --apply` pays for an
-orphan no row names. Use a new slug until **t_ce52bb8d** decides the edge back.
+ADR-004 removed that refusal before the first provider call: a destroyed row is
+reopened to `claimed` first, so the order always lands on a row that can record
+it. The re-provision is now:
 
-`destroyed` has no outgoing edge (`odilectl/state.py`, `TRANSITIONS`), so a
-destroyed slug cannot be provisioned again. **A rebuild today takes a new slug**
-and therefore a new URL — which is the one thing a rebuilt machine should not
-have to change. **t_ce52bb8d** is the card that decides the way back (an edge
-out of `destroyed`, or a new slug as the rule, with the URL consequence
-written down). Until it lands, the re-provision is:
-
-1. `odilectl provision <new-slug> --key <the user's public key> --pin
+1. `odilectl provision <slug> --key <the user's public key> --pin
    odile-verify.pin --backup-password-file <the user's old
-   odile-recovery-<old-slug>.txt> --apply` — the order, the row, the release
-   from the pin; the flag above keeps the old password, so the rebuilt machine
-   does not mint a second one.
-2. `/usr/bin/python3 -m odilectl.dns create <new-slug> --ip <the machine's
-   address> --apply` — the A record the claim path would have written (`dns`
-   is a module entry point, not a `cli.MODULES` subcommand, until
-   **t_1520be38**; the replay is `evidence/dns-create.txt`, §7).
+   odile-recovery-<slug>.txt> --apply` — the reopen, the order, the new
+   `server_id`, the release from the pin; the flag above keeps the old
+   password, so the rebuilt machine does not mint a second one.
+2. `/usr/bin/python3 -m odilectl.dns create <slug> --ip <the machine's
+   address> --apply` — the A record the destroy deleted, for the **same** slug
+   (`dns` is a module entry point until **t_1520be38**; the replay is
+   `evidence/dns-create.txt`, §7).
 3. The **signed image** pair in the panel (below).
 4. First boot → first visit → the sign-in and the recovery file
    (`docs/runbooks/install.md`, `docs/runbooks/backup.md` §5.2).
@@ -426,7 +425,7 @@ tenant is §2 — complete, with the record id, the server id and the backup dat
 | Gap | Why it is not here | Card |
 |---|---|---|
 | the installer does not place `odile-export` | the hand placement is the same gap `support/odile_support.py` records; the embed is an installer card with a re-sign and a release cut | **t_2efbd6e3** |
-| a destroyed slug cannot come back | `TRANSITIONS["destroyed"]` is empty; the decision and its URL consequence belong to the state machine | **t_ce52bb8d** |
+| ~~a destroyed slug cannot come back~~ **resolved** | ADR-004: `destroyed -> claimed`, the named `reopen()`, and `provision` reopens before the order; the slug, the URL and the `tenants/<slug>` repository keep their names | **t_ce52bb8d** |
 | the live tenant's destroy + rebuild | $18.99 and the panel's disk image — a real-world action | **t_8d50106b** |
 | the live tenant's Webapp refuses `/login` (`400 Invalid Host header`) | measured 2026-11-13T05:33Z after a boot-time release install; the same boot's release setup ended `rc=1` at `odile-access-report` — installer/release work, not the offboard path | **t_d95b8c13** |
 | the 30-day purge is an operator step | the box is off-site and has no agent; the date on the row makes it checkable | **t_9d6fb595** |

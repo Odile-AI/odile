@@ -1011,6 +1011,107 @@ class FixtureFlowTest(TempConfigMixin):
         self.assertTrue(create["body"]["measured"])
         self.assertEqual(transport.calls[2]["id"], SERVER_ID)
 
+    def _destroyed_row(self, config_path) -> Path:
+        """A tenant that reached ready and was then destroyed (ADR-004)."""
+        db = Path(config_path).parent / "waitlist.db"
+        store = state.StateStore.open(db)
+        try:
+            store.invite(SLUG)
+            store.claim(SLUG)
+            store.provision(
+                SLUG,
+                server_id="srv-old-0001",
+                ipv4="203.0.113.7",
+                plan_id=113,
+                release="2026.11.1",
+                expires_at=1_792_000_000,
+            )
+            store.await_boot(SLUG)
+            store.start_first_visit(SLUG)
+            store.ready(SLUG)
+            store.destroy(SLUG, reason="provider wipe")
+        finally:
+            store.close()
+        return db
+
+    def test_provision_on_a_destroyed_slug_reopens_it_under_the_same_slug(self):
+        """The card's end-to-end: destroy, provision again, the slug survives."""
+        config_path = self.make_config()
+        db = self._destroyed_row(config_path)
+        transport = self._flow_transport()
+        code, out, err = run_cli(
+            [
+                "provision",
+                SLUG,
+                "--key",
+                str(self.key_file()),
+                "--pin",
+                str(self.pin_file()),
+                "--interval",
+                "0",
+                "--apply",
+                "--json",
+            ],
+            config_path,
+            provider_factory=lambda _config: servury.ServuryProvider(TEST_KEY, transport=transport),
+        )
+        self.assertEqual(code, 0, err)
+        payload = json.loads(out)
+        self.assertTrue(payload["reopened"])
+        self.assertTrue(payload["created"])
+        self.assertEqual(payload["machine"]["hostname"], SLUG)
+        self.assertEqual(payload["machine"]["server_id"], SERVER_ID)
+        recorded = state.StateStore.open(db)
+        try:
+            tenant = recorded.get(SLUG)
+            events = recorded.events(SLUG)
+        finally:
+            recorded.close()
+        self.assertEqual(tenant.slug, SLUG, "a rebuild keeps its slug")
+        self.assertEqual(tenant.state, "provisioning")
+        self.assertEqual(tenant.server_id, SERVER_ID, "the new machine is the row's machine")
+        self.assertEqual(tenant.release, "2026.11.1")
+        self.assertEqual(
+            [event.kind for event in events][-3:],
+            ["destroyed", "claimed", "provisioning"],
+        )
+        reopen = [event for event in events if event.kind == "claimed"][-1]
+        self.assertEqual(reopen.from_state, "destroyed")
+        self.assertIn("same slug", reopen.detail["reason"])
+        self.assertEqual(f"https://{tenant.slug}.odile.fyi", f"https://{SLUG}.odile.fyi")
+
+    def test_provision_dry_run_on_a_destroyed_slug_lists_the_reopen(self):
+        config_path = self.make_config()
+        db = self._destroyed_row(config_path)
+        code, out, err = run_cli(
+            [
+                "provision",
+                SLUG,
+                "--key",
+                str(self.key_file()),
+                "--pin",
+                str(self.pin_file()),
+                "--dry-run",
+                "--json",
+            ],
+            config_path,
+            provider_factory=explode_provider,
+        )
+        self.assertEqual(code, 0, err)
+        payload = json.loads(out)
+        self.assertTrue(payload["dry_run"])
+        self.assertEqual(payload["actions"][0]["action"], "state.reopen")
+        self.assertEqual(payload["actions"][0]["from"], "destroyed")
+        self.assertEqual(payload["actions"][0]["to"], "claimed")
+        self.assertTrue(
+            any("keep their names" in note for note in payload["notes"]), payload["notes"]
+        )
+        recorded = state.StateStore.open(db)
+        try:
+            self.assertEqual(recorded.get(SLUG).state, "destroyed", "a dry run writes nothing")
+        finally:
+            recorded.close()
+
     def test_provision_refuses_a_pin_without_provision_release_and_orders_nothing(self):
         config_path = self.make_config()
         code, out, err = run_cli(
