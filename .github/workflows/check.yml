@@ -6,8 +6,9 @@
 #                    installer's self-test, compile, shellcheck, claims, brand
 #   fresh-check      clone HEAD and run the same gate inside the clone
 #   demo-check       the local demo's headless acceptance run, no network
-#   publish-lint     the publication gate over the built tree: leak_scan --tree
-#                    with the tree's own allowlist, read-only, no push
+#   publish-lint     the publication gate over the built tree: the BASE
+#                    branch's leak_scan and allowlist ran over this tree, then
+#                    the tree's own scanner — a PR cannot widen its own gate
 #   history-secrets  scan every commit, not the one-commit shallow default
 #
 # This file is a shipped path. The build copies `.github/` out of the source
@@ -189,11 +190,44 @@ jobs:
       # container, which git refuses as "dubious ownership" without this.
       - name: Trust this checkout
         run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
-      # The gate that ships: no public address, mailbox, home path, account id,
-      # credential assignment or private literal in the built tree. Every
-      # exception is one row of the tree's own leak-allow.tsv (reason and
-      # expiry), which the scanner loads from the root of this checkout. The
-      # job is read-only: it opens no PR and pushes nothing.
+      # The gate must not run the scanner it is gating. A pull request that
+      # weakens tools/leak_scan.py or widens leak-allow.tsv would otherwise pass
+      # its own gate: the job used to execute both files out of the PR's
+      # checkout. Fetch the base branch and run ITS scanner with ITS allowlist
+      # over this tree. The workspace is ephemeral and the job pushes nothing, so
+      # copying the base allowlist over the checkout changes no published byte.
+      # A PR that needs a new allowlist row therefore cannot grant it to itself;
+      # a maintainer lands the row on main first. The second step still runs the
+      # tree's own scanner, so the pair catches both a weakened scanner and a
+      # widened allowlist.
+      - name: Gate the tree with the base branch's scanner, not the PR's
+        env:
+          BASE_REF: ${{ github.base_ref }}
+          EVENT_NAME: ${{ github.event_name }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT_NAME" = "pull_request" ]; then
+            git fetch --no-tags --depth=1 origin "$BASE_REF"
+            base_sha=$(git rev-parse FETCH_HEAD)
+          else
+            # A push: the base is the commit this one lands on.
+            git fetch --no-tags --depth=2 origin "$REF_NAME"
+            base_sha=$(git rev-parse HEAD^ 2>/dev/null || git rev-parse HEAD)
+          fi
+          echo "base: ${EVENT_NAME} at $base_sha"
+          git show "$base_sha:tools/leak_scan.py" > /tmp/base-leak_scan.py
+          git show "$base_sha:leak-allow.tsv" > /tmp/base-leak-allow.tsv
+          cp leak-allow.tsv /tmp/pr-leak-allow.tsv
+          cp /tmp/base-leak-allow.tsv leak-allow.tsv
+          if git cat-file -e "$base_sha:leak-forbid.txt" 2>/dev/null; then
+            git show "$base_sha:leak-forbid.txt" > leak-forbid.txt
+            echo "forbid list: base copy installed"
+          else
+            echo "forbid list: absent at base (that class is off in this tree)"
+          fi
+          /usr/bin/python3 /tmp/base-leak_scan.py --tree --root "$PWD"
+          cp /tmp/pr-leak-allow.tsv leak-allow.tsv
       - name: Scan the built tree with its own allowlist
         run: /usr/bin/python3 tools/leak_scan.py --tree
 
