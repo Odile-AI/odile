@@ -805,7 +805,7 @@ The machine is up; the heartbeat job is what stopped — on the day the demo was
 reinstalled (13 November). The public `/status` page counts it: `Downtime 3,421
 min` against `In-service time 2.4 machine-days`. That is the discriminator §4.1
 now puts second, it is why "down" in this page means *the heartbeat stopped*,
-and it is a live defect the follow-up card owns (§7.6).
+and it is a live defect ODL-561 owns (§7.6).
 
 ## 7. Limits
 
@@ -830,8 +830,8 @@ and it is a live defect the follow-up card owns (§7.6).
    13 November (2 d 7 h stale at the time of writing) while the machine serves
    `/verify`, so the poll reports the demo `down`, its backup stale, and the
    public `/status` page counts `3,421 min` of downtime for a working machine.
-   A follow-up card owns the demo's heartbeat and backup timers and the status
-   page's demo row. Two smaller follow-ups the same measurement exposed: the
+   ODL-561 (`t_665ad87b`) owns the demo's heartbeat and backup timers and the
+   status page's demo row. Two smaller follow-ups the same measurement exposed: the
    `down`/`backup` alert's `first_command` is still
    `ssh -i ~/.ssh/odile …` (the key does not exist; `odilectl/health.py`), and
    the `spend` alert is dormant (§4.8).
