@@ -30,9 +30,9 @@ ExecStart=/usr/bin/python3 /usr/local/lib/odile-image/odile-firstboot.py
 # The installer converges the stack under emulation; a TCG guest takes minutes,
 # not seconds. The fail-closed paths return long before this.
 TimeoutStartSec=1200
-# The console is the evidence surface: one line, on ttyS0, in the serial
-# transcript. StandardError goes to the same place so a Python traceback cannot
-# hide in the journal alone.
+# The console is the evidence surface: the `odile-hostkeys:` and
+# `odile-firstboot:` lines, on ttyS0, in the serial transcript. StandardError
+# goes to the same place so a Python traceback cannot hide in the journal alone.
 StandardOutput=journal+console
 StandardError=journal+console
 # No sandbox: the unit starts other units and writes /etc, /var/lib and /var/log.

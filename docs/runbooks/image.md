@@ -1909,7 +1909,11 @@ install-stack: the image still carries an SSH host private key
 ```
 
 The script exits 0: both `install-stack` outcomes are inside it, and the
-assertion's own `exit 1` is the `rc=1` line above.
+assertion's own `exit 1` is the `rc=1` line above. The `/dev/loop153` on the
+first line is that run's free loop device — the number is whatever `losetup -f`
+returned on that run and moves with what is already attached (a rerun took
+`/dev/loop155`) — while the sha256 after the copy's path is the image's and does
+not move.
 
 So a build whose removal did not remove fails with its named error and a non-zero
 status; the same key, when the removal works, leaves zero files behind. The
@@ -1968,10 +1972,13 @@ tenant@odl-bench:~$ [  122.954616] python3[682]: odile-hostkeys: create the SSH 
 The host-key line is at 122.95 s and the boot-record line at 556.08 s: the key
 existed long before the record was read. The record line's `key SHA256:7ruI…` is
 the *measured boot key* (the throwaway in the command line); this machine's SSH
-key is in the record's `detail`, which HQ stored:
+key is in the record's `detail`, which HQ stored. `fixture-record.py --dir "$FX"`
+reads the fixture's single `tenant_state` row, and B's later boot (§13.11.6)
+replaced that row, so what is quoted here is the file the command printed after
+this boot, kept in the build root; `cat` and `sha256sum` reproduce it:
 
 ```sh
-$ /usr/bin/python3 /var/tmp/odile-odl523-build/fixture-record.py --dir "$FX"
+$ cat /var/tmp/odile-odl523-build/record-A.txt
 slug                 odl-bench
 state                first_visit
 release              2026.11.1
@@ -1981,6 +1988,11 @@ detail.host_key      SHA256:2yDvzxtBi9rIcEfjjIUc/zHdRCZLaaoymNtQDWs+WKc
 detail.first_visit   pending
 token.instance_id    45445445-0000-4000-8000-000000000454
 token.used_at        2026-11-15T07:07:39Z
+event                first_visit first_boot -> first_visit 2026-11-15T07:14:32Z
+event                first_boot provisioning -> first_boot 2026-11-15T06:20:02Z
+event                provisioning claimed -> provisioning 2026-11-15T06:20:02Z
+$ sha256sum /var/tmp/odile-odl523-build/record-A.txt
+902711ecf644dc10004aaeab2d4031355e52b76ca0fe117f8652bff01664437c  /var/tmp/odile-odl523-build/record-A.txt
 ```
 
 `detail.host_key` is the key A generated on its first boot (this section's
@@ -2039,7 +2051,7 @@ probe        GET /first-visit after the visit -> 404
 ```
 
 Two fingerprints from one image, read off the two public halves. The mount is
-§13.11.3's, per disk; A has had its second boot and B the hardened ones at this
+§13.11.3's, per disk; A has had later boots and B the hardened ones at this
 reading, so the disk hashes are the post-boot ones while the keys are the first
 boot's:
 
@@ -2062,9 +2074,15 @@ $ for d in A B; do
 256 SHA256:cFf+ky0CZ0kzTk110hv9wa71p71Ks9B/3WamtJoDwfc root@odl-bench (ED25519)
 ```
 
-B's boot record carries B's key (`fixture-record.py` at that point):
-`detail.host_key SHA256:cFf+ky0CZ0kzTk110hv9wa71p71Ks9B/3WamtJoDwfc`, so the
-record follows the machine, not the image. B's first boot printed
+B's boot record carries B's key — `record-B.txt`, the output of the same
+command after B's boot:
+
+```sh
+$ grep '^detail.host_key' /var/tmp/odile-odl523-build/record-B.txt
+detail.host_key      SHA256:cFf+ky0CZ0kzTk110hv9wa71p71Ks9B/3WamtJoDwfc
+```
+
+so the record follows the machine, not the image. B's first boot printed
 `odile-hostkeys: same the SSH host keys (this machine's own, no new key
 written)` at 89.51 s: on that boot `sshd-keygen.service` (the drop-in) won the
 race and generated the keys before `odile-firstboot` looked — the two paths are
@@ -2103,18 +2121,19 @@ with the console lines
 ```sh
 $ tr '\r' '\n' < /var/tmp/odile-odl523-final/A/same2/serial.log \
       | grep -a 'odile-hostkeys\|odile-firstboot:'
-[  230.927461] python3[668]: odile-hostkeys: same the SSH host keys (this machine's own, no new key written)
-[  259.727428] python3[668]: odile-firstboot: same
+[   71.905874] python3[676]: odile-hostkeys: same the SSH host keys (this machine's own, no new key written)
+tenant@odl-bench:~$ [   82.995279] python3[676]: odile-firstboot: same
 ```
 
 The key files' mtime is still 07:07:13 (the first boot) and the fingerprint and
-the private half's `sha256 keys` digest are A's, so a second boot neither
+the private half's `sha256 keys` digest are A's, so a later boot neither
 rotates the key nor touches the bytes:
 
 ```sh
 $ bash /var/tmp/odile-odl523-build/disk-facts.sh \
-      /var/tmp/odile-odl523-final/A/odile-tenant-sealed.raw "A, after same2"
-== A, after its second boot (same2)
+      /var/tmp/odile-odl523-final/A/odile-tenant-sealed.raw \
+      "A, after a later boot (same2)"
+== A, after a later boot (same2)
 disk          bb9b0e87222bfb4ce8d861d55340428528c835126e83c83eaa4f11921e0b7510  /var/tmp/odile-odl523-final/A/odile-tenant-sealed.raw
 host keys     3 private, 3 public
 ed25519 pub   256 SHA256:2yDvzxtBi9rIcEfjjIUc/zHdRCZLaaoymNtQDWs+WKc root@odl-bench (ED25519)
