@@ -2064,9 +2064,9 @@ class FirstbootScriptTests(unittest.TestCase):
         that name.
 
         systemd allocates a transient user *and group* named after the unit.
-        Main's meter removal renamed the group this unit joins from
-        `odile-meter` to `odile-manifest`, so the allocation failed on a real
-        boot — `Failed to update dynamic user credentials: User or group with
+        Main's meter removal renamed the group this unit joins to
+        `odile-manifest`, and the allocation failed on a real boot —
+        `Failed to update dynamic user credentials: User or group with
         specified name already exists` — and the first boot stopped before the
         sign-in evidence could be taken. The unit must name a user that is not
         the group it joins.
