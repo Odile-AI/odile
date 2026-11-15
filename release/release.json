@@ -1,8 +1,8 @@
 {
   "artifacts": {
     "installer": {
-      "sha256": "e8a33d47166fad6989e5c6e1115e5c36d439bae1aa247a0b969fba898b2b4cea",
-      "size": 1416049,
+      "sha256": "2bbc70c78888c1e01ea153ad55d8b615005c5a560c2235a8974bae197e110323",
+      "size": 1419392,
       "url": "odile_install.py"
     },
     "skills": {
@@ -14,14 +14,14 @@
   "boot": {
     "kernel": "6.12.115+deb13.1-amd64"
   },
-  "generated_at": "2026-11-15T09:15:00Z",
+  "generated_at": "2026-11-15T20:00:00Z",
   "manifest": {
-    "sha256": "92d3f7475729310d3e04f988809f5f1878068cbae234e41a40e8eca012aae8ad",
+    "sha256": "e71edfb97aeaa8a54f927e07b6f3d53f696bcace93c4169a7a920d9bab79c2ba",
     "signature_url": "manifest.json.sig",
     "url": "manifest.json"
   },
-  "notes": "t_afb081be: the support session wrapper installs its SIGTERM/SIGHUP/SIGINT handlers before the start line can be read, so a signal that lands while the shell is being forked still writes event=end (rc=143, signal=SIGTERM) instead of leaving only the start line. The installer embeds the re-cut support/odile_support.py; everything else the -4 installer carried is unchanged. release/manifest.json is -4's fresh-root document with only installer_sha256 re-derived by tools/recut_release.py, so this is a surgical re-cut, not a root rebuild. The id is 2026.11.15-6: -8 is ODL-505's, 2026.11.15-1 is t_ae833f3f's, -4 is ODL-474's, -5 is t_ab95ec2a's open cut, and -6 is later than every cut by generated_at. It is committed, not deployed.",
+  "notes": "t_d95b8c13: the boot release install leaves the tenant one boot away from `400 Invalid Host header`. Two ends are fixed in the installer. (1) The tenant config now carries a `dashboard:` managed block whose `public_url` is the same host as `webapp.public_url` \u2014 the fallback Hermes's Host/Origin check reads when the Webapp listener did not declare its own (hermes_cli/web_server_boundary._dashboard_public_hosts) \u2014 and `--self-test` fails if either block stops naming it. (2) `ensure_systemd_services` starts `odile-agent` even when the optional `odile-access-report` oneshot fails, and restarts it when any file the gateway reads at start changed (config, .env, unit, skin), not only when a unit file did: on 2026-11-13 the report failed at 49.7 s and the abort left the listener the boot had started with, so every public Host answered 400 for five hours. The boot half (deploy/image/odile-release-setup.sh) now passes `--i-have-copied-it` (the installer's recovery gate exited 4 on a machine with no TTY, measured 2026-11-13T10:29:14Z) and `ODILE_RELEASE_PUBLIC_URL`, so a forced re-run keeps the demo host the owner declared. release/manifest.json is -6's fresh-root document with only installer_sha256 re-derived by tools/recut_release.py, so this is a surgical re-cut, not a root rebuild; the skills artifact, the vendor pin and the meter-free rows are unchanged. The id is -8: -7 is t_ab95ec2a's (odile-help first person) and -6 is t_afb081be's; the live cut at this cut's measurement was 2026.11.14-8 (0c53a722\u2026, 1,356,516 bytes).",
   "product": "odile",
-  "release": "2026.11.15-6",
+  "release": "2026.11.15-8",
   "schema": 1
 }

@@ -240,7 +240,7 @@ prints `same` and restarts nothing (the smoke turn is not repeated unless
 | `/home/odile/workspace` | 0755 | odile | the user's files; survives a restart |
 | `/home/odile/.hermes/skills/<name>/SKILL.md` | 0644 | odile | every embedded skill, starting with `odile-first-run`; a skill that leaves the bundle is removed on the next run |
 | `/home/odile/.hermes/.odile-managed-skills.json` | 0644 | odile | the skill names this installer wrote, so a retired skill is removed without touching one the user added |
-| `/home/odile/.hermes/config.yaml` | 0644 | odile | five managed blocks: model, agent, custom_providers, webapp, onboarding; Hermes's own keys are preserved; `display.skin: odile` (§4a) |
+| `/home/odile/.hermes/config.yaml` | 0644 | odile | six managed blocks: model, agent, custom_providers, dashboard, webapp, onboarding; `dashboard.public_url` and `webapp.public_url` name the host Hermes's Host check accepts (t_d95b8c13); Hermes's own keys are preserved; `display.skin: odile` (§4a) |
 | `/home/odile/.hermes/skins/odile.yaml` | 0644 | odile | the Odile skin: paper and ink, no accent hue, serif headings (§4a) |
 | `<dist-webapp>/odile-brand.js` and the `<script>` tag in `index.html` | 0644 | odile | the four strings a skin cannot reach: title, wordmark, accessible name, About credit (§4a) |
 | `/home/odile/.hermes/.env` | 0600 | odile | exactly three keys: the dashboard username, the scrypt hash, the cookie secret |
@@ -297,7 +297,7 @@ script, so nobody edits a file on the machine by hand.
 | Source | Written to | Role |
 |---|---|---|
 | `templates/skin.yaml` | `/home/odile/.hermes/skins/odile.yaml` (0644) | a Hermes skin: paper and ink, no accent hue, serif headings, the developer status bar hidden |
-| `templates/config.yaml` | `/home/odile/.hermes/config.yaml` | the `display.skin: odile` block, merged beside the five managed blocks; every other display key is kept |
+| `templates/config.yaml` | `/home/odile/.hermes/config.yaml` | the `display.skin: odile` block, merged beside the six managed blocks; every other display key is kept |
 | `templates/webapp-brand.js` | `<dist-webapp>/odile-brand.js` plus a `<script>` tag in `index.html` | the strings a skin cannot reach: the page title, the empty-state wordmark and its accessible name, the rotating composer prompt, and the About credit line |
 | `deploy/image/odile-webapp-brand.py` | `/usr/local/lib/odile/odile-webapp-brand.py` (0755) | the re-assert: the same splice and the same three tab links, from the same bytes, whenever the bundle changes |
 | `deploy/image/webapp-brand.js` | `/usr/local/lib/odile/webapp-brand.js` (0644) | the bytes the re-assert copies into the bundle, byte-identical to the template |
@@ -582,7 +582,7 @@ same         boot record /etc/odile/boot-record.json (release 2026.11.1)
 same         seed cache /etc/odile/seed.json (signed, instance …)
 same         /etc/odile/key.env
 …
-same         /home/odile/.hermes/config.yaml (5 managed blocks, sha256 …)
+same         /home/odile/.hermes/config.yaml (6 managed blocks, sha256 …)
 same         /home/odile/.hermes/skins/odile.yaml (skin odile)
 same         /home/odile/.hermes/config.yaml (display.skin odile)
 same         Webapp brand (odile-brand.js v…, index.html linked, 2 icon files)
@@ -1185,7 +1185,7 @@ builder command with a transcript; everything after it is the image.
 | 5 | the signed measured UKI and the pre-sealed disk | **yes, round 8 at 10:28Z, saved 14:42:53Z and booted 14:43:54Z** — UKI `5cb31808…`, disk `c1278242…`, measurement `9f01725a…`, 4-vCPU pin, published 10:29Z; the earlier builds and the defect each exposed are in `docs/evidence/m1-tenant.md` §9–§9.8 and `docs/evidence/m1-image.md` |
 | 6 | a fresh setup token bound to `31a63bbb` | **yes** — ledger `67de1ba9…`, live until 2026-11-13T10:23Z; its plaintext is the `odile.token=` of the sealed line |
 | 7 | the owner's boot key, a passphrase, any operator key | **none** — the image's `bb.key` is a throwaway public key whose private half is shredded |
-| 8 | a signed installer a stranger can obtain (independent of the image) | **yes** — on 2026-11-11 the served release `2026.11.11-5` shipped the strict-bar installer `fde7a48f…`, its `.sig`, the published key and a skills tarball carrying `odile-recipes` (§12.6); the repository's cut is `2026.11.15-6` (`e8a33d47…` installer, 1,416,049 bytes, `92d3f747…` manifest, §12.6) — `-4` was re-cut at the head that merges `main`'s `-3` (ODL-522's per-machine session secret, `e0cec88a…` installer, 1,357,306 bytes, `4f0e3ef9…` manifest) and carries this card's `-2` landing (the five v3.10 access sentences on ODL-505's `-8` and t_ae833f3f's `2026.11.15-1`), then re-embedded every surface; `-6` re-embeds only the support program with t_afb081be's session signal-window fix — and the served URL serves `2026.11.14-8` (`0c53a722…` installer, 1,356,516 bytes, manifest `3a532eff…` — measured 2026-11-15T06:12Z) until a `./deploy.sh` from a `main` that carries this merge; that live cut carries the `c73dad4d…` vendor pin, and an image a build of this tree makes carries the `-6` pair in its `release/` directory, so the machine's `/manifest` and `/usr/local/bin/odile-install.sh` agree with each other. The live tenant's image is still `2026.11.11-8` (`4aee80c5…`, `1ed9dcad…`) until it is re-provisioned |
+| 8 | a signed installer a stranger can obtain (independent of the image) | **yes** — on 2026-11-11 the served release `2026.11.11-5` shipped the strict-bar installer `fde7a48f…`, its `.sig`, the published key and a skills tarball carrying `odile-recipes` (§12.6); the repository's cut is `2026.11.15-8` (`2bbc70c7…` installer, 1,419,392 bytes, `e71edfb9…` manifest, §12.6) — `-4` was re-cut at the head that merges `main`'s `-3` (ODL-522's per-machine session secret, `e0cec88a…` installer, 1,357,306 bytes, `4f0e3ef9…` manifest) and carries this card's `-2` landing (the five v3.10 access sentences on ODL-505's `-8` and t_ae833f3f's `2026.11.15-1`), then re-embedded every surface; `-6` re-embeds only the support program with t_afb081be's session signal-window fix — and the served URL serves `2026.11.14-8` (`0c53a722…` installer, 1,356,516 bytes, manifest `3a532eff…` — measured 2026-11-15T06:12Z) until a `./deploy.sh` from a `main` that carries this merge; that live cut carries the `c73dad4d…` vendor pin, and an image a build of this tree makes carries the `-6` pair in its `release/` directory, so the machine's `/manifest` and `/usr/local/bin/odile-install.sh` agree with each other. The live tenant's image is still `2026.11.11-8` (`4aee80c5…`, `1ed9dcad…`) until it is re-provisioned |
 
 ### 12.2 The builder's half (everything before the panel)
 
@@ -1282,6 +1282,91 @@ returns a stock machine, and the strict run starts again from §12.2.
 The one console line is the contract: `odile-firstboot: installed … ·
 first-visit 200 · Ns`, or a single `fail-closed: <reason>` line with the
 machine still reachable (`deploy/image/FIRSTBOOT.md` §2).
+
+**The trusted public host, and the two ends the 13 November boot paid for —
+measured
+2026-11-13 on `odl-7971a8` (t_d95b8c13).** The re-flashed machine's first boot
+ended `=== rc=1`: `systemctl start odile-access-report` failed, the installer
+aborted inside `ensure_systemd_services` before its agent restart, and the
+Webapp kept the listener the boot had started with, so every public Host
+answered `400 Invalid Host header` (`/login`, `/api/health`,
+`POST /auth/password-login`) while `/verify` stayed 200. The next boot's install
+converged and then ended `=== rc=4`, which is the installer's recovery-file
+confirmation refusing a machine with no TTY
+(`main()`: `if not confirm_recovery(args): return 4`).
+
+What the tree does now, and what `--self-test` asserts:
+
+1. `ensure_systemd_services` starts `odile-agent` even when the access report
+   fails — a stale `/verify` is not a dead page — and restarts it when any file
+   the gateway reads at start changed (the config's public URLs, the `.env`, the
+   unit, the skin), not only when a unit file did. A rewritten
+   `webapp.public_url` reaches the running process only by a restart.
+2. The boot half passes `--i-have-copied-it` (the first-visit page and `/verify`
+   are where the user downloads `/etc/odile/recovery.txt`) and
+   `ODILE_RELEASE_PUBLIC_URL` (default `https://<slug>.odile.fyi`), so a
+   converged install ends `=== rc=0` and a machine whose owner moved its public
+   name keeps it.
+3. The tenant config carries `dashboard.public_url` beside
+   `webapp.public_url`. Hermes v0.23.0 checks Host and Origin against the
+   Webapp listener's `webapp.public_url`; a listener started without that state
+   falls back to `dashboard.public_url`
+   (`hermes_cli/web_server_boundary.py::_dashboard_public_hosts`), and with
+   neither set every public Host is refused. Both keys name the machine, and
+   `--self-test` fails if the rendered template stops naming either one.
+
+The scratch proof is `installer/sim_tenant.py`: its `assert_login` speaks the
+public FQDN as the Host and Origin, prints the 302/401/200 gate and the four
+`__Host-` cookies, and now also asserts the written config carries that host in
+both blocks. The live proof is §12.4.1 below.
+
+#### 12.4.1 The live tenant's 13 November tail, and the recovery
+
+Measured from the serial console and the tenant's own log
+(`/var/log/odile-release-setup.log` behind the Webapp console,
+`deploy/demo-host/tenant_console.py`):
+
+```
+=== odile-release-setup 2026-11-13T01:13:53Z · odl-7971a8 · instance 31a63bbb
+...
+same         odile-access-report enabled at boot
+start        odile-access-report
+RuntimeError: systemctl start odile-access-report failed (1): Job for
+odile-access-report.service failed because the control process exited with
+error code.
+=== rc=1
+```
+
+The next run (2026-11-13T10:29:14Z) converged — `restart odile-agent (changed)`,
+`listening 127.0.0.1:9130`, the ACME certificate, the smoke block all `ok` —
+and ended `=== rc=4` at `write /etc/odile/recovery.txt`. `/login?next=%2F`
+returned 200 from that restart on, which is why the card's title is "one boot
+away from 400", not "400 today".
+
+The recovery, measured from HQ and from the tenant's own console on
+2026-11-15 (the fixed installer `2bbc70c7…` and its signature `e88576ef…`
+placed at `/usr/local/bin/odile-install.sh` and
+`/usr/local/lib/odile-image/odile_install.py.sig`; the setup script run as a
+transient unit with `ODILE_RELEASE_FORCE=1` and
+`ODILE_RELEASE_PUBLIC_URL=https://demo.odile.fyi`):
+
+```
+write        /home/tenant/.hermes/config.yaml (6 managed blocks; keys Hermes added are kept)
+...
+restart      odile-agent (changed)
+elapsed      0m 13s
+tenant: provisioned
+{"changed": true, "elapsed_s": 13, "installer_sha256": "2bbc70c7…", "mode": "tenant", "ok": true, "slug": "odl-7971a8"}
+=== rc=0
+```
+
+and the machine's config now carries both names (`grep -A3 '^dashboard:'` and
+`grep public_url ~/.hermes/config.yaml`, both `https://demo.odile.fyi`). From
+HQ immediately after: `GET https://demo.odile.fyi/login?next=%2F` 200,
+`GET /verify` 200, `GET /api/health` 200, `POST /auth/password-login` 200 with
+four `__Host-` cookies (`{"ok":true,"next":"/"}`). The machine's own name
+`odl-7971a8.odile.fyi` still answers 400 by design (`demo-public.md` §Host
+check): `webapp.public_url` is the demo host.
 
 **The zero-touch image needs neither `scp` nor a passphrase.** On a tenant
 image built from `release/` (ODL-456/ODL-472) the first boot places the
@@ -1944,6 +2029,29 @@ URL still serves `2026.11.14-8` (`0c53a722…`, 1,356,516 bytes; manifest
 `3a532eff…`). The id ledger: `-8` is ODL-505's, `2026.11.15-1` is
 t_ae833f3f's, `-4` is ODL-474's, `-5` is t_ab95ec2a's open cut, and `-6` is
 later than every cut by `generated_at`.
+
+This tree cuts `2026.11.15-8` on the merged head for t_d95b8c13 (the boot
+release install left the tenant one boot away from `400 Invalid Host header`).
+The installer moves from `e8a33d47…` (1,416,049 bytes) to `2bbc70c7…`
+(1,419,392 bytes): a `dashboard:` managed block whose `public_url` is the same
+host as `webapp.public_url`; an `ensure_systemd_services` that starts the agent
+even when the optional `odile-access-report` oneshot fails, and restarts it when
+any file the gateway reads at start changed; `--self-test` assertions for both
+blocks and for the five-block upgrade; and the boot half's `--i-have-copied-it`
+and `ODILE_RELEASE_PUBLIC_URL`. `release/manifest.json` is `-6`'s fresh-root
+document whose only move is `installer_sha256` (`e8a33d47…` → `2bbc70c7…`), so
+no root rebuild is claimed; the skills artifact (`9d82653f…`, 851,945 bytes) and
+the `539e205f…` audit row are unchanged. Manifest `e71edfb9…` (49,957 bytes),
+`--self-test` PASS, `--verify-signature` OK, `tools/recut_release.py --check`
+prints `ok` for the installer, its release copy and both documents;
+`release/release.json` (`2ae9c5ee…`) names `2026.11.15-8` at
+`2026-11-15T20:00:00Z`. It is committed, not deployed: the URL still serves
+`2026.11.14-8` (`0c53a722…`, 1,356,516 bytes; manifest `3a532eff…`). The id
+ledger: `-7` is t_ab95ec2a's open cut, `-6` is t_afb081be's, and `-8` is later
+than every cut by `generated_at`. The live tenant carries this installer pair
+(`2bbc70c7…` / `e88576ef…`) at `/usr/local/bin/odile-install.sh` and
+`/usr/local/lib/odile-image/odile_install.py.sig`, and its 2026-11-15T20:12Z
+release setup ended `=== rc=0` (§12.4.1).
 
 The clock starts at the build's `uki.sh --sign` and stops when
 `https://<slug>.odile.fyi/login` answers 200 over TLS. The gate is 30 minutes.

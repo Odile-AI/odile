@@ -219,9 +219,11 @@ BOOT_REPORT_VERSION = 5
 MEASUREMENT_OFFSET = 0x90
 MEASUREMENT_END = 0xC0
 
-MANAGED_KEYS = ("model", "agent", "custom_providers", "webapp", "onboarding")
+MANAGED_KEYS = ("model", "agent", "custom_providers", "dashboard", "webapp", "onboarding")
 # A config written before the onboarding block existed carries exactly these
-# four; a re-run adds the fifth in place instead of replacing the whole file.
+# four; a re-run adds the missing blocks in place instead of replacing the
+# whole file. `dashboard` (t_d95b8c13) is the later addition: a config this
+# program wrote before it has the four and no dashboard block.
 PRE_ONBOARDING_KEYS = ("model", "agent", "custom_providers", "webapp")
 TOP_LEVEL_KEY = re.compile(r"^([A-Za-z_][A-Za-z0-9_-]*):")
 
@@ -8390,12 +8392,14 @@ TENANT_CONFIG_TEMPLATE = """\
 # Webapp port and the public URL from the seed and the layout.
 # `--self-test` fails if the embedded copy and this file differ.
 #
-# Five managed blocks. Everything else in the written file belongs to Hermes
+# Six managed blocks. Everything else in the written file belongs to Hermes
 # and survives a re-run: the installer merges these blocks in place.
 #   * model            — provider "custom" needs base_url to resolve.
 #   * agent            — this model rejects Hermes's default reasoning effort.
 #   * custom_providers — inference goes straight to NEAR AI with this machine's
 #                        own key; there is no local proxy.
+#   * dashboard        — the public host Hermes's Host/Origin check reads when
+#                        the listener has not declared its own (t_d95b8c13).
 #   * webapp           — loopback bind, public_url so the sign-in gate is on.
 #   * onboarding       — Hermes's own first-run chat is off; Odile's ritual is
 #                        the first run, and no profile-build offer is made.
@@ -8417,6 +8421,15 @@ custom_providers:
     base_url: https://cloud-api.near.ai/v1
     key_env: HERMES_CUSTOM_CLOUD_API_NEAR_AI_API_KEY
     model: {model}
+
+# The same public name as webapp.public_url. Hermes's Webapp listener checks
+# Host and Origin against webapp.public_url; a listener that started without
+# that state falls back to dashboard.public_url
+# (hermes_cli/web_server_boundary.py::_dashboard_public_hosts), and with
+# neither set every public Host answers `400 Invalid Host header` — the
+# tenant's 13 November outage (t_d95b8c13). Both keys name the machine.
+dashboard:
+  public_url: "{public_url}"
 
 webapp:
   enabled: true
@@ -12416,7 +12429,19 @@ def ensure_one_service(layout: Layout, unit: str, dry: bool, unit_changed: bool,
     return changed
 
 
-def ensure_systemd_services(layout: Layout, dry: bool, units_changed: bool) -> bool:
+def ensure_systemd_services(layout: Layout, dry: bool, units_changed: bool,
+                            gateway_changed: bool | None = None) -> bool:
+    """Enable and start the units; the agent last, and whatever else failed.
+
+    ``gateway_changed`` is any file the gateway reads at start (its unit, the
+    config, the .env, the skin), not only a unit-file change: a rewritten
+    ``webapp.public_url`` reaches the running process only by a restart, and a
+    machine that kept the boot's listener answered `400 Invalid Host header`
+    for five hours because an earlier optional unit aborted the run first
+    (t_d95b8c13). It defaults to ``units_changed`` for the callers that only
+    know about units.
+    """
+    gateway_changed = units_changed if gateway_changed is None else gateway_changed
     changed = False
     if units_changed:
         print(f"{'would reread' if dry else 'daemon-reload':<12} systemd units")
@@ -12436,9 +12461,16 @@ def ensure_systemd_services(layout: Layout, dry: bool, units_changed: bool) -> b
     if layout.access_report_unit.is_file():
         # The report the /verify page reads. It runs before the agent unit and
         # again after the first visit; here it runs once so the page has it.
-        changed |= ensure_one_service(layout, "odile-access-report", dry, units_changed,
-                                      wait=False)
-    return ensure_one_service(layout, layout.unit_name, dry, units_changed, wait=True)
+        # A failed report is a stale /verify, not a dead machine: it must not
+        # abort the run before the agent restart below.
+        try:
+            changed |= ensure_one_service(layout, "odile-access-report", dry, units_changed,
+                                          wait=False)
+        except RuntimeError as exc:
+            print(f"FAIL         odile-access-report did not start: {exc}")
+            print("             /verify keeps the previous report; `systemctl status "
+                  "odile-access-report` names the cause")
+    return ensure_one_service(layout, layout.unit_name, dry, gateway_changed, wait=True)
 
 
 # --------------------------------------------------------------------------
@@ -12725,6 +12757,12 @@ def self_test() -> int:
         _, blocks = split_blocks(desired)
         check.ok("the template carries every managed block",
                  all(key in blocks for key in MANAGED_KEYS))
+        check.ok("the template declares the Host check's trusted public host",
+                 "public_url: http://odile-sim.test:9140"
+                 in [setting_line(line).strip() for line in settings(blocks["dashboard"])])
+        check.ok("the template's webapp public_url is the same host",
+                 "public_url: http://odile-sim.test:9140"
+                 in [setting_line(line).strip() for line in settings(blocks["webapp"])])
         check.ok("the onboarding block pins run false and profile_build off",
                  'onboarding:\n  run: false\n  profile_build: "off"' in desired)
         check.ok("a converged config reads as `same`", merge_config(desired, desired) is None)
@@ -12769,6 +12807,20 @@ def self_test() -> int:
                  and 'onboarding:\n  run: false\n  profile_build: "off"' in upgraded
                  and "display:\n  skin: odile" in upgraded
                  and upgraded.count("onboarding:") == 1)
+
+        # the five-block tenant this program wrote before the trusted-host block
+        # existed: a re-run must add it in place, not replace the file, and
+        # read `same` on the next pass.
+        order = ("model", "agent", "custom_providers", "webapp", "onboarding")
+        pre_dashboard = "_config_version: 52\n" + "".join(
+            line + "\n" for key in order for line in blocks[key])
+        upgraded = merge_config(pre_dashboard, desired)
+        check.ok("an existing tenant gains the trusted-host block",
+                 upgraded is not None
+                 and 'dashboard:\n  public_url: "http://odile-sim.test:9140"' in upgraded
+                 and "_config_version: 52" in upgraded
+                 and upgraded.count("dashboard:") == 1
+                 and merge_config(upgraded, desired) is None)
 
         # boot-report transformer: pin, checkout parity, and a round trip
         embedded_attest = ATTEST_SOURCE.encode("utf-8")
@@ -14114,8 +14166,10 @@ def tenant_main(args: argparse.Namespace) -> int:
     changed |= ensure_install(layout, args.dry_run)
     changed |= ensure_webapp_build(layout, args.dry_run)
     changed |= ensure_webapp_brand(layout, args.dry_run)
-    changed |= ensure_config(layout, seed, args.dry_run)
-    changed |= ensure_skin(layout, args.dry_run)
+    config_changed = ensure_config(layout, seed, args.dry_run)
+    changed |= config_changed
+    skin_changed = ensure_skin(layout, args.dry_run)
+    changed |= skin_changed
     env_changed, password = ensure_env(layout, args.signin_password, args.signin_username,
                                        args.dry_run, first_visit=args.first_visit)
     changed |= env_changed
@@ -14137,7 +14191,9 @@ def tenant_main(args: argparse.Namespace) -> int:
         changed |= ensure_scratch_attest(layout, args.dry_run)
         changed |= ensure_scratch_services(layout, args.dry_run)
     else:
-        changed |= ensure_systemd_services(layout, args.dry_run, units_changed)
+        changed |= ensure_systemd_services(
+            layout, args.dry_run, units_changed,
+            gateway_changed=units_changed or config_changed or env_changed or skin_changed)
     # After the daemon reload the branch above may have done: the nightly timer
     # is enabled now, and a converged tenant prints `same` (ODL-215 follow-up).
     changed |= ensure_backup_timer(layout, args.dry_run)
