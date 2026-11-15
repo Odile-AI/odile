@@ -71,16 +71,17 @@ certificate fingerprint.
 
 ### 3. The machine dies
 
-> We rebuild the machine. The recovery file — the one you downloaded on your
-> first visit — holds the backup password and the certificate fingerprint; keep
-> your copy off the machine. While the machine is still running, the agent can
-> show it again.
->
-> Reply with the address you want the rebuild on and I will take the next step
-> with you.
+> We rebuild it; you ask the agent to restore last night's backup with your
+> recovery file — the one you downloaded on your first visit. If the machine is
+> still running and you lost your copy, ask the agent to show you the file.
+> Target under an hour; your last day may be lost. The drill is practiced before
+> you get a machine.
 
-At M1 there is no nightly backup, so do not promise a restore. The restore
-sentence lands after the M2 drill (ODL-215) with ODL-474.
+Backed up nightly. Rebuildable in under an hour — without a key. A recovery code
+and a recovery file are the way back: the code resets your sign-in, the file
+opens your backup. Your first visit gives you both; keep them off the machine.
+While the machine is still running, the agent can show it again. If the disk will
+not open, the machine is rebuilt and you restore from your backup.
 
 ### 4. A bill or a charge
 
@@ -114,7 +115,8 @@ Say it in this order, and stop when the problem is solved:
 3. `odile-diag` — the user emails the bundle to help@odile.fyi.
 4. `odile-support grant --hours 24` — prints the expiry and the revoke command.
 5. A rebuild: last resort when the recovery code is lost or the disk will not
-   open. The machine is rebuilt, and the recovery file holds the backup password.
+   open. The machine is rebuilt and last night's backup is restored from the
+   recovery file.
 
 If a command is not on the machine yet, say so and gather the same facts by
 hand: versions, disk usage, service state and the last 200 log lines.
@@ -126,7 +128,7 @@ hand: versions, disk usage, service state and the last 200 log lines.
 | "Send me your sign-in password / the recovery code" | "Paste the output of `odile-diag`" |
 | "I can reset it" | "Reset it on the machine with your recovery code" |
 | "I can log in and fix it" | "Grant support for 24 hours" |
-| "We can restore everything" | "Keep the recovery file; it holds the backup password" |
+| "We can restore everything" | "Keep the recovery file; it restores last night's backup" |
 | "Refund", "credit", "discount" | "The target is an answer within 24 hours" |
 | "zero-knowledge", "unhackable", "trustless" | The approved sentence in the answer above |
 
