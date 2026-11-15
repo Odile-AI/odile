@@ -1,0 +1,12 @@
+[Unit]
+Description=Hermes disk care — prune stale test roots, scratch, worktrees and caches
+Documentation=file:///var/log/hermes-disk-care.log
+After=local-fs.target
+ConditionPathExists=/usr/local/sbin/hermes-disk-care.sh
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/hermes-disk-care.sh
+Nice=10
+IOSchedulingClass=idle
+TimeoutStartSec=1800
