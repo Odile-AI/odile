@@ -224,7 +224,7 @@ HOST_NAME = re.compile(
     r"(?i)\b(?:bb\.host|host[_-]?name)\b\s*[=:]\s*[\"']?([a-z][a-z0-9]{5,11})\b")
 HOST_NAME_ALLOW = {"hostfake", "hostname", "localhost", "machine", "odlukitest", "scratch", "tokens"}
 # Synthetic instance ids the tests use; a fixture is not a provider's machine.
-INSTANCE_ID_ALLOW = {"01494715", "45445445", "7448afca", "abc12345", "fbf0f1f0"}
+INSTANCE_ID_ALLOW = {"01494715", "0badc0de", "45445445", "7448afca", "abc12345", "cafebabe", "fbf0f1f0"}
 TENANT_SLUG = re.compile(r"\bodl-[0-9]{4}[a-z0-9]{2,4}\b")
 TENANT_SLUG_ALLOW = {"odl-000000"}
 
