@@ -151,11 +151,11 @@ cd odile-verify && ./odile-verify --expect <measurement from your ready email> h
 ```
 
 It prints PASS or FAIL, and the hash line proves you got the tarball this
-command names. A tenant's report names another chip than the demo's, so the
-verifier fetches that report's own VCEK from AMD's KDS and checks it against
-the pinned ARK; the machine's release selects its entry in the pin. On PASS,
-open the URL and set your sign-in. The independent rebuild is §4.5
-(`sev-snp-measure` + `snpguest`).
+command names. On macOS, `shasum -a 256 -c -` reads the same hash line. A
+tenant's report names another chip than the demo's, so the verifier fetches
+that report's own VCEK from AMD's KDS and checks it against the pinned ARK; the
+machine's release selects its entry in the pin. On PASS, open the URL and set
+your sign-in. The independent rebuild is §4.5 (`sev-snp-measure` + `snpguest`).
 
 Reason: the page has no certificate fingerprint and no release-id row
 (`/attestation` carries the release in the raw JSON), and the access report it
