@@ -95,6 +95,7 @@ MIN_ASSIGNMENT_LENGTH, MIN_ASSIGNMENT_ENTROPY = 20, 3.3
 SKIP_SUFFIXES = (".sig",)
 SKIP_DIRS = (".git", ".worktrees", ".fresh-clone", ".venv", "__pycache__", "node_modules")
 ALLOW_FILE = "leak-allow.tsv"
+DEFAULT_FORBID = "leak-forbid.txt"
 
 # Addresses that are never a leak: loopback, private, link-local, CGNAT,
 # benchmarking, documentation and the public resolvers the product names.
@@ -879,8 +880,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--history", action="store_true")
     parser.add_argument("--all", action="store_true")
     parser.add_argument("--root", default=".")
-    parser.add_argument("--forbid-file", default="leak-forbid.txt",
-                        help="file of private literals, one per line: label<TAB>regex")
+    parser.add_argument("--forbid-file", default=None,
+                        help="file of private literals, one per line: label<TAB>regex "
+                             "(default: leak-forbid.txt at the tree root; a missing "
+                             "default is reported, a named file that is missing exits 2)")
     args = parser.parse_args(argv)
 
     root = Path(args.root).resolve()
@@ -890,19 +893,34 @@ def main(argv: list[str] | None = None) -> int:
 
     allows, problems = load_allow(root)
     forbid: list[tuple[str, re.Pattern[str]]] = []
-    forbid_path = root / args.forbid_file
-    skip: set[str] = set()
-    if forbid_path.exists():
-        try:
-            skip = {forbid_path.resolve().relative_to(root).as_posix()}
-        except ValueError:
-            skip = set()
-        for line in forbid_path.read_text(encoding="utf-8").splitlines():
+    forbid_problems: list[str] = []
+    named = args.forbid_file is not None
+    forbid_name = args.forbid_file or DEFAULT_FORBID
+    forbid_path = Path(forbid_name)
+    if not forbid_path.is_absolute():
+        forbid_path = root / forbid_path
+    if forbid_path.is_file():
+        labels = 0
+        for number, line in enumerate(forbid_path.read_text(encoding="utf-8").splitlines(), 1):
             if not line.strip() or line.startswith("#"):
                 continue
             label, _, pattern = line.partition("\t")
-            if pattern:
-                forbid.append((label.strip(), re.compile(pattern)))
+            if not label.strip() or not pattern.strip():
+                forbid_problems.append(f"{forbid_name}:{number}: expected label<TAB>regex")
+                continue
+            forbid.append((label.strip(), re.compile(pattern)))
+            labels += 1
+        print(f"forbid list:     {forbid_name} ({labels} labels)")
+    elif named:
+        print(f"FINDING allow-file  --forbid-file {forbid_name}: no such file")
+        return 2
+    else:
+        print(f"forbid list:     absent ({forbid_name}) — the forbidden-value class did not run")
+    skip: set[str] = set()
+    try:
+        skip = {forbid_path.resolve().relative_to(root).as_posix()}
+    except ValueError:
+        skip = set()
     today = date.today()
 
     modes = ["tree", "history"] if args.all else (
@@ -911,6 +929,9 @@ def main(argv: list[str] | None = None) -> int:
     status = 0
     for problem in problems:
         print(f"FINDING allow-file {problem}")
+        status = 1
+    for problem in forbid_problems:
+        print(f"FINDING forbid-file {problem}")
         status = 1
     for mode in modes:
         report = (scan_tree(root, allows, today, forbid, skip) if mode == "tree"
