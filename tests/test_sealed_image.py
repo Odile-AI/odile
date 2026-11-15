@@ -28,6 +28,7 @@ import json
 import os
 import pathlib
 import re
+import select
 import shutil
 import signal
 import stat
@@ -2358,19 +2359,54 @@ class FirstBootReKeyTests(unittest.TestCase):
     The fixture's build keyslot uses PBKDF2 so the gate does not spend a
     minute per test in Argon2id; the behaviour under test is the volume key,
     which no PBKDF touches.
+
+    Every mapping carries this run's tag -- the pid plus four random bytes --
+    because two `make check` runs share one /dev/mapper. A fixed name made the
+    second gate red with exit 32 ("device or resource busy") on either the
+    `luksOpen` or the `mount`; the tag, the `mapped()` context and the
+    dead-owner sweep below are what make the class concurrent-safe.
+
+    A mapping is not free to close while something it backs is mounted, so the
+    class also tracks every mount point it creates: the SIGTERM/SIGINT handler
+    unmounts before it closes, and the dead-owner sweep unmounts a killed
+    run's mounts by their device source before closing its mapping. Without
+    that, a run killed between `mount` and `umount` left both behind and no
+    later run could recover the mapping (its opener count never fell).
     """
 
     VOLUME = 64 << 20
     REKEY_VOLUME = 2 << 30
     BOOT = 32 << 20
+    SIGNALS = (signal.SIGINT, signal.SIGTERM, signal.SIGHUP)
+    CRYPT = "cryptsetup"
+    RUN_TAG = ""
+    _open: set[str] = set()
+    _mounts: dict[str, str] = {}
+    _seq = 0
+    _handlers: dict = {}
+
+    @staticmethod
+    def tool_env() -> dict:
+        env = dict(os.environ)
+        env["PATH"] = "/usr/sbin:/usr/bin:/sbin:/bin:" + env.get("PATH", "")
+        return env
 
     @classmethod
     def setUpClass(cls) -> None:
-        for tool in ("cryptsetup", "losetup", "mkfs.ext4", "gcc", "mount", "umount"):
+        for tool in ("cryptsetup", "losetup", "mkfs.ext4", "dmsetup", "gcc", "mount", "umount"):
             if not shutil.which(tool):
                 raise unittest.SkipTest(f"{tool} is missing")
         if os.geteuid() != 0:
             raise unittest.SkipTest("LUKS, loop devices and mount need root")
+        cls.CRYPT = shutil.which("cryptsetup") or "cryptsetup"
+        cls.RUN_TAG = f"{os.getpid()}-{os.urandom(4).hex()}"
+        cls._open = set()
+        cls._mounts = {}
+        cls._seq = 0
+        cls._install_signal_cleanup()
+        # A killed older run must not make this one fail: close what its dead
+        # pid left, and never touch a mapping a live pid owns.
+        cls.close_stale_mappers()
         cls.tmp = tempfile.TemporaryDirectory(prefix="odile-rekey-")
         cls.dir = pathlib.Path(cls.tmp.name)
         cls.bin = cls.dir / "snpreport-standin"
@@ -2387,14 +2423,277 @@ class FirstBootReKeyTests(unittest.TestCase):
 
     @classmethod
     def tearDownClass(cls) -> None:
-        cls.tmp.cleanup()
+        try:
+            cls.close_all()
+            cls.close_stale_mappers()
+        finally:
+            cls._restore_signal_cleanup()
+            cls.tmp.cleanup()
+
+    # -- mapping bookkeeping ----------------------------------------------
+
+    @classmethod
+    def _install_signal_cleanup(cls) -> None:
+        """Close the mappings before SIGINT/SIGTERM ends the process.
+
+        unittest runs `addCleanup` for an exception but not for the
+        KeyboardInterrupt a Ctrl-C raises, and SIGTERM runs nothing at all.
+        Both left a mapping behind; this turns the signal into a clean close
+        and then re-raises it with the default action, so the exit status is
+        still the signal's.
+        """
+        if threading.current_thread() is not threading.main_thread():
+            return
+        cls._handlers = {sig: signal.getsignal(sig) for sig in cls.SIGNALS}
+        for sig in cls.SIGNALS:
+            signal.signal(sig, cls._signal_cleanup)
+
+    @classmethod
+    def _restore_signal_cleanup(cls) -> None:
+        if threading.current_thread() is not threading.main_thread():
+            return
+        for sig, previous in cls._handlers.items():
+            signal.signal(sig, previous)
+        cls._handlers = {}
+
+    @classmethod
+    def _signal_cleanup(cls, signum: int, frame: object) -> None:
+        try:
+            cls.close_all()
+        finally:
+            signal.signal(signum, signal.SIG_DFL)
+            os.kill(os.getpid(), signum)
+
+    @classmethod
+    def close_all(cls) -> None:
+        """Unmount what this run mounted, then close what it opened."""
+        for point in sorted(cls._mounts, key=len, reverse=True):
+            cls._umount(point)
+        for name in sorted(cls._open):
+            cls._close(name)
+
+    @classmethod
+    def _umount(cls, point: str, retries: int = 20) -> bool:
+        """Unmount `point`; True when it is no longer mounted.
+
+        Safe in a signal handler: it never asserts. A plain unmount is tried
+        first, then a lazy one, so the block device is released even when a
+        file or a process still pins the mount -- otherwise `cryptsetup close`
+        retries against a busy device and the run leaves both behind.
+        """
+        cls._mounts.pop(point, None)
+        for _ in range(retries):
+            if not os.path.ismount(point):
+                return True
+            try:
+                result = subprocess.run(["umount", point], capture_output=True, text=True,
+                                        timeout=60, env=cls.tool_env())
+            except (OSError, subprocess.SubprocessError):
+                return False
+            if result.returncode == 0 or not os.path.ismount(point):
+                return True
+            time.sleep(0.1)
+        try:
+            subprocess.run(["umount", "-l", point], capture_output=True, text=True,
+                           timeout=60, env=cls.tool_env())
+        except (OSError, subprocess.SubprocessError):
+            return False
+        return not os.path.ismount(point)
+
+    @staticmethod
+    def _unescaped(field: str) -> str:
+        """A mountinfo field with its octal escapes decoded."""
+        for code, char in (("\\040", " "), ("\\011", "\t"), ("\\012", "\n"), ("\\134", "\\")):
+            field = field.replace(code, char)
+        return field
+
+    @classmethod
+    def _mounts_for(cls, name: str) -> list[str]:
+        """Every mount point whose source is this mapping, from mountinfo.
+
+        `mount` records the path it was given, so a mapper opened as
+        `/dev/mapper/<name>` can appear as that path or as its `/dev/dm-N`
+        node; both resolve to the same realpath.
+        """
+        points = []
+        mapper = f"/dev/mapper/{name}"
+        try:
+            rows = pathlib.Path("/proc/self/mountinfo").read_text().splitlines()
+        except OSError:
+            return points
+        for row in rows:
+            fields = row.split(" ")
+            try:
+                separator = fields.index("-")
+            except ValueError:
+                continue
+            if len(fields) < max(6, separator + 3):
+                continue
+            source = cls._unescaped(fields[separator + 2])
+            if source not in (mapper, name):
+                try:
+                    if os.path.realpath(source) != os.path.realpath(mapper):
+                        continue
+                except OSError:
+                    continue
+            points.append(cls._unescaped(fields[4]))
+        return points
+
+    @classmethod
+    def _close(cls, name: str) -> bool:
+        """Close one mapping; True when it is no longer active.
+
+        A mapping can still be mounted when the signal path or a stale-run
+        sweep reaches it -- a test killed between `mount` and `umount`. The
+        mount keeps the device busy, so unmount it first, by source, which
+        also catches a mount this run did not create; then ask the mapper
+        until it answers "not active" rather than trusting one exit code (the
+        same race sealed-image.sh retries).
+        """
+        cls._open.discard(name)
+        for point in cls._mounts_for(name):
+            cls._umount(point)
+        for _ in range(20):
+            status = subprocess.run([cls.CRYPT, "status", name], capture_output=True,
+                                    text=True, timeout=60, env=cls.tool_env())
+            if status.returncode != 0:
+                return True
+            subprocess.run([cls.CRYPT, "close", name], capture_output=True, text=True,
+                           timeout=120, env=cls.tool_env())
+            time.sleep(0.1)
+        return subprocess.run([cls.CRYPT, "status", name], capture_output=True, text=True,
+                              timeout=60, env=cls.tool_env()).returncode != 0
+
+    @classmethod
+    def _mappings(cls) -> list[tuple[str, int]]:
+        """Every device-mapper name and its opener count, or [] without dm."""
+        result = subprocess.run([shutil.which("dmsetup") or "dmsetup", "info", "-c",
+                                 "--noheadings", "-o", "name,open"],
+                                capture_output=True, text=True, timeout=60,
+                                env=cls.tool_env())
+        if result.returncode != 0:
+            return []
+        rows = []
+        for line in result.stdout.splitlines():
+            # `dmsetup info -c` separates the columns with ':'.
+            name, _, openers = line.rpartition(":")
+            if name and openers.strip().isdigit():
+                rows.append((name, int(openers)))
+        return rows
+
+    @staticmethod
+    def _owner_pid(name: str) -> int | None:
+        """The pid a name was created by, when the name carries one."""
+        parts = name.split("-")
+        if name.startswith("odile-sealed-") and parts[-1].isdigit():
+            return int(parts[-1])
+        # odile-rekey-<purpose>-<pid>-<rand>-<n>; the purpose may carry dashes.
+        if name.startswith("odile-rekey-") and len(parts) >= 5 and parts[-3].isdigit():
+            return int(parts[-3])
+        return None
+
+    @staticmethod
+    def _alive(pid: int) -> bool:
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return False
+        except PermissionError:
+            return True
+        return True
+
+    @classmethod
+    def close_stale_mappers(cls, dead: set[int] | None = None) -> None:
+        """Close what a killed run left; never what a live run owns.
+
+        `odile-sealed-<pid>` is the image build's mapper and
+        `odile-rekey-<purpose>-<pid>-...` is this class's. A live pid is a
+        concurrent gate, so its mapping is left alone. A dead pid's mapping is
+        recovered even when it still has an opener -- a mount that outlived
+        the process, which is exactly what SIGKILL leaves -- because `_close`
+        unmounts every mountinfo entry sourced from that mapping first. The
+        old sweep skipped `openers>0` and so never recovered one: the mount
+        kept the count up and every later run inherited the mapping.
+
+        `dead` names pids the caller has proven dead. The tests that fabricate
+        an orphan pass their own pid here (a real, live pid) instead of a
+        numeric dead one: a sibling gate then sees a live owner and leaves the
+        fabricated mapping alone, so two concurrent runs cannot sweep each
+        other's test fixture.
+
+        A name without a pid is the old fixed form (`odile-rekey`,
+        `odile-rekey-check`): a run still on that code may hold it with zero
+        openers for the instant between `luksOpen` and `mount`, so it is never
+        swept. Those names cannot collide with the per-run names anyway.
+        """
+        declared = dead or set()
+        for name, _openers in cls._mappings():
+            if name in cls._open or not name.startswith(("odile-rekey-", "odile-sealed-")):
+                continue
+            owner = cls._owner_pid(name)
+            if owner is None or (owner not in declared and cls._alive(owner)):
+                continue
+            cls._close(name)
+
+    def mapper_name(self, purpose: str) -> str:
+        """A name no other run, test or retry on this box can be holding."""
+        type(self)._seq += 1
+        return f"odile-rekey-{purpose}-{type(self).RUN_TAG}-{type(self)._seq}"
+
+    def open_mapper(self, device: str, key: pathlib.Path, purpose: str) -> tuple[str, str]:
+        """Open `device` under a per-run name and promise to close it.
+
+        The cleanup is registered before the assertion: a `luksOpen` that
+        fails halfway can still have created the mapping, and a test that
+        only closes on its happy path is how the next run inherits a busy
+        device.
+        """
+        name = self.mapper_name(purpose)
+        result = self.crypt("--key-file", str(key), "luksOpen", device, name)
+        type(self)._open.add(name)
+        self.addCleanup(self.close_mapper, name)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return name, f"/dev/mapper/{name}"
+
+    def close_mapper(self, name: str) -> None:
+        type(self)._close(name)
+
+    @contextlib.contextmanager
+    def mapped(self, device: str, key: pathlib.Path, purpose: str):
+        """`luksOpen` -> body -> `cryptsetup close`, on every path."""
+        name, path = self.open_mapper(device, key, purpose)
+        try:
+            yield name, path
+        finally:
+            self.close_mapper(name)
+
+    def mount(self, device: str, point: pathlib.Path, *options: str) -> None:
+        """Mount `device` and remember the point for the signal path.
+
+        Registered before the call: a SIGTERM delivered while `mount` is in
+        flight runs this class's handler as soon as the subprocess returns,
+        and by then the mount exists. A failed mount unregisters itself.
+        """
+        where = str(point)
+        type(self)._mounts[where] = device
+        result = subprocess.run(["mount", *options, str(device), where],
+                                capture_output=True, text=True, timeout=60)
+        if result.returncode != 0:
+            type(self)._mounts.pop(where, None)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def umount(self, point: pathlib.Path, *, check: bool = True) -> None:
+        """Unmount `point` and forget it; `check=False` for "may be absent"."""
+        where = str(point)
+        type(self)._mounts.pop(where, None)
+        result = subprocess.run(["umount", where], capture_output=True, text=True, timeout=60)
+        if check:
+            self.assertEqual(result.returncode, 0, result.stderr)
 
     # -- fixture -----------------------------------------------------------
 
     def env(self) -> dict:
-        env = dict(os.environ)
-        env["PATH"] = "/usr/sbin:/usr/bin:/sbin:/bin:" + env.get("PATH", "")
-        return env
+        return self.tool_env()
 
     def crypt(self, *args: str) -> subprocess.CompletedProcess:
         return subprocess.run(["cryptsetup", *args], capture_output=True, text=True,
@@ -2433,30 +2732,28 @@ class FirstBootReKeyTests(unittest.TestCase):
         fx["root_loop"] = root_loop
         fx["boot_loop"] = boot_loop
 
-        result = self.crypt("--key-file", str(fx["build"]), "luksOpen", root_loop, "odile-rekey")
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.addCleanup(subprocess.run, ["cryptsetup", "close", "odile-rekey"],
-                        capture_output=True)
         rootmnt = base / "root.mnt"
         rootmnt.mkdir()
-        subprocess.run(["mkfs.ext4", "-q", "/dev/mapper/odile-rekey"], check=True,
-                       timeout=120, capture_output=True)
-        subprocess.run(["mount", "/dev/mapper/odile-rekey", str(rootmnt)], check=True, timeout=60)
-        (rootmnt / "marker.txt").write_text("the tenant's own filesystem\n")
-        payload = os.urandom(1 << 20)
-        (rootmnt / "blob").write_bytes(payload)
-        (rootmnt / "tail.txt").write_text("the far end of the filesystem\n")
-        fx["marker"].write_text(hashlib.sha256(payload).hexdigest() + "  blob\n")
-        subprocess.run(["sync"], check=True)
-        subprocess.run(["umount", str(rootmnt)], check=True, timeout=60)
-        self.assertEqual(self.crypt("close", "odile-rekey").returncode, 0)
+        with self.mapped(root_loop, fx["build"], "format") as (_name, device):
+            subprocess.run(["mkfs.ext4", "-q", device], check=True,
+                           timeout=120, capture_output=True)
+            self.mount(device, rootmnt)
+            try:
+                (rootmnt / "marker.txt").write_text("the tenant's own filesystem\n")
+                payload = os.urandom(1 << 20)
+                (rootmnt / "blob").write_bytes(payload)
+                (rootmnt / "tail.txt").write_text("the far end of the filesystem\n")
+                fx["marker"].write_text(hashlib.sha256(payload).hexdigest() + "  blob\n")
+                subprocess.run(["sync"], check=True)
+            finally:
+                self.umount(rootmnt)
 
         fx["mnt"].mkdir()
-        subprocess.run(["mount", boot_loop, str(fx["mnt"])], check=True, timeout=60)
+        self.mount(boot_loop, fx["mnt"])
         (fx["mnt"] / "odile").mkdir()
         shutil.copyfile(fx["build"], fx["mnt"] / "odile" / "luks-bootstrap.key")
         os.chmod(fx["mnt"] / "odile" / "luks-bootstrap.key", 0o600)
-        subprocess.run(["umount", str(fx["mnt"])], check=True, timeout=60)
+        self.umount(fx["mnt"])
         return fx
 
     # -- helpers -----------------------------------------------------------
@@ -2541,8 +2838,8 @@ class FirstBootReKeyTests(unittest.TestCase):
 
     def mount_boot(self, fx: dict) -> None:
         """Mount the boot partition even if a killed run left it mounted."""
-        subprocess.run(["umount", str(fx["mnt"])], capture_output=True)
-        subprocess.run(["mount", fx["boot_loop"], str(fx["mnt"])], check=True, timeout=60)
+        self.umount(fx["mnt"], check=False)
+        self.mount(fx["boot_loop"], fx["mnt"])
 
     def unseal(self, fx: dict, out: pathlib.Path) -> pathlib.Path:
         blob = fx["mnt"] / "odile" / "luks-vol.key.sealed"
@@ -2550,7 +2847,7 @@ class FirstBootReKeyTests(unittest.TestCase):
         try:
             shutil.copyfile(blob, fx["base"] / "blob.copy")
         finally:
-            subprocess.run(["umount", str(fx["mnt"])], check=True, timeout=60)
+            self.umount(fx["mnt"])
         result = subprocess.run([str(self.standin), "--unseal",
                                  str(fx["base"] / "blob.copy"), str(out)],
                                 capture_output=True, text=True, timeout=60)
@@ -2565,14 +2862,193 @@ class FirstBootReKeyTests(unittest.TestCase):
                 path = fx["mnt"] / "odile" / name
                 files[name] = path.read_bytes() if path.exists() else None
         finally:
-            subprocess.run(["umount", str(fx["mnt"])], check=True, timeout=60)
+            self.umount(fx["mnt"])
         return files
 
-    def keyslots(self, fx: dict) -> list:
+    def keyslots(self, fx: dict) -> list[str]:
         result = self.crypt("luksDump", fx["root_loop"])
         self.assertEqual(result.returncode, 0, result.stderr)
         return [line.split(":")[0].strip() for line in result.stdout.splitlines()
                 if line.startswith("  ") and line.rstrip().endswith(": luks2")]
+
+    # -- the gate's own collision -----------------------------------------
+
+    def test_two_opens_of_one_volume_take_distinct_names_and_both_close(self) -> None:
+        """The bug this card fixes: a fixed name made a concurrent gate red.
+
+        Two `make check` runs on one box both used `odile-rekey-check` -- on
+        their own loop devices -- so the second `luksOpen` failed with exit 32
+        ("device or resource busy"). These two mappings are open at once, each
+        on the loop device a concurrent run would own, and both read the
+        tenant's filesystem.
+        """
+        left = self.fixture()
+        right = self.fixture()
+        with self.mapped(left["root_loop"], left["build"], "check") as (first, first_dev):
+            with self.mapped(right["root_loop"], right["build"], "check") as (second, second_dev):
+                self.assertNotEqual(first, second)
+                self.assertNotEqual(left["root_loop"], right["root_loop"])
+                for device, fx in ((first_dev, left), (second_dev, right)):
+                    mnt = pathlib.Path(tempfile.mkdtemp(dir=fx["base"]))
+                    self.mount(device, mnt, "-o", "ro")
+                    try:
+                        self.assertEqual((mnt / "marker.txt").read_text(),
+                                         "the tenant's own filesystem\n")
+                    finally:
+                        self.umount(mnt)
+        for name in (first, second):
+            self.assertNotEqual(self.crypt("status", name).returncode, 0,
+                                f"{name} survived its context")
+
+    def test_a_failed_body_does_not_leave_the_mapping_open(self) -> None:
+        fx = self.fixture()
+        name = ""
+        with self.assertRaises(RuntimeError):
+            with self.mapped(fx["root_loop"], fx["build"], "check") as (name, _device):
+                raise RuntimeError("the body failed")
+        self.assertNotEqual(self.crypt("status", name).returncode, 0,
+                            f"{name} survived a failed test")
+
+    def test_an_orphan_mapping_is_swept_and_a_live_run_is_left_alone(self) -> None:
+        """A killed run's mapping is closed; a concurrent run's is not.
+
+        `dmsetup create` makes the two mappings a run can leave: one named
+        for this live pid and one the sweep is told is dead. Both carry this
+        run's random tag and a live pid, so a sibling gate sees a live owner
+        and leaves them alone; the sweep is the only thing that closes one.
+        """
+        tag = os.urandom(4).hex()
+        live = f"odile-rekey-check-{os.getpid()}-{tag}-1"
+        orphan = f"odile-rekey-check-{os.getppid()}-{tag}-2"
+        for name in (live, orphan):
+            made = subprocess.run(["dmsetup", "create", name, "--table", "0 1 zero"],
+                                  capture_output=True, text=True, env=self.env())
+            if made.returncode != 0:
+                self.skipTest(f"dmsetup create is unavailable: {made.stderr.strip()}")
+            self.addCleanup(subprocess.run, ["dmsetup", "remove", name],
+                            capture_output=True, text=True, env=self.env())
+        self.assertEqual(self.crypt("status", live).returncode, 0)
+        self.assertEqual(self.crypt("status", orphan).returncode, 0)
+        type(self).close_stale_mappers(dead={os.getppid()})
+        self.assertEqual(self.crypt("status", live).returncode, 0,
+                         "the sweep closed a live pid's mapping")
+        self.assertNotEqual(self.crypt("status", orphan).returncode, 0,
+                            "the sweep left a declared-dead pid's mapping")
+
+    def test_a_mounted_orphans_mapping_is_unmounted_and_closed(self) -> None:
+        """A SIGKILL leaves a mounted mapping; the sweep must recover it.
+
+        The mount outlives the process but has no process behind it -- only
+        the kernel holds the device -- so `openers` stays 1. The old sweep
+        read that as "someone is using it" and skipped the orphan forever.
+        This is the shape the verifier reproduced: killed while mounted. The
+        name carries a live pid (the parent make) and this run's random tag,
+        and the sweep is told that pid is dead, so a concurrent gate neither
+        creates the same name nor sweeps it.
+        """
+        fx = self.fixture()
+        tag = os.urandom(4).hex()
+        name = f"odile-rekey-check-{os.getppid()}-{tag}-1"
+        opened = self.crypt("--key-file", str(fx["build"]), "luksOpen",
+                            fx["root_loop"], name)
+        self.assertEqual(opened.returncode, 0, opened.stderr)
+        self.addCleanup(subprocess.run, ["dmsetup", "remove", name], capture_output=True)
+        mnt = pathlib.Path(tempfile.mkdtemp(dir=fx["base"]))
+        self.addCleanup(subprocess.run, ["umount", str(mnt)], capture_output=True)
+        subprocess.run(["mount", "-o", "ro", f"/dev/mapper/{name}", str(mnt)],
+                       check=True, timeout=60)
+        self.assertTrue(mnt.is_mount())
+        self.assertEqual(self.crypt("status", name).returncode, 0,
+                         "the fixture's mapping did not open")
+        type(self).close_stale_mappers(dead={os.getppid()})
+        self.assertNotEqual(self.crypt("status", name).returncode, 0,
+                            "the sweep left a dead run's mounted mapping")
+        self.assertFalse(mnt.is_mount(), "the sweep left the dead run's mount")
+
+    def _child_driver(self) -> pathlib.Path:
+        """The program the SIGTERM test starts: this class's own code, held open."""
+        path = self.dir / "held-mapping.py"
+        path.write_text(
+            "import json, pathlib, sys, time\n"
+            f"sys.path.insert(0, {str(ROOT / 'tests')!r})\n"
+            "import test_sealed_image as suite\n"
+            "T = suite.FirstBootReKeyTests\n"
+            "T.setUpClass()\n"
+            "case = T(methodName='test_two_opens_of_one_volume_take_distinct_names_and_both_close')\n"
+            "fx = case.fixture()\n"
+            "name, device = case.open_mapper(fx['root_loop'], fx['build'], 'probe')\n"
+            "held = fx['base'] / 'held.mnt'\n"
+            "held.mkdir()\n"
+            "case.mount(device, held, '-o', 'ro')\n"
+            "print(json.dumps({'name': name, 'device': device, 'mount': str(held),\n"
+            "                  'loops': [fx['root_loop'], fx['boot_loop']]}), flush=True)\n"
+            "while True:\n"
+            "    time.sleep(1)\n"
+        )
+        return path
+
+    def _child_ready(self, proc: subprocess.Popen) -> dict:
+        """The first JSON line the child prints, or a failure with its stderr."""
+        deadline = time.monotonic() + 180
+        stdout = proc.stdout
+        assert stdout is not None
+        while time.monotonic() < deadline:
+            ready, _, _ = select.select([stdout], [], [], 0.2)
+            if ready:
+                line = stdout.readline()
+                if line:
+                    try:
+                        return json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+            if proc.poll() is not None:
+                break
+        stderr = proc.stderr.read() if proc.poll() is not None and proc.stderr else ""
+        self.fail(f"the child never mounted a mapping (rc={proc.poll()}):\n{stderr}")
+
+    def _kill_child(self, proc: subprocess.Popen) -> None:
+        if proc.poll() is None:
+            os.killpg(proc.pid, signal.SIGKILL)
+        proc.wait(timeout=60)
+        for pipe in (proc.stdout, proc.stderr):
+            if pipe is not None:
+                pipe.close()
+
+    def test_a_sigterm_held_across_a_mount_leaves_no_mapping(self) -> None:
+        """DoD 2: a run interrupted with a mounted mapping leaves nothing.
+
+        The old handler called `cryptsetup close` while the mount still held
+        the device: twenty retries over ~2.5 s, then the process died and both
+        the mapping and its mount outlived it. The next run's sweep skipped
+        the mapping because `openers` stayed 1, so the leak was permanent.
+        This holds the class's own fixture open in a child, sends SIGTERM, and
+        asks the box: no mapping, no mount.
+        """
+        env = self.env()
+        env["TMPDIR"] = str(self.dir)  # the child's temp dirs die with the class
+        proc = subprocess.Popen(["/usr/bin/python3", "-u", str(self._child_driver())],
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                text=True, env=env, start_new_session=True)
+        self.addCleanup(self._kill_child, proc)
+        info = self._child_ready(proc)
+        self.addCleanup(subprocess.run, ["losetup", "-d", *info["loops"]],
+                        capture_output=True, text=True)
+        self.addCleanup(subprocess.run, ["dmsetup", "remove", info["name"]],
+                        capture_output=True, text=True)
+        self.addCleanup(subprocess.run, ["umount", info["mount"]],
+                        capture_output=True, text=True)
+        self.assertTrue(pathlib.Path(info["mount"]).is_mount(),
+                        "the child never mounted the mapping")
+        os.kill(proc.pid, signal.SIGTERM)
+        self.assertEqual(proc.wait(timeout=180), -signal.SIGTERM,
+                         "the SIGTERM handler did not end the process")
+        self.assertNotEqual(self.crypt("status", info["name"]).returncode, 0,
+                            f"{info['name']} outlived its run")
+        self.assertFalse(pathlib.Path(info["mount"]).is_mount(),
+                         "the mount outlived its run")
+        self.assertEqual([name for name, _openers in self._mappings()
+                          if name.startswith("odile-rekey-")
+                          and f"-{proc.pid}-" in name], [])
 
     # -- the behaviour -----------------------------------------------------
 
@@ -2596,18 +3072,16 @@ class FirstBootReKeyTests(unittest.TestCase):
         self.assertEqual(len(self.keyslots(fx)), 1)
         # And the tenant's data came through the online re-encryption intact.
         self.assertTrue(self.opens(fx, guest))
-        self.crypt("--key-file", str(guest), "luksOpen", fx["root_loop"], "odile-rekey-check")
         rootmnt = fx["base"] / "check.mnt"
         rootmnt.mkdir()
-        subprocess.run(["mount", "-o", "ro", "/dev/mapper/odile-rekey-check", str(rootmnt)],
-                       check=True, timeout=60)
-        try:
-            self.assertEqual((rootmnt / "marker.txt").read_text(), "the tenant's own filesystem\n")
-            self.assertEqual(hashlib.sha256((rootmnt / "blob").read_bytes()).hexdigest(),
-                             fx["marker"].read_text().split()[0])
-        finally:
-            subprocess.run(["umount", str(rootmnt)], check=True, timeout=60)
-            self.crypt("close", "odile-rekey-check")
+        with self.mapped(fx["root_loop"], guest, "check") as (_name, device):
+            self.mount(device, rootmnt, "-o", "ro")
+            try:
+                self.assertEqual((rootmnt / "marker.txt").read_text(), "the tenant's own filesystem\n")
+                self.assertEqual(hashlib.sha256((rootmnt / "blob").read_bytes()).hexdigest(),
+                                 fx["marker"].read_text().split()[0])
+            finally:
+                self.umount(rootmnt)
         state = json.loads(fx["state"].read_text())
         self.assertTrue(state["sealed"])
         self.assertTrue(state["bootstrap_removed"])
@@ -2648,18 +3122,14 @@ class FirstBootReKeyTests(unittest.TestCase):
         self.assertTrue(state["bootstrap_removed"])
         # The data pass the interrupted run started is now whole: the filesystem
         # checks clean and the far end of the volume reads.
-        opened = self.crypt("--key-file", str(guest), "luksOpen",
-                            fx["root_loop"], "odile-resume-check")
-        self.assertEqual(opened.returncode, 0, opened.stderr)
-        try:
+        rootmnt = fx["base"] / "resume.mnt"
+        rootmnt.mkdir()
+        with self.mapped(fx["root_loop"], guest, "resume") as (_name, device):
             if shutil.which("e2fsck"):
-                fsck = subprocess.run(["e2fsck", "-fn", "/dev/mapper/odile-resume-check"],
+                fsck = subprocess.run(["e2fsck", "-fn", device],
                                       capture_output=True, text=True, timeout=300)
                 self.assertEqual(fsck.returncode, 0, fsck.stdout + fsck.stderr)
-            rootmnt = fx["base"] / "resume.mnt"
-            rootmnt.mkdir()
-            subprocess.run(["mount", "-o", "ro", "/dev/mapper/odile-resume-check", str(rootmnt)],
-                           check=True, timeout=60)
+            self.mount(device, rootmnt, "-o", "ro")
             try:
                 self.assertEqual((rootmnt / "marker.txt").read_text(),
                                  "the tenant's own filesystem\n")
@@ -2668,9 +3138,7 @@ class FirstBootReKeyTests(unittest.TestCase):
                 self.assertEqual(hashlib.sha256((rootmnt / "blob").read_bytes()).hexdigest(),
                                  fx["marker"].read_text().split()[0])
             finally:
-                subprocess.run(["umount", str(rootmnt)], check=True, timeout=60)
-        finally:
-            self.crypt("close", "odile-resume-check")
+                self.umount(rootmnt)
 
     def test_a_second_run_writes_nothing_and_a_rotate_keeps_the_guest_key(self) -> None:
         """The keyslot dance is the fallback: a new V, the same volume key."""
@@ -2715,12 +3183,12 @@ class FirstBootReKeyTests(unittest.TestCase):
         """
         fx = self.fixture()
         self.assertEqual(self.run_provision(fx).returncode, 0)
-        subprocess.run(["mount", fx["boot_loop"], str(fx["mnt"])], check=True, timeout=60)
+        self.mount(fx["boot_loop"], fx["mnt"])
         try:
             shutil.copyfile(fx["build"], fx["mnt"] / "odile" / "luks-bootstrap.key")
             os.chmod(fx["mnt"] / "odile" / "luks-bootstrap.key", 0o600)
         finally:
-            subprocess.run(["umount", str(fx["mnt"])], check=True, timeout=60)
+            self.umount(fx["mnt"])
         fx["state"].unlink()
 
         again = self.run_provision(fx)
