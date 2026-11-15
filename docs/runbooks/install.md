@@ -1019,7 +1019,11 @@ pages, the skill and the support email; the support program placed at
 `/usr/local/sbin/odile-support` with `odile-diag` beside it) on the same merged
 head as ODL-505's icons, and ODL-514's seed-certificate
 chain (the release key certifies the
-seed key; the first boot and the installer both walk it), and the simulation's
+seed key; the first boot and the installer both walk it), t_ae833f3f's
+re-cut of the two embedded tenant pages and the skin onto BRAND.md's type
+roles (`/verify` and the first-visit form on the text serif, the display face
+only on the wordmark and h1/h2/h3; `templates/skin.yaml` names the display
+face on headings), the simulation's
 page server started with the layout's own icon root (§12.6) and the
 self-test's whole-bundle hash (`8ea15e2`), sha256 `fad35b94…` (1,413,055
 bytes, `--verify-signature` OK); the edited copy above is 1,413,056 bytes. The BAD line
@@ -1770,6 +1774,40 @@ is the cut; the URL served `2026.11.14-7` at 2026-11-15T01:07Z. `make check`
 is green at the merged head: 1,457 tests, `--self-test` PASS, secret
 scan PASS (307 files, 8,665,478 bytes), claims lint 19 files / 13
 phrases, brand lint 18 surfaces / 21 colours. It is committed, not deployed.
+
+**The `2026.11.15-1` cut (t_ae833f3f, the tenant pages' type, merged onto `-8`).**
+ODL-503 moved public prose onto the platform text serif but left the two tenant
+pages and the skin on Cormorant: they ship byte-embedded in the signed
+installer, so that card deferred them. This cut re-embeds `web/verify.html`
+(page pin `00552a5c…`, 44,882 bytes) and `web/first-visit.html` (`810a596d…`,
+41,485 bytes) with the roles BRAND.md §Typography names — 18 px / 1.6 prose,
+16 px / 1.6 notes, Cormorant only on the wordmark and h1/h2/h3 — and re-cuts
+`templates/skin.yaml` so its headings name the display face while body prose
+stays the bundle's UI sans (4,978 bytes, sha `51c30f46…`, byte-identical to the
+`SKIN_YAML` the self-test compares). `main` moved to `fcc87b2` (`-8`, ODL-505's
+icon set and page server) while the branch was in review, so the branch merged
+it first: `installer/odile_install.py` auto-merged keeping both sides, the
+`install.md` conflict's three hunks were resolved by hand with both sides kept
+and the numbers re-derived, and `installer/embed_verify.py` +
+`installer/embed_first_visit.py` ran on the merged installer — the five icon
+files, the five tenant routes, the Webapp's three tab links and
+`installer/first_visit.py` (`16f820b4…`) are `-8`'s, unchanged. The merged
+installer is `13863f6c…` (1,356,641 bytes); `--self-test` PASS and
+`--verify-signature` OK; a one-byte edit reads `b462ab8b…` (1,356,642 bytes)
+and `signature: BAD`, exit 3. `release/manifest.json` is the `-8` document
+(the fresh-root build from ODL-505's install, `generated_at`
+2026-11-14T22:50:20Z) with only `installer_sha256` moved — `4d0d5a2f…`:
+`scripts/manifest.py diff` prints that one line, and the vendor pin
+`c73dad4d…`, the skills artifact `09be3cd1…` and the meter-free rows are
+unchanged. `release/release.json` names release `2026.11.15-1` at
+`2026-11-15T02:50:19Z`, installer `13863f6c…` and manifest `4d0d5a2f…`
+(`cb90d62e…`). `tools/recut_release.py --check` prints `ok` for the installer,
+its release copy, both JSON documents and the pin's hook. The id was free at
+cut time: `2026.11.15-1` was carried by this branch only and the live cut was
+`2026.11.14-8`. It is committed, not deployed: measured 2026-11-15T02:52Z,
+`https://odile.fyi/release.json` serves `2026.11.14-8` (installer `0c53a722…`,
+1,356,516 bytes; manifest `3a532eff…`), and the next `./deploy.sh` from a
+`main` that carries this merge publishes `2026.11.15-1`.
 
 **The `2026.11.15-2` cut (ODL-474's v3.10 landing, ported onto the one-root
 tree and merged with ODL-505's icon-aware first-visit page).** The v3.10
