@@ -150,9 +150,9 @@ class ConfigTests(unittest.TestCase):
 
     def test_a_config_without_limits_gains_none(self) -> None:
         bare = ("model:\n  provider: custom\n"
-                "custom_providers:\n  - name: Odile Meter\n"
-                "    base_url: http://127.0.0.1:8010/v1\n"
-                "    key_env: METER_API_KEY\n"
+                "custom_providers:\n  - name: Old Provider\n"
+                "    base_url: http://127.0.0.1:8099/v1\n"
+                "    key_env: OLD_PROVIDER_API_KEY\n"
                 "webapp:\n  port: 9130\n")
         tuned, changed = self.module.tune_config(bare)
         self.assertNotIn("max_turns", tuned)
@@ -187,6 +187,18 @@ class NoBootReassertTests(unittest.TestCase):
         self.assertFalse(hasattr(self.module, "ensure_no_meter"))
         self.assertFalse(hasattr(self.module, "prune"))
         self.assertEqual(self.module.DEMO_UNIT, "odile-demo-public")
+
+    def test_the_meter_adoption_shim_is_gone(self) -> None:
+        """2026-11-14 13:55Z: the adoption was dead code, so it was deleted."""
+        for name in ("METER_UNIT", "METER_KEY", "METER_UNIT_FILE",
+                     "METER_URL_MARKERS", "_looks_like_meter"):
+            with self.subTest(name=name):
+                self.assertFalse(hasattr(self.module, name))
+        report = APPLY.read_text(encoding="utf-8")
+        self.assertNotIn('"meter":', report)
+        # The key is the profile's own, with the installer's root-only store
+        # as the one fallback on a rebuilt machine.
+        self.assertIn("KEY_STORE = Path(\"/etc/odile/key.env\")", report)
 
     def test_the_old_boot_flags_are_not_cli_options(self) -> None:
         parser = self.module.argparse.ArgumentParser()

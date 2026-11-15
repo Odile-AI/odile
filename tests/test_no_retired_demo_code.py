@@ -24,11 +24,10 @@ Every file in the tree except:
 The allowlist
 -------------
 ``ALLOW`` names the live files that legitimately carry a retired word: a
-negative assertion ("the unit is not found"), a fixture of the pre-removal
-shape the apply must still adopt, or a history comment in shipped bytes whose
-edit would mean a re-sign. Each entry says why, and two meta-tests keep the
-list honest: an entry for a deleted file, or for a word the file no longer
-carries, fails until the list is updated.
+negative assertion ("the unit is not found") or a history comment in shipped
+bytes whose edit would mean a re-sign. Each entry says why, and two meta-tests
+keep the list honest: an entry for a deleted file, or for a word the file no
+longer carries, fails until the list is updated.
 
 The positive shape is pinned too: the tenant template routes inference straight
 to NEAR AI with no meter placeholder, the committed demo Caddy block carries no
@@ -88,21 +87,36 @@ RETIRED = (
     ("odile-demo.service", re.compile(r"\bodile-demo\.service\b")),
 )
 
-#: The no-prune/no-caps state (t_ee5aac66) is the demo apply's own contract.
-#: These names are legitimate elsewhere — the installer and the seed deployer
-#: both build units with ``UNIT_TEMPLATE``/``ensure_unit`` — so they are fenced
-#: inside ``deploy/demo-host/`` only.
+#: The demo apply's own contract: t_ee5aac66's no-prune/no-caps state and the
+#: names of the meter shim deleted on 2026-11-15. These names are legitimate
+#: elsewhere — the installer and the seed deployer both build units with
+#: ``UNIT_TEMPLATE``/``ensure_unit`` — so they are fenced inside
+#: ``deploy/demo-host/`` only.
 DEMO_HOST = "deploy/demo-host/"
 RETIRED_IN_DEMO_HOST = (
     ("prune(", re.compile(r"\bprune\(")),
-    ("max_concurrent_sessions", re.compile(r"\bmax_concurrent_sessions\b")),
-    ("max_turns", re.compile(r"\bmax_turns\b")),
+    # Case-insensitive: the removed code declared them as module constants
+    # (`MAX_TURNS = 25`, `MAX_CONCURRENT_SESSIONS = 3`). The verifier's round-1
+    # plant of exactly those two lines passed the case-sensitive patterns.
+    ("max_concurrent_sessions", re.compile(r"\bmax_concurrent_sessions\b", re.IGNORECASE)),
+    ("max_turns", re.compile(r"\bmax_turns\b", re.IGNORECASE)),
     ("odile-demo-public.service", re.compile(r"\bodile-demo-public\.service\b")),
+    ("odile-demo-public.timer", re.compile(r"\bodile-demo-public\.timer\b")),
     ("UNIT_TEMPLATE", re.compile(r"\bUNIT_TEMPLATE\b")),
     ("ensure_unit", re.compile(r"\bensure_unit\b")),
-    # The boot re-assert's flags, as CLI options. The comments that explain
-    # they are gone are history, not a surface.
-    ("--tune/--keep-hash", re.compile(r"""add_argument\(\s*["']--(?:tune|keep-hash)["']""")),
+    # The boot re-assert's flags, as a CLI option or in prose: the CoS's
+    # 2026-11-14 04:05Z relay says to flag `--tune`/`--keep-hash` in the demo
+    # apply, and a command line is a surface whether or not `add_argument`
+    # created it.
+    ("--tune/--keep-hash", re.compile(r"(?<![\w-])--(?:tune|keep-hash)\b")),
+    # The deleted meter-adoption shim's own names (2026-11-14 13:55Z: delete
+    # it rather than allow it). Fencing the identifiers as well as the meter
+    # words means the shim cannot return under a different spelling.
+    ("_looks_like_meter", re.compile(r"\b_looks_like_meter\b")),
+    ("METER_KEY", re.compile(r"\bMETER_KEY\b")),
+    ("METER_UNIT", re.compile(r"\bMETER_UNIT\b")),
+    ("METER_UNIT_FILE", re.compile(r"\bMETER_UNIT_FILE\b")),
+    ("METER_URL_MARKERS", re.compile(r"\bMETER_URL_MARKERS\b")),
 )
 
 #: A retired mechanism can come back as a name, with no body to grep. These
@@ -110,17 +124,13 @@ RETIRED_IN_DEMO_HOST = (
 FORBIDDEN_PATH = re.compile(
     r"(?:^|/)(?:meter\.py|meter\.env|meter\.key|session_guard\.py|ws_guard\.py|"
     r"deploy_demo_host\.py|odile-meter\.service|odile-demo\.service|"
-    r"odile-demo-public\.service|DEMO-UNFREEZE\.md|test-meter)$")
+    r"odile-demo-public\.service|odile-demo-public\.timer|DEMO-UNFREEZE\.md|"
+    r"test-meter)$")
 FORBIDDEN_DIR = re.compile(r"(?:^|/)(?:meter|demo-workspace)(?:/|$)")
 
 #: Live files that name a retired thing on purpose. Keep this list small: a new
 #: entry is a decision ("this occurrence must stay"), not a formality.
 ALLOW: dict[str, tuple[frozenset[str], str]] = {
-    "deploy/demo-host/apply_demo_public.py": (
-        frozenset({"METER_API_KEY", "odile-meter", "8010", "8011", "meter.key"}),
-        "the legacy adoption shim: an older machine's meter-shaped provider row "
-        "and /etc/odile/meter.key are read once and rewritten to Near AI; "
-        "deleting it is a demo-apply card, not this fence"),
     "deploy/demo-host/check_demo_host.sh": (
         frozenset({"odile-meter", "8011", "__disabled__", "ws_guard", "DEMO-UNFREEZE"}),
         "the live check asserts the retired surfaces are absent (unit not-found, "
@@ -141,10 +151,6 @@ ALLOW: dict[str, tuple[frozenset[str], str]] = {
         frozenset({"odile-meter"}),
         "ODL-521's comment: the group was renamed from odile-meter, and a "
         "DynamicUser named after the joining group fails"),
-    "tests/test_demo_public_sessions.py": (
-        frozenset({"METER_API_KEY", "8010"}),
-        "the pre-removal config fixture the apply must still adopt, and then "
-        "rewrite to Near AI"),
     "tests/test_webapp_brand_reassert.py": (
         frozenset({"session_guard"}),
         "the negative assertion's comment names the guard the session menu was "
@@ -197,21 +203,28 @@ def patterns_for(rel: str) -> tuple[tuple[str, re.Pattern[str]], ...]:
     return RETIRED
 
 
+def scan_text(rel: str, text: str) -> list[str]:
+    """Every unallowlisted retired surface in one file's text, as ``path:line``."""
+    found: list[str] = []
+    allowed = ALLOW.get(rel, (frozenset(), ""))[0]
+    for token, pattern in patterns_for(rel):
+        if token in allowed:
+            continue
+        for match in pattern.finditer(text):
+            line_no = text.count("\n", 0, match.start()) + 1
+            line = text.splitlines()[line_no - 1].strip()
+            found.append(f"{rel}:{line_no}: retired {token!r} — {line[:160]}")
+    return found
+
+
 def occurrences() -> list[str]:
     """Every unallowlisted retired surface, as ``path:line`` with its text."""
     found: list[str] = []
     for rel, path in live_files():
         if FORBIDDEN_PATH.search(rel) or FORBIDDEN_DIR.search(rel):
             found.append(f"{rel}: a retired path")
-        allowed = ALLOW.get(rel, (frozenset(), ""))[0]
         text = path.read_text(encoding="utf-8", errors="replace")
-        for token, pattern in patterns_for(rel):
-            if token in allowed:
-                continue
-            for match in pattern.finditer(text):
-                line_no = text.count("\n", 0, match.start()) + 1
-                line = text.splitlines()[line_no - 1].strip()
-                found.append(f"{rel}:{line_no}: retired {token!r} — {line[:160]}")
+        found.extend(scan_text(rel, text))
     return found
 
 
@@ -222,6 +235,54 @@ class RetiredCodeTests(unittest.TestCase):
         found = occurrences()
         if found:
             self.fail("retired code is back in the tree:\n  " + "\n  ".join(found))
+
+
+class PatternTests(unittest.TestCase):
+    """The round-1 regressions: the removed constants, the timer and the flags.
+
+    The fence file itself is skipped by ``live_files`` (it must spell the
+    names), so these plants exercise ``scan_text`` on text, not on the tree.
+    """
+
+    def tokens(self, rel: str, text: str) -> list[str]:
+        return [found.split("retired ", 1)[1].split("'")[1]
+                for found in scan_text(rel, text)]
+
+    def test_the_removed_caps_constants_are_caught(self) -> None:
+        # The exact two lines the verifier planted (`Ran 8 tests ... OK` on
+        # round 1) and the CoS's 13:55Z "still flag MAX_TURNS,
+        # MAX_CONCURRENT_SESSIONS".
+        self.assertEqual(
+            sorted(self.tokens("deploy/demo-host/planted.py",
+                               "MAX_TURNS = 25\nMAX_CONCURRENT_SESSIONS = 3\n")),
+            ["max_concurrent_sessions", "max_turns"])
+
+    def test_the_demo_timer_is_caught(self) -> None:
+        self.assertEqual(
+            self.tokens("deploy/demo-host/planted.py",
+                        "install -m 0644 x /etc/systemd/system/"
+                        + "odile-demo-public" + ".timer\n"),
+            ["odile-demo-public.timer"])
+        self.assertRegex("deploy/units/" + "odile-demo-public" + ".timer",
+                         FORBIDDEN_PATH)
+
+    def test_the_boot_flags_are_caught_without_add_argument(self) -> None:
+        self.assertEqual(
+            sorted(set(self.tokens("deploy/demo-host/planted.py",
+                                   "apply --tune --keep-hash\n"))),
+            ["--tune/--keep-hash"])
+
+    def test_the_deleted_shim_names_are_caught(self) -> None:
+        for name in ("_looks_like_meter", "METER_KEY", "METER_UNIT_FILE",
+                     "METER_URL_MARKERS", "METER_UNIT"):
+            with self.subTest(name=name):
+                self.assertEqual(self.tokens("deploy/demo-host/planted.py",
+                                             f"{name} = None\n"), [name])
+
+    def test_a_clean_demo_host_text_has_no_hits(self) -> None:
+        self.assertEqual(self.tokens("deploy/demo-host/planted.py",
+                                     "provider: Near AI\nbase_url: https://cloud-api.near.ai/v1\n"),
+                         [])
 
 
 class AllowlistTests(unittest.TestCase):
