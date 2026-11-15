@@ -89,6 +89,8 @@ def firstboot_line(output: str) -> str:
     assert len(lines) == 2 and len(boot) == 1 and len(host) == 1, output
     assert lines[0] == host[0], output
     return boot[0]
+
+
 # A real ed25519 public key line; the measured `bb.key=` is its base64.
 BOOT_KEY_TEXT = (
     "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAICFh7hQkST5vRDolO3yqwCARRugZahMdc+WgR69JsoXG "
@@ -1408,7 +1410,7 @@ class FirstbootExchangeTests(unittest.TestCase):
             self.run_boot()
             self.assertEqual(firstboot.main(argv), 0)
 
-    def test_a_missing_token_fails_closed_with_one_line(self) -> None:
+    def test_a_missing_token_fails_closed_with_one_firstboot_line(self) -> None:
         self.write_cmdline(None)
         code, output = self.run_boot()
         self.assertEqual(code, 0)
