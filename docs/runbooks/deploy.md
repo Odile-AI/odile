@@ -61,11 +61,21 @@ git rev-parse HEAD          # record the deployed commit; §4.1 checks against i
 ./scripts/deploy.sh                 # apply; ends with `active` and `page 200`
 ```
 
-The first two output lines name the checkout and the runtime; the third is the
-guard verdict:
+The script resolves the repository root from its own path, so the first output
+line is the checkout — not `scripts/` — whichever directory you run it from.
+Measured on 2026-11-14 at `83eefd2`:
 
 ```text
-→ guard   HEAD bfe62fc contains main 0df4706
+→ source  /root/odile
+→ runtime /opt/odile
+→ guard   HEAD 83eefd2 contains main 83eefd2
+```
+
+A copy of the script outside `scripts/` — where `..` is not the checkout —
+refuses before the guard or any write, naming the directory it resolved:
+
+```text
+deploy: refused: <dir> is not the repository root (no app.py; run scripts/deploy.sh from the checkout)
 ```
 
 A refused deploy prints one stderr line, exits 1 and writes nothing (measured
@@ -100,6 +110,14 @@ except the host-only paths `scripts/deploy.sh` excludes:
 - `.worktrees/` — transient git worktree copies. Excluded so a deploy does not
   copy ~250 MB into the runtime, nor delete the runtime copy when deploying
   from a task worktree.
+
+- `scripts/deploy.sh` (tracked) and, on this host, the root-level copy of it
+  listed in `.git/info/exclude` — the entry point itself. Both are excluded
+  by root-anchored paths, so neither is copied into `/opt/odile`, and
+  `--delete` cannot remove the one that is not the rsync source. Before
+  2026-11-14 the tracked script resolved its source as `scripts/` and a run
+  from there planned 1305 file deletions, including `app.py` and every page
+  under `web/` (see §2).
 
 `tools/daily_visual.py` was also host-only. It has no consumer in the repo and
 no cron job references it, so it was retired, not restored; its only copy is in
@@ -398,11 +416,12 @@ install -o odile -g odile -m 600 \
   /var/backups/odile/waitlist-20261106T123433Z.db /var/lib/odile/waitlist.db
 rm -f /var/lib/odile/waitlist.db-wal /var/lib/odile/waitlist.db-shm
 
-# 3. Deploy the previous build with that build's own scripts/deploy.sh: 6c0535f is
-#    the 5 November build. Its script predates the main guard, so it needs no
-#    flag and installs exactly the units that tree carries.
+# 3. Deploy the previous build with that build's own entry point: 6c0535f is
+#    the 5 November build, and its entry point is ./deploy.sh at the tree root
+#    (it predates the scripts/ layout). Its script predates the main guard, so
+#    it needs no flag and installs exactly the units that tree carries.
 git worktree add /tmp/odile-rollback 6c0535f962ce4534accc6ec259ae6687b14360b4
-cd /tmp/odile-rollback && ./scripts/deploy.sh
+cd /tmp/odile-rollback && ./deploy.sh
 cd <checkout> && git worktree remove /tmp/odile-rollback
 
 # 4. Verify the old build serves
@@ -415,18 +434,29 @@ database backup also returns `user_version` to 0 and leaves only `waitlist`.
 A rollback loses every signup written after the backup, so record the backup
 timestamp in the incident note.
 
-Run the rollback tree's **own** `scripts/deploy.sh`. The current script expects the
-current tree: it installs `deploy/attest-refresh`, `deploy/seed`,
-`deploy/claim-worker` and `deploy/roadmap`, and none of the four exist at
-`6c0535f`, so copying it in aborts with
+Run the rollback tree's **own** entry point — for this build, `./deploy.sh` at
+the tree root; a target that carries the `scripts/` layout runs
+`scripts/deploy.sh` there instead. The current script expects the current tree:
+it installs `deploy/attest-refresh`, `deploy/seed`, `deploy/claim-worker` and
+`deploy/roadmap`, and none of the four exist at `6c0535f`, so copying it in
+aborts with
 `install: cannot stat 'deploy/attest-refresh/odile-service-atomic.conf'` after
 the rsync and before the restart (measured 2026-11-11 in a private mount
-namespace). A rollback target that already carries the guard — any commit after
-ODL-492 — runs its own script with `--allow-behind`; that is the flag's one
-use. The four units stopped in step 1 are the ones the newer tree added; the
-next main deploy re-enables all of them.
+namespace).
 
-The 5 November `scripts/deploy.sh` predates the `docs/growth` and `.worktrees` excludes,
+A rollback target that carries the guard — any commit after ODL-492 — runs its
+own entry point with `--allow-behind`; that is the flag's one use. Check that
+entry point before running it: until this fix, the entry point in `scripts/`
+resolves its rsync source as `scripts/`, so `./scripts/deploy.sh -n` from the
+worktree root prints `→ source  <tree>/scripts` and plans the live site's
+deletion. Fix the target's own copy first — replace `cd "$(dirname "$0")"` with
+`cd "$(dirname "$0")/.."` in its `scripts/deploy.sh`, then re-run `-n` until
+the first line is `→ source  <tree>` — and only then deploy. A tree at or after
+this fix resolves the checkout root itself and needs no edit. The four units
+stopped in step 1 are the ones the newer tree added; the next main deploy
+re-enables all of them.
+
+The 5 November `deploy.sh` predates the `docs/growth` and `.worktrees` excludes,
 so a rollback run as written deletes both from `/opt/odile`. Restore the growth
 workspace from the archive with the command in §2 after step 4; the
 `.worktrees` copy is transient and needs no restore. It also predates the tree

@@ -75,6 +75,10 @@ button[aria-label^="Effort:"] {
  *
  * Colour is BRAND's --ink (#1C1813) only. The demo ships light and dark mode
  * is not in V0.1, so there is no `light-dark()` second palette behaviour. */
+/* Display headings: the skin's own serif is not the brand voice. Cormorant
+   reaches h1/h2/h3 and heading roles only; body and UI stay on the sans. */
+html h1, html h2, html h3, html [role="heading"] { font-family: "Cormorant Garamond", "Iowan Old Style", Georgia, serif !important; }
+
 html p.wordmark {
   display: block !important;
   font-family: "Cormorant Garamond", "Iowan Old Style", Georgia, serif !important;
@@ -100,10 +104,11 @@ html p.wordmark span {
 
 /* The empty state's one sentence (ODL-390). It is the first thing a judge
  * reads after signing in, so it takes the brand's empty/loading role:
- * Cormorant 17 px / 1.55, --ink, 60ch. The two commands the sentence asks
+ * UI text, 17 px / 1.55, --ink, 60ch. The two commands the sentence asks
  * for are mono, per BRAND.md §Typography ("machine values are always mono"). */
 html p.wordmark + p {
-  font-family: "Cormorant Garamond", "Iowan Old Style", Georgia, serif !important;
+  font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto,
+    "Helvetica Neue", Arial, "DejaVu Sans", sans-serif !important;
   font-size: 17px !important;
   font-weight: 400 !important;
   line-height: 1.55 !important;
@@ -136,8 +141,9 @@ html p.wordmark + p code {
  * Only BRAND.md's values are used: --paper #EADFC4, --card #F2E9D4,
  * --panel #DDD0AE, --ink #1C1813, --soft #4A4136, the --line composite and
  * oxblood #6E2A2A as the destructive ink. The primary is ink, not a new
- * accent. The serif is the embedded Cormorant subset; the machine face
- * stays the vendor mono stack.
+ * accent. The display face is the embedded Cormorant subset (the wordmark
+ * and the skin's headings); the interface and prose are the bundle's own
+ * system sans stack; the machine face stays the vendor mono stack.
  */
 :root {
   --theme-foreground: #1c1813 !important;
@@ -166,7 +172,9 @@ html p.wordmark + p code {
   --dt-destructive-foreground: #eadfc4 !important;
   --dt-sidebar-border: rgba(28, 24, 19, 0.18) !important;
   --dt-user-bubble-border: rgba(28, 24, 19, 0.18) !important;
-  --dt-font-sans: "Cormorant Garamond", "Iowan Old Style", Georgia, serif !important;
+  --dt-font-sans: "OpenDyslexic", "Segoe WPC", "Segoe UI", -apple-system, BlinkMacSystemFont,
+    "SF Pro Text", "SF Pro Display", system-ui, sans-serif, "Apple Color Emoji",
+    "Segoe UI Emoji", "Segoe UI Symbol", "Noto Color Emoji", emoji !important;
   --ui-chat-surface-background: #eadfc4 !important;
   --ui-sidebar-surface-background: #eadfc4 !important;
   --ui-editor-surface-background: #eadfc4 !important;
@@ -190,6 +198,42 @@ html p.wordmark + p code {
  * the composer's scope. No new hue: --card #F2E9D4. */
 [data-slot="composer-root"] {
   --composer-fill: #f2e9d4 !important;
+}
+
+/* Reading is the product (ODL-503 follow-up).
+ *
+ * Cormorant set the chat at 14.3 px (13 px for the sidebar and the intro)
+ * and the assistant prose ran the full 1,120 px of the thread — a display
+ * face at caption size with a ~150-character measure. The interface face is
+ * the bundle's own system sans; this block gives the sentences the size and
+ * measure BRAND.md §Typography names for product prose: 16 px / 1.6,
+ * 60–72ch. The message paragraphs are capped, not the thread, so tables and
+ * terminal output keep their own width and scroll inside themselves.
+ */
+[data-slot="aui_thread-content"] {
+  --conversation-text-font-size: 16px !important;
+  --conversation-line-height: 1.6 !important;
+}
+
+[data-slot="aui_assistant-message-content"],
+[data-slot="aui_user-message-root"] {
+  font-size: 16px !important;
+  line-height: 1.6 !important;
+}
+
+[data-slot="aui_assistant-message-content"] .aui-md p,
+[data-slot="aui_assistant-message-content"] .aui-md li,
+[data-slot="aui_assistant-message-content"] .aui-md blockquote,
+[data-slot="aui_user-message-root"] .aui-md p,
+[data-slot="aui_user-message-root"] .aui-md li,
+[data-slot="aui_user-message-root"] .aui-md blockquote {
+  max-width: 60ch;
+  line-height: 1.6 !important;
+}
+
+[data-slot="aui_intro"] {
+  font-size: 16px !important;
+  line-height: 1.55 !important;
 }
 
 /* The raised surfaces the session menu opened (ODL-503 round 3).
@@ -412,7 +456,8 @@ a.odile-verify-link {
   padding: 0 10px;
   color: #1c1813;
   background: transparent;
-  font-family: "Cormorant Garamond", "Iowan Old Style", Georgia, serif;
+  font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto,
+    "Helvetica Neue", Arial, "DejaVu Sans", sans-serif;
   font-size: 10px;
   font-weight: 600;
   line-height: 1;

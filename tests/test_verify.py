@@ -983,7 +983,7 @@ class AccessReportTests(unittest.TestCase):
         five access lines as that machine's. The heading names the machine;
         the caption keeps the method and the date.
         """
-        page = (ROOT / "web" / "verify.html").read_text(encoding="utf-8")
+        page = (ROOT / "web" / "verify-public.html").read_text(encoding="utf-8")
         self.assertIn('<h2 id="access">The access report, from a test machine</h2>', page)
         self.assertIn('<p class="caption">Read from the machine, 10 November 2026</p>', page)
         self.assertNotIn("Bench report", page)
@@ -996,7 +996,7 @@ class AccessReportTests(unittest.TestCase):
         row; the 4 px pass moved the blocks around them. These are the exact
         declarations the brand review measured on the rendered page.
         """
-        page = (ROOT / "web" / "verify.html").read_text(encoding="utf-8")
+        page = (ROOT / "web" / "verify-public.html").read_text(encoding="utf-8")
         style = page.split("<style>", 1)[1].split("</style>", 1)[0]
         self.assertIn("font-size:2rem;font-weight:500;letter-spacing:-.03em", style)
         self.assertIn(
@@ -1014,7 +1014,7 @@ class AccessReportTests(unittest.TestCase):
         black panel that paints ink on ink (1.05:1) and the highlight vanishes
         while a reader copies the fingerprint or the measurement.
         """
-        page = (ROOT / "web" / "verify.html").read_text(encoding="utf-8")
+        page = (ROOT / "web" / "verify-public.html").read_text(encoding="utf-8")
         style = page.split("<style>", 1)[1].split("</style>", 1)[0]
         rule = re.search(
             r"pre code::selection\{background:var\(--([a-z-]+)\);color:var\(--([a-z-]+)\)\}",
@@ -1200,7 +1200,7 @@ class OwnReportTests(unittest.TestCase):
                 state=state, env=env, page=ROOT / "web" / "first-visit.html",
                 recovery=tmp_path / "recovery.txt", reload_command=[],
                 bind="127.0.0.1", port=0, caddy_stores=(),
-                verify_page=ROOT / "web" / "verify.html", report=report,
+                verify_page=ROOT / "web" / "verify-public.html", report=report,
                 attest=attest, report_command=[])
             server = ThreadingHTTPServer(("127.0.0.1", 0), first_visit.build_handler(service))
             port = server.server_address[1]
