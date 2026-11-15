@@ -63,9 +63,16 @@ class LoginPageTests(unittest.TestCase):
         self.assertIn('<p class="wordmark">Odile</p>', LOGIN_HTML)
         self.assertNotIn("Hermes Agent dashboard", LOGIN_HTML)
         self.assertNotIn("Nous", LOGIN_HTML)
-        self.assertIn('rel="icon"', LOGIN_HTML)
-        self.assertIn("r='7.5'", LOGIN_HTML)
-        self.assertIn("stroke-width='1.6'", LOGIN_HTML)
+        # ODL-505: the tab is the painted head, not the retired ring. The three
+        # links are the site pages' three, served by the demo's own page server
+        # through Caddy's exact handles.
+        self.assertIn('<link rel="icon" href="./favicon.ico" '
+                      'sizes="16x16 32x32 48x48">', LOGIN_HTML)
+        self.assertIn('<link rel="icon" type="image/png" sizes="32x32" '
+                      'href="./icon-32.png">', LOGIN_HTML)
+        self.assertIn('<link rel="apple-touch-icon" sizes="180x180" '
+                      'href="./apple-touch-icon.png">', LOGIN_HTML)
+        self.assertNotIn("data:image/svg+xml", LOGIN_HTML)
 
     def test_the_boundary_sentence_is_the_copy(self) -> None:
         self.assertIn(BOUNDARY_SENTENCE, LOGIN_HTML)

@@ -17,6 +17,11 @@ service's state file (the hashes).
     GET  /first-visit/reset       the reset form (recovery code + new password)
     POST /first-visit/reset       write a new hash; rotate the recovery code
     GET  /health                  ok
+    GET  /favicon.ico             the website icon, 16/32/48
+    GET  /icon-32.png             the website icon, 32
+    GET  /icon-192.png            the website icon, 192
+    GET  /icon-512.png            the website icon, 512
+    GET  /apple-touch-icon.png    the website icon, 180 on an opaque mount
 
 A refused link renders one of two pages: the spent token still offers the
 reset code, and a state with no recovery hash (the sign-in was never set, or
@@ -60,6 +65,12 @@ Design notes a reviewer should check:
   ``scrypt$n$r$p$salt$dk`` with n=2**14, r=8, p=1. The installer has its own
   copy of the two functions and ``tests/test_first_visit.py`` proves the copies
   agree byte for byte in both directions.
+* **The icons are the reviewed set, served from disk.** `/verify` and the
+  first-visit page link the five website-icon files by their site paths; this
+  service answers exactly those five and nothing else, with the reviewed
+  content types and a one-year immutable cache. The request path is a key in
+  the table below, so no filename comes from the request and there is no
+  traversal to guard; a missing file is a 404, not a 500.
 * **Fail loudly.** A write or a restart that fails answers 500 and leaves the
   token unspent, so the user can try again; the reason goes to stdout (journal)
   and never contains a secret.
@@ -125,6 +136,21 @@ DEFAULT_CADDY_STORES = (
     "/var/lib/caddy/.local/share/caddy/certificates",
     "/root/.local/share/caddy/certificates",
 )
+# The website icon set (ODL-504/ODL-505). The installer writes these five
+# files, pinned inside the signed installer, into this root; the pages link
+# them by the site paths below. A request path is a key in this table — the
+# filename never comes from the request — so the route cannot traverse.
+DEFAULT_ICONS = "/usr/local/lib/odile/icons"
+ICON_ROUTES = {
+    "/favicon.ico": ("favicon.ico", "image/x-icon"),
+    "/icon-32.png": ("icon-32.png", "image/png"),
+    "/icon-192.png": ("icon-192.png", "image/png"),
+    "/icon-512.png": ("icon-512.png", "image/png"),
+    "/apple-touch-icon.png": ("apple-touch-icon.png", "image/png"),
+}
+# The same cache the HQ routes send (ODL-504): the bytes never change under a
+# name, and the name changes when the rendition does.
+ICON_CACHE = "public, max-age=31536000, immutable"
 
 # The two keys this service owns in the tenant .env; the rest of the file
 # (the cookie secret) is preserved exactly.
@@ -811,7 +837,8 @@ class FirstVisit:
                  verify_page: Path = Path(DEFAULT_VERIFY_PAGE),
                  report: Path = Path(DEFAULT_REPORT),
                  attest: Path = Path(DEFAULT_ATTEST),
-                 report_command: list[str] | None = None):
+                 report_command: list[str] | None = None,
+                 icons: Path = Path(DEFAULT_ICONS)):
         self.state = state
         self.env = env
         self.page = page
@@ -824,6 +851,7 @@ class FirstVisit:
         self.report = report
         self.attest = attest
         self.report_command = report_command or []
+        self.icons = icons
 
     # -- helpers ---------------------------------------------------------
 
@@ -893,6 +921,24 @@ class FirstVisit:
         body = render(self.template(), "reset", title="Reset your sign-in — Odile",
                       error=error, username=self.username(), code=code)
         return 200, body
+
+    def icon(self, path: str) -> tuple[int, str, bytes] | None:
+        """One website-icon response: (status, content type, body).
+
+        ``None`` when ``path`` is not one of the five routes, so the caller
+        keeps its 404. A missing or unreadable file is a 404 too: the page's
+        icon must never be the reason a request 500s. The body is the installed
+        file's own bytes — the ones the signed installer pinned.
+        """
+        route = ICON_ROUTES.get(path)
+        if route is None:
+            return None
+        name, ctype = route
+        try:
+            data = (self.icons / name).read_bytes()
+        except OSError:
+            return 404, "text/plain; charset=utf-8", b"not found\n"
+        return 200, ctype, data
 
     # -- /verify (ODL-473) -----------------------------------------------
 
@@ -986,7 +1032,12 @@ def build_handler(service: FirstVisit):
         def _send(self, code: int, body: str, head: bool = False,
                   ctype: str = "text/html; charset=utf-8", close: bool = False,
                   filename: str = "") -> None:
-            data = body.encode("utf-8")
+            self._send_bytes(code, body.encode("utf-8"), head, ctype,
+                             close=close, filename=filename)
+
+        def _send_bytes(self, code: int, data: bytes, head: bool = False,
+                        ctype: str = "text/html; charset=utf-8", close: bool = False,
+                        filename: str = "", cache: str = "no-store") -> None:
             self.send_response(code)
             self.send_header("Content-Type", ctype)
             self.send_header("Content-Length", str(len(data)))
@@ -999,8 +1050,9 @@ def build_handler(service: FirstVisit):
                 # connection instead of corrupting the next one.
                 self.send_header("Connection", "close")
                 self.close_connection = True
-            self.send_header("Cache-Control", "no-store")
-            self.send_header("Pragma", "no-cache")
+            self.send_header("Cache-Control", cache)
+            if cache == "no-store":
+                self.send_header("Pragma", "no-cache")
             self.send_header("X-Content-Type-Options", "nosniff")
             self.send_header("X-Frame-Options", "DENY")
             self.send_header("Referrer-Policy", "no-referrer")
@@ -1072,6 +1124,15 @@ def build_handler(service: FirstVisit):
             query = parse_qs(url.query, keep_blank_values=True)
             if path == "/health":
                 return self._send(200, "ok\n", head, "text/plain; charset=utf-8")
+            # The website icon (ODL-505): five exact paths, the reviewed set.
+            # The bytes are immutable under their names, so a 200 may be
+            # cached for a year; a 404 is not, or a half-written install would
+            # be remembered as a missing icon.
+            icon = service.icon(path)
+            if icon is not None:
+                code, ctype, data = icon
+                return self._send_bytes(code, data, head, ctype,
+                                        cache=ICON_CACHE if code == 200 else "no-store")
             if path in ("/verify", "/verify/"):
                 code, body = service.verify()
                 return self._send(code, body, head)
@@ -1223,8 +1284,9 @@ def build_handler(service: FirstVisit):
 def serve(service: FirstVisit) -> int:
     server = ThreadingHTTPServer((service.bind, service.port), build_handler(service))
     server.daemon_threads = True
-    print("first-visit on %s:%d · state %s · env %s"
-          % (service.bind, service.port, service.state, service.env), flush=True)
+    print("first-visit on %s:%d · state %s · env %s · icons %s"
+          % (service.bind, service.port, service.state, service.env, service.icons),
+          flush=True)
     try:
         server.serve_forever()
     except KeyboardInterrupt:
@@ -1260,6 +1322,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--report-command", default=DEFAULT_REPORT_COMMAND,
                         help="command run after a sign-in is set, to rewrite the "
                              "access report; empty disables it")
+    parser.add_argument("--icons", default=DEFAULT_ICONS,
+                        help="the website-icon set this service serves "
+                             "(default %s)" % DEFAULT_ICONS)
     parser.add_argument("--print-state", action="store_true",
                         help="print a secret-free summary of the state file and exit")
     return parser
@@ -1301,6 +1366,7 @@ def main(argv: list[str] | None = None) -> int:
         report=Path(args.report_file),
         attest=Path(args.attest_file),
         report_command=report_command,
+        icons=Path(args.icons),
     )
     page_text(service.page)  # fail before binding, not on the first visit
     # A machine where ODL-473 has not landed has no verify page; /verify then
