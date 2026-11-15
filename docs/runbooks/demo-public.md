@@ -267,8 +267,9 @@ sudo -u tenant env HOME=/home/tenant HERMES_HOME=/home/tenant/.hermes \
     hermes sessions delete --yes <id>
 ```
 
-`--report` lists the live block's matcher names (`caddy.matchers`); the two
-left are `@tabicons` (the sign-in page's three tab files) and `@apidocs`. A
+`--report` lists the live block's matcher names (`caddy.matchers`); the three
+left are `@tabicons` (the sign-in page's three tab files), `@favicon` (the
+`.ico`-only `Content-Type` matcher inside that handle) and `@apidocs`. A
 block that names a `mutation` or `update` matcher fails both the deploy and the
 check.
 

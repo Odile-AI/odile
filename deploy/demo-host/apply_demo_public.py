@@ -1398,10 +1398,10 @@ def matchers(block: str) -> list[str]:
     """Every named matcher the block defines, in file order.
 
     Named so a reader can see the live shape: the demo's own `@tabicons`
-    static route (t_6b25f6e5) and `@apidocs` 404 are the only names left, and
-    the freeze's deny-by-default matcher is gone (t_69f1a5f3). Counting names
-    rather than grepping one literal also catches a matcher reintroduced under
-    different whitespace.
+    static route (t_6b25f6e5), its `@favicon` `Content-Type` matcher and
+    `@apidocs` 404 are the only names left, and the freeze's deny-by-default
+    matcher is gone (t_69f1a5f3). Counting names rather than grepping one
+    literal also catches a matcher reintroduced under different whitespace.
     """
     return re.findall(r"^\s*@([A-Za-z_][\w-]*)", block, re.M)
 
