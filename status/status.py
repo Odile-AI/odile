@@ -33,6 +33,12 @@ Definitions, because an uptime number without one is a decoration:
   reboot shorter than that window never leaves the ratio, because the machine
   comes back by itself.
 * *downtime* — accountable time that is not up.
+
+Odile's own demo machine is not a tenant and is not published.  Its password is
+public by design, so a judge can stop it, restart it or break it; counting its
+uptime would turn Odile's reliability figure into a function of who visited.
+`DEMO_SLUGS` names the tenancy ids the page leaves out of every aggregate and
+out of the incident list, and the page names no slug either way.
 """
 
 from __future__ import annotations
@@ -70,6 +76,13 @@ INCIDENT_KINDS = ("down",)
 INCIDENT_LIMIT = 5
 UTC = timezone.utc
 
+# Odile's own demo machine (the judge path).  Its password is published, so a
+# judge can stop or break it; its uptime is Odile's demo, not a tenant's, and
+# publishing it would make the reliability figure depend on who visited.  The
+# page leaves these tenancy ids out of the aggregate and the incident list.
+# `odl-7971a8` is the demo's tenancy id and survives a rebuild of the machine.
+DEMO_SLUGS = frozenset({"odl-7971a8"})
+
 # The three questions the page answers, as SQL.  They are kept here rather
 # than hidden in the module so `--json` can print them: the evidence for a
 # number is the query that produced it.
@@ -86,7 +99,7 @@ QUERIES = {
         " WHERE at >= :since AND at <= :now ORDER BY slug, at"
     ),
     "incidents": (
-        "SELECT kind, first_seen_at, resolved_at FROM health_alerts"
+        "SELECT slug, kind, first_seen_at, resolved_at FROM health_alerts"
         f" WHERE kind IN ({', '.join(repr(kind) for kind in INCIDENT_KINDS)})"
         " AND (resolved_at IS NULL OR resolved_at >= :since)"
         " ORDER BY first_seen_at DESC, id DESC LIMIT 5"
@@ -330,16 +343,21 @@ def _state_segments(
     *,
     start: int,
     end: int,
+    exclude: frozenset[str] = frozenset(),
 ) -> dict[str, list[tuple[int, int, str]]]:
     """Per slug, the in-service state that holds over [start, end), in order."""
     by_slug: dict[str, list[tuple[int, str]]] = {}
     for row in events:
+        if row["slug"] in exclude:
+            continue
         by_slug.setdefault(row["slug"], []).append((_epoch(row["created_at"]), row["to_state"]))
     # A tenant row without events (an older database) still has a state and a
     # creation stamp; treat that as one segment rather than hiding the tenant.
     # A tenant with events must not also get this row, or the current state
     # would be replayed at the creation time and rewrite its own history.
     for row in tenants:
+        if row["slug"] in exclude:
+            continue
         if row["slug"] not in by_slug:
             by_slug[row["slug"]] = [(_epoch(row["created_at"]), row["state"])]
 
@@ -378,9 +396,17 @@ def _coverage(rows: list[sqlite3.Row], *, start: int, end: int) -> dict[str, lis
     return covered
 
 
-def _incidents(rows: list[sqlite3.Row], *, now: int, start: int) -> tuple[Incident, ...]:
+def _incidents(
+    rows: list[sqlite3.Row],
+    *,
+    now: int,
+    start: int,
+    exclude: frozenset[str] = frozenset(),
+) -> tuple[Incident, ...]:
     incidents: list[Incident] = []
     for row in rows:
+        if row["slug"] in exclude:
+            continue
         first = int(row["first_seen_at"])
         resolved = row["resolved_at"]
         last = int(resolved) if resolved is not None else None
@@ -393,8 +419,18 @@ def _incidents(rows: list[sqlite3.Row], *, now: int, start: int) -> tuple[Incide
     return tuple(incidents[:INCIDENT_LIMIT])
 
 
-def collect(path: str | Path = DEFAULT_STATE_DB, *, now: int | None = None) -> Totals:
-    """Compute one aggregate over the trailing 30 days.  No tenant is named."""
+def collect(
+    path: str | Path = DEFAULT_STATE_DB,
+    *,
+    now: int | None = None,
+    exclude: frozenset[str] = DEMO_SLUGS,
+) -> Totals:
+    """Compute one aggregate over the trailing 30 days.  No tenant is named.
+
+    `exclude` is the demo machine's tenancy ids (`DEMO_SLUGS` by default): its
+    rows are read but never counted, so a silent demo cannot become Odile's
+    published downtime and its ledger row is not one of the five incidents.
+    """
     moment = int(now if now is not None else datetime.now(tz=UTC).timestamp())
     start = moment - WINDOW_SECONDS
     connection = _connect(path)
@@ -412,7 +448,7 @@ def collect(path: str | Path = DEFAULT_STATE_DB, *, now: int | None = None) -> T
     finally:
         connection.close()
 
-    segments = _state_segments(events, tenants, start=start, end=moment)
+    segments = _state_segments(events, tenants, start=start, end=moment, exclude=exclude)
     coverage = _coverage(beats, start=start, end=moment)
 
     accountable_total = 0
@@ -442,9 +478,10 @@ def collect(path: str | Path = DEFAULT_STATE_DB, *, now: int | None = None) -> T
         up_seconds=up_total,
         down_seconds=downtime,
         first_accountable_at=first_seen,
-        incidents=_incidents(incident_rows, now=moment, start=start),
+        incidents=_incidents(incident_rows, now=moment, start=start, exclude=exclude),
         inputs={
             "tenants": len(tenants),
+            "excluded_tenants": sum(1 for row in tenants if row["slug"] in exclude),
             "state_events": len(events),
             "heartbeats": len(beats),
             "incident_rows": len(incident_rows),
