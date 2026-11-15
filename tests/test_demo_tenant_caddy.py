@@ -93,6 +93,14 @@ class ShapeTests(unittest.TestCase):
         for keep in ("handle /login*", "handle /verify", "handle /attestation",
                      f"reverse_proxy {GATEWAY}", "@apidocs path /openapi.json"):
             self.assertIn(keep, text, f"the block lost {keep!r}")
+        # ODL-505: the five icon paths belong to the machine's own page server,
+        # exact, with no Cache-Control of Caddy's own — the service sends the
+        # immutable on a 200 and the no-store on its 404.
+        for icon in ("/favicon.ico", "/icon-32.png", "/icon-192.png",
+                     "/icon-512.png", "/apple-touch-icon.png"):
+            self.assertIn(f"handle {icon} {{\n\t\treverse_proxy 127.0.0.1:8091",
+                          text, f"the block lost the {icon} route")
+            self.assertNotIn(f"handle {icon} {{\n\t\theader", text)
         # `admin off` stays the machine's setting; the block must not re-enable
         # the admin endpoint (nor rely on a hot reload that is not there).
         self.assertIn("admin off", text)

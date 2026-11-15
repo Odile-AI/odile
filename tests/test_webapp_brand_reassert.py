@@ -200,6 +200,78 @@ class HelperSpliceTests(unittest.TestCase):
         self.assertIn("ok", result.stdout)
 
 
+    # -- the tab (ODL-505) -------------------------------------------------
+
+    def test_the_icon_splice_is_the_installers(self):
+        vendor_tab_shell = VENDOR_SHELL.replace(
+            "  <head>\n",
+            "  <head>\n"
+            '    <link rel="icon" type="image/png" sizes="180x180" href="./apple-touch-icon.png" />\n'
+            '    <link rel="apple-touch-icon" sizes="180x180" href="./apple-touch-icon.png" />\n'
+            '    <link rel="shortcut icon" href="./apple-touch-icon.png" />\n')
+        for shell in (vendor_tab_shell, VENDOR_SHELL):
+            self.assertEqual(self.helper.with_icons(shell),
+                             self.installer.with_icons(shell),
+                             "one splice, or a re-assert and a re-install disagree")
+            self.assertEqual(self.helper.ICON_LINK_LINES,
+                             self.installer.ICON_LINK_LINES)
+            self.assertEqual(self.helper.ICON_COMMENT,
+                             self.installer.ICON_COMMENT)
+
+    def test_a_rebuild_restores_the_tab_and_leaves_the_vendor_file(self):
+        vendor_tab_shell = VENDOR_SHELL.replace(
+            "  <head>\n",
+            "  <head>\n"
+            '    <link rel="icon" type="image/png" sizes="180x180" href="./apple-touch-icon.png" />\n'
+            '    <link rel="apple-touch-icon" sizes="180x180" href="./apple-touch-icon.png" />\n'
+            '    <link rel="shortcut icon" href="./apple-touch-icon.png" />\n')
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            bundle = root / "dist-webapp" / "index.html"
+            bundle.parent.mkdir()
+            bundle.write_text(vendor_tab_shell, encoding="utf-8")
+            (bundle.parent / "apple-touch-icon.png").write_bytes(b"vendor mark")
+            source = root / "webapp-brand.js"
+            source.write_bytes(TEMPLATE.read_bytes())
+            icons = root / "icons"
+            icons.mkdir()
+            for name in ("favicon.ico", "apple-touch-icon.png"):
+                (icons / name).write_bytes((ROOT / "web" / name).read_bytes())
+            with contextlib.redirect_stdout(io.StringIO()):
+                changed = self.helper.apply(bundle, source, icons_root=icons)
+            self.assertTrue(changed)
+            text = bundle.read_text(encoding="utf-8")
+            self.assertEqual(text.count('href="./odile-'), 3)
+            self.assertNotIn('href="./apple-touch-icon.png"', text)
+            self.assertEqual((bundle.parent / "odile-favicon.ico").read_bytes(),
+                             (ROOT / "web" / "favicon.ico").read_bytes())
+            self.assertEqual((bundle.parent / "odile-apple-touch-icon.png").read_bytes(),
+                             (ROOT / "web" / "apple-touch-icon.png").read_bytes())
+            self.assertEqual((bundle.parent / "apple-touch-icon.png").read_bytes(),
+                             b"vendor mark", "the vendor's own file is not ours")
+            with contextlib.redirect_stdout(io.StringIO()) as output:
+                changed = self.helper.apply(bundle, source, icons_root=icons)
+            self.assertFalse(changed)
+            self.assertIn("same", output.getvalue())
+            self.assertIn("2 icon files", output.getvalue())
+
+    def test_a_machine_without_the_icon_root_keeps_the_vendors_links(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            bundle = root / "index.html"
+            bundle.write_text(VENDOR_SHELL, encoding="utf-8")
+            source = root / "webapp-brand.js"
+            source.write_bytes(TEMPLATE.read_bytes())
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output):
+                changed = self.helper.apply(bundle, source,
+                                            icons_root=root / "icons")
+            self.assertTrue(changed, "the brand splice still runs")
+            self.assertIn("wait", output.getvalue())
+            self.assertIn("Webapp icons", output.getvalue())
+            self.assertNotIn("odile-favicon.ico", bundle.read_text(encoding="utf-8"))
+
+
 class HelperUnionTests(unittest.TestCase):
     """The re-assert this branch deploys carries all three splices (ODL-505).
 
