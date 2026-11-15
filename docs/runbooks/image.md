@@ -1332,9 +1332,22 @@ and after the visit. Three writers now make it the machine's:
 
 #### 13.9.1 The build, and the image's secret
 
-The production build of the card's code head (`de261b3`: `git diff --stat
-de261b3 -- deploy installer release` prints nothing, so the build inputs are
-the commit's), with the fixture seed the boot will use:
+The production build ran at `de261b3`, the card's code head: the image inputs
+(`deploy/image`, `release/`, `installer/`, the two pages, the unlock script,
+`attest.py` and `skills/`) are that commit's. `main` then moved one image input
+— `deploy/image/webapp-chrome.css`, ODL-503's type roles — so at the handoff
+head the same set names exactly that file and nothing else:
+
+```sh
+$ git diff --name-only de261b3..dcba4e4 -- deploy/image release installer \
+      web/first-visit.html web/verify.html scripts/verify_and_unlock.sh attest.py skills
+deploy/image/webapp-chrome.css
+```
+
+That file is CSS the Webapp serves, not a sign-in input; the installer's
+`--self-test` and `tools/recut_release.py --check` pass at the merge head, and
+a rebuild there differs in that file alone. The build, with the fixture seed the
+boot will use:
 
 ```sh
 $ OUT=/var/tmp/odile-odl522-prod
