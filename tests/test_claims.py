@@ -439,6 +439,46 @@ class PrivacyTests(unittest.TestCase):
         self.assertEqual(unmatched, [], "sentences with no CLAIMS.md row: %r" % (unmatched,))
 
 
+class ReadmeTests(unittest.TestCase):
+    """The README's opening is public copy: every sentence is a deck row.
+
+    `claims_lint` catches a forbidden phrase, not an unapproved sentence. Savio
+    rewrote the README on the public tree on 2026-11-14 (`2d8999d`, `a5c3428`)
+    and its headline, its lede and one closing clause were privacy sentences no
+    row carried; the lint stayed green (t_0d4ebfd8). The FAQ and the privacy
+    page already have this test; the opening block is the part Savio rewrites by
+    hand, so it gets one too. The rest of the README is component lists and the
+    demo table, not claims.
+    """
+
+    PAGE = ROOT / "README.md"
+
+    def opening(self) -> str:
+        text = self.PAGE.read_text(encoding="utf-8")
+        head = text.split("\n## ", 1)[0]
+        # The H1 is the product name, not a sentence; a heading has no full stop
+        # and would otherwise fuse with the headline under the splitter.
+        body = "\n".join(line for line in head.splitlines() if not line.startswith("# "))
+        # A markdown link is a citation, not copy: compare the words.
+        body = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", body)
+        return normalise(body)
+
+    def test_every_readme_opening_sentence_maps_to_the_deck(self):
+        deck = deck_copy(ROOT)
+        allowed = {normalise(sentence) for sentence in UI_SENTENCES}
+        unmatched = [
+            sentence
+            for sentence in sentences(self.opening())
+            if normalise(sentence) not in allowed and normalise(sentence) not in deck
+        ]
+        self.assertEqual(unmatched, [], "sentences with no CLAIMS.md row: %r" % (unmatched,))
+
+    def test_the_opening_span_is_not_empty(self):
+        # A silent pass is the failure mode: if the split stops finding the
+        # opening, the mapping above would check nothing. Pin its shape.
+        self.assertGreaterEqual(len(sentences(self.opening())), 3)
+
+
 class PublicSurfaceTests(unittest.TestCase):
     def test_public_surfaces_pass_the_lint(self):
         result = subprocess.run(
