@@ -923,6 +923,23 @@ deployed `2026.11.14-8` (installer `0c53a722…`, 1,356,516 bytes; manifest
 t_ae833f3f's, `-2` was this branch's earlier open cut (demoted), `-3` is
 ODL-522's; `-4` is later than every cut by `generated_at`.
 
+**The `2026.11.15-6` cut (t_afb081be's support re-embed).** The support
+program's session wrapper now blocks SIGTERM/SIGHUP/SIGINT before it writes
+`event=start`, installs the handlers, starts the shell and only then unblocks,
+so a signal that lands while the shell is being forked still writes
+`event=end` (rc=143, signal=SIGTERM) instead of leaving only the start line.
+`installer/embed_support.py` re-embedded the program and the installer was
+re-signed; `install.md` §12.6 has the full record. Installer `e8a33d47…`
+(1,416,049 bytes), manifest `92d3f747…` (49,957 bytes; its only move against
+`-4` is `installer_sha256`, so it is a surgical re-cut and not a root
+rebuild), skills `9d82653f…` unchanged, `--self-test` PASS,
+`--verify-signature` OK and `tools/recut_release.py --check` green. It is
+committed, not deployed: measured 2026-11-15T09:15Z, the URL serves the
+deployed `2026.11.14-8` (installer `0c53a722…`, 1,356,516 bytes; manifest
+`3a532eff…`). The id ledger: `-8` is ODL-505's, `2026.11.15-1` is
+t_ae833f3f's, `-4` is ODL-474's, `-5` is t_ab95ec2a's open cut; `-6` is
+later than every cut by `generated_at`.
+
 ## 6. The guest: check, apply, rollback
 
 The machine's v1 tree is its identity: `manifest.py build` is

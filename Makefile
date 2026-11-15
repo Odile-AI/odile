@@ -36,10 +36,29 @@ PY_FILES = $(shell find . $(PRUNE) -o -name '*.py' -print | sort)
 SH_FILES = $(shell find . $(PRUNE) -o \( -name '*.sh' -o -path './.githooks/pre-commit' \) -print | sort)
 endif
 
-.PHONY: check acceptance prereqs test test-unit self-test compile lint claims brand roadmap secrets leak hooks fresh-check deploy-dry \
+.PHONY: check check-inner acceptance prereqs test test-unit self-test compile lint claims brand roadmap secrets leak hooks fresh-check deploy-dry \
 	demo demo-check demo-reset uki-cycle release-sign seed-cert
 
-check: prereqs secrets leak test self-test compile lint claims brand roadmap
+# `make check` is the CPU ceiling on this host: the sealed-image fixture drives
+# `cryptsetup reencrypt` at about four cores, so two suites that overlap take
+# the six vCPUs and a third makes load 13 (measured 2026-11-14). One host-wide
+# lock serializes the gate; a suite started in another worktree queues behind
+# this one and prints why (tools/check_lock.py). Override CHECK_LOCK only to
+# exercise the mechanism: a distinct path stops serializing the host.
+CHECK_LOCK ?= /var/lock/odile-check.lock
+CHECK_LOCK_WAIT ?= 3600
+# `$(MAKE)` in a recipe is executed even under `make -n`, and would take the
+# real lock during a dry run. An alias keeps the recursion but lets -n print.
+MAKE_BIN := $(MAKE)
+CHECK_LOCK_PY := $(PYTHON) tools/check_lock.py --lock "$(CHECK_LOCK)" --wait "$(CHECK_LOCK_WAIT)" --
+
+check:
+	@$(CHECK_LOCK_PY) $(MAKE_BIN) --no-print-directory check-inner
+
+# The gate proper. Separate from `check` so the lock spans every step -- the
+# light linters as well as `test` and `self-test` -- and two runs cannot
+# interleave their halves on a six-vCPU host.
+check-inner: prereqs secrets leak test self-test compile lint claims brand roadmap
 	@echo "make check: OK"
 
 # The handoff gate. A card runs this before it asks for review, so the verifier
@@ -59,7 +78,7 @@ prereqs:
 test: test-unit
 
 test-unit:
-	$(PYTHON) -m unittest discover -s tests -v
+	@$(CHECK_LOCK_PY) $(PYTHON) -m unittest discover -s tests -v
 
 # The installer's own suite: it verifies the shipped bytes against the
 # detached signature and, in a checkout, the embedded tenant files against
@@ -67,7 +86,7 @@ test-unit:
 # green with a stale pair (ODL-403). The signature check shells out to openssl,
 # which prereqs names.
 self-test: prereqs
-	$(PYTHON) installer/odile_install.py --self-test
+	@$(CHECK_LOCK_PY) $(PYTHON) installer/odile_install.py --self-test
 
 compile: prereqs
 	@test -n "$(PY_FILES)" || { echo "make compile: no .py files found" >&2; exit 1; }

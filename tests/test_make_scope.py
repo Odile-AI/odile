@@ -23,8 +23,8 @@ import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-GIT = shutil.which("git")
-MAKE = shutil.which("make")
+GIT = shutil.which("git") or ""
+MAKE = shutil.which("make") or ""
 SHELLCHECK = shutil.which("shellcheck")
 
 TRACKED_SH = "#!/bin/sh\nset -eu\nprintf '%s\\n' tracked\n"
@@ -39,8 +39,7 @@ def scrub_hook_environment() -> dict[str, str]:
 
     `make check` runs from `.githooks/pre-commit`, where git sets GIT_DIR and
     GIT_INDEX_FILE; a fixture repository that inherits them commits to the outer
-    branch instead of its own. The fixture's HOME also points inside itself so
-    no global git config (a hooks path, an identity) applies.
+    branch instead of its own.
     """
     return {key: value for key, value in os.environ.items()
             if not key.startswith("GIT_")}
@@ -60,7 +59,7 @@ class Fixture(unittest.TestCase):
     """A throwaway repository: tracked files, a hook, and planted warnings."""
 
     def setUp(self) -> None:
-        if GIT is None or MAKE is None:
+        if not GIT or not MAKE:
             self.skipTest("make or git is not installed")
         self.root = Path(tempfile.mkdtemp(prefix="odl-338-"))
         self.addCleanup(shutil.rmtree, self.root, True)
@@ -95,10 +94,10 @@ class Fixture(unittest.TestCase):
                          f"git {' '.join(args)}: {result.stderr}")
         return result.stdout
 
-    def make(self, *args: str, **kwargs: object) -> subprocess.CompletedProcess:
+    def make(self, *args: str) -> subprocess.CompletedProcess:
         return subprocess.run([MAKE, "--no-print-directory", *args], cwd=self.root,
                               env=self.env(), capture_output=True, text=True,
-                              timeout=120, **kwargs)
+                              timeout=120)
 
     def planned_lint(self) -> list[str]:
         dry_run = self.make("-n", "lint")
@@ -153,7 +152,7 @@ class ThisCheckoutTest(unittest.TestCase):
     """The checkout the suite runs in obeys the same rule."""
 
     def setUp(self) -> None:
-        if GIT is None or MAKE is None:
+        if not GIT or not MAKE:
             self.skipTest("make or git is not installed")
         env = scrub_hook_environment()
         inside = subprocess.run([GIT, "rev-parse", "--is-inside-work-tree"],

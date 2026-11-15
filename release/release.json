@@ -1,8 +1,8 @@
 {
   "artifacts": {
     "installer": {
-      "sha256": "4e41122ea9a41fcdc2be60d6178110c0d4bef22813bc4639bea3fc6fdc76c58e",
-      "size": 1413845,
+      "sha256": "e8a33d47166fad6989e5c6e1115e5c36d439bae1aa247a0b969fba898b2b4cea",
+      "size": 1416049,
       "url": "odile_install.py"
     },
     "skills": {
@@ -14,14 +14,14 @@
   "boot": {
     "kernel": "6.12.115+deb13.1-amd64"
   },
-  "generated_at": "2026-11-15T06:20:00Z",
+  "generated_at": "2026-11-15T09:15:00Z",
   "manifest": {
-    "sha256": "e933b5416ac953dc66ee008347b580dfba460294f14337969dc884b63f62fcf8",
+    "sha256": "92d3f7475729310d3e04f988809f5f1878068cbae234e41a40e8eca012aae8ad",
     "signature_url": "manifest.json.sig",
     "url": "manifest.json"
   },
-  "notes": "ODL-474: the five v3.10 access sentences land on the deck, the public pages and the installed help surface, re-cut at the head that merges ODL-522's -3 (the per-machine session secret). The installer embeds the merged sources: skills/odile-help (v3.10), support/odile_support.py placed at /usr/local/sbin/odile-support with odile-diag beside it, scripts/backup.py, installer/first_visit.py d1c761f0... (ODL-505's five icons, t_ae833f3f's page re-cut and ODL-522's SECRET_KEY + write_env_hash refusal) and web/first-visit.html 810a596d...; release/manifest.json is the merged head's fresh-root document (48 skills, audit 539e205f...), whose diff against -3 is installer_sha256 and the odile-help row. The id is 2026.11.15-4: -8 is ODL-505's, -1 is main's type re-cut, -2 was this branch's open cut (demoted), -3 is ODL-522's. It is committed, not deployed.",
+  "notes": "t_afb081be: the support session wrapper installs its SIGTERM/SIGHUP/SIGINT handlers before the start line can be read, so a signal that lands while the shell is being forked still writes event=end (rc=143, signal=SIGTERM) instead of leaving only the start line. The installer embeds the re-cut support/odile_support.py; everything else the -4 installer carried is unchanged. release/manifest.json is -4's fresh-root document with only installer_sha256 re-derived by tools/recut_release.py, so this is a surgical re-cut, not a root rebuild. The id is 2026.11.15-6: -8 is ODL-505's, 2026.11.15-1 is t_ae833f3f's, -4 is ODL-474's, -5 is t_ab95ec2a's open cut, and -6 is later than every cut by generated_at. It is committed, not deployed.",
   "product": "odile",
-  "release": "2026.11.15-4",
+  "release": "2026.11.15-6",
   "schema": 1
 }
