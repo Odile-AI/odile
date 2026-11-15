@@ -2,17 +2,20 @@
 # runs before a commit. A red run means a broken tree, not a missing runner.
 #
 # Five jobs, one per surface:
-#   check            make check — prereqs, tree secret scan, tests, the
-#                    installer's self-test, compile, shellcheck, claims, brand
+#   check            make check — prereqs, tree secret scan, publication scan,
+#                    tests, the installer's self-test, compile, shellcheck,
+#                    claims, brand, roadmap
 #   fresh-check      clone HEAD and run the same gate inside the clone
 #   demo-check       the local demo's headless acceptance run, no network
-#   publish-lint     the publication gate over the built tree: leak_scan --tree
-#                    with the tree's own allowlist, read-only, no push
+#   publish-lint     the publication gate over the built tree: the BASE
+#                    branch's leak_scan and allowlist ran over this tree, then
+#                    the tree's own scanner — a PR cannot widen its own gate
 #   history-secrets  scan every commit, not the one-commit shallow default
 #
-# This file is a shipped path. The build copies `.github/` out of the source
-# revision (tools/build_public_tree.py), so the workflow that runs on the
-# published tree is the one edited on HQ; there is no overlay copy to drift.
+# This file is a shipped path in the repository, and the repository is the
+# source of truth: the copy these five jobs run is the one in the tree at the
+# pushed head. An edit made here reaches it as an ordinary commit on `main` —
+# never a merge, never a replacement root.
 #
 # The roadmap check is not a job. tools/roadmap_page.py and docs/backlog.yaml
 # are private, so a runner on the public tree cannot render the page; the check
@@ -189,13 +192,73 @@ jobs:
       # container, which git refuses as "dubious ownership" without this.
       - name: Trust this checkout
         run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
-      # The gate that ships: no public address, mailbox, home path, account id,
-      # credential assignment or private literal in the built tree. Every
-      # exception is one row of the tree's own leak-allow.tsv (reason and
-      # expiry), which the scanner loads from the root of this checkout. The
-      # job is read-only: it opens no PR and pushes nothing.
+      # The gate must not run the scanner it is gating. A pull request that
+      # weakens tools/leak_scan.py or widens leak-allow.tsv would otherwise pass
+      # its own gate: the job used to execute both files out of the PR's
+      # checkout. Fetch the base branch and run ITS scanner with ITS allowlist
+      # over this tree. The workspace is ephemeral and the job pushes nothing, so
+      # copying the base allowlist over the checkout changes no published byte.
+      # A PR that needs a new allowlist row (class, credential, reason and
+      # expiry) therefore cannot grant it to itself; a maintainer lands the row
+      # on main first. The second step still runs the tree's own scanner, so the
+      # pair catches both a weakened scanner and a widened allowlist. The forbid
+      # list holds the private literals themselves, so the source-of-truth
+      # repository does not carry it at its root — carrying it would publish what
+      # it forbids. Where the base has one (a built tree) this step installs it
+      # and the class runs; the tree's own step below names its own copy when it
+      # is present, and says so when it is absent. The job is read-only: it opens
+      # no PR and pushes nothing.
+      - name: Gate the tree with the base branch's scanner, not the PR's
+        env:
+          BASE_REF: ${{ github.base_ref }}
+          EVENT_NAME: ${{ github.event_name }}
+          REF_NAME: ${{ github.ref_name }}
+          PUSH_BASE: ${{ github.event.before }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT_NAME" = "pull_request" ]; then
+            git fetch --no-tags --depth=1 origin "$BASE_REF"
+            base_sha=$(git rev-parse FETCH_HEAD)
+          else
+            # A push: github.event.before is the commit this one lands on, and
+            # HEAD^ is the previous new commit on a multi-commit push, not the
+            # pre-push main. The checkout is depth 1 and a plain fetch into a
+            # shallow clone stays shallow, so the base commit's tree is absent
+            # and `git show "$base_sha:…"` fails; unshallow first (this
+            # repository is one root plus ordinary commits). A branch's first
+            # push has an all-zero before; fall back to HEAD's parent only then.
+            if [ "$(git rev-parse --is-shallow-repository)" = "true" ]; then
+              git fetch --no-tags --unshallow origin
+            fi
+            git fetch --no-tags origin "$REF_NAME"
+            base_sha="${PUSH_BASE:-}"
+            case "$base_sha" in
+              ""|0000000000000000000000000000000000000000)
+                base_sha=$(git rev-parse HEAD^ 2>/dev/null || git rev-parse HEAD) ;;
+            esac
+          fi
+          echo "base: ${EVENT_NAME} at $base_sha"
+          git show "$base_sha:tools/leak_scan.py" > /tmp/base-leak_scan.py
+          git show "$base_sha:leak-allow.tsv" > /tmp/base-leak-allow.tsv
+          cp leak-allow.tsv /tmp/pr-leak-allow.tsv
+          cp /tmp/base-leak-allow.tsv leak-allow.tsv
+          if git cat-file -e "$base_sha:leak-forbid.txt" 2>/dev/null; then
+            git show "$base_sha:leak-forbid.txt" > leak-forbid.txt
+            echo "forbid list: base copy installed"
+          else
+            echo "forbid list: absent at base (that class is off in this tree)"
+          fi
+          /usr/bin/python3 /tmp/base-leak_scan.py --tree --root "$PWD"
+          cp /tmp/pr-leak-allow.tsv leak-allow.tsv
       - name: Scan the built tree with its own allowlist
-        run: /usr/bin/python3 tools/leak_scan.py --tree
+        run: |
+          set -euo pipefail
+          if [ -f leak-forbid.txt ]; then
+            /usr/bin/python3 tools/leak_scan.py --tree --forbid-file leak-forbid.txt
+          else
+            /usr/bin/python3 tools/leak_scan.py --tree
+            echo "forbid list: absent (leak-forbid.txt) — the forbidden-value class did not run in this tree"
+          fi
 
   history-secrets:
     name: history-secrets
@@ -242,9 +305,11 @@ jobs:
           test -n "$scanned"
           test "$scanned" -eq "$expected"
           echo "scanned ${scanned} commits; matches git rev-list --count --all"
-      # The repository is one root commit of the built tree, replaced never
-      # appended. On a push to main that invariant is the assertion: a second
-      # commit on main is a red run, not a new history. (A pull request is a
+      # The repository is the source of truth: one root, cut once from `main`
+      # `65e2764` (`24ee323`), and every commit after it is an ordinary commit
+      # on top. On a push to main that shape is the assertion — exactly one
+      # root, no merges, and the head is the pushed sha. A second root or a
+      # merge is a red run; a new ordinary commit is not. (A pull request is a
       # branch, so its own commits are what the scan above reads.)
       - name: On a push to main, assert the history shape
         if: github.event_name == 'push'

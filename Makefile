@@ -1,8 +1,9 @@
 # Odile — one command that proves the tree is healthy.
 #
-# There is no remote CI yet, so `make check` is the gate and
-# `.githooks/pre-commit` runs it on every commit. It needs /usr/bin/python3,
-# shellcheck and openssl; see README.md, "Tests and the local gate".
+# `make check` is the gate, `.githooks/pre-commit` runs it on every commit, and
+# `.github/workflows/check.yml` runs it on every push and pull request. It needs
+# /usr/bin/python3, shellcheck and openssl; see README.md, "Tests and the local
+# gate".
 
 PYTHON ?= /usr/bin/python3
 SHELLCHECK ?= shellcheck
@@ -24,10 +25,10 @@ PRUNE = \( -path ./.git -o -path ./.worktrees -o -path ./.venv -o -path ./.fresh
 PY_FILES = $(shell find . $(PRUNE) -o -name '*.py' -print | sort)
 SH_FILES = $(shell find . $(PRUNE) -o \( -name '*.sh' -o -path './.githooks/pre-commit' \) -print | sort)
 
-.PHONY: check acceptance prereqs test test-unit self-test compile lint claims brand roadmap secrets hooks fresh-check deploy-dry \
+.PHONY: check acceptance prereqs test test-unit self-test compile lint claims brand roadmap secrets leak hooks fresh-check deploy-dry \
 	demo demo-check demo-reset uki-cycle release-sign seed-cert
 
-check: prereqs secrets test self-test compile lint claims brand roadmap
+check: prereqs secrets leak test self-test compile lint claims brand roadmap
 	@echo "make check: OK"
 
 # The handoff gate. A card runs this before it asks for review, so the verifier
@@ -104,6 +105,13 @@ roadmap:
 #   /usr/bin/python3 tools/secret_scan.py --history
 secrets:
 	$(PYTHON) tools/secret_scan.py --tree
+
+# The publication gate: no address, mailbox, home path, account id or credential
+# assignment in the tree. It runs in `check` as well as in CI (`publish-lint`),
+# because `.githooks/pre-commit` runs `check` — a leak dies before it becomes a
+# commit, which is the only point where the fix is cheap.
+leak: prereqs
+	$(PYTHON) tools/leak_scan.py --tree
 
 # Enable the committed pre-commit hook in this clone. Idempotent: git keeps the
 # path in local config, so run it once per clone.
