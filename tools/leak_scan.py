@@ -144,7 +144,7 @@ EMAIL_ALLOW = {
 }
 # The service accounts the product ships — including the retired HQ demo's,
 # whose home path dated records still name; every other /home/<name>/ is a person.
-HOME_ALLOW = {"me", "user", "odile", "odiledemo", "runner", "linuxbrew", "ubuntu"}
+HOME_ALLOW = {"me", "user", "odile", "runner", "linuxbrew", "ubuntu"}
 # /root/ is the service root's home, so its product-owned paths are not a person
 # either. The operator checkout path is deliberately absent: it names this
 # operator's working copy and the public build replaces it with <checkout>.
@@ -380,6 +380,8 @@ def secret_assignment(name: str, value: str) -> bool:
         return False        # a dotted expression, not a value
     if re.match(r"^_?[a-z][a-z0-9]*(?:_[a-z0-9]+)+$", value):
         return False        # a snake_case identifier, not a value
+    if re.fullmatch(r"[A-Z][A-Z0-9_]+", value):
+        return False        # an environment-variable name, not a value
     return shannon(value) >= MIN_ASSIGNMENT_ENTROPY
 
 

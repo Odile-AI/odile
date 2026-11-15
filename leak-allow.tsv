@@ -56,3 +56,5 @@ ssh-fingerprint	*	sha256:5aac542ccbea	the boot-key fingerprint asserted by the p
 ssh-fingerprint	*	sha256:d013dbd86272	a boot-key fingerprint in an audit fixture; public key	2027-12-31
 ssh-fingerprint	*	sha256:74853506a072	a host-key fingerprint in a boot-record fixture; public host identity	2027-12-31
 credential-assignment	deploy/demo-host/apply_demo_public.py	sha256:8902d6757a1e	the retired demo session seed: a public constant, and the id is a uuid5 over it	2027-12-31
+home-path	docs/*	sha256:2ba89d6fdadd	the retired HQ demo account home in a dated architecture/runbook record; the fence forbids the mechanism, history keeps the record	2027-12-31
+ssh-fingerprint	*	sha256:faa8e4b1225f	the 2026-11-10 boot record's boot-key fingerprint in a dated image transcript; public key	2027-12-31

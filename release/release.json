@@ -1,8 +1,8 @@
 {
   "artifacts": {
     "installer": {
-      "sha256": "13863f6c04f22a798137933a7a75904693367d9147b375ee6579231421c7521e",
-      "size": 1356641,
+      "sha256": "e0cec88a958ba80cb1fd29e5d9157eefac1ce775c4ad3e83fa51025e1570e646",
+      "size": 1357306,
       "url": "odile_install.py"
     },
     "skills": {
@@ -14,14 +14,14 @@
   "boot": {
     "kernel": "6.12.115+deb13.1-amd64"
   },
-  "generated_at": "2026-11-15T02:50:19Z",
+  "generated_at": "2026-11-15T05:10:00Z",
   "manifest": {
-    "sha256": "4d0d5a2ffb711204c26a60c451c9ac9f84960c1ee85edf23325eded696d7b960",
+    "sha256": "4f0e3ef9b4d846fec83e57be6f92c5d30a4edd66ed07e3a1daf26e2ce130f3cc",
     "signature_url": "manifest.json.sig",
     "url": "manifest.json"
   },
-  "notes": "t_ae833f3f: the installer-embedded tenant pages and skin are re-cut onto ODL-503's type roles, on top of ODL-505's icon set. web/verify.html (00552a5c) and web/first-visit.html (810a596d) set prose on the platform text serif at 18 px / 1.6 and notes at 16 px / 1.6, with Cormorant only on the wordmark and h1/h2/h3; templates/skin.yaml names the display face on headings and leaves body prose on the bundle's UI sans. The five icon files, the five tenant icon routes, the Webapp's three tab links and the rebuild re-assert are ODL-505's, carried unchanged from -8; installer/first_visit.py is -8's 16f820b4. installer_sha256, the installer size, the manifest hash and this document move; the vendor pin c73dad4d, the skills artifact 09be3cd1 and the meter-free rows are -8's.",
+  "notes": "ODL-522: the session secret is the machine's, re-cut at the head that merges main 842006b (the -1 tenant-verify type cut, installer 13863f6c..., manifest 4d0d5a2f...) and ODL-505's -8. The signed installer embeds installer/first_visit.py d1c761f0325516b2ccc8611344eb53827090c7ad70e6901d3d451f495f0e4bb6 (ODL-505's five icons, t_ae833f3f's page re-cut and this card's SECRET_KEY + write_env_hash refusal, merged not chosen) and web/first-visit.html 810a596d561fb7ae28fcd67b864a836fe2c5b808dce223b89d573fd9d622ef29. deploy/image/install-stack.sh's first boot writes a fresh discarded sign-in hash and a fresh HERMES_DASHBOARD_BASIC_AUTH_SECRET for the machine, so the secret in the published image no longer signs a tenant's session; the first-visit POST keeps that secret byte for byte and refuses an .env without one (500, 'The sign-in was not set. Try again.', no token spent). The image secret, two machine secrets, the four-line forge pair (image 401 / machine 200 / random 401 / the login's own token 200, refresh cookie withheld) and the post-signin_set_at reboot are recorded with their commands in docs/runbooks/image.md 13.9. The manifest is the merged head's fresh-root document with installer_sha256 re-derived by tools/recut_release.py. The id is 2026.11.15-3: -8 is ODL-505's, 2026.11.15-1 is main's tenant-verify type cut and 2026.11.15-2 is port/odl-474's open cut. The vendor pin c73dad4d, the skills artifact and the meter-free rows are unchanged.",
   "product": "odile",
-  "release": "2026.11.15-1",
+  "release": "2026.11.15-3",
   "schema": 1
 }

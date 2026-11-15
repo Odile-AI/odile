@@ -952,7 +952,7 @@ Verify (this is also step 2 of the ritual):
 ```sh
 $ ./installer/odile_install.py --verify-signature --pubkey installer/odile-signing-key.pub
 signing key  sha256 13e8c2aee8263f550033448c8193a82b89498f533f52943e09c14d22e5b036e2 · SHA256:ZyFEbkw2oetDml63XaHTix0kUrR2kAVGZaaeDAHvXu8
-signature: OK (sha256 13863f6c04f22a798137933a7a75904693367d9147b375ee6579231421c7521e)
+signature: OK (sha256 e0cec88a958ba80cb1fd29e5d9157eefac1ce775c4ad3e83fa51025e1570e646)
 ```
 
 The first value is `sha256sum` of the exact PEM file the run used — here the
@@ -973,14 +973,14 @@ A one-byte edit anywhere — including a change made after a valid signature was
 issued — fails against the same detached signature:
 
 ```sh
-$ cp installer/odile_install.py /var/tmp/odile-t_ae833f3f-edited.py
-$ printf 'x' >> /var/tmp/odile-t_ae833f3f-edited.py
-$ sha256sum /var/tmp/odile-t_ae833f3f-edited.py
-b462ab8bd6492fd0d24880a2354e6734d1bc9445e9ffe26b527d25148b1377ac  /var/tmp/odile-t_ae833f3f-edited.py
-$ /usr/bin/python3 /var/tmp/odile-t_ae833f3f-edited.py --verify-signature \
+$ cp installer/odile_install.py /tmp/edited.py
+$ printf 'x' >> /tmp/edited.py
+$ sha256sum /tmp/edited.py
+c90475cdf36404b2827c90777162f8074b288eed95bbf6078afaf70c9009602a  /tmp/edited.py
+$ /usr/bin/python3 /tmp/edited.py --verify-signature \
       --pubkey installer/odile-signing-key.pub --signature installer/odile_install.py.sig
 signing key  sha256 13e8c2aee8263f550033448c8193a82b89498f533f52943e09c14d22e5b036e2 · SHA256:ZyFEbkw2oetDml63XaHTix0kUrR2kAVGZaaeDAHvXu8
-signature: BAD (sha256 b462ab8bd6492fd0d24880a2354e6734d1bc9445e9ffe26b527d25148b1377ac)
+signature: BAD (sha256 c90475cdf36404b2827c90777162f8074b288eed95bbf6078afaf70c9009602a)
 $ echo $?
 3
 ```
@@ -1007,7 +1007,9 @@ icon links on the merged head that also carries `main`'s re-signed `-4` pair
 inside the installer, the five tenant routes, the Webapp's three tab links and
 the re-assert helper) ported onto the one-root tree and re-cut there,
 t_9c2d31f1's re-embedded `/verify` page, t_781fc5cb's demo-lede `/verify` page
-(`bf4dda17…`), ODL-514's seed-certificate
+(`bf4dda17…`), ODL-522's per-machine session secret (the first boot mints a
+fresh one; the page keeps it and refuses an `.env` with none), ODL-514's
+seed-certificate
 chain (the release key certifies the
 seed key; the first boot and the installer both walk it), t_ae833f3f's
 re-cut of the two embedded tenant pages and the skin onto BRAND.md's type
@@ -1015,8 +1017,8 @@ roles (`/verify` and the first-visit form on the text serif, the display face
 only on the wordmark and h1/h2/h3; `templates/skin.yaml` names the display
 face on headings), the simulation's
 page server started with the layout's own icon root (§12.6) and the
-self-test's whole-bundle hash (`8ea15e2`), sha256 `13863f6c…` (1,356,641
-bytes, `--verify-signature` OK); the edited copy above is 1,356,642 bytes. The BAD line
+self-test's whole-bundle hash (`8ea15e2`), sha256 `e0cec88a…` (1,357,306
+bytes, `--verify-signature` OK); the edited copy above is 1,357,307 bytes. The BAD line
 prints the edited copy's own sha256 — the `sha256sum` above — so the hex moves
 whenever the installer's bytes do; `signature: BAD` and exit 3 are the
 invariant. The edited copy is a different `INSTALLER_PATH`, so this runs the
@@ -1171,7 +1173,7 @@ builder command with a transcript; everything after it is the image.
 | 5 | the signed measured UKI and the pre-sealed disk | **yes, round 8 at 10:28Z, saved 14:42:53Z and booted 14:43:54Z** — UKI `5cb31808…`, disk `c1278242…`, measurement `9f01725a…`, 4-vCPU pin, published 10:29Z; the earlier builds and the defect each exposed are in `docs/evidence/m1-tenant.md` §9–§9.8 and `docs/evidence/m1-image.md` |
 | 6 | a fresh setup token bound to `31a63bbb` | **yes** — ledger `67de1ba9…`, live until 2026-11-13T10:23Z; its plaintext is the `odile.token=` of the sealed line |
 | 7 | the owner's boot key, a passphrase, any operator key | **none** — the image's `bb.key` is a throwaway public key whose private half is shredded |
-| 8 | a signed installer a stranger can obtain (independent of the image) | **yes** — on 2026-11-11 the served release `2026.11.11-5` shipped the strict-bar installer `fde7a48f…`, its `.sig`, the published key and a skills tarball carrying `odile-recipes` (§12.6); the repository's cut is `2026.11.15-1` (`13863f6c…` installer, 1,356,641 bytes, `4d0d5a2f…` manifest, §12.6) — re-cut at the head that merged `main`'s `-8` (ODL-505's icon set and page server, `0c53a722…`) and ODL-503's type re-cut of the two embedded tenant pages and the skin — and the served URL serves `2026.11.14-8` (`0c53a722…` installer, 1,356,516 bytes, manifest `3a532eff…` — measured 2026-11-15T02:52Z) until a `./deploy.sh` from a `main` that carries this merge; that live cut carries the `c73dad4d…` vendor pin, and an image a build of this tree makes carries the `2026.11.15-1` pair in its `release/` directory, so the machine's `/manifest` and `/usr/local/bin/odile-install.sh` agree with each other. The live tenant's image is still `2026.11.11-8` (`4aee80c5…`, `1ed9dcad…`) until it is re-provisioned |
+| 8 | a signed installer a stranger can obtain (independent of the image) | **yes** — on 2026-11-11 the served release `2026.11.11-5` shipped the strict-bar installer `fde7a48f…`, its `.sig`, the published key and a skills tarball carrying `odile-recipes` (§12.6); the repository's cut is `2026.11.15-3` (`e0cec88a…` installer, 1,357,306 bytes, `4f0e3ef9…` manifest, §12.6) — re-cut at the head that merges `main`'s `-1` (t_ae833f3f's type re-cut, `13863f6c…`) and carries ODL-522's per-machine session secret — and the served URL serves `2026.11.14-8` (`0c53a722…` installer, 1,356,516 bytes, manifest `3a532eff…` — measured 2026-11-15T02:52Z) until a `./deploy.sh` from a `main` that carries this merge; that live cut carries the `c73dad4d…` vendor pin, and an image a build of this tree makes carries the `-3` pair in its `release/` directory, so the machine's `/manifest` and `/usr/local/bin/odile-install.sh` agree with each other. The live tenant's image is still `2026.11.11-8` (`4aee80c5…`, `1ed9dcad…`) until it is re-provisioned |
 
 ### 12.2 The builder's half (everything before the panel)
 
@@ -1798,6 +1800,25 @@ cut time: `2026.11.15-1` was carried by this branch only and the live cut was
 `https://odile.fyi/release.json` serves `2026.11.14-8` (installer `0c53a722…`,
 1,356,516 bytes; manifest `3a532eff…`), and the next `./deploy.sh` from a
 `main` that carries this merge publishes `2026.11.15-1`.
+
+**The `2026.11.15-3` cut (ODL-522, the session secret is the machine's, re-cut
+at the merged head).** While this card was in review `main` took ODL-505's
+`-8` and t_ae833f3f's `-1`, so the branch merged `main` `842006b` — the
+installer/release conflicts resolved by taking `main`'s side whole, then
+`installer/embed_first_visit.py` re-embedded the merged
+`installer/first_visit.py` (`d1c761f0…`: ODL-505's five icons, t_ae833f3f's
+page re-cut and this card's `SECRET_KEY` + `write_env_hash` refusal), the
+installer was re-signed and `tools/recut_release.py` re-cut the chain after
+demoting the conflicting id. The installer is `e0cec88a…` (1,357,306 bytes);
+`release/odile_install.py` is the same bytes; `release/manifest.json` is the
+merged head's fresh-root document with `installer_sha256` re-derived
+(`4f0e3ef9…`); `release/release.json` is `d132f7c7…` and names the `-3` cut.
+The id is `2026.11.15-3`: `-8` is ODL-505's, `-1` is `main`'s type re-cut and
+`2026.11.15-2` is port/odl-474's open cut; the live cut at this cut's
+measurement (2026-11-15T02:52Z) was `2026.11.14-8`. `--self-test` PASSes and
+`--verify-signature` prints OK; the image build at `a651208` carries the
+earlier `bd3c8963…` pair (image.md §13.9 records that image's boot), and the
+per-machine secret is unchanged by this re-cut. It is committed, not deployed.
 
 The clock starts at the build's `uki.sh --sign` and stops when
 `https://<slug>.odile.fyi/login` answers 200 over TLS. The gate is 30 minutes.
