@@ -121,7 +121,13 @@ class PublishLintUsesTheBaseScanner(unittest.TestCase):
         self.assertLess(base, own, "the tree's own scanner must not run first")
 
     def test_the_job_still_scans_with_the_tree_scanner(self):
-        self.assertIn("run: /usr/bin/python3 tools/leak_scan.py --tree", self.block)
+        self.assertIn("tools/leak_scan.py --tree", self.block)
+        # The tree's own scan names the forbid list when the tree carries one
+        # (a built tree), so a missing list is a finding there; the
+        # source-of-truth repository cannot carry the list, so the step says
+        # the class did not run instead of skipping it in silence.
+        self.assertIn("--forbid-file leak-forbid.txt", self.block)
+        self.assertIn("the forbidden-value class did not run in this tree", self.block)
 
     # -- behaviour: run the step's own shell against a fixture tree ----------
     def test_the_step_fails_a_pr_that_weakens_its_own_scanner(self):
