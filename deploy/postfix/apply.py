@@ -18,7 +18,8 @@ committed themselves, and a fresh host is exactly where they go missing:
     still looks right, so the database is checked by asking it the questions
     Postfix will ask, not by trusting its presence;
   * the two local mailboxes — `dsn` for VERP bounces and DMARC reports,
-    `help` for replies — each a nologin user with a Maildir.
+    `help` for the support spool — each a nologin user with a Maildir. No
+    reader consumes the support spool yet.
 
 The SASL account database (/etc/sasldb2) is *state*, not config: it holds
 tenant secrets, is created with saslpasswd2, and never appears in git. This
@@ -59,7 +60,9 @@ class Mailbox(NamedTuple):
 MAILBOXES = (
     Mailbox("dsn", Path("/var/mail/dsn"),
             "every VERP sender and every unmatched address under mail.odile.fyi"),
-    Mailbox("help", Path("/var/mail/help"), "replies to help@odile.fyi"),
+    Mailbox("help", Path("/var/mail/help"),
+            "the support spool every help@, abuse@ and postmaster@ message lands in; "
+            "no reader consumes it yet"),
 )
 
 # source (relative to this directory), destination, owner, group, mode
@@ -359,6 +362,8 @@ def self_test() -> int:
     entries = virtual_entries(HERE / "virtual")
     check("the catch-all routes to dsn", entries.get("@mail.odile.fyi"), "dsn")
     check("help@odile.fyi routes to help", entries.get("help@odile.fyi"), "help")
+    check("abuse@odile.fyi routes to help", entries.get("abuse@odile.fyi"), "help")
+    check("postmaster@odile.fyi routes to help", entries.get("postmaster@odile.fyi"), "help")
 
     real_getpwnam = pwd.getpwnam
     real_run = subprocess.run

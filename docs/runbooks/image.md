@@ -1337,14 +1337,31 @@ The production build ran at `a651208`, the commit that merges `main` `fcc87b2`
 (ODL-505's `-8`, installer `0c53a722…`) and re-cuts the release at that head
 (`2026.11.15-3`, installer `bd3c8963…`, manifest `0574d0ac…`): the image inputs
 (`deploy/image`, `release/`, `installer/`, the two pages, the unlock script,
-`attest.py` and `skills/`) are that commit's. The runbook edit that records
-this run moves no image input, so the same set is empty at the handoff head:
+`attest.py` and `skills/`) are that commit's. After the build, `main` took
+t_ae833f3f's `-1` (a type re-cut of the two embedded tenant pages), the branch
+merged it at `842006b` and re-cut the same id at that head
+(`e0cec88a…`, manifest `4f0e3ef9…`), so the boot transcript below is the
+`a651208` image's and this is the one moved input set:
 
 ```sh
-$ git diff --name-only a651208..HEAD -- deploy/image release installer \
+$ git diff --name-only a651208 -- deploy/image release installer \
       web/first-visit.html web/verify.html scripts/verify_and_unlock.sh attest.py skills
-$ (no output)
+installer/odile_install.py
+installer/odile_install.py.sig
+release/manifest.json
+release/manifest.json.sig
+release/odile_install.py
+release/odile_install.py.sig
+release/release.json
+release/release.json.sig
+web/first-visit.html
+web/verify.html
 ```
+
+No `deploy/image` byte moved, and `installer/first_visit.py` (`d1c761f0…`) is
+the same file in both pairs: the image carries the `bd3c8963…` installer and
+`web/first-visit.html` `4d7c4960…`, a build at the handoff head carries
+`e0cec88a…` and the type re-cut page `810a596d…`.
 
 The build's own head line and the fixture seed the boot uses:
 

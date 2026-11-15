@@ -68,19 +68,20 @@ customCSS: |
    *
    * The skin engine paints the palette; this block reaches the few things a
    * palette cannot say. Every value is BRAND.md's, and no font host is
-   * contacted: the stack below is system-local, the closest available serif on
-   * the machine. BRAND.md §Typography allows the fallback stack to carry the
-   * page when the embedded face cannot.
+   * contacted: the display stack names the embedded Cormorant subset first,
+   * then the platform serif. Body and prose stay the interface role the
+   * bundle owns (BRAND.md §Typography: the Webapp's own UI sans, 16 px / 1.6
+   * for chat), so the display face never sets a sentence.
    */
   :root {
-    --odile-serif: "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, "DejaVu Serif", serif;
+    --odile-display: "Cormorant Garamond", "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, serif;
   }
 
-  /* Headings: the closest available serif, at the sheet's weight. Body stays
-   * the bundle's quiet sans. */
+  /* Headings: the display face. Body and prose stay the bundle's own UI sans
+   * at the vendor's sizes (BRAND.md §Typography: the interface face). */
   h1, h2, h3, h4, h5, h6,
   [role="heading"] {
-    font-family: var(--odile-serif) !important;
+    font-family: var(--odile-display) !important;
     font-weight: 500 !important;
     letter-spacing: -0.02em !important;
   }
@@ -92,7 +93,7 @@ customCSS: |
    * turn ink into a white smudge on paper. */
   p.wordmark {
     display: block !important;
-    font-family: var(--odile-serif) !important;
+    font-family: var(--odile-display) !important;
     font-size: 32px !important;
     font-weight: 500 !important;
     line-height: 0.88 !important;
