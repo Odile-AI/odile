@@ -482,12 +482,16 @@ synthetic KDS chain. It trades test fidelity against publishing a silicon id.
 ## 11. §4 re-measured and closed (ODL-906-F4, 2026-11-15)
 
 The platform layer was rebuilt as a script that sets every control and then
-**reads every one back**. It was run twice: first on a throwaway public
-repository, then on `Odile-AI/odile` with `--profile=public-open`. The values
-below are the live repository, read directly from the API at 05:47Z (not from
-the script's own output); the throwaway run produced the same 32 ok / 3 gaps / 0
-failures on a user-owned public repository and was then deleted (`GET` → 404,
-`public_repos` → 0).
+**reads every field it sets back**. It was run twice: first on a throwaway
+public repository, then on `Odile-AI/odile` with `--profile=public-open`; both
+were re-measured at 07:48Z after the round-2 review. The values below are the
+live repository, read directly from the API (not from the script's own output).
+The script's own table on the throwaway was 37 ok / 3 gaps / 0 failures; the
+independent read-back on the same repository was 33 ok / 4 gaps over 37 rows
+(its extra gap is the `advanced_security` row it carries separately). On the
+live repository the script reads 37 ok / 10 gaps / 0 failures and the
+independent read-back 34 ok / 10 gaps over 44 rows. The throwaway was deleted
+(`GET` → 404, `public_repos` → 0).
 
 | Control | Endpoint | Measured |
 |---|---|---|
@@ -500,17 +504,17 @@ failures on a user-owned public repository and was then deleted (`GET` → 404,
 | Dependabot alerts | `GET …/vulnerability-alerts` | `204` |
 | Dependabot security updates | `GET repos/…` | `enabled` |
 | default workflow permissions | `GET …/actions/permissions/workflow` | `read`, cannot approve PR reviews |
-| merge shape | `GET repos/…` | squash only, no merge commit, no rebase, delete branch on merge, update branch |
+| merge shape | `GET repos/…` | squash only, no merge commit, no rebase, delete branch on merge, update branch; `has_wiki`/`has_projects` false |
 | branch protection | `GET …/branches/main/protection` | five contexts (`check`, `publish-lint`, `history-secrets`, `fresh-check`, `demo-check`), strict, no force push, no deletion, conversation resolution required |
 | `enforce_admins` | same | `false` — **by design** (`public-open`: the publishing account is a repository admin and pushes `main` directly; binding admins would stop every publish) |
 | required PR reviews | same | `null` — same design |
 | required signed commits (main) | same | `false` — **gap, deferred** (below) |
-| Actions policy | `GET …/actions/permissions` | `allowed_actions: selected`, `sha_pinning_required: true` |
+| Actions policy | `GET …/actions/permissions` | `enabled: true`, `allowed_actions: selected`, `sha_pinning_required: true` |
 | Actions allowlist | `GET …/actions/permissions/selected-actions` | only `actions/checkout@*` and `github/codeql-action@*` |
 | artifact + log retention | `GET …/actions/permissions/artifact-and-log-retention` | `7` days (was 90) |
 | fork-PR approval | `GET …/actions/permissions/fork-pr-contributor-approval` | `all_external_contributors` (was `first_time_contributors`) |
-| CodeQL default setup | `GET …/code-scanning/default-setup` | `configured` (was `not-configured`) |
-| tag ruleset | `GET …/rulesets/27297820` | `target: tag`, `active`; rules `deletion`, `update`, `non_fast_forward`, `required_signatures` |
+| CodeQL default setup | `GET …/code-scanning/default-setup` | `configured` (was `not-configured`), `query_suite: default` |
+| tag ruleset | `GET …/rulesets/27297820` | `target: tag`, `active`, conditions `include: ~ALL`, `exclude: []`; rules `deletion`, `update`, `non_fast_forward`, `required_signatures` |
 | org plan | `GET orgs/Odile-AI` | `free` |
 | org push-protection policy | `GET orgs/Odile-AI/code-security/configurations` | **403** — member token |
 | org ruleset | `GET orgs/Odile-AI/rulesets` | **404** — member token |
@@ -544,19 +548,28 @@ failures on a user-owned public repository and was then deleted (`GET` → 404,
    so enabling the rule now would reject their merges. The signing path itself
    works: an SSH signing key is registered on the publishing account and a
    signed commit is `verified: true` at the API. The tag ruleset already carries
-   `required_signatures`; it refused a tag whose push introduced an unsigned
-   commit and accepted one at a signed commit. The step that remains is to
-   enable the branch rule once the unsigned branches have drained — not to
-   invent a mechanism.
+   `required_signatures`; a clean positive control on a throwaway accepted a tag
+   push that introduced only a signed commit (local `%G?` = `G`, API
+   `verified=true reason=valid`) and refused a tag push that introduced an
+   unsigned commit, and one whose signed tip sat on an unsigned ancestor. The
+   enable step that remains is owned by **`t_476c7a6f`** (parented on ODL-231,
+   the last known unsigned branch) — not a missing mechanism.
 4. **The tag ruleset is real.** Deleting a tag answers `GH013 "Cannot delete
-   this tag"`; moving one answers `GH013 "Cannot update this protected ref"`.
-   A tag placed on a commit already on the remote is not re-checked (the rule
-   reads the objects the push introduces), so the signature half becomes
-   universal only with signed commits on main.
+   this tag"`; moving one answers `GH013 "Cannot update this protected ref"` /
+   `"Cannot force-push to this tag"`. A tag placed on a commit already on the
+   remote is not re-checked (the rule reads the objects the push introduces), so
+   the signature half becomes universal only with signed commits on main. Round
+   1's transcript mis-labelled `v0.0.11` as "a tag at a signed commit accepted";
+   it was `rc=1` at unsigned ancestor `99b52bb`. The round-2 drill
+   (`docs/ops/evidence/ODL-906-F4/tag-ruleset.txt`) carries a clean acceptance
+   case instead: `v0.0.1` on a signed commit introduced by that push, `rc=0`.
 5. **The gate no longer runs the scanner it is gating.** `publish-lint` used to
    execute `tools/leak_scan.py` and `leak-allow.tsv` from the PR's checkout; a
    PR that added an early `return 0` and an allowlist row for its own leaked
    address passed its own gate (measured: `rc 0`). The job now fetches the base
    branch and runs **its** scanner with **its** allowlist over the PR tree,
    then the tree's own scanner. The same drilled PR now fails on the base pass
-   (`FINDING public-ip README.md:44`, `rc 1`).
+   (`FINDING public-ip README.md:43`, `rc 1` at base `d5c63fb`). On a push the
+   base is `github.event.before`, not `HEAD^` (which is the previous new commit
+   on a multi-commit push); `tests/test_ci_gate_scanner.py` executes the step's
+   own shell against a fixture tree rather than asserting YAML text.
