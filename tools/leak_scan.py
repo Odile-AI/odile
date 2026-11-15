@@ -26,9 +26,11 @@ Classes:
                          the service account the product ships.
 * ``basic-auth-url``     a URL that carries a username and a password.
 * ``phone``              an E.164 number.
-* ``forbidden-value``    a literal from the private list (``--forbid-file``),
-                         which is the one file a public tree must not carry: the
-                         vendor account ids and box ids.
+* ``forbidden-value``    a literal from the list named by ``--forbid-file``: the
+                         vendor account ids, box ids and checkout path that must
+                         never appear in a published tree. The list itself is the
+                         one file that carries them, so it is not scanned for its
+                         own literals.
 
 Allowlist discipline. Every exception is one line of ``leak-allow.tsv``:
 
@@ -37,6 +39,12 @@ Allowlist discipline. Every exception is one line of ``leak-allow.tsv``:
 The digest is over the matched value, so a row cannot hide a *different* value at
 the same path. A row past its expiry is itself a finding. A row without a reason
 is itself a finding. There is no wildcard rule, and no path-wide row.
+
+The forbid list. The default is ``leak-forbid.txt`` at the root of the tree, and
+the public tree carries one (``tools/build_public_tree.py`` copies it). A missing
+default is printed in the header, so a skip is never silent; an explicitly named
+``--forbid-file`` that does not exist is a finding and exit 2, because the caller
+asked for that list and did not get it.
 
 Usage:
 
@@ -67,6 +75,7 @@ MIN_ASSIGNMENT_LENGTH, MIN_ASSIGNMENT_ENTROPY = 20, 3.3
 SKIP_SUFFIXES = (".sig",)
 SKIP_DIRS = (".git", ".worktrees", ".fresh-clone", ".venv", "__pycache__", "node_modules")
 ALLOW_FILE = "leak-allow.tsv"
+DEFAULT_FORBID = "leak-forbid.txt"
 
 # Addresses that are never a leak: loopback, private, link-local, documentation.
 IP_ALLOW = (
@@ -388,13 +397,17 @@ def scan_forbidden(text: str, path: str, forbid: list[tuple[str, re.Pattern[str]
 
 
 def scan_tree(root: Path, allows: list[Allow], today: date,
-              forbid: list[tuple[str, re.Pattern[str]]]) -> Report:
+              forbid: list[tuple[str, re.Pattern[str]]],
+              skip: set[str] | None = None) -> Report:
     report = Report("tree")
+    skip = skip or set()
     listed = subprocess.run(["git", "-C", str(root), "ls-files", "-z"], capture_output=True).stdout.split(b"\0")
     untracked = subprocess.run(["git", "-C", str(root), "ls-files", "-z", "--others", "--exclude-standard"],
                                capture_output=True).stdout.split(b"\0")
     paths = sorted({p.decode("utf-8", "replace") for p in listed + untracked if p})
     for relative in paths:
+        if relative in skip:
+            continue
         if any(part in SKIP_DIRS for part in relative.split("/")):
             continue
         if relative.endswith(SKIP_SUFFIXES):
@@ -418,8 +431,10 @@ def scan_tree(root: Path, allows: list[Allow], today: date,
 
 
 def scan_history(root: Path, allows: list[Allow], today: date,
-                 forbid: list[tuple[str, re.Pattern[str]]]) -> Report:
+                 forbid: list[tuple[str, re.Pattern[str]]],
+                 skip: set[str] | None = None) -> Report:
     report = Report("history")
+    skip = skip or set()
     commits = [c.decode() for c in subprocess.run(
         ["git", "-C", str(root), "rev-list", "--all", "--reverse"],
         capture_output=True).stdout.split() if c]
@@ -442,6 +457,8 @@ def scan_history(root: Path, allows: list[Allow], today: date,
     assert process.stdin and process.stdout
     try:
         for blob, (commit, path) in first.items():
+            if path in skip:
+                continue
             process.stdin.write(blob.encode() + b"\n")
             process.stdin.flush()
             header = process.stdout.readline().decode().split()
@@ -491,8 +508,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--history", action="store_true")
     parser.add_argument("--all", action="store_true")
     parser.add_argument("--root", default=".")
-    parser.add_argument("--forbid-file", default="leak-forbid.txt",
-                        help="file of private literals, one per line: label<TAB>regex")
+    parser.add_argument("--forbid-file", default=None,
+                        help="file of private literals, one per line: label<TAB>regex "
+                             "(default: leak-forbid.txt at the tree root; a missing "
+                             "default is reported, a named file that is missing exits 2)")
     args = parser.parse_args(argv)
 
     root = Path(args.root).resolve()
@@ -502,14 +521,38 @@ def main(argv: list[str] | None = None) -> int:
 
     allows, problems = load_allow(root)
     forbid: list[tuple[str, re.Pattern[str]]] = []
-    forbid_path = root / args.forbid_file
-    if forbid_path.exists():
-        for line in forbid_path.read_text(encoding="utf-8").splitlines():
+    forbid_problems: list[str] = []
+    named = args.forbid_file is not None
+    forbid_name = args.forbid_file or DEFAULT_FORBID
+    forbid_path = Path(forbid_name)
+    if not forbid_path.is_absolute():
+        forbid_path = root / forbid_path
+    if forbid_path.is_file():
+        labels = 0
+        for number, line in enumerate(forbid_path.read_text(encoding="utf-8").splitlines(), 1):
             if not line.strip() or line.startswith("#"):
                 continue
             label, _, pattern = line.partition("\t")
-            if pattern:
-                forbid.append((label.strip(), re.compile(pattern)))
+            if not label.strip() or not pattern.strip():
+                forbid_problems.append(f"{forbid_name}:{number}: expected label<TAB>regex")
+                continue
+            forbid.append((label.strip(), re.compile(pattern)))
+            labels += 1
+        print(f"forbid list:     {forbid_name} ({labels} labels)")
+    elif named:
+        # The caller asked for this list; a scan without it would silently skip a
+        # whole class, so this is a finding, not a note.
+        print(f"FINDING allow-file  --forbid-file {forbid_name}: no such file")
+        return 2
+    else:
+        # The default is absent in the private checkout, where the list lives
+        # under docs/ops/. Say so, so a skip is never silent.
+        print(f"forbid list:     absent ({forbid_name}) — the forbidden-value class did not run")
+    skip: set[str] = set()
+    try:
+        skip = {forbid_path.resolve().relative_to(root).as_posix()}
+    except ValueError:
+        skip = set()
     today = date.today()
 
     modes = ["tree", "history"] if args.all else (
@@ -519,8 +562,12 @@ def main(argv: list[str] | None = None) -> int:
     for problem in problems:
         print(f"FINDING allow-file {problem}")
         status = 1
+    for problem in forbid_problems:
+        print(f"FINDING forbid-file {problem}")
+        status = 1
     for mode in modes:
-        report = scan_tree(root, allows, today, forbid) if mode == "tree" else scan_history(root, allows, today, forbid)
+        report = (scan_tree(root, allows, today, forbid, skip) if mode == "tree"
+                  else scan_history(root, allows, today, forbid, skip))
         render(report)
         if report.findings:
             status = 1

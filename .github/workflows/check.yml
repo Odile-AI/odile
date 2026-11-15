@@ -193,9 +193,12 @@ jobs:
       # credential assignment or private literal in the built tree. Every
       # exception is one row of the tree's own leak-allow.tsv (reason and
       # expiry), which the scanner loads from the root of this checkout. The
-      # job is read-only: it opens no PR and pushes nothing.
+      # forbid list is named explicitly: it is carried into the tree at the root
+      # by the build, and a named file that is missing is a finding and exit 2,
+      # not a silently skipped class. The job is read-only: it opens no PR and
+      # pushes nothing.
       - name: Scan the built tree with its own allowlist
-        run: /usr/bin/python3 tools/leak_scan.py --tree
+        run: /usr/bin/python3 tools/leak_scan.py --tree --forbid-file leak-forbid.txt
 
   history-secrets:
     name: history-secrets

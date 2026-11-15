@@ -1203,12 +1203,12 @@ def self_test() -> int:
             print(f"FAIL  {name}: got {got!r}, want {want!r}")
 
     check("clean_txt joins quoted chunks",
-          clean_txt('"v=spf1 " "ip4:1.2.3.4 -all"'), "v=spf1 ip4:1.2.3.4 -all")
+          clean_txt('"v=spf1 " "ip4:203.0.113.4 -all"'), "v=spf1 ip4:203.0.113.4 -all")
     check("clean_txt leaves a bare value alone", clean_txt("p=abc"), "p=abc")
     check("SPF with our own IP passes",
           check_spf(["v=spf1 ip4:203.0.113.139 -all"], "203.0.113.139")[0], True)
     check("SPF without our IP fails",
-          check_spf(["v=spf1 ip4:1.2.3.4 -all"], "203.0.113.139")[0], False)
+          check_spf(["v=spf1 ip4:203.0.113.4 -all"], "203.0.113.139")[0], False)
     check("SPF with a third-party include fails",
           check_spf(["v=spf1 include:amazonses.com ~all"], "203.0.113.139")[0], False)
     check("SPF that is not -all fails",
@@ -1352,11 +1352,11 @@ def self_test() -> int:
                       {"content": DOMAIN, "priority": 20, "type": "MX"}), False)
     check("a missing record is a create",
           [row["action"] for row in plan_records(
-              [{"type": "A", "name": DOMAIN, "content": "1.2.3.4"}], [])], ["create"])
+              [{"type": "A", "name": DOMAIN, "content": "203.0.113.4"}], [])], ["create"])
     check("an identical record is unchanged",
           [row["action"] for row in plan_records(
-              [{"type": "A", "name": DOMAIN, "content": "1.2.3.4"}],
-              [{"type": "A", "name": DOMAIN, "content": "1.2.3.4", "id": "x"}])], ["unchanged"])
+              [{"type": "A", "name": DOMAIN, "content": "203.0.113.4"}],
+              [{"type": "A", "name": DOMAIN, "content": "203.0.113.4", "id": "x"}])], ["unchanged"])
 
     check("relaxed body squeezes runs and strips trailing WSP",
           relaxed_body(b"a  b \r\nc\r\n\r\n\r\n"), b"a b\r\nc\r\n")
