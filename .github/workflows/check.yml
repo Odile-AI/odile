@@ -197,13 +197,14 @@ jobs:
       # checkout. Fetch the base branch and run ITS scanner with ITS allowlist
       # over this tree. The workspace is ephemeral and the job pushes nothing, so
       # copying the base allowlist over the checkout changes no published byte.
-      # A PR that needs a new allowlist row therefore cannot grant it to itself;
-      # a maintainer lands the row on main first. The second step still runs the
-      # tree's own scanner, so the pair catches both a weakened scanner and a
-      # widened allowlist. The forbid list is named explicitly on the tree's
-      # own scan: it is carried into the tree at the root by the build, and a
-      # named file that is missing is a finding and exit 2, not a silently
-      # skipped class. The job is read-only: it opens no PR and pushes nothing.
+      # A PR that needs a new allowlist row (class, credential, reason and
+      # expiry) therefore cannot grant it to itself; a maintainer lands the row
+      # on main first. The second step still runs the tree's own scanner, so the
+      # pair catches both a weakened scanner and a widened allowlist. The forbid
+      # list is named explicitly on the tree's own scan: it is carried into the
+      # tree at the root by the build, and a named file that is missing is a
+      # finding and exit 2, not a silently skipped class. The job is read-only:
+      # it opens no PR and pushes nothing.
       - name: Gate the tree with the base branch's scanner, not the PR's
         env:
           BASE_REF: ${{ github.base_ref }}

@@ -34,9 +34,10 @@ The allowlist
 -------------
 ``ALLOW`` names the live files that legitimately carry a retired word: a
 negative assertion ("the unit is not found") or a history comment in shipped
-bytes whose edit would mean a re-sign. Each entry says why, and two meta-tests
-keep the list honest: an entry for a deleted file, or for a word the file no
-longer carries, fails until the list is updated.
+bytes whose edit would mean a re-sign. Each entry says why, and three meta-tests
+keep the list honest: an entry for a deleted file, for a word the file no
+longer carries, or for a file the public build drops fails until the list is
+updated.
 
 The positive shape is pinned too: the tenant template routes inference straight
 to NEAR AI with no meter placeholder, the committed demo Caddy block carries no
@@ -46,6 +47,8 @@ shipped page prints.
 
 from __future__ import annotations
 
+import ast
+import fnmatch
 import http.client
 import os
 import re
@@ -165,9 +168,6 @@ ALLOW: dict[str, tuple[frozenset[str], str]] = {
         frozenset({"session_guard"}),
         "the negative assertion's comment names the guard the session menu was "
         "written for"),
-    "tests/test_sealed_image.py": (
-        frozenset({"odile-meter"}),
-        "ODL-521's docstring on the group rename"),
     "installer/odile_install.py": (
         frozenset({"deploy_demo_host"}),
         "the signed installer's docstring; one byte means re-sign + release cut "
@@ -176,6 +176,36 @@ ALLOW: dict[str, tuple[frozenset[str], str]] = {
         frozenset({"deploy_demo_host"}),
         "the release copy of the same signed docstring"),
 }
+
+#: The private publish tool. It builds the public tree from an explicit INCLUDE
+#: minus an EXCLUDE, and is itself excluded, so it exists only on HQ and in the
+#: main worktree the merge gate runs from.
+PUBLIC_TREE_BUILDER = ("tools", "build_public_tree.py")
+
+
+def public_tree_exclude() -> list[str] | None:
+    """The public build's EXCLUDE globs, when the private builder is in reach.
+
+    Round 3's defect: ``ALLOW`` named ``tests/test_sealed_image.py``, which the
+    public build drops, so a built public tree failed both allowlist meta-tests
+    on a path no reader of the public repository has. The builder is untracked,
+    so this returns ``None`` in a card worktree (and in a built public tree):
+    the guard skips there and runs where the merge gate runs. The list is parsed
+    with ``ast`` rather than imported — the tool is a script, and a shipped test
+    should not depend on its module surface.
+    """
+    try:
+        tree = ast.parse(
+            ROOT.joinpath(*PUBLIC_TREE_BUILDER).read_text(encoding="utf-8"))
+    except (OSError, SyntaxError, UnicodeDecodeError):
+        return None
+    for node in tree.body:
+        if (isinstance(node, ast.Assign)
+                and len(node.targets) == 1
+                and isinstance(node.targets[0], ast.Name)
+                and node.targets[0].id == "EXCLUDE"):
+            return list(ast.literal_eval(node.value))
+    return None
 
 
 def is_history(parts: tuple[str, ...]) -> bool:
@@ -355,6 +385,23 @@ class AllowlistTests(unittest.TestCase):
                 self.assertTrue((ROOT / rel).is_file(),
                                 f"{rel} is allowlisted but not in the tree; "
                                 "remove the entry")
+
+    def test_no_allowlist_entry_names_a_file_the_public_build_drops(self) -> None:
+        """An allowlist entry must survive the public build.
+
+        Round 3 shipped an entry for `tests/test_sealed_image.py`, which
+        `tools/build_public_tree.py` excludes, so the built public tree failed
+        this class on a path it never carries. The builder is private; where it
+        is absent (a card worktree, the public tree) the check skips.
+        """
+        exclude = public_tree_exclude()
+        if exclude is None:
+            self.skipTest("the private public-tree builder is not in this tree")
+        dropped = sorted(rel for rel in ALLOW
+                         if any(fnmatch.fnmatch(rel, glob) for glob in exclude))
+        self.assertEqual(dropped, [],
+                         "an ALLOW entry names a file the public build drops; "
+                         "reword the file or move the entry to history")
 
     def test_every_allowlisted_word_still_occurs(self) -> None:
         for rel, (tokens, _reason) in ALLOW.items():
