@@ -381,16 +381,51 @@ class SurfaceValueTests(unittest.TestCase):
                                               .get("background-color", [])),
                           f"{selector} does not paint --paper")
 
-    def test_the_face_is_cormorant_garamond_first(self):
+    def test_the_display_face_is_cormorant_on_the_wordmark_only(self):
         face = block_after(self.css, "@font-face")
         self.assertIn('font-family: "Cormorant Garamond"', face)
-        for rule in ("html p.wordmark", "html p.wordmark + p", "a.odile-verify-link"):
+        family = " ".join(declarations(self.css, "html p.wordmark").get("font-family", []))
+        self.assertTrue(family.startswith('"Cormorant Garamond"'),
+                        f"the wordmark does not name Cormorant Garamond first: {family!r}")
+        # The display face is reached by the wordmark, and by nothing else in
+        # the chrome: the interface and prose are the bundle's system sans.
+        clean = re.sub(r"/\*.*?\*/", "", self.css, flags=re.S)
+        cormorant = set()
+        for match in re.finditer(r"([^{}]+)\{([^}]*)\}", clean):
+            if 'font-family: "Cormorant Garamond"' in match.group(2) or \
+                    "font-family: \"Cormorant Garamond\"" in match.group(2):
+                cormorant.add(match.group(1).strip())
+        self.assertEqual(cormorant, {
+            "@font-face",
+            "html p.wordmark",
+            'html h1, html h2, html h3, html [role="heading"]',
+        }, f"the display face leaked into {sorted(cormorant)}")
+
+    def test_the_interface_and_chat_text_are_the_system_sans(self):
+        root = declarations(self.css, ":root")
+        sans = " ".join(root.get("--dt-font-sans", []))
+        self.assertTrue(sans.startswith('"OpenDyslexic"'),
+                        f"--dt-font-sans is not the bundle's system stack: {sans!r}")
+        self.assertNotIn("Cormorant", sans)
+        for rule in ("html p.wordmark + p", "a.odile-verify-link"):
             family = " ".join(declarations(self.css, rule).get("font-family", []))
-            self.assertTrue(family.startswith('"Cormorant Garamond"'),
-                            f"{rule} does not name Cormorant Garamond first: {family!r}")
-        self.assertTrue(" ".join(declarations(self.css, ":root")
-                                 .get("--dt-font-sans", []))
-                        .startswith('"Cormorant Garamond"'))
+            self.assertTrue(family.startswith("ui-sans-serif"),
+                            f"{rule} is not the interface face: {family!r}")
+        thread = declarations(self.css, '[data-slot="aui_thread-content"]')
+        self.assertEqual(thread.get("--conversation-text-font-size"),
+                         ["16px !important"])
+        self.assertEqual(thread.get("--conversation-line-height"),
+                         ["1.6 !important"])
+        content = declarations(self.css, '[data-slot="aui_assistant-message-content"]')
+        self.assertEqual(content.get("font-size"), ["16px !important"])
+        self.assertEqual(content.get("line-height"), ["1.6 !important"])
+        prose = declarations(
+            self.css,
+            '[data-slot="aui_assistant-message-content"] .aui-md p')
+        self.assertEqual(prose.get("max-width"), ["60ch"],
+                         "the chat paragraph has no measure cap")
+        self.assertEqual(prose.get("line-height"), ["1.6 !important"],
+                         "the chat paragraph is tighter than 1.55")
 
     def test_focus_is_two_px_ink_at_three_px_offset(self):
         ring = declarations(self.css, ":focus-visible")

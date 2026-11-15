@@ -74,6 +74,15 @@ silent leak: add the sentence to `REDACTIONS`, or the timer stops and the page
 goes stale. `tests/test_roadmap_page.py` pins the rendered page against
 `\$[0-9]`.
 
+A board card's `title` is a sentence on the page too, under **What needs you**
+(§1). Those titles are redacted one by one before the line is joined, so a
+title's key is the exact board `title` — not the joined needs line, which
+changes whenever a card enters or leaves the three-item queue. A priced card
+that reached the page without an entry (measured 2026-11-13: `$10.18` in a
+human card's title) stops the timer exactly as a backlog price does; the error
+names the `$`-and-digit fragment, so grep the board's titles, not only
+`docs/backlog.yaml`.
+
 ## 3. Regenerate by hand
 
 ```sh
@@ -144,7 +153,7 @@ is at 1440×900 and 390×844, plus a grayscale screenshot for the `held` tag.
 | `503 roadmap not generated yet` | the state file is missing | `sudo systemctl start odile-roadmap.service`; read its log |
 | The page is stale | the timer did not run or the unit failed | `systemctl status odile-roadmap.timer`; `journalctl -u odile-roadmap -n 40` |
 | `roadmap: board db …: no such file` | the board moved or `HERMES_KANBAN_DB` is unset in the unit's environment | name the file with `--board-db` in the unit |
-| `roadmap: a price reached the page` | a `$`-and-digit sentence in the backlog is not in `REDACTIONS` | add it to the map; the page stays at the previous generation until then |
+| `roadmap: a price reached the page` | a `$`-and-digit sentence in the backlog or in a board card `title` is not in `REDACTIONS` | add it to the map — a title is keyed by its exact board `title`, redacted before the needs line is joined; the page stays at the previous generation until then |
 | `roadmap: milestones[3]: unknown key 'owner'` | a field was added to `docs/backlog.yaml` that the tool does not render | add it to `MILESTONE_KEYS` and to the template |
 
 ## 7. Rollback

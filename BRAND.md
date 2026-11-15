@@ -288,7 +288,7 @@ the contrast pair is the one measured for that surface.
 | Boundary, control | `--edge` | ≥3:1 against the adjacent surface; 3.60 on paper; the shipped input measures 3.42 at 1440 and 3.32 at 390 |
 | Focus ring | 2 px solid `--ink`, offset 3 px; on `--term`, `--term-ink` | ≥3:1 against both sides; 13.33:1 on paper, 14.61:1 on card, 12.80:1 on the 1440 veil, 12.52:1 on the 390 veil; never `outline: none` without this replacement |
 | Target size | 44×44 px minimum, 8 px minimum gap | WCAG 2.2 2.5.8; inline prose links are the documented exception |
-| Body text | 17 px / 1.55, minimum 16 px | Large text is 24 px regular or 18.66 px bold for the 3:1 rule |
+| Body text | 18 px / 1.6 on public pages; 16 px minimum for notes; Webapp chat 16 px / 1.6 | Large text is 24 px regular or 18.66 px bold for the 3:1 rule |
 | Measure | 36ch marketing; 60–72ch product; 66ch email; 1100 px video | A wider measure is a new decision |
 | Motion | 120 / 180 / 240 ms; 0 under `prefers-reduced-motion: reduce` | §Motion |
 | Zoom | 200 % text, 320 px reflow, no horizontal scroll | Test at 320×640 and a 32 px root |
@@ -312,52 +312,79 @@ switch the palette; the terminal is the only dark surface.
 
 ## Typography
 
-One family: **Cormorant Garamond** (SIL OFL 1.1), a variable face 300–700 with
-roman and italic, subset to the characters the page uses and embedded as woff2.
-No font host is ever contacted.
+Two type roles and two machine roles. One face never does both jobs:
+
+- **Display — Cormorant Garamond** (SIL OFL 1.1), a variable face 300–700
+  with roman and italic, subset to the characters the page uses and embedded
+  as woff2. It is the brand voice at display size: the wordmark, h1/h2/h3 and
+  the demo sign-in's h1. It never sets a sentence at reading size. No font host
+  is ever contacted.
+- **Text — the platform's text serif**, `"Iowan Old Style", "Palatino Linotype",
+  Palatino, Georgia, "DejaVu Serif", serif`, at 18 px / 400 / 1.6 for public
+  prose and 16 px for notes. It is a system stack: no file, no request, no
+  swap. The resolved face is the platform's own — Iowan Old Style on macOS,
+  Palatino Linotype or Georgia on Windows, DejaVu Serif on Linux (measured on
+  this box). A line break may move between platforms; the measure band is the
+  contract, not the pixel width.
+- **Interface — the Webapp bundle's own UI sans stack** (OpenDyslexic first,
+  then the platform sans): `"OpenDyslexic", "Segoe WPC", "Segoe UI",
+  -apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro Display",
+  system-ui, sans-serif, …`. It sets the
+  sidebar, labels, buttons, composer and chat prose at the vendor's sizes:
+  13–14 px labels, 17 px composer, 16 px / 1.6 chat with a 60–72ch measure.
+  The Webapp's `--dt-font-sans` resolves to this stack; Cormorant is reached
+  only by `p.wordmark` and the skin's headings.
+- **Machine — the system mono stack**, unchanged: `ui-monospace, SFMono-Regular,
+  Menlo, Consolas, "Liberation Mono", monospace`.
 
 ```css
---serif: "Cormorant Garamond", "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, serif;
---mono:  ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+--display: "Cormorant Garamond", "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, serif;
+--text:    "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, "DejaVu Serif", serif;
+--ui:      "OpenDyslexic", "Segoe WPC", "Segoe UI", -apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro Display", system-ui, sans-serif;
+--mono:    ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
 ```
 
-Every `font-family` declaration names the full stack; never a bare `serif`.
-If the embedded face fails, the fallback stack carries the page at the same
-sizes and measures. There is no third family, no sans display face, no system
-serif on a video card (the woff2 is embedded there too).
+Every `font-family` declaration names the full stack; the semantic role
+(`--display`, `--text`, `--ui`) is copied, never a bare `serif` or `sans-serif`
+alone. If the embedded display face fails, its fallback stack carries the
+headings at the same sizes and measures. The text face has no embedded file,
+so it cannot swap and does not move the first paint.
 
-| Role | Size | Weight | Line height | Tracking | Colour | Measure |
-|---|---|---|---|---|---|---|
-| Wordmark | `clamp(5rem, 7.1vw, 6.7rem)` — 80.0 / 102.24 px | 500 | .88 | −.03em | `--ink` | one line |
-| Marketing description | `1.11rem` — 17.76 px | 400 | 1.52 | 0 | `--soft` | 36ch |
-| Marketing field text | `1.05rem` — 16.8 px | 400 | 1.4 | 0 | `--ink` | field width |
-| Marketing placeholder | same, italic | 400 | 1.4 | 0 | `--placeholder` | field width |
-| Primary button | 10 px caps | 600 | 1 | .28em | `--paper` on `--ink` | one line |
-| Confirmation line | `1.22rem` — 19.52 px italic | 400 | 1.3 | 0 | `--ink` | 30ch |
-| Confirmation sub-line | `.9rem` — 14.4 px italic | 400 | 1.55 | 0 | `--soft` | 36ch |
-| Confirmation address | `.88rem` — 14.08 px roman | 400 | 1.5 | 0 | `--ink` | 36ch, wrap anywhere |
-| Marketing error | `.94rem` — 15.04 px italic | 400 | 1.4 | 0 | `--error` | field width |
-| Page title (h1) | `clamp(2.5rem, 5vw, 4.1rem)` — 40 / 65.6 px | 500 | 1.02 | −.025em | `--ink` | 18ch |
-| Section title (h2) | `clamp(1.9rem, 3vw, 2.6rem)` — 30.4 / 41.6 px | 500 | 1.04 | −.02em | `--ink` | 48ch |
-| Subsection (h3) | `1.45rem` — 23.2 px | 500 | 1.1 | −.01em | `--ink` | 52ch |
-| Product body | 17 px | 400 | 1.55 | 0 | `--ink` | 60–72ch |
-| Product help | `.95rem` — 15.2 px | 400 | 1.5 | 0 | `--soft` | 60ch |
-| Empty / loading line | 17 px | 400 | 1.55 | 0 | `--ink` | 60ch |
-| Notice / callout | `.98rem` — 15.68 px | 400 | 1.55 | 0 | `--soft`; strong `--ink` | 60ch |
-| Status lede | `1.14rem` — 18.24 px | 400 | 1.5 | 0 | `--soft` | 66ch, `text-wrap:balance` |
-| Status figure (mono) | `clamp(2rem, 4.5vw, 3.1rem)` — 32 / 49.6 px | 400 | 1 | −.02em | `--ink` | one measured figure per screen; tabular figures |
-| Table label (mono caps) | `.72rem` — 11.52 px column; `.78rem` — 12.48 px row | 600 | 1.3 / 1.4 | .12em | `--soft` | one line, uppercase |
-| Label (caps) | 10 px caps | 600 | 1 | .24em | `--soft` | one line |
-| Micro-label (caps) | 9 px caps | 600 | 1 | .20em | `--soft` | one line |
-| Mono body | 12.5 px | 400 | 1.55 | 0 | `--ink` or `--term-ink` | 72ch, no wrap inside a token |
-| Mono value | 12.5 px | 400 | 1.5 | 0 | `--ink` | right-aligned, `overflow-wrap:anywhere` |
-| Terminal command | 12.5 px | 400 | 1.55 | 0 | `--term-command` | 72ch |
-| Email heading (HTML only) | 24 px | 500 | 1.1 | −.02em | `--ink` | 48ch |
-| Email body | 17 px | 400 | 1.55 | 0 | `--ink` | 66ch |
-| Email footer | 12.5 px | 400 | 1.5 | 0 | `--soft` | 66ch |
-| Video wordmark | 102 px at 1440; 27.6 px at 390 | 500 | .88 | −.03em | `--ink` | one line |
-| Video sentence | 64 px at 1440; 17.3 px at 390 | 500 | 1.15 | 0 | `--soft` | ≤1100 px |
-| Video address | 52 px at 1440; 14.1 px at 390, mono | 400 | 1.5 | 0 | `--ink` | one line each |
+| Role | Face | Size | Weight | Line height | Tracking | Colour | Measure |
+|---|---|---|---|---|---|---|---|
+| Wordmark | Display | `clamp(5rem, 7.1vw, 6.7rem)` — 80.0 / 102.24 px | 500 | .88 | −.03em | `--ink` | one line |
+| Marketing description | Text | 18 px | 400 | 1.6 | 0 | `--soft` | 36ch |
+| Marketing field text | Text | 16.8 px | 400 | 1.4 | 0 | `--ink` | field width |
+| Marketing placeholder | Text italic | same | 400 | 1.4 | 0 | `--placeholder` | field width |
+| Primary button | Text | 10 px caps | 600 | 1 | .28em | `--paper` on `--ink` | one line |
+| Confirmation line | Text italic | 19.52 px | 400 | 1.4 | 0 | `--ink` | 30ch |
+| Confirmation sub-line | Text italic | 16 px | 400 | 1.6 | 0 | `--soft` | 36ch |
+| Confirmation address | Text | 16 px | 400 | 1.5 | 0 | `--ink` | 36ch, wrap anywhere |
+| Marketing error | Text italic | 16 px | 400 | 1.5 | 0 | `--error` | field width |
+| Page title (h1) | Display | `clamp(2.5rem, 5vw, 4.1rem)` — 40 / 65.6 px | 500 | 1.02 | −.025em | `--ink` | 18ch |
+| Section title (h2) | Display | `clamp(1.9rem, 3vw, 2.6rem)` — 30.4 / 41.6 px | 500 | 1.04 | −.02em | `--ink` | 48ch |
+| Subsection (h3) | Display | `1.45rem` — 23.2 px | 500 | 1.1 | −.01em | `--ink` | 52ch |
+| Product body | Text | 18 px | 400 | 1.6 | 0 | `--ink` | 60–72ch |
+| Product help | Text | 16 px | 400 | 1.6 | 0 | `--soft` | 60ch |
+| Empty / loading line | Text | 17 px | 400 | 1.6 | 0 | `--ink` | 60ch |
+| Notice / callout | Text | 16 px | 400 | 1.6 | 0 | `--soft`; strong `--ink` | 60ch |
+| Status lede | Text | 18 px | 400 | 1.6 | 0 | `--soft` | 66ch, `text-wrap:balance` |
+| Status figure (mono) | Mono | `clamp(2rem, 4.5vw, 3.1rem)` — 32 / 49.6 px | 400 | 1 | −.02em | `--ink` | one measured figure per screen; tabular figures |
+| Table label (mono caps) | Mono | `.72rem` — 11.52 px column; `.78rem` — 12.48 px row | 600 | 1.3 / 1.4 | .12em | `--soft` | one line, uppercase |
+| Label (caps) | Text | 10 px caps | 600 | 1 | .24em | `--soft` | one line |
+| Micro-label (caps) | Text | 9 px caps | 600 | 1 | .20em | `--soft` | one line |
+| Mono body | Mono | 12.5 px | 400 | 1.55 | 0 | `--ink` or `--term-ink` | 72ch, no wrap inside a token |
+| Mono value | Mono | 12.5 px | 400 | 1.5 | 0 | `--ink` | right-aligned, `overflow-wrap:anywhere` |
+| Terminal command | Mono | 12.5 px | 400 | 1.55 | 0 | `--term-command` | 72ch |
+| Email heading (HTML only) | Text (system serif) | 24 px | 500 | 1.1 | −.02em | `--ink` | 48ch |
+| Email body | Text (system serif) | 17 px | 400 | 1.55 | 0 | `--ink` | 66ch |
+| Email footer | Text (system serif) | 12.5 px | 400 | 1.5 | 0 | `--soft` | 66ch |
+| Video wordmark | Display | 102 px at 1440; 27.6 px at 390 | 500 | .88 | −.03em | `--ink` | one line |
+| Video sentence | Display | 64 px at 1440; 17.3 px at 390 | 500 | 1.15 | 0 | `--soft` | ≤1100 px |
+| Video address | Mono | 52 px at 1440; 14.1 px at 390 | 400 | 1.5 | 0 | `--ink` | one line each |
+| Webapp UI label | UI | 13–14 px | 400 | 1.5 | 0 | `--ink` / `--soft` | one line |
+| Webapp composer | UI | 17 px | 400 | 1.55 | 0 | `--ink` | field width |
+| Webapp chat prose | UI | 16 px | 400 | 1.6 | 0 | `--ink` | 60–72ch |
 
 Rules that are not in the table:
 
@@ -367,21 +394,29 @@ Rules that are not in the table:
   h2 −.02em, h3 −.01em).
 - **No faux bold, no outline type, no gradient text, no all-caps sentence.**
   The 9 px micro-label is a label, never a paragraph.
-- **Minimums:** body text 16 px on a page; email and video prose 17 px at their
-  delivery size; mono 12 px; labels 9 px. Nothing below 14 px on a 390-wide
-  card.
+- **The display face is never used for a sentence at reading size.** If the
+  text is a paragraph, a note, a label, a field or a button, it is the text
+  face — or the interface face on the Webapp. The video card's 390 rendition
+  is the same 64 px display line at 27.1 %: a picture, not a reading-size page.
+- **Minimums:** body text 18 px on a public page (16 px for notes); Webapp
+  chat prose 16 px; UI labels 13 px; mono 12 px; labels 9 px. Prose never
+  falls below 14 px on a 390-wide card.
 - **Numbers are old-style in prose and tabular in mono.** Machine values
   (hashes, fingerprints, IPs, versions, measurements) are always mono; prose
-  numbers are Cormorant. A short machine value — a SHA-256 fingerprint, an IP,
-  a version, a commit hash — never wraps mid-token: wrap the row, not the
+  numbers are the text face. A short machine value — a SHA-256 fingerprint, an
+  IP, a version, a commit hash — never wraps mid-token: wrap the row, not the
   token. A value longer than its panel wraps inside its own field with
   `overflow-wrap:anywhere` and is never set below 12 px to fit: the 96-hex
   SEV-SNP measurement is 795 px at the 13.76 px mono and cannot fit the 674 px
   `/verify` panel at 1440 or the 316 px one at 390, so it wraps there and the
   page never widens.
-- **The description is held to 36ch.** At 17.76 px that is 304.8 px and three
-  lines; product prose is 60–72ch. A measure outside those bands is a new
-  decision, not a tweak.
+- **The description is held to 36ch.** At 18 px that is about 325–415 px
+  depending on the platform face, and three lines at 1440; product prose is
+  60–72ch. A measure outside those bands is a new decision, not a tweak.
+- **An embedded text face is the exception, not the rule.** Embed one only if
+  the platform stack fails the wrap/measure test on two platforms; then it is
+  one OFL text face on every page, and the signed pages are re-cut in the
+  release card.
 
 ## Spacing and layout
 
@@ -434,8 +469,9 @@ edit without re-measuring.
   scroll inside their own field; the page never widens. Fields and panels get
   `min-width: 0` and `overflow-wrap: anywhere` before they get a scrollbar.
 - **Direction and language:** V0.1 ships English only. There is no RTL layout
-  and no second language. The embedded Cormorant subset carries the characters
-  the page uses, so a new script is a new subset, not a new face. The 4 px scale
+  and no second language. The embedded Cormorant subset carries the display
+  characters; the text face is the platform's own, so a new script is a new
+  subset for the display face, not a new face. The 4 px scale
   and the containers are direction-neutral: an RTL build is a layout decision,
   not a token rewrite.
 
@@ -645,9 +681,10 @@ image `center / cover no-repeat fixed`; at ≤820 the attachment becomes
 
 ### Description
 
-17.76 px Cormorant 400 in `--soft`, 1.52 line height, 36ch measure (304.8 px),
-left-aligned. It is a subset of the approved sentences in `docs/CLAIMS.md`; no
-new trust sentence may be introduced here.
+18 px text serif 400 in `--soft`, 1.6 line height, 36ch measure (about
+325–415 px depending on the platform face), left-aligned. It is a subset of the
+approved sentences in `docs/CLAIMS.md`; no new trust sentence may be introduced
+here.
 
 ### Email field and button
 
@@ -784,7 +821,7 @@ text the first send must use.
 - **One column, 560 px max; body 17 px / 1.55; measure 66ch; left-aligned.**
   Paper `#EADFC4`, ink `#1C1813`, soft `#4A4136`. In HTML use the system serif
   fallback (`Georgia, serif`) — a web font in email is a request and a flash;
-  Cormorant is for the page, not the inbox.
+  The display face is for the page, not the inbox.
 - **One action.** A link is a link: ink, underlined, 1 px; never a filled
   button drawn as an image. A second link is navigation, not a second primary.
   The invite action links to the claim page with the single-use token; the ready
@@ -932,15 +969,15 @@ the literal `Repo: <REPO_URL>` and is replaced with one command; never
 
 | Surface | Art | Type | Palette |
 |---|---|---|---|
-| Marketing / waitlist | One full-bleed painting, paper veil, no other image | Cormorant; caps for buttons | Core |
-| Claim, judge, verify, status | Paper field. Judge and the demo's verify carry one contained plate band (a detail of the Ruysch) above the first section; a tenant's verify is paper only. Judge carries one filled primary (`Open the demo`) and one quiet secondary (`Check the boot report`) | Cormorant for prose, mono for credentials and machine values | Core + product extension |
-| Webapp | First run, workspace, brief, verify, reboot, support and status; paper field; one contained artwork allowed in an empty state or onboarding, never behind text or controls | Cormorant for prose, mono for terminal and metadata | Core + product extension |
-| Demo (`demo/local`) | Paper field; no painting; a reproduction of the surface, not the machine | Cormorant + mono | Core + product extension |
-| Hosted demo sign-in (`demo.odile.fyi/login`) | Paper field; one contained plate band — the same Ruysch, `center 50%`, 84 px at 320, 120 px at 390 and 140 px at 1440, inlined as a data URI between the landing line and the boundary note; the 32 px wordmark, the h1 role for `The demo machine`, the landing line, the boundary note with its 2 px oxblood rule, one filled **Sign in** and one quiet `Check the boot report →` to the same host's `/verify`; no card | Cormorant for prose; the one arrow glyph in mono | Core + product extension |
-| First-visit preview (`odile.fyi/first-visit-preview`) | Paper field; no painting; the reviewed first-visit form in a read-only state, with one disabled primary and its reason within 8 px | Cormorant for prose; mono for the sign-in name and the masked values | Core + product extension |
+| Marketing / waitlist | One full-bleed painting, paper veil, no other image | Display for the wordmark and headings; text serif for the description; caps for buttons | Core |
+| Claim, judge, verify, status | Paper field. Judge and the demo's verify carry one contained plate band (a detail of the Ruysch) above the first section; a tenant's verify is paper only. Judge carries one filled primary (`Open the demo`) and one quiet secondary (`Check the boot report`) | Text serif for prose; display for headings; mono for credentials and machine values | Core + product extension |
+| Webapp | First run, workspace, brief, verify, reboot, support and status; paper field; one contained artwork allowed in an empty state or onboarding, never behind text or controls | UI sans for interface and chat prose; display for the wordmark and headings; mono for terminal and metadata | Core + product extension |
+| Demo (`demo/local`) | Paper field; no painting; a reproduction of the surface, not the machine | Display + text serif + mono | Core + product extension |
+| Hosted demo sign-in (`demo.odile.fyi/login`) | Paper field; one contained plate band — the same Ruysch, `center 50%`, 84 px at 320, 120 px at 390 and 140 px at 1440, inlined as a data URI between the landing line and the boundary note; the 32 px wordmark, the h1 role for `The demo machine`, the landing line, the boundary note with its 2 px oxblood rule, one filled **Sign in** and one quiet `Check the boot report →` to the same host's `/verify`; no card | Display for the wordmark and h1; text serif for the landing line, the boundary note and the button; the one arrow glyph in mono | Core + product extension |
+| First-visit preview (`odile.fyi/first-visit-preview`) | Paper field; no painting; the reviewed first-visit form in a read-only state, with one disabled primary and its reason within 8 px | Display for the wordmark and h1; text serif for prose; mono for the sign-in name and the masked values | Core + product extension |
 | Email | Plain text first; HTML only when a link needs it, no images by default | System serif fallback; mono for values | Core |
 | Video | Paper cards and caption plates; no painting; the recording is evidence | Cormorant embedded; mono for addresses | Core |
-| Prototype | May simulate the product and use JavaScript; same tokens and art rules | Cormorant + mono | Core + product extension |
+| Prototype | May simulate the product and use JavaScript; same tokens and art rules | Display + text serif + mono | Core + product extension |
 
 The screen's field inventory and validation copy belong to the product spec;
 every field and error uses §Component states. Density is calm: a panel has one
@@ -1038,6 +1075,7 @@ names the `docs/CLAIMS.md` row that moved with it.
 | 2026-11-13 | **The demo sign-in carries the plate.** Savio's order of 2026-11-13 (*"Add an artwork on the page."*) supersedes the earlier 2026-11-13 front-door row's "No painting: the judge page one click earlier carries the plate". `demo.odile.fyi/login` gains one contained plate band — the same Ruysch, `center 50%`, 84 px at 320, 120 px at 390 and 140 px at 1440 — between the landing line and the boundary note, in the judge page's reading order (wordmark, h1, line, plate, boundary note, one action). The band is **inlined** as a `data:image/webp` URI, the same 96,726-byte file, not a re-cut, because the demo host serves the page from one file and has no static route for the painting; the page measures 167,426 bytes. The page's colour balance moves — a dark warm block takes 120 px of the column's 611 px height at 390 — while the paper field, the tokens and every text pair are unchanged (ink 13.33:1, soft 7.55:1, oxblood 7.82:1 on paper, measured at 390 and 1440). No new colour, face or public sentence: the landing line is §1 *The machine*, Savio's sentence is § *The demo machine*. | Designer | verifier, t_9896a577 |
 | 2026-11-13 | **The website icon.** Savio: "use the attached image as the Odile website icon." The ring is retired as the favicon; every page under `web/` carries `favicon.ico`, `icon-32.png` and an opaque-paper `apple-touch-icon.png`, served first-party with an immutable cache, with `icon-192.png` and `icon-512.png` in the set. The mark is Saint Ottilia's head from Lucas Cranach the Elder, *Saints Christina and Ottilia* (Katharinenaltar, Dresden), 1506 — public domain, Wikimedia Commons; `web/icon-source.txt` records the reproduction's URL, its sha256 and the crop box, and `web/icon-source-supplied.jpg` keeps Savio's 480×480 attachment byte-identical. **One rendition, every size.** Savio, 2026-11-13: "Why create the 16 px sign? Simply shrinking seems to keep branding more consistent and easier to maintain, rather than spinning up a weirdly different looking sign. I personally think simply shrinking looks fine." The 16 px sign and the four-ink cut are both retired: the crop is warm-graded once at 512 px and downsampled with LANCZOS to 16/32/48/180/192/512, so the ICO's three entries are the same master and the 16 px entry is the 512 px render at 16 (a test asserts it). The grade is measured on the master — saturation 0.34, hue 41°, R−B 12/29/56 across the luminance bands — and so is the 16 px read: face 172 luminance against 59 in the corners, skin R−B 64, no eye-band cell below 140, the eyes a shadow about 20 levels under the cheek. The four-ink cut had given up the skin hue the face needs at 16 px and read as a skull; the warm grade keeps it. §Name and mark, §Iconography and §Art direction name the one exception: a painted saint in browser chrome, never on a page. `/verify` and the first-visit page are re-embedded, the installer is re-signed (`ef559548…`) and the release re-cut (`2026.11.13-6`, manifest `881bc481…`; the icon-only rebuild moves no embedded page blob). The cut is `-6`, not `-5`: `main` re-signed the `-4` pair after the three live addresses left the tree, and ODL-514 took and deployed `2026.11.13-5`. **Also re-cut in the same change:** `docs/brand/ST-ODILE.md` (intro, §9, §10, §12, §13), `docs/brand/st-odile.html` (the story paragraph and the colophon icon row) and `docs/brand/REVIEW.md` (the art test's icon bullet) — the retired no-saint rule, the one-painting line, the ring-as-mark bullet and the two-rendition sentence now mirror this sheet. `docs/brand/GAP-2026-11-07.md` and `docs/brand/REVIEW-demo-entry.md` are dated records and keep the ring where they quote it. No public sentence in `docs/CLAIMS.md` changed. | Designer | verifier, ODL-504 |
 | 2026-11-14 | **Voice, the lexicon**: *NEAR AI key* is recorded — the machine's one inference credential, one per user, written at install and read by the agent, named in full on first use. It is the term `docs/CLAIMS.md` v3.9c and `web/privacy.html` already carry as the meter's replacement (ODL-205, card t_7f339817), so the sheet names the shipped word instead of leaving it outside the reserved table. The `token` row drops the retired *metering token*. No palette, face, artwork or public sentence changed. | Designer | verifier, t_7f339817 |
+| 2026-11-14 | **Typography re-cut into roles.** Cormorant Garamond is the **display face** — wordmark, h1/h2/h3 and the demo sign-in's h1 — and never sets a sentence at reading size. Public prose moves to the platform's **text serif** (Iowan Old Style / Palatino Linotype / Georgia / DejaVu Serif) at 18 px / 400 / 1.6; notes 16 px; the landing description stays 36ch, product prose 60–72ch. The Webapp's `--dt-font-sans` resolves to the bundle's own UI sans stack (OpenDyslexic first, then the platform sans) at the vendor's sizes, with chat prose 16 px / 1.6 and a 60–72ch measure; `p.wordmark` and the h1/h2/h3 heading selector are the only Cormorant left in the chrome. No new colour, no new image, no public sentence: this supersedes the type clause of ODL-503 (t_0127daed) and the type decision of t_dc4559ee. | Designer | verifier, t_99262fa2 |
 
 
 ## Do / Don't

@@ -596,7 +596,7 @@ def render_verify(role: str = "") -> str:
         values["ACCESS_CAUSE"] = ("The machine has not written its access report "
                                   "yet. <a href=\"/verify\">Try again</a> in a minute.")
     keep.add(role)
-    body = page("verify.html", TITLE="Verify \u2014 Odile", ROBOTS="noindex")
+    body = page("verify-public.html", TITLE="Verify \u2014 Odile", ROBOTS="noindex")
     body = VERIFY_BLOCK_RE.sub(
         lambda match: match.group(2) if match.group(1) in keep else "", body)
     for name, value in values.items():
