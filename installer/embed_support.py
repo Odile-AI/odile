@@ -2,8 +2,8 @@
 """Embed support/odile_support.py into installer/odile_install.py.
 
 The installer is one printable, signed file, so the reviewed support programs
-(ODL-217) travel inside it, pinned by SHA-256 exactly like `meter.py`,
-`backup.py` and the first-visit service:
+(ODL-217) travel inside it, pinned by SHA-256 exactly like `backup.py` and the
+first-visit service:
 
     support/odile_support.py -> /usr/local/sbin/odile-support (0755 root)
                              -> /usr/local/bin/odile-diag (a symlink to it)
