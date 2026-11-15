@@ -246,9 +246,9 @@ class LocalDemoTest(unittest.TestCase):
     def test_brand_lint_scans_the_demo_template(self) -> None:
         self.assertIn("demo/local/*.html", brand_lint.SURFACE_GLOBS)
         palette = brand_lint.brand_palette(ROOT / "BRAND.md")
-        allowed = {value for value in palette.values() if value.startswith("#")}
+        legacy = brand_lint.legacy_palette(ROOT / "BRAND.md")
         findings = brand_lint.check_surface(
-            Path("demo/local/template.html"), allowed
+            Path("demo/local/template.html"), palette, legacy
         )
         self.assertEqual(findings, [])
 
