@@ -525,8 +525,9 @@ quote them.
   record.
 
 Still held, and named in `docs/CLAIMS.md` §1a: the 30-day retention row (its
-page is `web/privacy.html`) and "Backups are off-site" — both outside this
-card's `touches`, card `t_5f10dd14`.
+page is `web/privacy.html`, outside this card's `touches`) and "Backups are
+off-site" (its page is `web/faq.html`, outside the five passages this card's
+DoD names) — card `t_5f10dd14`.
 
 Two measured details bound the A10 answer; neither rewords it. The post-revoke
 check names `crontab -l`, and Debian 13 on the tenant image has no `cron`
