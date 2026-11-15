@@ -15,6 +15,9 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
+import shlex
+import subprocess
 import sys
 import tempfile
 import types
@@ -25,6 +28,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 APPLY = ROOT / "deploy" / "demo-host" / "apply_demo_public.py"
 CHECK = ROOT / "deploy" / "demo-host" / "check_demo_public.py"
+CHECK_HOST = ROOT / "deploy" / "demo-host" / "check_demo_host.sh"
 
 
 def apply_module():
@@ -43,6 +47,39 @@ def check_module():
     sys.modules[spec.name] = module
     spec.loader.exec_module(module)
     return module
+
+
+def host_report_fields(report: dict) -> str:
+    """Run check_demo_host.sh's own field generator over one report object.
+
+    The text is cut from the script, not copied: a copy would keep passing
+    after the script's generator and its case arms drifted apart (round 2).
+    """
+    text = CHECK_HOST.read_text(encoding="utf-8")
+    marker = """FIELDS=$(REPORT="$REPORT" python3 - <<'PY'"""
+    start = text.index(marker)
+    start = text.index("\n", start) + 1
+    end = text.index("\nPY\n)", start)
+    source = text[start:end]
+    out = subprocess.run([sys.executable, "-c", source],
+                         env=dict(os.environ, REPORT=json.dumps(report)),
+                         capture_output=True, text=True, check=True)
+    return out.stdout.strip()
+
+
+def meter_verdict(fields: str) -> str:
+    """The check's meter case arm, run against one ``FIELDS`` line: ok or bad."""
+    text = CHECK_HOST.read_text(encoding="utf-8")
+    hit = text.index('*"meter_object=False"*')
+    start = text.rindex('case "$FIELDS" in', 0, hit)
+    end = text.index("\nesac", hit)
+    block = text[start:end]
+    script = ("ok() { echo ok; }\n"
+              "bad() { echo bad; }\n"
+              f"FIELDS={shlex.quote(fields)}\n{block}\nesac\n")
+    out = subprocess.run(["bash", "-c", script], capture_output=True,
+                         text=True, check=True)
+    return out.stdout.strip()
 
 
 class SeedTests(unittest.TestCase):
@@ -172,6 +209,39 @@ class ConfigTests(unittest.TestCase):
         self.assertIn("def max_iterations_lines", text)
         self.assertIn("AGENT_LOG", text)
         self.assertIn("exits = max_iterations_lines()", text)
+
+
+class HostReportFieldTests(unittest.TestCase):
+    """The machine-side check accepts the old report too (round 2's defect).
+
+    ``--tenant`` uploads *this* check and reads the tenant's installed
+    ``apply_demo_public.py --report``; until the next deploy that installed
+    apply prints the old meter object. The generator must therefore print the
+    old enabled/active/installed triple, and the case arm must accept the
+    absent values while still failing a live meter. Without this test the
+    generator can print one shape and the case arm match another — which is
+    exactly what round 2 found.
+    """
+
+    def test_the_new_report_without_a_meter_object_passes(self) -> None:
+        fields = host_report_fields({"config": {"near_ai_direct": True}})
+        self.assertIn("meter_object=False", fields)
+        self.assertEqual(meter_verdict(fields), "ok")
+
+    def test_the_old_report_with_an_absent_meter_passes(self) -> None:
+        fields = host_report_fields(
+            {"meter": {"enabled": "not-found", "active": "inactive",
+                       "unit_installed": False}})
+        self.assertIn("meter_object=True", fields)
+        self.assertIn("meter=not-found/inactive/False", fields)
+        self.assertEqual(meter_verdict(fields), "ok")
+
+    def test_the_old_report_with_a_live_meter_still_fails(self) -> None:
+        fields = host_report_fields(
+            {"meter": {"enabled": "enabled", "active": "active",
+                       "unit_installed": True}})
+        self.assertIn("meter=enabled/active/True", fields)
+        self.assertEqual(meter_verdict(fields), "bad")
 
 
 class NoBootReassertTests(unittest.TestCase):

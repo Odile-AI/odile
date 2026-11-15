@@ -523,14 +523,16 @@ except Exception:
 c = r.get("config") or {}
 p = r.get("provider") or {}
 m = "meter" in r
+mo = r.get("meter") or {}
 d = r.get("caddy") or {}
 s = r.get("session") or {}
 v = r.get("verify") or {}
 messages = s.get("messages") or 0
-print("near_ai_direct={} public_url={} provider={} at={} meter_object={} caddy_same={} markers={} matchers={} residue={} lede={}/{} rollback={} seed={} seed_messages={} seed_ok={}".format(
+print("near_ai_direct={} public_url={} provider={} at={} meter_object={} meter={}/{}/{} caddy_same={} markers={} matchers={} residue={} lede={}/{} rollback={} seed={} seed_messages={} seed_ok={}".format(
     c.get("near_ai_direct"), c.get("public_url"),
     p.get("name"), p.get("base_url"),
     m,
+    mo.get("enabled"), mo.get("active"), mo.get("unit_installed"),
     d.get("installed_sha256") == d.get("live_block_sha256"),
     d.get("markers"), d.get("matchers"), d.get("residue_lines"),
     v.get("demo_lede"), v.get("customer_lede"), v.get("rollback"),
@@ -552,8 +554,10 @@ esac
 # t_e237e261 removed the meter product-wide; t_dd815e89 deleted the apply's
 # adoption shim, so a report from this tree carries no meter object at all.
 # The report installed on the machine until the next deploy still prints the
-# old object, whose values must also say the meter is absent. Any other
-# answer fails.
+# old object, whose values must also say the meter is absent: the generator
+# prints both shapes (`meter_object` and the old enabled/active/installed
+# triple), so this check is green before and after the deploy and red on a
+# live meter.
 case "$FIELDS" in
     *"meter_object=False"*|*"meter=not-found/inactive/False"*)
         ok "the meter is not installed (removed product-wide)" ;;

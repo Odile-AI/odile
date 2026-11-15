@@ -11,7 +11,8 @@ tests``, so a file under ``tests/`` is in the gate without a Makefile line.
 
 What is scanned
 ---------------
-Every file in the tree except:
+Every file git sees in the repository — tracked plus untracked and not
+ignored — except:
 
 * ``docs/`` and ``deploy/demo-host/evidence/`` — dated history (transcripts,
   the product/security record, live measurements). A card that needs a new
@@ -20,6 +21,14 @@ Every file in the tree except:
 * build and runtime trees (``.git``, ``.worktrees``, ``.venv``,
   ``.fresh-clone``, ``__pycache__``, ``node_modules``);
 * binary files, and this guard file (it spells the retired names).
+
+The enumeration is ``git ls-files --cached --others --exclude-standard``, not
+an ``os.walk``, because the main worktree carries files the repository does
+not: the machine's private ``AGENTS.md`` (still naming the retired meter), its
+private tools and the demo evidence are all in ``.git/info/exclude``. ``make
+check`` is run from that worktree by the merge gate, so a walk would fail the
+merge on a file no clone has. ``--others`` keeps a planted untracked file in
+scope, which is what makes the fence catch a real regression.
 
 The allowlist
 -------------
@@ -40,6 +49,7 @@ from __future__ import annotations
 import http.client
 import os
 import re
+import shutil
 import socket
 import subprocess
 import sys
@@ -172,29 +182,80 @@ def is_history(parts: tuple[str, ...]) -> bool:
     return any(parts[:len(prefix)] == prefix for prefix in HISTORY_DIRS)
 
 
-def live_files() -> list[tuple[str, Path]]:
-    """Every non-history, non-binary file in the tree, repo-relative."""
+#: The machine's operating record. It sits at the root of the main worktree,
+#: is never tracked, and only matters to a tree without git (an exported
+#: tarball that carried it along); with git, ``info/exclude`` already hides it.
+PRIVATE_RECORD = "AGENTS.md"
+
+
+def git_env() -> dict[str, str]:
+    """A child git must not inherit the outer repo's location.
+
+    A pre-commit hook exports ``GIT_DIR`` and ``GIT_INDEX_FILE`` pointing at
+    the repository being committed. A fixture repo that inherits them runs
+    ``git init`` against the *real* gitdir and then lists the wrong index;
+    ``git ls-files`` would answer for the caller's repository instead of the
+    tree in hand. ``tests/test_manifest.py`` scrubs the same variables for
+    the same reason.
+    """
+    return {key: value for key, value in os.environ.items()
+            if not key.startswith("GIT_")}
+
+
+def repository_files(root: Path = ROOT) -> list[str]:
+    """The files git sees: tracked plus untracked and not ignored.
+
+    ``git ls-files`` is the point, not a convenience. The merge gate runs
+    ``make check`` in the main worktree, which carries the machine's private
+    ``AGENTS.md`` (line 81 still says "reached through odile-meter") and its
+    private tools; ``.git/info/exclude`` hides them from the repository, so
+    they are not code and the fence must not scan them. ``--others`` keeps a
+    planted untracked file in scope, which is how the fence catches a
+    regression before it is committed.
+    """
+    try:
+        out = subprocess.run(
+            ["git", "ls-files", "-z", "--cached", "--others", "--exclude-standard"],
+            cwd=root, capture_output=True, check=True, env=git_env()).stdout
+    except (OSError, subprocess.CalledProcessError):
+        # A tree without git (an exported tarball): walk it, and still leave
+        # the machine's private operating record out when it rides along.
+        names: list[str] = []
+        for dirpath, dirnames, filenames in os.walk(root):
+            here = Path(dirpath)
+            parts = here.relative_to(root).parts
+            if parts and (parts[0] in PRUNE_NAMES or is_history(parts)):
+                dirnames[:] = []
+                continue
+            dirnames[:] = sorted(name for name in dirnames if name not in PRUNE_NAMES)
+            for name in sorted(filenames):
+                if name in PRUNE_NAMES:
+                    continue
+                if not parts and name == PRIVATE_RECORD:
+                    continue
+                names.append((here / name).relative_to(root).as_posix())
+        return names
+    return [name for name in out.decode("utf-8", "surrogateescape").split("\0") if name]
+
+
+def live_files(root: Path = ROOT) -> list[tuple[str, Path]]:
+    """Every non-history, non-binary repository file, repo-relative."""
     files: list[tuple[str, Path]] = []
-    for dirpath, dirnames, filenames in os.walk(ROOT):
-        here = Path(dirpath)
-        rel_dir = here.relative_to(ROOT)
-        parts = rel_dir.parts
-        if parts and (parts[0] in PRUNE_NAMES or is_history(parts)):
-            dirnames[:] = []
+    for rel in repository_files(root):
+        parts = tuple(Path(rel).parts)
+        if any(part in PRUNE_NAMES for part in parts) or is_history(parts):
             continue
-        dirnames[:] = sorted(name for name in dirnames if name not in PRUNE_NAMES)
-        for name in sorted(filenames):
-            path = here / name
-            if name in PRUNE_NAMES or path == FENCE:
-                continue
-            try:
-                data = path.read_bytes()
-            except OSError:
-                continue
-            if b"\0" in data:  # an image, a raw disk, a tarball
-                continue
-            files.append((path.relative_to(ROOT).as_posix(), path))
-    return files
+        path = root / rel
+        if root == ROOT and path == FENCE:
+            continue
+        try:
+            data = path.read_bytes()
+        except OSError:
+            continue
+        if b"\0" in data:  # an image, a raw disk, a tarball
+            continue
+        files.append((rel, path))
+    return sorted(files)
 
 
 def patterns_for(rel: str) -> tuple[tuple[str, re.Pattern[str]], ...]:
@@ -305,6 +366,50 @@ class AllowlistTests(unittest.TestCase):
                     self.assertRegex(
                         text, pattern,
                         f"{rel} no longer carries {token!r}; remove it from ALLOW")
+
+
+class ScopeTests(unittest.TestCase):
+    """git decides what is code: a private file is out, an untracked plant in.
+
+    Round 2's defect: the walk scanned the *main worktree's* private
+    ``AGENTS.md`` (hidden by ``.git/info/exclude``), so the merge gate's
+    ``make check`` failed on a file no clone carries. The other half matters
+    too — an untracked, unignored plant must still be caught before anyone
+    commits it — so both halves are pinned here.
+    """
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory(prefix="odile-fence-scope-")
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name)
+        subprocess.run(["git", "init", "-q"], cwd=self.root,
+                       capture_output=True, check=True, env=git_env())
+        (self.root / ".git" / "info" / "exclude").write_text(
+            "/AGENTS.md\n", encoding="utf-8")
+        (self.root / "AGENTS.md").write_text(
+            "| Inference | reached through odile" + "-meter on the guest |\n",
+            encoding="utf-8")
+        (self.root / "live.py").write_text("provider: Near AI\n", encoding="utf-8")
+
+    def names(self) -> list[str]:
+        return [rel for rel, _path in live_files(self.root)]
+
+    def test_a_file_git_excludes_is_not_scanned(self) -> None:
+        self.assertNotIn("AGENTS.md", self.names())
+        hits = [hit for rel, path in live_files(self.root)
+                for hit in scan_text(rel, path.read_text(encoding="utf-8"))]
+        self.assertEqual(hits, [])
+
+    def test_an_untracked_unignored_file_is_scanned(self) -> None:
+        (self.root / "plant.py").write_text("odile" + "-meter\n", encoding="utf-8")
+        hits = [hit for rel, path in live_files(self.root)
+                for hit in scan_text(rel, path.read_text(encoding="utf-8"))]
+        self.assertEqual(len(hits), 1)
+        self.assertTrue(hits[0].startswith("plant.py:1: retired 'odile-meter'"), hits)
+
+    def test_a_tree_without_git_still_skips_the_private_record(self) -> None:
+        shutil.rmtree(self.root / ".git")
+        self.assertEqual(self.names(), ["live.py"])
 
 
 class TenantShapeTests(unittest.TestCase):
