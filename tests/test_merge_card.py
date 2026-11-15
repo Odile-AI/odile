@@ -219,6 +219,36 @@ class GateSemanticsTests(unittest.TestCase):
         self.assertEqual(self.fixture.head(), self.fixture.before)
         self.assertIn(f"main reset to {self.fixture.before[:12]}", proc.stdout)
 
+    def test_a_failure_that_quotes_the_lock_line_still_resets_main(self) -> None:
+        """A gate that ran and failed is exit 1 even when its output carries the lock line.
+
+        `tests/test_check_lock.py` asserts check_lock's timeout exit code and
+        prints `result.stderr` in the assertion message, so a drift in that
+        contract makes *every* gate failure quote `could not take … another
+        suite still holds it` verbatim. The suite still ran: it prints
+        unittest's `Ran N tests` summary after the assertion. Reporting that as
+        "never started" would leave `main` at a red merge.
+        """
+        proc, _ = self.fixture.run_tool(
+            make=(
+                'echo "======================================================================"\n'
+                'echo "FAIL: test_a_waiter_that_times_out_exits_75 (tests.test_check_lock.LockContractTest)"\n'
+                'echo "----------------------------------------------------------------------"\n'
+                'echo "AssertionError: 76 != 75 : make check: could not take /var/tmp/odile-check-lock-hwi9jhlw/lock after 1s; another suite still holds it"\n'
+                'echo "----------------------------------------------------------------------"\n'
+                'echo "Ran 5 tests in 0.2s"\n'
+                'echo "FAILED (failures=1)"\n'
+                'echo "make: *** [Makefile:56: check] Error 1" >&2\n'
+                "exit 2\n"
+            ),
+        )
+
+        self.assertEqual(proc.returncode, 1, proc.stdout + proc.stderr)
+        self.assertEqual(self.fixture.head(), self.fixture.before,
+                         "main was left at a merge whose gate ran and failed")
+        self.assertIn(f"main reset to {self.fixture.before[:12]}", proc.stdout)
+        self.assertIn("make check failed", proc.stdout)
+
 
 @unittest.skipUnless(TOOL, TOOL_MISSING)
 class PolicyTests(unittest.TestCase):
