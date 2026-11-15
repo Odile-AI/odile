@@ -17,12 +17,24 @@ DEMO_STATE ?= $(CURDIR)/demo/local/state
 SERVER_ID ?= $(shell cat /root/.odile/servury_uki_server_id 2>/dev/null)
 SLUG ?= odlukitest
 
-# Every .py and every shell script in the tree, minus VCS, virtualenvs and the
-# disposable fresh-clone checkout. `.githooks/` holds shell hooks, so they are
-# linted even though only one carries a .sh suffix today.
+# The gate's file lists come from the index, not from a walk of the working
+# tree: `git ls-files` is the repository, so an untracked private evidence
+# script (the shared checkout keeps the operating record under `docs/ops/`
+# untracked) cannot fail the gate every merge runs (ODL-338). The pre-commit
+# hook is shell without the `.sh` suffix, so `.githooks/pre-commit` is named
+# explicitly; every hook that does carry the suffix is already in the list. A
+# tree with no git — the built public tree — keeps the walk, pruned of VCS,
+# virtualenvs and the disposable fresh-clone checkout, so it still lints every
+# script and compiles every module it ships.
+GIT ?= git
 PRUNE = \( -path ./.git -o -path ./.worktrees -o -path ./.venv -o -path ./.fresh-clone \) -prune
+ifeq ($(shell $(GIT) rev-parse --is-inside-work-tree 2>/dev/null),true)
+PY_FILES = $(shell $(GIT) ls-files -- '*.py')
+SH_FILES = $(shell { $(GIT) ls-files -- '*.sh'; $(GIT) ls-files -- .githooks/pre-commit; } | sort -u)
+else
 PY_FILES = $(shell find . $(PRUNE) -o -name '*.py' -print | sort)
 SH_FILES = $(shell find . $(PRUNE) -o \( -name '*.sh' -o -path './.githooks/pre-commit' \) -print | sort)
+endif
 
 .PHONY: check acceptance prereqs test test-unit self-test compile lint claims brand roadmap secrets leak hooks fresh-check deploy-dry \
 	demo demo-check demo-reset uki-cycle release-sign seed-cert
