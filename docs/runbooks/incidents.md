@@ -795,13 +795,17 @@ ODL-212), and the cache-first rule is the fastest way out. See §6.3, rows 4–7
 
 ### 6.4 A live measurement beside the drills
 
-While the drills ran, the poll's own view of the demo tenant was recorded: the
-heartbeat was `2 d 7 h` old, `/verify` answered `200` with `PASS — five checks`,
-and `odilectl health --json` planned a `down` alert ("heartbeat stopped 2d 7h
-ago; port 22 answers host key …") and a `backup` alert ("last backup 2d 7h ago
-(threshold 1d 12h)"). The machine is up; the heartbeat job is what stopped. That
-is the discriminator §4.1 now puts second, and it is the reason "down" in this
-page means *the heartbeat stopped*, not *the machine is gone*.
+While the drills ran, the poll's own view of the demo tenant was recorded: its
+last heartbeat is `2026-11-13 03:01:14Z` (`odilectl health --json`:
+`heartbeat_age_seconds: 200,991`, classification `down`, brief missed), while
+`/verify` answers `200` with `measurement 9f01725a…` and `PASS — five checks`.
+The poll plans a `down` alert ("heartbeat stopped 2d 7h ago; port 22 answers
+host key …") and a `backup` alert ("last backup 2d 7h ago (threshold 1d 12h)").
+The machine is up; the heartbeat job is what stopped — on the day the demo was
+reinstalled (13 November). The public `/status` page counts it: `Downtime 3,421
+min` against `In-service time 2.4 machine-days`. That is the discriminator §4.1
+now puts second, it is why "down" in this page means *the heartbeat stopped*,
+and it is a live defect the follow-up card owns (§7.6).
 
 ## 7. Limits
 
@@ -822,8 +826,12 @@ page means *the heartbeat stopped*, not *the machine is gone*.
 5. **The provider console is a door we do not control.** It shows the boot and
    can restart or power off; it is not a shell and it does not decrypt anything
    (`image.md` §11.5, gap 2).
-6. **The demo tenant is the counter-example in §6.4.** Its heartbeat job is not
-   running (2 d 7 h stale) while the machine serves `/verify`, so the poll
-   reports the demo `down` and its backup stale. That is a live defect named
-   here, not a property of the runbook; the follow-up card owns the demo's
-   heartbeat and backup timers.
+6. **The demo tenant is the counter-example in §6.4.** Its heartbeat stopped on
+   13 November (2 d 7 h stale at the time of writing) while the machine serves
+   `/verify`, so the poll reports the demo `down`, its backup stale, and the
+   public `/status` page counts `3,421 min` of downtime for a working machine.
+   A follow-up card owns the demo's heartbeat and backup timers and the status
+   page's demo row. Two smaller follow-ups the same measurement exposed: the
+   `down`/`backup` alert's `first_command` is still
+   `ssh -i ~/.ssh/odile …` (the key does not exist; `odilectl/health.py`), and
+   the `spend` alert is dormant (§4.8).
