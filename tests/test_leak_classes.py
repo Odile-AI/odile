@@ -78,6 +78,9 @@ class MachineIdentity(unittest.TestCase):
     def test_a_plain_serial_variable_is_not_a_serial_number(self):
         self.assertNotIn("machine-identity", rules('serial = pathlib.Path(tmp)'))
 
+    def test_a_sha512_digest_is_not_a_chip_id(self):
+        self.assertNotIn("machine-identity", rules("sha512 " + "ab" * 64))
+
 
 class VendorResourceIds(unittest.TestCase):
     def test_an_instance_id_is_reported(self):

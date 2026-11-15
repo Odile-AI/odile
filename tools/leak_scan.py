@@ -394,8 +394,10 @@ def text_candidates(line: str, number: int) -> list[tuple[str, str, str]]:
             seen.add(value)
 
     # Machine identity first: a silicon id is the strongest fingerprint there is.
+    digest_line = bool(re.search(r"(?i)sha(256|512)|digest|checksum", line))
     for match in CHIP_ID.finditer(line):
-        add("machine-identity", match.group(0), "chip id")
+        if not digest_line:
+            add("machine-identity", match.group(0), "chip id")
     for match in PARTUUID.finditer(line):
         add("machine-identity", match.group(1), "partuuid")
     for match in MACHINE_ID.finditer(line):
