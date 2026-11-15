@@ -218,14 +218,22 @@ class AllowlistRecord(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stdout)
         self.assertIn("allowlisted:    1", result.stdout)
 
-    def test_a_constant_row_with_a_date_is_a_format_finding(self) -> None:
-        # A date on a constant re-creates the single cliff the class column removed.
+    def test_an_expired_constant_row_is_not_a_finding(self) -> None:
+        # `class` decides what the expiry means: a constant never expires, so a
+        # date on one is accepted and means nothing (the card's own sentence).
         self.write_probe(PROBE_IP)
-        self.write_allow(self.row(PROBE_IP, expires="2027-12-31"))
+        self.write_allow(self.row(PROBE_IP, expires="2026-01-01"))
+        result = self.scan()
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertIn("allowlisted:    1", result.stdout)
+
+    def test_a_malformed_expiry_is_a_format_finding(self) -> None:
+        self.write_probe(PROBE_IP)
+        self.write_allow(self.row(PROBE_IP, expires="next year"))
         result = self.scan()
         self.assertEqual(result.returncode, 1, result.stdout)
         self.assertIn("FINDING allow-file", result.stdout)
-        self.assertIn("a constant row expires never", result.stdout)
+        self.assertIn("expires must be never or YYYY-MM-DD", result.stdout)
 
     def test_a_debt_row_cannot_carry_never(self) -> None:
         self.write_probe(PROBE_IP)

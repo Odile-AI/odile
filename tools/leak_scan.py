@@ -42,10 +42,10 @@ value, so there is no path-wide row.
 
 ``class`` is either ``constant`` — a value that is permanent (a published
 password, a public key, a reserved-domain address, a test fixture) — and then
-``expires`` is ``never``; or ``debt`` — an allowance a card will clear — and then
-``expires`` is that card's date (``YYYY-MM-DD``). A debt row past its date is a
-finding; a constant row never expires. A constant carrying a date, or a debt
-carrying ``never``, is a format finding.
+expiry does not apply, so it reads ``never`` (a date is accepted and never
+expires); or ``debt`` — an allowance a card will clear — and then ``expires`` is
+that card's date (``YYYY-MM-DD``). A debt row past its date is a finding; a
+constant row never expires. A debt row carrying ``never`` is a format finding.
 
 ``credential`` is ``yes`` when the value is a secret a person could present to a
 live system, and ``no`` otherwise. Every run prints the count beside the row
@@ -247,17 +247,15 @@ def allow_problem(row: Allow, number: int) -> str:
         return f"{where}: digest must read sha256:<12 lowercase hex>, not {row.digest!r}"
     if not row.reason:
         return f"{where}: a row without a reason is a finding"
-    if row.klass == "constant":
-        if row.expires != "never":
-            return (f"{where}: a constant row expires never, not {row.expires!r} "
-                    f"— a date on a constant is the cliff this column removed")
-        return ""
-    if row.expires == "never":
+    # `class` decides what the expiry means: a constant never expires, so a date
+    # on one is accepted and ignored; a debt must carry the date that clears it.
+    if row.expires != "never":
+        try:
+            date.fromisoformat(row.expires)
+        except ValueError:
+            return f"{where}: expires must be never or YYYY-MM-DD, not {row.expires!r}"
+    if row.klass == "debt" and row.expires == "never":
         return f"{where}: a debt row needs the date of the card that clears it, not 'never'"
-    try:
-        date.fromisoformat(row.expires)
-    except ValueError:
-        return f"{where}: expires must be never or YYYY-MM-DD, not {row.expires!r}"
     return ""
 
 

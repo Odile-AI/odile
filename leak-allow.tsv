@@ -8,10 +8,11 @@
 # digest still pins the one value, so there is no path-wide row.
 #
 # class: `constant` for a value that is permanent (a published password, a public
-# key, a reserved-domain address, a test fixture) — it expires `never`; or `debt`
-# for an allowance a card will clear — it carries that card's date (YYYY-MM-DD). A
-# debt row past its date is a finding; a constant row never expires. A constant
-# carrying a date, or a debt carrying `never`, is a format finding.
+# key, a reserved-domain address, a test fixture) — expiry does not apply, so it
+# reads `never` (a date is accepted and never expires); or `debt` for an allowance
+# a card will clear — it carries that card's date (YYYY-MM-DD). A debt row past its
+# date is a finding; a constant row never expires. A debt carrying `never` is a
+# format finding.
 #
 # credential: `yes` when the value is a secret a person could present to a live
 # system, `no` otherwise. Every scan prints the count next to the row count, so a
