@@ -90,7 +90,9 @@ if [ "$MODE" = tenant ]; then
     # The page this checkout carries, so the tenant leg can compare it to the
     # bytes Caddy serves. `make secrets` never sees it; it is a file hash.
     LOGIN_SHA=$(sha256sum "$REPO/deploy/demo-host/login.html" | awk '{print $1}')
+    BACKUP_SHA=$(sha256sum "$REPO/scripts/backup.py" | awk '{print $1}')
     echo "upload       $(sha256sum "$0" | awk '{print $1}') -> /run/odile-check-demo-host.sh"
+    echo "backup       $BACKUP_SHA (scripts/backup.py) -> /usr/local/lib/odile/backup.py"
     echo "page         $LOGIN_SHA (deploy/demo-host/login.html)"
     # One console for the whole drive. The Webapp rate-limits a wrong sign-in
     # (`401` then `429 Too many login attempts` for about a minute, measured
@@ -98,24 +100,31 @@ if [ "$MODE" = tenant ]; then
     # restarts, so a connect that fails while the run is in flight is
     # transient; only a 401 (the password) is fatal. The restart leg closes
     # this socket on purpose, and the run's own log file is its record.
-    VERDICT=$(python3 - "$CONSOLE" "$PW_FILE" "$0" "$LOGIN_SHA" <<'PY'
+    VERDICT=$(python3 - "$CONSOLE" "$PW_FILE" "$0" "$LOGIN_SHA" \
+        "$REPO/scripts/backup.py" "$BACKUP_SHA" <<'PY'
+import json
 import os
+import sqlite3
 import sys
 import time
 
-console_path, password_path, script_path, login_sha = sys.argv[1:5]
+console_path, password_path, script_path, login_sha, backup_path, backup_sha = sys.argv[1:7]
 sys.path.insert(0, os.path.dirname(os.path.abspath(console_path)))
 import tenant_console  # noqa: E402
 
 password = open(password_path, encoding="utf-8").read().strip()
 REMOTE_SCRIPT = "/run/odile-check-demo-host.sh"
 REMOTE_PW = "/run/odile-check-demo-host.pass"
+REMOTE_BACKUP = "/run/odile-backup.py"
 REMOTE_LOG = "/run/odile-check-demo-host.log"
 REMOTE_FILES = ("odile-check-demo-host.sh odile-check-demo-host.pass"
-                " odile-check-demo-host.log")
+                " odile-backup.py odile-check-demo-host.log")
 #: The whole drive: sign-in, upload, the detached run (which restarts the
 #: gateway) and the read-back. Past this the transport gives up with exit 2.
-DEADLINE = time.monotonic() + 1200
+#: It has to outlast the inner first-backup wait (BACKUP_WAIT_SECONDS, 900 s
+#: by default) plus the check's other legs, which take a couple of minutes
+#: including the gateway restart.  Forty minutes leaves room for both.
+DEADLINE = time.monotonic() + 2400
 #: The wait between sign-in attempts while the gateway restarts.
 RETRY = 5.0
 
@@ -159,9 +168,263 @@ def cleanup(client):
 
 
 client = connect()
+
+
+def read_remote(path: str) -> str:
+    """One small root-owned file, read over the console."""
+    try:
+        return client.read(path).decode("utf-8", "replace").strip()
+    except (tenant_console.ConsoleError, OSError):
+        return ""
+
+
+#: How long the seed waits for a first backup.  Five minutes was short enough
+#: to fail a healthy seed on 2026-11-15, and — worse — the failure printed
+#: "did not finish within 300 s" while the cause (a wrong repository password)
+#: sat in the unit's journal.  A full first backup is a minutes-scale job: the
+#: demo's first successful snapshot (47 MB / 635 files) took 1.5 s of restic
+#: time once the repository answered, but a cold repository and a slower link
+#: are not five-second jobs.  The wait is a budget; a run still going when it
+#: ends is a note, and a unit that died is a failure with its journal.
+#: BACKUP_WAIT_SECONDS shortens the budget for a test of that branch on a
+#: machine whose repository is already warm.
+try:
+    BACKUP_WAIT = max(1, int(os.environ.get("BACKUP_WAIT_SECONDS") or 900))
+except ValueError:
+    BACKUP_WAIT = 900
+
+#: The wrong-password remedy the runbook (§6) describes; printed beside the
+#: failure so the operator does not have to read the journal to learn it.
+REMEDY = (
+    "the repository was initialised with another password (a rebuild without"
+    " the old recovery file): move the old repository aside and run backup.py"
+    " init with /etc/odile/recovery.txt before starting the service"
+)
+
+
+def backup_record() -> dict:
+    """The machine's status record, or `{}` when there is none yet."""
+    try:
+        result = client.run("sudo cat /var/lib/odile/backup.json", check=False)
+        value = json.loads((result.get("stdout") or "").strip() or "{}")
+        return value if isinstance(value, dict) else {}
+    except (tenant_console.ConsoleError, OSError, ValueError, TypeError):
+        return {}
+
+
+def backup_unit_state() -> tuple[str, str]:
+    """What systemd says about the backup unit, and the tail of its journal.
+
+    `backup.json` carries the program's own failure record, but a unit can die
+    before writing one (an unreadable repository password is one way).  The
+    unit is the surface the operator reads, so the seed asks it directly.
+    """
+    try:
+        shown = client.run(
+            "systemctl show -p ActiveState -p SubState -p Result -p ExecMainStatus"
+            " odile-backup-tenant.service",
+            check=False,
+        )
+        journal = client.run(
+            "sudo journalctl -u odile-backup-tenant.service -n 20 --no-pager",
+            check=False,
+        ).get("stdout") or ""
+    except (tenant_console.ConsoleError, OSError) as error:
+        return "unknown", str(error)
+    text = (shown.get("stdout") or "").strip()
+    fields = dict(line.split("=", 1) for line in text.splitlines() if "=" in line)
+    state = fields.get("ActiveState") or "unknown"
+    detail = " ".join(
+        f"{key}={value}" for key, value in fields.items() if key != "ActiveState"
+    )
+    tail = " | ".join(line for line in journal.strip().splitlines()[-4:])
+    return state, (detail + (" | " + tail if tail else "")).strip()
+
+
+def seed_hq() -> tuple[bool, str]:
+    """The half only HQ can do after a rebuild, and it is idempotent.
+
+    A rebuilt machine makes a new heartbeat key, and the receiver refuses a
+    different key on purpose (409); a new SFTP key is refused by the backup
+    box until its public half is authorized.  This half revokes the stale
+    registration, appends the new SFTP key, runs one backup when the last
+    success is older than twelve hours, and reads the fresh beat back from
+    HQ.  A converged machine prints `same` and skips the backup.
+    """
+    print("== the HQ half (seeding)")
+    slug = "odl-7971a8"
+    try:
+        seed = json.loads(read_remote("/etc/odile/seed.json"))
+        slug = seed.get("slug") or slug
+    except (ValueError, AttributeError):
+        pass
+    hb_pub = read_remote("/etc/odile/heartbeat/heartbeat.pub")
+    sftp_pub = read_remote("/etc/odile/backup-ssh/id_ed25519.pub")
+    db = os.environ.get("ODILE_STATE_DB", "/var/lib/odile/waitlist.db")
+    authorized = os.environ.get(
+        "ODILE_BACKUP_AUTHORIZED_KEYS", "/srv/odile-backup/.ssh/authorized_keys")
+    failures: list[str] = []
+
+    # 1. The SFTP key on the backup box.
+    parts = sftp_pub.split()
+    blob = parts[1] if len(parts) >= 2 else ""
+    if not blob:
+        failures.append("the machine has no SFTP public key")
+    else:
+        existing = ""
+        try:
+            existing = open(authorized, encoding="utf-8").read()
+        except OSError:
+            existing = ""
+        if blob in existing:
+            print("same         the backup box authorizes this machine's SFTP key")
+        else:
+            # The whole line, comment included: `ssh-keygen -C "odile-backup
+            # $SLUG"` names the machine, and the comment is how a stale key is
+            # later told apart from a live one.
+            line = " ".join(parts)
+            try:
+                with open(authorized, "a", encoding="utf-8") as handle:
+                    if existing and not existing.endswith("\n"):
+                        handle.write("\n")
+                    handle.write(line + "\n")
+                print(f"authorized   {line}")
+            except OSError as error:
+                failures.append(
+                    f"cannot write {authorized} ({error}); append: {line}")
+
+    # 2. The heartbeat key the receiver holds for this slug.
+    if not hb_pub:
+        failures.append("the machine has no heartbeat public key")
+    else:
+        try:
+            connection = sqlite3.connect(db, timeout=10)
+            try:
+                row = connection.execute(
+                    "SELECT public_key FROM heartbeat_keys WHERE slug = ?", (slug,)
+                ).fetchone()
+                if row is None:
+                    print(f"seeded       no key registered yet; the first beat registers {slug}")
+                elif row[0].strip() == hb_pub:
+                    print("same         the registered heartbeat key is this machine's")
+                else:
+                    connection.execute(
+                        "DELETE FROM heartbeat_keys WHERE slug = ?", (slug,))
+                    connection.commit()
+                    print(f"revoked      the old heartbeat key for {slug} "
+                          "(this machine was rebuilt)")
+            finally:
+                connection.close()
+        except sqlite3.Error as error:
+            failures.append(f"cannot read the heartbeat keys: {error}")
+
+    # 3. One backup when the last success is stale, then read it back.
+    now = int(time.time())
+    record = backup_record()
+    last = int(record.get("last_success_at") or 0)
+    snapshot = str(record.get("snapshot") or "")
+    if last and now - last < 12 * 3600:
+        print(f"same         the last backup is {now - last}s old "
+              f"(snapshot {snapshot[:12]}…)")
+    elif failures:
+        print("skip         the first backup (fix the keys above first)")
+    else:
+        unit = "odile-demo-backup-%d" % now
+        try:
+            client.run(f"sudo systemd-run --unit={unit} --collect"
+                       " systemctl start odile-backup-tenant.service")
+            print(f"started      odile-backup-tenant.service ({unit})")
+        except (tenant_console.ConsoleError, OSError) as error:
+            failures.append(f"cannot start the backup: {error}")
+        started = time.monotonic()
+        deadline = started + BACKUP_WAIT
+        fresh = False
+        while not failures and time.monotonic() < deadline:
+            # Sleep no longer than the budget: a short BACKUP_WAIT_SECONDS
+            # must reach the end of the budget, not overshoot it by a poll.
+            time.sleep(min(8.0, max(1.0, deadline - time.monotonic())))
+            record = backup_record()
+            last = int(record.get("last_success_at") or 0)
+            if last >= now - 120:
+                snapshot = str(record.get("snapshot") or "")
+                print(f"ok           a fresh backup at {last} "
+                      f"(snapshot {snapshot[:12]}…) after "
+                      f"{int(time.monotonic() - started)}s")
+                fresh = True
+                break
+            if record.get("status") == "failed":
+                error = str(record.get("error") or "")[:200]
+                failures.append(f"the backup failed: {error}")
+                if "wrong password" in error or "no key found" in error:
+                    failures.append(REMEDY)
+                state, detail = backup_unit_state()
+                if detail:
+                    print(f"unit         odile-backup-tenant.service: "
+                          f"{state} {detail}")
+                break
+        if not failures and not fresh:
+            # The unit may have finished between the last poll and the
+            # deadline: one last read before asking systemd.
+            record = backup_record()
+            last = int(record.get("last_success_at") or 0)
+            if last >= now - 120:
+                snapshot = str(record.get("snapshot") or "")
+                print(f"ok           a fresh backup at {last} "
+                      f"(snapshot {snapshot[:12]}…) after "
+                      f"{int(time.monotonic() - started)}s")
+                fresh = True
+        if not failures and not fresh:
+            # Either the backup is still running or the unit died before it
+            # wrote a record.  Ask systemd which one: a wrong password kills
+            # the unit, and "did not finish within N s" would hide the remedy.
+            state, detail = backup_unit_state()
+            elapsed = int(time.monotonic() - started)
+            if detail:
+                print(f"unit         odile-backup-tenant.service: {state} {detail}")
+            if state in ("failed", "inactive", "unknown"):
+                failures.append(
+                    f"odile-backup-tenant.service is {state} after {elapsed}s"
+                    f" and /var/lib/odile/backup.json has no fresh success"
+                    + (f": {detail}" if detail else ""))
+                if "wrong password" in detail or "no key found" in detail:
+                    failures.append(REMEDY)
+            else:
+                print(f"note         the first backup is still running after "
+                      f"{elapsed}s (a first backup is a minutes-scale job; the "
+                      "budget is BACKUP_WAIT_SECONDS); the timer finishes it "
+                      "and the next check reads last_success_at")
+
+    # 4. The beat itself, read from HQ's own store.
+    try:
+        client.run("sudo systemctl start odile-heartbeat.service", check=False)
+        time.sleep(2)
+    except (tenant_console.ConsoleError, OSError):
+        pass
+    try:
+        connection = sqlite3.connect(db, timeout=10)
+        try:
+            row = connection.execute(
+                "SELECT MAX(at) FROM heartbeats WHERE slug = ?", (slug,)
+            ).fetchone()
+        finally:
+            connection.close()
+        latest = int(row[0] or 0)
+        if latest >= now - 600:
+            print(f"ok           HQ holds a signed heartbeat for {slug} at {latest}")
+        else:
+            failures.append(f"HQ has no heartbeat newer than ten minutes for {slug}")
+    except (sqlite3.Error, TypeError, ValueError) as error:
+        failures.append(f"cannot read the heartbeats: {error}")
+
+    for failure in failures:
+        print(f"FAIL seeding: {failure}")
+    return (not failures), ("seed: " + "; ".join(failures) if failures else "seed: ok")
+
+
 try:
     client.put(script_path, REMOTE_SCRIPT)
     client.put(password_path, REMOTE_PW)
+    client.put(backup_path, REMOTE_BACKUP)
     client.run(f"sudo chmod 0600 {REMOTE_PW}", check=False)
     # Bare names after `cd /run`: the Webapp's command guard reads an absolute
     # path after `rm` as destructive (tenant_console.put's note).
@@ -171,10 +434,18 @@ try:
     # refuses `nohup`/`&`, and systemd-run is how a detached job is started on
     # this machine (the same way a tenant service runs).
     unit = "odile-check-demo-host-%d" % int(time.time())
+    # The runbook's documented override has to reach the machine: the local
+    # half reads BACKUP_REPO_URL, and the console transport is the only way a
+    # run from HQ can set it (a real storage box, or a drill's decoy repo).
+    repo_override = os.environ.get("BACKUP_REPO_URL", "").strip()
+    repo_env = (
+        f" --setenv=BACKUP_REPO_URL={repo_override}" if repo_override else ""
+    )
     launch = (
         f"sudo systemd-run --unit={unit} --collect"
         f" --setenv=CHECK_LOG={REMOTE_LOG} --setenv=DEMO_PASSWORD_FILE={REMOTE_PW}"
-        f" --setenv=LOGIN_SHA={login_sha} bash {REMOTE_SCRIPT} --local"
+        f" --setenv=LOGIN_SHA={login_sha} --setenv=BACKUP_SHA={backup_sha}{repo_env}"
+        f" bash {REMOTE_SCRIPT} --local"
     )
     started = client.run(launch)
     if started.get("code") not in (0, None):
@@ -207,8 +478,11 @@ try:
     sys.stdout.write(log)
     if log and not log.endswith("\n"):
         sys.stdout.write("\n")
-    if "demo-host check: PASS (" in log:
+    sd_ok, sd_note = seed_hq()
+    if "demo-host check: PASS (" in log and sd_ok:
         print("VERDICT pass")
+    elif "demo-host check: PASS (" in log:
+        print(f"VERDICT seed-fail {sd_note}")
     elif "demo-host check: FAIL (" in log:
         print("VERDICT fail")
     else:
@@ -224,6 +498,7 @@ PY
     printf '%s\n' "$VERDICT" | sed '/^VERDICT /d'
     case "$VERDICT" in
         *"VERDICT pass"*) exit 0 ;;
+        *"VERDICT seed-fail"*) echo "check_demo_host: the machine passed; the HQ seed did not (see above)" >&2; exit 1 ;;
         *"VERDICT fail"*) exit 1 ;;
     esac
     if [ "$TRANSPORT_RC" = 2 ]; then
@@ -255,7 +530,7 @@ expect() { # label expected actual
     fi
 }
 
-for tool in curl getent ip pgrep python3 ss systemctl stat sha256sum; do
+for tool in curl getent ip openssl pgrep python3 sha256sum ssh-keygen ssh-keyscan ss stat systemctl; do
     command -v "$tool" >/dev/null 2>&1 || { echo "check_demo_host: missing $tool" >&2; exit 2; }
 done
 if [ "$(id -u)" != 0 ]; then
@@ -472,7 +747,209 @@ else
     bad "odile-demo-* timer(s) present: $(printf '%s' "$DEMO_TIMERS" | tr '\n' ';')"
 fi
 expect "odile-meter unit" "not-found" "$(systemctl is-enabled odile-meter 2>&1 || true)"
-expect "odile timers on this machine" "0" "$(systemctl list-timers --all --no-legend 2>/dev/null | grep -c 'odile' || true)"
+
+# 4b. The signed heartbeat and the nightly backup — seeded here, not assumed.
+#
+# The release installer writes these when it converges, but a rebuild puts the
+# image back and can lose them: measured 2026-11-15, the demo's last heartbeat
+# was 2026-11-13T03:01:14Z, the day it was reinstalled, and the poll planned a
+# `down` and a `backup` alert for a machine that was up. So the machine's own
+# check is the seed. Every step compares before it writes and prints `same` on
+# a converged machine; the two public keys are printed for the HQ half, which
+# registers the SFTP key and revokes a rebuilt machine's old heartbeat key.
+#
+# The seed URL names `backup.odile.fyi`, a host that does not resolve yet; the
+# storage box today is HQ's own sftp service on port 2222 (docs/runbooks/
+# backup.md §3). The landing host resolves to it, and BACKUP_REPO_URL overrides
+# both when a real box is bought.
+echo "== heartbeat and backup timers"
+BACKUP=/usr/local/lib/odile/backup.py
+KEY_DIR=/etc/odile/backup-ssh
+HEARTBEAT_DIR=/etc/odile/heartbeat
+SLUG=$(/usr/bin/python3 - <<'PY' 2>/dev/null || true
+import json
+for path in ("/etc/odile/seed.json", "/var/lib/odile/firstboot.json"):
+    try:
+        value = json.load(open(path, encoding="utf-8")).get("slug")
+    except (OSError, ValueError):
+        continue
+    if isinstance(value, str) and value:
+        print(value)
+        break
+PY
+)
+[ -n "$SLUG" ] || SLUG=${MACHINE_HOST%%.*}
+LANDING_HOST=${LANDING_URL#*://}
+LANDING_HOST=${LANDING_HOST%%/*}
+REPO_URL=${BACKUP_REPO_URL:-}
+if [ -z "$REPO_URL" ] && [ -s /etc/odile/backup-repo.txt ]; then
+    # Keep a seed (or an override) whose host resolves: that is a real box.
+    CANDIDATE=$(head -n 1 /etc/odile/backup-repo.txt)
+    CANDIDATE_HOST=$(printf '%s' "$CANDIDATE" \
+        | sed -n 's|^sftp://\{0,1\}[^@]*@\([^:/]*\).*|\1|p')
+    if [ -n "$CANDIDATE_HOST" ] && getent hosts "$CANDIDATE_HOST" >/dev/null 2>&1; then
+        REPO_URL=$CANDIDATE
+    fi
+fi
+[ -n "$REPO_URL" ] || REPO_URL="sftp://odile-backup@$LANDING_HOST:2222/tenants/$SLUG"
+REPO_AUTH=${REPO_URL#sftp:}
+REPO_AUTH=${REPO_AUTH#//}
+REPO_HOSTPORT=${REPO_AUTH#*@}
+REPO_HOSTPORT=${REPO_HOSTPORT%%/*}
+REPO_HOST=${REPO_HOSTPORT%%:*}
+REPO_PORT=""
+case "$REPO_HOSTPORT" in
+    *:*) REPO_PORT=${REPO_HOSTPORT##*:} ;;
+esac
+note "$SLUG -> $REPO_URL"
+
+# The program: uploaded with this check on the HQ path, or already installed.
+if [ ! -x "$BACKUP" ]; then
+    if [ -s /run/odile-backup.py ]; then
+        if [ -n "${BACKUP_SHA:-}" ]; then
+            expect "the uploaded backup program is this checkout's scripts/backup.py" \
+                "$BACKUP_SHA" "$(sha256sum /run/odile-backup.py | awk '{print $1}')"
+        fi
+        if install -m 0755 -o root -g root /run/odile-backup.py "$BACKUP"; then
+            ok "installed $BACKUP (uploaded with this check)"
+        else
+            bad "could not install $BACKUP from /run/odile-backup.py"
+        fi
+    else
+        bad "$BACKUP is missing; run this check with --tenant from HQ (it uploads the program)"
+    fi
+else
+    ok "$BACKUP exists (sha256 $(sha256sum "$BACKUP" | cut -c1-12)…)"
+fi
+
+# The repository URL the units and `backup.py run` read.
+if [ -s /etc/odile/backup-repo.txt ] && [ "$(head -n 1 /etc/odile/backup-repo.txt)" = "$REPO_URL" ]; then
+    ok "/etc/odile/backup-repo.txt is the live repository URL"
+else
+    printf '%s\n' "$REPO_URL" > /etc/odile/backup-repo.txt
+    chmod 0644 /etc/odile/backup-repo.txt
+    ok "wrote /etc/odile/backup-repo.txt ($REPO_URL)"
+fi
+
+# The SFTP transport key: generated here, public half registered on the box.
+if [ ! -s "$KEY_DIR/id_ed25519" ]; then
+    install -d -m 0700 "$KEY_DIR"
+    if ssh-keygen -q -t ed25519 -N "" -C "odile-backup $SLUG" -f "$KEY_DIR/id_ed25519"; then
+        chmod 0600 "$KEY_DIR/id_ed25519"
+        ok "created the SFTP key for $SLUG"
+    else
+        bad "ssh-keygen did not create the SFTP key"
+    fi
+else
+    expect "the SFTP key mode" "600" "$(stat -c '%a' "$KEY_DIR/id_ed25519")"
+fi
+if [ ! -s "$KEY_DIR/known_hosts" ]; then
+    SCAN_ARGS=(-T 8 -H)
+    if [ -n "$REPO_PORT" ]; then
+        SCAN_ARGS+=(-p "$REPO_PORT")
+    fi
+    if ssh-keyscan "${SCAN_ARGS[@]}" "$REPO_HOST" > "$KEY_DIR/known_hosts" 2>/dev/null \
+        && [ -s "$KEY_DIR/known_hosts" ]; then
+        chmod 0600 "$KEY_DIR/known_hosts"
+        ok "recorded $REPO_HOST's host key ($(wc -l < "$KEY_DIR/known_hosts") line(s))"
+    else
+        bad "ssh-keyscan $REPO_HOST did not answer; the first backup will fail"
+    fi
+else
+    expect "the SFTP known_hosts mode" "600" "$(stat -c '%a' "$KEY_DIR/known_hosts")"
+fi
+
+# The heartbeat key: generated here, the private half never leaves the machine.
+if [ ! -s "$HEARTBEAT_DIR/heartbeat.key" ]; then
+    install -d -m 0700 "$HEARTBEAT_DIR"
+    if openssl genpkey -algorithm ED25519 -out "$HEARTBEAT_DIR/heartbeat.key" \
+        && chmod 0600 "$HEARTBEAT_DIR/heartbeat.key" \
+        && openssl pkey -in "$HEARTBEAT_DIR/heartbeat.key" -pubout \
+            -out "$HEARTBEAT_DIR/heartbeat.pub"; then
+        chmod 0644 "$HEARTBEAT_DIR/heartbeat.pub"
+        ok "created the heartbeat key"
+    else
+        bad "openssl did not create the heartbeat key"
+    fi
+else
+    expect "the heartbeat key mode" "600" "$(stat -c '%a' "$HEARTBEAT_DIR/heartbeat.key")"
+fi
+
+# The nightly backup unit and timer, from the program's own templates.
+if [ -x "$BACKUP" ]; then
+    if "$BACKUP" install --repo "$REPO_URL" --slug "$SLUG" --home "$DEMO_HOME" \
+        --recovery /etc/odile/recovery.txt --status /var/lib/odile/backup.json \
+        --key "$KEY_DIR/id_ed25519" --known-hosts "$KEY_DIR/known_hosts" \
+        --heartbeat-url https://odile.fyi/heartbeat \
+        --heartbeat-key-dir "$HEARTBEAT_DIR" \
+        --unit-dir /etc/systemd/system --install-path "$BACKUP"; then
+        ok "the nightly backup unit and timer converged (daily 03:00)"
+    else
+        bad "backup.py install did not converge the nightly unit"
+    fi
+fi
+
+# The five-minute heartbeat: a signed note from this machine, independent of
+# the backup run. `Persistent=true` means a beat missed while down fires on the
+# next boot rather than waiting for the next five-minute boundary.
+write_unit() { # path text
+    if [ -f "$1" ] && [ "$(cat "$1")" = "$2" ]; then
+        note "same         $1"
+        return 0
+    fi
+    printf '%s\n' "$2" > "$1"
+    chmod 0644 "$1"
+    note "wrote        $1"
+}
+write_unit /etc/systemd/system/odile-heartbeat.service "[Unit]
+Description=Odile tenant heartbeat (signed, every five minutes)
+Documentation=file://$BACKUP
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 $BACKUP heartbeat --status /var/lib/odile/backup.json --slug $SLUG --url https://odile.fyi/heartbeat --key-dir $HEARTBEAT_DIR
+Nice=10
+IOSchedulingClass=idle"
+write_unit /etc/systemd/system/odile-heartbeat.timer "[Unit]
+Description=Odile tenant heartbeat, every five minutes
+
+[Timer]
+OnCalendar=*:0/5
+Persistent=true
+RandomizedDelaySec=30
+
+[Install]
+WantedBy=timers.target"
+
+systemctl daemon-reload
+for unit in odile-backup-tenant.timer odile-heartbeat.timer; do
+    systemctl enable "$unit" >/dev/null 2>&1 || true
+    systemctl start "$unit" >/dev/null 2>&1 || true
+    expect "systemctl is-enabled $unit" "enabled" "$(systemctl is-enabled "$unit" 2>&1 || true)"
+    expect "systemctl is-active $unit" "active" "$(systemctl is-active "$unit" 2>&1 || true)"
+done
+expect "odile timers on this machine" "2" \
+    "$(systemctl list-timers --all --no-legend --no-pager 2>/dev/null | grep -c 'odile' || true)"
+
+if [ -s /var/lib/odile/backup.json ]; then
+    LAST_BACKUP=$(/usr/bin/python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print(d.get("last_success_at") or "")' /var/lib/odile/backup.json 2>/dev/null || true)
+    if [ -n "$LAST_BACKUP" ]; then
+        ok "the last successful backup is $LAST_BACKUP"
+    else
+        bad "/var/lib/odile/backup.json carries no last_success_at"
+    fi
+else
+    note "no backup yet: the timer runs daily at 03:00; the SFTP key below must be authorized first"
+fi
+if [ -s "$HEARTBEAT_DIR/heartbeat.pub" ]; then
+    note "heartbeat public key: $(cat "$HEARTBEAT_DIR/heartbeat.pub" | tr '\n' ' ')"
+fi
+if [ -s "$KEY_DIR/id_ed25519.pub" ]; then
+    note "sftp public key: $(cat "$KEY_DIR/id_ed25519.pub")"
+fi
+
 for unit in odile-first-visit odile-manifest odile-access-report odile-attest-boot; do
     expect "systemctl is-active $unit" "active" "$(systemctl is-active "$unit" 2>&1 || true)"
 done

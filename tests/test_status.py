@@ -400,6 +400,104 @@ class StatusTestCase(unittest.TestCase):
         self.assertNotIn("Waiting for its owner", body)
         self.assertNotIn("{{WAITING}}", body)
 
+    # ------------------------------------------------------------ the demo machine
+
+    def test_the_demo_machine_is_not_published(self) -> None:
+        """Odile's own demo is the judge path, not a tenant, and it is excluded.
+
+        The demo's password is public, so a judge can stop or break it; its
+        uptime is not a tenant's.  A month of silence on the demo must not
+        become the page's downtime, and its `down` ledger row is not one of the
+        last five incidents.
+        """
+        start = NOW - 10 * HOUR
+        self.fixture.tenant("odl-7971a8", activated_at=start)
+        self.fixture.alert("odl-7971a8", "down", at=NOW - 4 * HOUR)
+        # A real tenant, beating every five minutes for the same ten hours.
+        self.fixture.tenant("odl-aa11bb", activated_at=start)
+        self.fixture.beats_between("odl-aa11bb", start=start, end=NOW)
+
+        totals = self.collect()
+
+        self.assertEqual(totals.tenants, 1)
+        self.assertEqual(totals.accountable_seconds, 10 * HOUR)
+        self.assertEqual(totals.down_seconds, 0)
+        self.assertEqual(totals.uptime_percent, 100.0)
+        self.assertEqual(totals.incidents, ())
+
+        body, _ = self.page()
+        self.assertIn("100.0%", body)
+        self.assertIn("0 min", body)
+        self.assertIn("1 machine · measured since", body)
+        self.assertNotIn("odl-7971a8", body)
+        self.assertIn("No incidents in the last 30 days.", body)
+
+    def test_a_demo_only_history_reads_as_no_machine_in_service(self) -> None:
+        """When the demo is the only row, the page reads as no machine counted.
+
+        The demo is excluded rather than silently counted, and the empty
+        history renders the same dash the page already used for no history.
+        """
+        start = NOW - 10 * HOUR
+        self.fixture.tenant("odl-7971a8", activated_at=start)
+        self.fixture.alert("odl-7971a8", "down", at=NOW - 4 * HOUR)
+
+        body, totals = self.page()
+
+        self.assertEqual(totals.tenants, 0)
+        self.assertIsNone(totals.uptime_percent)
+        self.assertEqual(totals.down_seconds, 0)
+        self.assertIn("No machine has been in service in the last 30 days.", body)
+        self.assertIn("No incidents in the last 30 days.", body)
+        self.assertNotIn("odl-7971a8", body)
+        self.assertNotRegex(body, r"\b[0-9],[0-9]{3} min\b")
+
+    def test_the_demo_exclusion_is_not_a_slug_on_the_page_or_in_json(self) -> None:
+        """The exclusion is a decision in code, never a name on the page."""
+        start = NOW - 3 * HOUR
+        self.fixture.tenant("odl-7971a8", activated_at=start)
+        self.fixture.beats_between("odl-7971a8", start=start, end=NOW)
+        captured = io.StringIO()
+        with contextlib.redirect_stdout(captured):
+            code = status_page.main(
+                ["--db", str(self.fixture.db), "--now", str(NOW), "--json"]
+            )
+        self.assertEqual(code, 0)
+        self.assertNotIn("odl-7971a8", captured.getvalue())
+        payload = json.loads(captured.getvalue())
+        self.assertEqual(payload["totals"]["tenants"], 0)
+        self.assertEqual(payload["inputs"]["excluded_tenants"], 1)
+
+    def test_a_newer_demo_incident_does_not_take_a_tenant_incident_s_slot(self) -> None:
+        """The demo is filtered after the query, so the query fetches one extra.
+
+        Five tenant `down` incidents and a demo incident newer than all five:
+        the page must still show five tenant incidents.  Filtering after a
+        plain `LIMIT 5` returned four — the demo's row took the fifth slot —
+        which is the bug this pins.
+        """
+        for index in range(5):
+            self.fixture.alert(
+                f"odl-inc{index:02d}",
+                "down",
+                at=NOW - (index + 1) * HOUR,
+                resolved_at=NOW - (index + 1) * HOUR + 20 * 60,
+            )
+        self.fixture.alert(
+            "odl-7971a8", "down", at=NOW - 10 * 60, resolved_at=NOW - 5 * 60
+        )
+
+        totals = self.collect()
+
+        self.assertEqual(len(totals.incidents), 5)
+        self.assertEqual(
+            [incident.start for incident in totals.incidents],
+            [NOW - (index + 1) * HOUR for index in range(5)],
+        )
+
+        body, _ = self.page()
+        self.assertEqual(body.count('<td class="when">'), 5)
+
     def test_page_numbers_are_computed_from_the_history_not_typed(self) -> None:
         """The same template, two histories, two different numbers."""
         start = NOW - 10 * HOUR

@@ -16,7 +16,8 @@ It puts, as root:
   * ``web/{favicon.ico,icon-32.png,…}``     -> ``/usr/local/lib/odile/icons``
   * ``deploy/image/odile-webapp-brand.py``  -> the union re-assert (name, chrome, tab)
   * ``deploy/demo-host/login.html``         -> ``/srv/odile-demo/login.html``
-  * ``deploy/caddy/demo-tenant-site.caddy`` -> the five exact icon routes
+  * ``deploy/caddy/demo-tenant-site.caddy`` -> the three static tab-icon routes
+    and the two the shell links
 
 Then it converges with ``apply_demo_public.py``'s own functions (the demo
 lede, the sign-in page and the Caddy block), restarts ``odile-first-visit``,
@@ -68,12 +69,17 @@ ICONS = (
     ("apple-touch-icon.png", "dd5386a9c772a5d67702f35fd22eed649783a8575d54f4cbd641111434123773", "image/png"),
 )
 
+#: The three files the sign-in page links, which Caddy answers from the page
+#: root (t_6b25f6e5); the two shell-only sizes stay in the page server's root.
+TAB_ICONS = ("favicon.ico", "icon-32.png", "apple-touch-icon.png")
+
 #: (local source, remote path, mode) — the machine's own copies.
 PUTS = (
     (REPO / "installer" / "first_visit.py", f"{LIB}/first_visit.py", "0755"),
     (REPO / "web" / "first-visit.html", f"{LIB}/first-visit.html", "0644"),
     *[(REPO / "web" / name, f"{ICON_ROOT}/{name}", "0644")
       for name, _sha, _type in ICONS],
+    *[(REPO / "web" / name, f"{DEMO_LIB}/{name}", "0644") for name in TAB_ICONS],
     (REPO / "deploy" / "image" / "odile-webapp-brand.py",
      f"{LIB}/odile-webapp-brand.py", "0755"),
     (REPO / "deploy" / "demo-host" / "login.html",
@@ -137,7 +143,12 @@ def local_checks() -> None:
         if line not in page:
             raise SystemExit(f"error: the demo sign-in page is missing {line}")
     block = (REPO / "deploy" / "caddy" / "demo-tenant-site.caddy").read_text(encoding="utf-8")
-    for name, _sha, _type in ICONS:
+    # t_6b25f6e5: the three paths the sign-in page links are one static handle
+    # serving the page root; the two sizes only the shell links keep their own
+    # page-server route.
+    if "@tabicons path /favicon.ico /icon-32.png /apple-touch-icon.png" not in block:
+        raise SystemExit("error: the demo Caddy block has no static tab-icon route")
+    for name in ("icon-192.png", "icon-512.png"):
         if f"handle /{name} {{" not in block:
             raise SystemExit(f"error: the demo Caddy block has no /{name} route")
 
@@ -313,10 +324,10 @@ def main(argv: list[str] | None = None) -> int:
                     "systemctl is-active odile-first-visit"):
         result = console.run(f"sudo {command}", check=False)
         say("state", f"{command}: {(result.get('stdout') or '').strip()}")
-    block = console.run("sudo grep -c 'handle /favicon.ico' /etc/caddy/Caddyfile",
+    block = console.run("sudo grep -c '@tabicons path /favicon.ico' /etc/caddy/Caddyfile",
                         check=False).get("stdout", "").strip()
     if block != "1":
-        raise SystemExit("error: the Caddyfile does not carry the icon route")
+        raise SystemExit("error: the Caddyfile does not carry the static tab-icon route")
 
     head = bundle_head(console)
     if head:

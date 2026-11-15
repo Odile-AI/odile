@@ -19,6 +19,17 @@ The holder's pid is written into the lock file, which is what N names; the
 file is only read while the lock is contended, so a stale pid after a clean
 exit is never mistaken for a live holder.
 
+The file is shared by every uid on the host, so it must stay openable by all of
+them. It lives in a world-writable directory (`/run/lock`), but the file itself
+belongs to whoever created it: `os.open(..., 0o666)` is masked by that user's
+umask, and a `0644` root-owned file refused `O_RDWR` to the next uid, whose
+suite then died on an uncaught `PermissionError` before the gate started
+(measured 2026-11-15). Two mechanisms keep it host-wide: the creating holder
+chmods the file `0666` (defeating its umask), and a holder that is not the file
+owner falls back to `O_RDONLY`, because `flock(2)` needs no write access. A
+read-only holder cannot record its pid; the previous holder's pid then stays in
+the file until a writable one takes over.
+
 `make check` runs the whole gate under the lock (see the Makefile). The `test`
 and `self-test` targets take it too, so a direct `make test` in another
 worktree also queues. A nested invocation (the gate's own recursive make) sees
@@ -52,12 +63,35 @@ def holder_pid(path: str) -> int | None:
         return None
 
 
+def open_lock(path: str) -> tuple[int, bool]:
+    """Open the lock file for `flock` from any uid on the host.
+
+    Returns the descriptor and whether it is writable. The owner of an existing
+    file may refuse `O_RDWR` to another uid, and `flock(2)` also works on an
+    `O_RDONLY` descriptor, so the pid write is the only thing the fallback
+    gives up. A holder that *can* write chmods the file `0666` first: the mode
+    passed to `os.open` is masked by its umask, and that is what left the host
+    lock `0644` root-owned in the first place.
+    """
+    try:
+        fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o666)
+    except OSError as exc:
+        if exc.errno != errno.EACCES:
+            raise
+        return os.open(path, os.O_RDONLY), False
+    try:
+        os.fchmod(fd, 0o666)
+    except OSError:
+        pass  # not our file; the O_RDONLY fallback covers the next holder
+    return fd, True
+
+
 def acquire(path: str, wait: int) -> int | None:
     """Take the lock, announcing a wait once; None when the wait expired."""
     parent = os.path.dirname(os.path.abspath(path))
     if parent:
         os.makedirs(parent, exist_ok=True)
-    fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o666)
+    fd, writable = open_lock(path)
     deadline = time.monotonic() + wait
     announced = False
     while True:
@@ -77,9 +111,10 @@ def acquire(path: str, wait: int) -> int | None:
             os.close(fd)
             return None
         time.sleep(POLL)
-    os.lseek(fd, 0, os.SEEK_SET)
-    os.ftruncate(fd, 0)
-    os.write(fd, f"{os.getpid()}\n".encode("ascii"))
+    if writable:
+        os.lseek(fd, 0, os.SEEK_SET)
+        os.ftruncate(fd, 0)
+        os.write(fd, f"{os.getpid()}\n".encode("ascii"))
     return fd
 
 

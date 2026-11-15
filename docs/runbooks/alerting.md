@@ -1,8 +1,9 @@
 # Alerting — the heartbeat, the poll and the down alert
 
 **Status:** v0.1, fixture-proven; the live stopped-VM check is ODL-332's evidence.
-**Card:** ODL-216, re-cut ODL-467. **Code:** `scripts/heartbeat.py`, `odilectl/health.py`.
-**Tests:** `tests/test_heartbeat.py` (48 tests, hermetic).
+**Card:** ODL-216, re-cut ODL-467; the demo's two timers are ODL-561. **Code:**
+`scripts/heartbeat.py`, `odilectl/health.py`, `deploy/demo-host/check_demo_host.sh`.
+**Tests:** `tests/test_heartbeat.py` (48 tests, hermetic), `tests/test_status.py`.
 
 A tenant that goes quiet must be understood before its owner notices, and a
 stopped heartbeat must be named as exactly that — downtime, whatever port 22
@@ -216,7 +217,121 @@ Persistent=true
 WantedBy=timers.target
 ```
 
-## 6. Reading and testing the ledger
+## 6. The demo machine — what a reinstall must put back
+
+Odile's own demo (the judge path, `demo.odile.fyi` → `odl-7971a8`) runs the
+same signed heartbeat and nightly backup as a tenant, but it is not a tenant:
+its password is published, the judge can stop or break it, and it is **excluded
+from `/status`** (`status/status.py`'s `DEMO_SLUGS`).  The page counts tenant
+machines only; a silent demo must never become Odile's published downtime.
+
+A reinstall puts the image back, and the image does not carry the two timers.
+Measured 2026-11-15: the demo's last heartbeat was `2026-11-13T03:01:14Z`, the
+day it was reinstalled, `/var/lib/odile/backup.json` was gone, and
+`odilectl health --json` planned a `down` and a `backup` alert for a machine
+that was up (`/verify` answered 200).  The machine's own check is the seed, so
+the next rebuild cannot lose them:
+
+```sh
+# from the repo root on HQ; the judge password is read at run time
+DEMO_PASSWORD_FILE=/root/.odile/judge-pass.txt \
+    ./deploy/demo-host/check_demo_host.sh --tenant
+```
+
+The `--tenant` drive uploads `scripts/backup.py` with the check, then runs
+`--local` on the machine.  That half is idempotent and prints `same` on a
+converged machine:
+
+| Step | What it writes |
+|---|---|
+| the program | `/usr/local/lib/odile/backup.py` (0755 root, the checkout's `scripts/backup.py`) |
+| the repository | `/etc/odile/backup-repo.txt` — the seed's URL when its host resolves, otherwise `sftp://odile-backup@odile.fyi:2222/tenants/odl-7971a8` (the storage box today is HQ's own sftp service, `docs/runbooks/backup.md` §3) |
+| the SFTP key | `/etc/odile/backup-ssh/id_ed25519` (0600) and `known_hosts` (0600, `ssh-keyscan -H`) |
+| the heartbeat key | `/etc/odile/heartbeat/heartbeat.key` (0600) and `.pub` |
+| the backup timer | `odile-backup-tenant.service` + `.timer` from the program's own templates (`OnCalendar=*-*-* 03:00:00`, `Persistent=true`) |
+| the heartbeat timer | `odile-heartbeat.service` + `.timer` (`OnCalendar=*:0/5`, `Persistent=true`), running `backup.py heartbeat` |
+
+The HQ half then finishes what only HQ can:
+
+1. **The SFTP key.**  A rebuilt machine makes a new key; the backup box refuses
+   it until its public half is in `/srv/odile-backup/.ssh/authorized_keys`.
+   The check appends it (idempotent; `ODILE_BACKUP_AUTHORIZED_KEYS` overrides
+   the path).
+2. **The heartbeat key.**  The receiver is trust-on-first-use and refuses a
+   different key with **409** (`odilectl/health.py` `record`).  A rebuild
+   therefore leaves a stale registration: the check compares the machine's
+   `heartbeat.pub` with `heartbeat_keys.public_key` for the slug and, when they
+   differ, deletes the row so the first signed beat registers the new key.  This
+   is the runbook's §10 revoke, done automatically and only on a mismatch.
+3. **One backup.**  When the last success is older than twelve hours the check
+   starts `odile-backup-tenant.service` (through a transient unit, so the
+   Webapp's 30-second command ceiling cannot cut it) and waits for a fresh
+   `last_success_at` and snapshot in `/var/lib/odile/backup.json`.  The wait is
+   `BACKUP_WAIT_SECONDS` (default 900 s) because a first backup of a full home
+   is a minutes-scale job; the demo's first successful snapshot (2026-11-15,
+   47 MB / 635 files) took 1.5 s of restic time, but only after the repository
+   answered.  If the budget ends with the unit still running, the check prints a
+   `note` — the timer finishes it and the next run reads the record — but if
+   the unit is `failed` or `inactive`, that is a `FAIL` carrying the unit's
+   state and the last journal lines.
+
+   The old 300 s wait reported a timeout for the 2026-11-15 seed, which had
+   actually failed in under a second: the journal shows `Starting
+   odile-backup-tenant.service` and `Fatal: wrong password or no key found` in
+   the same second, and the successful run after the repository was repaired
+   came 18m42s after the first start.  The unit's state and journal are now
+   what the check reports, so the cause can never again be a timeout.
+4. **The beat.**  It starts `odile-heartbeat.service` and reads `MAX(at)` for
+   the slug out of HQ's own `heartbeats` table; a beat newer than ten minutes
+   is the line `HQ holds a signed heartbeat for odl-7971a8 at <epoch>`.
+
+If the backup fails with `wrong password or no key found`, the rebuild minted a
+new repository password while the repository still holds the old one: a rebuild
+that did not pass `--backup-password-file` to `odilectl provision` gets "no
+sealed password (a first install mints one)" (`odilectl/provision.py`), and the
+old password lives only in the user's recovery file.  Measured on the demo,
+2026-11-15: the machine's recovery file (`2026-11-13T10:29:12Z`) did not open
+the repository created `2026-11-12T19:01Z`.  The check reports the failure and
+the remedy — the `FAIL` line carries the error from `backup.json`, or, when the
+unit died before writing one, `systemctl show`'s state and the journal tail —
+and doing it keeps the bytes:
+
+```sh
+# HQ, root: keep the unreadable repository, then let the machine make a new one
+mv /srv/odile-backup/tenants/odl-7971a8 \
+   /srv/odile-backup/tenants/odl-7971a8.unreadable-$(date -u +%Y-%m-%d)
+install -d -m 0700 -o odile-backup -g odile-backup \
+    /srv/odile-backup/tenants/odl-7971a8
+
+# on the demo machine, as root (serial console or the tenant console)
+/usr/bin/python3 /usr/local/lib/odile/backup.py init \
+    --repo 'sftp://odile-backup@odile.fyi:2222/tenants/odl-7971a8' \
+    --recovery /etc/odile/recovery.txt \
+    --key /etc/odile/backup-ssh/id_ed25519 \
+    --known-hosts /etc/odile/backup-ssh/known_hosts
+```
+
+Then re-run the check's HQ half (a second `--tenant` run) and the fresh
+repository is backed up against the recovery file the machine actually holds.
+The root cause — a rebuild should seal the old password unless the user says
+otherwise — is ODL-215's provision path, not this check.
+
+A machine that is already converged prints `same` for both keys and skips the
+backup inside twelve hours.  `--local` (serial console, root on the machine)
+does the machine half only and prints the two public keys; without
+`--tenant` the two HQ lines above are the operator's.
+
+After a seed, the two checks the card asks for are:
+
+```sh
+/usr/bin/python3 -m odilectl health --json | grep -A2 '"slug": "odl-7971a8"'
+/usr/bin/python3 status/status.py --db /var/lib/odile/waitlist.db --json
+```
+
+`health --json` plans no `down` and no `backup` alert for the demo, and
+`status/status.py` reports `"excluded_tenants": 1` with no demo downtime.
+
+## 7. Reading and testing the ledger
 
 The alert ledger lives beside the state machine. One row per open condition;
 `resolved_at` is set when the condition clears, never deleted:
@@ -268,7 +383,7 @@ A manual fixture replay (the shape used for the card's evidence) is:
 and the line `host unreachable`; it is how a stopped machine is replayed
 without a stopped VM.
 
-## 7. What to do with an alert
+## 8. What to do with an alert
 
 | Alert | Operator action |
 |---|---|
@@ -283,7 +398,7 @@ Alerts clear on their own when the condition is gone; the next poll sets
 arrives; a legacy open waiting_for_owner row is resolved by the same poll and
 never re-raised.
 
-## 8. Limits
+## 9. Limits
 
 1. **The heartbeat proves liveness, not honesty.** It is signed by the key the
    guest generated at install; the first heartbeat is trust-on-first-use. TLS
@@ -308,7 +423,7 @@ never re-raised.
    retried every five minutes; the outbox always has the message. The mail
    relay's certificate is pinned by `smtp_ca_file` when it is self-signed.
 
-## 9. Rollback
+## 10. Rollback
 
 * Stop and disable `odile-health.timer` and `odile-heartbeat.service`; alerts
   stop and no state changes.

@@ -9,13 +9,13 @@ prints one line per fact:
      time and never printed).
   2. **The tenant's surface.** The files the machine needs are uploaded over
      its own Webapp socket — Odile holds no SSH key to a tenant — and
-     `apply_demo_public.py` runs there as root: Odile's sign-in page, the
-     `demo.odile.fyi` Caddy block, Near AI direct with one key, the judge
-     account, and the one seeded "Start here — Odile demo" session, written
-     only if it is not already there. The machine's current release-setup
-     script is installed too: it converges the release installer once (a done
-     marker under `/var/lib/odile`), so a boot cannot rewrite the config the
-     owner changed.
+     `apply_demo_public.py` runs there as root: Odile's sign-in page and its
+     three tab files, the `demo.odile.fyi` Caddy block, Near AI direct with one
+     key, the judge account, and the one seeded "Start here — Odile demo"
+     session, written only if it is not already there. The machine's current
+     release-setup script is installed too: it converges the release installer
+     once (a done marker under `/var/lib/odile`), so a boot cannot rewrite the
+     config the owner changed.
   3. **The gate over HTTPS**, from HQ: `/login` is Odile's page, anonymous `/`
      is a 302 to it, the judge signs in, and `/verify` is the tenant's own
      report whose measurement is the one `/attestation` carries; the page's
@@ -98,6 +98,24 @@ LOGIN_MARKERS = (
     "This is an Odile demo instance.",
     'aria-label="Sign in"',
 )
+#: The sign-in page's three tab files (t_6b25f6e5). The committed `web/`
+#: renditions are what a browser's tab shows; the deploy puts them beside the
+#: page in `/srv/odile-demo`, where the block's one static handle answers them
+#: first-party and immutable. Pinned by hash here, again by the apply, and
+#: again by the check: no hop installs a different picture under the name.
+ICONS = (
+    ("favicon.ico",
+     "8f5f997684f2d8eb2336eef46ef8e100776ecaa35c0375faadd4bb7e1ab17fba", "image/x-icon"),
+    ("icon-32.png",
+     "28bedf61e9f5bad25d9a7b874bab788634299eb1e08a9bd99f614a09f9f904bc", "image/png"),
+    ("apple-touch-icon.png",
+     "dd5386a9c772a5d67702f35fd22eed649783a8575d54f4cbd641111434123773", "image/png"),
+)
+ICON_SOURCES = {name: REPO / "web" / name for name, _pin, _type in ICONS}
+#: BRAND.md §Name and mark: the credit sits in the HTML comment beside the
+#: link on every page. The sign-in page is a page.
+CREDIT_COMMENT = ("<!-- Icon: Lucas Cranach the Elder, Saints Christina and Ottilia "
+                  "(Katharinenaltar, Dresden). Public domain. Source: Wikimedia Commons. -->")
 #: The demo machine's /verify lede. One committed file: the apply uploads and
 #: injects it, and this program asserts the served page opens with it.
 VERIFY_LEDE = HERE / "verify-lede.html"
@@ -270,6 +288,31 @@ def verify_public(judge_password: str) -> tuple[bool, list[str]]:
     record(code == 200 and not missing and not missing_headers,
            f"GET /login -> {code}" + (f", missing {missing!r}" if missing else "")
            + (f", missing headers {missing_headers!r}" if missing_headers else ""))
+    head = text.split("</head>", 1)[0]
+    head_missing = [name for name, _pin, _type in ICONS
+                    if f'href="./{name}"' not in head]
+    record(not head_missing and CREDIT_COMMENT in head
+           and "data:image/svg+xml" not in head,
+           "the sign-in page's head carries the three tab links and the credit "
+           "comment, and no data: favicon"
+           + (f", missing {head_missing!r}" if head_missing else ""))
+
+    for name, pin, content_type in ICONS:
+        code, body, headers = http(base + "/" + name)
+        digest = hashlib.sha256(body).hexdigest() if body else ""
+        cache = (headers.get("Cache-Control") or "").lower()
+        record(code == 200 and digest == pin
+               and (headers.get("Content-Type") or "").split(";")[0] == content_type
+               and "immutable" in cache and "max-age=31536000" in cache,
+               f"GET /{name} -> {code} {(headers.get('Content-Type') or '-').split(';')[0]} "
+               f"{digest[:16]}… == {pin[:16]}…, {cache or '-'}")
+        code, body, _ = http(base + "/" + name, method="HEAD")
+        record(code == 200 and body == b"",
+               f"HEAD /{name} -> {code}, {len(body)} body bytes")
+
+    for probe in ("/favicon.ico/../../etc/passwd", "/..%2f..%2fetc%2fpasswd"):
+        code, body, _ = http(base + probe)
+        record(b"root:" not in body, f"GET {probe} -> {code}, no /etc/passwd")
 
     code, _, headers = http(base + "/")
     location = headers.get("Location") or headers.get("location") or ""
@@ -366,6 +409,10 @@ def tenant_assertions(console) -> bool:
            "the live /etc/caddy/Caddyfile block == the committed block")
     record(caddy.get("markers") == [1, 1],
            f"exactly one marker pair: {caddy.get('markers')}")
+    icons = state.get("icons") or {}
+    for name, pin, _type in ICONS:
+        record(icons.get(name) == pin,
+               f"/srv/odile-demo/{name} == the committed {pin[:16]}…")
     names = caddy.get("matchers")
     record(isinstance(names, list) and not {"mutation", "update"} & set(names),
            f"the live block has no mutation or self-update matcher: {names}")
@@ -436,6 +483,14 @@ def self_test() -> int:
 
     check(all(source_of(name).is_file() for name, _ in UPLOADS),
           "every uploaded file exists in the tree")
+    check(all(ICON_SOURCES[name].is_file() for name, _pin, _type in ICONS)
+          and all(hashlib.sha256(ICON_SOURCES[name].read_bytes()).hexdigest() == pin
+                  for name, pin, _type in ICONS),
+          "the three tab files are the committed web/ renditions, byte for byte")
+    head = (HERE / "login.html").read_text(encoding="utf-8").split("</head>", 1)[0]
+    check(CREDIT_COMMENT in head and "data:image/svg+xml" not in head
+          and all(f'href="./{name}"' in head for name, _pin, _type in ICONS),
+          "the sign-in page's head carries the three links and the credit comment")
     lede = VERIFY_LEDE.read_text(encoding="utf-8").strip()
     check(lede.startswith('<p class="lede">') and lede.endswith("</p>")
           and "\n" not in lede and "{{" not in lede,
@@ -465,13 +520,24 @@ def self_test() -> int:
     return 0 if failures == 0 else 1
 
 
+def icon_uploads(remote_dir: str = LIB_REMOTE) -> tuple[tuple[Path, str, str], ...]:
+    """The three tab files this deploy puts beside the sign-in page.
+
+    The source is the committed `web/` file — one rendition for the site and
+    the demo — and the remote name is the path the page's links already use.
+    """
+    return tuple((ICON_SOURCES[name], f"{remote_dir}/{name}", "0644")
+                 for name, _pin, _type in ICONS)
+
+
 def cleanup_dry_run(console) -> None:
     """Remove the dry run's scratch files; `rm -f` on relative paths is the
     one form the Webapp's command guard allows (no `rm -rf`, no `find -delete`,
     and the uploaded files are root-owned)."""
     names = ("apply_demo_public.py", "demo-tenant-site.caddy", "login.html",
              "verify-lede.html", "verify-command.html", "start-here.md",
-             "session-receipt.json")
+             "session-receipt.json", *(name for name, _pin, _type in ICONS))
+
     quoted = " ".join(f"odile-demo-public-dryrun/{name}" for name in names)
     console.run(f"cd /tmp && sudo rm -f {quoted}", check=False)
     console.run("cd /tmp && sudo rmdir odile-demo-public-dryrun", check=False)
@@ -555,6 +621,9 @@ def _run(argv: list[str] | None = None) -> int:
             source = HERE / name
         console.put(str(source), f"{remote_dir}/{name}", mode=f"{mode:04o}")
         print(f"upload       {source.name} -> {remote_dir}/{name}")
+    for source, remote, mode in icon_uploads(remote_dir):
+        console.put(str(source), remote, mode=mode)
+        print(f"upload       web/{source.name} -> {remote}")
     login_flag = " --no-login" if args.no_login else ""
     if args.judge_password_file:
         console.put(str(Path(args.judge_password_file)), password_remote, mode="0600")
