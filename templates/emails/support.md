@@ -6,9 +6,8 @@ person answering `help@odile.fyi` · **Answers:** `docs/FAQ.md`.
 A support reply is a page, not a room: plain text, one column, no image, no
 tracking pixel, no third-party request. It leaves from Odile's own mail server
 and comes back to `help@odile.fyi` when the user answers. The five bodies below
-are subsets of `docs/CLAIMS.md` and, until ODL-462 lands v3.9, of the decided
-rows in `docs/product/CLAIMS-RECUT-STRICT.md`; do not add a sentence that is
-not in `docs/FAQ.md`.
+are subsets of `docs/CLAIMS.md` (v3.10) and `docs/FAQ.md`; do not add a sentence
+that is not in either.
 
 ## Envelope
 
@@ -30,7 +29,9 @@ that domain, and a From on another domain would not align with it.
 ## Structure
 
 1. Greeting. Their name if the message carries one; otherwise `Hello,`.
-2. One paragraph. The answer, in three short sentences at most.
+2. One paragraph. The answer, in three short sentences at most. The grant body
+   (5) and the machine-dies body (3) are the long answers: both carry the deck's
+   §5 text verbatim, and shortening them would drop a fact the user needs.
 3. The address or the next step. One command, or one link, never a menu.
 4. `— Odile`.
 
@@ -74,9 +75,13 @@ If the recovery code is lost too, reply and the machine is rebuilt.
 ```text
 Hello,
 
-We rebuild the machine. The recovery file — the one you downloaded on your first
-visit — holds the backup password and the certificate fingerprint; keep your copy
-off the machine. While the machine is still running, the agent can show it again.
+We rebuild it; you ask the agent to restore last night's backup with your
+recovery file — the one you downloaded on your first visit. If the machine is
+still running and you lost your copy, ask the agent to show you the file. Target
+under an hour; your last day may be lost. The drill is practiced before you get
+a machine.
+
+Backed up nightly. Rebuildable in under an hour — without a key.
 
 Reply with the address you want the rebuild on and I will take the next step
 with you.
@@ -105,13 +110,19 @@ Hello,
 
 No one at Odile can log in to a tenant machine. The only sign-in is yours. A
 support grant is a time-boxed door into the running machine. It ends for new
-logins when it expires or you revoke it; an open session keeps running until it
-exits. A root shell, for 24 hours — only when you grant it.
+logins when it expires or you revoke it. A root shell, for 24 hours — only when
+you grant it.
 
-A grant is a handover, not a peek. It can read the mounted disk, every file, the
-agent's memory and past prompts, the sign-in hash, and the backup password if
-the recovery file is still on the machine. It can add a LUKS keyslot or copy the
-volume key, so it can keep disk access after the grant.
+Ask the agent to run odile-diag and email the bundle to help@odile.fyi. If that
+is not enough, ask it to run odile-support grant --hours 24; it prints the expiry
+and the revoke command, and every session is logged. A grant is a handover: it
+can read the mounted disk, every file, the agent's memory and past prompts, the
+sign-in hash, and the backup password if the recovery file is still on the
+machine. Expiry and revoke block new logins; an open session keeps running until
+it exits. A root shell can add a keyslot, copy the volume key, or leave a service
+behind, so ask the agent to check authorized_keys, cryptsetup luksDump and
+crontab -l after revoke. The grant log is written on the machine; a root shell
+can edit it.
 
 — Odile
 ```

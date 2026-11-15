@@ -9,11 +9,11 @@ starts it; `revoke` ends it; a timer ends it at the expiry even if nobody is
 looking.
 
 `support/odile_support.py` is both programs. `odile-diag` is the same file
-invoked under its own name. **The installer does not place either yet**: the
-embedding and the two installed names are ODL-474's step, so this card shipped
-the program and proved it on the tenant by placing it by hand at
-`/usr/local/sbin/odile-support` with `odile-diag` symlinked beside it. Card:
-ODL-217.
+invoked under its own name. **The installer places both** (ODL-474): the file
+at `/usr/local/sbin/odile-support` (0755 root) and `odile-diag` linked beside
+it at `/usr/local/bin/odile-diag`. ODL-217 shipped the program and proved it on
+the tenant by placing it by hand; the embedding, the two names and the release
+cut are ODL-474's.
 
 **The one fact that is easy to get wrong: a reboot does not close a grant, but
 the bytes in `authorized_keys` do not survive one by themselves.** The tenant
@@ -383,9 +383,9 @@ HQ audits a grant through the log the tenant carries
 (`/var/log/odile-support.log`), `odile-support status --json`, and the
 `audit`/`logs` sections of the bundle the user emails. Teaching `/verify` to
 name the grant (its id, expiry and fingerprint) rather than show a bare FAIL
-needs the reporter in `installer/odile_install.py`, which is outside this
-card's `touches`; it is named in the handoff for ODL-474 (which already carries
-the installer and the A10 sentence).
+needs the reporter in `installer/odile_install.py`; ODL-474 landed the A10
+sentence and the installer placement, and the reporter row is routed to card
+`t_e23f3288`.
 
 ---
 
@@ -398,8 +398,9 @@ the ODL-332 pin: seal id `53ac131dda13e47a`, measurement `9f01725a…f137`.
 
 **Method.** The program was uploaded, checked byte-for-byte against the
 checkout, placed at `/usr/local/sbin/odile-support` and symlinked as
-`/usr/local/bin/odile-diag`, because the installer embedding is ODL-474's step.
-The support key in `/etc/odile/support-key.pub` was replaced for the drill with
+`/usr/local/bin/odile-diag` — the installer now places both (ODL-474), so the
+drill's hand placement is the pre-landing state. The support key in
+`/etc/odile/support-key.pub` was replaced for the drill with
 a throwaway `ssh-ed25519` key whose private half stayed on this workstation;
 the seed key was put back afterwards (§8.5, §9). Every command below is a line
 from the round-2 transcripts attached to the card
