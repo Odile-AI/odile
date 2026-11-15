@@ -10,7 +10,9 @@ only the `publish-lint` job would have seen the next push.
 These tests pin the dependency (`check` → `leak`), the recipe (the scanner in
 tree mode) and the order (the scan fails before the suite runs), so deleting the
 target or dropping it from `check` turns the suite red instead of silently
-reopening the hole.
+reopening the hole. `check` now takes the host-wide gate lock and hands the
+actual prerequisites to `check-inner`, so the tests follow that hand-off and
+also pin the lock on the heavy targets.
 """
 
 from __future__ import annotations
@@ -22,6 +24,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 MAKEFILE = ROOT / "Makefile"
+LOCK_HELPER = "tools/check_lock.py"
+LOCK_VAR = "CHECK_LOCK_PY"
 
 
 def rule(name: str) -> list[str]:
@@ -38,13 +42,31 @@ def rule(name: str) -> list[str]:
     raise AssertionError(f"the Makefile has no {name!r} rule")
 
 
+def gate_prerequisites() -> list[str]:
+    """The gate's prerequisites, reached through the lock wrapper.
+
+    `make check` is one locked recipe that runs `check-inner`; the scanner must
+    stay a prerequisite of whichever target actually runs the steps, and the
+    wrapper must name the lock helper, or a second suite stacks on this host.
+    """
+    wrapper = "\n".join(rule("check"))
+    assert LOCK_VAR in wrapper, "make check does not take the host gate lock"
+    assert "check-inner" in wrapper, "make check does not run the locked gate"
+    assert f"{LOCK_VAR} := $(PYTHON) {LOCK_HELPER}" in MAKEFILE.read_text(encoding="utf-8"), \
+        f"{LOCK_VAR} does not name {LOCK_HELPER}"
+    return rule("check-inner")[0].split(":", 1)[1].split()
+
+
 class CheckIncludesThePublicationGate(unittest.TestCase):
     def test_check_requires_leak(self):
-        prerequisites = rule("check")[0].split(":", 1)[1].split()
+        prerequisites = gate_prerequisites()
         self.assertIn("leak", prerequisites, "make check does not run the publication gate")
+        for target in ("test-unit", "self-test"):
+            self.assertIn(LOCK_VAR, "\n".join(rule(target)),
+                          f"make {target} does not take the host gate lock")
 
     def test_leak_runs_before_the_test_suite(self):
-        prerequisites = rule("check")[0].split(":", 1)[1].split()
+        prerequisites = gate_prerequisites()
         self.assertLess(prerequisites.index("leak"), prerequisites.index("test"),
                         "the scan must fail fast, before the suite runs")
 
