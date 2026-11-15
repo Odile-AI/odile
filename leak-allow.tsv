@@ -7,7 +7,6 @@
 #
 # An expired row is a finding, so a debt cannot outlive its date. Delete the row
 # when the value is gone; do not move the date forward without a reason here.
-public-ip	scripts/send_test.py	sha256:6694f83c9f47	an SPF ip4: token and a DNS A-record fixture in scripts/send_test.py --self-test; not an Odile address, never dialled	2027-12-31
 credential-assignment	deploy/demo-host/login.html	sha256:b2132046eb76	the published demo password: public by design (CLAIMS); with it the Webapp shell runs as `tenant` and `sudo -n` reaches root on Odile's tenant machine (odl-7971a8), where the tenant's live Near AI key is readable (0600 tenant)	2027-12-31
 credential-assignment	deploy/image/tenant-image.pin	sha256:417b28e44772	the one-time seed token for bench tenant odl-7971a8 (instance 31a63bbb), spent 2026-11-14; kept so the pin cmdline stays byte-identical	2027-12-31
 credential-assignment	tests/test_first_visit.py	sha256:f4a39f182031	test fixture: the password the recovery reset ACCEPTS and stores (verify_password is True for it) — not a value the form rejects	2027-12-31
