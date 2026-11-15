@@ -74,16 +74,23 @@ live address; on a converged zone the step then prints `same`:
     --judge-password-file /path/to/judge-password
 ```
 
-**A second writer to the `/verify` template (measured 2026-11-15).**
+**Two other writers to the `/verify` template (both measured 2026-11-15).**
 `deploy/demo-host/deploy_demo_icons.py` (t_6b25f6e5) uploads `web/verify.html`
-as the release template, and `apply_demo_icons.py` re-injects only the lede —
-so an icons deploy drops the demo's `<!--demo-check-->` section. The journal
-shows the 2026-11-15T01:09:17Z run installing `/tmp/verify.html` over
-`/usr/local/lib/odile/verify.html`; `apply_demo_public.py --report` read
-`"demo_command": false` until this card's deploy restored it. Run the
-demo-public deploy after an icons deploy: its verify step now records a FAIL
-for a `/verify` that does not carry exactly one `<!--demo-check-->` section
-(ODL-563), so a stale page cannot print PASS.
+as the release template, and `apply_demo_icons.py` re-injects only the lede.
+A forced release re-cut does the same by a different route: `odile-recut-run2`
+ran `odile-release-setup.sh --force` at 20:12:29Z and the release installer
+wrote its own `/verify` page over the template. The icons deploy keeps the
+demo lede but drops the `<!--demo-check-->` section; the re-cut drops both.
+The journal shows the first at 01:09:17Z installing `/tmp/verify.html`;
+`apply_demo_public.py --report` read `"demo_command": false` after the second
+until the next deploy. Run the demo-public deploy after either: its verify step
+now records a FAIL for a `/verify` that does not carry exactly one
+`<!--demo-check-->` section (ODL-563), so a stale page cannot print PASS.
+
+The same re-cut also exposed an old image's listener: the machine's
+`odile-manifest.service` predates ODL-521 and its dynamic user cannot traverse
+`/etc/odile` once the current installer sets it to 0750 root:odile-manifest, so
+`/manifest` answered 503. §6 carries the repair.
 
 A converged machine prints `same` for every piece and still runs the restart
 and the verify. The apply restarts Caddy (which drops the socket it is talking
@@ -406,6 +413,19 @@ machine's own name, and the record propagates in a minute.
 - **Caddy is broken**: `caddy validate --config /etc/caddy/Caddyfile`; the
   apply backs the file up (`/etc/caddy/Caddyfile.odile-demo-public.bak`) and
   rolls back on failure.
+- **`/manifest` answers 503 `manifest unavailable` after a forced re-cut**: the
+  running image's `odile-manifest.service` predates ODL-521 — it has
+  `DynamicUser=yes` and no `SupplementaryGroups=odile-manifest`, so the
+  listener's dynamic user cannot traverse `/etc/odile` once the current release
+  installer sets it to 0750 root:odile-manifest (measured 2026-11-15T20:12Z on
+  this machine, ODL-563). Install the image's current unit —
+  `deploy/image/odile-manifest.service`, which carries `User=odile-manifest-svc`
+  and `SupplementaryGroups=odile-manifest` — over
+  `/etc/systemd/system/odile-manifest.service` **and**
+  `/usr/local/lib/odile-image/odile-manifest.service`, then
+  `systemctl daemon-reload && systemctl restart odile-manifest`. The loopback
+  (`http://127.0.0.1:8012/manifest`) and the machine's own name must both
+  answer 200; the demo-public deploy's `GET …/manifest` row then passes.
 - **The account is locked** (too many wrong passwords): the tenant's own
   recovery path is `/first-visit/reset` with the recovery code on the machine;
   then re-run the deploy to re-assert the judge hash.
@@ -502,11 +522,12 @@ transcript.
 
 | What | Where |
 |---|---|
-| The page's line | `https://demo.odile.fyi/verify` 200, 43,071 B, sha256 `ef24385c…`; exactly one `<!--demo-check-->` / `<!--/demo-check-->` pair; the section is `deploy/demo-host/verify-command.html` with the measurement it serves, `9f01725a…f137` = `/attestation` |
+| The page's line | `https://demo.odile.fyi/verify` 200, 43,159 B, sha256 `3cdd7427…` (measured 20:28Z, after the forced re-cut below was repaired and the deploy re-converged; the report card is live, so its byte count moves with the report). Exactly one `<!--demo-check-->` / `<!--/demo-check-->` pair; the section is `deploy/demo-host/verify-command.html` with the measurement it serves, `9f01725a…f137` = `/attestation` |
 | The lede | the deck row verbatim — `Every judge sees these sessions and files.` — `grep -c 'lands in the same workspace'` = 0 and `grep -c 'No one at Odile can log in'` = 0 |
 | The check, before and after | public half before the deploy: 20 passed / 4 failed (no command section, the sign-in page's missing credit comment, the two DNS rows); after: 23 passed / 2 failed — both are the DNS rows, which compare the tree's redacted `203.0.113.87` to the live A record (`dig +short demo.odile.fyi`). The command row prints `ok` and the page's own line, run out of the published bundle, exits 0 |
-| The second run | `deploy_demo_public.py` prints `same` for `/usr/local/lib/odile/verify.html (the demo lede)` and `(the demo command)`, the login page, the icons, the Caddyfile block, the config, the `.env` and `state.db`; the page's sha256 is unchanged and the seeded session `local-931d9e32…` keeps its 22 messages, `messages_sha256 870fa53c…` and its two timestamps across both runs |
-| The cause | journal 2026-11-15T01:09:17Z: `install … /tmp/verify.html /usr/local/lib/odile/verify.html` from `deploy_demo_icons.py`; `apply_demo_public.py --report` then read `"demo_lede": true, "demo_command": false` (§2). The deploy's verify now fails a page without exactly one `<!--demo-check-->` section |
+| The second run | `deploy_demo_public.py` prints `same` for `/usr/local/lib/odile/verify.html (the demo lede)` and `(the demo command)` — including the 20:28Z run after the re-cut repair — plus the login page, the icons, the Caddyfile block, the config, the `.env` and `state.db`; the page's sha256 is unchanged and the seeded session `local-931d9e32…` keeps its 22 messages, `messages_sha256 870fa53c…` and its two timestamps across the runs |
+| The two other writers | 2026-11-15T01:09:17Z: `deploy_demo_icons.py` installs `/tmp/verify.html` over `/usr/local/lib/odile/verify.html`; `apply_demo_public.py --report` then reads `"demo_lede": true, "demo_command": false`. 20:12:29Z: `odile-recut-run2` runs `odile-release-setup.sh --force` and the release installer writes the release page (customer lede, no section) over the template; the deploy restores both (`write … (the demo lede)` / `(the demo command)`) and the next run prints `same` (§2) |
+| The re-cut's side effect | the same re-cut set `/etc/odile` to 0750 root:odile-manifest; the machine's old listener (no `SupplementaryGroups=odile-manifest`) answered `/manifest` 503 until `deploy/image/odile-manifest.service` was installed and the unit restarted (loopback and `odl-7971a8.odile.fyi` both 200, §6) |
 
 ### The published password's reach (2026-11-14)
 
