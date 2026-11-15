@@ -30,9 +30,10 @@ file already opens the repository; a new machine that mints a new password
 meets that repository with a key it cannot use. With `--backup-password-file`
 the run reads the `Backup password:` line of the user's file and seals it under
 the token it just minted (`seed.seal_backup_password`), storing only ciphertext
-in the seed config's `rebuilds` map: the guest opens it with the token from the
-measured command line, which HQ prints once and keeps as a hash. A run *without*
-the flag removes the slug's entry, so a token never carries a stale secret.
+in `/var/lib/odile/seed-rebuilds.json`, one entry per slug: the guest opens it
+with the token from the measured command line, which HQ prints once and keeps
+as a hash. A run *without* the flag removes the slug's entry, so a token never
+carries a stale secret.
 """
 
 from __future__ import annotations
@@ -133,8 +134,9 @@ def _bind_seed_token(ctx: Context, slug: str, instance_id: str,
     not a failure; any other ledger error is loud.
 
     `backup_password` is the user's old repository password (a rebuild). It is
-    sealed under the token that was just minted and written to the seed config
-    as ciphertext; the run's report says which happened.
+    sealed under the token that was just minted and written to
+    `/var/lib/odile/seed-rebuilds.json` as ciphertext; the run's report says
+    which happened.
     """
     path = _seed_db(ctx)
     try:
@@ -210,8 +212,9 @@ def _write_rebuild_entry(ctx: Context, seed, slug: str, issued: dict,
                          backup_password: str | None) -> str:
     """Seal the old password under this token, or clear the slug's entry.
 
-    Returns "sealed" or "none" for the report. The config holds the ciphertext,
-    never the password; a stale entry cannot be opened by a later token.
+    Returns "sealed" or "none" for the report.
+    `/var/lib/odile/seed-rebuilds.json` holds the ciphertext, never the
+    password; a stale entry cannot be opened by a later token.
     """
     path = _seed_rebuilds_path(ctx, seed)
     if backup_password is None:
@@ -249,7 +252,7 @@ def _seed_lines(binding: SeedBinding) -> list[str]:
     if binding.rebuild == "sealed":
         lines.append(
             "  rebuild:     the old repository password is sealed under this token "
-            "(seed-config; ciphertext, no plaintext at HQ)"
+            "(seed-rebuilds.json; ciphertext, no plaintext at HQ)"
         )
     else:
         lines.append("  rebuild:     no sealed password (a first install mints one)")
@@ -503,7 +506,8 @@ def run(ctx: Context, args) -> Report:
         "before the machine is polled: single-use, and refused on any other instance",
         "the token is printed once; the seed service stores only its SHA-256 hash",
         f"rebuild password: {backup_label} (its 'Backup password:' line is sealed "
-        "under the token; the seed config holds ciphertext, never the password)",
+        "under the token; `/var/lib/odile/seed-rebuilds.json` holds ciphertext, "
+        "never the password)",
     ]
 
     if not ctx.mutate:
