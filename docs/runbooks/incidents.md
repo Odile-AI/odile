@@ -138,9 +138,9 @@ systemctl list-timers --all; systemctl --failed
 
 A grant installs Odile's support public key behind a forced command for a fixed
 number of hours, logs every use, and expires on its own (`support.md` §3). **The
-user starts it; HQ cannot.** `odilectl support --apply` is not wired in v0.1
-(`NotWired`, ODL-217 owns the grant code), so the only form is the user asking
-the agent:
+user starts it; HQ cannot.** `odilectl support --apply` still raises `NotWired`
+(the guest program ships; the wrapper does not), so the only form is the user
+asking the agent:
 
 ```sh
 sudo odile-support grant --hours 24 --reason "disk full after an update"
@@ -777,7 +777,8 @@ key, driven by `curl` and by the shipping installer
 **What it changed.** v1 said the refusal exits 2 and gave
 `odilectl rotate-token --apply` as the rotation command. The refusal exits 1, the
 command is `seed.py token rotate` (the `odilectl` wrapper is `NotWired` until
-ODL-212), and the cache-first rule is the fastest way out. See §6.3, rows 4–7.
+the wrapper still raises `NotWired`), and the cache-first rule is the fastest
+way out. See §6.3, rows 4–7.
 
 ### 6.3 Every line the drills changed
 
