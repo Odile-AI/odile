@@ -76,10 +76,10 @@ SITE_BLOCK = LIB / "demo-tenant-site.caddy"
 LOGIN_SOURCE = LIB / "login.html"
 START_HERE = LIB / "start-here.md"
 #: The demo's boot re-assert unit, installed by revisions before t_ee5aac66.
-#: It ran `apply --tune --keep-hash` after the release installer; this program
-#: removes it (disable, delete, daemon-reload) so a boot cannot rewrite the
-#: owner's state. The name is split so the "no boot re-assert" fence can grep
-#: for the full unit and find none in the tree's code.
+#: It re-ran this program with tune flags after the release installer; this
+#: program removes it (disable, delete, daemon-reload) so a boot cannot
+#: rewrite the owner's state. The name is split so the "no boot re-assert"
+#: fence can grep for the full unit and find none in the tree's code.
 DEMO_UNIT = "odile-demo-public"
 UNIT_TARGET = Path(f"/etc/systemd/system/{DEMO_UNIT}.service")
 
@@ -127,13 +127,10 @@ STATE_DB = HERMES_HOME / "state.db"
 #: the turn-cap line — the report reads both. (t_098d9cee, merged 81093db.)
 AGENT_LOG = HERMES_HOME / "logs" / "agent.log"
 AGENT_LOG_TAIL = 4000
-METER_UNIT = "odile-meter"
-METER_KEY = Path("/etc/odile/meter.key")
-#: The meter's unit as the machine has it. This program only reads it: the
-#: meter is not in the demo's path, and its state (and the saved copy beside
-#: it) is the machine's own. The meter is removed product-wide at 0a4b726
-#: (t_e237e261); the fallback below keeps an older machine working.
-METER_UNIT_FILE = Path("/etc/systemd/system/odile-meter.service")
+#: The release installer's key store (t_e237e261): root-only, one line. It is
+#: what a machine rebuilt from the release carries when the profile `.env` has
+#: not been written yet; it replaces the retired meter key file.
+KEY_STORE = Path("/etc/odile/key.env")
 TENANT_USER = "tenant"
 TENANT_UID = 1000
 TENANT_GID = 1000
@@ -157,13 +154,11 @@ NEAR_BASE_URL = "https://cloud-api.near.ai/v1"
 NEAR_KEY_ENV = "HERMES_CUSTOM_CLOUD_API_NEAR_AI_API_KEY"
 NEAR_MODEL = "deepseek-ai/DeepSeek-V4.1-Flash-1017-abliterated"
 #: The label the demo's provider row carries. The release installer writes
-#: "Odile Meter" on every boot (`installer/odile_install.py`), so this program
+#: "Near AI" on every boot (`installer/odile_install.py`), so this program
 #: owns the name in both shapes Hermes accepts: the installer's
 #: `custom_providers:` list and Hermes's normalised `custom_providers: []` +
 #: `providers:` map. The check reads it back and fails on any other label.
 PROVIDER_NAME = "Near AI"
-#: The meter's loopback URLs; an entry carrying either is the row to adopt.
-METER_URL_MARKERS = ("127.0.0.1:8010", "127.0.0.1:8011")
 #: The Webapp's console banner, found appended to files a concurrent writer
 #: touched on 2026-11-13 (`/etc/caddy/Caddyfile`, `config.yaml`). It is neither
 #: Caddy syntax nor a setting; the demo's writers remove it on sight.
@@ -709,10 +704,11 @@ def _set_field(lines: list[str], start: int, end: int, names: tuple[str, ...],
     return True
 
 
-def _looks_like_meter(lines: list[str], start: int, end: int) -> bool:
-    blob = "\n".join(lines[start:end + 1]).lower()
-    return (any(marker in blob for marker in METER_URL_MARKERS)
-            or "odile-meter" in blob or "odile meter" in blob)
+def _is_demo_row(lines: list[str], start: int, end: int) -> bool:
+    """Whether this provider entry is the row the demo owns (or will own)."""
+    blob = "\n".join(lines[start:end + 1])
+    return (PROVIDER_NAME in blob or NEAR_BASE_URL in blob
+            or NEAR_KEY_ENV in blob)
 
 
 def provider_entry(text: str) -> tuple[list[str], tuple[int, int] | None, str]:
@@ -726,7 +722,7 @@ def provider_entry(text: str) -> tuple[list[str], tuple[int, int] | None, str]:
             continue
         entries = _children(lines, *span)
         for entry in entries:
-            if _looks_like_meter(lines, *entry):
+            if _is_demo_row(lines, *entry):
                 return lines, entry, block
         if len(entries) == 1:
             return lines, entries[0], block
@@ -752,12 +748,12 @@ def provider_row(text: str) -> dict[str, str]:
 def tune_providers(text: str) -> tuple[str, list[str]]:
     """Own the provider row in both shapes: the list and the `[]` + map.
 
-    The installer writes a `custom_providers:` list with `name: Odile Meter`
-    and the meter's URL on every boot; Hermes's Settings rewrite may instead
-    store `custom_providers: []` and put the same endpoint in `providers:`.
-    Both are edited in place, and a missing row is written as a proper list —
-    never as indented children under an inline `[]`, which is not YAML (the
-    bug this function was re-cut for; measured on the live shape 2026-11-13).
+    The release installer and Hermes's Settings rewrite may store the row
+    either as a `custom_providers:` list or as `custom_providers: []` with the
+    same endpoint in `providers:`. Both are edited in place, and a missing row
+    is written as a proper list — never as indented children under an inline
+    `[]`, which is not YAML (the bug this function was re-cut for; measured on
+    the live shape 2026-11-13).
     """
     lines, entry, where = provider_entry(text)
     changed: list[str] = []
@@ -922,29 +918,29 @@ def inference_key(current: dict[str, str] | None = None) -> str:
     """The machine's one inference key.
 
     The machine's own `.env` is authoritative when it already carries the key:
-    that is the credential Hermes uses, and it is what survives the meter's
-    removal product-wide (t_e237e261). A tenant that still has the meter reads
-    the key from ``/etc/odile/meter.key`` — the installer's shape — and the
-    deploy then writes it into the `.env` for the first time.
+    that is the credential Hermes uses, and on this machine it is where the
+    demo's key lives. A machine rebuilt from the release writes the key to the
+    installer's root-only store instead (t_e237e261), so that store is read as
+    the one fallback; a missing key is an error, never a silent empty value.
     """
     existing = ((current or {}).get(NEAR_KEY_ENV) or "").strip()
     if len(existing) >= 16:
         return existing
-    if METER_KEY.is_file():
-        key = METER_KEY.read_text(encoding="utf-8").strip()
+    if KEY_STORE.is_file():
+        values = parse_env(KEY_STORE.read_text(encoding="utf-8"))
+        key = (values.get(NEAR_KEY_ENV) or "").strip()
         if len(key) >= 16:
             return key
-        raise SystemExit(f"error: {METER_KEY} does not hold a usable key")
-    raise SystemExit(f"error: {ENV_FILE} has no {NEAR_KEY_ENV} and {METER_KEY} is missing")
+        raise SystemExit(f"error: {KEY_STORE} does not hold a usable key")
+    raise SystemExit(f"error: {ENV_FILE} has no {NEAR_KEY_ENV} and {KEY_STORE} is missing")
 
 
 def ensure_env(password: str, *, dry: bool) -> tuple[bool, bool]:
     """Write the tenant .env: judge account + the one Near AI key.
 
     Returns (changed, hash_changed). The cookie secret is kept byte-for-byte:
-    it is what keeps judges signed in across a restart. The meter token is
-    removed — the meter is not in the path — and the Near AI key takes its
-    place, so the file carries exactly one inference credential.
+    it is what keeps judges signed in across a restart. The file carries
+    exactly one inference credential — the Near AI key — and no meter token.
     """
     if not ENV_FILE.is_file():
         raise SystemExit(f"error: {ENV_FILE} is missing; run the release installer first")
@@ -974,7 +970,7 @@ def ensure_env(password: str, *, dry: bool) -> tuple[bool, bool]:
         return False, False
     hash_changed = username != "judge" or bool(password and not hash_ok)
     say("would write" if dry else "write",
-        f"{ENV_FILE} (judge account, one Near AI key, meter token removed)")
+        f"{ENV_FILE} (judge account, one Near AI key)")
     if dry:
         return True, hash_changed
     write_atomic(ENV_FILE, rendered.encode("utf-8"), 0o600, TENANT_UID, TENANT_GID)
@@ -1093,10 +1089,10 @@ def rendered_receipt(stamp: float) -> dict:
                 .replace("{{USER_ID}}", PRINCIPAL_ID)
                 .replace("{{STAMP}}", created)
                 .replace("{{REQUEST_ID}}", REQUEST_ID))
-    # The template was written for the HQ demo (its meter at 127.0.0.1:8011 and
-    # its own workspace path). The identity above must stay the frozen one, but
-    # the policy's working directory must be this machine's, or the session
-    # resumes into a path that does not exist here.
+    # The template was written for the retired HQ demo (a loopback provider
+    # and its own workspace path). The identity above must stay the frozen
+    # one, but the policy's working directory must be this machine's, or the
+    # session resumes into a path that does not exist here.
     receipt_doc = json.loads(rendered)
     # The session id is the HQ demo's constant (the one app.py's /judge deep
     # links), but this receipt is minted by *this* machine's profile: the
@@ -1115,13 +1111,12 @@ def rendered_receipt(stamp: float) -> dict:
     terminal["TERMINAL_CWD"] = str(WORKSPACE)
     policy["terminal_json"] = json.dumps(terminal)
     # The receipt also freezes the whole config it was minted under. The HQ
-    # template's copy routes inference through the HQ meter (127.0.0.1:8011)
-    # with the HQ meter's key name; resumed as-is, the seeded session's first
-    # turn calls a port this machine does not run and fails with
-    # `APIConnectionError ... base_url=http://127.0.0.1:8011/v1` (measured
-    # 2026-11-13). Re-point the snapshot at the route this program owns. The
-    # template carries no turn or session limit and neither does the snapshot:
-    # the demo sets no cap a real tenant would not have (t_ee5aac66).
+    # template's copy routes inference through a loopback URL with the HQ
+    # credential's name; resumed as-is, the seeded session's first turn calls
+    # a port this machine does not run and fails with an `APIConnectionError`
+    # (measured 2026-11-13). Re-point the snapshot at the route this program
+    # owns. The template carries no turn or session limit and neither does the
+    # snapshot: the demo sets no cap a real tenant would not have (t_ee5aac66).
     config = json.loads(policy["config_json"])
     model = config.setdefault("model", {})
     model["base_url"] = NEAR_BASE_URL
@@ -1228,8 +1223,8 @@ def ensure_session(dry: bool) -> bool:
 # 6. the removed boot re-assert, and the restart helper
 #
 # Revisions before t_ee5aac66 installed a oneshot unit that re-ran this
-# program's `--tune` path after `odile-release-setup.service` on every boot,
-# to undo the release installer's config rewrite. The owner's config must
+# program with its old tune flags after `odile-release-setup.service` on every
+# boot, to undo the release installer's config rewrite. The owner's config must
 # survive a reboot on its own (the release setup now converges once), so the
 # unit is removed here — any later deploy converges a machine that still has
 # it. Nothing re-asserts anything at boot.
@@ -1268,8 +1263,8 @@ RESTART_HELPER = """#!/bin/sh
 # The Webapp's shell.exec refuses any command line carrying `systemctl
 # restart`, and the deploy needs one restart of the unit whose socket it is
 # talking over. This script is that restart, named so the guard lets it pass.
-# Nothing else comes back with it: the product ships no odile-meter.service
-# (removed at 0a4b726), so no Wants= can start a meter.
+# Nothing else comes back with it: the product ships no meter unit
+# (removed at 0a4b726), so no Wants= can start one.
 systemctl restart odile-agent
 """
 
@@ -1427,11 +1422,10 @@ def report(session_id: str = "") -> int:
     """Print the demo's tenant-side state as one JSON object.
 
     Read-only: the config's managed settings and the provider row it actually
-    uses, the .env's key names, the meter's state, the seeded session's row,
-    the last runs' turn counts, the agent's own `max_iterations_reached` lines
-    (agent log and journal), the number of session rows, and the Caddy block's
-    hashes (committed copy, live block, residue). The check script asserts on
-    this.
+    uses, the .env's key names, the seeded session's row, the last runs' turn
+    counts, the agent's own `max_iterations_reached` lines (agent log and
+    journal), the number of session rows, and the Caddy block's hashes
+    (committed copy, live block, residue). The check script asserts on this.
 
     With `session_id`, print that one session's row and message digest instead
     (`--session-id`): the report stays under the console's 4 KB reply for the
@@ -1478,11 +1472,6 @@ def report(session_id: str = "") -> int:
         "provider": provider_row(config),
         "env_keys": env_keys,
         "verify": verify_state(),
-        "meter": {
-            "active": run(["systemctl", "is-active", METER_UNIT]).stdout.strip(),
-            "enabled": run(["systemctl", "is-enabled", METER_UNIT]).stdout.strip(),
-            "unit_installed": (METER_UNIT_FILE.exists() or METER_UNIT_FILE.is_symlink()),
-        },
         "caddy": caddy_state(),
         "session": session,
         "session_count": session_count,
@@ -1540,14 +1529,14 @@ def self_test() -> int:
         "model:\n"
         "  default: \"m\"\n"
         "  provider: \"custom\"\n"
-        "  base_url: \"http://127.0.0.1:8010/v1\"\n"
+        "  base_url: \"http://127.0.0.1:8099/v1\"\n"
         "  extra_key: kept\n"
         "agent:\n"
         "  reasoning_effort: \"high\"\n"
         "custom_providers:\n"
-        "  - name: Odile Meter\n"
-        "    base_url: http://127.0.0.1:8010/v1\n"
-        "    key_env: METER_API_KEY\n"
+        "  - name: Old Provider\n"
+        "    base_url: http://127.0.0.1:8099/v1\n"
+        "    key_env: OLD_PROVIDER_API_KEY\n"
         "    model: m\n"
         "webapp:\n"
         "  port: 9130\n"
@@ -1557,12 +1546,12 @@ def self_test() -> int:
     check("key_env: HERMES_CUSTOM_CLOUD_API_NEAR_AI_API_KEY" in tuned,
           "the provider names the one key")
     check("name: Near AI" in tuned,
-          "the provider row is renamed from the installer's meter label")
+          "the provider row is renamed to Near AI")
     bare = ("model:\n  provider: custom\n"
             "agent:\n  reasoning_effort: high\n"
-            "custom_providers:\n  - name: Odile Meter\n"
-            "    base_url: http://127.0.0.1:8010/v1\n"
-            "    key_env: METER_API_KEY\n"
+            "custom_providers:\n  - name: Old Provider\n"
+            "    base_url: http://127.0.0.1:8099/v1\n"
+            "    key_env: OLD_PROVIDER_API_KEY\n"
             "webapp:\n  port: 9130\n")
     tuned_bare, _ = tune_config(bare)
 
@@ -1608,12 +1597,12 @@ def self_test() -> int:
         "_config_version: 52\n"
         "model:\n"
         "  provider: custom\n"
-        "  base_url: http://127.0.0.1:8010/v1\n"
+        "  base_url: http://127.0.0.1:8099/v1\n"
         "custom_providers: []\n"
         "providers:\n"
-        "  odile-meter:\n"
-        "    api: http://127.0.0.1:8010/v1\n"
-        "    name: Odile Meter\n"
+        "  old-provider:\n"
+        "    api: http://127.0.0.1:8099/v1\n"
+        "    name: Old Provider\n"
         "webapp:\n"
         "  port: 9130\n"
     )
@@ -1638,7 +1627,7 @@ def self_test() -> int:
 
     broken = ("_config_version: 1\n"
               "custom_providers: []\n"
-              "    base_url: http://127.0.0.1:8010/v1\n")
+              "    base_url: http://127.0.0.1:8099/v1\n")
     check(bool(config_problem(broken)),
           "children under an inline [] are refused before a write")
 
@@ -1655,9 +1644,9 @@ def self_test() -> int:
                   and row.get("base_url") == NEAR_BASE_URL
                   and row.get("key_env") == NEAR_KEY_ENV
                   for row in frozen.get("custom_providers") or []),
-          "the seed's receipt names the Near AI row and routes inference there, not the HQ meter")
-    check("8011" not in json.dumps(seeded),
-          "no HQ meter port survives in the seed's receipt")
+          "the seed's receipt names the Near AI row and routes inference there, not a loopback")
+    check("127.0.0.1:" not in json.dumps(seeded),
+          "no loopback URL survives in the seed's receipt")
     template_config = json.loads(json.loads(
         receipt_template().read_text(encoding="utf-8"))["policy"]["config_json"])
     check(set(frozen) == set(template_config)

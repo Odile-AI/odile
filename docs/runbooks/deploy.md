@@ -66,7 +66,7 @@ line is the checkout — not `scripts/` — whichever directory you run it from.
 Measured on 2026-11-14 at `83eefd2`:
 
 ```text
-→ source  /root/odile
+→ source  <checkout>
 → runtime /opt/odile
 → guard   HEAD 83eefd2 contains main 83eefd2
 ```

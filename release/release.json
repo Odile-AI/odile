@@ -1,8 +1,8 @@
 {
   "artifacts": {
     "installer": {
-      "sha256": "7900e62df2dbafd4d6b722606b11594b598b388abf2c49e1189001e902373d4e",
-      "size": 1413180,
+      "sha256": "4e41122ea9a41fcdc2be60d6178110c0d4bef22813bc4639bea3fc6fdc76c58e",
+      "size": 1413845,
       "url": "odile_install.py"
     },
     "skills": {
@@ -14,14 +14,14 @@
   "boot": {
     "kernel": "6.12.115+deb13.1-amd64"
   },
-  "generated_at": "2026-11-15T03:45:00Z",
+  "generated_at": "2026-11-15T06:20:00Z",
   "manifest": {
-    "sha256": "270f462a25959aec90b6c9ff50b5eb3de69e89d7834cfa190a89be068f4ef05c",
+    "sha256": "e933b5416ac953dc66ee008347b580dfba460294f14337969dc884b63f62fcf8",
     "signature_url": "manifest.json.sig",
     "url": "manifest.json"
   },
-  "notes": "ODL-474: the v3.10 held access sentences land after the M2 drills, on the ODL-505 and t_ae833f3f head",
+  "notes": "ODL-474: the five v3.10 access sentences land on the deck, the public pages and the installed help surface, re-cut at the head that merges ODL-522's -3 (the per-machine session secret). The installer embeds the merged sources: skills/odile-help (v3.10), support/odile_support.py placed at /usr/local/sbin/odile-support with odile-diag beside it, scripts/backup.py, installer/first_visit.py d1c761f0... (ODL-505's five icons, t_ae833f3f's page re-cut and ODL-522's SECRET_KEY + write_env_hash refusal) and web/first-visit.html 810a596d...; release/manifest.json is the merged head's fresh-root document (48 skills, audit 539e205f...), whose diff against -3 is installer_sha256 and the odile-help row. The id is 2026.11.15-4: -8 is ODL-505's, -1 is main's type re-cut, -2 was this branch's open cut (demoted), -3 is ODL-522's. It is committed, not deployed.",
   "product": "odile",
-  "release": "2026.11.15-2",
+  "release": "2026.11.15-4",
   "schema": 1
 }
