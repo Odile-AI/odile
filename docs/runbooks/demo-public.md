@@ -51,10 +51,10 @@ page a judge should be sent to. It does not demonstrate a user-held key.
 
 ```sh
 cd <checkout>
-./deploy/demo-host/deploy_demo_public.py --dry-run
-./deploy/demo-host/deploy_demo_public.py
+./deploy/demo-host/deploy_demo_public.py --dry-run --target "$(dig +short demo.odile.fyi)"
+./deploy/demo-host/deploy_demo_public.py --target "$(dig +short demo.odile.fyi)"
 # only for a tree older than the live page — keep `/srv/odile-demo/login.html`:
-./deploy/demo-host/deploy_demo_public.py --no-login
+./deploy/demo-host/deploy_demo_public.py --target "$(dig +short demo.odile.fyi)" --no-login
 ```
 
 `--no-login` keeps `/srv/odile-demo/login.html` as the machine has it and does
@@ -65,8 +65,9 @@ the live page's markers either way, so a stale page still fails the gate check.
 
 **The DNS step and the redacted address (ODL-563).** The tree names the tenant
 `203.0.113.87` (§5) and the live zone's record holds the machine's real address,
-so the bare command above would *update* the record to the redaction. Pass the
-live address; on a converged zone the step then prints `same`:
+so a run without `--target` would *update* the record to the redaction. The base
+form above passes the live address; check the zone first and pass the same
+value, so a converged zone prints `same`:
 
 ```sh
 ./deploy/demo-host/create_dns.py --dry-run --target "$(dig +short demo.odile.fyi)"  # must print `same`
@@ -133,13 +134,13 @@ change what every customer machine verifies. Instead:
   reads per request — adds the command section inside the same block, and keeps
   the release page at
   `/usr/local/lib/odile-demo-public/verify.html.release` for the rollback;
-- the deploy's `apply --write` is the only writer of this paragraph.
-  `odile-release-setup.service` converges **once** (t_ee5aac66 writes a done
-  marker under `/var/lib/odile`), so after the first boot the release
-  installer no longer rewrites the template; there is no boot unit and no
-  `--tune` re-assert. The one other writer to the template is the t_6b25f6e5
-  icons deploy, which installs `web/verify.html` and re-injects only the lede
-  (§2, measured 2026-11-15); run the demo-public deploy after it;
+- the demo-public deploy's `apply --write` and the t_6b25f6e5 icons deploy are
+  the two writers of this paragraph. `odile-release-setup.service` converges
+  **once** (t_ee5aac66 writes a done marker under `/var/lib/odile`), so after
+  the first boot the release installer no longer rewrites the template; there
+  is no boot unit and no `--tune` re-assert. The icons deploy installs
+  `web/verify.html` and re-injects only the lede (§2, measured 2026-11-15);
+  run the demo-public deploy after it, and after a forced re-cut;
 - a customer machine never runs `apply_demo_public.py`, so its `/verify` keeps
   the general row. `tests/test_demo_public.py` renders both pages through the
   release renderer and pins the sentence each one shows. The same test runs
@@ -451,8 +452,8 @@ machine's own name, and the record propagates in a minute.
 
   The demo's old boot unit (`odile-demo-public`, which re-ran `apply --tune`
   after every boot) is removed by the apply and does not exist on the machine.
-  Nothing re-asserts the demo config or the `/verify` lede at boot; the deploy
-  is the only writer.
+  Nothing re-asserts the demo config or the `/verify` lede at boot; the
+  demo-public deploy is the one to run after a boot-time rewrite (§2).
 
 ## 7. The seed's first turn (the part that is not obvious)
 
@@ -525,7 +526,7 @@ transcript.
 | The page's line | `https://demo.odile.fyi/verify` 200, 43,159 B, sha256 `3cdd7427…` (measured 20:28Z, after the forced re-cut below was repaired and the deploy re-converged; the report card is live, so its byte count moves with the report). Exactly one `<!--demo-check-->` / `<!--/demo-check-->` pair; the section is `deploy/demo-host/verify-command.html` with the measurement it serves, `9f01725a…f137` = `/attestation` |
 | The lede | the deck row verbatim — `Every judge sees these sessions and files.` — `grep -c 'lands in the same workspace'` = 0 and `grep -c 'No one at Odile can log in'` = 0 |
 | The check, before and after | public half before the deploy: 20 passed / 4 failed (no command section, the sign-in page's missing credit comment, the two DNS rows); after: 23 passed / 2 failed — both are the DNS rows, which compare the tree's redacted `203.0.113.87` to the live A record (`dig +short demo.odile.fyi`). The command row prints `ok` and the page's own line, run out of the published bundle, exits 0 |
-| The second run | `deploy_demo_public.py` prints `same` for `/usr/local/lib/odile/verify.html (the demo lede)` and `(the demo command)` — including the 20:28Z run after the re-cut repair — plus the login page, the icons, the Caddyfile block, the config, the `.env` and `state.db`; the page's sha256 is unchanged and the seeded session `local-931d9e32…` keeps its 22 messages, `messages_sha256 870fa53c…` and its two timestamps across the runs |
+| The second run | `deploy_demo_public.py` prints `same` for `/usr/local/lib/odile/verify.html (the demo lede)` and `(the demo command)` — including the 20:28Z run after the re-cut repair — plus the login page, the icons, the Caddyfile block, the config, the `.env` and `state.db`; the page's sha256 is unchanged. In the three run-window readings (19:00:31, 19:02:57, 19:04:15Z — before, between and after the two runs) the seeded session `local-931d9e32…` kept its 22 messages, `messages_sha256 870fa53c…` and both timestamps. A live count moves after the card — a check's turn appends to the seed by design (21:05Z read 28 messages, `c3746671…`) — so quote the run-window transcript, not a live read |
 | The two other writers | 2026-11-15T01:09:17Z: `deploy_demo_icons.py` installs `/tmp/verify.html` over `/usr/local/lib/odile/verify.html`; `apply_demo_public.py --report` then reads `"demo_lede": true, "demo_command": false`. 20:12:29Z: `odile-recut-run2` runs `odile-release-setup.sh --force` and the release installer writes the release page (customer lede, no section) over the template; the deploy restores both (`write … (the demo lede)` / `(the demo command)`) and the next run prints `same` (§2) |
 | The re-cut's side effect | the same re-cut set `/etc/odile` to 0750 root:odile-manifest; the machine's old listener (no `SupplementaryGroups=odile-manifest`) answered `/manifest` 503 until `deploy/image/odile-manifest.service` was installed and the unit restarted (loopback and `odl-7971a8.odile.fyi` both 200, §6) |
 
