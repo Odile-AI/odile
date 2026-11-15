@@ -2,8 +2,10 @@
 #
 # One oneshot per boot, before the tenant gateway. It prints exactly one
 # `odile-firstboot:` line to the serial console (`installed`, `same`, or
-# `fail-closed: <reason>`) and writes nothing else there; the installer it
-# runs logs to /var/log/odile-firstboot.log.
+# `fail-closed: <reason>`), and — on a boot that runs the first-boot steps —
+# one `odile-hostkeys:` line in front of it (the SSH host key this boot
+# generated or kept, ODL-523). Nothing else goes there; the installer it runs
+# logs to /var/log/odile-firstboot.log.
 #
 # It runs as root because its whole job is privileged and one-time: read the
 # measured command line, exchange the one-time setup token at the seed
@@ -28,9 +30,9 @@ ExecStart=/usr/bin/python3 /usr/local/lib/odile-image/odile-firstboot.py
 # The installer converges the stack under emulation; a TCG guest takes minutes,
 # not seconds. The fail-closed paths return long before this.
 TimeoutStartSec=1200
-# The console is the evidence surface: one line, on ttyS0, in the serial
-# transcript. StandardError goes to the same place so a Python traceback cannot
-# hide in the journal alone.
+# The console is the evidence surface: the `odile-hostkeys:` and
+# `odile-firstboot:` lines, on ttyS0, in the serial transcript. StandardError
+# goes to the same place so a Python traceback cannot hide in the journal alone.
 StandardOutput=journal+console
 StandardError=journal+console
 # No sandbox: the unit starts other units and writes /etc, /var/lib and /var/log.

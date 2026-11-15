@@ -18,19 +18,25 @@ recorded in docs/runbooks/image.md §13.)
 
 What this program does, in order:
 
-1. places the release's exact installer at /usr/local/bin/odile-install.sh
+1. generates this machine's own SSH host keys with `ssh-keygen -A` when the
+   image shipped none (ODL-523: the build removes debootstrap's
+   /etc/ssh/ssh_host_*, and Debian's sshd-keygen.service cannot make new ones
+   on a cloned disk because it carries ConditionFirstBoot=yes). It runs before
+   the boot record is read, so the first boot's record carries this machine's
+   key (ODL-398);
+2. places the release's exact installer at /usr/local/bin/odile-install.sh
    (0755 root), the signed manifest pair at /etc/odile/manifest.json/.sig and
    the listener that serves them — from the image's own copy of the release,
    verifying the pair before it writes (ODL-472). The placement is idempotent:
    a converged machine reads `same` for every byte in the installer's log;
-2. reads the state at /var/lib/odile/firstboot.json; a machine that already
+3. reads the state at /var/lib/odile/firstboot.json; a machine that already
    installed and still holds the seed cache prints exactly `odile-firstboot:
    same` and exits (a second boot does not reinstall and does not spend a
    token);
-3. without a token or an instance id it prints one fail-closed line and exits
+4. without a token or an instance id it prints one fail-closed line and exits
    0 — the unit is oneshot, so the rest of the boot continues and the machine
    stays reachable;
-4. POSTs {token, instance_id} to the seed endpoint, requires the
+5. POSTs {token, instance_id} to the seed endpoint, requires the
    X-Odile-Signature Ed25519 signature over the exact response bytes; a seed
    carries the seed key's public half and the release key's certificate over
    it, so the body is checked against the certified seed key after the
@@ -39,7 +45,7 @@ What this program does, in order:
    release that retires a key). A seed issued before ODL-514 carries no
    certificate and is checked against the release key itself. A body that is
    not the tenant's (slug / instance / keys) is refused the same way;
-5. writes the seed to /etc/odile/seed.json (0600, atomic). On a **rebuild** it
+6. writes the seed to /etc/odile/seed.json (0600, atomic). On a **rebuild** it
    first writes the tenant's OLD backup password — which the seed carries
    sealed under this boot's setup token — into /etc/odile/recovery.txt through
    the image's recovery-seed.py (password on stdin, never argv), so the new
@@ -50,11 +56,15 @@ What this program does, in order:
    did), hands the sign-in hash in the tenant .env to Hermes basic auth, writes
    /etc/odile/first-visit.json (the token's SHA-256, never the token) and
    starts the first-visit page;
-6. asserts the first-visit page answers through loopback, then prints one
+7. asserts the first-visit page answers through loopback, then prints one
    line: `odile-firstboot: installed <slug> · first-visit <status>`.
 
-Exactly one `odile-firstboot:` line reaches stdout — the serial console. The
-installer's own output goes to /var/log/odile-firstboot.log.
+Exactly one `odile-firstboot:` line reaches stdout — the serial console. On
+every boot that runs the steps above, one `odile-hostkeys:` line stands in
+front of it: the key this boot generated or kept, which is what lets a reader
+of the transcript see that the key existed before the boot record was read.
+Nothing else goes to the console; the installer's own output goes to
+/var/log/odile-firstboot.log.
 
 No passphrase, private key or operator key is read, written or printed. The one
 secret that passes through is a rebuild's backup password: it is written to the
@@ -95,6 +105,14 @@ INSTALLER = "/usr/local/lib/odile-image/install-stack.sh"
 CMDLINE = "/proc/cmdline"
 DEFAULT_SEED_URL = "https://odile.fyi/seed"
 FIRST_VISIT_PORT = 8091
+
+# ODL-523: the image ships no SSH host private key; this boot makes the
+# machine's own. `ssh-keygen -A -f <root>` reads and writes <root>/etc/ssh, so
+# "/" is the image and a test passes its own root so the host's keys are never
+# touched. HOST_KEY_KINDS is what `-A` generates (sshd's three defaults).
+SSH_ROOT = "/"
+SSH_KEYGEN = "ssh-keygen"
+HOST_KEY_KINDS = ("rsa", "ecdsa", "ed25519")
 
 # The measured facts the boot record is built from (ODL-398 follow-up). The
 # key is the one in the measured line; the release is the image pin's, the one
@@ -304,6 +322,53 @@ def write_first_visit_state(path: str, token: str) -> bool:
     return True
 
 
+# ---------------------------------------------------------------- host keys
+
+def host_key_paths(root: str = SSH_ROOT) -> list[str]:
+    """The three private host keys `ssh-keygen -A` writes under <root>/etc/ssh."""
+    base = os.path.join(root, "etc", "ssh")
+    return [os.path.join(base, "ssh_host_%s_key" % kind) for kind in HOST_KEY_KINDS]
+
+
+def ensure_host_keys(root: str = SSH_ROOT, keygen: str = SSH_KEYGEN) -> tuple[str, str]:
+    """Generate this machine's own SSH host keys when the image shipped none.
+
+    ODL-523: the image removes debootstrap's /etc/ssh/ssh_host_* at build time,
+    and Debian's sshd-keygen.service cannot put them back on a cloned disk — it
+    carries ConditionFirstBoot=yes and the image ships a machine-id. `ssh-keygen
+    -A` leaves existing keys alone, so this is idempotent: a second boot reads
+    `same` and the key bytes do not move.
+
+    Returns (verb, log line). A missing ssh-keygen is a `warn`, not a refusal:
+    the machine still installs, and the sshd-keygen drop-in retries at the first
+    ssh start.
+    """
+    present = [path for path in host_key_paths(root) if os.path.isfile(path)]
+    if len(present) == len(HOST_KEY_KINDS):
+        return "same", "the SSH host keys (this machine's own, no new key written)"
+    # `ssh-keygen -A -f <root>` requires <root>/etc/ssh to exist; the image has
+    # it, and a test's fresh root does not.
+    try:
+        os.makedirs(os.path.join(root, "etc", "ssh"), mode=0o755, exist_ok=True)
+    except OSError as error:
+        return "warn", "cannot create %s/etc/ssh (%s)" % (root, error.strerror or error)
+    try:
+        proc = subprocess.run([keygen, "-A", "-f", root],
+                              capture_output=True, text=True, timeout=120)
+    except FileNotFoundError:
+        return "warn", "ssh-keygen is missing; sshd-keygen.service retries at the next ssh start"
+    except (OSError, subprocess.SubprocessError) as error:
+        return "warn", "ssh-keygen -A failed (%s)" % error
+    if proc.returncode != 0:
+        detail = ((proc.stderr or proc.stdout).strip().splitlines() or [""])[0]
+        return "warn", "ssh-keygen -A failed (%s)" % (detail or "rc %d" % proc.returncode)
+    generated = [path for path in host_key_paths(root) if os.path.isfile(path)]
+    if len(generated) != len(HOST_KEY_KINDS):
+        return "warn", ("ssh-keygen -A wrote %d of %d host keys; sshd-keygen.service"
+                        " retries at the next ssh start" % (len(generated), len(HOST_KEY_KINDS)))
+    return "create", "the SSH host keys (%d generated by ssh-keygen -A)" % len(generated)
+
+
 # ------------------------------------------------------------ the boot record
 
 def fingerprint(blob: bytes) -> str:
@@ -500,12 +565,13 @@ def report_record(facts: dict | None, key_fingerprint: str, reason: str, *,
 
 # ------------------------------------------------------------------- release
 
-def log_placements(path: str, lines: list[str]) -> None:
+def log_placements(path: str, lines: list[str], label: str = "release placement") -> None:
     """The placement record: the installer's log, never the console.
 
     The console carries exactly one `odile-firstboot:` line. The log carries
     what was placed and, on a second boot, the `same` lines a reader compares
-    with the first.
+    with the first. `label` names the section a reader is looking at (the
+    release placement, or this machine's SSH host keys).
     """
     if not lines:
         return
@@ -513,7 +579,7 @@ def log_placements(path: str, lines: list[str]) -> None:
         directory = os.path.dirname(path) or "."
         os.makedirs(directory, exist_ok=True)
         with open(path, "ab") as handle:
-            handle.write(("=== odile-firstboot %s: release placement\n" % utcnow()).encode())
+            handle.write(("=== odile-firstboot %s: %s\n" % (utcnow(), label)).encode())
             for line in lines:
                 handle.write((line + "\n").encode())
             handle.flush()
@@ -1152,6 +1218,10 @@ def main(argv: list[str] | None = None) -> int:
                         help="the image's release artifacts (ODL-472)")
     parser.add_argument("--installer-copy", default=INSTALLER_COPY,
                         help="where the release installer is placed (CLAIMS 4.6)")
+    parser.add_argument("--ssh-root", default=SSH_ROOT,
+                        help="the root ssh-keygen -A writes <root>/etc/ssh under")
+    parser.add_argument("--ssh-keygen", default=SSH_KEYGEN,
+                        help="ssh-keygen to run (a test may pass a stub)")
     parser.add_argument("--etc-dir", default=ETC_DIR)
     parser.add_argument("--odile-lib", default=ODILE_LIB)
     parser.add_argument("--manifest-unit", default=MANIFEST_UNIT)
@@ -1180,6 +1250,19 @@ def main(argv: list[str] | None = None) -> int:
         instance_id = facts["instance_id"]
         token = facts["token"] or read_stdin_token(os.path.join(
             os.path.dirname(args.seed_cache), "setup-token"))
+        # ODL-523: the image ships no SSH host private key; this boot makes the
+        # machine's own before any unit can need one — and before the boot
+        # record is read, so the first boot's record carries this machine's host
+        # key (ODL-398 reads current_host_key()). A fail-closed boot still gets
+        # them, so the machine stays reachable.
+        if not args.check:
+            verb, detail = ensure_host_keys(args.ssh_root, args.ssh_keygen)
+            log_placements(args.log, ["%-12s %s" % (verb, detail)], label="ssh host keys")
+            # The serial transcript's host-key line (ODL-523): before the boot
+            # record is read, and before the one `odile-firstboot:` line, so a
+            # reader sees the key came first. Its own prefix keeps the
+            # one-`odile-firstboot:`-line console contract.
+            print("odile-hostkeys: %s %s" % (verb, detail), flush=True)
         record, record_key, record_reason = boot_record_facts(
             cmdline_text, pin_path=args.pin, boot_key_path=args.boot_key,
             boot_record_path=args.boot_record, host_key_path=args.host_key,

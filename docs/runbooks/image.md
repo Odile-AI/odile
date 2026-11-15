@@ -795,7 +795,7 @@ cgroup2 mount and `/dev` nodes survived (`LEAK`/`HOST DAMAGE` exit 3). The
 signing key stays in `/root/.odile/image-signing.key`; rotating it means a
 new certificate, a new pin and a re-sign, not a rebuild of the disk.
 
-## 13. The published image ships no usable sign-in and no shared session secret (ODL-521, ODL-522)
+## 13. The published image ships no usable sign-in, no shared session secret and no SSH host private key (ODL-521, ODL-522, ODL-523)
 
 ### 13.1 The rule
 
@@ -1703,3 +1703,528 @@ these bytes; or that a real first boot over the tenant's certificate answers
 `/first-visit` on the tenant's own name. Those are ODL-454's and ODL-466's
 arguments and the strict run's; this section proves what the *image* carries
 and what the *boot* does with it.
+
+### 13.11 The image ships no SSH host private key (ODL-523)
+
+#### 13.11.1 The rule
+
+The built image carries **no** `/etc/ssh/ssh_host_*` file — not a private key
+and not its public half — and every machine makes its own three host keys at its
+first boot, before anything reads the boot record. Two disks built from one
+image therefore present different ed25519 fingerprints, and the boot record HQ
+keeps for each machine carries that machine's own fingerprint
+(`tenant_state.detail.host_key`).
+
+Before this card every disk built from the image carried debootstrap's
+`/etc/ssh/ssh_host_{ed25519,rsa,ecdsa}_key` at 0600 root, and the live tenant
+presented the image's ed25519 key `SHA256:IRqReY12…` (ODL-466 §0.2, finding 3).
+SSH is not in the user path, so it was not a way in; it was a private key in a
+public artifact, which AGENTS.md's "never add a standing credential to a tenant
+machine" forbids.
+
+#### 13.11.2 The mechanism
+
+Three writers, in this order.
+
+1. **debootstrap's `openssh-server` postinst** writes the keys at build time.
+   Measured in the build root while `sealed-image.sh` was still in its
+   `install-stack.sh` step, so before the removal in 2:
+
+   ```sh
+   $ pid=$(pgrep -f "install-stack.sh --password" | head -1)
+   $ nsenter -t "$pid" -m -- ls /var/tmp/odile-odl523-prod-rootfs/etc/ssh/
+   moduli  ssh_config  ssh_config.d  ssh_host_ecdsa_key  ssh_host_ecdsa_key.pub
+   ssh_host_ed25519_key  ssh_host_ed25519_key.pub  ssh_host_rsa_key
+   ssh_host_rsa_key.pub  sshd_config
+   ```
+
+   `sealed-image.sh` removes the build root at the end, so that listing is a
+   measurement *during* a build; §13.11.4 plants the same file on a finished
+   image's copy, which is the reproducible half.
+2. **The build removes them, and fails if a private one survives.**
+   `install-stack.sh` section `4b` removes every `/etc/ssh/ssh_host_*`, prints
+   `remove the debootstrap SSH host keys (/etc/ssh/ssh_host_*)`, and then exits
+   1 with `install-stack: the image still carries an SSH host private key` if
+   `compgen -G "/etc/ssh/ssh_host_*_key"` still matches. The same section writes
+   the drop-in
+   `/etc/systemd/system/sshd-keygen.service.d/10-odile-hostkeys.conf`.
+3. **The first boot makes this machine's own.** Debian's `sshd-keygen.service`
+   carries `ConditionFirstBoot=yes` and the image ships an `/etc/machine-id`, so
+   on a cloned disk that condition is false and the unit would never fire —
+   hence the drop-in, which clears the condition (`[Unit]` then
+   `ConditionFirstBoot=`), so `ssh-keygen -A` runs before `ssh.service`.
+   Independently, `odile-firstboot.py`'s `ensure_host_keys()` runs
+   `ssh-keygen -A -f /` **before** it calls `boot_record_facts()`, so the record
+   carries this machine's key even if the unit has not run yet.
+   `ssh-keygen -A` leaves existing keys alone: whichever path runs first
+   generates them, the other reads `same`, and a later boot does not move the
+   bytes. The console carries one `odile-hostkeys:` line in front of the one
+   `odile-firstboot:` line.
+
+#### 13.11.3 The build: zero host keys, and the drop-in
+
+The production build is §13.3's five commands with the fixture seed the boots
+use, run from this card's worktree on top of `main`'s `ef0bc27`. The build log
+records the tree it built from — the three image inputs and the test, before
+this section was written:
+
+```sh
+$ head -7 /var/tmp/odile-odl523-build/build.log
+=== build start 2026-11-15T06:31:38Z head ef0bc27da49bdd2e3d3bdba3a05e6da635018037
+=== tree status
+ M deploy/image/install-stack.sh
+ M deploy/image/odile-firstboot.py
+ M deploy/image/odile-firstboot.service
+ M tests/test_sealed_image.py
+=== prepare the fixture seed
+```
+
+The commit that carries the work is
+`4ea2f4c3c26fdc23aa0540d55d94434059d8dda0`; `git diff --stat ef0bc27 4ea2f4c3`
+lists those four files, this section, and no other path (the unit's change is
+its console-contract comment, not behaviour). The image's own copies of the
+three build inputs are byte-for-byte that commit's, read at the mount below:
+
+```sh
+$ for p in usr/local/lib/odile-image/install-stack.sh \
+           usr/local/lib/odile-image/odile-firstboot.py \
+           etc/systemd/system/odile-firstboot.service; do
+      sha256sum "/mnt/odl523root/$p"
+  done
+027bec3dba314db45fca5c6b6b0873724fed0809f60641f313305aad5be1fd14  /mnt/odl523root/usr/local/lib/odile-image/install-stack.sh
+751d8384f9631749d97ee8e1977d130b6541220244676b33f7e4acc26b002878  /mnt/odl523root/usr/local/lib/odile-image/odile-firstboot.py
+dbbe95ae8b94669ea2116cf0e787110c1ecb66022b78518e59a0782adc1b728d  /mnt/odl523root/etc/systemd/system/odile-firstboot.service
+$ for p in deploy/image/install-stack.sh deploy/image/odile-firstboot.py \
+           deploy/image/odile-firstboot.service; do
+      git show 4ea2f4c:$p | sha256sum
+  done
+027bec3dba314db45fca5c6b6b0873724fed0809f60641f313305aad5be1fd14  -
+751d8384f9631749d97ee8e1977d130b6541220244676b33f7e4acc26b002878  -
+dbbe95ae8b94669ea2116cf0e787110c1ecb66022b78518e59a0782adc1b728d  -
+```
+
+The five commands, in order:
+
+```sh
+$ OUT=/var/tmp/odile-odl523-prod
+$ FX=/var/tmp/odile-odl523-boot
+$ ./deploy/image/firstboot-fixture.py prepare --dir "$FX" \
+      --instance 45445445-0000-4000-8000-000000000454
+$ ./deploy/image/sealed-initrd.sh --out "$OUT" --force
+$ ODILE_GUEST_NAME=odl-bench \
+  ODILE_IP_TOKEN="ip=dhcp bb.ip4=10.0.2.15/24 bb.gw4=10.0.2.2 bb.dns=10.0.2.3" \
+  ODILE_SEED_TOKEN="$(cat "$FX/token")" \
+  ODILE_SEED_URL="http://10.0.2.2:18081/seed" \
+  ODILE_SEALED_ROOTFS=/var/tmp/odile-odl523-prod-rootfs \
+      ./deploy/image/sealed-image.sh --out "$OUT" --production --force
+$ ./deploy/image/uki.sh --in "$OUT" --sign --pin "$OUT/tenant-image.pin" --vcpus 2
+$ ./deploy/image/place-pin.sh --disk "$OUT/odile-tenant-sealed.raw" \
+      --pin "$OUT/tenant-image.pin"
+write
+pin raw_image_sha256 -> 4910ede1b463 (as built, pin inside)
+=== production build rc=0 at 2026-11-15T06:42:38Z
+$ sha256sum "$OUT/odile-tenant-sealed.raw" "$OUT/odile-tenant.efi"
+4910ede1b4639f5ce9b89cc1ec40f4fd7c32af769e0f8bd219e0a4627f00cc3e  /var/tmp/odile-odl523-prod/odile-tenant-sealed.raw
+450f156bc36e2bd738d2882cba5a268757e766da8102b9b247c0adc3e3fb8618  /var/tmp/odile-odl523-prod/odile-tenant.efi
+```
+
+The build's own log carries the two host-key lines (once, then `same` on the
+idempotency rerun `sealed-image.sh` always does):
+
+```sh
+$ grep -n "hostkeys\|SSH host key" /var/tmp/odile-odl523-build/build.log
+1002:write        /etc/systemd/system/sshd-keygen.service.d/10-odile-hostkeys.conf (ssh-keygen -A before sshd -t)
+1003:remove       the debootstrap SSH host keys (/etc/ssh/ssh_host_*)
+1052:same         /etc/systemd/system/sshd-keygen.service.d/10-odile-hostkeys.conf
+1053:same         no SSH host key in the image
+```
+
+The mounted image, read the way §13.3 reads it:
+
+```sh
+$ RAW=/var/tmp/odile-odl523-prod/odile-tenant-sealed.raw
+$ LOOP=$(losetup -fP --show -r "$RAW")
+$ mount -o ro,noload "${LOOP}p2" /mnt/odl523boot
+$ install -m600 /mnt/odl523boot/odile/luks-bootstrap.key /var/tmp/odile-odl523-build/v.key
+$ umount /mnt/odl523boot
+$ cryptsetup open --readonly --key-file /var/tmp/odile-odl523-build/v.key "${LOOP}p3" odl523img
+$ mount -o ro,noload /dev/mapper/odl523img /mnt/odl523root
+$ ls -la /mnt/odl523root/etc/ssh/
+drwxr-xr-x  4 root root   4096 Nov 15 06:41 .
+drwxr-xr-x 50 root root   4096 Nov 15 06:41 ..
+-rw-r--r--  1 root root 592383 May  6  2026 moduli
+-rw-r--r--  1 root root   1668 May  6  2026 ssh_config
+drwxr-xr-x  2 root root   4096 Nov 15 06:37 ssh_config.d
+-rw-r--r--  1 root root   3424 May  6  2026 sshd_config
+drwxr-xr-x  2 root root   4096 May  6  2026 sshd_config.d
+$ find /mnt/odl523root/etc/ssh -maxdepth 1 -name 'ssh_host_*' | wc -l
+0
+$ cat /mnt/odl523root/etc/systemd/system/sshd-keygen.service.d/10-odile-hostkeys.conf
+# Odile: the image ships no private SSH host keys (ODL-523). The first boot
+# generates this machine's own; there is no first boot left for
+# ConditionFirstBoot to detect once the image is cloned, so clear it.
+# ssh-keygen -A leaves existing keys alone, and this unit is Before=ssh.service.
+[Unit]
+ConditionFirstBoot=
+$ grep -n 'ConditionFirstBoot' /mnt/odl523root/usr/lib/systemd/system/sshd-keygen.service
+3:ConditionFirstBoot=yes
+$ ls -la /mnt/odl523root/etc/systemd/system/multi-user.target.wants/ | grep ssh
+lrwxrwxrwx  1 root root   35 Nov 15 06:38 ssh.service -> /usr/lib/systemd/system/ssh.service
+$ ls -la /mnt/odl523root/etc/machine-id
+-r--r--r--  1 root root 33 Nov 15 06:37 /mnt/odl523root/etc/machine-id
+$ umount /mnt/odl523root; cryptsetup close odl523img; losetup -d "$LOOP"
+$ grep -c odl523 /proc/mounts
+0
+```
+
+Zero host keys, the drop-in that clears the condition Debian's unit sets, and an
+`/etc/machine-id` that would make `ConditionFirstBoot` false on every clone —
+the three facts the drop-in exists for. `ssh.service` is enabled, so sshd is up
+on the booted machine (§13.11.5).
+
+#### 13.11.4 The build's other outcome: a private key that survives
+
+`bash /var/tmp/odile-odl523-build/negative.sh` copies the image, opens the copy,
+plants an ed25519 host key exactly as debootstrap's postinst does, and runs the
+image's own `install-stack.sh` (the build branch, no `--seed`) under `chroot` —
+first with the real `rm`, then with an `rm` that ignores `/etc/ssh/ssh_host_*`
+and is the real `rm` for everything else. The second run is the case the
+assertion exists for:
+
+```sh
+$ bash /var/tmp/odile-odl523-build/negative.sh
+loop         /dev/loop153 /var/tmp/odile-odl523-negative/negative.raw 4910ede1b4639f5ce9b89cc1ec40f4fd7c32af769e0f8bd219e0a4627f00cc3e
+-- planted: -rw------- 419 /var/tmp/odile-odl523-negative/root/etc/ssh/ssh_host_ed25519_key
+== positive control: the build removes the planted key
+-- install-stack rc=0
+remove       the debootstrap SSH host keys (/etc/ssh/ssh_host_*)
+-- keys left: 0
+-- planted: -rw------- 419 /var/tmp/odile-odl523-negative/root/etc/ssh/ssh_host_ed25519_key
+== negative: a private host key survives the removal
+-- install-stack rc=1
+remove       the debootstrap SSH host keys (/etc/ssh/ssh_host_*)
+install-stack: the image still carries an SSH host private key
+-- keys left: 2
+== cleanup
+```
+
+The script exits 0: both `install-stack` outcomes are inside it, and the
+assertion's own `exit 1` is the `rc=1` line above. The `/dev/loop153` on the
+first line is that run's free loop device — the number is whatever `losetup -f`
+returned on that run and moves with what is already attached (a rerun took
+`/dev/loop155`) — while the sha256 after the copy's path is the image's and does
+not move.
+
+So a build whose removal did not remove fails with its named error and a non-zero
+status; the same key, when the removal works, leaves zero files behind. The
+copy's mounts, mapper and loop device are released at the end (`grep -c odl523
+/proc/mounts` → 0).
+
+#### 13.11.5 Disk A, the first boot: this machine's key, then the record
+
+A is a byte copy of the built image (`cp --sparse=always`; its sha256 is the
+image's, `4910ede1…`), booted from its UKI under QEMU TCG with
+`/usr/share/ovmf/OVMF.fd` (Servury's OVMF.amdsev.fd boots its built-in GRUB
+first and the bench has no `sevsecret`, so the bench boot uses the distro
+firmware). The harness is `/var/tmp/odile-odl523-build/boot-probe.py`; it reads
+ttyS0 over a unix socket, runs the probes inside the guest (the image binds the
+Webapp and the first-visit service to 127.0.0.1, which QEMU's hostfwd cannot
+reach) and powers the guest down through ACPI.
+
+```sh
+$ /usr/bin/python3 /var/tmp/odile-odl523-build/boot-probe.py --phase pre \
+      --disk /var/tmp/odile-odl523-final/A/odile-tenant-sealed.raw \
+      --uki /var/tmp/odile-odl523-prod/odile-tenant.efi \
+      --token "$(cat /var/tmp/odile-odl523-boot/token)" --expect installed \
+      --out /var/tmp/odile-odl523-final/A/pre
+phase        pre
+disk         .../A/odile-tenant-sealed.raw sha256 4910ede1b4639f5ce9b89cc1ec40f4fd7c32af769e0f8bd219e0a4627f00cc3e
+uki          .../odile-tenant.efi sha256 450f156bc36e2bd738d2882cba5a268757e766da8102b9b247c0adc3e3fb8618
+ssh port     hostfwd 127.0.0.1:2300 -> guest 22
+firstboot    PASS odile-firstboot: installed odl-bench (instance 45445445-0000-4000-8000-0000…
+boot         570s wall
+guest key    256 SHA256:2yDvzxtBi9rIcEfjjIUc/zHdRCZLaaoymNtQDWs+WKc root@odl-bench (ED25519)
+sshd         active / enabled
+wire key     SHA256:2yDvzxtBi9rIcEfjjIUc/zHdRCZLaaoymNtQDWs+WKc
+ssh          rc 255 root@127.0.0.1: Permission denied (publickey,password).
+probe        GET /verify -> 200
+verify       4 PASS rows
+probe        GET /first-visit -> 404
+probe        GET / (Webapp gate) -> 000
+shutdown     ACPI powerdown, exit 0
+```
+
+(The harness's console reader can match the `odile-firstboot:` line mid-arrival,
+so its `firstboot` line stops at 93 columns; the serial line below is the whole
+one. The `GET /first-visit` without a token is 404; §13.11.7 reads the page with
+the token on a later boot.)
+
+The console's own ordering, from `$OUT/A/pre/serial.log` (`tr '\r' '\n'` first:
+the console wraps long lines with a carriage return):
+
+```sh
+$ tr '\r' '\n' < /var/tmp/odile-odl523-final/A/pre/serial.log \
+      | grep -a 'odile-hostkeys\|odile-firstboot:'
+tenant@odl-bench:~$ [  122.954616] python3[682]: odile-hostkeys: create the SSH host keys (3 generated by ssh-keygen -A)
+[  556.076325] python3[682]: odile-firstboot: installed odl-bench (instance 45445445-0000-4000-8000-000000000454) · first-visit 200 · record 2026.11.1 pending key SHA256:7ruIxWkKeNStqHiE6jh2CJ4g2Z1OfyJyF1ny1oULYb0 (hq first_visit, first_boot -> first_visit) · 412s
+```
+
+The host-key line is at 122.95 s and the boot-record line at 556.08 s: the key
+existed long before the record was read. The record line's `key SHA256:7ruI…` is
+the *measured boot key* (the throwaway in the command line); this machine's SSH
+key is in the record's `detail`, which HQ stored. `fixture-record.py --dir "$FX"`
+reads the fixture's single `tenant_state` row, and B's later boot (§13.11.6)
+replaced that row, so what is quoted here is the file the command printed after
+this boot, kept in the build root; `cat` and `sha256sum` reproduce it:
+
+```sh
+$ cat /var/tmp/odile-odl523-build/record-A.txt
+slug                 odl-bench
+state                first_visit
+release              2026.11.1
+recorded_at          2026-11-15T07:14:32Z
+detail.boot_key      ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIBW0mNRc2zHqyCxjwkzfdIt+lubwOEBY/Repnbm1lqCn odile-bench throwaway boot key
+detail.host_key      SHA256:2yDvzxtBi9rIcEfjjIUc/zHdRCZLaaoymNtQDWs+WKc
+detail.first_visit   pending
+token.instance_id    45445445-0000-4000-8000-000000000454
+token.used_at        2026-11-15T07:07:39Z
+event                first_visit first_boot -> first_visit 2026-11-15T07:14:32Z
+event                first_boot provisioning -> first_boot 2026-11-15T06:20:02Z
+event                provisioning claimed -> provisioning 2026-11-15T06:20:02Z
+$ sha256sum /var/tmp/odile-odl523-build/record-A.txt
+902711ecf644dc10004aaeab2d4031355e52b76ca0fe117f8652bff01664437c  /var/tmp/odile-odl523-build/record-A.txt
+```
+
+`detail.host_key` is the key A generated on its first boot (this section's
+`guest key` line) — not the image's, because the image has none. The disk after
+the boot (an excerpt of `disk-facts.sh`, which also prints the disk hash and the
+first-visit state):
+
+```sh
+$ bash /var/tmp/odile-odl523-build/disk-facts.sh \
+      /var/tmp/odile-odl523-final/A/odile-tenant-sealed.raw "A"
+host keys     3 private, 3 public
+-rw------- root 505 ssh_host_ecdsa_key
+-rw------- root 411 ssh_host_ed25519_key
+-rw------- root 2602 ssh_host_rsa_key
+ed25519 pub   256 SHA256:2yDvzxtBi9rIcEfjjIUc/zHdRCZLaaoymNtQDWs+WKc root@odl-bench (ED25519)
+rsa pub       3072 SHA256:u5MgN/3hPa0lTcJVBjrGn/60/U7uUU6+z/EWyqjOeQY root@odl-bench (RSA)
+ecdsa pub     256 SHA256:MY0QDasNYK0iaFMBOtJwAsyE1J+er1cJXVl+xTHo8NA root@odl-bench (ECDSA)
+sha256 keys   ebce6c2b7930a288340a9e1cbd2b773c689c94e47358460be45c8209061b4bef
+sshd drop-ins
+firstboot log
+              === odile-firstboot 2026-11-15T07:07:18Z: ssh host keys
+              create       the SSH host keys (3 generated by ssh-keygen -A)
+              === odile-firstboot 2026-11-15T07:07:37Z: release placement
+```
+
+`sha256 keys` is the private half's digest, so "the same key on the next boot"
+(§13.11.7) can be checked without a fingerprint lookup; the three private keys
+are 0600 root and the three public halves are 0644, all `root@odl-bench`.
+
+#### 13.11.6 Disk B, a second fresh disk from the same image: a different key
+
+B is another `cp --sparse=always` of the same image (sha256 `4910ede1…`, before
+its boot), booted with the token re-armed
+(`firstboot-fixture.py prepare --dir "$FX" --token-file "$FX/token"`, the
+documented bench rerun), and it does the first visit in that same boot:
+
+```sh
+$ /usr/bin/python3 /var/tmp/odile-odl523-build/boot-probe.py --phase pre \
+      --disk /var/tmp/odile-odl523-final/B/odile-tenant-sealed.raw \
+      --uki /var/tmp/odile-odl523-prod/odile-tenant.efi \
+      --token "$(cat "$FX/token")" --expect installed \
+      --visit odl523-bench-owner-passphrase --out /var/tmp/odile-odl523-final/B/pre
+firstboot    PASS odile-firstboot: installed odl-bench (instance 45445445-0000-4000-8000-000000000454) · fi…
+boot         487s wall
+guest key    256 SHA256:cFf+ky0CZ0kzTk110hv9wa71p71Ks9B/3WamtJoDwfc root@odl-bench (ED25519)
+sshd         active / enabled
+wire key     SHA256:cFf+ky0CZ0kzTk110hv9wa71p71Ks9B/3WamtJoDwfc
+ssh          rc 255 root@127.0.0.1: Permission denied (publickey,password).
+probe        GET /verify -> 200
+verify       4 PASS rows
+probe        GET /first-visit?t=<token> -> 200
+visit        POST /first-visit -> 200
+probe        GET /verify after the visit -> 200
+verify       4 PASS rows after the visit
+probe        GET /first-visit after the visit -> 404
+```
+
+Two fingerprints from one image, read off the two public halves. The mount is
+§13.11.3's, per disk; A has had later boots and B the hardened ones at this
+reading, so the disk hashes are the post-boot ones while the keys are the first
+boot's:
+
+```sh
+$ for d in A B; do
+    RAW=/var/tmp/odile-odl523-final/$d/odile-tenant-sealed.raw
+    LOOP=$(losetup -fP --show -r "$RAW")
+    mount -o ro,noload "${LOOP}p2" /mnt/odl523boot
+    install -m600 /mnt/odl523boot/odile/luks-bootstrap.key /tmp/v.key
+    umount /mnt/odl523boot
+    cryptsetup open --readonly --key-file /tmp/v.key "${LOOP}p3" odl523fp
+    mount -o ro,noload /dev/mapper/odl523fp /mnt/odl523root
+    echo "== $d $(sha256sum "$RAW" | cut -d' ' -f1)"
+    ssh-keygen -lf /mnt/odl523root/etc/ssh/ssh_host_ed25519_key.pub
+    umount /mnt/odl523root; cryptsetup close odl523fp; losetup -d "$LOOP"
+  done
+== A bb9b0e87222bfb4ce8d861d55340428528c835126e83c83eaa4f11921e0b7510
+256 SHA256:2yDvzxtBi9rIcEfjjIUc/zHdRCZLaaoymNtQDWs+WKc root@odl-bench (ED25519)
+== B 628ee9c56654b32f58c2b4fbaf223d17a24203159bae25dc8554a0dbda55b502
+256 SHA256:cFf+ky0CZ0kzTk110hv9wa71p71Ks9B/3WamtJoDwfc root@odl-bench (ED25519)
+```
+
+B's boot record carries B's key — `record-B.txt`, the output of the same
+command after B's boot:
+
+```sh
+$ grep '^detail.host_key' /var/tmp/odile-odl523-build/record-B.txt
+detail.host_key      SHA256:cFf+ky0CZ0kzTk110hv9wa71p71Ks9B/3WamtJoDwfc
+```
+
+so the record follows the machine, not the image. B's first boot printed
+`odile-hostkeys: same the SSH host keys (this machine's own, no new key
+written)` at 89.51 s: on that boot `sshd-keygen.service` (the drop-in) won the
+race and generated the keys before `odile-firstboot` looked — the two paths are
+independent and either one is enough. B's `/first-visit` answered 200 with the
+form before the visit and 404 after it (a spent token), and the page's bytes are
+the image's (§13.11.8's `page` line, `sha256 810a596d…`).
+
+The visit's 200 and the `/verify` PASS rows after it are what this card owes
+ODL-521's page: the page still sets the sign-in, and `/verify` still prints its
+four PASS rows afterwards. On disk A, where the visit was posted while the
+tenant gateway was still starting under TCG, the page refused with `500` and its
+journal line `first-visit: refused: the agent did not restart: Command
+'['systemctl', 'restart', 'odile-agent']' timed out after 120 seconds` — a bench
+timing limit, not the host-key change (the page writes nothing on that path and
+`/verify` still answers 200).
+
+#### 13.11.7 A later boot of A: `same`, the same bytes
+
+```sh
+$ /usr/bin/python3 /var/tmp/odile-odl523-build/boot-probe.py --phase same2 \
+      --disk /var/tmp/odile-odl523-final/A/odile-tenant-sealed.raw \
+      --uki /var/tmp/odile-odl523-prod/odile-tenant.efi --expect same \
+      --out /var/tmp/odile-odl523-final/A/same2
+firstboot    PASS odile-firstboot: same
+boot         91s wall
+guest key    256 SHA256:2yDvzxtBi9rIcEfjjIUc/zHdRCZLaaoymNtQDWs+WKc root@odl-bench (ED25519)
+wire key     SHA256:2yDvzxtBi9rIcEfjjIUc/zHdRCZLaaoymNtQDWs+WKc
+ssh          rc 255 root@127.0.0.1: Permission denied (publickey,password).
+probe        GET /verify -> 200
+verify       4 PASS rows
+probe        GET /first-visit?t=<token> -> 200
+```
+
+with the console lines
+
+```sh
+$ tr '\r' '\n' < /var/tmp/odile-odl523-final/A/same2/serial.log \
+      | grep -a 'odile-hostkeys\|odile-firstboot:'
+[   71.905874] python3[676]: odile-hostkeys: same the SSH host keys (this machine's own, no new key written)
+tenant@odl-bench:~$ [   82.995279] python3[676]: odile-firstboot: same
+```
+
+The key files' mtime is still 07:07:13 (the first boot) and the fingerprint and
+the private half's `sha256 keys` digest are A's, so a later boot neither
+rotates the key nor touches the bytes:
+
+```sh
+$ bash /var/tmp/odile-odl523-build/disk-facts.sh \
+      /var/tmp/odile-odl523-final/A/odile-tenant-sealed.raw \
+      "A, after a later boot (same2)"
+== A, after a later boot (same2)
+disk          bb9b0e87222bfb4ce8d861d55340428528c835126e83c83eaa4f11921e0b7510  /var/tmp/odile-odl523-final/A/odile-tenant-sealed.raw
+host keys     3 private, 3 public
+ed25519 pub   256 SHA256:2yDvzxtBi9rIcEfjjIUc/zHdRCZLaaoymNtQDWs+WKc root@odl-bench (ED25519)
+sha256 keys   ebce6c2b7930a288340a9e1cbd2b773c689c94e47358460be45c8209061b4bef
+firstboot log
+              === odile-firstboot 2026-11-15T07:39:46Z: ssh host keys
+              same         the SSH host keys (this machine's own, no new key written)
+$ stat -c '%y %n' /mnt/odl523root/etc/ssh/ssh_host_ed25519_key
+2026-11-15 07:07:13.183998634 +0000 /mnt/odl523root/etc/ssh/ssh_host_ed25519_key
+```
+
+(the `stat` is at a read-only mount of A's disk, the §13.11.6 loop; the mtime
+is the first boot's.)
+
+#### 13.11.8 The tenant's refusal: `Permission denied (publickey)`
+
+The shipped image keeps Debian's own `sshd_config` (`#PasswordAuthentication
+yes`, every line commented) and an empty `sshd_config.d`, so sshd advertises
+`password` beside `publickey`; the release installer is what writes
+`/etc/ssh/sshd_config.d/99-odile.conf` (its `SSHD_TEMPLATE`:
+`PasswordAuthentication no`, `KbdInteractiveAuthentication no`,
+`PermitRootLogin prohibit-password`), and on the bench it exits before that step
+— `odile-release-setup.sh: error: boot check failed: the boot report status is
+'not_confidential', not 'ok'` … `=== rc=5` — because TCG has no SEV. Writing
+that file on disk B offline
+(`bash /var/tmp/odile-odl523-build/harden-offline.sh`, sha256
+`89a26b7bec6229078c2d84e24ae6e0c5ec989c9778afff2ddbff0d62cc5c4cae`) and booting
+B again gives the tenant's answer — and B's ed25519 key is unchanged:
+
+```sh
+$ sha256sum /var/tmp/odile-odl523-build/harden-offline.sh
+89a26b7bec6229078c2d84e24ae6e0c5ec989c9778afff2ddbff0d62cc5c4cae  /var/tmp/odile-odl523-build/harden-offline.sh
+```
+
+```sh
+$ /usr/bin/python3 /var/tmp/odile-odl523-build/boot-probe.py --phase keyonly \
+      --disk /var/tmp/odile-odl523-final/B/odile-tenant-sealed.raw \
+      --uki /var/tmp/odile-odl523-prod/odile-tenant.efi --expect same \
+      --out /var/tmp/odile-odl523-final/B/keyonly2
+firstboot    PASS odile-firstboot: same
+boot         83s wall
+guest key    256 SHA256:cFf+ky0CZ0kzTk110hv9wa71p71Ks9B/3WamtJoDwfc root@odl-bench (ED25519)
+sshd         active / enabled
+wire key     SHA256:cFf+ky0CZ0kzTk110hv9wa71p71Ks9B/3WamtJoDwfc
+ssh          rc 255 root@127.0.0.1: Permission denied (publickey).
+ssh cmd      $ ssh -F /dev/null -o BatchMode=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=10 -p 2300 root@127.0.0.1 true
+ssh inside   rc 255 root@127.0.0.1: Permission denied (publickey).
+probe        GET /verify -> 200
+verify       4 PASS rows
+probe        GET /first-visit?t=<token> -> 404
+page         /usr/local/lib/odile/first-visit.html sha256 810a596d561fb7ae28fcd67b864a836fe2c5b808dce223b89d573fd9d622ef29
+```
+
+The disk after that boot (`bash /var/tmp/odile-odl523-build/disk-facts.sh
+/var/tmp/odile-odl523-final/B/odile-tenant-sealed.raw "B, after the hardened boots"`):
+
+```sh
+== B, after the hardened boots
+disk          628ee9c56654b32f58c2b4fbaf223d17a24203159bae25dc8554a0dbda55b502  /var/tmp/odile-odl523-final/B/odile-tenant-sealed.raw
+host keys     3 private, 3 public
+-rw------- root 505 ssh_host_ecdsa_key
+-rw------- root 411 ssh_host_ed25519_key
+-rw------- root 2602 ssh_host_rsa_key
+ed25519 pub   256 SHA256:cFf+ky0CZ0kzTk110hv9wa71p71Ks9B/3WamtJoDwfc root@odl-bench (ED25519)
+rsa pub       3072 SHA256:73yFbeFt93Tc9i0fSS6ZPLqrLRsaIvYnzPH7WTkJEyc root@odl-bench (RSA)
+ecdsa pub     256 SHA256:VExuExQM97jL9xd26x4W3kqpYJbp0LPHEr1CnHm4ZAw root@odl-bench (ECDSA)
+sha256 keys   c184b078cf50a68c9672c599665031e961a8d8b61a635e479fa703a89778e498
+sshd drop-ins 99-odile.conf
+              PasswordAuthentication no
+```
+
+The fingerprint and the `sha256 keys` digest are B's first-boot key (`cFf+…`),
+unmoved by the hardening or the third boot; `99-odile.conf` with
+`PasswordAuthentication no` is the only new line beside the image's own.
+
+`Permission denied (publickey)` is the tenant's refusal: the machine presents its
+own key, and the only way in is a key the user holds. (The `-p 2300` is the
+probe's hostfwd to the guest's 22; the guest sees `root@<guest> true`.)
+
+#### 13.11.9 What only a Blackbox can prove
+
+Two facts this card did not move: the tree's `web/first-visit.html` is
+`810a596d561fb7ae28fcd67b864a836fe2c5b808dce223b89d573fd9d622ef29`
+(`git show ef0bc27:web/first-visit.html | sha256sum`), the same bytes the image
+serves; and the bench smoke set is unchanged —
+`git diff --stat ef0bc27..4ea2f4c -- deploy/image/smoke.sh deploy/image/bench.py
+deploy/image/odile-bench-smoke.service` prints nothing.
+
+This section proves the *image* carries no host key, that the build fails when
+one survives, and that each boot makes its own before the record. It does not
+prove that Servury's firmware boots this UKI, nor that a Blackbox's `sshd` is
+started by the same unit ordering; those are ODL-454's arguments. The bench also
+cannot show the release installer's own `99-odile.conf` step (it needs the `ok`
+boot report), so §13.11.8 writes the file the installer would write and boots it.

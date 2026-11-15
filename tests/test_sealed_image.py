@@ -69,6 +69,28 @@ INITRD_HOOK_MISSING = (
 )
 SEED = b"odile-bench-vcek-NOT-a-secret-32"
 IMAGE = ROOT / "deploy" / "image"
+
+
+def console_lines(output: str) -> list[str]:
+    """The console transcript's lines (ODL-523).
+
+    The unit prints exactly one `odile-firstboot:` line. A boot that runs the
+    first-boot steps prints one `odile-hostkeys:` line in front of it — the key
+    this boot generated or kept — and nothing else reaches the console.
+    """
+    return [line for line in output.splitlines() if line.strip()]
+
+
+def firstboot_line(output: str) -> str:
+    """The one `odile-firstboot:` line, with the console contract asserted."""
+    lines = console_lines(output)
+    boot = [line for line in lines if line.startswith("odile-firstboot:")]
+    host = [line for line in lines if line.startswith("odile-hostkeys:")]
+    assert len(lines) == 2 and len(boot) == 1 and len(host) == 1, output
+    assert lines[0] == host[0], output
+    return boot[0]
+
+
 # A real ed25519 public key line; the measured `bb.key=` is its base64.
 BOOT_KEY_TEXT = (
     "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAICFh7hQkST5vRDolO3yqwCARRugZahMdc+WgR69JsoXG "
@@ -820,6 +842,114 @@ class FirstbootUnitTests(unittest.TestCase):
 
 
 
+class HostKeyTests(unittest.TestCase):
+    """ODL-523: the image ships no host key; the boot makes one.
+
+    The image build removes debootstrap's /etc/ssh/ssh_host_*_key and asserts
+    none is left; this exercises the other half, the first boot's own
+    `ssh-keygen -A`, against a real ssh-keygen and a private root, so the test
+    host's /etc/ssh is never read or written.
+    """
+
+    def setUp(self) -> None:
+        if not shutil.which("ssh-keygen"):
+            raise unittest.SkipTest("ssh-keygen is missing")
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = pathlib.Path(self.tmp.name)
+
+    def tearDown(self) -> None:
+        self.tmp.cleanup()
+
+    def generate(self, root: pathlib.Path) -> tuple[str, str]:
+        return firstboot.ensure_host_keys(str(root))
+
+    def keys(self, root: pathlib.Path) -> list[pathlib.Path]:
+        return [pathlib.Path(p) for p in firstboot.host_key_paths(str(root))]
+
+    def fingerprint(self, root: pathlib.Path) -> str:
+        result = subprocess.run(
+            ["ssh-keygen", "-lf", str(root / "etc" / "ssh" / "ssh_host_ed25519_key.pub")],
+            capture_output=True, text=True, timeout=60)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return result.stdout.split()[1]
+
+    def test_a_bare_root_gets_this_machines_own_keys(self) -> None:
+        verb, detail = self.generate(self.root)
+        self.assertEqual(verb, "create", detail)
+        for key in self.keys(self.root):
+            self.assertTrue(key.is_file(), key)
+            self.assertEqual(key.stat().st_mode & 0o777, 0o600, key)
+            self.assertTrue(key.with_name(key.name + ".pub").is_file(), key)
+        self.assertIn("3 generated", detail)
+
+    def test_a_second_run_writes_nothing_and_the_bytes_do_not_move(self) -> None:
+        self.generate(self.root)
+        before = {str(key): key.read_bytes() for key in self.keys(self.root)}
+        verb, detail = self.generate(self.root)
+        self.assertEqual(verb, "same", detail)
+        self.assertEqual({str(key): key.read_bytes() for key in self.keys(self.root)}, before)
+
+    def test_two_machines_do_not_share_a_host_key(self) -> None:
+        other = self.root / "other"
+        self.generate(self.root)
+        self.generate(other)
+        self.assertNotEqual(self.fingerprint(self.root), self.fingerprint(other))
+
+    def test_a_missing_ssh_keygen_is_a_warning_not_a_failed_boot(self) -> None:
+        verb, detail = firstboot.ensure_host_keys(str(self.root), "/nonexistent/ssh-keygen")
+        self.assertEqual(verb, "warn", detail)
+        self.assertIn("sshd-keygen.service", detail)
+
+    def test_the_keys_exist_before_the_boot_record_is_read(self) -> None:
+        """ODL-398's record carries the host key, so the keys come first.
+
+        A merged first boot that reads the record before it runs ssh-keygen
+        posts a `detail` with no `host_key` on the first boot — the one boot
+        the record exists for.
+        """
+        order: list[str] = []
+        seen: dict[str, bool] = {}
+        real_ensure = firstboot.ensure_host_keys
+
+        def ensure(root=firstboot.SSH_ROOT, keygen=firstboot.SSH_KEYGEN):
+            order.append("host keys")
+            return real_ensure(root, keygen)
+
+        def record(cmdline, **kwargs):
+            order.append("boot record")
+            seen["key_present"] = pathlib.Path(kwargs["host_key_path"]).is_file()
+            return None, "", "test"
+
+        cmdline = self.root / "cmdline"
+        cmdline.write_text("root=/dev/mapper/root_crypt ro\n", encoding="utf-8")
+        argv = [
+            "--cmdline", str(cmdline), "--state", str(self.root / "state.json"),
+            "--seed-cache", str(self.root / "seed.json"),
+            "--signing-key", str(self.root / "key.pub"),
+            "--installer", str(self.root / "installer.sh"), "--first-visit-port", "0",
+            "--log", str(self.root / "log"), "--release-dir", str(self.root / "release"),
+            "--installer-copy", str(self.root / "install.sh"),
+            "--etc-dir", str(self.root / "etc"), "--odile-lib", str(self.root / "lib"),
+            "--manifest-unit", str(self.root / "unit"),
+            "--ssh-root", str(self.root / "ssh-root"),
+            "--ssh-keygen", shutil.which("ssh-keygen") or "ssh-keygen",
+            "--pin", str(self.root / "pin.json"),
+            "--boot-key", str(self.root / "boot-key.pub"),
+            "--boot-record", str(self.root / "record.json"),
+            "--host-key", str(self.root / "ssh-root/etc/ssh/ssh_host_ed25519_key.pub"),
+            "--first-visit-state", str(self.root / "first-visit.json"),
+        ]
+        with mock.patch.object(firstboot, "ensure_host_keys", ensure), \
+                mock.patch.object(firstboot, "boot_record_facts", record), \
+                mock.patch.object(firstboot, "place_release", lambda **kwargs: None), \
+                contextlib.redirect_stdout(io.StringIO()) as output:
+            code = firstboot.main(argv)
+        self.assertEqual(code, 0, output.getvalue())
+        self.assertEqual(order, ["host keys", "boot record"], output.getvalue())
+        self.assertTrue(seen["key_present"],
+                        "the record was read before this machine's host key existed")
+
+
 class FirstbootExchangeTests(unittest.TestCase):
     """The program against the real seed service: exchange, refusal, cache."""
 
@@ -857,8 +987,12 @@ class FirstbootExchangeTests(unittest.TestCase):
         self.pin = self.dir / "tenant-image.pin"
         self.pin.write_text(json.dumps({"release": "2026.11.1"}), encoding="utf-8")
         self.boot_key_path = self.dir / "boot-key.pub"
-        self.host_key_path = self.dir / "host-key.pub"
-        self.host_key_path.write_text(BOOT_KEY_TEXT + "\n", encoding="utf-8")
+        # ODL-523: the first boot runs `ssh-keygen -A` under --ssh-root, and
+        # the boot record reads the key it wrote — the image's path, so the
+        # record carries the key this machine generated, not a fixture.
+        self.ssh_root = self.dir / "ssh-root"
+        self.keygen = pathlib.Path(shutil.which("ssh-keygen") or "ssh-keygen")
+        self.host_key_path = self.ssh_root / "etc" / "ssh" / "ssh_host_ed25519_key.pub"
         self.first_visit_state = self.dir / "etc" / "first-visit.json"
 
     def tearDown(self) -> None:
@@ -976,6 +1110,10 @@ class FirstbootExchangeTests(unittest.TestCase):
             "--etc-dir", str(self.dir / "etc"),
             "--odile-lib", str(self.dir / "lib"),
             "--manifest-unit", str(self.unit_target),
+            # ODL-523: the gate host is not the image: ssh-keygen writes under
+            # this root, never the test host's /etc/ssh.
+            "--ssh-root", str(self.ssh_root),
+            "--ssh-keygen", str(self.keygen),
             "--pin", str(self.pin),
             "--boot-key", str(self.boot_key_path),
             "--boot-record", str(self.dir / "boot-record.json"),
@@ -1074,9 +1212,9 @@ class FirstbootExchangeTests(unittest.TestCase):
         code, output = self.run_boot(recovery=recovery,
                                      recovery_seed=IMAGE / "recovery-seed.py")
         self.assertEqual(code, 0, output)
-        lines = [line for line in output.splitlines() if line.strip()]
-        self.assertEqual(lines, ["odile-firstboot: fail-closed: the seed's rebuild "
-                                 "password does not open with this setup token"], output)
+        self.assertEqual(firstboot_line(output),
+                         "odile-firstboot: fail-closed: the seed's rebuild "
+                         "password does not open with this setup token")
         self.assertFalse(recovery.exists())
         self.assertFalse(self.log.exists(), "the installer must not run")
         state = json.loads(self.state.read_text(encoding="utf-8"))
@@ -1086,10 +1224,11 @@ class FirstbootExchangeTests(unittest.TestCase):
         self.write_cmdline(self.token)
         code, output = self.run_boot()
         self.assertEqual(code, 0, output)
-        lines = [line for line in output.splitlines() if line.strip()]
-        self.assertEqual(len(lines), 1, output)
-        self.assertTrue(lines[0].startswith("odile-firstboot: installed %s" % self.SLUG), output)
-        self.assertIn("first-visit not checked", lines[0])
+        lines = console_lines(output)
+        self.assertEqual(len(lines), 2, output)  # one hostkeys line, one firstboot line
+        self.assertTrue(lines[0].startswith("odile-hostkeys: create "), output)
+        self.assertTrue(lines[1].startswith("odile-firstboot: installed %s" % self.SLUG), output)
+        self.assertIn("first-visit not checked", lines[1])
 
         cache = json.loads(self.cache.read_text())
         self.assertEqual(cache["slug"], self.SLUG)
@@ -1178,7 +1317,17 @@ class FirstbootExchangeTests(unittest.TestCase):
         detail = json.loads(spine["detail"])
         self.assertEqual(detail["boot_key"], BOOT_KEY_TEXT)
         self.assertEqual(detail["first_visit"], "pending")
-        self.assertIn("host_key", detail)
+        # ODL-523: the record carries the key THIS boot generated, read back
+        # through ssh-keygen — not a fixture and not the image's (the image has
+        # none). This is the ordering assertion at the behaviour level.
+        listed = subprocess.run(["ssh-keygen", "-lf", str(self.host_key_path)],
+                                capture_output=True, text=True, timeout=60)
+        self.assertEqual(listed.returncode, 0, listed.stderr)
+        self.assertEqual(detail["host_key"], listed.stdout.split()[1])
+        self.assertTrue(self.host_key_path.is_file(), self.host_key_path)
+        log = (self.dir / "installer-run.log").read_text(encoding="utf-8")
+        self.assertIn("ssh host keys", log)
+        self.assertIn("create", log)
         self.assertEqual([(row["kind"], row["from_state"], row["to_state"])
                           for row in events],
                          [("first_visit", "first_boot", "first_visit")])
@@ -1191,7 +1340,7 @@ class FirstbootExchangeTests(unittest.TestCase):
         self.first_visit_state.write_text(json.dumps(state), encoding="utf-8")
         code, output = self.run_boot()
         self.assertEqual(code, 0, output)
-        self.assertEqual(output.strip(), "odile-firstboot: same")
+        self.assertEqual(firstboot_line(output), "odile-firstboot: same")
         con = self.seed.connect(str(self.dir / "seed.db"))
         con.row_factory = self.seed.sqlite3.Row
         try:
@@ -1246,7 +1395,7 @@ class FirstbootExchangeTests(unittest.TestCase):
         time.sleep(1.1)
         code, output = self.run_boot()
         self.assertEqual(code, 0)
-        self.assertEqual(output.strip(), "odile-firstboot: same")
+        self.assertEqual(firstboot_line(output), "odile-firstboot: same")
         self.assertEqual(len(self.log.read_text().splitlines()), 1)
         self.assertEqual(json.loads(self.state.read_text())["first_boot_at"], first_boot_at)
 
@@ -1261,11 +1410,11 @@ class FirstbootExchangeTests(unittest.TestCase):
             self.run_boot()
             self.assertEqual(firstboot.main(argv), 0)
 
-    def test_a_missing_token_fails_closed_with_one_line(self) -> None:
+    def test_a_missing_token_fails_closed_with_one_firstboot_line(self) -> None:
         self.write_cmdline(None)
         code, output = self.run_boot()
         self.assertEqual(code, 0)
-        self.assertEqual(output.strip(),
+        self.assertEqual(firstboot_line(output),
                          "odile-firstboot: fail-closed: no setup token in the command line")
         self.assertFalse(self.cache.exists())
 
@@ -1276,7 +1425,7 @@ class FirstbootExchangeTests(unittest.TestCase):
         self.cache.unlink()
         code, output = self.run_boot()
         self.assertEqual(code, 0)
-        self.assertEqual(output.strip(), "odile-firstboot: fail-closed: seed token used")
+        self.assertEqual(firstboot_line(output), "odile-firstboot: fail-closed: seed token used")
         self.assertFalse(self.cache.exists())
         self.assertEqual(len(self.log.read_text().splitlines()), 1)
 
@@ -1351,7 +1500,10 @@ class FirstbootExchangeTests(unittest.TestCase):
         # The token is spent; the retry must use the cache, not /seed (410).
         code, output = self.run_boot()
         self.assertEqual(code, 0)
-        self.assertTrue(output.startswith("odile-firstboot: installed %s" % self.SLUG), output)
+        self.assertTrue(firstboot_line(output).startswith(
+            "odile-firstboot: installed %s" % self.SLUG), output)
+        # ODL-523: the retried boot finds this machine's own keys and says so.
+        self.assertTrue(console_lines(output)[0].startswith("odile-hostkeys: same "), output)
         self.assertEqual(len(self.log.read_text().splitlines()), 2)
 
 
@@ -1385,7 +1537,7 @@ class FirstbootExchangeTests(unittest.TestCase):
         first_log = (self.dir / "installer-run.log").read_text()
         code, output = self.run_boot()
         self.assertEqual(code, 0)
-        self.assertEqual(output.strip(), "odile-firstboot: same")
+        self.assertEqual(firstboot_line(output), "odile-firstboot: same")
         second_log = (self.dir / "installer-run.log").read_text()[len(first_log):]
         self.assertTrue(any(line.split()[0] == "same" and str(self.installer_copy) in line
                             for line in second_log.splitlines()), second_log)
@@ -2174,6 +2326,34 @@ class FirstbootScriptTests(unittest.TestCase):
         self.assertLess(branch.index("bench_password_verifies"),
                         branch.index("write_env"),
                         "the hash must be checked before the file is rewritten")
+
+    def test_the_build_removes_every_host_key_and_fails_if_one_survives(self) -> None:
+        """ODL-523: debootstrap's host keys must not reach a tenant.
+
+        The build branch (no --seed) removes /etc/ssh/ssh_host_* and then
+        asserts none is left, exiting 1 with the named error; the seed branch
+        (the first boot) runs ssh-keygen -A for the machine's own. Debian's
+        sshd-keygen.service cannot do it on a cloned disk (ConditionFirstBoot=yes
+        and the image ships a machine-id), so the image also carries a drop-in
+        that clears the condition.
+        """
+        installer = (IMAGE / "install-stack.sh").read_text(encoding="utf-8")
+        # The drop-in: the path, and the cleared condition (not `no`).
+        self.assertIn("/etc/systemd/system/sshd-keygen.service.d/10-odile-hostkeys.conf",
+                      installer)
+        self.assertIn("[Unit]\nConditionFirstBoot=\n", installer)
+        self.assertNotIn("ConditionFirstBoot=no", installer)
+        # The build branch: remove, then assert, then the named error.
+        branch = installer.index('if [ -n "$SEED_FILE" ]; then\n    if [ -f /etc/ssh/ssh_host_ed25519_key ]')
+        section = installer[branch:]
+        removal = section.index('rm -f "$key"')
+        assertion = section.index('compgen -G "/etc/ssh/ssh_host_*_key"')
+        named = section.index("install-stack: the image still carries an SSH host private key")
+        self.assertLess(removal, assertion, "the removal must come before the assertion")
+        self.assertLess(assertion, named, "the assertion must name the failure")
+        self.assertIn("exit 1", section[assertion:named + 200])
+        # The first boot's half, in the same block.
+        self.assertIn("ssh-keygen -A", section[:removal])
 
     def test_the_first_visit_write_replaces_the_hash_until_the_page_sets_it(self) -> None:
         """The installer half of ODL-521, read where it runs.
