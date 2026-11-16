@@ -282,7 +282,9 @@ the data pass (the finalize, the metadata commit) leaves every sector under V
 and is recovered by the repair and resume above with no initramfs work. A crash
 *inside* the data pass needs the pass finished first — `cryptsetup repair` and
 `reencrypt --resume-only` with V, from an initramfs or rescue shell — before
-the root will mount; only then does a normal boot follow.
+the root is trustworthy; a prefix of the volume may still mount and read clean,
+but the tail is a mix of the two keys, so only the finished pass is a normal
+boot.
 
 `--rotate` is the seal-break path and the keyslot dance is its fallback: on a
 volume that is already the guest's, a new V in a new keyslot, the old V
@@ -315,9 +317,10 @@ state — instead of exiting early. An interrupted re-encryption is finished
 first: V (from the blob) opens the volume the build key no longer opens,
 `cryptsetup repair` clears the recovery state a hard kill leaves, and
 `reencrypt --resume-only --key-file V --key-slot <sidecar>` finishes the pass
-before the `already provisioned` path finalizes. A stop mid-re-key is therefore
-recoverable on the next boot; the cost is the remaining data pass, not the
-machine.
+before the `already provisioned` path finalizes. A stop at or after the data
+pass is therefore recoverable on the next boot; a stop inside the pass costs the
+remaining pass — finish it from a rescue shell if the guest does not come up —
+never the machine.
 
 **The bench rehearsal.** A build host has no AMD PSP, so the disk cannot be
 sealed to a chip at build time; the production image ships the bootstrap key

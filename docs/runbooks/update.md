@@ -940,7 +940,7 @@ deployed `2026.11.14-8` (installer `0c53a722…`, 1,356,516 bytes; manifest
 t_ae833f3f's, `-4` is ODL-474's, `-5` is t_ab95ec2a's open cut; `-6` is
 later than every cut by `generated_at`.
 
-**The `2026.11.15-8` cut (t_d95b8c13's boot-install fix).** The tenant
+**The `2026.11.15-8` cut (t_d95b8c13's boot-install fix, pre-merge).** The tenant
 template's public-host comment now states the truth the pin measures — the
 Webapp listener reads `webapp.public_url`, and `dashboard.public_url` is not
 its fallback — and `login_table` asserts the four session cookies the sign-in sets
@@ -960,6 +960,43 @@ deployed `2026.11.14-8` (installer `0c53a722…`, 1,356,516 bytes; manifest
 t_ab95ec2a's open cut and `-6` is t_afb081be's. The branch's earlier revision
 of this cut (20:00Z) was never merged or deployed, and this re-cut supersedes it
 with a later `generated_at`, so no guest can read it as a downgrade.
+
+**The `2026.11.15-9` cut (t_2efbd6e3's guest export placement).** The
+installer embeds `odilectl/offboard.py`'s `EXPORT_PROGRAM` — the bytes
+`odilectl export <slug> --script` prints — and places it at
+`/usr/local/bin/odile-export` (0755 root) on every install, so a fresh tenant
+has the command without a hand placement; `install.md` §12.6 has the full
+record. Installer `2cdf0801…` (1,424,179 bytes), manifest `4664da84…`
+(49,957 bytes; its only move against `-6` is `installer_sha256`, so it is a
+surgical re-cut and not a root rebuild), skills `9d82653f…` unchanged,
+`--self-test` PASS, `--verify-signature` OK and `tools/recut_release.py
+--check` green. The document was re-cut at `2026-11-15T23:59:00Z`
+(`release/release.json` `5bee6fd3…`) after t_d95b8c13 re-cut `-8` at 22:45Z
+(`6a98879`), so this ledger is true at this cut. It was committed, not
+deployed at its cut; the URL has since served it — measured 2026-11-16T01:44Z,
+`2026.11.15-9` (`2cdf0801…`, 1,424,179 bytes; manifest `4664da84…`). The id ledger: `-7` is t_ab95ec2a's
+open cut, `-8` is t_d95b8c13's (re-cut at 22:45Z); `-9` is later than every
+cut by `generated_at`.
+
+**The `2026.11.16-1` cut (the merged head: t_d95b8c13 and t_2efbd6e3).**
+The merge carries both signed changes: `odilectl export <slug> --script`'s
+program at `/usr/local/bin/odile-export` (0755 root, `install.md` §12.6) and
+the boot-install fix (the tenant template's public-host wording, the
+`login_table` cookie assertion, the agent restart when a file the gateway
+reads at start changed, and the boot half's `--i-have-copied-it` and
+`ODILE_RELEASE_PUBLIC_URL`; §12.4/§12.4.1). Installer `37860cc9…` (1,428,018
+bytes), manifest `6bc8f558…` (49,957 bytes; its only move against `-9` is
+`installer_sha256`, so it is a surgical re-cut and not a root rebuild),
+skills `9d82653f…` unchanged, `--self-test` PASS, `--verify-signature` OK and
+`tools/recut_release.py --check` green. The document was re-cut at
+`2026-11-16T01:40:00Z` (`release/release.json` `33b4e772…`) after `main`'s
+`-9` at 23:59Z, so this ledger is true at this cut. It is committed, not
+deployed: measured 2026-11-16T01:44Z the URL serves `2026.11.15-9`
+(`2cdf0801…`, 1,424,179 bytes; manifest `4664da84…`). The id ledger: `-7` is
+t_ab95ec2a's open cut, `-8` is t_d95b8c13's pre-merge cut (22:45Z, superseded
+by this merged head), `-9` is t_2efbd6e3's (23:59Z); `2026.11.16-1` is later
+than every cut by `generated_at`.
+
 
 ## 6. The guest: check, apply, rollback
 

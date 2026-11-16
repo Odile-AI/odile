@@ -3,8 +3,8 @@
 The user runs `odile-export` on the guest; HQ never reads the files. This
 command is the two ends HQ does own:
 
-* `--script` prints the guest program byte-for-byte, so the user can place it
-  on the machine without a download (the installer does not embed it yet);
+* `--script` prints the guest program byte-for-byte, so an operator can compare
+  it with the copy the installer placed (`/usr/local/bin/odile-export`);
 * `--verify PATH` inspects the bundle the user downloaded — its SHA-256, size,
   entry count and members — and is the same check `destroy` refuses without.
 
