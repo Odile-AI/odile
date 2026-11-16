@@ -809,7 +809,9 @@ sentence is quoted (ODL-474 lands it).
   file still opens it. The live tenant's rebuild is ODL-218's destroy-and-re-provision path
   (`docs/runbooks/offboard.md` §5), a human step. ADR-004 (`t_ce52bb8d`) makes
   it the same slug: `destroyed -> claimed` is the one edge back, `provision
-  <slug>` reopens the row before it orders, and the URL, the recovery file's
+  <slug>` reopens the row before it orders, points the web row and the state
+  row at the new machine and moves the state row to `first_boot` (so the new
+  machine's first boot records itself), and the URL, the recovery file's
   name and the `tenants/<slug>` repository all survive — so `backup-repo.txt`
   names the same repository and §5.2's same-repository rebuild is the live
   path, not a bench-only one. That path's `provision` step must add the flag

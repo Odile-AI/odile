@@ -37,6 +37,14 @@ name and the repository, and it would make that sentence false. The provider's
 DNS record is deleted at destroy, so a rebuild still re-creates the A record for
 the same slug; the name does not change.
 
+The reopen is half the way back. `odilectl provision` records the order in both
+schemas: the state row carries the new machine and reaches `first_boot`, and
+the web `tenants` row is pointed at the same `server_id` (address, expiry,
+ordered release, `state='provisioned'`). `bootrecord.record_boot` reads that web
+row and refuses a `claimed`/`provisioning` spine, so a rebuild that moved only
+`tenant_state` would order a machine whose first boot could never be recorded —
+the failure this card's review measured on 2026-11-16.
+
 Storage is additive, in the same SQLite file as the waitlist (`state_db` in the
 odilectl config, `/var/lib/odile/waitlist.db` by default), exactly as the seed
 ledger adds `seed_tokens`: `tenant_state` is the machine spine and

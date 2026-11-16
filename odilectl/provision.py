@@ -33,6 +33,15 @@ file's name and the `tenants/<slug>` repository — does not change; the reopen
 is one `claimed` event whose detail carries the reason, and the dead machine's
 columns are cleared. Running the command on a live tenant does nothing extra.
 
+**The order is recorded in both schemas.** A `provision` that has placed the
+order names the machine on the state row *and* on the web `tenants` row, and
+moves the spine to `first_boot`: `record_boot` reads `tenants.server_id` and
+refuses a `claimed`/`provisioning` row, so without both writes the machine's
+own first boot cannot land — on a rebuild it would still be checked against the
+dead machine's id. The web row is pointed at the new `server_id`, address,
+expiry and ordered release, with `state='provisioned'` until the boot record
+moves it on; a row that already names the machine is not rewritten.
+
 **A rebuild keeps the repository (ODL-215 follow-up).** The user's old recovery
 file already opens the repository; a new machine that mints a new password
 meets that repository with a key it cannot use. With `--backup-password-file`
@@ -52,6 +61,7 @@ import os
 import sqlite3
 from argparse import ArgumentParser
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from functools import lru_cache
 from pathlib import Path
 
@@ -446,16 +456,96 @@ def _reopen_destroyed(ctx: Context, slug: str) -> bool:
         store.close()
 
 
+def _has_table(connection: sqlite3.Connection, name: str) -> bool:
+    return connection.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?", (name,)
+    ).fetchone() is not None
+
+
+def _iso_epoch(epoch: int | None) -> str | None:
+    """The app's `tenants.expires_at` is ISO text; the provider speaks seconds."""
+    if epoch is None:
+        return None
+    return datetime.fromtimestamp(int(epoch), timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _point_web_row_at_machine(
+    connection: sqlite3.Connection, spec: CreateSpec, machine: Machine, release: str
+) -> str:
+    """Point the web `tenants` row at the machine this run ordered.
+
+    The row the app and the first-boot writer read must name the machine that
+    exists now. After a rebuild it still named the dead one, and `record_boot`
+    refused the new machine's measured line ("is ordered for instance
+    'srv-old', the measured line boots 'srv-new'"). This is the write the claim
+    path makes when it orders (server_id, ipv4, expires_at, state
+    `provisioned`), plus the facts a rebuild needs to be honest: the release
+    the new machine is ordered under and the key it is ordered with;
+    `installed_at` goes back to NULL because this machine has not installed.
+    `setup_token_hash` is untouched — `seed.bind` wrote the new token's hash
+    moments before this write. A row that already names this machine is not
+    rewritten, so a second run cannot move an `active` row backwards.
+
+    Returns "absent" (a state-only database, or a row the claim never made),
+    "unchanged" (the row already names this machine) or "repointed".
+    """
+    if not _has_table(connection, "tenants"):
+        return "absent"
+    row = connection.execute(
+        "SELECT id, server_id FROM tenants WHERE slug = ?", (spec.hostname,)
+    ).fetchone()
+    if row is None:
+        return "absent"
+    if row["server_id"] == machine.server_id:
+        return "unchanged"
+    try:
+        connection.execute(
+            "UPDATE tenants SET server_id = ?, ipv4 = ?, expires_at = ?,"
+            " state = 'provisioned', ssh_public_key = ?, release = ?,"
+            " installed_at = NULL WHERE id = ?",
+            (
+                machine.server_id,
+                machine.ipv4,
+                _iso_epoch(machine.expires_at),
+                spec.ssh_key.strip(),
+                release,
+                row["id"],
+            ),
+        )
+        connection.commit()
+    except sqlite3.Error as error:
+        connection.rollback()
+        raise ProviderError(
+            f"provision: cannot point the tenant row at {machine.server_id}: {error}"
+        ) from None
+    return "repointed"
+
+
+def _web_row_line(machine: Machine) -> str:
+    """The report line for a web row that now names this run's machine."""
+    return (
+        f"  web row:   {machine.server_id} (state provisioned; the app and the "
+        "first boot read this row)"
+    )
+
+
 def _record_machine(
     ctx: Context, spec: CreateSpec, machine: Machine, release: str
 ) -> dict[str, object]:
-    """Write the order's release onto the tenant's state row, idempotently.
+    """Write the order onto the tenant's state row and web row, idempotently.
 
     A tenant created by the claim spine already has a state row; a manual
     provision creates the missing one at `invited` and walks it to
     `provisioning`, the same path the claim code uses. A second run does not
     move the state again, and `record_release` fills a NULL release only, so
     the release the machine was actually ordered under is never rewritten.
+
+    An order is recorded in both schemas (ODL-218 follow-up, ADR-004). The
+    state row carries the machine and then reaches `first_boot` — the order
+    exists, the machine runs its zero-touch boot — and the web row is pointed
+    at the same machine. Only then can `record_boot` take the machine's
+    measured line: it reads `tenants.server_id` and refuses a
+    `claimed`/`provisioning` row. A same-slug rebuild takes this path again.
     """
     db_path = ctx.config.path_value("state_db", DEFAULT_STATE_DB) or Path(DEFAULT_STATE_DB)
     store = StateStore.open(db_path)
@@ -468,6 +558,12 @@ def _record_machine(
             )
         if tenant.state == "invited":
             tenant = store.claim(spec.hostname)
+        if tenant.state == "destroyed":
+            raise StateError(
+                f"{spec.hostname} is destroyed; reopen it (run this command, which "
+                "reopens it before the order) before recording a machine"
+            )
+        recorded = False
         if tenant.state == "claimed":
             tenant = store.provision(
                 spec.hostname,
@@ -479,18 +575,28 @@ def _record_machine(
                 expires_at=machine.expires_at,
                 detail={"source": "odilectl provision", "release": release},
             )
-            return {"recorded": True, "tenant_state": tenant.state, "release": tenant.release}
-        if tenant.state == "destroyed":
-            raise StateError(
-                f"{spec.hostname} is destroyed; reopen it (run this command, which "
-                "reopens it before the order) before recording a machine"
-            )
-        before = tenant.release
-        tenant = store.record_release(spec.hostname, release)
+            recorded = True
+        else:
+            before = tenant.release
+            tenant = store.record_release(spec.hostname, release)
+            recorded = before is None
+        # The web row follows the spine: it is pointed at the machine only once
+        # the state row names it, so the two can never disagree about which
+        # machine exists. Then the spine's `first_boot`, the state the machine's
+        # own record is written from.
+        if tenant.server_id == machine.server_id:
+            web_row = _point_web_row_at_machine(store.connection, spec, machine, release)
+        else:
+            # A live row that has no edge to `provisioning` (ready, suspended):
+            # the spine keeps its machine, and the web row is left as it was.
+            web_row = "skipped"
+        if tenant.state == "provisioning":
+            tenant = store.await_boot(spec.hostname)
         return {
-            "recorded": before is None,
+            "recorded": recorded,
             "tenant_state": tenant.state,
             "release": tenant.release,
+            "web_row": web_row,
         }
     finally:
         store.close()
@@ -606,6 +712,10 @@ def run(ctx: Context, args) -> Report:
             f"slug before the order: https://{spec.hostname}.odile.fyi and "
             f"odile-recovery-{spec.hostname}.txt keep their names",
         )
+    notes.append(
+        "the tenant row is pointed at the new server_id and the state row reaches "
+        "first_boot, so the machine's first boot writes its own record"
+    )
 
     if not ctx.mutate:
         return plan(
@@ -653,6 +763,7 @@ def run(ctx: Context, args) -> Report:
                 [
                     f"  {machine.server_id} ({machine.hostname}) is already active",
                     *([_reopen_line(spec.hostname)] if reopened else []),
+                    *([_web_row_line(machine)] if record["web_row"] == "repointed" else []),
                     f"  release:   {record['release']} (from the pin, recorded with the tenant)",
                     *_seed_lines(seed),
                 ],
@@ -661,6 +772,7 @@ def run(ctx: Context, args) -> Report:
                 created=False,
                 recorded=record["recorded"],
                 reopened=reopened,
+                web_row=record["web_row"],
                 release=record["release"],
                 tenant_state=record["tenant_state"],
                 seed=seed.to_dict(),
@@ -698,6 +810,7 @@ def run(ctx: Context, args) -> Report:
         f"  server_id: {machine.server_id}",
         f"  hostname:  {machine.hostname}",
         *([_reopen_line(spec.hostname)] if reopened else []),
+        *([_web_row_line(machine)] if record["web_row"] == "repointed" else []),
         f"  state:     {machine.state} ({machine.raw_status or 'no raw status'})",
         f"  ipv4:      {machine.ipv4 or '-'}",
         f"  expires:   {render_datetime(machine.expires_at)}",
@@ -712,6 +825,7 @@ def run(ctx: Context, args) -> Report:
         created=created,
         recorded=record["recorded"],
         reopened=reopened,
+        web_row=record["web_row"],
         release=record["release"],
         tenant_state=record["tenant_state"],
         seed=seed.to_dict(),

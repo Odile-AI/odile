@@ -19,6 +19,7 @@ import json
 import os
 import re
 import shutil
+import sqlite3
 import struct
 import subprocess
 import sys
@@ -33,7 +34,8 @@ PACKAGE = ROOT / "odilectl"
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from odilectl import cli, config, health, offboard, providers, state  # noqa: E402
+import app  # noqa: E402
+from odilectl import bootrecord, cli, config, health, offboard, providers, state  # noqa: E402
 from odilectl.core import Context  # noqa: E402
 from odilectl.errors import ConfigError, ProviderError, ProviderTimeout  # noqa: E402
 from odilectl.providers import base, servury  # noqa: E402
@@ -1034,6 +1036,27 @@ class FixtureFlowTest(TempConfigMixin):
             store.close()
         return db
 
+    def _web_row(self, db: Path, *, server_id: str = "srv-old-0001") -> None:
+        """The app's `tenants` row, as a destroyed tenant leaves it.
+
+        The live row after `offboard` was measured like this: `state active`,
+        `server_id` still the dead machine (verifier probe on 2026-11-16).
+        """
+        con = sqlite3.connect(db)
+        try:
+            app.migrate(con)
+            con.execute(
+                "INSERT INTO tenants (slug, email, state, server_id, ssh_public_key,"
+                " release, expires_at, claimed_at, installed_at, created_at)"
+                " VALUES (?, ?, 'active', ?, 'ssh-ed25519 OLD', '2026.11.1',"
+                " '2026-12-10T00:00:00Z', '2026-11-09T16:03:46Z',"
+                " '2026-11-09T16:10:00Z', '2026-11-09T16:03:46Z')",
+                (SLUG, "ada@example.com", server_id),
+            )
+            con.commit()
+        finally:
+            con.close()
+
     def test_provision_on_a_destroyed_slug_reopens_it_under_the_same_slug(self):
         """The card's end-to-end: destroy, provision again, the slug survives."""
         config_path = self.make_config()
@@ -1061,6 +1084,10 @@ class FixtureFlowTest(TempConfigMixin):
         self.assertTrue(payload["created"])
         self.assertEqual(payload["machine"]["hostname"], SLUG)
         self.assertEqual(payload["machine"]["server_id"], SERVER_ID)
+        # The order reached the machine: the row is first_boot, not provisioning,
+        # so the machine's own boot record has a state to land on (must 1).
+        self.assertEqual(payload["tenant_state"], "first_boot")
+        self.assertEqual(payload["web_row"], "absent")  # this fixture has no web row
         recorded = state.StateStore.open(db)
         try:
             tenant = recorded.get(SLUG)
@@ -1068,17 +1095,100 @@ class FixtureFlowTest(TempConfigMixin):
         finally:
             recorded.close()
         self.assertEqual(tenant.slug, SLUG, "a rebuild keeps its slug")
-        self.assertEqual(tenant.state, "provisioning")
+        self.assertEqual(tenant.state, "first_boot")
         self.assertEqual(tenant.server_id, SERVER_ID, "the new machine is the row's machine")
         self.assertEqual(tenant.release, "2026.11.1")
         self.assertEqual(
-            [event.kind for event in events][-3:],
-            ["destroyed", "claimed", "provisioning"],
+            [event.kind for event in events][-4:],
+            ["destroyed", "claimed", "provisioning", "first_boot"],
         )
         reopen = [event for event in events if event.kind == "claimed"][-1]
         self.assertEqual(reopen.from_state, "destroyed")
         self.assertIn("same slug", reopen.detail["reason"])
         self.assertEqual(f"https://{tenant.slug}.odile.fyi", f"https://{SLUG}.odile.fyi")
+
+    def test_a_rebuilt_tenant_records_its_first_boot_on_the_new_machine(self):
+        """The way back end-to-end: the new machine's measured line lands.
+
+        The web row is half of the order (must 1): `record_boot` reads
+        `tenants.server_id` and refuses a `provisioning` spine, so a rebuild
+        that writes only the state row can never record its first boot. This
+        fixture carries both schemas, as the live database does.
+        """
+        config_path = self.make_config()
+        db = self._destroyed_row(config_path)
+        self._web_row(db)
+        transport = self._flow_transport()
+        code, out, err = run_cli(
+            [
+                "provision",
+                SLUG,
+                "--key",
+                str(self.key_file()),
+                "--pin",
+                str(self.pin_file()),
+                "--interval",
+                "0",
+                "--apply",
+                "--json",
+            ],
+            config_path,
+            provider_factory=lambda _config: servury.ServuryProvider(TEST_KEY, transport=transport),
+        )
+        self.assertEqual(code, 0, err)
+        payload = json.loads(out)
+        self.assertEqual(payload["tenant_state"], "first_boot")
+        self.assertEqual(payload["web_row"], "repointed")
+        con = sqlite3.connect(db)
+        con.row_factory = sqlite3.Row
+        self.addCleanup(con.close)
+        row = con.execute(
+            "SELECT state, server_id, ipv4, expires_at, installed_at,"
+            " ssh_public_key, release, setup_token_hash FROM tenants WHERE slug = ?",
+            (SLUG,),
+        ).fetchone()
+        # Every machine fact names the new machine before it boots; the old
+        # machine's install time is gone, and the token seed.bind wrote survives.
+        self.assertEqual(row["server_id"], SERVER_ID)
+        self.assertEqual(row["state"], "provisioned")
+        self.assertEqual(row["ipv4"], "203.0.113.120")
+        self.assertEqual(row["expires_at"], "2026-10-14T17:46:40Z")
+        self.assertIsNone(row["installed_at"])
+        self.assertEqual(row["ssh_public_key"], KEY_TEXT)
+        self.assertEqual(row["release"], "2026.11.1")
+        self.assertIsNotNone(row["setup_token_hash"])
+        # The new machine's measured line is accepted and the spine walks on.
+        measured = (
+            "root=/dev/mapper/root_crypt ro console=ttyS0 "
+            f"bb.host={SLUG} bb.iid={SERVER_ID} "
+            f"bb.key={base64.b64encode(KEY_TEXT.encode()).decode()} "
+            f"odile.token={'ab' * 32}"
+        )
+        parsed = bootrecord.parse_record(
+            {"cmdline": measured, "release": "2026.11.1", "first_visit": "done"},
+            slug=SLUG,
+        )
+        written = bootrecord.record_boot(con, slug=SLUG, record=parsed, source="first_boot")
+        self.assertEqual(
+            written["changed"], ["first_boot -> first_visit", "first_visit -> ready"]
+        )
+        self.assertEqual(written["state"], "ready")
+        self.assertEqual(written["tenants_state"], "active")
+        after = con.execute(
+            "SELECT state, server_id, ssh_public_key FROM tenants WHERE slug = ?", (SLUG,)
+        ).fetchone()
+        self.assertEqual(after["state"], "active")
+        self.assertEqual(after["server_id"], SERVER_ID)
+        self.assertEqual(after["ssh_public_key"], KEY_TEXT, "the measured boot key landed")
+        # A record for the dead machine is still refused: the instance check.
+        stale = bootrecord.parse_record(
+            {"cmdline": measured.replace(SERVER_ID, "srv-old-0001"),
+             "release": "2026.11.1", "first_visit": "done"},
+            slug=SLUG,
+        )
+        with self.assertRaises(bootrecord.BootRecordError) as caught:
+            bootrecord.record_boot(con, slug=SLUG, record=stale, source="first_boot")
+        self.assertIn("srv-old-0001", str(caught.exception))
 
     def test_provision_dry_run_on_a_destroyed_slug_lists_the_reopen(self):
         config_path = self.make_config()
