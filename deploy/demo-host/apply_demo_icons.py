@@ -3,11 +3,14 @@
 
 `deploy/demo-host/deploy_demo_icons.py` uploads the new page server, the two
 pages, the five icons, the re-assert helper, the sign-in page and the Caddy
-block, then runs this program as root. It converges the three files that belong
+block, then runs this program as root. It converges the files that belong
 to `apply_demo_public.py`'s surface and nothing else:
 
-  * the demo lede on `/usr/local/lib/odile/verify.html` (the page was replaced
-    with the release's own copy, which carries the icon links);
+  * the demo lede **and** the `<!--demo-check-->` command section on
+    `/usr/local/lib/odile/verify.html` (the deploy installed the release's own
+    page, which carries the icon links but neither demo paragraph). ODL-563's
+    root cause was this program re-injecting the lede only: an icons deploy
+    then dropped the judge's command section (journal 2026-11-15T01:09:17Z);
   * the sign-in page at `/srv/odile-demo/login.html`, and the three tab files
     beside it (`ensure_icons`, t_6b25f6e5);
   * the `demo.odile.fyi` Caddy block, with the three static tab routes and the
@@ -57,6 +60,22 @@ def restart(unit: str) -> None:
     raise SystemExit(f"error: {unit} did not become active")
 
 
+def converge_verify(dry: bool) -> bool:
+    """Converge the demo's two paragraphs on the /verify template.
+
+    The deploy installs the release page (it carries the icon links), so this
+    program is the one that puts the demo back: the lede first, then the
+    `<!--demo-check-->` command section. Re-injecting only the lede was
+    ODL-563's root cause — an icons deploy silently dropped the judge's
+    command (journal 2026-11-15T01:09:17Z). Both writes are idempotent and
+    both print `same` on a converged page.
+    """
+    changed = demo.ensure_verify_lede(dry)
+    if demo.ensure_verify_command(dry):
+        changed = True
+    return changed
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Converge the demo's icon surface.")
     parser.add_argument("--dry-run", action="store_true", help="print the plan, change nothing")
@@ -64,13 +83,13 @@ def main(argv: list[str] | None = None) -> int:
                         help="restart odile-first-visit (the page server changed)")
     args = parser.parse_args(argv)
     dry = args.dry_run
-    changed = demo.ensure_verify_lede(dry)
+    changed = converge_verify(dry)
     changed = demo.ensure_login_page(dry) or changed
     changed = demo.ensure_icons(dry) or changed
     changed = demo.ensure_caddy_block(dry) or changed
     print(("would write" if dry else "write") if changed else "same",
-          "demo icon surface (/verify lede, /login page, tab icons, Caddy block)",
-          flush=True)
+          "demo icon surface (/verify lede and command, /login page, tab icons, "
+          "Caddy block)", flush=True)
     if dry:
         return 0
     if args.restart:
