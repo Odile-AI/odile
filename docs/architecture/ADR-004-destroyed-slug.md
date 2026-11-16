@@ -227,8 +227,8 @@ Hermetic, no order and no money (branch head of this card):
 /usr/bin/python3 -m unittest tests.test_seed
   Ran 45 tests … OK
 make check
-  Ran 1645 tests … OK (skipped=7); self-test: PASS; claims lint: OK;
-  brand lint: OK; make check: OK (EXIT=0)
+  OK (skipped=7); self-test: PASS; claims lint: OK; brand lint: OK;
+  make check: OK (the run's full line is in the card's evidence)
 ```
 
 **The way back, end-to-end.** `test_a_rebuilt_tenant_records_its_first_boot_on_the_new_machine`
