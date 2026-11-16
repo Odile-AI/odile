@@ -1035,7 +1035,7 @@ asserts the four `__Host-` cookies, t_2efbd6e3's guest export placement
 (`odilectl/offboard.py`'s `EXPORT_PROGRAM` at `/usr/local/bin/odile-export`,
 0755), and the self-test's whole-bundle hash (`8ea15e2`), sha256 `37860cc9…`
 (1,428,018 bytes, `--verify-signature` OK); the edited copy above is 1,428,019
-bytes. The BAD lineprints the edited copy's own sha256 — the `sha256sum` above — so the hex moves
+bytes. The BAD line prints the edited copy's own sha256 — the `sha256sum` above — so the hex moves
 whenever the installer's bytes do; `signature: BAD` and exit 3 are the
 invariant. The edited copy is a different `INSTALLER_PATH`, so this runs the
 *whole* installer and it still checks its own bytes. A tenant run does the same
@@ -2075,9 +2075,10 @@ unchanged. Installer `e8a33d47…` (1,416,049 bytes), manifest `92d3f747…`
 (49,957 bytes), `--self-test` PASS, `--verify-signature` OK,
 `tools/recut_release.py --check` prints `ok` for the installer, its release
 copy and both documents; `release/release.json` (`5f15ee0f…`) names
-`2026.11.15-6` at `2026-11-15T09:15:00Z`. It is committed, not deployed: the
-URL still serves `2026.11.14-8` (`0c53a722…`, 1,356,516 bytes; manifest
-`3a532eff…`). The id ledger: `-8` is ODL-505's, `2026.11.15-1` is
+`2026.11.15-6` at `2026-11-15T09:15:00Z`. It is committed, not deployed:
+measured 2026-11-15T09:15Z, the URL served the deployed `2026.11.14-8`
+(installer `0c53a722…`, 1,356,516 bytes; manifest `3a532eff…`). The id
+ledger: `-8` is ODL-505's, `2026.11.15-1` is
 t_ae833f3f's, `-4` is ODL-474's, `-5` is t_ab95ec2a's open cut, and `-6` is
 later than every cut by `generated_at`.
 
@@ -2101,9 +2102,10 @@ and the `539e205f…` audit row are unchanged. Manifest `33f00dc5…` (49,957
 bytes), `--self-test` PASS, `--verify-signature` OK,
 `tools/recut_release.py --check` prints `ok` for the installer, its release
 copy and both documents; `release/release.json` (`26596bee…`) names
-`2026.11.15-8` at `2026-11-15T22:45:00Z`. It is committed, not deployed: the
-URL still serves `2026.11.14-8` (`0c53a722…`, 1,356,516 bytes; manifest
-`3a532eff…`). The id ledger: `-7` is t_ab95ec2a's open cut, `-6` is
+`2026.11.15-8` at `2026-11-15T22:45:00Z`. It is committed, not deployed:
+measured 2026-11-15T22:41Z, the URL served the deployed `2026.11.14-8`
+(installer `0c53a722…`, 1,356,516 bytes; manifest `3a532eff…`). The id ledger:
+`-7` is t_ab95ec2a's open cut, `-6` is
 t_afb081be's, and `-8` is later than every cut by `generated_at`; an earlier
 revision of this cut (20:00Z) was never merged or deployed. The live tenant
 carries that earlier installer pair (`2bbc70c7…` / `e88576ef…`) at
@@ -2134,9 +2136,10 @@ manifest `4664da84…` (49,957 bytes), `--self-test` PASS,
 `--verify-signature` OK, `tools/recut_release.py --check` prints `ok` for the
 installer, its release copy and both documents; `release/release.json`
 (`5bee6fd3…`) names `2026.11.15-9` at `2026-11-15T23:59:00Z` (re-cut from
-22:25Z after t_d95b8c13 re-cut `-8` at 22:45Z). It is committed,
-not deployed: the URL still serves `2026.11.14-8` (`0c53a722…`, 1,356,516
-bytes; manifest `3a532eff…`). The id ledger: `-7` is t_ab95ec2a's open cut
+22:25Z after t_d95b8c13 re-cut `-8` at 22:45Z). It was committed, not
+deployed at its cut; the URL has since served it — measured 2026-11-16T01:44Z,
+`2026.11.15-9` (`2cdf0801…`, 1,424,179 bytes; manifest `4664da84…`). The id
+ledger: `-7` is t_ab95ec2a's open cut
 (10:45Z), `-8` is t_d95b8c13's (re-cut at 22:45Z, `6a98879`), and `-9` is
 later than every cut by `generated_at` as of its 2026-11-15T23:59:00Z cut.
 
