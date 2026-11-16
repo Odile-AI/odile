@@ -29,15 +29,18 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "deploy" / "demo-host"))
 
+import apply_demo_icons  # noqa: E402
 import apply_demo_public as apply  # noqa: E402
 import check_demo_public as check  # noqa: E402
 import deploy_demo_icons as deploy  # noqa: E402
 import deploy_demo_public as deploy_public  # noqa: E402
 
-LOGIN_PAGE = ROOT / "deploy" / "demo-host" / "login.html"
+DEMO = ROOT / "deploy" / "demo-host"
+LOGIN_PAGE = DEMO / "login.html"
 SITE_BLOCK = ROOT / "deploy" / "caddy" / "demo-tenant-site.caddy"
 VERIFY_PAGE = ROOT / "web" / "verify.html"
-VERIFY_LEDE = ROOT / "deploy" / "demo-host" / "verify-lede.html"
+VERIFY_LEDE = DEMO / "verify-lede.html"
+VERIFY_COMMAND = DEMO / "verify-command.html"
 
 
 class DemoIconFilesTests(unittest.TestCase):
@@ -175,6 +178,75 @@ class DemoVerifyTemplateTests(unittest.TestCase):
             self.assertIn(line, wanted)
         self.assertEqual(apply.inject_lede(wanted, lede), wanted)
         self.assertNotEqual(wanted, release)
+
+
+class DemoIconsKeepsVerifyCommandTests(unittest.TestCase):
+    """The icons deploy must not be the writer that drops the judge's command.
+
+    ODL-563's root cause: ``deploy_demo_icons.py`` installs ``web/verify.html``
+    as the release template and ``apply_demo_icons.py`` re-injected only the
+    lede, so an icons deploy removed the ``<!--demo-check-->`` section the
+    demo-public deploy had put there (journal 2026-11-15T01:09:17Z). The apply
+    now converges both demo paragraphs, so either deploy leaves one pair.
+    """
+
+    def setUp(self) -> None:
+        self.tmp = Path(tempfile.mkdtemp(prefix="odile-demo-icons-verify-"))
+        self.addCleanup(shutil.rmtree, self.tmp)
+        for source in (VERIFY_LEDE, VERIFY_COMMAND):
+            shutil.copyfile(source, self.tmp / source.name)
+        self.page = self.tmp / "verify.html"
+        # The apply module is shared with the demo-public tests; bind every
+        # path it writes so the run cannot reach the live template.
+        for name, value in (
+            ("VERIFY_TEMPLATE", self.page),
+            ("VERIFY_BACKUP", self.tmp / "verify.html.release"),
+            ("__file__", str(self.tmp / "apply_demo_public.py")),
+        ):
+            self.addCleanup(setattr, apply, name, getattr(apply, name))
+            setattr(apply, name, value)
+
+    def converged(self) -> str:
+        """The page the demo-public deploy leaves: demo lede plus one section."""
+        return apply.inject_command(
+            apply.inject_lede(VERIFY_PAGE.read_text(encoding="utf-8"),
+                              VERIFY_LEDE.read_text(encoding="utf-8")),
+            VERIFY_COMMAND.read_text(encoding="utf-8"))
+
+    def assert_one_pair(self, text: str) -> None:
+        self.assertEqual(text.count("<!--demo-check-->"), 1)
+        self.assertEqual(text.count("<!--/demo-check-->"), 1)
+
+    def test_the_icons_apply_keeps_the_pair_on_a_page_that_already_has_it(self):
+        self.page.write_text(self.converged(), encoding="utf-8")
+        before = self.page.read_text(encoding="utf-8")
+        self.assertFalse(apply_demo_icons.converge_verify(dry=False))
+        after = self.page.read_text(encoding="utf-8")
+        self.assertEqual(after, before)
+        self.assert_one_pair(after)
+
+    def test_the_icons_apply_restores_the_pair_to_a_page_that_lost_it(self):
+        # The state `deploy_demo_icons.py` leaves when it installs the release
+        # page: the customer lede, no demo lede and no command section.
+        self.page.write_text(VERIFY_PAGE.read_text(encoding="utf-8"), encoding="utf-8")
+        self.assertTrue(apply_demo_icons.converge_verify(dry=False))
+        after = self.page.read_text(encoding="utf-8")
+        self.assert_one_pair(after)
+        self.assertIn(VERIFY_LEDE.read_text(encoding="utf-8").strip(), after)
+        self.assertIn("./odile-verify https://demo.odile.fyi --expect {{MEASUREMENT}}", after)
+
+    def test_the_deploy_uploads_the_sections_the_apply_reads_beside_it(self):
+        remotes = {remote for _source, remote, _mode in deploy.PUTS}
+        for name in ("verify-lede.html", "verify-command.html"):
+            self.assertIn(f"{deploy.DEMO_LIB}/{name}", remotes,
+                          "the apply must read this deploy's own section, not an "
+                          "older installed copy")
+
+    def test_the_deploy_compares_against_the_converged_page(self):
+        # Comparing the raw release page made every run rewrite the template
+        # (and drop the command until the apply re-added it). The deploy's
+        # `same` target must be the page the apply leaves.
+        self.assertEqual(deploy.template_bytes().decode("utf-8"), self.converged())
 
 
 if __name__ == "__main__":
