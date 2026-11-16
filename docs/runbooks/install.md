@@ -1259,7 +1259,10 @@ machine. The command-line field stays empty when the per-tenant line is inside
 the UKI's `.cmdline` section (Servury's measured-boot guide §7). §4 of
 [`docs/evidence/m1-tenant.md`](../evidence/m1-tenant.md) carries every round's
 pair and names the current one (round 8, card `t_d41b2384`, saved 14:42:53Z;
-§9.8 is the boot it produced).
+§9.8 is the boot it produced). The served pair is now round 9 —
+[`docs/evidence/m1-image.md`](../evidence/m1-image.md) §8, built from `main`
+with the first-boot re-key — while the live tenant still boots round 8 until
+the panel is given both fields.
 
 A reinstall always comes back on the Servury release, because it replaces the
 disk. That is the rollback: **Back to the Servury release** plus a reinstall
