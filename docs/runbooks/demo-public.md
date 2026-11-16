@@ -75,18 +75,20 @@ value, so a converged zone prints `same`:
     --judge-password-file /path/to/judge-password
 ```
 
-**Two other writers to the `/verify` template (both measured 2026-11-15).**
-`deploy/demo-host/deploy_demo_icons.py` (t_6b25f6e5) uploads `web/verify.html`
-as the release template, and `apply_demo_icons.py` re-injects only the lede.
-A forced release re-cut does the same by a different route: `odile-recut-run2`
+**The other writer to the `/verify` template (measured 2026-11-15).** A forced
+release re-cut writes the release page over the template: `odile-recut-run2`
 ran `odile-release-setup.sh --force` at 20:12:29Z and the release installer
-wrote its own `/verify` page over the template. The icons deploy keeps the
-demo lede but drops the `<!--demo-check-->` section; the re-cut drops both.
-The journal shows the first at 01:09:17Z installing `/tmp/verify.html`;
-`apply_demo_public.py --report` read `"demo_command": false` after the second
-until the next deploy. Run the demo-public deploy after either: its verify step
-now records a FAIL for a `/verify` that does not carry exactly one
-`<!--demo-check-->` section (ODL-563), so a stale page cannot print PASS.
+wrote its own `/verify` page (customer lede, no command) over
+`/usr/local/lib/odile/verify.html`; `apply_demo_public.py --report` then read
+`"demo_command": false` until the next deploy. `deploy/demo-host/deploy_demo_icons.py`
+(t_6b25f6e5) also installs `web/verify.html` as the release template, but its
+`apply_demo_icons.py` now re-injects both demo paragraphs — the lede and the
+`<!--demo-check-->` section — so an icons deploy keeps the page the
+demo-public deploy left (ODL-563 follow-up; the pre-fix run was measured
+dropping the section at 01:09:17Z). Run the demo-public deploy after a forced
+re-cut: its verify step records a FAIL for a `/verify` that does not carry
+exactly one `<!--demo-check-->` section (ODL-563), so a stale page cannot print
+PASS.
 
 The same re-cut also exposed an old image's listener: the machine's
 `odile-manifest.service` predates ODL-521 and its dynamic user cannot traverse
@@ -135,12 +137,13 @@ change what every customer machine verifies. Instead:
   the release page at
   `/usr/local/lib/odile-demo-public/verify.html.release` for the rollback;
 - the demo-public deploy's `apply --write` and the t_6b25f6e5 icons deploy are
-  the two writers of this paragraph. `odile-release-setup.service` converges
+  the two writers of this page. `odile-release-setup.service` converges
   **once** (t_ee5aac66 writes a done marker under `/var/lib/odile`), so after
   the first boot the release installer no longer rewrites the template; there
   is no boot unit and no `--tune` re-assert. The icons deploy installs
-  `web/verify.html` and re-injects only the lede (§2, measured 2026-11-15);
-  run the demo-public deploy after it, and after a forced re-cut;
+  `web/verify.html` and its `apply_demo_icons.py` re-injects both the lede and
+  the `<!--demo-check-->` section (§2), so it keeps this page; run the
+  demo-public deploy after a forced re-cut;
 - a customer machine never runs `apply_demo_public.py`, so its `/verify` keeps
   the general row. `tests/test_demo_public.py` renders both pages through the
   release renderer and pins the sentence each one shows. The same test runs
