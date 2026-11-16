@@ -1378,8 +1378,12 @@ four `__Host-` cookies (`{"ok":true,"next":"/"}`). The machine's own name
 check): `webapp.public_url` is the demo host.
 
 **The boot half on the machine is the deployer's, not the recovery run's.** The
-recovery above ran the fixed script (`deploy/image/odile-release-setup.sh`,
-sha256 `348794a3…`) as a transient unit, but the file that unit executes is
+recovery above ran the fixed script (`deploy/image/odile-release-setup.sh`)
+as a transient unit. The bytes it ran are that script's `6a98879` revision,
+sha256 `348794a3…`, unchanged from `763e78b`; `d43db54` later reflowed one
+header comment, so the branch head hashes `6c3edc45…` — `git diff
+6a98879..HEAD -- deploy/image/odile-release-setup.sh` moves comment lines and
+no command. The file that unit executes is
 owned by `deploy/demo-host/deploy_demo_public.py` (`RELEASE_SETUP_REMOTE`,
 `:92-93`), which re-placed `main`'s copy over it. Measured on the tenant
 2026-11-15T22:37:32Z:
