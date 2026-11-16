@@ -51,10 +51,10 @@ page a judge should be sent to. It does not demonstrate a user-held key.
 
 ```sh
 cd <checkout>
-./deploy/demo-host/deploy_demo_public.py --dry-run
-./deploy/demo-host/deploy_demo_public.py
+./deploy/demo-host/deploy_demo_public.py --dry-run --target "$(dig +short demo.odile.fyi)"
+./deploy/demo-host/deploy_demo_public.py --target "$(dig +short demo.odile.fyi)"
 # only for a tree older than the live page — keep `/srv/odile-demo/login.html`:
-./deploy/demo-host/deploy_demo_public.py --no-login
+./deploy/demo-host/deploy_demo_public.py --target "$(dig +short demo.odile.fyi)" --no-login
 ```
 
 `--no-login` keeps `/srv/odile-demo/login.html` as the machine has it and does
@@ -62,6 +62,38 @@ not upload the tree's copy. Since t_9896a577's artwork page merged (main
 `87a0f75`), the committed page *is* the artwork page (`94a22b03…`), so a
 deploy from `main` installs it and the flag is not needed. The deploy asserts
 the live page's markers either way, so a stale page still fails the gate check.
+
+**The DNS step and the redacted address (ODL-563).** The tree names the tenant
+`203.0.113.87` (§5) and the live zone's record holds the machine's real address,
+so a run without `--target` would *update* the record to the redaction. The base
+form above passes the live address; check the zone first and pass the same
+value, so a converged zone prints `same`:
+
+```sh
+./deploy/demo-host/create_dns.py --dry-run --target "$(dig +short demo.odile.fyi)"  # must print `same`
+./deploy/demo-host/deploy_demo_public.py --target "$(dig +short demo.odile.fyi)" \
+    --judge-password-file /path/to/judge-password
+```
+
+**The other writer to the `/verify` template (measured 2026-11-15).** A forced
+release re-cut writes the release page over the template: `odile-recut-run2`
+ran `odile-release-setup.sh --force` at 20:12:29Z and the release installer
+wrote its own `/verify` page (customer lede, no command) over
+`/usr/local/lib/odile/verify.html`; `apply_demo_public.py --report` then read
+`"demo_command": false` until the next deploy. `deploy/demo-host/deploy_demo_icons.py`
+(t_6b25f6e5) also installs `web/verify.html` as the release template, but its
+`apply_demo_icons.py` now re-injects both demo paragraphs — the lede and the
+`<!--demo-check-->` section — so an icons deploy keeps the page the
+demo-public deploy left (ODL-563 follow-up; the pre-fix run was measured
+dropping the section at 01:09:17Z). Run the demo-public deploy after a forced
+re-cut: its verify step records a FAIL for a `/verify` that does not carry
+exactly one `<!--demo-check-->` section (ODL-563), so a stale page cannot print
+PASS.
+
+The same re-cut also exposed an old image's listener: the machine's
+`odile-manifest.service` predates ODL-521 and its dynamic user cannot traverse
+`/etc/odile` once the current installer sets it to 0750 root:odile-manifest, so
+`/manifest` answered 503. §6 carries the repair.
 
 A converged machine prints `same` for every piece and still runs the restart
 and the verify. The apply restarts Caddy (which drops the socket it is talking
@@ -78,8 +110,7 @@ account. `demo.odile.fyi/verify` therefore opens with
 
 > This is Odile's tenant machine: one shared workspace on our measured AMD
 > SEV-SNP machine. Odile holds this machine's boot key and can log in. The demo
-> password is public by design. Every judge who signs in lands in the same
-> workspace.
+> password is public by design. Every judge sees these sessions and files.
 
 **The route (ODL-503 finding 1): a demo-only page, not a release re-cut.** The
 signed installer's page already carries both paragraphs — the demo one in a
@@ -105,10 +136,14 @@ change what every customer machine verifies. Instead:
   reads per request — adds the command section inside the same block, and keeps
   the release page at
   `/usr/local/lib/odile-demo-public/verify.html.release` for the rollback;
-- the deploy's `apply --write` is the only writer. `odile-release-setup.service`
-  converges **once** (t_ee5aac66 writes a done marker under `/var/lib/odile`),
-  so after the first boot the release installer no longer rewrites the
-  template; there is no boot unit and no `--tune` re-assert;
+- the demo-public deploy's `apply --write` and the t_6b25f6e5 icons deploy are
+  the two writers of this page. `odile-release-setup.service` converges
+  **once** (t_ee5aac66 writes a done marker under `/var/lib/odile`), so after
+  the first boot the release installer no longer rewrites the template; there
+  is no boot unit and no `--tune` re-assert. The icons deploy installs
+  `web/verify.html` and its `apply_demo_icons.py` re-injects both the lede and
+  the `<!--demo-check-->` section (§2), so it keeps this page; run the
+  demo-public deploy after a forced re-cut;
 - a customer machine never runs `apply_demo_public.py`, so its `/verify` keeps
   the general row. `tests/test_demo_public.py` renders both pages through the
   release renderer and pins the sentence each one shows. The same test runs
@@ -382,6 +417,19 @@ machine's own name, and the record propagates in a minute.
 - **Caddy is broken**: `caddy validate --config /etc/caddy/Caddyfile`; the
   apply backs the file up (`/etc/caddy/Caddyfile.odile-demo-public.bak`) and
   rolls back on failure.
+- **`/manifest` answers 503 `manifest unavailable` after a forced re-cut**: the
+  running image's `odile-manifest.service` predates ODL-521 — it has
+  `DynamicUser=yes` and no `SupplementaryGroups=odile-manifest`, so the
+  listener's dynamic user cannot traverse `/etc/odile` once the current release
+  installer sets it to 0750 root:odile-manifest (measured 2026-11-15T20:12Z on
+  this machine, ODL-563). Install the image's current unit —
+  `deploy/image/odile-manifest.service`, which carries `User=odile-manifest-svc`
+  and `SupplementaryGroups=odile-manifest` — over
+  `/etc/systemd/system/odile-manifest.service` **and**
+  `/usr/local/lib/odile-image/odile-manifest.service`, then
+  `systemctl daemon-reload && systemctl restart odile-manifest`. The loopback
+  (`http://127.0.0.1:8012/manifest`) and the machine's own name must both
+  answer 200; the demo-public deploy's `GET …/manifest` row then passes.
 - **The account is locked** (too many wrong passwords): the tenant's own
   recovery path is `/first-visit/reset` with the recovery code on the machine;
   then re-run the deploy to re-assert the judge hash.
@@ -407,8 +455,8 @@ machine's own name, and the record propagates in a minute.
 
   The demo's old boot unit (`odile-demo-public`, which re-ran `apply --tune`
   after every boot) is removed by the apply and does not exist on the machine.
-  Nothing re-asserts the demo config or the `/verify` lede at boot; the deploy
-  is the only writer.
+  Nothing re-asserts the demo config or the `/verify` lede at boot; the
+  demo-public deploy is the one to run after a boot-time rewrite (§2).
 
 ## 7. The seed's first turn (the part that is not obvious)
 
@@ -473,6 +521,17 @@ transcript.
 | The line in a judge's shell | `check_demo_public.py` extracts it and runs it from the published bundle: `expected PASS matches --expect …` / `PASS — the CPU signed this report and the launch measurement matches the pin.`, exit 0 |
 | The plain form is the defect | `./odile-verify https://demo.odile.fyi` prints `a tenant run needs --expect <measurement>`, exit 2 — the pin's `source` is the HQ record |
 | The pages that hand it over | `README.md` (a `/verify` pointer, no bare command) and the demo page; `/judge` is a 301 since ODL-901, so `web/judge.html` no longer ships |
+
+### Evidence for the restored command (ODL-563, 2026-11-15)
+
+| What | Where |
+|---|---|
+| The page's line | `https://demo.odile.fyi/verify` 200, 43,159 B, sha256 `3cdd7427…` (measured 20:28Z, after the forced re-cut below was repaired and the deploy re-converged; the report card is live, so its byte count moves with the report). Exactly one `<!--demo-check-->` / `<!--/demo-check-->` pair; the section is `deploy/demo-host/verify-command.html` with the measurement it serves, `9f01725a…f137` = `/attestation` |
+| The lede | the deck row verbatim — `Every judge sees these sessions and files.` — `grep -c 'lands in the same workspace'` = 0 and `grep -c 'No one at Odile can log in'` = 0 |
+| The check, before and after | public half before the deploy: 20 passed / 4 failed (no command section, the sign-in page's missing credit comment, the two DNS rows); after: 23 passed / 2 failed — both are the DNS rows, which compare the tree's redacted `203.0.113.87` to the live A record (`dig +short demo.odile.fyi`). The command row prints `ok` and the page's own line, run out of the published bundle, exits 0 |
+| The second run | `deploy_demo_public.py` prints `same` for `/usr/local/lib/odile/verify.html (the demo lede)` and `(the demo command)` — including the 20:28Z run after the re-cut repair — plus the login page, the icons, the Caddyfile block, the config, the `.env` and `state.db`; the page's sha256 is unchanged. In the three run-window readings (19:00:31, 19:02:57, 19:04:15Z — before, between and after the two runs) the seeded session `local-931d9e32…` kept its 22 messages, `messages_sha256 870fa53c…` and both timestamps. A live count moves after the card — a check's turn appends to the seed by design (21:05Z read 28 messages, `c3746671…`) — so quote the run-window transcript, not a live read |
+| The two other writers | 2026-11-15T01:09:17Z: `deploy_demo_icons.py` installs `/tmp/verify.html` over `/usr/local/lib/odile/verify.html`; `apply_demo_public.py --report` then reads `"demo_lede": true, "demo_command": false`. 20:12:29Z: `odile-recut-run2` runs `odile-release-setup.sh --force` and the release installer writes the release page (customer lede, no section) over the template; the deploy restores both (`write … (the demo lede)` / `(the demo command)`) and the next run prints `same` (§2) |
+| The re-cut's side effect | the same re-cut set `/etc/odile` to 0750 root:odile-manifest; the machine's old listener (no `SupplementaryGroups=odile-manifest`) answered `/manifest` 503 until `deploy/image/odile-manifest.service` was installed and the unit restarted (loopback and `odl-7971a8.odile.fyi` both 200, §6) |
 
 ### The published password's reach (2026-11-14)
 

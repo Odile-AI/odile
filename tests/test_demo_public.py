@@ -24,12 +24,15 @@ from __future__ import annotations
 
 import hashlib
 import importlib.util
+import json
 import re
 import shutil
 import sys
 import tempfile
 import unittest
+import urllib.parse
 from pathlib import Path
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parent.parent
 DEMO = ROOT / "deploy" / "demo-host"
@@ -120,7 +123,11 @@ class LedeSourceTests(unittest.TestCase):
         text = flatten(self.markup)
         self.assertIn("odile holds this machine's boot key and can log in", text)
         self.assertIn("the demo password is public by design", text)
-        self.assertIn("every judge who signs in lands in the same workspace", text)
+        # ODL-563: the deck row (docs/CLAIMS.md §The demo machine), verbatim.
+        # "Every judge who signs in lands in the same workspace." was coined for
+        # the demo and was in no row; it must not come back.
+        self.assertIn("every judge sees these sessions and files", text)
+        self.assertNotIn("lands in the same workspace", text)
         self.assertNotIn(flatten(CUSTOMER_SENTENCE), text)
 
 
@@ -284,6 +291,139 @@ class DeployAndCheckTests(unittest.TestCase):
         self.assertIn(CUSTOMER_SENTENCE, check.lede_problem(body.replace(
             LEDE.read_text(encoding="utf-8").strip(),
             '<p class="lede">%s The only sign-in is yours.</p>' % CUSTOMER_SENTENCE)))
+
+    def test_the_deploy_refuses_a_page_without_exactly_one_demo_check_section(self):
+        """The deploy's own verify gate (ODL-563): the marker, not just the line.
+
+        A page with no section passes "some text" checks and serves a stale
+        demo; a page with two sections is ambiguous about which line a judge
+        copies. The deploy records a FAIL for either.
+        """
+        deploy = load(DEMO / "deploy_demo_public.py", "demo_deploy_marker_test")
+        section = (DEMO / "verify-command.html").read_text(encoding="utf-8").strip()
+        page = '<main><p class="lede">%s</p></main>' % LEDE.read_text(encoding="utf-8").strip()
+        self.assertIn("demo-check", deploy.demo_check_problem(page))
+        self.assertEqual(deploy.demo_check_problem(page + section), "")
+        self.assertIn("2", deploy.demo_check_problem(page + section + section))
+
+
+MATCH = "9f" * 48
+
+
+class _StubTransport:
+    """The deploy's `http`, answered from one stubbed `/verify` body.
+
+    Every other row `verify_public` records is made to pass, so the only
+    possible FAIL is the marker row under test. That is the shape that makes
+    deleting the `record(section_problem == "", …)` call redden the suite.
+    """
+
+    def __init__(self, module, verify_body: str) -> None:
+        self.module = module
+        self.verify_body = verify_body
+
+    def _login_page(self) -> bytes:
+        head = "".join(f'<link rel="icon" href="./{name}">'
+                       for name in ("favicon.ico", "icon-32.png",
+                                    "apple-touch-icon.png"))
+        return ("<!doctype html><html><head><title>Sign in — Odile</title>"
+                + head + self.module.CREDIT_COMMENT + "</head><body>"
+                '<form data-provider="basic" aria-label="Sign in">'
+                "This is an Odile demo instance.</form></body></html>").encode()
+
+    def __call__(self, url: str, *, method: str = "GET", body: bytes | None = None,
+                 headers: dict[str, str] | None = None,
+                 cookie: str = "") -> tuple[int, bytes, dict]:
+        parts = urllib.parse.urlsplit(url)
+        route = parts.path
+        if parts.netloc == self.module.MACHINE_HOST:
+            return 200, b"the machine's own name answers", {}
+        if route == "/login":
+            return 200, self._login_page(), {
+                "Strict-Transport-Security": "max-age=31536000",
+                "X-Robots-Tag": "noindex"}
+        for name, _pin, content_type in self.module.ICONS:
+            if route == "/" + name:
+                if method == "HEAD":
+                    return 200, b"", {"Content-Length": "1"}
+                return 200, (ROOT / "web" / name).read_bytes(), {
+                    "Content-Type": content_type,
+                    "Cache-Control": "public, max-age=31536000, immutable"}
+        if route in ("/favicon.ico/../../etc/passwd", "/..%2f..%2fetc%2fpasswd"):
+            return 404, b"not found", {}
+        if route == "/":
+            if cookie:
+                return 200, b'<div id="root"></div>', {}
+            return 302, b"", {"Location": "https://demo.odile.fyi/login"}
+        if route == "/api/sessions":
+            if not cookie:
+                return 401, b"", {}
+            return 200, json.dumps(
+                {"sessions": [{"title": "Start here — Odile demo"}]}).encode(), {}
+        if route == "/verify":
+            return 200, self.verify_body.encode("utf-8"), {}
+        if route == "/attestation":
+            return 200, json.dumps({"measurement": MATCH}).encode(), {}
+        raise AssertionError(f"the stub got an unexpected URL: {url}")
+
+
+def served_page(pairs: int) -> str:
+    """A /verify body with *pairs* demo-check sections and the live measurement.
+
+    The command line is present even at zero pairs, so a no-section page still
+    passes the command row and the marker row is the only FAIL.
+    """
+    lede = (DEMO / "verify-lede.html").read_text(encoding="utf-8").strip()
+    command = ((DEMO / "verify-command.html").read_text(encoding="utf-8")
+               .strip().replace("{{MEASUREMENT}}", MATCH))
+    line = f'<p class="caption">./odile-verify https://demo.odile.fyi --expect {MATCH}</p>'
+    return (f'<main>{lede}<p>{MATCH}</p>{line}'
+            + (command + "\n") * pairs + "</main>")
+
+
+class VerifyPublicSectionTests(unittest.TestCase):
+    """ODL-563 N3: the deploy's marker gate is driven, not just its helper.
+
+    `demo_check_problem`'s own tests stay green if the `record(section_problem
+    == "", …)` line in `verify_public` is deleted, and the deploy then stops
+    failing a stale page. These tests call `verify_public` over a stub whose
+    every other row passes, so the marker record is the only thing that can
+    produce a FAIL.
+    """
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.deploy = load(DEMO / "deploy_demo_public.py",
+                          "demo_deploy_marker_wiring_test")
+
+    def run_verify(self, pairs: int) -> tuple[bool, list[str]]:
+        stub = _StubTransport(self.deploy, served_page(pairs))
+        with mock.patch.object(self.deploy, "http", stub), \
+                mock.patch.object(self.deploy, "sign_in",
+                                  lambda base, password: "session=stub"):
+            return self.deploy.verify_public("x" * 16)
+
+    def test_the_stub_page_with_one_section_passes_every_row(self) -> None:
+        ok, lines = self.run_verify(1)
+        self.assertTrue(ok, "\n".join(lines))
+        self.assertEqual([line for line in lines if line.startswith("FAIL")], [])
+
+    def test_a_page_with_no_section_fails_and_names_the_marker_counts(self) -> None:
+        ok, lines = self.run_verify(0)
+        self.assertFalse(ok)
+        failures = [line for line in lines if line.startswith("FAIL")]
+        self.assertEqual(len(failures), 1, "\n".join(lines))
+        self.assertIn("exactly one demo-check section", failures[0])
+        self.assertIn("0 '<!--demo-check-->' marker(s)", failures[0])
+        self.assertIn("0 '<!--/demo-check-->' closer(s)", failures[0])
+
+    def test_a_page_with_two_sections_fails_and_names_the_marker_counts(self) -> None:
+        ok, lines = self.run_verify(2)
+        self.assertFalse(ok)
+        failures = [line for line in lines if line.startswith("FAIL")]
+        self.assertEqual(len(failures), 1, "\n".join(lines))
+        self.assertIn("2 '<!--demo-check-->' marker(s)", failures[0])
+        self.assertIn("2 '<!--/demo-check-->' closer(s)", failures[0])
 
 
 if __name__ == "__main__":
