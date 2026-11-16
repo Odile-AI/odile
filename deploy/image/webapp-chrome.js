@@ -58,9 +58,9 @@
  * empty-state sentence. A subscriber's workspace keeps its own sentence.
  *
  * Two more things follow the machine rather than the demo. The Verify link is
- * the demo's ODL-500 href on demo.odile.fyi and the machine's own `/verify`
- * everywhere else: odile.fyi/verify describes the demo machine, while a
- * subscriber's report is served by that subscriber's VM (odilectl/offboard.py
+ * the demo's own `/verify` on demo.odile.fyi — the same host, one hop
+ * (ODL-564) — and the machine's own `/verify` everywhere else: a subscriber's
+ * report is served by that subscriber's VM (odilectl/offboard.py
  * probes the same path). And the workspace gets the semantics the vendor shell
  * omits — `role="main"` on the chat surface, one visually hidden <h1> named
  * as the page title, and `role="navigation"` + `aria-label="Sessions"` on the
@@ -108,11 +108,11 @@
   const TITLE_SUFFIXES = [' · Hermes Agent', ' · Hermes']
   // The one persistent route from the workspace to the machine's report. It
   // sits in the titlebar, left of the app controls, so a judge meets it on
-  // every screen without opening a chat message or a menu (ODL-500). The demo
-  // keeps the ODL-500 href; on a subscriber's machine the report is served by
-  // that machine at /verify, and odile.fyi/verify describes the demo machine.
+  // every screen without opening a chat message or a menu (ODL-500). On the
+  // demo it is the demo's own /verify — the same host, one hop (ODL-564); on a
+  // subscriber's machine the report is served by that machine at /verify.
   const VERIFY_LINK = 'a.odile-verify-link'
-  const VERIFY_HREF_DEMO = 'https://odile.fyi/verify'
+  const VERIFY_HREF_DEMO = 'https://demo.odile.fyi/verify'
   const VERIFY_HREF_TENANT = '/verify'
   const VERIFY_LABEL = 'Verify this machine'
   // The one host where the empty-state sentence and the hidden row writes are
