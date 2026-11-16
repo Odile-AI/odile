@@ -462,8 +462,12 @@ evidence is in `/var/tmp/odile-218f-evidence/` (this card's scratch root,
 attached to the card): `self-test.txt` (PASS), `one-byte.txt` (a copy with one
 byte flipped inside the embedded program: `FAIL the embedded odile-export
 matches its pinned hash`, `FAIL this installer's shipped signature verifies`,
-exit 1), `sim.txt` (the scratch install's placement and the SHA-256 pair) and
-`release.txt` (`tools/recut_release.py`, its `--check`, and the manifest pair). `odilectl` in the blocks is
+exit 1), `signature.txt` (`--verify-signature` OK, sha256 `2cdf0801…`),
+`sim.txt` (the scratch install's placement and the SHA-256 pair),
+`release-check.txt` (`tools/recut_release.py --check`: five `ok` hash lines and
+four `ok` signatures) and `manifest-pair.txt` (the installer, its release copy,
+the manifest, `release.json` and the skills tarball — sha256 and size; the
+manifest's `installer_sha256` is the installer's own hash). `odilectl` in the blocks is
 `/usr/bin/python3 -m odilectl` run from the checkout; the name is not installed
 as a console script. `dns` is the one exception: it runs as
 `/usr/bin/python3 -m odilectl.dns` (the module's own entry point), because

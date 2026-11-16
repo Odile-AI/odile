@@ -1969,11 +1969,12 @@ claimed, and the skills artifact (`9d82653f…`, 851,945 bytes) and the
 manifest `4664da84…` (49,957 bytes), `--self-test` PASS,
 `--verify-signature` OK, `tools/recut_release.py --check` prints `ok` for the
 installer, its release copy and both documents; `release/release.json`
-(`fdf96240…`) names `2026.11.15-9` at `2026-11-15T22:25:00Z`. It is committed,
+(`5bee6fd3…`) names `2026.11.15-9` at `2026-11-15T23:59:00Z` (re-cut from
+22:25Z after t_d95b8c13 re-cut `-8` at 22:45Z). It is committed,
 not deployed: the URL still serves `2026.11.14-8` (`0c53a722…`, 1,356,516
 bytes; manifest `3a532eff…`). The id ledger: `-7` is t_ab95ec2a's open cut
-(10:45Z), `-8` is t_d95b8c13's (20:00Z), and `-9` is later than every cut by
-`generated_at`.
+(10:45Z), `-8` is t_d95b8c13's (re-cut at 22:45Z, `6a98879`), and `-9` is
+later than every cut by `generated_at` as of its 2026-11-15T23:59:00Z cut.
 
 The clock starts at the build's `uki.sh --sign` and stops when
 `https://<slug>.odile.fyi/login` answers 200 over TLS. The gate is 30 minutes.

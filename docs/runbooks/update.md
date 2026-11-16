@@ -949,10 +949,13 @@ record. Installer `2cdf0801…` (1,424,179 bytes), manifest `4664da84…`
 (49,957 bytes; its only move against `-6` is `installer_sha256`, so it is a
 surgical re-cut and not a root rebuild), skills `9d82653f…` unchanged,
 `--self-test` PASS, `--verify-signature` OK and `tools/recut_release.py
---check` green. It is committed, not deployed: the URL serves the deployed
-`2026.11.14-8` (installer `0c53a722…`, 1,356,516 bytes; manifest
-`3a532eff…`). The id ledger: `-7` is t_ab95ec2a's open cut, `-8` is
-t_d95b8c13's; `-9` is later than every cut by `generated_at`.
+--check` green. The document was re-cut at `2026-11-15T23:59:00Z`
+(`release/release.json` `5bee6fd3…`) after t_d95b8c13 re-cut `-8` at 22:45Z
+(`6a98879`), so this ledger is true at this cut. It is committed, not
+deployed: the URL serves the deployed `2026.11.14-8` (installer `0c53a722…`,
+1,356,516 bytes; manifest `3a532eff…`). The id ledger: `-7` is t_ab95ec2a's
+open cut, `-8` is t_d95b8c13's (re-cut at 22:45Z); `-9` is later than every
+cut by `generated_at`.
 
 ## 6. The guest: check, apply, rollback
 

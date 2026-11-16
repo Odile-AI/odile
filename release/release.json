@@ -14,13 +14,13 @@
   "boot": {
     "kernel": "6.12.115+deb13.1-amd64"
   },
-  "generated_at": "2026-11-15T22:25:00Z",
+  "generated_at": "2026-11-15T23:59:00Z",
   "manifest": {
     "sha256": "4664da84a67633dd907b9cf138bc38386da9e4c7afc8b4b24df6cd2e683c9a9a",
     "signature_url": "manifest.json.sig",
     "url": "manifest.json"
   },
-  "notes": "t_2efbd6e3 (ODL-218 follow-up): the signed installer now carries the guest export program \u2014 odilectl/offboard.py's EXPORT_PROGRAM, the bytes `odilectl export <slug> --script` prints \u2014 and places it at /usr/local/bin/odile-export (0755 root) on every install, so a fresh tenant has the command without the hand placement the ODL-218 drill used. The embed is installer/embed_export.py; --self-test pins the bytes, checks them against the checkout and fails on a one-byte edit. Everything else the -6 installer carried is unchanged. release/manifest.json is -6's fresh-root document with only installer_sha256 re-derived by tools/recut_release.py, so this is a surgical re-cut, not a root rebuild. The id is 2026.11.15-9: -7 is t_ab95ec2a's open cut (10:45Z), -8 is t_d95b8c13's (20:00Z), and -9 is later than every cut by generated_at. It is committed, not deployed.",
+  "notes": "t_2efbd6e3 (ODL-218 follow-up): the signed installer now carries the guest export program \u2014 odilectl/offboard.py's EXPORT_PROGRAM, the bytes `odilectl export <slug> --script` prints \u2014 and places it at /usr/local/bin/odile-export (0755 root) on every install, so a fresh tenant has the command without the hand placement the ODL-218 drill used. The embed is installer/embed_export.py; --self-test pins the bytes, checks them against the checkout and fails on a one-byte edit. Everything else the -6 installer carried is unchanged. release/manifest.json is -6's fresh-root document with only installer_sha256 re-derived by tools/recut_release.py, so this is a surgical re-cut, not a root rebuild. The id is 2026.11.15-9: -7 is t_ab95ec2a's open cut (10:45Z), -8 is t_d95b8c13's (re-cut at 22:45Z, `6a98879`), and -9 is later than every cut by `generated_at` at this cut's 2026-11-15T23:59:00Z. It is committed, not deployed.",
   "product": "odile",
   "release": "2026.11.15-9",
   "schema": 1
