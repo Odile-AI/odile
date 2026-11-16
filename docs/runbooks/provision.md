@@ -371,6 +371,12 @@ three append-only events (`invited`, `claimed`, `provisioning`). The two state
 words differ because the web row says "a machine was ordered" and the state
 machine says "waiting for the ceremony"; both are true at once.
 
+The boot record the machine posts after its first boot (`odilectl boot-record`
+is the operator's repair path) adds `detail.boot_key`, `detail.boot_release`
+and `detail.recorded_at` — the stamp of the **first** record, kept against
+every replay like `installed_at`. Liveness is `tenant_state.last_heartbeat`,
+never this field.
+
 ```
 $ /usr/bin/python3 manage.py funnel
 signups                2

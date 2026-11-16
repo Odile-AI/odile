@@ -1996,8 +1996,12 @@ $ sha256sum /var/tmp/odile-odl523-build/record-A.txt
 ```
 
 `detail.host_key` is the key A generated on its first boot (this section's
-`guest key` line) — not the image's, because the image has none. The disk after
-the boot (an excerpt of `disk-facts.sh`, which also prints the disk hash and the
+`guest key` line) — not the image's, because the image has none.
+`detail.recorded_at` is the **first** record's stamp — the row's write time,
+like `installed_at` — so B's later boot (§13.11.6) leaves it at A's
+`07:14:32Z` and a replay writes no row at all; liveness is
+`tenant_state.last_heartbeat`, not this field. The disk after the boot (an
+excerpt of `disk-facts.sh`, which also prints the disk hash and the
 first-visit state):
 
 ```sh
