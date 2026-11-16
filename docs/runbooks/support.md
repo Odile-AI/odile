@@ -52,7 +52,10 @@ curl -sS https://<slug>.odile.fyi/verify | grep "operator key"
 `<slug>` is the machine's own name (`odl-7971a8` in the drill), and that page
 is fed by `/var/lib/odile/access-report.txt`; its `operator key` row reads
 `PASS none (authorized_keys: 1 line(s), the measured throwaway)`. The page at
-`https://odile.fyi/verify` is Odile's own machine, not the tenant's.
+`https://odile.fyi/verify` is not that page: HQ answers **302** to
+`https://demo.odile.fyi/verify`, the demo tenant's own page, where the
+sentence, the report and the access report are one machine. HQ's own report is
+the JSON at `https://odile.fyi/attestation`.
 
 `status` never creates the state, the log or the timer. As root it converges
 first, so a grant whose timer never started still closes — or is restored — the

@@ -92,6 +92,14 @@ RATE_WINDOW = 600       # seconds
 # an HQ page; the two nav links on the landing page point at this URL directly.
 DEMO_LOGIN_URL = "https://demo.odile.fyi/login"
 
+# odile.fyi/verify is the demo tenant's page, not HQ's (ODL-562). The demo's
+# own page pairs the v3.8b tenant sentence with the report and the access
+# report of one machine; HQ's guest is a different machine and has no tenant
+# access report. The Host gate keeps a DNS fallback (demo.odile.fyi -> HQ, with
+# the demo role) from redirecting to itself.
+DEMO_HOST = "demo.odile.fyi"
+DEMO_VERIFY_URL = "https://demo.odile.fyi/verify"
+
 # The verifier bundle /verify offers: the script, its one module, the pin and
 # the AMD chain. Built once, in memory; no route reads arbitrary paths.
 VERIFIER_BUNDLE_FILES = (
@@ -532,6 +540,16 @@ def access_report() -> dict:
     return {"state": "ok", "at": at, "text": "\n".join(lines[1:])}
 
 
+def app_role(role: str = "") -> str:
+    """The role this app renders: ``demo`` on HQ, ``tenant`` on a tenant.
+
+    One normalisation for the page render and the `/verify` Host gate, so the
+    two cannot disagree about what the environment said.
+    """
+    name = (role or os.environ.get("ODILE_ROLE") or "demo").strip().lower()
+    return name if name in ("demo", "tenant") else "demo"
+
+
 def render_verify(role: str = "") -> str:
     """The proof page: the report, the verifier command, the three gaps.
 
@@ -549,9 +567,7 @@ def render_verify(role: str = "") -> str:
     HQ's copy of the old demo-reset note published a reliability claim the deck
     had retired; the demo's own page is the tenant's (t_9c2d31f1).
     """
-    role = (role or os.environ.get("ODILE_ROLE") or "demo").strip().lower()
-    if role not in ("demo", "tenant"):
-        role = "demo"
+    role = app_role(role)
     report = cached_report()
     if report is None:
         values = {
@@ -709,9 +725,12 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response_only(code, message)
         self.send_header("Date", self.date_time_string())
 
-    def _send(self, code, body, ctype="text/html; charset=utf-8", head=False, cache="no-store"):
+    def _send(self, code, body, ctype="text/html; charset=utf-8", head=False, cache="no-store",
+              location=None):
         data = body.encode("utf-8") if isinstance(body, str) else body
         self.send_response(code)
+        if location is not None:
+            self.send_header("Location", location)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(data)))
         self.send_header("Cache-Control", cache)
@@ -774,7 +793,14 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/attestation":
             return self._send(200, self._attestation(), "application/json", head=head)
         if path == "/verify":
-            return self._send(200, render_verify(), head=head)
+            # GET and HEAD alike: the HQ app is not the machine the demo's
+            # sentence describes (ODL-562). Only the demo host renders the
+            # page, so a DNS fallback cannot loop; a tenant always renders.
+            role = app_role()
+            host = (self.headers.get("Host") or "").split(":", 1)[0].strip().lower()
+            if role == "demo" and host != DEMO_HOST:
+                return self._send(302, "", head=head, location=DEMO_VERIFY_URL)
+            return self._send(200, render_verify(role), head=head)
         if path == "/faq":
             return self._send(200, render_faq(), head=head)
         if path == "/privacy":

@@ -112,10 +112,16 @@ def stop_app(proc) -> None:
         proc.communicate()
 
 
-def http_request(port, path, method="GET", fields=None, raw=False):
-    """One request to a test server; the body is bytes when raw=True."""
+def http_request(port, path, method="GET", fields=None, raw=False, host=None):
+    """One request to a test server; the body is bytes when raw=True.
+
+    ``host`` sets the Host header explicitly: /verify is host-gated, so a
+    test that wants the page rather than the redirect must name the demo host.
+    """
     body = urllib.parse.urlencode(fields) if fields is not None else None
     headers = {"Content-Type": "application/x-www-form-urlencoded"} if body else {}
+    if host is not None:
+        headers["Host"] = host
     conn = http.client.HTTPConnection("127.0.0.1", port, timeout=10)
     conn.request(method, path, body=body, headers=headers)
     res = conn.getresponse()
@@ -148,7 +154,10 @@ class Flow(unittest.TestCase):
         cls.db = os.path.join(cls.tmp.name, "waitlist.db")
         cls.attest = os.path.join(cls.tmp.name, "attestation.json")
         write_attestation(cls.attest)
-        cls.proc, cls.port = start_app(ODILE_DB=cls.db, ODILE_ATTEST=cls.attest)
+        # Explicit role: /verify is host-gated only in the demo role, and an
+        # ODILE_ROLE inherited from the shell must not choose what this tests.
+        cls.proc, cls.port = start_app(
+            ODILE_DB=cls.db, ODILE_ATTEST=cls.attest, ODILE_ROLE="demo")
 
     @classmethod
     def tearDownClass(cls):
@@ -159,8 +168,13 @@ class Flow(unittest.TestCase):
     def url(cls, path: str) -> str:
         return "http://127.0.0.1:%d%s" % (cls.port, path)
 
-    def request(self, path, method="GET", fields=None, raw=False):
-        return http_request(self.port, path, method=method, fields=fields, raw=raw)
+    def request(self, path, method="GET", fields=None, raw=False, host=None):
+        return http_request(self.port, path, method=method, fields=fields, raw=raw,
+                            host=host)
+
+    def verify(self, method="GET"):
+        """The demo host's /verify: the shape the demo tenant serves."""
+        return self.request("/verify", method, host="demo.odile.fyi")
 
     def signup(self, email="someone@example.com"):
         res, _ = self.request("/waitlist", "POST", {"email": email})
@@ -330,7 +344,7 @@ class Flow(unittest.TestCase):
     # -- the proof page ----------------------------------------------------
 
     def test_verify_page_shows_the_report_and_the_three_gaps(self):
-        res, body = self.request("/verify")
+        res, body = self.verify()
         self.assertEqual(res.status, 200)
         self.assertIn("text/html", res.getheader("Content-Type") or "")
         self.assertIn(MEASUREMENT, body, "the full measurement must be on the page")
@@ -354,8 +368,43 @@ class Flow(unittest.TestCase):
         positions = [body.index(gap) for gap in GAPS]
         self.assertEqual(positions, sorted(positions), "the gaps are out of order")
 
+    def test_verify_on_odile_fyi_redirects_to_the_demo_tenants_own_page(self):
+        # ODL-562: HQ's /verify put the demo's tenant sentence over HQ's own
+        # guest. The HQ app now answers a 302 to the page where the sentence,
+        # the report and the access report are the same machine.
+        for method in ("GET", "HEAD"):
+            with self.subTest(method=method):
+                res, body = self.request("/verify", method, host="odile.fyi")
+                self.assertEqual(res.status, 302)
+                self.assertEqual(res.getheader("Location"),
+                                 "https://demo.odile.fyi/verify")
+                self.assertEqual(body, "")
+                self.assertEqual(res.getheader("Cache-Control"), "no-store")
+
+    def test_verify_redirect_does_not_depend_on_host_case_or_port(self):
+        # The Host header is split on the port and lowercased: a proxy or a
+        # curl -H 'Host: ODILE.FYI:443' must get the same answer.
+        for host in ("ODILE.FYI", "odile.fyi:443", "127.0.0.1"):
+            with self.subTest(host=host):
+                res, body = self.request("/verify", host=host)
+                self.assertEqual(res.status, 302)
+                self.assertEqual(res.getheader("Location"),
+                                 "https://demo.odile.fyi/verify")
+                self.assertEqual(body, "")
+
+    def test_verify_on_the_demo_host_renders_the_page(self):
+        # The DNS fallback (demo.odile.fyi -> HQ with the demo role) must not
+        # redirect to itself; case and an explicit port are part of the Host.
+        for host in ("demo.odile.fyi", "DEMO.ODILE.FYI:443"):
+            with self.subTest(host=host):
+                res, body = self.request("/verify", host=host)
+                self.assertEqual(res.status, 200)
+                self.assertIn("This is Odile's tenant machine", body)
+                self.assertIn(MEASUREMENT, body)
+                self.assertIn(FETCHED_AT, body)
+
     def test_verify_page_has_no_javascript_and_no_external_request(self):
-        _, body = self.request("/verify")
+        _, body = self.verify()
         self.assertNotIn("<script", body.lower())
         self.assertIsNone(
             re.search(r"<(?:script|link|img)\b[^>]*\b(?:src|href)=[\"']https?://", body, re.I),
@@ -371,19 +420,19 @@ class Flow(unittest.TestCase):
     def test_verify_page_names_no_network_record(self):
         # The product tells one story — the pin in the repository. The NEAR
         # testnet anchor left no section, link or vocabulary behind (ODL-421).
-        _, body = self.request("/verify")
+        _, body = self.verify()
         self.assertNotIn("testnet", body.lower())
         self.assertNotIn("anchor", body.lower())
 
     def test_verify_page_has_no_unrendered_placeholders(self):
-        _, body = self.request("/verify")
+        _, body = self.verify()
         self.assertNotIn("{{", body)
         self.assertNotIn("}}", body)
 
     def test_verify_page_prompt_is_decorative(self):
         # Selecting the <pre> must not copy the prompt: a pasted "$" is
         # "command not found", and this command is the page's one action.
-        _, body = self.request("/verify")
+        _, body = self.verify()
         self.assertIn('class="prompt" aria-hidden="true"', body)
         self.assertRegex(body, r"\.prompt\{[^}]*user-select:none")
 
@@ -391,7 +440,7 @@ class Flow(unittest.TestCase):
         # The embedded Cormorant subset carries no U+2192 or U+2026, so a bare
         # arrow or ellipsis falls back to a third serif family. Both carry the
         # mono stack instead.
-        _, body = self.request("/verify")
+        _, body = self.verify()
         self.assertIn('<span class="mono">&rarr;</span>', body)
         self.assertIn('<span class="mono">&hellip;</span>', body)
         bare = re.sub(r'<span class="mono">(?:&rarr;|&hellip;)</span>', "", body)
@@ -400,21 +449,21 @@ class Flow(unittest.TestCase):
 
     def test_verify_page_keeps_machine_tokens_whole(self):
         # At 390 a break after the hyphen reads as the start of a new row.
-        _, body = self.request("/verify")
+        _, body = self.verify()
         self.assertIn('<span class="nowrap">SHA-256</span>', body)
         self.assertIn('<span class="nowrap"><code>odile-verify.pin</code></span>', body)
 
     def test_verify_page_adds_no_unapproved_claim(self):
         # The refresh cadence is an implementation detail: docs/CLAIMS.md has
         # no row for it, so the page may not mention it.
-        _, body = self.request("/verify")
+        _, body = self.verify()
         self.assertNotIn("cached", body.lower())
         self.assertNotIn("timer", body.lower())
 
     def test_verify_without_a_report_still_serves_the_page(self):
         os.unlink(self.attest)
         try:
-            res, body = self.request("/verify")
+            res, body = self.verify()
         finally:
             write_attestation(self.attest)
         self.assertEqual(res.status, 200)
@@ -425,7 +474,7 @@ class Flow(unittest.TestCase):
     def test_verify_escapes_a_hostile_measurement(self):
         write_attestation(self.attest, measurement="<script>alert(1)</script>")
         try:
-            res, body = self.request("/verify")
+            res, body = self.verify()
         finally:
             write_attestation(self.attest)
         self.assertEqual(res.status, 200)
@@ -438,7 +487,7 @@ class Flow(unittest.TestCase):
         self.assertIn("application/json", res.getheader("Content-Type") or "")
         data = json.loads(body)
         self.assertEqual(data["measurement"], MEASUREMENT)
-        _, page_body = self.request("/verify")
+        _, page_body = self.verify()
         self.assertIn(data["measurement"], page_body)
 
     # -- the FAQ -----------------------------------------------------------
@@ -558,7 +607,7 @@ class Flow(unittest.TestCase):
         self.assertEqual(body, "")
 
     def test_verify_page_offers_the_verifier_bundle(self):
-        _, body = self.request("/verify")
+        _, body = self.verify()
         self.assertIn("https://odile.fyi/odile-verify.tar.gz", body)
         self.assertIn("tar xzf odile-verify.tar.gz", body)
         self.assertIn("./odile-verify https://odile.fyi", body)
@@ -569,7 +618,7 @@ class Flow(unittest.TestCase):
         # demo block quotes the v3.8b deck row verbatim. Savio's 2026-11-14
         # decision makes the tenant's login page the judge's entry surface;
         # the header and foot links go there, not to the retiring /judge.
-        _, body = self.request("/verify")
+        _, body = self.verify()
         self.assertIn("This is Odile's tenant machine", body)
         self.assertIn("Odile holds this machine's boot key and can log in.", body)
         self.assertNotIn("It is not a tenant machine", body)
@@ -581,7 +630,7 @@ class Flow(unittest.TestCase):
         # reset the demo no longer has, and docs/CLAIMS.md v3.8b says the
         # opposite ("There is no nightly reset"), so the page drops it
         # (t_9c2d31f1).
-        _, body = self.request("/verify")
+        _, body = self.verify()
         self.assertNotIn("resets daily", body)
         self.assertNotIn("00:00 UTC", body)
         self.assertNotIn("This demo comes back without you", body)
@@ -792,6 +841,77 @@ class Flow(unittest.TestCase):
         self.assertEqual(
             res.getheader("Content-Length"),
             str(os.path.getsize(os.path.join(ROOT, "release", "manifest.json"))))
+
+
+class TenantVerify(unittest.TestCase):
+    """ODILE_ROLE=tenant: /verify is the machine's own page, on any Host.
+
+    The redirect is a demo-role (HQ) answer only. A tenant machine has no
+    demo page to send a reader to, and its page is already the machine's own:
+    the report, the access report and the public sentence are one machine.
+    """
+
+    AT = "2026-11-11T10:00:00Z"
+    ROWS = (
+        "  usable keys    PASS  0 usable user keys; every authorized_keys line is the measured boot key",
+        "  boot key       PASS  ssh-ed25519 SHA256:LLwDfYyE3VMc9T9o+XvydfNzrXxyzaQ2lysSxCSSEWA; public key only",
+        "  seal           PASS  policy 0x30000; seal_id strict-bench-v1; measurement " + "a" * 96,
+        "  sign-in hash   PASS  scrypt hash present in /home/odile/.hermes/.env; no plaintext password",
+        "  operator key   PASS  none (authorized_keys: 1 line(s), the measured throwaway)",
+    )
+    SUMMARY = ("PASS \u2014 five checks: zero usable user keys, the throwaway boot key, "
+               "the seal, the sign-in hash, no operator key.")
+
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = tempfile.TemporaryDirectory()
+        cls.db = os.path.join(cls.tmp.name, "waitlist.db")
+        cls.attest = os.path.join(cls.tmp.name, "attestation.json")
+        cls.report = os.path.join(cls.tmp.name, "access-report.txt")
+        write_attestation(cls.attest)
+        with open(cls.report, "w", encoding="utf-8") as handle:
+            handle.write("read from your machine, %s\n" % cls.AT)
+            handle.write("verify_and_unlock \u2014 access report\n\n")
+            handle.write("\n".join(cls.ROWS) + "\n\n")
+            handle.write("  %s\n" % cls.SUMMARY)
+        cls.proc, cls.port = start_app(
+            ODILE_DB=cls.db, ODILE_ATTEST=cls.attest,
+            ODILE_ROLE="tenant", ODILE_ACCESS_REPORT=cls.report)
+
+    @classmethod
+    def tearDownClass(cls):
+        stop_app(cls.proc)
+        cls.tmp.cleanup()
+
+    def request(self, path, method="GET", host=None):
+        return http_request(self.port, path, method=method, host=host)
+
+    def test_a_tenant_renders_its_own_page_on_every_host(self):
+        # No redirect: a tenant's /verify is not the demo's page, so the
+        # odile.fyi Host must answer with this machine's own report.
+        for host in ("odile.fyi", "demo.odile.fyi"):
+            with self.subTest(host=host):
+                res, body = self.request("/verify", host=host)
+                self.assertEqual(res.status, 200)
+                self.assertIn(MEASUREMENT, body)
+                self.assertIn(FETCHED_AT, body)
+                self.assertIn("read from your machine", body)
+                self.assertIn("usable keys    PASS", body)
+                self.assertIn("No one at Odile can log in to a tenant machine.", body)
+                self.assertNotIn("This is Odile's tenant machine", body)
+                self.assertNotIn("from a test machine", body)
+
+    def test_a_tenant_page_keeps_the_three_gaps(self):
+        _, body = self.request("/verify", host="odile.fyi")
+        for gap in GAPS:
+            self.assertIn(gap, body)
+        positions = [body.index(gap) for gap in GAPS]
+        self.assertEqual(positions, sorted(positions), "the gaps are out of order")
+
+    def test_a_tenant_head_verify_has_no_body(self):
+        res, body = self.request("/verify", "HEAD", host="odile.fyi")
+        self.assertEqual(res.status, 200)
+        self.assertEqual(body, "")
 
 
 class ReleaseServing(unittest.TestCase):
