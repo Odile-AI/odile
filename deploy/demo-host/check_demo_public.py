@@ -16,9 +16,15 @@ must be where the check found it. The seed's turn is a judge's own turn.
 
     ./deploy/demo-host/check_demo_public.py --password-file /path/to/demo-password
     ./deploy/demo-host/check_demo_public.py            # the public half only
+    ./deploy/demo-host/check_demo_public.py --target "$(dig +short demo.odile.fyi)"
+                                                       # the public half on the live zone
     ./deploy/demo-host/check_demo_public.py --password-file … --persistence
     ./deploy/demo-host/check_demo_public.py --password-file … --sessions
                                                        # + a fourth concurrent session runs
+
+The two DNS rows take the expected A record from ``--target``. The default is
+the tree's redacted address (``create_dns.TENANT_IP``), so a live zone needs
+the flag; both public names must answer the one expected address.
 
 Exit codes: 0 every check passed, 1 a failure named, 2 a missing prerequisite.
 """
@@ -49,10 +55,18 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 
+import create_dns  # noqa: E402
 import tenant_console  # noqa: E402
 
-DEMO = "https://demo.odile.fyi"
-MACHINE = "https://odl-7971a8.odile.fyi"
+DEMO_NAME = "demo.odile.fyi"
+MACHINE_NAME = "odl-7971a8.odile.fyi"
+DEMO = "https://" + DEMO_NAME
+MACHINE = "https://" + MACHINE_NAME
+#: The address the two public names must answer. The tree carries the tenant's
+#: redacted address (docs/ops/PUBLIC-TREE.md), so the default is the same value
+#: `create_dns.py` and the deploy's `--target` name; a live run passes
+#: ``--target "$(dig +short demo.odile.fyi)"``.
+DEFAULT_DNS = create_dns.TENANT_IP
 TENANT_BASE = tenant_console.DEFAULT_BASE
 DEMO_UNIT_GLOB = "odile-demo-*"
 APPLY = "/usr/local/lib/odile-demo-public/apply_demo_public.py"
@@ -257,6 +271,26 @@ def dig(name: str) -> list[str]:
     return [line.strip() for line in result.stdout.splitlines() if line.strip()]
 
 
+def dns_checks(expected: str, resolve=dig) -> list[tuple[bool, str]]:
+    """The two DNS rows: both public names answer the one expected address.
+
+    Returns ``(ok, row)`` pairs instead of printing, so a unit test can drive
+    both shapes without a network. The second row requires the machine's own
+    name to answer the same address — a well-formed answer somewhere else is
+    the tenant block pointing at a host that no longer serves this machine.
+    """
+    demo = resolve(DEMO_NAME)
+    machine = resolve(MACHINE_NAME)
+    return [
+        (demo == [expected],
+         f"dig {DEMO_NAME} A -> {', '.join(demo) or 'none'} (expected {expected})"),
+        (machine == [expected] and machine == demo,
+         f"dig {MACHINE_NAME} A -> {', '.join(machine) or 'none'} "
+         "(the tenant's own name answers the same address, "
+         f"expected {expected})"),
+    ]
+
+
 def certificate(name: str) -> tuple[str, str]:
     pem = ssl.get_server_certificate((name, 443), timeout=15)
     subject = subprocess.run(["openssl", "x509", "-noout", "-subject"], input=pem,
@@ -348,13 +382,11 @@ def judge_delete_a_session(password: str, cookie: str, console=None) -> None:
           "the session the judge deleted is gone (GET -> 404)")
 
 
-def public_checks(password: str) -> str:
+def public_checks(password: str, target: str = DEFAULT_DNS) -> str:
     wait_for_gate()
     print("== dns")
-    answers = dig("demo.odile.fyi")
-    check(answers == ["203.0.113.87"], f"dig demo.odile.fyi A -> {', '.join(answers) or 'none'}")
-    check(dig("odl-7971a8.odile.fyi") == ["203.0.113.87"],
-          "the tenant's own name still answers the same address")
+    for ok, row in dns_checks(target):
+        check(ok, row)
 
     print("== tls")
     detail, _ = certificate("demo.odile.fyi")
@@ -884,6 +916,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--password-file", default="", help="the published judge password")
     parser.add_argument("--base", default="",
                         help="force one console base (default: the demo host, then the machine's own name)")
+    parser.add_argument("--target", default=DEFAULT_DNS,
+                        help="the A record both public names must answer "
+                             f"(default: the tree's redacted {DEFAULT_DNS})")
     parser.add_argument("--persistence", action="store_true",
                         help="write a file and restart odile-agent (part of done)")
     parser.add_argument("--sessions", action="store_true",
@@ -892,7 +927,7 @@ def main(argv: list[str] | None = None) -> int:
 
     password = (Path(args.password_file).read_text(encoding="utf-8").strip()
                 if args.password_file else "")
-    cookie = public_checks(password)
+    cookie = public_checks(password, args.target)
     if password:
         try:
             console = connect("judge", password, (args.base,) if args.base else ())

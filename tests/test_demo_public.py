@@ -22,8 +22,10 @@ These tests pin three things:
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import importlib.util
+import io
 import json
 import re
 import shutil
@@ -424,6 +426,60 @@ class VerifyPublicSectionTests(unittest.TestCase):
         self.assertEqual(len(failures), 1, "\n".join(lines))
         self.assertIn("2 '<!--demo-check-->' marker(s)", failures[0])
         self.assertIn("2 '<!--/demo-check-->' closer(s)", failures[0])
+
+
+class DnsRowTests(unittest.TestCase):
+    """The two DNS rows take the run's expected address, not the redaction.
+
+    The public tree carries the tenant's redacted address (create_dns.TENANT_IP),
+    so the check's default must be that value and a live zone must pass the
+    machine's real address explicitly. Both names have to answer the same one.
+    The non-redacted address is TEST-NET-2: the leak gate forbids the machine's
+    real address in the tree, and a row only compares strings.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.check = load(DEMO / "check_demo_public.py", "demo_check_dns_test")
+
+    def rows(self, expected: str, demo: list[str], machine: list[str]):
+        answers = {self.check.DEMO_NAME: demo, self.check.MACHINE_NAME: machine}
+        return self.check.dns_checks(expected, lambda name: list(answers[name]))
+
+    def test_the_tree_default_is_the_redacted_tenant_address(self):
+        self.assertEqual(self.check.DEFAULT_DNS, "203.0.113.87")
+        rows = self.rows(self.check.DEFAULT_DNS, ["203.0.113.87"], ["203.0.113.87"])
+        self.assertEqual([ok for ok, _ in rows], [True, True])
+        self.assertIn("203.0.113.87", rows[0][1])
+
+    def test_a_live_zone_passed_explicitly_passes(self):
+        rows = self.rows("198.51.100.7", ["198.51.100.7"], ["198.51.100.7"])
+        self.assertEqual([ok for ok, _ in rows], [True, True])
+        self.assertIn("198.51.100.7", rows[0][1])
+
+    def test_the_live_zone_fails_the_redacted_default(self):
+        rows = self.rows(self.check.DEFAULT_DNS, ["198.51.100.7"], ["198.51.100.7"])
+        self.assertEqual([ok for ok, _ in rows], [False, False])
+
+    def test_two_names_that_disagree_fail_the_second_row(self):
+        rows = self.rows("198.51.100.7", ["198.51.100.7"], ["198.51.100.8"])
+        self.assertEqual([ok for ok, _ in rows], [True, False])
+        self.assertIn("198.51.100.8", rows[1][1])
+
+    def test_main_passes_its_target_to_the_public_half(self):
+        seen: list[str] = []
+
+        def fake_public(password: str, target: str = "") -> str:
+            seen.append(target)
+            return ""
+
+        original = self.check.public_checks
+        self.check.public_checks = fake_public
+        self.addCleanup(setattr, self.check, "public_checks", original)
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(self.check.main([]), 0)
+            self.assertEqual(self.check.main(["--target", "198.51.100.7"]), 0)
+        self.assertEqual(seen, [self.check.DEFAULT_DNS, "198.51.100.7"])
 
 
 if __name__ == "__main__":
