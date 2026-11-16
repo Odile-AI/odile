@@ -56,7 +56,11 @@ Case D is why the defect hid: any live Hermes writer, or any other reader that
 touched the board first, leaves the side files behind and the timer passes. The
 03:30 run wrote the page and the 03:45 run failed, with nothing changed on the
 path but the side files; a read connection of my own created them at 06:37 and
-they were gone by 06:41, which is the same window the unit hit at 06:45.
+they were gone by 06:41, which is the same window the unit hit at 06:45. The live
+host agreed at 07:15Z: once the board was warm again the unit wrote the page
+(`Result=success`, mtime 07:15), so the same unit alternates between pass and
+fail with no change to its own files — the signature of state borrowed from
+another process.
 
 **Fix, one line, not applied here:** add
 `ReadWritePaths=/root/.hermes/kanban/boards/odile` to
