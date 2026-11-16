@@ -85,14 +85,18 @@ sentence.
 The sign-in page (Savio, 13 November 2026, card t_3d717ffc) carries the first
 row above and nothing else: one **Sign in** button, the published `judge`
 credential, no version credit. The tenant-machine, public-password and
-shared-workspace rows are carried by the tenant's own `/verify`
-(`deploy/demo-host/verify-lede.html`, served at `demo.odile.fyi/verify`) and by
-`web/verify.html`'s demo block, which quotes the tenant-machine row verbatim;
-`web/judge.html` carried them until ODL-901 retired `/judge` to a 301 (Savio,
-14 November 2026), and `README.md` was simplified the same day to link the login
-page only. The no-nightly-reset row stays approved here and has no public home
-until a card publishes it; `deploy/demo-host/login.html` carries only the first
-row.
+shared-workspace rows are carried by the demo tenant's own `/verify`
+(`deploy/demo-host/verify-lede.html`, served at `demo.odile.fyi/verify`), which
+is their public home. The HQ app's `https://odile.fyi/verify` answers **302**
+there (ODL-562): HQ's own guest is a different machine and has no tenant access
+report. `web/verify.html`'s demo block, which quotes the tenant-machine row
+verbatim, remains the HQ app's render; it is no longer served at
+`odile.fyi/verify`, and HQ's own report is the JSON at
+`https://odile.fyi/attestation`. `web/judge.html` carried the rows until
+ODL-901 retired `/judge` to a 301 (Savio, 14 November 2026), and `README.md`
+was simplified the same day to link the login page only. The no-nightly-reset
+row stays approved here and has no public home until a card publishes it;
+`deploy/demo-host/login.html` carries only the first row.
 
 ### First run and support
 
