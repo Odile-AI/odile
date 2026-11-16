@@ -19,9 +19,9 @@
 # marker under /var/lib/odile; every later boot reads the marker and exits
 # without running the installer. That is what makes the owner's config survive
 # a reboot: the installer's managed blocks (model, agent, custom_providers,
-# webapp, onboarding) and its .env allowlist are written on the first boot
-# only, so a key the owner changed afterwards — `webapp.public_url`, the
-# provider row, a key in `.env` — is not rewritten. The marker records the
+# dashboard, webapp, onboarding) and its .env allowlist are written on the
+# first boot only, so a key the owner changed afterwards — `webapp.public_url`,
+# the provider row, a key in `.env` — is not rewritten. The marker records the
 # run's exit code. A failed first run is not retried automatically; to retry it
 # on purpose, remove the marker and run this script with `--force` (or
 # ODILE_RELEASE_FORCE=1) — the log's earlier run line would otherwise make the
