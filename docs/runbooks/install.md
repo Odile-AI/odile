@@ -993,8 +993,8 @@ $ echo $?
 3
 ```
 
-Recorded on 2026-11-14 and re-measured on 2026-11-15 from the merged installer
-that carries the handoff audit
+Recorded on 2026-11-14 and re-measured on 2026-11-16 from the merged installer
+(`main`'s `f18e55a` plus this branch) that carries the handoff audit
 (ODL-208's `/usr/local/bin/odile-audit`, re-cut by the follow-up that reads
 `authorized_keys2` and scans `/root` for the boot key's private half) beside
 the strict-bar help surface (ODL-470's five answers), ODL-457's first-visit
