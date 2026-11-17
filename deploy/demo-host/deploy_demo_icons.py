@@ -19,6 +19,7 @@ It puts, as root:
   * ``web/first-visit.html``                -> the first-visit page
   * ``web/{favicon.ico,icon-32.png,…}``     -> ``/usr/local/lib/odile/icons``
   * ``deploy/image/odile-webapp-brand.py``  -> the union re-assert (name, chrome, tab)
+  * ``deploy/demo-host/webapp-chrome.js``   -> ``/usr/local/lib/odile/webapp-chrome.js``
   * ``deploy/demo-host/login.html``         -> ``/srv/odile-demo/login.html``
   * ``deploy/caddy/demo-tenant-site.caddy`` -> the three static tab-icon routes
     and the two the shell links
@@ -26,6 +27,13 @@ It puts, as root:
 Then it converges with ``apply_demo_public.py``'s own functions (the demo
 lede, the sign-in page and the Caddy block), restarts ``odile-first-visit``,
 and runs the re-assert twice so a second run proves ``same``.
+
+The chrome rides along because the titlebar's ``Verify this machine`` link is
+the demo's own ``/verify`` on this host (ODL-564). The installed script is the
+re-assert helper's source — it copies it into the bundle as
+``odile-demo-chrome.js`` — so a stale copy on the machine would send a judge to
+HQ's ``odile.fyi/verify`` and back through its 302, with another host in the
+address bar.
 
 Idempotent: every put is content-compared by the installer on the machine's
 side (``install`` rewrites only the bytes given), the helper prints ``same``
@@ -86,6 +94,8 @@ PUTS = (
     *[(REPO / "web" / name, f"{DEMO_LIB}/{name}", "0644") for name in TAB_ICONS],
     (REPO / "deploy" / "image" / "odile-webapp-brand.py",
      f"{LIB}/odile-webapp-brand.py", "0755"),
+    (REPO / "deploy" / "demo-host" / "webapp-chrome.js",
+     f"{LIB}/webapp-chrome.js", "0644"),
     (REPO / "deploy" / "demo-host" / "login.html",
      f"{DEMO_LIB}/login.html", "0644"),
     # The two demo paragraphs the apply injects. They travel with the apply so
@@ -171,6 +181,9 @@ def local_checks() -> None:
         raise SystemExit(
             f"error: the converged /verify page carries {opens} demo-check "
             f"marker(s) and {closes} closer(s), expected one of each")
+    chrome = (REPO / "deploy" / "demo-host" / "webapp-chrome.js").read_text(encoding="utf-8")
+    if "const VERIFY_HREF_DEMO = 'https://demo.odile.fyi/verify'" not in chrome:
+        raise SystemExit("error: the chrome's demo Verify link is not the demo's own /verify")
 
 
 def template_bytes(repo: Path = REPO) -> bytes:
@@ -295,6 +308,13 @@ def verify(password: str) -> int:
         check("./apple-touch-icon.png" not in text.replace(
             "./odile-apple-touch-icon.png", ""),
             "the shell no longer links the vendor's mark as a tab icon")
+        # The href the browser runs: the link is built client-side, so the
+        # served script is the measurement (ODL-564).
+        status, _headers, body = get("/odile-demo-chrome.js", cookie=cookie)
+        script = body.decode("utf-8", "replace")
+        check(status == 200, f"GET /odile-demo-chrome.js -> {status}")
+        check("const VERIFY_HREF_DEMO = 'https://demo.odile.fyi/verify'" in script,
+              "the served chrome links the demo's own /verify (same host, one hop)")
 
     return 0 if failures == 0 else 1
 

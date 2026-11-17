@@ -563,10 +563,14 @@ class SurfaceValueTests(unittest.TestCase):
         self.assertNotIn("rgba(74, 65, 54, 0.72)", self.css)
 
     def test_the_verify_link_is_the_demos_here_and_the_machines_elsewhere(self):
-        # The demo keeps the ODL-500 href. A subscriber's report is served by
-        # the machine at /verify (odilectl/offboard.py probes it); sending a
-        # subscriber to odile.fyi/verify says "This is Odile's demo machine".
-        self.assertIn("const VERIFY_HREF_DEMO = 'https://odile.fyi/verify'", self.js)
+        # The demo's link is the demo's own page on its own host, one hop
+        # (ODL-564): odile.fyi/verify answers 302 to it, so linking HQ would
+        # put another host in the judge's address bar. A subscriber's report is
+        # served by the machine at /verify (odilectl/offboard.py probes it);
+        # sending a subscriber to odile.fyi/verify says "This is Odile's demo
+        # machine".
+        self.assertIn("const VERIFY_HREF_DEMO = 'https://demo.odile.fyi/verify'",
+                      self.js)
         self.assertIn("const VERIFY_HREF_TENANT = '/verify'", self.js)
         self.assertIn("link.href = IS_DEMO ? VERIFY_HREF_DEMO : VERIFY_HREF_TENANT",
                       self.js)
