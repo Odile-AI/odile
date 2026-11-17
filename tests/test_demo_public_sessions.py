@@ -17,6 +17,7 @@ import importlib.util
 import json
 import os
 import shlex
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -464,6 +465,238 @@ class DeployCleanupTests(unittest.TestCase):
         self.assertEqual(text.count("open_console_session(console)"), 3)
         # The only raw `console.open_session()` is inside the recorder.
         self.assertEqual(text.count("console.open_session()"), 1)
+
+
+class HostCheckSessionLeakTests(unittest.TestCase):
+    """One run of check_demo_host.sh leaves no "Reply with exactly: ok" row.
+
+    Savio, 2026-11-16: the demo's sidebar carried ~20 such rows, one per run
+    of the host check — the socket leg mints a session and step 11's restart
+    reaps it as a startup orphan. The check now deletes the id it minted, by
+    id, with the tenant's own CLI, on the success and the failure path, and
+    proves the delete with the machine's own `--report --session-id`.
+    """
+
+    def functions(self) -> str:
+        """The check's own session-lifecycle shell functions, cut from the script."""
+        text = CHECK_HOST.read_text(encoding="utf-8")
+        start = text.index("count_check_prompt_rows() {")
+        end = text.index("\n}\n", text.index("cleanup_on_exit() {")) + 3
+        return text[start:end]
+
+    def scratch(self) -> Path:
+        directory = Path(tempfile.mkdtemp(prefix="odile-host-cleanup-"))
+        self.addCleanup(lambda: __import__("shutil").rmtree(directory, ignore_errors=True))
+        return directory
+
+    def stub_sudo(self, directory: Path) -> tuple[Path, Path]:
+        """A `sudo` that records its argv and answers with SUDO_RC."""
+        binary = directory / "bin" / "sudo"
+        binary.parent.mkdir(parents=True)
+        binary.write_text("#!/bin/sh\n"
+                          "printf '%s\\n' \"$*\" >> \"$SUDO_LOG\"\n"
+                          "exit \"${SUDO_RC:-0}\"\n", encoding="utf-8")
+        binary.chmod(0o755)
+        log = directory / "sudo.log"
+        return binary.parent, log
+
+    def stub_apply(self, directory: Path) -> None:
+        """The installed report: exists follows REPORT_EXISTS, as the real one does."""
+        (directory / "apply_demo_public.py").write_text(
+            "import json, os, sys\n"
+            "print(json.dumps({'id': sys.argv[-1],\n"
+            "                  'exists': os.environ.get('REPORT_EXISTS') == '1'}))\n",
+            encoding="utf-8")
+
+    def run_functions(self, directory: Path, body: str, *args: str,
+                      env: dict | None = None) -> subprocess.CompletedProcess:
+        script = (
+            "set -u\n"
+            "DEMO_USER=tenant\n"
+            "DEMO_HOME=/home/tenant\n"
+            f"LIB={shlex.quote(str(directory))}\n"
+            f"STATE_DB={shlex.quote(str(directory / 'state.db'))}\n"
+            "CHECK_PROMPT='Reply with exactly: ok'\n"
+            "PASS=0\nFAIL=0\n"
+            "ok() { printf 'ok   %s\\n' \"$*\"; PASS=$((PASS + 1)); }\n"
+            "bad() { printf 'FAIL %s\\n' \"$*\"; FAIL=$((FAIL + 1)); }\n"
+            "note() { printf '     %s\\n' \"$*\"; }\n"
+            "SESSION_CLEANED=0\n"
+            f"{self.functions()}\n"
+            f"{body} " + " ".join(shlex.quote(argument) for argument in args) + "\n"
+            "rc=$?\n"
+            "printf 'PASS=%d FAIL=%d\\n' \"$PASS\" \"$FAIL\"\n"
+            "exit \"$rc\"\n"
+        )
+        environment = dict(os.environ, SUDO_LOG=str(directory / "sudo.log"),
+                           PATH=f"{directory / 'bin'}:{os.environ['PATH']}")
+        environment.update(env or {})
+        return subprocess.run(["/bin/bash", "-c", script], env=environment,
+                              capture_output=True, text=True)
+
+    def test_the_minted_session_is_deleted_with_the_tenants_own_cli(self) -> None:
+        directory = self.scratch()
+        _, log = self.stub_sudo(directory)
+        self.stub_apply(directory)
+        session_id = "local-" + "a1" * 32
+        result = self.run_functions(directory, "cleanup_check_session", session_id,
+                                    env={"REPORT_EXISTS": "0"})
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("ok   the session this check minted is gone", result.stdout)
+        self.assertIn("PASS=1 FAIL=0", result.stdout)
+        self.assertEqual(
+            log.read_text(encoding="utf-8").strip(),
+            "-u tenant env HOME=/home/tenant HERMES_HOME=/home/tenant/.hermes"
+            " /home/tenant/.hermes/hermes-agent/hermes sessions delete --yes " + session_id)
+
+    def test_a_failed_delete_is_a_failure(self) -> None:
+        directory = self.scratch()
+        self.stub_sudo(directory)
+        self.stub_apply(directory)
+        result = self.run_functions(directory, "cleanup_check_session", "local-b2",
+                                    env={"SUDO_RC": "1", "REPORT_EXISTS": "0"})
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("FAIL hermes sessions delete --yes local-b2", result.stdout)
+        self.assertIn("PASS=0 FAIL=1", result.stdout)
+
+    def test_a_row_that_survives_the_delete_is_a_failure(self) -> None:
+        directory = self.scratch()
+        self.stub_sudo(directory)
+        self.stub_apply(directory)
+        result = self.run_functions(directory, "cleanup_check_session", "local-c3",
+                                    env={"REPORT_EXISTS": "1"})
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("FAIL the session this check minted still exists", result.stdout)
+
+    def test_the_quiet_cleanup_prints_nothing_and_still_deletes(self) -> None:
+        directory = self.scratch()
+        _, log = self.stub_sudo(directory)
+        self.stub_apply(directory)
+        result = self.run_functions(directory, "cleanup_check_session", "local-d4", "quiet",
+                                    env={"REPORT_EXISTS": "0"})
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.strip(), "PASS=0 FAIL=0")
+        self.assertIn("sessions delete --yes local-d4", log.read_text(encoding="utf-8"))
+
+    def test_the_exit_trap_deletes_a_session_the_run_left(self) -> None:
+        directory = self.scratch()
+        _, log = self.stub_sudo(directory)
+        self.stub_apply(directory)
+        result = self.run_functions(
+            directory, "SESSION_ID=local-e5; cleanup_on_exit",
+            env={"REPORT_EXISTS": "0", "JAR": "/nonexistent"})
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("sessions delete --yes local-e5", log.read_text(encoding="utf-8"))
+        self.assertIn("PASS=0 FAIL=0", result.stdout)
+
+    def test_the_count_query_counts_only_the_checks_prompt_rows(self) -> None:
+        """The fence's number is the store's own count, first user message only."""
+        directory = self.scratch()
+        con = sqlite3.connect(str(directory / "state.db"))
+        con.executescript(
+            "CREATE TABLE sessions (id TEXT PRIMARY KEY, title TEXT, message_count INTEGER);"
+            "CREATE TABLE messages (id INTEGER PRIMARY KEY, session_id TEXT, role TEXT,"
+            " content TEXT, display_order INTEGER);")
+        rows = {
+            "s-first": [("user", "Reply with exactly: ok", 1), ("assistant", "ok", 2)],
+            "s-later": [("user", "hello", 1), ("user", "Reply with exactly: ok", 2)],
+            "s-near": [("user", "Reply with exactly: ok.", 1)],
+            "s-system": [("system", "rules", 1), ("user", "Reply with exactly: ok", 2)],
+        }
+        for session_id, messages in rows.items():
+            con.execute("INSERT INTO sessions VALUES (?, NULL, ?)", (session_id, len(messages)))
+            for role, content, order in messages:
+                con.execute("INSERT INTO messages (session_id, role, content, display_order)"
+                            " VALUES (?, ?, ?, ?)", (session_id, role, content, order))
+        con.commit()
+        con.close()
+        result = self.run_functions(directory, "count_check_prompt_rows")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.split("PASS=")[0].strip(), "2")
+
+    def test_the_cleanup_runs_before_the_restart_leg(self) -> None:
+        text = CHECK_HOST.read_text(encoding="utf-8")
+        self.assertLess(text.index('cleanup_check_session "$SESSION_ID"'),
+                        text.index('echo "== restart"'))
+        # The before-count is taken before the socket mints a row.
+        self.assertLess(text.index("SESSION_BEFORE=$(count_check_prompt_rows)"),
+                        text.index('send_request(tls, 2, "session.create"'))
+
+    def test_the_tenant_driver_hands_the_cleanup_its_own_user_and_home(self) -> None:
+        text = CHECK_HOST.read_text(encoding="utf-8")
+        self.assertIn('"$BACKUP_SHA" "$DEMO_USER" "$DEMO_HOME"', text)
+        self.assertIn("console_user, console_home = sys.argv[7:9]", text)
+
+
+class HostDriverConsoleTests(unittest.TestCase):
+    """The --tenant driver deletes the console sessions it opened, by id."""
+
+    def driver_function(self, name: str) -> str:
+        text = CHECK_HOST.read_text(encoding="utf-8")
+        start = text.index(f"def {name}(")
+        end = text.index("\n\n\nclient = connect()", start)
+        return text[start:end]
+
+    def test_every_console_session_is_deleted_and_proved_gone(self) -> None:
+        calls: list[str] = []
+
+        class ConsoleError(RuntimeError):
+            pass
+
+        class FakeConsole:
+            def run(self, command: str, check: bool = True) -> dict:
+                calls.append(command)
+                if "--report --session-id" in command:
+                    return {"code": 0, "stdout": json.dumps({"id": "x", "exists": False})}
+                return {"code": 0, "stdout": "Deleted session 'x'."}
+
+        class FakeModule:
+            pass
+
+        FakeModule.ConsoleError = ConsoleError
+
+        namespace = {
+            "json": json,
+            "tenant_console": FakeModule,
+            "REMOTE_FILES": "odile-check-demo-host.sh odile-check-demo-host.log",
+            "CONSOLES": ["local-a" + "0" * 64, "local-b" + "1" * 64],
+            "console_user": "tenant",
+            "console_home": "/home/tenant",
+            "connect": lambda: (_ for _ in ()).throw(SystemExit(2)),
+        }
+        exec(compile(self.driver_function("cleanup"), "check_demo_host-driver", "exec"),
+             namespace)
+        namespace["cleanup"](FakeConsole())
+        deletes = [call for call in calls if "sessions delete --yes" in call]
+        reports = [call for call in calls if "--report --session-id" in call]
+        self.assertEqual(len(deletes), 2)
+        self.assertEqual(len(reports), 2)
+        self.assertEqual(
+            deletes[0],
+            "sudo -u tenant env HOME=/home/tenant HERMES_HOME=/home/tenant/.hermes"
+            " /home/tenant/.hermes/hermes-agent/hermes sessions delete --yes local-a"
+            + "0" * 64)
+        self.assertIn("local-b" + "1" * 64, deletes[1])
+
+    def test_a_reconnected_console_session_is_recorded(self) -> None:
+        class FakeConsole:
+            session_id = ""
+
+            def open_session(self) -> str:
+                self.session_id = "local-" + "c7" * 32
+                return self.session_id
+
+        class FakeModule:
+            class ConsoleError(RuntimeError):
+                pass
+
+        namespace = {"tenant_console": FakeModule, "CONSOLES": []}
+        exec(compile(self.driver_function("tracked"), "check_demo_host-driver", "exec"),
+             namespace)
+        console = namespace["tracked"](FakeConsole())
+        self.assertEqual(console.open_session(), "local-" + "c7" * 32)
+        self.assertEqual(console.open_session(), "local-" + "c7" * 32)
+        self.assertEqual(namespace["CONSOLES"], ["local-" + "c7" * 32])
 
 
 if __name__ == "__main__":
