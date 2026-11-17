@@ -1,0 +1,596 @@
+# ADR-004 — Upgrade inventory and the default-model switch
+
+**Status:** Proposed — the inventory and the trigger default wait on Savio's
+confirmation, which A4's exit criterion 2 names · 17 November 2026 · Architect
+**Answers:** ODL-571 — "which layers of a tenant can be updated, and how does the
+team switch a tenant's default model without seeing prompts?"
+**Short answer:** every layer that is not the boot chain or the OS moves in place
+from a signed artefact the guest pulls; firmware, the UKI, the disk image, the OS
+packages and the environment are rebuild-and-restore; the machine's NEAR key and
+the signing-key anchor are not updatable at all. The default model is a **signed
+per-tenant document the guest pulls** — a model name, not a prompt — so the guest
+keeps calling `cloud-api.near.ai` with its own key and no Odile service ever sees
+a prompt. The machine updates itself on a timer for the layers that can move in
+place; a rebuild is scheduled by HQ, announced to the user, and finished by the
+user with their own backup password.
+**What Savio is asked to confirm:** (1) the layer table in §3, row by row;
+(2) the model route in §4 — a signed document, no proxy in front of NEAR;
+(3) the trigger in §5 — the machine updates itself, HQ never connects, and a
+boot-chain or OS change is a rebuild the user is told about and completes.
+**Related:** `docs/MVP-V0.1.md` §3–§7, §12 (D7, D14, D25, D27);
+`docs/CLAIMS.md` §1 *Inference* and *Money and place*, §3 gaps 1–3, §4.6;
+`docs/runbooks/update.md` §2, §8, §10; `docs/runbooks/install.md` §4, §6.1;
+`docs/architecture/ADR-image-vs-installer.md` §3 axis 6, §15.2;
+`docs/architecture/PIN-POLICY.md` §6; cards ODL-219, ODL-332, ODL-205, A4.
+**Decision owner:** Architect for the mechanism, the document schema and the
+applier's interface. **Savio confirms the inventory and the trigger** because the
+card says so and because the trigger changes what a tenant does without its owner
+present. No new provider, no new network path, no standing credential on the
+tenant, no change to the access model and no sentence in `docs/CLAIMS.md` moves —
+so this is not an escalation under `docs/AGENT-ORG.md` §3; it is a confirmation.
+
+---
+
+## 1. The invariant at risk
+
+Four sentences the product is built on, and what this change does to each:
+
+- **I1 — no Odile service sits between the agent and the inference endpoint.**
+  `docs/MVP-V0.1.md` §6.1 invariant 4 ("Odile is never in the data path") and
+  `docs/CLAIMS.md` §1: "Your prompts go from your machine to the enclave. They do
+  not pass through Odile's servers." **This is the invariant the rejected option
+  breaks**, and it is why the choice in §4 is not a matter of taste.
+- **I2 — one operator identity signs what the machine runs, and the machine
+  trusts exactly that key.** `docs/runbooks/update.md` §1: the same Ed25519 key
+  signs the installer, the seed responses and the manifest inside every release.
+  The model document joins that scope; it does not add a key.
+- **I3 — the machine and the record agree.** A4's exit criterion: "The machine
+  and the record agree on the installed version, and a stale instance is
+  visible." Today the record is *not* ready for a model switch: `manifest.py`
+  records the model from the **seed cache** (`scripts/manifest.py:502`), and
+  `odile_update` never reads the model at all (zero occurrences at this head).
+  A switch without a record fix would make the machine's own manifest lie.
+- **I4 — a changed boot image or firmware breaks the seal, and the machine is
+  rebuilt.** `docs/CLAIMS.md` §3 gap 3; `docs/MVP-V0.1.md` §5's 15 November
+  note. This is what turns three of the table's rows into rebuild-and-restore.
+
+## 2. What exists today, at this head
+
+The inventory in §3 is not a wish list; it is a reading of the tree at
+`d3c372b`. Six facts shape it, and each is cited because a later card will
+change one of them.
+
+**2.1 The app layer already has a signed, transactional mover.**
+`update/odile_update.py` (sha256 `dd70d0de…`, 2074 lines) fetches
+`https://odile.fyi/release.json`, verifies one Ed25519 signature over the exact
+bytes, verifies the manifest it names, applies only the app layer, snapshots
+once, checks the result, and rolls back on failure. Its refusals are precise:
+a release for another kernel (`exit 5`), a downgrade (`exit 5`), a moved
+environment (`exit 5`), a bad signature (`exit 3`), an inconsistent release
+(`exit 4`). Its own layer table is `docs/runbooks/update.md` §2, and it is the
+parent of the table in §3. **`--self-test` prints `self-test: 37/37 passed` at
+this head** (§11).
+
+**2.2 The guest half of it is not installed yet.** `grep -c odile-update
+installer/odile_install.py` is **0**: the installer places the installer, the
+skills, the Webapp, Caddy, the backup unit and the boot record, and it does not
+place the update command, its key or a timer; the first tenant's record does not
+name one either. `docs/runbooks/update.md` §9 lists
+that wiring as the tenant half; the machine-free half was ODL-219, and the first
+tenant (ODL-332) did not carry it. So "in place" in §3 means *the mechanism
+exists and is proved on scratch roots*, not *it runs on a tenant tonight*. The
+build card closes that gap; this ADR does not.
+
+**2.3 The boot chain cannot move in place, by construction.**
+`docs/architecture/ADR-image-vs-installer.md` §15.2: the tenant boots Odile's
+signed UKI **plus a pre-sealed disk image written by the Servury panel**. The
+keyslot passphrase is derived from `SNP_GET_DERIVED_KEY` and sealed to the
+measurement, so a new UKI derives a different passphrase and the old disk will
+not open. The swap itself is non-destructive (`?action=boot-image`), which is
+exactly the trap: the machine starts, fails to unlock, and is a rebuild. The LUKS
+**master key** is still the build-time key until `t_28dda3b7` lands and
+`t_51ebf972` publishes the re-keyed image (`docs/MVP-V0.1.md` §5 note).
+
+**2.4 The model has three homes today, and none of them is a switch.**
+The **seed** carries `model`; the installer renders it into the config
+(`installer/odile_install.py:11889`, `model = seed.get("model")`) into **two**
+keys — `model.default` and `custom_providers[0].model`; the **manifest** records
+it from the seed cache. The seed cache at `/etc/odile/seed.json` is verified
+forever and never re-fetched while it verifies, and the setup token that fetched
+it is single-use (`installer/odile_install.py:10484`, `10884`). So the seed is
+not a channel: a tenant cannot get a new seed without a new token, and the seed
+also carries the NEAR key and the mail secret.
+
+**2.5 The config is a managed-block file, and the installer wins a tie.**
+`MANAGED_KEYS = ("model", "agent", "custom_providers", "webapp", "onboarding")`
+(`installer/odile_install.py:223`). `merge_block` drops "a current line whose key
+the template does name … even if its value differs" (`:9717`), and
+`ensure_config` renders the model from the seed on every run. **A model switch
+applied by any new mechanism would be reverted by the next installer re-run**
+unless the precedence rule in §4.6 exists. This is the failure this ADR exists to
+prevent, and it is invisible to a test that only switches a model.
+
+**2.6 What HQ already knows, and what it does not.** HQ's heartbeat contract
+accepts an optional `versions` map of names to strings (`odilectl/health.py:964`),
+and the approved privacy row already names "versions" among what a heartbeat
+carries. But the tenant's own sender is the installer's embedded
+`backup.py heartbeat`, and it sends only the backup facts and the slug
+(`installer/odile_install.py:1240`–`1256`): no app release, no model, and none of
+the other facts the row lists. `scripts/heartbeat.py` is the richer sender, with
+a `versions` map at `:263`, and the tenant does not run it. HQ's one drift
+detector, `release_report` (`odilectl/health.py:1020`), compares the **boot**
+release it intended with the one the guest reports — there is no app-layer or
+model analogue. §8 lists the signal; today it does not exist.
+
+## 3. The layer inventory
+
+Three labels, and only three: **in place** (a signed artefact is written and a
+process restarted, no rebuild), **rebuild-and-restore** (a new machine is built
+and the user's data comes back from the nightly backup), **not updatable** (no
+mechanism exists, and by design or by an unbuilt dependency).
+
+| # | Layer | Today | Label | Why, and the path |
+|---|---|---|---|---|
+| 1 | Firmware — `OVMF.amdsev.fd`, Servury's edk2 build | part of Servury's release; in the measurement | rebuild-and-restore | Not Odile's artefact. A firmware change re-measures every unchanged UKI and breaks the seal; the machine is rebuilt onto the new firmware. ADR-001 §3 axis 8. |
+| 2 | Boot image — Odile's signed UKI (kernel, initramfs, command line, seal hook) | `tenant-image.pin`, `releases/m1/odile-tenant.efi`; set by panel or `?action=boot-image` | rebuild-and-restore | Measured, and the disk keyslot is sealed to the measurement. The swap is non-destructive; the disk will not open under it. New UKI + new disk image + restore. |
+| 3 | Disk image — Debian rootfs, pre-sealed keyslot, `/etc/odile/apt-pins.list` | written by the Servury panel (no API verb) | rebuild-and-restore | The panel's write is destructive, and the LUKS master key is the build key until `t_28dda3b7`/`t_51ebf972`. A rebuild is the only honest route. |
+| 4 | OS packages — the pinned trixie set from `snapshot.debian.org` | recorded in the manifest; installed from the pin | rebuild-and-restore | A release whose pins move is refused as a reinstall (`update.md` §10). `apt` in place works on the machine but leaves the signed record stale; the supported route is reinstall plus restore. |
+| 5 | Python venv, npm tree, Hermes toolchain | recorded in the manifest (`python_packages`, `node_packages`, `toolchain`) | rebuild-and-restore | A Hermes commit whose lockfiles or Python pins move is a reinstall, refused before a write. In place only when the environment does not move. |
+| 6 | Hermes commit — the agent source | a git checkout under `~/.hermes/hermes-agent` | in place | `git checkout --detach` to a commit the checkout already carries; the environment must not move, and a `webapp` artifact must ride with it. `update.md` §10. |
+| 7 | Installer — `/usr/local/bin/odile-install.sh` | its own bytes, 0755 root | in place | A signed artifact hashed against the release and the manifest; restarts nothing. |
+| 8 | Skills — `~/.hermes/skills` | signed tarball, canonical hashes | in place | Only skills that changed are written; a skill the release drops is left in place (`update.md` §10). |
+| 9 | Webapp bundle — `apps/desktop/dist-webapp` | signed artifact, `hermes-build.json` | in place | Written only when it moves; restarts `odile-agent`. |
+| 10 | Default model — `~/.hermes/config.yaml`, `model.default` and `custom_providers[0].model` | rendered from the seed at install | **in place** | A text setting and a restart. **Today there is no route**: the seed is cached and single-use, and the installer reads the cache. §4 adds the signed document. |
+| 11 | The machine's NEAR key — `/etc/odile/key.env` | written once from the signed seed, 0600 root | not updatable | One key per user, read by the agent through `EnvironmentFile=`. A new key arrives with a rebuild (A2); there is no rotation path, and rotating in place would be a new credential path with its own decision. |
+| 12 | The signing-key anchor — `/etc/odile/odile-signing-key.pub` | the recovery kit's copy, installed at first boot | not updatable | It verifies every release and (from §4) every model document. Rotating it needs a document signed by the **old** key, which is not built. Today a key rotation means a rebuild of every tenant, or a user-initiated support grant on each. |
+| 13 | What the CPU measures — firmware, UKI, command line | the live report at `/attestation` | not updatable | No update can make the running app layer measured; that is a new image with dm-verity or a measured disk (`docs/MVP-V0.1.md` §13 item 3). Rows 6–10 are **signed and hashed, not measured** — gap 1 stands unchanged. |
+| 14 | The user's files, memory and sessions — `/home/odile` | the user's workspace | in place | The user's own, by definition. It is what rows 1–5 restore, and the reason a rebuild is a user-facing event rather than a silent one. |
+
+**The rule behind the labels.** "In place" requires three things: a signed
+artefact, a destination the release names, and a post-check that can fail and be
+rolled back. Rows 4 and 5 fail the first test (they are pinned but never
+written), rows 1–3 fail the second (the destination is a disk, not a file), and
+row 12 fails the third in a way worth stating: the verifier cannot verify its own
+replacement.
+
+**What this table does not say.** "In place" is not "unmeasured". Rows 6–10 are
+covered by one Ed25519 signature and a manifest of hashes; the CPU does not vouch
+for them. That is gap 1, it is already stated, and this ADR does not narrow it.
+
+## 4. The default-model switch
+
+### 4.1 The two options, and the one consequence that decides it
+
+| | A signed document the guest pulls | An Odile API in front of NEAR resolving an alias |
+|---|---|---|
+| Where the model is resolved | on the guest, from a signed file | in Odile's service |
+| Who sees a prompt | NEAR's enclave only | **Odile's service, in plaintext, on every turn** |
+| Latency of a switch | the guest's next check (§5) | immediate |
+| What a prompt's path becomes | guest → `cloud-api.near.ai` | guest → Odile → NEAR |
+| `docs/CLAIMS.md` §1 *Inference* | true, verbatim | **false** |
+| The privacy inventory | unchanged | gains prompt content at a third party |
+| Availability | one document fetch | every tenant's inference depends on one service |
+| The retired meter/proxy (ODL-205) | stays retired | re-created with a central key |
+| A4's exit criterion | satisfied | **fails**: "no prompt passes through an Odile service" |
+
+### 4.2 Why the proxy is rejected
+
+1. **It makes an approved sentence false.** `docs/CLAIMS.md` §1 *Inference*:
+   "Your prompts go from your machine to the enclave. They do not pass through
+   Odile's servers." A proxy that resolves an alias sees the request body. The
+   row would have to be re-cut, the privacy inventory would gain a new store, and
+   the change would need Savio — which is exactly the escalation this ADR is
+   designed not to require.
+2. **It fails the gate it is meant to serve.** A4's exit criterion names "no
+   prompt passes through an Odile service". An option that fails its own
+   milestone's criterion is not an option.
+3. **It re-creates what ODL-205 retired.** The meter was removed for one NEAR key
+   per user, deployed at install and spent directly. A proxy holds the account
+   key and meters per request — the central key, the per-request ledger and the
+   cap setting all come back.
+4. **It moves the attestation story.** Today the guest calls the enclave and the
+   model attestation binds to that endpoint. Through a proxy, the attested call
+   is the proxy's, and the user's evidence no longer covers the hop that holds
+   their text.
+5. **It is a new single point of failure and a new trust boundary** in the
+   prompt path, with no verdict behind it. The one thing it buys — immediacy — is
+   bought for a 15-minute poll in §5.
+
+**What the rejection costs, stated honestly.** MVP §13 item 4 wants per-response
+attestation, and "a thin proxy would capture NEAR's response signature". This ADR
+closes the proxy as a *model-resolution* mechanism; a later per-response
+attestation proxy is a separate decision with its own CLAIMS row. It is not
+banned by this ADR.
+
+### 4.3 The chosen route: a signed per-tenant document, pulled by the guest
+
+```
+        odile.fyi (HQ)                                NEAR AI (TEE)
+        │  GET /model/<slug>.json + .sig               ▲
+        │  one signed JSON: a model name               │ prompts, direct, with
+        ▼                                               │ the machine's own key
+   ┌────────────────────────────┐                       │
+   │ tenant VM                  │───────────────────────┘
+   │  odile-update model apply  │
+   │    verify → compare → write│         (no Odile service in this line)
+   │    → restart odile-agent   │
+   └────────────────────────────┘
+```
+
+The guest initiates; HQ publishes. Nothing on HQ connects to a tenant, and no
+process of Odile's is on the prompt path. "Push" in the card's wording means
+"HQ makes it available"; the connection is the guest's, because that is the
+existing direction (`release.json`, the seed, the heartbeat) and the one that
+needs no listener on a machine whose owner holds the only key.
+
+### 4.4 The document — one interface, written down
+
+```
+GET https://odile.fyi/model/<slug>.json        Cache-Control: no-store
+GET https://odile.fyi/model/<slug>.json.sig    detached Ed25519, base64 + "\n"
+```
+
+```json
+{
+  "schema": 1,
+  "slug": "odl-7f3a2c",
+  "model": "deepseek-ai/DeepSeek-V4.1-Flash-1017-abliterated",
+  "reasoning_effort": "high",
+  "generated_at": "2026-11-17T18:00:00Z",
+  "notes": "one line a user can read"
+}
+```
+
+| Field | Rule | On failure |
+|---|---|---|
+| signature | Ed25519 over the exact bytes, verified with `/etc/odile/odile-signing-key.pub`; raw 64 bytes or base64 accepted, the same reader the release uses | `exit 3`, no write |
+| `schema` | exactly `1`; unknown top-level keys are refused, so a future schema is a new number | `exit 4` |
+| `slug` | equals this machine's slug, read from `/etc/odile/seed.json` | `exit 5` — a mis-served document cannot switch another tenant's model |
+| `model` | `^[A-Za-z0-9][A-Za-z0-9._/-]{0,127}$`; no colon, quote, backslash or newline, because the value is written into YAML and must not be able to add a key | `exit 4` |
+| `reasoning_effort` | optional; one of `low`, `medium`, `high`, `max` — the levels the pinned model's provider accepts. A model that needs another level is schema 2 | `exit 4` |
+| `generated_at` | `YYYY-MM-DDTHH:MM:SSZ`; must be **newer** than the recorded one. Equal means already current; older is refused unless `--allow-downgrade` | `exit 10` / `exit 5` |
+| `notes` | optional, one line, ≤ 200 characters; printed and stored, never parsed | `exit 4` |
+| the whole document | a `404` means **no document**: the seed's model stands. It is a state, not an error | `exit 0`, `no-document` |
+
+The ordering on `generated_at` is the replay control: a validly signed old
+document cannot pin a tenant to an old model, and the comparison is against the
+**recorded** document, not against the guest's clock, so a machine with a wrong
+clock is still correct. Rolling back to an earlier model is therefore a **new**
+document with a newer timestamp, not a downgrade flag — the same rule
+`odile_update` already uses for releases.
+
+### 4.5 The applier
+
+`odile-update model {check,apply,rollback,status}` — a subcommand of the same
+program, not a second program. One file on the machine, one key, one signature
+reader, one log (`/var/lib/odile/odile-update.log`), one snapshot directory. The
+subcommand skips the app layer's refusals, which do not apply to a text setting.
+
+- **`check`** fetches, verifies, prints the plan, writes nothing, and exits 10
+  when the machine is already at the document.
+- **`apply`** snapshots the previous `config.yaml` to
+  `/var/lib/odile/odile-update/model-snapshot/config.yaml`, writes the new value
+  atomically (temp file, `fsync`, `rename`, 0644, the home's uid/gid), records
+  the document's exact signed bytes at `/etc/odile/model.json`, restarts
+  `odile-agent`, and checks that the unit is active and that both config keys
+  read back as the document says. On any failure it restores the snapshot,
+  restarts, and exits 6.
+- **`rollback`** restores that one snapshot, restarts, and checks; a second
+  rollback says `same`.
+- **Two homes, always both.** `model.default` and
+  `custom_providers[0].model` are written together, because the About panel and
+  the provider route read different keys. The applier refuses if the `model`
+  block or a single `custom_providers` entry is missing or ambiguous: it is a
+  setter, not a config generator.
+- **Everything else survives.** `_config_version`, `display.skin`, the `webapp`
+  and `onboarding` blocks, and every key Hermes added inside `custom_providers`
+  (`models:`, `models_discovered:`) are preserved on its own line-level rewrite.
+  A byte-compatibility test binds it to the installer: applying model *M* to a
+  config the installer wrote must equal what `render_tenant_config` writes for a
+  seed with model *M*.
+- **No new key.** The machine's NEAR key is not scoped to a model (A2: keys
+  carry their own limits and draw on the account's shared credit pool), so a
+  switch needs no key change. The operator must confirm the account serves the
+  new model before the document is cut — the demo tenant is the canary (§4.8).
+- **Idempotent.** A second apply of the same document writes nothing, restarts
+  nothing, and says `same`.
+- **The managed block is the operator's.** If the live config disagrees with the
+  record, the next check repairs it and logs `drift` — the template already says
+  "never hand-edited" (`installer/odile_install.py` `TENANT_CONFIG_TEMPLATE`).
+
+### 4.6 The precedence rule — the failure this ADR exists for
+
+`ensure_config` renders the model from the seed and `merge_block` drops a drifted
+value (`installer/odile_install.py:11889`, `:9717`). Left alone, a repair
+re-run of the installer would put a switched tenant back on the seed's model,
+silently, days later. The rule:
+
+> **The seed is the install-time default. A signed model document is the
+> operator's later word and wins. On every installer run, the model is read from
+> `/etc/odile/model.json` when it exists and verifies, and from the seed
+> otherwise.**
+
+Three edits follow, and they belong in the build card, not in a later one:
+`render_tenant_config` prefers the record; `scripts/manifest.py` records the
+**live** model (with the seed as fallback) so the machine's own manifest agrees
+with the machine; `installer --manifest` prints the same value. The release
+manifest's `model` field then means "the model the release candidate was
+installed with", which is provenance, and it may legitimately differ from a
+tenant's live model after a switch. That is written down in
+`docs/runbooks/manifest.md` in the same card.
+
+### 4.7 What the user sees
+
+Nothing interrupts, and nothing is hidden:
+
+- **At the switch:** no email, no banner, no prompt. The About panel in the
+  Webapp already names the model and the effort; on the next page load it names
+  the new one.
+- **The next turn** runs on the new model, because `odile-agent` was restarted.
+  A turn in flight when the timer fires is lost; the model timer only restarts
+  when a document actually changes (a handful of times a year), and the user
+  simply re-asks.
+- **The record:** `/etc/odile/model.json` is the signed document exactly as
+  served, with its `generated_at` and its one-line `notes`; `odile-update model
+  status` and the agent can both read it, and one line lands in
+  `/var/lib/odile/odile-update.log`.
+- **The machine's page:** `/verify` gains one row naming the model and the app
+  release (§8, a release change). Until that lands, the About panel and the
+  record are the two places.
+
+### 4.8 The HQ action
+
+`tools/cut_model.py --slug <slug> --model <id> [--effort high] [--notes "…"]`
+writes `model/<slug>.json`, signs it with the HQ key, copies the `.sig`, and
+verifies the pair with the published key before it prints the digests — the shape
+`tools/recut_release.py` already has. `./scripts/deploy.sh` publishes it. One
+tenant is one run of the tool; the fleet is a loop over slugs. `app.py` serves
+`/model/<slug>.json` and `.sig` from `model/` with a slug pattern and an
+existence check — no path is named by a request, the same rule `RELEASE_FILES`
+follows today. The files are not secret (a model id and a slug are already
+public) and no page links them.
+
+The intended model therefore has **one** home on HQ: the signed file. No database
+column, no second copy — the same discipline that keeps the release in `release/`.
+
+## 5. The trigger
+
+**The answer, in one line: the user never presses update. The machine updates
+itself for every layer that can move in place; the layers that cannot are a
+rebuild that HQ schedules, tells the user about, and the user finishes.**
+
+| Layer group | Who triggers | When | What the user sees |
+|---|---|---|---|
+| App layer (rows 6–9) | the machine — `odile-update.timer`, installed **on** by default in alpha.0; the user may also run it | daily, 04:00 ± 1 h, `Persistent=true` (the backup is 03:00); and after boot | A journal line and a record; the app release readable at `/manifest` and recorded in `/etc/odile/release.json` (the `/verify` row checks the **boot** release); a failed post-check rolls back by itself and the release is still the old one |
+| Default model (row 10) | the machine — `odile-update model` on its own timer; the user may also run it | on boot, every 15 min ± 3 min, and on demand; a 404 costs one request | The About panel's model label; the one-line `notes` in `/etc/odile/model.json`; the next turn on the new model |
+| Boot chain, OS, environment (rows 1–5) | **HQ schedules; the user consents and finishes** | per change, announced in advance | An email with the date and the one restore step; a rebuilt machine at the same slug; the data back from the last backup once the user's recovery file opens it |
+
+**Why the app layer's timer is installed on by default.** V0.1's design was a
+manual default with an opt-in timer (`update.md` §8), for paying strangers with a
+ceremony. A4's objective is
+"a security and a feature update without an operator", alpha.0 is
+invitation-only with the team watching, and a signed, hash-checked,
+snapshot-protected release that refuses a machine it was not cut for is a smaller
+risk than a tenant six weeks behind a security fix. The user can turn it off
+(`systemctl disable --now odile-update.timer`), and the first-run skill will say
+the machine keeps itself updated. The record is `/etc/odile/release.json`.
+
+**Why the model check is 15 minutes and the app layer is daily.** The model
+document is a few hundred bytes and a switch is a handful of times a year; the
+freshness that matters is "before the next real conversation", not "within the
+day". The app layer is a multi-hundred-kilobyte fetch and a restart, so daily is
+right. Both are `Persistent=true`, so a machine that was off catches up once when
+it returns — the same rule as the backup and brief timers.
+
+**HQ never connects.** There is no inbound route to a tenant, no queue, no
+daemon. The heartbeat already goes guest → HQ; the two fetches go guest → HQ.
+A "push" that opened a connection from HQ would be the first inbound path since
+the console, and it would need a listener and a credential on the machine.
+
+**The rebuild, and the owner who is asleep.** A rebuild can be *started* without
+the owner and cannot be *finished* without them: the backup password is theirs
+(D19) and the restore runs with their recovery file (`docs/CLAIMS.md` §5). So the
+honest sequence for a boot-chain or OS change is:
+
+1. HQ picks the window and emails the user the date, the reason and the one
+   restore step. Consent is the reply; a tenant that does not reply waits.
+2. The new machine is built from the new UKI and disk image at the same slug,
+   with its seed cut to the current default model; the DNS record moves; the
+   installer runs; the Webapp and the agent answer, with no memory of the user
+   yet. A model document for the slug, if one exists, applies within 15 minutes.
+3. The user restores last night's backup with their recovery file, or asks the
+   agent to. The agent's memory and the workspace return together.
+4. The old machine is destroyed, and the event is written to the machine record.
+
+What this costs, stated: the rebuild loses the day since the last backup, and
+until the restore the agent is a stranger to the user. That is why the trigger is
+a scheduled, announced event rather than a nightly automatic one — the machine
+cannot re-key itself without a passphrase nobody holds.
+
+## 6. Failure modes, and the control for each
+
+| Failure | What the user gets | The control |
+|---|---|---|
+| A validly signed **old** document is served (replay, stale CDN, a rollback commit) | the tenant pinned to an old model | `generated_at` must be newer than the recorded one (`exit 5`); compared to the record, not the clock |
+| A document for **another tenant** is served | the wrong model | `slug` must equal the machine's own (`exit 5`) |
+| A half-written document during a deploy | nothing | the signature covers the exact bytes (`exit 3`); no write; the next tick retries |
+| The installer is re-run after a switch | the seed's model returns, silently | §4.6's precedence rule, plus the byte-compatibility test and `manifest.py` reading the live model |
+| `model.default` and `custom_providers[0].model` disagree | the About panel and the turns disagree | both written; the post-check reads both; refuse if either block is missing |
+| A model id with a YAML metacharacter | a broken config, a dead gateway | the id pattern excludes `:`, quotes, backslash and newline; written double-quoted |
+| A restart lands mid-turn | that turn is lost | the timer restarts only on a real change; the user re-asks; the record says when |
+| The document names a model NEAR does not serve, retires one, or one the account is not entitled to | the switch applies and the first turn fails | try it on the demo tenant (Odile's own machine) first, with the same key type; publish a new document naming a working model — every tenant picks it up within 15 minutes |
+| The timer dies, or the machine is off for a week | the old model keeps working | `Persistent=true`; a journal line per run; once §8.3 lands, `versions.model` against HQ's intended model makes a stale instance visible |
+| The signing key rotates | every document fails to verify | row 12: today a rebuild. A signed rotation document is a later ADR |
+| The applied config is valid YAML but the gateway will not start | the workspace is down | post-check `systemctl is-active`, then restore the snapshot and restart (exit 6) |
+
+Blast radius: one tenant. The document is per-tenant, the `slug` check is
+server-agnostic, the applier touches two lines of one file, and a failed apply
+restores the previous bytes. No tenant's document can reach another machine.
+
+## 7. Alternatives rejected
+
+- **A — an Odile API in front of NEAR, resolving a default alias.** Rejected in
+  §4.2: it puts Odile in the prompt path, falsifies an approved sentence, fails
+  A4's own exit criterion, and re-creates the retired central key and meter.
+- **B — add the model to the existing release document.** The smallest number of
+  new parts, and the coupling is worse than the extra part: a model switch would
+  inherit the app layer's refusals (another kernel, a moved environment, a
+  downgrade) so a tenant on an older boot chain could not take a model change at
+  all; and a one-line change would need a new manifest, installer and skills cut.
+  The model's lifecycle is the operator's, not the release's.
+- **C — a new seed, or a re-run of the installer with a new seed.** Rejected by
+  §2.4: the seed is cached and verified forever, its token is single-use, and it
+  carries the NEAR key and the mail secret — a "refresh" would re-deliver
+  secrets to a machine that already has them. The installer is also a repair, not
+  a switch: it runs the whole install and its smoke tests.
+- **D — an HQ push: a listener, a queue, or a connection from HQ.** Rejected: it
+  is a new inbound path to a machine whose owner holds the only key, it needs a
+  listener and a credential, and it inverts the direction every other control
+  message already uses. The guest pulls.
+- **E — the user switches the model.** Rejected as the mechanism, kept as an
+  option: the user cannot know a model was retired, alpha.0's testers are not
+  shell users, and A4 says the **team** moves the tenant. The user can still run
+  `sudo odile-update model apply` (or ask the agent to) and can turn the timer
+  off.
+- **F — a second signing key for configuration.** Rejected: two trust anchors on
+  the machine, two rotations, no benefit. Whoever holds the key that signs the
+  installer can already ship code; a document it also signs adds no power.
+
+## 8. Consequences
+
+**New parts, counted.** One route family on HQ (`/model/<slug>.json` + `.sig`),
+one cutter (`tools/cut_model.py`), one subcommand family in `odile_update.py`,
+one file per switched tenant in `model/`, one record on the machine
+(`/etc/odile/model.json`), one snapshot slot, two timers (the app layer's and the
+model's), one line in the installer's placement list, and one release cut. Of the
+fourteen rows, six are in place (6–10 and 14), five are rebuild-and-restore (1–5)
+and three are not updatable (11–13).
+
+**Follow-on cards this ADR names but does not do:**
+
+1. **The guest wiring of `odile-update`** — command, key, URL, timer, and now the
+   model timer. Still open from `update.md` §9; it is the A4 build card.
+2. **The precedence rule** — §4.6's three edits, with the byte-compatibility
+   test and the manifest runbook note.
+3. **The staleness signal** — `odile-update` maintains
+   `/var/lib/odile/odile-versions.json` (`odile`, `hermes`, `model`); the
+   installer's `backup.py heartbeat` adds those keys to `facts.versions`, which
+   HQ's contract already accepts and the privacy row already names; and
+   `odilectl health` compares the intended model (the document) and the intended
+   app release with the beat. This is A4's "a stale instance is visible", and it
+   adds no new datum class — but it does add a fact the tenant's heartbeat does
+   not send today (§2.6).
+4. **A `/verify` row** naming the model and the app release (the page is
+   embedded in the installer, so this rides a release cut).
+5. **A CLAIMS row for self-updating** — "your machine keeps itself updated from
+   signed releases" is a reliability sentence no row carries. It is the Product
+   lead's and Savio's, before any page says it. This ADR adds no sentence.
+6. **Signing-key rotation** — a document signed by the old key that installs the
+   new one; not built, and row 12 says so.
+
+**What does not change.** No access-model change: Odile still cannot log in, and
+the new document is a file, not a door. No new provider and no new network path:
+the same host, the same TLS, the same direction as `release.json` and the seed.
+No standing credential on a tenant: the signing key is already there. No CLAIMS
+sentence moves, and the *Inference* row stays true verbatim. The model was
+already Odile's choice at install (D7; MVP §5's "one model, chosen and pinned by
+us"), so a movable default is the same power at a later time — not a fourth
+power in gap 3's list, though the deck may want to say it in one sentence (§8,
+item 5).
+
+## 9. Reversibility
+
+**The model mechanism is two-way until the first tenant applies a document.** Up
+to that point it is a route, a tool and a subcommand, and deleting them leaves a
+tree that installs and updates exactly as today. After the first apply, the unit,
+the record and the timer are shipped surfaces: removing them is a release plus a
+`systemctl disable` on every machine — still two-way, at the cost of a release.
+Putting a tenant back on any model is one document, any time.
+
+**The trigger default is two-way** — a unit that is enabled or not, one
+installer line, one skill sentence and, once §8 item 5 lands, one deck row.
+
+**The proxy option would have been one-way.** It changes an approved claim, the
+privacy inventory and the key model at once; un-cutting it means re-cutting all
+three and telling every user. That asymmetry is the reason to decide it here
+rather than after the first tenant.
+
+## 10. What this ADR does not decide
+
+The A2 credential question (account password versus instance sign-in); A3's
+backup provider; A6's admin console, which is the natural future UI for
+`cut_model.py`; per-response inference attestation; the model catalogue or a
+picker (V0.2); signing-key rotation; whether alpha.0 ever takes money. Each is
+its own card, and two of them (A3's provider, a per-response proxy) are Savio's.
+
+## 11. Evidence
+
+Read and run in the card's worktree at head `d3c372b`
+(`d3c372ba8ee01bc2df8ddb5a7a63361ac4c2d5a0`), 17 November 2026. Read-only: no
+file outside this ADR is touched.
+
+```sh
+$ git rev-parse HEAD
+d3c372ba8ee01bc2df8ddb5a7a63361ac4c2d5a0
+$ sha256sum update/odile_update.py installer/odile_install.py app.py \
+    scripts/manifest.py scripts/heartbeat.py
+dd70d0de863c6ce16e1bc34cc220605bde5d1643b9296d90a3f3615690508e72  update/odile_update.py
+2cdf0801aa032dfb39296f7424a94fe003a8f05b8c9a6c9e459fa70516905dfb  installer/odile_install.py
+6d256539709e194a1f6cd85e6b9a4c29d0920fa28e8a35287594741256a89a1b  app.py
+bdca28acb6782a0658f6ef14f13e6c3cd6bfd7f123af9be1f8d119a80730b345  scripts/manifest.py
+2130870684e5ba2975517b805abc2aa0b4731478b277cbb74ef2e4a0d2922f32  scripts/heartbeat.py
+
+$ ./update/odile_update.py self-test | tail -1
+self-test: 37/37 passed                          # exit 0
+
+$ grep -c odile-update installer/odile_install.py     # the guest half is unbuilt
+0
+$ grep -c model update/odile_update.py                 # the updater never reads a model
+0
+$ grep -c /model app.py                                # no model route exists
+0
+$ grep -n '^MANAGED_KEYS' installer/odile_install.py
+223:MANAGED_KEYS = ("model", "agent", "custom_providers", "webapp", "onboarding")
+$ sed -n '9715,9719p' installer/odile_install.py
+    """`desired`'s settings, then every current line the template does not name.
+
+    A current line whose key the template does name is dropped even if its
+    value differs, so a drifted value cannot survive as a duplicate key. Lines
+$ sed -n '11889p' installer/odile_install.py
+    model = seed.get("model") or "deepseek-ai/DeepSeek-V4.1-Flash-1017"
+$ sed -n '502p' scripts/manifest.py
+        model_name = seed.get("model")
+$ sed -n '1245,1255p' installer/odile_install.py   # the tenant's own heartbeat body
+    facts = {
+        "last_backup_at": status.get("last_success_at"),
+        "backup": {
+            "repo": status.get("repo"),
+            "snapshot": status.get("snapshot"),
+            "status": status.get("status"),
+            "bytes": status.get("bytes_processed"),
+            "repo_bytes": status.get("repo_bytes"),
+            "at": status.get("last_success_at"),
+        },
+    }
+$ sed -n '964,965p' odilectl/health.py                # HQ accepts a versions map, optional
+    versions = facts.get("versions")
+    if versions is not None:
+$ python3 -c 'import json;d=json.load(open("release/release.json"));\
+print(d["release"],d["generated_at"],sorted(d["artifacts"]))'
+2026.11.15-9 2026-11-15T23:59:00Z ['installer', 'skills']
+```
+
+| Claim in this ADR | Where it comes from |
+|---|---|
+| the app layer moves in place, one snapshot, refusals with exit codes | `update/odile_update.py` docstring; `docs/runbooks/update.md` §2, §4, §10; self-test 37/37 |
+| the guest half of the updater is not installed | `grep -c odile-update installer/odile_install.py` → 0 |
+| the boot chain is rebuild-and-restore because the seal is bound to the measurement | `docs/CLAIMS.md` §3 gap 3; `docs/MVP-V0.1.md` §5 note; ADR-001 §15.2 |
+| the OS and the environment are pinned and refused, not written | `docs/runbooks/update.md` §10; `docs/runbooks/install.md` §6.1 (`apt-pins.list`) |
+| the model is rendered from the seed into two keys | `installer/odile_install.py:11889`, `TENANT_CONFIG_TEMPLATE` |
+| a re-run would revert a switch | `installer/odile_install.py:9717`, `ensure_config` |
+| the seed cannot be refreshed | `installer/odile_install.py:10484`, `10884`; `SEED_KEYS` |
+| the manifest records the seed's model, not the live one | `scripts/manifest.py:502` |
+| the tenant's heartbeat sends no versions at all; the contract accepts one | `installer/odile_install.py:1245`; `odilectl/health.py:964`; `scripts/heartbeat.py:263` |
+| HQ's only drift detector is the boot release | `odilectl/health.py:1020` (`release_report`) |
+| no Odile service is in the prompt path today | `docs/MVP-V0.1.md` §6.1 invariant 4; `docs/CLAIMS.md` §1 *Inference*; `docs/runbooks/install.md` §4 |
+| the proxy re-creates the retired meter and central key | `docs/CLAIMS.md` §1 *Money and place* (v3.9c, ODL-205) |
