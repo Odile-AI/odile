@@ -81,6 +81,12 @@ UPLOADS = (
     ("verify-command.html", 0o644),
     ("start-here.md", 0o644),
     ("session-receipt.json", 0o644),
+    # The demo's five-minute report refresh (t_145ca49c): the wrapper is the
+    # HQ one (deploy/attest-refresh/refresh.sh, unchanged), the two units are
+    # this directory's. The apply installs them from these uploaded copies.
+    ("attest-refresh.sh", 0o644),
+    ("odile-attest-refresh.service", 0o644),
+    ("odile-attest-refresh.timer", 0o644),
 )
 #: The receipt template lives in the reviewed demo seed (moved here from the
 #: retired demo workspace tree, t_9d7ee536).
@@ -456,6 +462,11 @@ def tenant_assertions(console) -> bool:
            f"the provider route is Near AI direct: {provider.get('base_url')!r}")
     record(provider.get("key_env") == NEAR_KEY_ENV,
            f"the provider row names the one key: {provider.get('key_env')!r}")
+    refresh = state.get("attest_refresh") or {}
+    record(refresh.get("timer") == "active",
+           f"odile-attest-refresh.timer is active (enabled: {refresh.get('enabled')!r})")
+    record(refresh.get("result") in ("success", ""),
+           f"the last refresh run's result is {refresh.get('result') or 'success'!r}")
     return ok
 
 
@@ -510,6 +521,8 @@ def self_test() -> int:
             return REPO / "deploy/caddy" / name
         if name == "start-here.md":
             return HERE / "seed/start-here-tenant.md"
+        if name == "attest-refresh.sh":
+            return REPO / "deploy/attest-refresh" / "refresh.sh"
         return HERE / name
 
     check(all(source_of(name).is_file() for name, _ in UPLOADS),
@@ -571,7 +584,9 @@ def cleanup_dry_run(console) -> None:
     and the uploaded files are root-owned)."""
     names = ("apply_demo_public.py", "demo-tenant-site.caddy", "login.html",
              "verify-lede.html", "verify-command.html", "start-here.md",
-             "session-receipt.json", *(name for name, _pin, _type in ICONS))
+             "session-receipt.json", "attest-refresh.sh",
+             "odile-attest-refresh.service", "odile-attest-refresh.timer",
+             *(name for name, _pin, _type in ICONS))
 
     quoted = " ".join(f"odile-demo-public-dryrun/{name}" for name in names)
     console.run(f"cd /tmp && sudo rm -f {quoted}", check=False)
@@ -652,6 +667,8 @@ def _run(argv: list[str] | None = None) -> int:
             source = RECEIPT_SOURCE
         elif name == "demo-tenant-site.caddy":
             source = COMMITTED_BLOCK
+        elif name == "attest-refresh.sh":
+            source = REPO / "deploy/attest-refresh" / "refresh.sh"
         else:
             source = HERE / name
         console.put(str(source), f"{remote_dir}/{name}", mode=f"{mode:04o}")
