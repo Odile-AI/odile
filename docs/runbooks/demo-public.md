@@ -26,6 +26,7 @@ page a judge should be sent to. It does not demonstrate a user-held key.
 | Sign-in page | `/srv/odile-demo/login.html`, Caddy's `handle /login*`. Committed and live are **one file**: sha256 `077f47d541b8a9daab33cf7e607f1a2e7e03c561342230f62fa5f25437b89253` (167,642 B), t_9896a577's artwork page with ODL-504's icon head (three links + the credit comment) and ODL-505's three paths (t_6b25f6e5), installed from `deploy/demo-host/login.html`. `--no-login` remains for a deploy that must keep the machine's current page |
 | Tab icon | three files beside the page — `web/favicon.ico` 11,790 B, `web/icon-32.png` 2,302 B, `web/apple-touch-icon.png` 47,543 B — put in `/srv/odile-demo` by the apply and answered by Caddy's `@tabicons` handle (`image/x-icon` for the `.ico`; one-year immutable). `/icon-192.png` and `/icon-512.png` stay the page server's, for the Webapp shell (§4) |
 | Caddy block | `deploy/caddy/demo-tenant-site.caddy`, sha256 `a38c22658436965126d9b234cdc422e1cf48d303c19f6c8f5d1124e1f7a5c0c6`, 4,465 B; no mutation matcher and no self-update matcher — every write reaches Hermes (§4) |
+| Report refresh | `odile-attest-refresh.timer` on the tenant: every five minutes, root runs `/usr/local/lib/odile/attest.py` into `/var/lib/odile/attestation.json` (atomic rename). This is the row's "refreshes every five minutes" made true (t_145ca49c); the check fails any served `fetched_at` older than ten minutes |
 | Seeded session | `Start here — Odile demo`, pinned, two messages, id `local-931d9e32…` (the constant `/judge` deep-links); written **once**, when the row is absent, and never rewritten |
 | Sessions | every session a judge opens persists across deploys and reboots; a deploy writes no session and deletes none |
 | Meter | none in the path: model route is Near AI direct, `.env` carries one key; on this machine the meter is **removed** (unit not installed, no key file, user gone — t_e237e261), so nothing masks or starts it |
@@ -46,6 +47,8 @@ page a judge should be sent to. It does not demonstrate a user-held key.
 | `deploy/demo-host/seed/session-receipt.json` | the reviewed receipt template the seeded session's row is minted from (cwd, route and caps rewritten for this machine) |
 | `deploy/demo-host/seed/start-here-tenant.md` | the seeded session's answer |
 | `deploy/caddy/demo-tenant-site.caddy` | the tenant's site block, committed source of truth |
+| `deploy/demo-host/odile-attest-refresh.service`, `.timer` | the demo's five-minute report refresh; the wrapper is `deploy/attest-refresh/refresh.sh`, the same one HQ runs. Installed by the apply (§6b) |
+| `deploy/attest-refresh/refresh.sh` | the atomic refresh wrapper: `attest.py` into a sibling temp file, `chmod 0644`, `mv` over the served copy |
 
 ## 2. Apply
 
@@ -100,6 +103,26 @@ and the verify. The apply restarts Caddy (which drops the socket it is talking
 over) and then `odile-agent`; the gateway takes ~35 s to answer again, and its
 graceful shutdown can take up to `TimeoutStopSec=90`, so a restart is a
 one-to-two-minute outage of the demo.
+
+### The report refreshes every five minutes — measured
+
+The claims row "The report refreshes every five minutes" (`docs/CLAIMS.md` §1
+*The demo machine*) is a row about this machine, and the tenant image alone does
+not satisfy it: ODL-397 writes `/var/lib/odile/attestation.json` from the boot
+report once, and the demo boot of 13 November was still being served on 16
+November. The demo therefore runs the same root timer HQ's `/verify` has run
+since ODL-322 — `odile-attest-refresh.timer`, every five minutes, the tenant's
+own `/usr/local/lib/odile/attest.py`, an atomic rename over the file Caddy
+serves. `apply_demo_public.py` §6b installs it (enabled, started, one refresh
+now); `check_demo_public.py` fails a served `fetched_at` older than ten minutes
+and fails the tenant's own file the same way, so a stopped timer cannot pass a
+green gate. Inspect it on the machine with:
+
+```sh
+systemctl list-timers odile-attest-refresh.timer
+systemctl show -p Result --value odile-attest-refresh.service
+journalctl -u odile-attest-refresh.service -n 20 --no-pager
+```
 
 ### The `/verify` lede is demo-only — the choice
 

@@ -306,6 +306,47 @@ class DeployAndCheckTests(unittest.TestCase):
         self.assertEqual(deploy.demo_check_problem(page + section), "")
         self.assertIn("2", deploy.demo_check_problem(page + section + section))
 
+    def test_the_freshness_gate_pins_the_five_minute_row(self):
+        """A stale report fails the gate, not just a missing one (t_145ca49c).
+
+        The regression was a green gate over a three-day-old report: the
+        measurement matched, so every existing row passed. The age itself has
+        to be a row, bounded by the claims sentence, not by a timer's say-so.
+        """
+        from datetime import datetime, timezone
+
+        check = load(DEMO / "check_demo_public.py", "demo_check_freshness_test")
+        self.assertEqual(check.REPORT_MAX_AGE_SECONDS, 600)
+        base = datetime(2026, 11, 17, 12, 0, tzinfo=timezone.utc).timestamp()
+        report = {"fetched_at": "2026-11-17T11:55:00Z"}
+        self.assertEqual(check.freshness_problem(report, now=base), "")
+        self.assertEqual(check.freshness_problem(report, now=base + 300), "")
+        self.assertIn("11.0 minutes", check.freshness_problem(report, now=base + 360))
+        self.assertIn("no fetched_at", check.freshness_problem({}, now=base))
+        self.assertIn("ISO-8601", check.freshness_problem(
+            {"fetched_at": "yesterday"}, now=base))
+        self.assertIn("future", check.freshness_problem(
+            {"fetched_at": "2026-11-17T12:05:00Z"}, now=base))
+
+    def test_the_deploy_ships_the_refresh_units_the_apply_installs(self):
+        """The demo's timer is committed, uploaded and installed in one deploy.
+
+        A machine rebuilt from the image has the boot report only (ODL-397);
+        the five-minute row is true only if the deploy puts the timer back.
+        """
+        deploy = load(DEMO / "deploy_demo_public.py", "demo_deploy_refresh_test")
+        apply = load(DEMO / "apply_demo_public.py", "demo_apply_refresh_test")
+        names = [name for name, _ in deploy.UPLOADS]
+        for name in ("attest-refresh.sh", "odile-attest-refresh.service",
+                     "odile-attest-refresh.timer"):
+            self.assertIn(name, names)
+        self.assertTrue((ROOT / "deploy" / "attest-refresh" / "refresh.sh").is_file())
+        self.assertTrue((DEMO / "odile-attest-refresh.service").is_file())
+        self.assertTrue((DEMO / "odile-attest-refresh.timer").is_file())
+        self.assertEqual(apply.ATTEST_TIMER_UNIT, "odile-attest-refresh.timer")
+        self.assertEqual(apply.ATTEST_REFRESH_TARGET.name, "attest-refresh.sh")
+        self.assertEqual(apply.ATTEST_FILE.name, "attestation.json")
+
 
 MATCH = "9f" * 48
 

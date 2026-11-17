@@ -44,6 +44,7 @@ import time
 import urllib.error
 import urllib.request
 import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -86,6 +87,12 @@ CREDIT_COMMENT = ("<!-- Icon: Lucas Cranach the Elder, Saints Christina and Otti
 VERIFIER_BUNDLE = "https://odile.fyi/odile-verify.tar.gz"
 PASS_LINE = ("PASS — the CPU signed this report and the launch measurement "
              "matches the pin.")
+#: The demo's claims row says the report refreshes every five minutes
+#: (docs/CLAIMS.md §1 *The demo machine*). The gate measures the age of the
+#: document the page actually serves: ten minutes is two timer periods, so the
+#: timer's 15 s accuracy cannot fail the check, while a stopped timer fails on
+#: its second interval (t_145ca49c).
+REPORT_MAX_AGE_SECONDS = 600
 #: The seeded session's identity is frozen: the id is a hash over the profile
 #: and principal the row was minted with on the retired HQ demo, and app.py's
 #: /judge deep link carries the same id. The retired account name is spelled in
@@ -112,6 +119,41 @@ def check(ok: bool, text: str) -> bool:
     FAILED += 0 if ok else 1
     print(("ok   " if ok else "FAIL ") + text)
     return ok
+
+
+def report_age_seconds(fetched_at: str, now: float | None = None) -> float | None:
+    """The report's age in seconds, or None when fetched_at is not `…Z` ISO-8601."""
+    try:
+        stamp = datetime.strptime(str(fetched_at), "%Y-%m-%dT%H:%M:%SZ")
+    except ValueError:
+        return None
+    return (now if now is not None else time.time()) - stamp.replace(tzinfo=timezone.utc).timestamp()
+
+
+def freshness_problem(document: dict, now: float | None = None,
+                      max_age: int = REPORT_MAX_AGE_SECONDS) -> str:
+    """Why the served report is not fresh; '' when it is (t_145ca49c).
+
+    The approved row is "The report refreshes every five minutes"
+    (docs/CLAIMS.md §1 *The demo machine*). The gate measures the document the
+    page actually serves, not the timer's intent: a one-shot refresh that
+    stopped would otherwise keep a green page for three days, which is the
+    regression this check exists to catch. The bound is two timer periods, so
+    the timer's own accuracy window is not a failure.
+    """
+    if not isinstance(document, dict):
+        return "the response is not a JSON object"
+    fetched_at = document.get("fetched_at")
+    if not isinstance(fetched_at, str) or not fetched_at:
+        return "the report has no fetched_at"
+    age = report_age_seconds(fetched_at, now)
+    if age is None:
+        return f"fetched_at {fetched_at!r} is not ISO-8601 UTC"
+    if age < -60:
+        return f"fetched_at {fetched_at} is {-age:.0f}s in the future"
+    if age > max_age:
+        return f"fetched_at {fetched_at} is {age / 60:.1f} minutes old (max {max_age // 60})"
+    return ""
 
 
 def icon_problem(name: str, status: int, headers: dict, body: bytes) -> str:
@@ -456,12 +498,22 @@ def public_checks(password: str) -> str:
 
     print("== the machine")
     code, body, _ = http(DEMO + "/attestation")
-    report_measurement = ""
+    document: dict = {}
     try:
-        report_measurement = str(json.loads(body).get("measurement") or "")
+        parsed = json.loads(body)
+        document = parsed if isinstance(parsed, dict) else {}
     except ValueError:
-        report_measurement = ""
+        document = {}
+    report_measurement = str(document.get("measurement") or "")
     check(code == 200 and bool(report_measurement), f"GET /attestation -> {code}")
+    age = report_age_seconds(str(document.get("fetched_at") or ""))
+    freshness = freshness_problem(document)
+    observed = (f"fetched_at {document.get('fetched_at')}, {age / 60:.1f} min old"
+                if age is not None else f"fetched_at {document.get('fetched_at')!r}")
+    check(freshness == "",
+          f"the report is no older than {REPORT_MAX_AGE_SECONDS // 60} minutes "
+          f"(the five-minute row): {observed}"
+          + (f" — {freshness}" if freshness else ""))
     code, body, _ = http(DEMO + "/verify", cookie=cookie)
     page = body.decode("utf-8", "replace")
     page_measurement = MEASUREMENT.search(page)
@@ -583,6 +635,22 @@ def tenant_checks(console, password: str = "") -> tenant_console.Console:
     check(caddy.get("residue_lines") == 0,
           f"no console residue after END: {caddy.get('residue_lines')}")
     check(caddy.get("active") == "active", f"caddy is {caddy.get('active')}")
+
+    print("== the report refresh (the five-minute row)")
+    refresh = state.get("attest_refresh") or {}
+    committed_timer = hashlib.sha256(
+        (HERE / "odile-attest-refresh.timer").read_bytes()).hexdigest()
+    check(refresh.get("timer") == "active",
+          f"odile-attest-refresh.timer is {refresh.get('timer') or 'unknown'!r} "
+          f"(enabled: {refresh.get('enabled') or 'unknown'})")
+    check(refresh.get("unit_sha256") == committed_timer,
+          f"the installed timer is the committed file ({committed_timer[:16]}…)")
+    check(refresh.get("result") in ("success", ""),
+          f"the last refresh run's result is {refresh.get('result') or 'success'!r}")
+    machine_problem = freshness_problem({"fetched_at": refresh.get("fetched_at")})
+    check(machine_problem == "",
+          "the tenant's own served report is no older than ten minutes: "
+          + (machine_problem or f"fetched_at {refresh.get('fetched_at')}"))
 
     print("== the seeded session")
     session = state.get("session") or {}

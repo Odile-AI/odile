@@ -1,0 +1,11 @@
+[Unit]
+Description=Refresh the cached SEV-SNP attestation report every five minutes
+
+[Timer]
+OnCalendar=*:0/5
+AccuracySec=15s
+RandomizedDelaySec=0
+Unit=odile-attest-refresh.service
+
+[Install]
+WantedBy=timers.target
