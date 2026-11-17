@@ -77,3 +77,4 @@ ssh-fingerprint	*	sha256:4a06410661a1	constant	no	the bench disk B's ed25519 SSH
 ssh-fingerprint	*	sha256:9dc5452993d1	constant	no	the bench disk B's rsa SSH host-key fingerprint in image.md section 13.11; the public half of a second machine booted from the same image	never
 ssh-fingerprint	*	sha256:e16a77fdc93e	constant	no	the bench disk B's ecdsa SSH host-key fingerprint in image.md section 13.11; the public half of a second machine booted from the same image	never
 ssh-fingerprint	*	sha256:dc2ac0dce274	constant	no	the measured boot key's fingerprint in image.md section 13.11.5's boot-record line; a public key in the measured command line	never
+public-ip	docs/ops/GATE-PACKET.md	sha256:9876939e2536	constant	no	the gate packet's runnable card needs HQ's real IPv4 — the zone's A record; the address is public in DNS, not a secret	never
