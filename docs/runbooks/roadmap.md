@@ -123,7 +123,9 @@ cd <checkout>
 The units are committed under `deploy/roadmap/`:
 
 - `odile-roadmap.service` — oneshot, root, `ProtectSystem=strict`,
-  `ProtectHome=read-only`, `ReadWritePaths=/var/lib/odile`.
+  `ProtectHome=read-only`, `ReadWritePaths=/var/lib/odile` and the board's
+  directory (`/root/.hermes/kanban/boards/odile`), because a `mode=ro` open of
+  a WAL database still writes the `-shm` index beside it.
 - `odile-roadmap.timer` — `OnCalendar=*:0/15`, `Persistent=true`.
 
 ## 5. Check it
