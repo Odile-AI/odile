@@ -531,6 +531,23 @@ onto that tree and merged with this head, re-embeds every surface and cuts
 `-3` (§12.6). t_afb081be then re-embeds the support program and cuts
 `2026.11.15-6` (§12.6).
 
+t_4fcd465f (the ODL-236 follow-up) moves the tenant's `/verify` off the
+first-visit service: the installer now embeds the reviewed `verify/verify.py`
+and `templates/verify.html`, places them at
+`/usr/local/lib/odile/verify.{py,html}`, writes `odile-verify.service` (root,
+127.0.0.1:8098) and splices one no-store `/verify` route to it; the first-visit
+service keeps `/first-visit*` and the icon paths. It cuts `2026.11.17-1`
+(installer `03fca7c3…`, 1,478,098 bytes; manifest `6139cc7f…`,
+`generated_at` 2026-11-15T06:15:00Z — `-9`'s fresh-root document with only
+`installer_sha256` re-derived, a surgical re-cut rather than a root rebuild).
+`release/release.json` is `2026-11-17T19:30:00Z` and names that pair; all four
+signatures verify against `installer/odile-signing-key.pub`
+(`--verify-signature` printed `signature: OK (sha256 03fca7c3…)`). It is
+committed, not deployed. Measured 2026-11-17T18:59Z, the URL still served the
+deployed `2026.11.15-9` (installer `2cdf0801…`, 1,424,179 bytes; manifest
+`4664da84…`); this cut publishes when a `./scripts/deploy.sh` runs from a
+`main` that carries it.
+
 The order is proved on a machine with no network: `--self-test` points
 `ensure_install` at a local `file://` script and asserts that a mismatched one
 is refused with no marker left by `bash`, while a matching one reaches `bash`

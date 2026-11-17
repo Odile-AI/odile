@@ -1,0 +1,14 @@
+# Odile image bench — pipe the verify socket to the loopback page.
+#
+# One process per connection (Accept=no in the socket unit);
+# systemd-socket-proxyd is part of systemd, so the bench adds no package.
+[Unit]
+Description=Odile image bench — loopback proxy for host-forwarded verify traffic
+Requires=odile-bench-proxy-verify.socket
+After=odile-bench-proxy-verify.socket odile-verify.service
+StartLimitIntervalSec=0
+StartLimitBurst=0
+
+[Service]
+ExecStart=/lib/systemd/systemd-socket-proxyd 127.0.0.1:__VERIFY_PORT__
+PrivateTmp=true

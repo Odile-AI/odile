@@ -84,11 +84,11 @@ START_HERE = LIB / "start-here.md"
 DEMO_UNIT = "odile-demo-public"
 UNIT_TARGET = Path(f"/etc/systemd/system/{DEMO_UNIT}.service")
 
-#: The release installer's /verify template. It is read by the first-visit
-#: service on every request (`FirstVisit.verify`), so replacing the file is
-#: served without a restart. The release installer writes it once, on the
-#: first boot (`odile-release-setup.service` now converges once); this deploy
-#: is the only writer after that (ODL-503 finding 1).
+#: The release installer's /verify template. It is read by
+#: `odile-verify.service` on every request (`verify/verify.py`), so replacing
+#: the file is served without a restart. The release installer writes it once,
+#: on the first boot (`odile-release-setup.service` now converges once); this
+#: deploy is the only writer after that (ODL-503 finding 1).
 VERIFY_TEMPLATE = Path("/usr/local/lib/odile/verify.html")
 #: The demo's lede, uploaded beside this program. It replaces the one lede
 #: paragraph inside the template's tenant block; a customer machine never runs
@@ -421,9 +421,9 @@ def ensure_verify_command(dry: bool) -> bool:
 
     The demo's page is the only public tenant /verify, so the command lives in
     the demo layer: the release template's tenant block stays the customer's
-    page (no command, no demo hostname). The write goes to the same file the
-    first-visit service reads per request; the lede's update wrote the backup,
-    so this step must not overwrite it with a half-injected page.
+    page (no command, no demo hostname). The write goes to the same file
+    `odile-verify.service` reads per request; the lede's update wrote the
+    backup, so this step must not overwrite it with a half-injected page.
     """
     source = command_source()
     if not source.is_file():

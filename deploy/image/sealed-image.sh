@@ -470,6 +470,8 @@ done
 for f in config.yaml tenant.service odile-bench-smoke.service \
          odile-bench-proxy.service odile-bench-proxy.socket \
          odile-bench-proxy-firstvisit.service odile-bench-proxy-firstvisit.socket \
+         odile-bench-proxy-verify.service odile-bench-proxy-verify.socket \
+         odile-verify.service \
          odile-bench-attest.service odile-attest-boot.service odile-access-report.service \
          odile-bench-proxy-manifest.service odile-bench-proxy-manifest.socket \
          odile-firstboot.service odile-first-visit.service \
@@ -487,7 +489,8 @@ done
 # card has not merged: the image still builds, the first boot skips it.
 for pair in "installer/first_visit.py:first_visit.py:0755" \
             "web/first-visit.html:first-visit.html:0644" \
-            "web/verify.html:verify.html:0644" \
+            "templates/verify.html:verify.html:0644" \
+            "verify/verify.py:verify.py:0755" \
             "installer/access_report.sh:access_report.sh:0755" \
             "scripts/verify_and_unlock.sh:verify_and_unlock.sh:0755" \
             "attest.py:attest.py:0755"; do

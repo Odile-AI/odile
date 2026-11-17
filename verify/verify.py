@@ -21,6 +21,7 @@ Where the numbers come from, all read at request time and none invented:
   /etc/ssh/ssh_host_ed25519_key.pub the host key the user compares
   /etc/passwd, /etc/shadow          the accounts and root's lock
   /run/bb/sealed-unlock.state       the initramfs seal's boot outcome
+  <home>/.hermes/.env               the scrypt sign-in hash, never the password
   /etc/odile/manifest.json(.sig)    the signed app-layer manifest
   odile-audit --json                the handoff audit (ODL-208), for the
                                     access rows it already checks
@@ -35,7 +36,7 @@ not on this machine says so instead of guessing.
     /usr/bin/python3 verify/verify.py --stdout             # the page on stdout
     /usr/bin/python3 verify/verify.py --json               # the same rows
     /usr/bin/python3 verify/verify.py --out /var/lib/odile/verify.html
-    /usr/bin/python3 verify/verify.py --serve --port 8099  # Caddy's upstream
+    /usr/bin/python3 verify/verify.py --serve --port 8098  # Caddy's upstream
 
 On a bench, point it at a mounted machine root and the dump the audit uses:
 
@@ -43,10 +44,11 @@ On a bench, point it at a mounted machine root and the dump the audit uses:
         --luks-dump /tmp/luks.txt --now 2026-11-13T12:00:00Z
 
 `--now` pins the provenance line. Nothing is written except `--out`, which is
-atomic and 0644. `--serve` answers `/` with the page and everything else with
-404, `Cache-Control: no-store`; it holds no state and runs no timer. On a guest
-it runs as root because the handoff audit reads `/etc/shadow` and sshd's
-journal, and it binds loopback: Caddy is the public listener.
+atomic and 0644. `--serve` answers `/` with the page, `/health` with `ok` and
+everything else with 404, `Cache-Control: no-store`; it holds no state and runs
+no timer. On a guest the `odile-verify.service` unit runs it as root because
+the handoff audit reads `/etc/shadow` and sshd's journal, and it binds loopback
+on 127.0.0.1:8098: Caddy is the public listener at `/verify`.
 """
 
 from __future__ import annotations
@@ -69,8 +71,11 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-TEMPLATE_PATH = ROOT / "templates" / "verify.html"
-DEFAULT_PORT = 8099
+# Beside the program on a tenant (/usr/local/lib/odile/verify.html, written by
+# the installer's embedded copy), the repository template on a checkout.
+_TEMPLATE_BESIDE = Path(__file__).resolve().parent / "verify.html"
+TEMPLATE_PATH = _TEMPLATE_BESIDE if _TEMPLATE_BESIDE.is_file() else ROOT / "templates" / "verify.html"
+DEFAULT_PORT = 8098
 
 ATTESTATION = "/var/lib/odile/attestation.json"
 BOOT_RECORD = "/etc/odile/boot-record.json"
@@ -116,6 +121,15 @@ GUEST_AGENT_NAMES = ("servury", "blackbox", "bb-agent", "servury-agent")
 
 LAPTOP_TAG = "checked from your laptop"
 MACHINE_TAG = "read from the machine"
+
+# The seal's signed policy (SNP guest policy) and the two .env keys the
+# sign-in row reads. The sign-in row never prints the hash, only that it is a
+# scrypt hash and that no plaintext password sits beside it.
+SEAL_POLICY = 0x30000
+SIGNIN_HASH_KEY = "HERMES_DASHBOARD_BASIC_AUTH_PASSWORD_HASH"
+SIGNIN_PASSWORD_KEY = "HERMES_DASHBOARD_BASIC_AUTH_PASSWORD"
+SCRYPT_RE = re.compile(
+    r"^scrypt\$\d+\$\d+\$\d+\$[A-Za-z0-9+/=]+\$[A-Za-z0-9+/=]+$")
 
 
 class PageError(Exception):
@@ -180,6 +194,11 @@ def parse_public_key(line: str) -> tuple[str, str, str] | None:
             continue
         return fields[index], fields[index + 1], " ".join(fields[index + 2:])
     return None
+
+
+def cmdline_token(cmdline: str, name: str) -> str | None:
+    match = re.search(r"(?:^|\s)%s=(\S+)" % re.escape(name), cmdline)
+    return match.group(1) if match else None
 
 
 def run(argv: list[str], *, timeout: int = 60, env: dict | None = None):
@@ -365,6 +384,80 @@ class Machine:
 
     def seal_state(self) -> str:
         return self.read(SEAL_STATE).strip()
+
+    def home_of(self, user: str) -> str:
+        for name, _uid, home, _shell in self.accounts():
+            if name == user:
+                return home
+        return ""
+
+    def seal(self, document: dict | None, report: bytes | None) -> tuple[str, str, tuple[str, ...]]:
+        """(state, detail, mono) for the signed seal policy and the seal_id.
+
+        The policy is the report's own first 8-byte field; ``seal_id`` is in
+        the measured command line and must still be the running one. This is
+        the same check ``verify_and_unlock.sh --mode access`` prints, so the
+        page and the report cannot disagree about the seal.
+        """
+        if not report or len(report) < 16:
+            return "FAIL", "no report bytes to read a policy from", ()
+        policy = int.from_bytes(report[8:16], "little")
+        signed = report[0x90:0xC0].hex() if len(report) >= 0xC0 else ""
+        measured = document.get("cmdline") if isinstance(document, dict) else ""
+        if not isinstance(measured, str):
+            measured = ""
+        seal_id = cmdline_token(measured, "seal_id")
+        running_seal = cmdline_token(self.cmdline(), "seal_id")
+        problems = []
+        if policy != SEAL_POLICY:
+            problems.append("policy is 0x%x, not 0x%x" % (policy, SEAL_POLICY))
+        if len(signed) != 96 or signed == "0" * 96:
+            problems.append("the signed report carries no measurement")
+        if seal_id is None:
+            problems.append("the measured command line has no seal_id")
+        elif running_seal != seal_id:
+            problems.append("the running command line has no measured seal_id")
+        detail = "policy 0x%x; seal_id %s; measurement %s" % (
+            policy, seal_id or "missing", signed or "missing")
+        if problems:
+            detail += " (%s)" % "; ".join(problems)
+        marks = tuple(mark for mark in ("0x%x" % policy, seal_id or "", signed)
+                      if mark)
+        return ("FAIL" if problems else "PASS"), detail, marks
+
+    def signin_hash(self) -> tuple[str, str, str]:
+        """(state, detail, command) for the scrypt sign-in hash, never its value."""
+        user = self.agent_user()
+        home = self.home_of(user) if user else ""
+        if not home:
+            return "N/A", "no agent account with a home directory", ""
+        absolute = home.rstrip("/") + "/.hermes/.env"
+        command = "grep -c '^%s=' %s" % (SIGNIN_HASH_KEY, absolute)
+        path = self.path(absolute)
+        if not path.is_file():
+            return "FAIL", "no %s" % absolute, command
+        values = {}
+        for line in read_text(path).splitlines():
+            if "=" in line and not line.lstrip().startswith("#"):
+                name, value = line.split("=", 1)
+                values[name.strip()] = value.strip()
+        encoded = values.get(SIGNIN_HASH_KEY, "")
+        plaintext = SIGNIN_PASSWORD_KEY in values
+        valid = bool(SCRYPT_RE.match(encoded))
+        if valid:
+            try:
+                valid = int(encoded.split("$")[1]) >= 16384
+            except (IndexError, ValueError):
+                valid = False
+        if not encoded:
+            return "FAIL", "no scrypt hash in %s" % absolute, command
+        if plaintext:
+            return "FAIL", "plaintext password in %s" % absolute, command
+        if not valid:
+            return "FAIL", "the hash in %s is not scrypt" % absolute, command
+        return ("PASS",
+                "scrypt hash present in %s; no plaintext password" % absolute,
+                command)
 
     def luks(self) -> tuple[list[str], list[str], str]:
         """(keyslots, tokens, command) from the header, never the volume."""
@@ -686,6 +779,14 @@ def collect(machine: Machine) -> Machine:
                             "(/run/bb/sealed-unlock.state is absent)", "machine",
                             "cat /run/bb/sealed-unlock.state"))
 
+    seal_verdict, seal_detail, seal_marks = machine.seal(document, report)
+    reported.append(Row("seal policy", seal_verdict, seal_detail, "machine",
+                        "cat /proc/cmdline", mono=seal_marks))
+
+    signin_state, signin_detail, signin_command = machine.signin_hash()
+    reported.append(Row("sign-in hash", signin_state, signin_detail, "machine",
+                        signin_command))
+
     reported.append(support_row(machine, support, keyslots))
     reported.append(Row("manifest", manifest_state, manifest_detail, "machine",
                         "curl -s https://<slug>.odile.fyi/manifest | jq"))
@@ -807,6 +908,10 @@ def render(machine: Machine, template: str) -> str:
     for name, value in (
         ("TITLE", "Verify \u2014 Odile"),
         ("STAMP", html.escape(values["stamp"])),
+        # The demo page's one-line verifier command carries {{MEASUREMENT}}
+        # (deploy/demo-host/apply_demo_public.py); a customer page has no
+        # such slot. Filled here, never left to a second renderer.
+        ("MEASUREMENT", html.escape(values.get("measurement") or "unavailable")),
         ("ROBOTS", "noindex"),
         ("STATE_BLOCK", state_block),
         ("HEAD", head),

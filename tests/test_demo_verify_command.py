@@ -50,9 +50,25 @@ def load(path: Path, name: str):
 
 def embedded_page(path: Path) -> str:
     text = path.read_text(encoding="utf-8")
-    match = re.search(r"VERIFY_PAGE = r'''(.*?)'''", text, re.S)
-    assert match is not None, f"{path} carries no VERIFY_PAGE"
+    match = re.search(r"VERIFY_TEMPLATE = r'''(.*?)'''", text, re.S)
+    assert match is not None, f"{path} carries no VERIFY_TEMPLATE"
     return match.group(1)
+
+
+def render_page(page: str, measurement: str | None = MEASUREMENT) -> str:
+    """Render *page* through the shipped /verify program (t_4fcd465f)."""
+    verify = load(ROOT / "verify" / "verify.py", "demo_command_verify_render")
+    machine = verify.Machine(root=Path("/"), now=verify.parse_iso("2026-11-14T00:00:00Z"))
+    machine.values = {
+        "stamp": "2026-11-14T00:00:00Z", "measurement": measurement or "",
+        "measurement_short": (measurement or "")[:16],
+        "release": "2026.11.2" if measurement else "", "vcpus": "4" if measurement else "",
+        "report_fingerprint": "", "fetched_at": "2026-11-14T00:00:00Z" if measurement else "",
+        "boot_key": "", "host_key": "", "signing_key": "",
+        "state": "available" if measurement else "unavailable",
+        "state_text": "" if measurement else "The CPU has not produced a report yet",
+    }
+    return verify.render(machine, page)
 
 
 def copied_lines(page: str) -> list[str]:
@@ -166,7 +182,7 @@ class WrapTests(unittest.TestCase):
     def setUpClass(cls):
         cls.text = COMMAND.read_text(encoding="utf-8")
         cls.page = embedded_page(INSTALLERS[0])
-        cls.checkout_page = (ROOT / "web" / "verify.html").read_text(encoding="utf-8")
+        cls.checkout_page = (ROOT / "templates" / "verify.html").read_text(encoding="utf-8")
 
     def test_the_terminal_block_carries_a_wrap_class_the_page_defines(self):
         block = re.search(r"<pre([^>]*)>", self.text)
@@ -185,12 +201,12 @@ class WrapTests(unittest.TestCase):
                     + r" code\{[^}]*white-space:pre-wrap[^}]*\}",
                     f"the page defines no wrap rule for .{token} code")
 
-    def test_the_note_points_below_to_the_report_it_describes(self):
+    def test_the_note_points_above_to_the_measurement_it_names(self):
         note = re.search(r'<p class="note">(.*?)</p>', self.text, re.S)
         self.assertIsNotNone(note)
         copy = html.unescape(re.sub(r"<[^>]+>", "", note.group(1)))
-        self.assertIn("shown in the report below", copy)
-        self.assertNotIn("measurement above", copy)
+        self.assertIn("shown above", copy)
+        self.assertNotIn("shown in the report below", copy)
 
 
 class InjectionTests(unittest.TestCase):
@@ -246,26 +262,19 @@ class InjectionTests(unittest.TestCase):
 
 
 class RenderTests(unittest.TestCase):
-    """What a browser actually reads, through the tenant's own renderer."""
+    """What a browser actually reads, through the shipped renderer."""
 
     @classmethod
     def setUpClass(cls):
         cls.apply = load(DEMO / "apply_demo_public.py", "demo_command_render_test")
-        cls.first_visit = load(ROOT / "installer" / "first_visit.py",
-                               "demo_command_first_visit_test")
         cls.lede = LEDE.read_text(encoding="utf-8").strip()
         cls.command = COMMAND.read_text(encoding="utf-8").strip()
-        cls.report = {"state": "ok", "at": "2026-11-14T00:00:00Z",
-                      "text": "report body"}
-        cls.attestation = {"measurement": MEASUREMENT,
-                           "fetched_at": "2026-11-14T00:00:00Z",
-                           "meta": "version 3, 1184 bytes"}
 
     def rendered(self) -> str:
         page = self.apply.inject_command(
             self.apply.inject_lede(embedded_page(INSTALLERS[0]), self.lede),
             self.command)
-        return self.first_visit.render_verify_page(page, self.report, self.attestation)
+        return render_page(page)
 
     def test_the_command_carries_the_measurement_the_page_serves(self):
         rendered = self.rendered()
@@ -279,11 +288,11 @@ class RenderTests(unittest.TestCase):
         self.assertEqual(lines, [EXPECTED])
 
     def test_without_a_report_the_page_still_renders_and_names_it(self):
-        rendered = self.first_visit.render_verify_page(
+        rendered = render_page(
             self.apply.inject_command(
                 self.apply.inject_lede(embedded_page(INSTALLERS[0]), self.lede),
                 self.command),
-            {"state": "missing"}, None)
+            measurement=None)
         self.assertIn("--expect unavailable", rendered)
         self.assertIn("Report unavailable", rendered)
 
@@ -295,16 +304,11 @@ class CheckTests(unittest.TestCase):
     def setUpClass(cls):
         cls.check = load(DEMO / "check_demo_public.py", "demo_command_check_test")
         cls.apply = load(DEMO / "apply_demo_public.py", "demo_command_check_apply_test")
-        cls.first_visit = load(ROOT / "installer" / "first_visit.py",
-                               "demo_command_check_first_visit_test")
         page = cls.apply.inject_command(
             cls.apply.inject_lede(embedded_page(INSTALLERS[0]),
                                   LEDE.read_text(encoding="utf-8").strip()),
             COMMAND.read_text(encoding="utf-8").strip())
-        cls.page = cls.first_visit.render_verify_page(
-            page, {"state": "ok", "at": "2026-11-14T00:00:00Z", "text": "report body"},
-            {"measurement": MEASUREMENT, "fetched_at": "2026-11-14T00:00:00Z",
-             "meta": "version 3, 1184 bytes"})
+        cls.page = render_page(page)
 
     def test_the_check_extracts_the_line_a_browser_copies(self):
         self.assertEqual(self.check.page_command(self.page), EXPECTED)
