@@ -20,10 +20,11 @@ measured repository size (1.017 GB), **$0.10** at a 15 GB envelope; the plan's
 existing $0.60 line covers 86 GB per tenant and does not move.
 **Related:** `docs/MVP-V0.1.md` §6.1, §6.7, §8, §12 (D19); `docs/CLAIMS.md` §1
 *Reliability* and §4.5 (lines 64–65, 121–122, 180); `docs/architecture/ADR-003`
-(the factory's copy — restic to Cloudflare R2) and §4.2 of it (B2 named as the
-fallback); `docs/runbooks/backup.md` §1–§9; `docs/runbooks/offboard.md` §4–§5;
+(`ADR-factory-backup.md`, the factory's copy — restic to Cloudflare R2) and §4.2
+of it (B2 named as the fallback); `docs/runbooks/backup.md` §1–§9;
+`docs/runbooks/offboard.md` §4–§5;
 `docs/RESTORE.md` (HQ's own restore, not this); cards ODL-215, ODL-218,
-`t_fec9f699`, `t_8eb17a54`, `t_ce52bb8d`, `t_9d6fb595`, ODL-570.
+`t_fec9f699`, `t_8eb17a54`, `t_ce52bb8d`, `t_9d6fb595`, `t_02b8df9d`, ODL-570.
 **Decision owner:** Architect for the mechanism, the include set and the restore
 path; **Savio for the provider, the account, the region and the credentials**
 (§3 of the authority matrix). Product lands any sentence that moves
@@ -34,7 +35,8 @@ path; **Savio for the provider, the account, the region and the credentials**
 ## 1. The invariant at risk
 
 Five sentences the product depends on: four are internal invariants, and the
-fifth is already published.
+fifth is a deck sentence still **held from the public pages** (`docs/CLAIMS.md`
+§1a, line 219).
 
 1. **The copy survives the machine.** *True, drilled.* ODL-215's nightly restic
    snapshot and a destroy-and-restore were measured on 2026-11-12 (§2).
@@ -62,10 +64,17 @@ fifth is already published.
    "before" the 30 days; nothing today gives the user a credential that reaches
    the bytes. They hold a password and a repository URL, and an SFTP account only
    the guest can authenticate to.
-5. **"Backups are off-site."** *Published and not yet true.* The sentence is on
-   `web/faq.html` (`docs/CLAIMS.md`:121, held by `t_5f10dd14`); at this head the
-   bytes are on HQ's disk, in the same provider and the same city as the machine
-   they are supposed to survive.
+5. **"Backups are off-site."** *In the deck, held from the page.*
+   `docs/CLAIMS.md`:121 carries it and §1a line 219 holds it; it lands with
+   `t_5f10dd14`. No page quotes the clause — `web/faq.html:131` has only "The
+   machine is in Montreal, Canada." — but one page carries the *substance* in a
+   different sentence: `web/privacy.html:149` lists the nightly backup's
+   destination as "an off-site SFTP storage box". That is wrong twice today (the
+   bytes are on HQ's disk, and the box was never bought) and stale after this ADR
+   (the destination becomes a B2 bucket, not SFTP). Both surfaces are Product's
+   to land; **this ADR publishes nothing**. And the deck sentence is not true in
+   fact at this head: the bytes are on HQ's disk, in the same provider and the
+   same city as the machine they are supposed to survive.
 
 **What this ADR preserves:** the shape (restic), the password (guest-generated,
 user-held, never at HQ), the nightly timer, the status record and the heartbeat,
@@ -107,14 +116,21 @@ failure the builder did not test.**
    "HQ cannot read" measurement greps `/root/.odile`, `/etc/odile` and
    `/opt/odile`, none of which is a shell's `~`. A rebuild is also the one moment
    the repository password is *supposed* to be the user's alone.
-3. **The include set has two possible homes.** The installer's backup unit uses
-   `layout.home` (the tenant layout, `/home/odile`, where `.hermes` lives on the
-   current image — `installer/odile_install.py`, `backup_unit_files`), while the
-   live tenant's hand-installed unit from the drill names `--home /home/tenant`
-   (`backup.md` §2). Both strings are in the tree today; a restore that uses the
-   wrong one succeeds, restores an empty tree, and reports `ok`. The drill must
-   assert that `state.db` and `cron/jobs.json` came back, not that restic exited
-   zero.
+3. **The include set is a flag, and the wrong flag succeeds.** The installer's
+   backup unit is rendered from `layout.home` (`backup_unit_files`,
+   `installer/odile_install.py:12194–12214`), which for a tenant is
+   `/home/tenant` (`Layout.tenant`, `:10103–10113`; `DEFAULT_HOME`, `:578`;
+   the image runs the installer with `--user tenant`,
+   `deploy/image/odile-release-setup.sh:154`) — the same string the live unit
+   the drill measured names (`backup.md` §2.1). The `/home/odile` string in
+   the tree is `installer/first_visit.py`'s standalone `DEFAULT_ENV` (`:114`),
+   which the unit overrides with `--env-file` (`:9299`) filled from the tenant
+   layout (`installer/odile_install.py:12474`, `:12279`). So today the two
+   homes agree, and **no migration or home-mapping is needed**: the failure is a
+   rebuild whose unit or restore call drops `--home` or overrides it. A restore
+   under a wrong `--home` succeeds, restores an empty tree, and reports `ok`.
+   The drill must assert that `state.db` and `cron/jobs.json` came back, not
+   that restic exited zero.
 
 ## 3. The three shapes the card asks about
 
@@ -220,6 +236,10 @@ deleted in the same commit.
 - **Let Odile pay $6.95/TB-month.** The first bill, at ten tenants, is under a
   cent; at the plan's $0.60/tenant line the allowance is 86 GB per tenant.
 
+**The board card for this question:** `t_02b8df9d` (lane `human`, assignee
+`savio`, blocked), linked from ODL-570. The answer is recorded there, and the
+cards in §8 wait for it.
+
 ## 5. The trust boundary this creates
 
 **What Backblaze holds:** ciphertext, the repository's size and object count, the
@@ -238,6 +258,16 @@ already delete any tenant's machine through the Servury API, so this does not wi
 the availability power; it does add "can overwrite", which is worth stating: an
 operator who wanted to destroy a backup could, and an operator who wanted to read
 one could not.
+
+**The rule this amends, named.** `AGENTS.md` line 61 says HQ stores no tenant
+passphrase, private key or Webapp password — "Only the public key and a hashed
+setup token." A bucket-scoped application key is none of those three: it is not
+a key *to* the machine (no door in), it opens one bucket of the tenant's own
+ciphertext, and it has to be in the seed because HQ mints it at provision and
+the guest cannot. This ADR amends the **letter** of that rule with Savio's yes
+(§4) and leaves its purpose — nothing at HQ can log in or read plaintext —
+exactly as it was. The recovery file's read-only key is the same class of
+credential, held by the user instead of HQ.
 
 **What the guest holds.** `/etc/odile/backup-s3.env` (0600 root): the bucket, the
 region and the read-write application key, whose capabilities are exactly
@@ -309,11 +339,12 @@ home**, and the backup contains the home.
 | | the TLS certificate (ACME, on first request) and `/var/lib/odile/backup.json` (the first post-rebuild run) |
 
 Two consequences a reviewer should check. **First, a restore is only as good as
-its `--home`** — §2 fact 3: the wrong path restores an empty tree and exits 0, so
-the drill asserts content, not an exit code: `state.db` opens and holds the
-sessions the user had, `cron/jobs.json` is present, and the `.env` hash the
-restore put back equals the one the backup carried (checked before the page's
-sign-in step replaces it). **Second, the sign-in hash is in the home**, so the
+its `--home`** — §2 fact 3: a restore under the wrong path writes an empty tree
+and exits 0 (both units name `/home/tenant` today; the failure is a rebuild that
+overrides it), so the drill asserts content, not an exit code: `state.db` opens
+and holds the sessions the user had, `cron/jobs.json` is present, and the `.env`
+hash the restore put back equals the one the backup carried (checked before the
+page's sign-in step replaces it). **Second, the sign-in hash is in the home**, so the
 order of the rebuilt machine's steps matters: restore first, then set the sign-in
 (§7.3) — the other order lets the restore silently replace the password the user
 just chose.
@@ -328,8 +359,9 @@ not a nicety.
 
 ### 7.1 What has to be true before the machine dies
 
-- The nightly run has succeeded: the heartbeat's `last_backup_at` is under 26
-  hours old (the freshness watchdog, ODL-216) and `backup.json` says `ok`.
+- The nightly run has succeeded: the heartbeat's `last_backup_at` is under **36
+  hours** old (the freshness watchdog, ODL-216 — `odilectl/health.py:710`,
+  `BACKUP_ALERT_SECONDS = 36 * 60 * 60`) and `backup.json` says `ok`.
 - The user still has the recovery file, off the machine. Nothing else is needed
   from them — not a key, not a passphrase, not a shell.
 
@@ -342,7 +374,7 @@ not a nicety.
 | 2 | the machine | the signed image boots and the installer runs zero-touch; the seed carries the bucket, the read-write key and the tenant row's **previous instance id**, so the page knows this is a rebuild from the row and not from an operator flag somebody forgot | included above |
 | 3 | the user | opens `https://<slug>.odile.fyi/first-visit?t=<token>` from the "your machine is back" email and **pastes the whole recovery file** into one textarea | under a minute |
 | 4 | the machine | the first-visit service parses `Backup password:` with the installer's own grammar (`RECOVERY_PASSWORD_RE`), writes `/etc/odile/recovery.txt` (0600) **regenerated for this machine** — same password, new `Instance:`, new `Certificate SHA-256:`, the repository and the read-only key — starts `odile-restore.service`, and the page polls a text status endpoint with a meta refresh (no JavaScript) | — |
-| 5 | the machine | `odile-restore.service`: stop the agent unit, `backup.py restore latest --target / --include <home>`, start the agent unit, run one `backup.py run` so a fresh snapshot exists immediately, write the status | repo ÷ throughput; the measured repository is **1.017 GB** |
+| 5 | the machine | `odile-restore.service`: stop the backup timer and the agent unit, `backup.py restore latest --target / --include <home>`, start the agent unit, run one `backup.py run` so a fresh snapshot exists immediately, re-enable the timer, write the status. The timer is stopped first so a 03:00 run cannot snapshot a half-restored home; the restore's own run is the newest snapshot either way | repo ÷ throughput; the measured repository is **1.017 GB** |
 | 6 | the user | the page says "Restored snapshot `<id>` of 2026-11-17T03:00Z — 156,311 files, 3.14 GB"; they set a **new sign-in** (the page's normal step) and sign in | under a minute |
 | 7 | the user | checks one thing they care about — a file, the last brief, the agent's memory of yesterday — and the page's own report names the snapshot and its time | a minute |
 | 8 | HQ | records the rebuild on the row: snapshot id, restore time, size; the next 03:00 run lands under the same `--host <slug>`, so the retention group stays one | — |
@@ -371,9 +403,9 @@ message containing a secret.
 |---|---|
 | **Wrong password** | restic exits 12 (`wrong password or no key found`); the page says "that file does not open your backup", the home is untouched, the paste can be retried. A file from another tenant is caught by its own `Tenant:` and `Repository:` lines before restic runs, and a truncated paste fails at the page — the installer's `parse_recovery` grammar is reused, so a bad file never reaches a restic call |
 | **The user lost the recovery file** | the page offers "start fresh without a restore": the guest mints a new password into a new recovery file, uses a new repository path, and the old bucket is kept 30 days and deleted (`t_9d6fb595`). The page says, in one sentence, that the old data is unrecoverable without the old file — which is the promise, not a bug |
-| **The restore is interrupted** | `odile-restore.service` is a oneshot and the page re-offers the step; restic restore overwrites into the same target, so a second run converges. Nothing else in the machine depends on it, so the user is never blocked |
+| **The restore is interrupted** | `odile-restore.service` is a oneshot and the page re-offers the step; restic restore overwrites into the same target, so a second run converges. The backup timer stays stopped until a run completes, and if the user never comes back the 36-hour freshness watchdog is the signal. Nothing else in the machine depends on it, so the user is never blocked |
 | **The process is killed mid-write** | `state.db` is overwritten under a live gateway — the torn-database failure `docs/RESTORE.md` §2 already refuses. The unit stops the agent first and starts it after; the drill asserts the session list is readable afterwards |
-| **The nightly timer fires before the user pastes** | `ConditionPathExists=/etc/odile/recovery.txt` on the backup unit, so a rebuilt-but-not-yet-restored machine does not report a failed backup. Without it, every rebuild produces a false "backup failed" alert that trains the operator to ignore the one that matters |
+| **The nightly timer fires before the user pastes** | The backup **service** carries `ConditionPathExists=/etc/odile/recovery.txt`, and on a rebuild the installer **does not create that file**: `ensure_recovery` (`installer/odile_install.py:10972`) skips when the seed carries the previous instance id, because a freshly minted password would not open the old repository. So a rebuilt-but-not-yet-restored machine's timer fires, the condition fails, the service is skipped silently, and no false "backup failed" reaches the watchdog. The paste writes `/etc/odile/recovery.txt`, and `odile-restore.service` runs one snapshot before the next 03:00. On a **fresh** tenant there is no previous instance id, the installer mints the recovery file at install as today, and the first backup is not suppressed |
 | **A password typed into the chat instead of the page** | it travels to NEAR AI's TEE in the prompt **and** lands in `state.db`, which is inside the backup it opens. The restore step is a page POST for exactly this reason, and the help text says so |
 | **Backblaze is down or the account is capped** | the restore waits and retries; the machine is usable without it. A failed upload is a `status: failed` heartbeat, which the freshness watchdog already reports |
 | **HQ is gone** | the bucket, the user's recovery file and the signed image are enough to rebuild the machine by hand on any provider; what is lost is the convenience of `odilectl`, not the data. This is the first time that sentence has been true |
@@ -385,8 +417,8 @@ and the drill are the two that make the destination worth paying for.
 
 | Card | What it must do | Depends on |
 |---|---|---|
-| **Provisioning** | `odilectl provision` mints the tenant's bucket (a four-character suffix on a name collision, because B2 bucket names are globally unique), the read-write key and the read-only key, records the repository in the tenant row, and puts the read-write key in the seed. **Retires `--backup-password-file`** and with it the sealed password in `seed-rebuilds.json` | the account (§4) |
-| **`backup.py` + installer** | an `s3:` repository: load `/etc/odile/backup-s3.env`, keep the SFTP branch for one release, add `ConditionPathExists=` to the backup unit. Update `BACKUP_SHA256` and re-sign the installer | the seed field |
+| **Provisioning** | `odilectl provision` mints the tenant's bucket (a four-character suffix on a name collision, because B2 bucket names are globally unique), the read-write key and the read-only key, records the repository in the tenant row, and puts the read-write key in the seed **with the previous instance id** (empty on a fresh tenant; the rebuild marker §7.4 reads). **Retires `--backup-password-file`** and with it the sealed password in `seed-rebuilds.json` | the account (§4; `t_02b8df9d`) |
+| **`backup.py` + installer** | an `s3:` repository: load `/etc/odile/backup-s3.env`, keep the SFTP branch for one release, add `ConditionPathExists=/etc/odile/recovery.txt` to the backup **service**, and **skip `ensure_recovery` when the seed carries the previous instance id** — the suppression that makes the condition true before the paste (§7.4). Update `BACKUP_SHA256` and re-sign the installer | the seed field |
 | **First visit** | the rebuild step: detect the previous instance id in the seed, ask for the recovery file before the sign-in step, write `/etc/odile/recovery.txt`, run `odile-restore.service`, show the snapshot and its time (no JavaScript) | `backup.py`'s `restore` (already supports `--target /` and `--include`) |
 | **Recovery file** | two new lines (the repository URL and the read-only key) and the parse that tolerates them; the `first_visit.py` copy of the grammar stays the one source | the provisioning card |
 | **The drill** | destroy → rebuild → paste → restore against the **real bucket**, with `state.db` and `cron/jobs.json` asserted, and both clocks stated (the lesson of ODL-215's two T0s). This replaces 38m03s and decides whether "under an hour" stays | all of the above |
@@ -398,7 +430,7 @@ and the drill are the two that make the destination worth paying for.
 
 | Sentence | Today | After this ADR |
 |---|---|---|
-| "Backups are off-site." (`CLAIMS.md`:121) | published, **not true** | true, and the evidence is a bucket in Toronto at a different provider from the machine and from HQ |
+| "Backups are off-site." (`CLAIMS.md`:121) | **in the deck, held from the page** (`CLAIMS.md` §1a line 219, `t_5f10dd14`); not true in fact — the bytes are on HQ's disk | **true in fact when the migration card (§8) runs**: a bucket in Toronto at a different provider from the machine and from HQ. The page sentence stays held until Product lands it — **this ADR does not publish it** |
 | "The encrypted backup is kept 30 days after cancellation, then deleted. Odile can delete it, not read it." (`:122`) | true on the storage path; conditional during a rebuild | true on both paths, because the password never transits HQ: the rebuild is a paste on the machine and `--backup-password-file` is retired |
 | "A recovery code and a recovery file are the way back: … the file opens your backup." (`:64`) | true through the agent | **literally true**: the file carries the URL and a read-only key, so it opens the backup on any machine. **This is stronger than the deck owns** — Product lands the wording, Savio approves it (§3, a published sentence not in `CLAIMS.md`) |
 | "The recovery file holds the backup password and the certificate fingerprint." (`:65`) | true | it now also holds the repository and a read-only key; the sentence needs the extra clause |
@@ -441,10 +473,13 @@ Measured, at this head, unless marked *modelled*:
 - The numbers in §2: `backup.md` §4 (0.931 s), §5.5 (38m03s / 84m13s / 14m24s /
   0.861 s), §8 (156,311 files / 3,139,596,963 bytes; repository
   1,017,111,156 bytes; the `rc=1` password grep; the snapshot ids).
-- The include set and the two homes: `installer/odile_install.py`
-  (`DEFAULT_EXCLUDES`, `backup_unit_files` with `home=layout.home`),
-  `installer/first_visit.py` (`DEFAULT_ENV = /home/odile/.hermes/.env`),
-  `backup.md` §2 (the live unit's `--home /home/tenant`).
+- The include set and its home: `installer/odile_install.py` (`DEFAULT_EXCLUDES`;
+  `backup_unit_files` with `home=layout.home`; `Layout.tenant` → `/home/<user>`;
+  `DEFAULT_HOME`; the unit's `--env-file` filled from `layout.hermes_home`),
+  `deploy/image/odile-release-setup.sh` (the installer runs with `--user tenant`),
+  `backup.md` §2.1 (the installer-written unit names `--home /home/tenant`), and
+  `installer/first_visit.py` (`DEFAULT_ENV = /home/odile/.hermes/.env`, which the
+  unit overrides).
 - The rebuild's password path: `docs/runbooks/offboard.md` §5 and
   `docs/runbooks/backup.md` §5.2, §9; `seed/seed.py:39`, `:383`, `:541`.
 - The restore primitives that already exist: `command_restore` in
@@ -456,7 +491,8 @@ Measured, at this head, unless marked *modelled*:
   (Backblaze data-centres page, updated 2026-11-13); 11 nines and 17+3 erasure
   coding (Backblaze resiliency page); 100 buckets per account and bucket-scoped
   app keys (Backblaze S3-API and app-key pages). Cloudflare R2 $0.015/GB-month,
-  10 GB free, free egress (`ADR-003` §4.1). Hetzner BX11 €3.20/month, 1 TB, 100
+  10 GB free, free egress (`ADR-003`, `docs/architecture/ADR-factory-backup.md`
+  §4.1). Hetzner BX11 €3.20/month, 1 TB, 100
   sub-accounts, 10 concurrent connections, Germany or Finland, "the data is not
   mirrored onto other servers" (hetzner.com Storage Box page and FAQ).
 - The transfer bound: `curl -o /dev/null -w '%{speed_download}'` against
@@ -476,7 +512,9 @@ Measured, at this head, unless marked *modelled*:
 - **No `docs/MVP-V0.1.md` edit** for §6.1's diagram, §6.7's "off-site SFTP box",
   §8's $0.60 line or `AGENTS.md`'s "off-site SFTP storage box": all four are
   outside this card's `touches` and are named in §8's card list instead of
-  smuggled in here.
+  smuggled in here. **No `web/privacy.html` edit either**: its destination cell
+  (line 149, "an off-site SFTP storage box") is wrong today and staler after this
+  ADR; it lands with `t_5f10dd14` (§1 item 5).
 - **No second copy.** One destination, one credential set, one drill — the same
   call ADR-003 §4.1 made for HQ, for the same reason: a second copy doubles what
   can be wrong at 03:00 and still needs a drill to prove it. The read-only key is
