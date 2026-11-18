@@ -670,9 +670,10 @@ What the reset does and does not move:
   record.** The exchange installs once; the same token is also the bearer for
   the boot-record POST on every boot, and `record_for_token` answers an expired
   row `410 expired`. That is non-fatal (the console still says `same`), but the
-  ledger's boot record (`boot_release`, `recorded_at`, `first_visit`) stops
-  refreshing. Nothing on the box changes until the next reinstall, and a reset
-  re-arms the record along with the token.
+  ledger's boot record (`boot_release`, `first_visit`) stops refreshing;
+  `recorded_at` never moves on a replay — it is the first record's stamp, like
+  `installed_at` (ODL-218 follow-up). Nothing on the box changes until the next
+  reinstall, and a reset re-arms the record along with the token.
 - **A replay hands over machine credentials.** The seed carries the NEAR key and
   the mail relay secret, and a tenant provisioned as a rebuild also gets its
   `rebuild` block, sealed under this same token (`/var/lib/odile/seed-rebuilds.json`,

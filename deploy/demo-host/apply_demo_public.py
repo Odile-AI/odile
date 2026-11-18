@@ -83,6 +83,24 @@ START_HERE = LIB / "start-here.md"
 #: fence can grep for the full unit and find none in the tree's code.
 DEMO_UNIT = "odile-demo-public"
 UNIT_TARGET = Path(f"/etc/systemd/system/{DEMO_UNIT}.service")
+#: The demo's report refresh (t_145ca49c). The claims row promises a report
+#: that refreshes every five minutes; the tenant image writes its served copy
+#: once at boot (ODL-397), so the demo installs the same five-minute root timer
+#: HQ's /verify has run since ODL-322 — against the tenant's own attest.py.
+#: The wrapper is `deploy/attest-refresh/refresh.sh`; the two units are this
+#: directory's committed copies. The deploy uploads all three beside this
+#: program, so a rebuilt machine gets the timer in the same one deploy.
+ATTEST_REFRESH = LIB / "attest-refresh.sh"
+ATTEST_REFRESH_TARGET = Path("/usr/local/lib/odile/attest-refresh.sh")
+ATTEST_SERVICE = LIB / "odile-attest-refresh.service"
+ATTEST_SERVICE_TARGET = Path("/etc/systemd/system/odile-attest-refresh.service")
+ATTEST_TIMER = LIB / "odile-attest-refresh.timer"
+ATTEST_TIMER_TARGET = Path("/etc/systemd/system/odile-attest-refresh.timer")
+#: The file Caddy serves at /attestation, and the two units whose state the
+#: check reads through `--report`.
+ATTEST_FILE = Path("/var/lib/odile/attestation.json")
+ATTEST_SERVICE_UNIT = "odile-attest-refresh.service"
+ATTEST_TIMER_UNIT = "odile-attest-refresh.timer"
 
 #: The release installer's /verify template. It is read by the first-visit
 #: service on every request (`FirstVisit.verify`), so replacing the file is
@@ -1312,6 +1330,71 @@ def remove_boot_unit(dry: bool) -> bool:
     return True
 
 
+# ---------------------------------------------------------------------------
+# 6b. the report refresh (t_145ca49c)
+#
+# The demo's approved row says "The report refreshes every five minutes." The
+# tenant image serves the once-at-boot report (ODL-397), so without this the
+# sentence goes stale the moment the machine boots. This is the HQ mechanism
+# moved onto the demo guest: a root oneshot every five minutes, written
+# atomically over the file Caddy already serves.
+
+def _uploaded(path: Path) -> Path:
+    """The copy beside this program, else the installed path.
+
+    The deploy's dry run executes the uploaded program from its scratch
+    directory, before the installed copies exist; the same resolution the lede
+    uses keeps one file on both paths.
+    """
+    beside = Path(__file__).resolve().parent / path.name
+    return beside if beside.is_file() else path
+
+
+def ensure_attest_refresh(dry: bool) -> bool:
+    """Install the five-minute report refresh the demo's claims row promises.
+
+    Idempotent: bytes (and modes) are compared before a write, the timer is
+    enabled/started only when it is not already, and one refresh runs here so
+    the deploy's own verify never reads yesterday's report.
+    """
+    sources = ((_uploaded(ATTEST_REFRESH), ATTEST_REFRESH_TARGET, 0o755),
+               (_uploaded(ATTEST_SERVICE), ATTEST_SERVICE_TARGET, 0o644),
+               (_uploaded(ATTEST_TIMER), ATTEST_TIMER_TARGET, 0o644))
+    changed = False
+    for source, target, mode in sources:
+        if not source.is_file():
+            raise SystemExit(f"error: missing {source}")
+        desired = source.read_bytes()
+        same = (target.is_file() and target.read_bytes() == desired
+                and (target.stat().st_mode & 0o777) == mode)
+        if same:
+            say("same", f"{target} ({source.name})")
+            continue
+        say("would write" if dry else "write", f"{target} ({source.name})")
+        changed = True
+        if not dry:
+            write_atomic(target, desired, mode, 0, 0)
+    enabled = run(["systemctl", "is-enabled", ATTEST_TIMER_UNIT]).stdout.strip()
+    active = run(["systemctl", "is-active", ATTEST_TIMER_UNIT]).stdout.strip()
+    if dry:
+        say("would enable", f"{ATTEST_TIMER_UNIT} (enabled={enabled or '-'}, "
+                            f"active={active or '-'}) and run one refresh")
+        return changed or enabled != "enabled" or active != "active"
+    if changed:
+        run(["systemctl", "daemon-reload"])
+    if enabled != "enabled" or active != "active":
+        run(["systemctl", "enable", "--now", ATTEST_TIMER_UNIT])
+    # One report now: the page a judge reads during the deploy is fresh too.
+    run(["systemctl", "start", ATTEST_SERVICE_UNIT])
+    result = run(["systemctl", "show", "--value", "-p", "Result",
+                  ATTEST_SERVICE_UNIT]).stdout.strip()
+    if result and result != "success":
+        raise SystemExit(f"error: {ATTEST_SERVICE_UNIT} result {result}")
+    say("refresh", f"{ATTEST_TIMER_UNIT} enabled and active; one refresh run "
+                   f"(result {result or 'success'})")
+    return changed or enabled != "enabled" or active != "active"
+
+
 RESTART_HELPER = """#!/bin/sh
 # Installed by deploy/demo-host/apply_demo_public.py (ODL-503).
 # The Webapp's shell.exec refuses any command line carrying `systemctl
@@ -1473,6 +1556,30 @@ def max_iterations_lines() -> list[str]:
     return [line.strip() for line in lines if "reason=max_iterations_reached(" in line]
 
 
+def attest_refresh_state() -> dict:
+    """The timer's own state and the served report's fetched_at (read-only).
+
+    The check reads this through `--report`: a fresh page can still be served
+    by a stopped timer for one interval, so the mechanism and the document are
+    asserted together.
+    """
+    def value(*command: str) -> str:
+        return (run(list(command)).stdout or "").strip()
+    try:
+        document = json.loads(ATTEST_FILE.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        document = {}
+    return {
+        "timer": value("systemctl", "is-active", ATTEST_TIMER_UNIT),
+        "enabled": value("systemctl", "is-enabled", ATTEST_TIMER_UNIT),
+        "result": value("systemctl", "show", "--value", "-p", "Result",
+                        ATTEST_SERVICE_UNIT),
+        "fetched_at": document.get("fetched_at") if isinstance(document, dict) else None,
+        "unit_sha256": (hashlib.sha256(ATTEST_TIMER_TARGET.read_bytes()).hexdigest()
+                        if ATTEST_TIMER_TARGET.is_file() else None),
+    }
+
+
 def report(session_id: str = "") -> int:
     """Print the demo's tenant-side state as one JSON object.
 
@@ -1533,6 +1640,7 @@ def report(session_id: str = "") -> int:
             for name, _pin, _content_type in ICONS
         },
         "caddy": caddy_state(),
+        "attest_refresh": attest_refresh_state(),
         "session": session,
         "session_count": session_count,
         "runs": runs,
@@ -1857,6 +1965,7 @@ def main(argv: list[str] | None = None) -> int:
     changed |= config_changed or env_changed
     changed |= ensure_session(dry)
     changed |= remove_boot_unit(dry)
+    changed |= ensure_attest_refresh(dry)
     changed |= ensure_restart_helper(dry)
     if dry:
         say("dry run", "nothing written, caddy and odile-agent untouched")

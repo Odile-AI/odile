@@ -22,8 +22,10 @@ These tests pin three things:
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import importlib.util
+import io
 import json
 import re
 import shutil
@@ -306,6 +308,47 @@ class DeployAndCheckTests(unittest.TestCase):
         self.assertEqual(deploy.demo_check_problem(page + section), "")
         self.assertIn("2", deploy.demo_check_problem(page + section + section))
 
+    def test_the_freshness_gate_pins_the_five_minute_row(self):
+        """A stale report fails the gate, not just a missing one (t_145ca49c).
+
+        The regression was a green gate over a three-day-old report: the
+        measurement matched, so every existing row passed. The age itself has
+        to be a row, bounded by the claims sentence, not by a timer's say-so.
+        """
+        from datetime import datetime, timezone
+
+        check = load(DEMO / "check_demo_public.py", "demo_check_freshness_test")
+        self.assertEqual(check.REPORT_MAX_AGE_SECONDS, 600)
+        base = datetime(2026, 11, 17, 12, 0, tzinfo=timezone.utc).timestamp()
+        report = {"fetched_at": "2026-11-17T11:55:00Z"}
+        self.assertEqual(check.freshness_problem(report, now=base), "")
+        self.assertEqual(check.freshness_problem(report, now=base + 300), "")
+        self.assertIn("11.0 minutes", check.freshness_problem(report, now=base + 360))
+        self.assertIn("no fetched_at", check.freshness_problem({}, now=base))
+        self.assertIn("ISO-8601", check.freshness_problem(
+            {"fetched_at": "yesterday"}, now=base))
+        self.assertIn("future", check.freshness_problem(
+            {"fetched_at": "2026-11-17T12:05:00Z"}, now=base))
+
+    def test_the_deploy_ships_the_refresh_units_the_apply_installs(self):
+        """The demo's timer is committed, uploaded and installed in one deploy.
+
+        A machine rebuilt from the image has the boot report only (ODL-397);
+        the five-minute row is true only if the deploy puts the timer back.
+        """
+        deploy = load(DEMO / "deploy_demo_public.py", "demo_deploy_refresh_test")
+        apply = load(DEMO / "apply_demo_public.py", "demo_apply_refresh_test")
+        names = [name for name, _ in deploy.UPLOADS]
+        for name in ("attest-refresh.sh", "odile-attest-refresh.service",
+                     "odile-attest-refresh.timer"):
+            self.assertIn(name, names)
+        self.assertTrue((ROOT / "deploy" / "attest-refresh" / "refresh.sh").is_file())
+        self.assertTrue((DEMO / "odile-attest-refresh.service").is_file())
+        self.assertTrue((DEMO / "odile-attest-refresh.timer").is_file())
+        self.assertEqual(apply.ATTEST_TIMER_UNIT, "odile-attest-refresh.timer")
+        self.assertEqual(apply.ATTEST_REFRESH_TARGET.name, "attest-refresh.sh")
+        self.assertEqual(apply.ATTEST_FILE.name, "attestation.json")
+
 
 MATCH = "9f" * 48
 
@@ -424,6 +467,60 @@ class VerifyPublicSectionTests(unittest.TestCase):
         self.assertEqual(len(failures), 1, "\n".join(lines))
         self.assertIn("2 '<!--demo-check-->' marker(s)", failures[0])
         self.assertIn("2 '<!--/demo-check-->' closer(s)", failures[0])
+
+
+class DnsRowTests(unittest.TestCase):
+    """The two DNS rows take the run's expected address, not the redaction.
+
+    The public tree carries the tenant's redacted address (create_dns.TENANT_IP),
+    so the check's default must be that value and a live zone must pass the
+    machine's real address explicitly. Both names have to answer the same one.
+    The non-redacted address is TEST-NET-2: the leak gate forbids the machine's
+    real address in the tree, and a row only compares strings.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.check = load(DEMO / "check_demo_public.py", "demo_check_dns_test")
+
+    def rows(self, expected: str, demo: list[str], machine: list[str]):
+        answers = {self.check.DEMO_NAME: demo, self.check.MACHINE_NAME: machine}
+        return self.check.dns_checks(expected, lambda name: list(answers[name]))
+
+    def test_the_tree_default_is_the_redacted_tenant_address(self):
+        self.assertEqual(self.check.DEFAULT_DNS, "203.0.113.87")
+        rows = self.rows(self.check.DEFAULT_DNS, ["203.0.113.87"], ["203.0.113.87"])
+        self.assertEqual([ok for ok, _ in rows], [True, True])
+        self.assertIn("203.0.113.87", rows[0][1])
+
+    def test_a_live_zone_passed_explicitly_passes(self):
+        rows = self.rows("198.51.100.7", ["198.51.100.7"], ["198.51.100.7"])
+        self.assertEqual([ok for ok, _ in rows], [True, True])
+        self.assertIn("198.51.100.7", rows[0][1])
+
+    def test_the_live_zone_fails_the_redacted_default(self):
+        rows = self.rows(self.check.DEFAULT_DNS, ["198.51.100.7"], ["198.51.100.7"])
+        self.assertEqual([ok for ok, _ in rows], [False, False])
+
+    def test_two_names_that_disagree_fail_the_second_row(self):
+        rows = self.rows("198.51.100.7", ["198.51.100.7"], ["198.51.100.8"])
+        self.assertEqual([ok for ok, _ in rows], [True, False])
+        self.assertIn("198.51.100.8", rows[1][1])
+
+    def test_main_passes_its_target_to_the_public_half(self):
+        seen: list[str] = []
+
+        def fake_public(password: str, target: str = "") -> str:
+            seen.append(target)
+            return ""
+
+        original = self.check.public_checks
+        self.check.public_checks = fake_public
+        self.addCleanup(setattr, self.check, "public_checks", original)
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(self.check.main([]), 0)
+            self.assertEqual(self.check.main(["--target", "198.51.100.7"]), 0)
+        self.assertEqual(seen, [self.check.DEFAULT_DNS, "198.51.100.7"])
 
 
 if __name__ == "__main__":

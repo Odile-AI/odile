@@ -766,6 +766,33 @@ class SeedService(unittest.TestCase):
             con.close()
         return tenant, spine, events
 
+    def boot_row(self, slug: str) -> sqlite3.Row:
+        con = sqlite3.connect(self.db)
+        con.row_factory = sqlite3.Row
+        try:
+            return con.execute(
+                "SELECT detail, updated_at FROM tenant_state WHERE slug = ?", (slug,)
+            ).fetchone()
+        finally:
+            con.close()
+
+    def pin_tenant(self, slug: str, instance: str) -> None:
+        """A tenant at `first_boot` with its own spine row, for a pinned replay."""
+        stamp = iso(now())
+        con = sqlite3.connect(self.db)
+        try:
+            con.execute(
+                "INSERT INTO tenants (slug, email, server_id, created_at)"
+                " VALUES (?, ?, ?, ?)",
+                (slug, slug + "@example.com", instance, stamp))
+            con.execute(
+                "INSERT INTO tenant_state (slug, state, server_id, detail,"
+                " created_at, updated_at) VALUES (?, 'first_boot', ?, '{}', ?, ?)",
+                (slug, instance, stamp, stamp))
+            con.commit()
+        finally:
+            con.close()
+
     def test_a_record_before_the_seed_is_refused(self):
         token, _ = self.issue("odl-boot")
         status, _, body = self.boot_record(token)
@@ -832,20 +859,62 @@ class SeedService(unittest.TestCase):
         self.assertEqual(detail["boot_key"], BOOT_KEY_TEXT)
         self.assertEqual(detail["first_visit"], "done")
         self.assertIn("cmdline_sha256", detail)
-        # A reboot sends the same record again; it writes no second event.
+        # A reboot sends the same record again; it writes no second event and
+        # no second row: every detail key, `recorded_at` included, is unchanged.
         status, _, body = self.boot_record(token)
         self.assertEqual(status, 200, body)
         self.assertEqual(json.loads(body)["changed"], [])
         again = self.boot_rows()
         self.assertEqual(again[2], events)
-        # `recorded_at` is the observation's own clock, so a replay refreshes
-        # it; every other fact must be byte-identical, and the difference must
-        # be that one key (a replay writes no second row and no second event).
         before = json.loads(spine["detail"])
-        after = json.loads(again[1]["detail"])
-        self.assertRegex(after.pop("recorded_at"), r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$")
-        before.pop("recorded_at")
-        self.assertEqual(after, before)
+        self.assertRegex(before["recorded_at"], r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$")
+        self.assertEqual(json.loads(again[1]["detail"]), before)
+
+    def test_a_replayed_record_keeps_the_first_recorded_at(self):
+        """The row's stamp is the first record's, with the writer's clock pinned.
+
+        Both forms: a record that carries its own `at` (the operator's repair
+        path) and one that does not (the guest's boot report). The clock moves
+        between the two calls, so a per-call key would show up as a changed
+        `detail` — the replay must write nothing at all.
+        """
+        seed_module = load_seed_module()
+        first = now().replace(microsecond=0)
+        later = first + timedelta(minutes=5)
+        # slug, instance, the record's own `at`, and the clock of the first call
+        for slug, instance, own_at, first_now in (
+            ("odl-pin", "srv-pin", None, first),
+            ("odl-pinat", "srv-pinat", iso(first), later),
+        ):
+            self.pin_tenant(slug, instance)
+            token, _ = self.issue(slug)
+            status, _, body = self.exchange(token, instance)
+            self.assertEqual(status, 200, body)
+            record = {
+                "cmdline": self.measured_line(instance=instance, host=slug),
+                "release": "2026.11.1",
+                "first_visit": "done",
+                "serving": "200",
+            }
+            if own_at:
+                record["at"] = own_at
+            con = sqlite3.connect(self.db)
+            con.row_factory = sqlite3.Row
+            try:
+                seed_module.record_for_token(con, token, instance, record, now=first_now)
+                before = self.boot_row(slug)
+                replay = dict(record)
+                if own_at:
+                    replay["at"] = iso(later)
+                seed_module.record_for_token(con, token, instance, replay,
+                                             now=later + timedelta(minutes=5))
+                after = self.boot_row(slug)
+            finally:
+                con.close()
+            self.assertEqual(json.loads(after["detail"])["recorded_at"],
+                             iso(first), slug)
+            self.assertEqual(after["detail"], before["detail"], slug)
+            self.assertEqual(after["updated_at"], before["updated_at"], slug)
 
     def test_a_record_for_another_instance_is_refused(self):
         token, _ = self.issue("odl-boot")
