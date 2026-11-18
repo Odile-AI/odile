@@ -4,7 +4,7 @@
 The reseller API has a boot-image verb now (`?action=boot-image`, probed 12
 November), and `tools/servury_cycle.py` uses it when the account holding a
 machine has a reseller key. The panel is the route for an account with a session
-but no key — `<servury-account:dev>`, which owns `<server:ukitest>`. Its login is
+but no key — `lkbxu6i9`, which owns the bench `168020b4` and the tenant box. Its login is
 not an email form: it is one **32-character credential** field
 (`input#credential`) plus a CSRF token, with a 30-day "remember me". That makes
 the panel drivable with a cookie jar — no headless browser, no brittle clicking.
@@ -319,8 +319,12 @@ def post(opener, url: str, fields: dict[str, str]) -> str:
     unknown = set(fields) - allowed
     if unknown:
         raise SystemExit(f"panel: refusing unknown form field(s) {sorted(unknown)}")
-    account = f" account={_ACCOUNT}" if _ACCOUNT else ""
-    audit(f"{datetime_stamp()} POST {url} fields={sorted(fields)}{account}")
+    # Every write path audits before it posts, so `account_of` is normally a
+    # cache hit here. Reading it through the function (not `_ACCOUNT`) means a
+    # future path that posts first still writes a line naming the account it
+    # landed in, or `?` when the session could not be read — never a bare POST.
+    account = account_of(opener)
+    audit(f"{datetime_stamp()} POST {url} fields={sorted(fields)} account={account}")
     body = urllib.parse.urlencode(fields).encode()
     with opener.open(request_for(url, data=body), timeout=40) as response:
         text = response.read().decode("utf-8", "replace")

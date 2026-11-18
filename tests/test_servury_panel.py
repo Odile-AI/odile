@@ -394,6 +394,65 @@ class AccountTests(AuditIsolatedTests):
             self.assertIn("account=lkbxu6i9", line)
 
 
+class _FakeResponse:
+    def __init__(self, body: str) -> None:
+        self._body = body.encode("utf-8")
+
+    def read(self) -> bytes:
+        return self._body
+
+
+class _FakeOpener:
+    """The one call `post` makes: `open(request, timeout=…)` as a context."""
+
+    def __init__(self, body: str = "<p>ok</p>") -> None:
+        self.requests: list[object] = []
+        self.body = body
+
+    def open(self, request, timeout=None):  # noqa: ARG002 - the tool's timeout
+        self.requests.append(request)
+        return contextlib.nullcontext(_FakeResponse(self.body))
+
+
+class PostLineTests(AuditIsolatedTests):
+    """The POST line itself names the account, so no reader has to infer it.
+
+    The DoD is read from the log alone, and the write line is not the only line
+    a reader sees: each write is followed by a `POST` line. Reading the account
+    through `account_of` (not the module global) means a write path that ever
+    posts before its audit line still leaves a line naming the account.
+    """
+
+    def setUp(self) -> None:
+        super().setUp()
+        patcher = mock.patch.object(panel, "_ACCOUNT", None)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_the_post_line_names_the_account_without_a_prior_audit_line(self) -> None:
+        opener = _FakeOpener()
+        with mock.patch.object(panel, "get", return_value=SETTINGS_HTML):
+            text = panel.post(opener, panel.BASE + "/manage/168020b4/admin/",
+                              {"action": "restart", "csrf_token": "t"})
+
+        self.assertEqual(text, "<p>ok</p>")
+        lines = self.audit_lines()
+        self.assertEqual(len(lines), 1, lines)
+        self.assertIn("POST " + panel.BASE + "/manage/168020b4/admin/", lines[0])
+        self.assertIn("account=lkbxu6i9", lines[0])
+        self.assertEqual(len(opener.requests), 1, "the form was posted once")
+
+    def test_an_unreadable_account_is_named_unknown_never_omitted(self) -> None:
+        # The line must still carry the field, so a reader cannot mistake a
+        # missing account for a write made by an account they do not know of.
+        with mock.patch.object(panel, "get", return_value="<main><h1>Settings</h1></main>"):
+            panel.post(_FakeOpener(), panel.BASE + "/manage/168020b4/admin/",
+                       {"action": "restart"})
+
+        line = self.audit_lines()[0]
+        self.assertIn("account=?", line)
+
+
 class BootImageWriteTests(AuditIsolatedTests):
     """Replacing the boot image needs detach → attach → wait for ready."""
 
