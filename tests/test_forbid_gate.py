@@ -198,6 +198,9 @@ class PatchRecords(unittest.TestCase):
             "@@ -0,0 +1 @@\n"
             f"+host {HQ_IP}\n"
         )
+        return self.raw(body)
+
+    def raw(self, body: str) -> subprocess.CompletedProcess[str]:
         return run([sys.executable, str(SCANNER), "--stdin-patch", "--label",
                     "outgoing-diff", "--forbid-file", "leak-forbid.txt"],
                    cwd=self.repo, input=body)
@@ -212,6 +215,39 @@ class PatchRecords(unittest.TestCase):
         self.assertIn("FINDING forbidden-value", other.stdout)
         self.assertIn("elsewhere/host.txt:1", other.stdout)
         self.assertIn("(hq-address)", other.stdout)
+
+    def test_an_added_line_that_begins_with_two_pluses_is_scanned(self) -> None:
+        # A pasted `set -x` transcript line reaches a patch as `+++ ssh …`,
+        # byte-for-byte the shape of a `+++ b/<path>` header. The hunk's own
+        # counts say it is body, so it is scanned and the section that follows
+        # keeps its path — the header-only parser lost the line and misfiled
+        # the rest of the hunk under a path named after its own text.
+        body = (
+            "diff --git a/notes.md b/notes.md\n"
+            "--- a/notes.md\n"
+            "+++ b/notes.md\n"
+            "@@ -0,0 +1,2 @@\n"
+            f"+++ ssh root@{HQ_IP}\n"
+            "+plain after the transcript\n"
+            "diff --git a/keep.txt b/keep.txt\n"
+            "--- a/keep.txt\n"
+            "+++ b/keep.txt\n"
+            "@@ -1 +1 @@\n"
+            "-nothing private here\n"
+            "+still nothing private here\n"
+        )
+        result = self.raw(body)
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn("notes.md:1", result.stdout)
+        self.assertIn("(hq-address)", result.stdout)
+        self.assertIn("outgoing-diff (2 paths", result.stdout)
+        self.assertNotIn("keep.txt:", result.stdout)
+        # Removal and context lines still leave the new side alone: three added
+        # lines are counted once each, not once per side of the hunk.
+        expected = sum(len(line) + 1 for line in (
+            f"++ ssh root@{HQ_IP}", "plain after the transcript",
+            "still nothing private here"))
+        self.assertIn(f"lines scanned:  {expected} bytes", result.stdout)
 
 
 class HistoryPrivate(unittest.TestCase):
@@ -346,6 +382,25 @@ class PrePushHook(unittest.TestCase):
         commit_all(self.work, "a comment in the deny list")
         edited = self.push()
         self.assertEqual(edited.returncode, 0, edited.stdout + edited.stderr)
+
+    def test_an_xtrace_line_in_the_outgoing_diff_blocks_the_push(self) -> None:
+        # DoD 2 is "block on a hit", and a pasted `set -x` transcript is the
+        # archetypal runbook line: `++ ssh root@…` becomes `+++ ssh root@…` in
+        # the patch, the shape of a `+++ b/<path>` header. A prefix-reading
+        # parser swallowed it as a header and pushed; the real hook must refuse.
+        (self.work / "notes.md").write_text(f"++ ssh root@{HQ_IP}\n", encoding="utf-8")
+        commit_all(self.work, "a clean message")
+        direct = run([str(self.work / ".githooks" / "pre-push")], cwd=self.work)
+        self.assertEqual(direct.returncode, 1, direct.stdout + direct.stderr)
+        self.assertIn("FINDING forbidden-value", direct.stdout)
+        self.assertIn("notes.md:1", direct.stdout)
+        self.assertIn("(hq-address)", direct.stdout)
+        blocked = self.push()
+        self.assertNotEqual(blocked.returncode, 0, blocked.stdout + blocked.stderr)
+        (self.work / "notes.md").unlink()
+        git("add", "-A", cwd=self.work)
+        git("commit", "--amend", "-qm", "a clean message", cwd=self.work)
+        self.assertEqual(self.push().returncode, 0)
 
     def test_the_published_copy_does_not_blind_the_rest_of_the_range(self) -> None:
         # The exclusion is two paths, not the whole scan: the same commit that

@@ -91,10 +91,13 @@ the card that clears it, is recorded.
 the CI history job uses, so an already-public address in an old root does not
 fail a job about the deny list. ``--stdin`` scans a stream with ``--label``
 naming it — the pre-push hook's commit-message surface. ``--stdin-patch``
-scans a git patch and files each added line under the path its ``+++ b/…``
-header names, so the allowlist's path column applies to an outgoing diff the
+scans a git patch and files each added line under the path of the file section
+it belongs to, so the allowlist's path column applies to an outgoing diff the
 same way it applies to a whole file: a live constant pinned at its own path
-is not a leak, and the same value at any other path still is.
+is not a leak, and the same value at any other path still is. The hunk's own
+``@@ -a,b +c,d @@`` counts decide which lines are body: an added line may
+itself begin with ``++`` (a pasted ``set -x`` transcript reaches the parser as
+``+++ …``), so the prefix alone cannot tell a header from content.
 
 Usage:
 
@@ -122,6 +125,7 @@ import sys
 import tarfile
 import zipfile
 from collections import Counter
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path
@@ -979,6 +983,57 @@ def render(report: Report) -> None:
     print(f"PASS: nothing to leak in {where}, {report.bytes_scanned:,} bytes scanned")
 
 
+HUNK_HEADER = re.compile(r"^@@ -\d+(?:,(?P<old>\d+))? \+\d+(?:,(?P<new>\d+))? @@")
+
+
+def added_lines(patch: Iterable[str]) -> dict[str, list[str]]:
+    """The added lines of a git patch, filed under the path they came from.
+
+    The hunk header's counts drive the parse, not the shape of the line. An
+    added file line may begin with ``++`` — a pasted ``set -x`` transcript is
+    the archetypal one — and arrives here as ``+++ …``, indistinguishable from a
+    ``+++ b/<path>`` header by prefix alone. Reading the counts keeps every
+    header a header and every body line a body line, so the line is scanned and
+    the rest of its hunk stays filed under the right path.
+    """
+    added: dict[str, list[str]] = {}
+    path = ""
+    in_hunk = False
+    # (old lines left, new lines left); None means an `@@` shape this parser
+    # does not model — a combined `@@@ … @@@` hunk — so the body runs until the
+    # next `@@` or `diff --git` and no line is mistaken for a header.
+    remaining: tuple[int, int] | None = None
+    for line in patch:
+        if line.startswith("diff --git "):
+            path, in_hunk, remaining = "", False, None
+            continue
+        if in_hunk:
+            if line.startswith("\\"):
+                continue                      # "\ No newline at end of file"
+            if line.startswith("+"):
+                if path:
+                    added.setdefault(path, []).append(line[1:].rstrip("\n"))
+                if remaining is not None:
+                    remaining = (remaining[0], remaining[1] - 1)
+            elif remaining is not None:
+                # A context line consumes both sides, a removal only the old.
+                step = 0 if line.startswith("-") else 1
+                remaining = (remaining[0] - 1, remaining[1] - step)
+            if remaining is not None and remaining[0] <= 0 and remaining[1] <= 0:
+                in_hunk = False
+            continue
+        if line.startswith("@@"):
+            match = HUNK_HEADER.match(line)
+            remaining = ((int(match.group("old") or 1), int(match.group("new") or 1))
+                         if match else None)
+            in_hunk = remaining is None or remaining[0] > 0 or remaining[1] > 0
+            continue
+        if line.startswith("+++ "):
+            target = line[4:].rstrip("\n")
+            path = "" if target == "/dev/null" else re.sub(r"^b/", "", target)
+    return added
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Publication gate: no address, person or account.")
     parser.add_argument("--tree", action="store_true")
@@ -1071,15 +1126,7 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.stdin_patch:
         report = Report("stdin")
-        added: dict[str, list[str]] = {}
-        path = ""
-        for line in sys.stdin:
-            if line.startswith("+++ "):
-                target = line[4:].rstrip("\n")
-                path = "" if target == "/dev/null" else re.sub(r"^b/", "", target)
-            elif line.startswith("+") and path:
-                added.setdefault(path, []).append(line[1:].rstrip("\n"))
-        for relative, lines in added.items():
+        for relative, lines in added_lines(sys.stdin).items():
             if relative in skip:
                 continue
             report.files += 1
