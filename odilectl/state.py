@@ -5,6 +5,7 @@ between them is explicit:
 
     invited -> claimed -> provisioning -> first_boot -> first_visit -> ready
             -> waiting_for_owner -> suspended -> destroyed
+    destroyed -> claimed   (reopen: a rebuild under the same slug)
 
 `waiting_for_ceremony` and `installing` belonged to the ceremony model. The
 zero-touch image replaces them with `first_boot` (the machine installs itself)
@@ -19,6 +20,31 @@ transaction, so a state that changed without a record is not representable.
 initramfs host key recorded at provision moves a ready tenant there, and a
 returning heartbeat moves it back.
 
+`destroyed` is the end of a **machine**, not of the tenant (ODL-218 follow-up,
+ADR-007). It has exactly one outgoing edge, `destroyed -> claimed`, taken by
+`StateStore.reopen()`: `reconcile --apply` marks a missing machine destroyed, a
+person cancels, and the way back is `odilectl provision <slug> --apply`, which
+reopens the row before it orders. The reopen keeps every earlier event and
+appends one `claimed` event whose detail carries the reason. `claimed` is
+*before* the order, so entering it clears the dead machine's columns
+(`server_id`, `hostname`, `ipv4`, `plan_id`, `release`, `expires_at`,
+`initramfs_host_key`, `last_heartbeat`) and the row names no machine until the
+next order. The slug survives, and with it `https://<slug>.odile.fyi`, the
+recovery file's name (`odile-recovery-<slug>.txt`) and the backup repository
+path (`tenants/<slug>`) — the sentence `docs/CLAIMS.md` §1 already publishes.
+A new slug per machine was rejected: it changes the URL, the recovery file's
+name and the repository, and it would make that sentence false. The provider's
+DNS record is deleted at destroy, so a rebuild still re-creates the A record for
+the same slug; the name does not change.
+
+The reopen is half the way back. `odilectl provision` records the order in both
+schemas: the state row carries the new machine and reaches `first_boot`, and
+the web `tenants` row is pointed at the same `server_id` (address, expiry,
+ordered release, `state='provisioned'`). `bootrecord.record_boot` reads that web
+row and refuses a `claimed`/`provisioning` spine, so a rebuild that moved only
+`tenant_state` would order a machine whose first boot could never be recorded —
+the failure this card's review measured on 2026-11-16.
+
 Storage is additive, in the same SQLite file as the waitlist (`state_db` in the
 odilectl config, `/var/lib/odile/waitlist.db` by default), exactly as the seed
 ledger adds `seed_tokens`: `tenant_state` is the machine spine and
@@ -30,8 +56,9 @@ edits the web schema.
 returns findings — a missing machine, an expired machine, an unknown machine,
 and a machine still running behind a destroyed tenant. It is read-only unless
 `apply=True`; when it applies, it changes only the database, never the provider:
-a missing machine is marked destroyed, an expired ready machine suspended, and
-an unknown machine is left for a human to adopt or destroy.
+a missing machine is marked destroyed (the finding names the same-slug rebuild),
+an expired ready machine suspended, and an unknown machine is left for a human
+to adopt or destroy.
 """
 
 from __future__ import annotations
@@ -102,7 +129,9 @@ TRANSITIONS: dict[str, tuple[str, ...]] = {
     "ready": ("waiting_for_owner", "suspended", "destroyed"),
     "waiting_for_owner": ("ready", "suspended", "destroyed"),
     "suspended": ("ready", "destroyed"),
-    "destroyed": (),
+    # The one edge back: a destroyed machine is replaced, the tenant and its
+    # slug are not. Only `reopen()` takes it (ADR-007).
+    "destroyed": ("claimed",),
 }
 
 # The columns a transition may fill in. Nothing else is writable through this
@@ -609,6 +638,12 @@ class StateStore:
         unknown = set(fields) - set(_FIELDS)
         if unknown:
             raise TypeError(f"unknown tenant field(s): {', '.join(sorted(unknown))}")
+        if to_state == "claimed" and any(
+            fields.get(name) is not None for name in _FIELDS
+        ):
+            raise TypeError(
+                "a claimed row is before the order: claimed takes no machine fields"
+            )
         tenant = self.get(slug)
         if tenant.state == to_state:
             return tenant
@@ -622,14 +657,26 @@ class StateStore:
         stamp = _iso(self.now())
         assignments = ["state = ?", "updated_at = ?"]
         values: list[Any] = [to_state, stamp]
-        for name in _FIELDS:
-            if fields.get(name) is not None:
-                assignments.append(f"{name} = ?")
-                values.append(fields[name])
         event_detail = dict(detail or {})
-        if detail is not None:
-            assignments.append("detail = ?")
-            values.append(json.dumps(event_detail, sort_keys=True))
+        if to_state == "claimed":
+            # A claim is before the order, so it owns no machine facts. This is
+            # what makes destroyed -> claimed a rebuild and not a relabel: the
+            # dead machine's id, address, plan, release and host key all go,
+            # and the next provision writes the new ones (ADR-007). The detail
+            # is replaced when the caller brings one (always, for a reopen) and
+            # kept on a plain invite -> claim, whose detail is the claim's.
+            assignments.extend(f"{name} = NULL" for name in _FIELDS)
+            if detail is not None or tenant.state == "destroyed":
+                assignments.append("detail = ?")
+                values.append(json.dumps(event_detail, sort_keys=True))
+        else:
+            for name in _FIELDS:
+                if fields.get(name) is not None:
+                    assignments.append(f"{name} = ?")
+                    values.append(fields[name])
+            if detail is not None:
+                assignments.append("detail = ?")
+                values.append(json.dumps(event_detail, sort_keys=True))
         values.append(slug)
 
         try:
@@ -663,6 +710,19 @@ class StateStore:
     # -------------------------------------------------------- named moves
 
     def claim(self, slug: str) -> Tenant:
+        """The claim step: `invited -> claimed`, a no-op on an already-claimed row.
+
+        A destroyed tenant does not come back through this door. The one edge
+        out of `destroyed` is the reopen, which must carry a reason and keep
+        the earlier events; a bare claim here would write `claimed` with an
+        empty detail and lose why the machine died (ADR-007).
+        """
+        tenant = self.get(slug)
+        if tenant.state == "destroyed":
+            raise InvalidTransition(
+                f"{slug}: destroyed -> claimed is the reopen; call "
+                "reopen(reason), which records why"
+            )
         return self.transition(slug, "claimed")
 
     def provision(
@@ -816,6 +876,30 @@ class StateStore:
 
     def destroy(self, slug: str, *, reason: str = "") -> Tenant:
         return self.transition(slug, "destroyed", detail={"reason": reason})
+
+    def reopen(self, slug: str, *, reason: str) -> Tenant:
+        """Bring a destroyed tenant back under the same slug (ADR-007).
+
+        The one edge back: it keeps the slug and every earlier event, clears
+        the dead machine's columns through `transition(..., "claimed")`, and
+        appends one `claimed` event whose detail carries `reason`. A second
+        call on an already-claimed row is a no-op, so a retried rebuild writes
+        one event. Any other state is refused: a live tenant is not reopened,
+        it is provisioned or destroyed.
+        """
+        tenant = self.get(slug)
+        if tenant.state == "claimed":
+            return tenant
+        if tenant.state != "destroyed":
+            raise InvalidTransition(
+                f"{slug}: {tenant.state} -> claimed is not a reprovision "
+                "(only a destroyed tenant reopens)"
+            )
+        return self.transition(
+            slug,
+            "claimed",
+            detail={"reason": reason, "reprovision": True},
+        )
 
     # ------------------------------------------------------- heartbeat
 
@@ -981,6 +1065,13 @@ def reconcile(
                         "hostname": tenant.hostname or tenant.slug,
                         "tenant_state": tenant.state,
                         "provider_state": match.state if match is not None else None,
+                        # The way back keeps the slug (ADR-007): --apply marks
+                        # the row destroyed, and provision reopens it before it
+                        # orders, so the URL and the repository do not move.
+                        "rebuild": (
+                            f"provision {tenant.slug}: same slug, "
+                            "destroyed -> claimed (reopen)"
+                        ),
                     },
                 )
             )

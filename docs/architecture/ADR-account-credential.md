@@ -4,13 +4,9 @@
 after three review rounds (host naming per environment, counts, annex output,
 identifier, the evidence pin)
 **Number:** ADR-006. `main` holds ADR-001–004 (`ADR-backup.md` is ADR-004,
-ODL-570). 005 is contested by two unmerged branches, so the id below this one
-is decided by merge order, not by this file: `ADR-upgrades-and-model.md`
-(ODL-571) renamed to **ADR-005** at 06:50Z on 18 November, while the
-destroyed-slug ADR (`ADR-004-destroyed-slug.md`, t_ce52bb8d), directed to 005
-at 03:42Z, still carries ADR-004 on its branch. **The first of the two to merge
-owns 005; the other renumbers to 007.** This seat reads it as ODL-571 keeping
-005 (the rename is already done) and t_ce52bb8d taking 007. Neither ordering
+ODL-570). The two contested numbers are settled: `ADR-upgrades-and-model.md`
+(ODL-571) merged as **ADR-005**, and the destroyed-slug ADR (t_ce52bb8d) took
+**ADR-007** rather than 005, so no merge-order race remains. Neither move
 changes this file: it is 006.
 **Answers:** ODL-569 · G3 of `docs/product/ROADMAP-ALPHA0.md` §4 — “is the
 account password the instance sign-in, or are they two credentials?”

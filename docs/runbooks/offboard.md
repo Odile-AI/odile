@@ -376,64 +376,72 @@ checkable in the meantime.
 This is the step that `docs/runbooks/backup.md` §9 calls "ODL-218's path", and
 it has two halves.
 
-### The mechanics, measured
+### The mechanics — the same slug comes back (ADR-007)
 
 After a destroy, `odilectl provision <slug> --key <user.pub> --pin
 odile-verify.pin --backup-password-file <the user's old
-odile-recovery-<slug>.txt> --apply` orders the machine and writes the row.
-Without the flag the rebuilt machine mints a new repository password (Drill 2's
-C); with it the guest's own recovery file carries the old password and
-`backup.py init` says `same` (`docs/runbooks/backup.md` §5.2, §9). The drill's
-order was **plan 120 / 7 days** — the drill config's `default_plan_id: 120` and
-`default_days: 7`, the panel's Blackbox Core (the Netherlands; $9.49 per 31 days,
-billed $2.15 for the drill's 7 days), invoice `e0e6fbce` (§3). The live rebuild
-orders the live config's default, **plan 113 / 31 days**: `/root/.odile/config.yaml`
-carries `default_plan_id: 113` and `default_days: 31`, and the live tenant itself
-is on plan 113 (`?action=server&id=31a63bbb` → `plan_id: 113`, Blackbox Plus,
-Canada, $18.99 reseller / $19.99 retail per 31 days, active to 2026-12-10;
-`evidence/plans.txt`). Plan 121 is also Blackbox Plus at $18.99 per 31 days,
-but in the Netherlands — it is not what the live config orders. The flags
-differ, the path does not: drill 2 ordered `fbf0f1f0` after drill 1's destroy,
-and the row went `invited → claimed → provisioning` with release `2026.11.1` from the
-pin, the machine came up active with its address, and a DNS-only A record was
-written for the slug (drill 1's `882f002b…` in §3, TTL 120; the destroy deleted
-it). The command is `odilectl dns create <slug> --ip <addr> --apply`. When
-the drill ran, `odilectl dns …` did not exist yet (it exited 2, `invalid
-choice: 'dns'`), so the replay used the module's own entry point
-(`python3 -m odilectl.dns`); **t_1520be38** registered `dns` in
-`cli.MODULES`. The command was replayed on 2026-11-13T08:03Z with drill 1's
-own slug and address: dry run → applied (record `83269c0c…`) → one A record
-read back → deleted → `result_count 0`; `evidence/dns-create.txt` (§7). The
-route works; what it cannot do is keep the **slug**:
+odile-recovery-<slug>.txt> --apply` reopens the row and orders the machine.
+The reopen is the one edge back (`destroyed -> claimed`, `odilectl/state.py`);
+it appends one `claimed` event with the reason, keeps every earlier event and
+clears the dead machine's columns, so the order records `provisioning` on the
+same row. The same write points the web `tenants` row at the new `server_id`
+(address, expiry, release, `state='provisioned'`) and moves the state row on
+to `first_boot`, so the machine's own first boot has a row to land on
+(`odilectl/bootrecord.py` checks `tenants.server_id` and refuses a
+`provisioning` spine). **The slug does not change**: the URL, the recovery
+file's name and the `tenants/<slug>` repository survive (ADR-007;
+`docs/CLAIMS.md` §1). A dry run on a destroyed slug lists `state.reopen` as
+its first action and writes nothing. Without the `--backup-password-file` flag
+the rebuilt machine mints a new repository password (Drill 2's C); with it the
+guest's own recovery file carries the old password and `backup.py init` says
+`same` (`docs/runbooks/backup.md` §5.2, §9). The drill's order was **plan 120
+/ 7 days** — the drill config's `default_plan_id: 120` and `default_days: 7`,
+the panel's Blackbox Core (the Netherlands; $9.49 per 31 days, billed $2.15
+for the drill's 7 days), invoice `e0e6fbce` (§3). The live rebuild orders the
+live config's default, **plan 113 / 31 days**: `/root/.odile/config.yaml`
+carries `default_plan_id: 113` and `default_days: 31`, and the live tenant
+itself is on plan 113 (`?action=server&id=31a63bbb` → `plan_id: 113`, Blackbox
+Plus, Canada, $18.99 reseller / $19.99 retail per 31 days, active to
+2026-12-10; `evidence/plans.txt`). Plan 121 is also Blackbox Plus at $18.99
+per 31 days, but in the Netherlands — it is not what the live config orders.
+The flags differ, the path does not: a same-slug rebuild orders a new machine,
+the row reopens and moves `claimed → provisioning → first_boot` with release
+`2026.11.1` from the pin, and a DNS-only A record is written for the **same**
+slug (`odilectl dns create <slug> --ip <addr> --apply`; the drill's replay
+used the module entry point `python3 -m odilectl.dns` because `odilectl dns …`
+exited 2 at the time, and **t_1520be38** registered `dns` in `cli.MODULES`).
+The command was replayed on 2026-11-13T08:03Z (dry run → applied, record
+`83269c0c…` → one A record read back → deleted → `result_count 0`;
+`evidence/dns-create.txt`, §7).
+
+The old behaviour was the fork this card closed. On 2026-11-13, a destroyed
+slug refused in `_record` **after** the order had been placed and billed:
 
 ```
 $ python3 -c '… provision._record_machine(ctx, spec, machine, "2026.11.1")'
 StateError: odl-218a1b is destroyed; its release cannot be recorded
 ```
 
-The refusal is not free on the normal path: `provision --apply` orders the
-machine (`provider.create`) and binds the seed token *before* `_record` raises
-(`odilectl/provision.py`), so `provision <destroyed-slug> --apply` pays for an
-orphan no row names. Use a new slug until **t_ce52bb8d** decides the edge back.
+ADR-007 removed that refusal before the first provider call: a destroyed row is
+reopened to `claimed` first, so the order always lands on a row that can record
+it. The re-provision is now:
 
-`destroyed` has no outgoing edge (`odilectl/state.py`, `TRANSITIONS`), so a
-destroyed slug cannot be provisioned again. **A rebuild today takes a new slug**
-and therefore a new URL — which is the one thing a rebuilt machine should not
-have to change. **t_ce52bb8d** is the card that decides the way back (an edge
-out of `destroyed`, or a new slug as the rule, with the URL consequence
-written down). Until it lands, the re-provision is:
-
-1. `odilectl provision <new-slug> --key <the user's public key> --pin
+1. `odilectl provision <slug> --key <the user's public key> --pin
    odile-verify.pin --backup-password-file <the user's old
-   odile-recovery-<old-slug>.txt> --apply` — the order, the row, the release
-   from the pin; the flag above keeps the old password, so the rebuilt machine
-   does not mint a second one.
-2. `odilectl dns create <new-slug> --ip <the machine's address> --apply` —
-   the A record the claim path would have written (the replay that used the
-   module entry point is `evidence/dns-create.txt`, §7).
+   odile-recovery-<slug>.txt> --apply` — the reopen, the order, the new
+   `server_id` on both the state row and the web row, the release from the
+   pin, and the state row at `first_boot`; the flag above keeps the old
+   password, so the rebuilt machine does not mint a second one.
+2. `odilectl dns create <slug> --ip <the machine's address> --apply` — the A
+   record the destroy deleted, for the **same** slug (the replay used the
+   module entry point `python3 -m odilectl.dns` before **t_1520be38**
+   registered `dns` in `cli.MODULES`; `evidence/dns-create.txt`, §7).
 3. The **signed image** pair in the panel (below).
 4. First boot → first visit → the sign-in and the recovery file
-   (`docs/runbooks/install.md`, `docs/runbooks/backup.md` §5.2).
+   (`docs/runbooks/install.md`, `docs/runbooks/backup.md` §5.2). The first
+   boot's measured line lands because step 1 left `tenants.server_id` naming
+   this machine and the state row at `first_boot`; a record from the dead
+   machine's instance is refused.
 5. The home comes back from restic with the user's own recovery file
    (`docs/runbooks/backup.md` §5.3–§5.4, measured 38m03s for the timed rebuild).
 
@@ -467,7 +475,7 @@ tenant is §2 — complete, with the record id, the server id and the backup dat
 
 | Gap | Why it is not here | Card |
 |---|---|---|
-| a destroyed slug cannot come back | `TRANSITIONS["destroyed"]` is empty; the decision and its URL consequence belong to the state machine | **t_ce52bb8d** |
+| ~~a destroyed slug cannot come back~~ **resolved** | ADR-007: `destroyed -> claimed`, the named `reopen()`, and `provision` reopens before the order, points the web row and the state row at the new machine and reaches `first_boot` (so its boot record lands); the slug, the URL and the `tenants/<slug>` repository keep their names | **t_ce52bb8d** |
 | the live tenant's destroy + rebuild | $18.99 and the panel's disk image — a real-world action | **t_8d50106b** |
 | the live tenant's Webapp refuses `/login` (`400 Invalid Host header`) | measured 2026-11-13T05:33Z after a boot-time release install; that boot's release setup ended `rc=1` at `odile-access-report` and the 10:29Z retry ended `rc=4` at the recovery confirmation. It was installer/release work, not the offboard path: the agent is restarted whenever a file the gateway reads at start changed (so a rewritten `webapp.public_url` goes live), a failed access report no longer aborts that restart, and the boot half passes `--i-have-copied-it`. **Recovered on the live tenant 2026-11-15T20:12Z**: `=== rc=0`, `/login?next=%2F` 200, `POST /auth/password-login` 200 with four `__Host-` cookies, `/verify` 200. The machine's own name `odl-7971a8.odile.fyi` still answers 400 by design (`demo-public.md` §Host check) | **t_d95b8c13** fixed and recovered 2026-11-15 |
 | the 30-day purge is an operator step | the box is off-site and has no agent; the date on the row makes it checkable | **t_9d6fb595** |
@@ -510,7 +518,7 @@ remains only for scripts that already call it.
 | `dry-run-live.txt` (03:32:59Z), `dry-run-live.json` (03:22:13Z) | §2, the plan against the live tenant — two separate runs; the text one is quoted, the JSON one carries the same seven steps with its own `keep_until` clock |
 | `provision-a.json`, `destroy-a.json` | drill 1: the order, the destroy's JSON |
 | `provision-b.json`, `destroy-b.json` | drill 2 (the re-provision): the order, the destroy's JSON |
-| `same-slug-refusal.txt` | the `StateError` on a destroyed slug |
+| `same-slug-refusal.txt` | the `StateError` a destroyed slug raised in `_record` after the order — the **pre-ADR-007** behaviour §5 removes |
 | `servers-before.txt`, `servers-after.txt` | `?action=servers`, before and after (the same account read as `evidence/provider-after.txt`) |
 | `scratch.yaml` | the drill's config (0600): the host account, its own state DB in `/var/tmp`, plan 120 / 7 days |
 

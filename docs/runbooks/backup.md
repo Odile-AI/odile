@@ -806,12 +806,17 @@ sentence is quoted (ODL-474 lands it).
   `--backup-password-file` removes the slug's entry, so a plain install never
   carries a stale secret. Measured on the bench (§5.2): the rebuilt guest's own
   file opens the repository, `backup.py init` prints `same`, and the user's old
-  file still opens it. The live tenant's rebuild is ODL-218's destroy-and-re-
-  provision path (`docs/runbooks/offboard.md` §5), a human step that until
-  **t_ce52bb8d** takes a new slug, so its `backup-repo.txt` names a new
-  repository; the same-repository rebuild §5.2 measures keeps the tenant slug.
-  That path's `provision` step must add the flag above with the user's old
-  file — without it the rebuilt machine mints a new password (Drill 2's C).
+  file still opens it. The live tenant's rebuild is ODL-218's destroy-and-re-provision path
+  (`docs/runbooks/offboard.md` §5), a human step. ADR-007 (`t_ce52bb8d`) makes
+  it the same slug: `destroyed -> claimed` is the one edge back, `provision
+  <slug>` reopens the row before it orders, points the web row and the state
+  row at the new machine and moves the state row to `first_boot` (so the new
+  machine's first boot records itself), and the URL, the recovery file's
+  name and the `tenants/<slug>` repository all survive — so `backup-repo.txt`
+  names the same repository and §5.2's same-repository rebuild is the live
+  path, not a bench-only one. That path's `provision` step must add the flag
+  above with the user's old file — without it the rebuilt machine mints a new
+  password (Drill 2's C).
 - **The Servury rebuild.** Drill 2 rebuilds a VM from the same signed recipe;
   destroying and re-provisioning the *live tenant* is ODL-218's path (destroy
   needs the provider API and a new order, i.e. Savio), and it reuses this
