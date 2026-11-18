@@ -21,6 +21,10 @@
 # A row's reason must not contain the row's own value: that row matches itself,
 # and "every row matched at least once" would prove nothing. Delete the row when
 # the value is gone; do not change its class or date without a reason here.
+# 2026-11-18 (ODL-910): the repository is the source of truth and its history was
+# rewritten in place. The one history-secret is the retired bench fixture's scrypt
+# hash at docs/runbooks/image.md, sha256:6a3d71aa28cc; the row for it is
+# value-scoped, so a different value at that path is still a finding.
 credential-assignment	deploy/demo-host/login.html	sha256:b2132046eb76	constant	yes	the published demo password: public by design (CLAIMS); with it the Webapp shell runs as `tenant` and `sudo -n` reaches root on Odile's tenant machine (odl-7971a8), where the tenant's live Near AI key is readable (0600 tenant)	never
 credential-assignment	deploy/image/tenant-image.pin	sha256:417b28e44772	constant	yes	the one-time seed token for bench tenant odl-7971a8 (instance 31a63bbb), spent 2026-11-14; kept so the pin cmdline stays byte-identical	never
 credential-assignment	tests/test_first_visit.py	sha256:f4a39f182031	constant	no	test fixture: the password the recovery reset ACCEPTS and stores (verify_password is True for it) — not a value the form rejects	never
