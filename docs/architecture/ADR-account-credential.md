@@ -1,13 +1,17 @@
 # ADR-006 — The account password is not the instance sign-in
 
 **Status:** Accepted · 17 November 2026 · Architect · revised 18 November 2026
-after two review rounds (host naming per environment, counts, annex output,
-identifier, line pins)
-**Number:** ADR-006. `main` already holds ADR-001–004 (`ADR-backup.md` is
-ADR-004, ODL-570); ADR-005 is allocated to the destroyed-slug ADR
-(`ADR-004-destroyed-slug.md`, t_ce52bb8d). `ADR-upgrades-and-model.md`
-(ODL-571) still carries ADR-004 on its branch and takes 007, the next free id
-after this one.
+after three review rounds (host naming per environment, counts, annex output,
+identifier, the evidence pin)
+**Number:** ADR-006. `main` holds ADR-001–004 (`ADR-backup.md` is ADR-004,
+ODL-570). 005 is contested by two unmerged branches, so the id below this one
+is decided by merge order, not by this file: `ADR-upgrades-and-model.md`
+(ODL-571) renamed to **ADR-005** at 06:50Z on 18 November, while the
+destroyed-slug ADR (`ADR-004-destroyed-slug.md`, t_ce52bb8d), directed to 005
+at 03:42Z, still carries ADR-004 on its branch. **The first of the two to merge
+owns 005; the other renumbers to 007.** This seat reads it as ODL-571 keeping
+005 (the rename is already done) and t_ce52bb8d taking 007. Neither ordering
+changes this file: it is 006.
 **Answers:** ODL-569 · G3 of `docs/product/ROADMAP-ALPHA0.md` §4 — “is the
 account password the instance sign-in, or are they two credentials?”
 **Short answer:** no. **Two credentials, one link.** A2's registration collects an
@@ -62,10 +66,13 @@ ODL-572 — but it binds it, and §5 states the constraint.
 ## 2. What exists today, and what it already promises
 
 The pieces A2 must fit, with the lines that matter. **Line numbers in this
-section and the rest of the body are pinned to the card's base**, `main`
-`d3c372b` (17 November 2026) — the same snapshot the annex reproduces — because
+section and the rest of the body are pinned to the branch point**, `main`
+`7e67b67` (17 November 2026) — the same snapshot the annex reproduces — because
 `main` moves under them. Cite the symbol named beside each number; `git show
-d3c372b:<file>` reproduces every number in this ADR.
+7e67b67:<file>` reproduces every number in this ADR. The card was cut from
+`d3c372b`; the second cut's history rewrite (ODL-910) renamed every commit and
+that hash no longer resolves, so `7e67b67` — the same tree under its surviving
+name — is the pin a reader can actually run.
 
 | Piece | Today | Where |
 |---|---|---|
@@ -162,7 +169,7 @@ not merely a seed field:
    `validate_seed` enforces it (`installer/odile_install.py:184-188`,
    `:10832-10857`). A verifier is not a password, so the field can be
    `sign_in_hash` — but the seed now carries the machine's gate, and
-   `docs/runbooks/seed.md:52` says it carries no login credential.
+   `docs/runbooks/seed.md:50-53` says it carries no login credential.
 2. **The guest's only writer changes.** ODL-521's whole point is “the first-visit
    page is the only writer of a usable sign-in”. B makes the installer a second
    writer, so that invariant, its test and the `/verify` line that describes it
@@ -336,11 +343,12 @@ post-first-visit path:
    (`:3604-3628`), so a reset does not end other machine sessions. A5's “a
    password change ends the other sessions” means rotating that secret in the
    same write.
-4. **The setup token has a permanent copy.** `odile-firstboot.py:1137-1138`
-   appends `--first-visit-token <64 hex>` to `/var/log/odile-firstboot.log` at
-   the unit's default umask (0644: no `UMask=` is set in
-   `deploy/image/odile-firstboot.service`). Fix the mode to 0600 and redact the
-   argument; A5's reset link must not repeat the shape.
+4. **The setup token has a permanent copy.**
+   `deploy/image/odile-firstboot.py:1137-1138` appends `--first-visit-token
+   <64 hex>` to `/var/log/odile-firstboot.log` at the unit's default umask
+   (0644: no `UMask=` is set in `deploy/image/odile-firstboot.service`). Fix the
+   mode to 0600 and redact the argument; A5's reset link must not repeat the
+   shape.
 
 **The A5 criteria to re-cut**, verbatim, with the reading A requires:
 
@@ -415,7 +423,7 @@ worth more than a paragraph in this ADR.
   page must render it as “already set”, not as an error. Do not “fix” it by
   allowing a second write.
 - **No password in the seed.** `SEED_FORBIDDEN` stays as it is under A; the seed
-  carries no login credential (`docs/runbooks/seed.md:52`).
+  carries no login credential (`docs/runbooks/seed.md:50-53`).
 - **No secret in an argv.** `installer/odile_install.py:14040` already has a
   `--signin-password` flag on the classic-install path; the account flow must not
   add one, and A5's reset must not pass a password on a command line.
@@ -473,7 +481,8 @@ seeded, which is why B must be decided before A2 ships.
 
 ## Annex — the load-bearing lines, reproducible
 
-At the card's base, `main` `d3c372b` (17 November 2026), in a clean checkout:
+At the branch point, `main` `7e67b67` (17 November 2026; the same tree the card
+was cut from), in a clean checkout:
 
 ```sh
 $ grep -n 'SEED_FORBIDDEN = ' installer/odile_install.py
@@ -514,10 +523,12 @@ $ grep -n 'first-visit?t=' odilectl/claim.py
 
 The CLAIMS clause this ADR falsifies has no test and no lint phrase binding it:
 
-$ git grep -n 'no account at HQ' d3c372b
-d3c372b:docs/CLAIMS.md:106:- "Your Odile sign-in is the username and password that open the workspace; only its hash is stored, on the machine. There is no password and no account at HQ."
+```sh
+$ git grep -n 'no account at HQ' 7e67b67
+7e67b67:docs/CLAIMS.md:106:- "Your Odile sign-in is the username and password that open the workspace; only its hash is stored, on the machine. There is no password and no account at HQ."
+```
 
-The tracked tree at the base has exactly one hit, and nothing under `tests/` or
+The tracked tree at the pin has exactly one hit, and nothing under `tests/` or
 `web/`. The two other places that discuss the idea are HQ-only files no checkout
 carries — `docs/product/RECUT-2026-11-07-model-a.md`'s “Odile account at HQ”
 row (the idea, not the phrase) and the untracked 2026-11-08 evidence walkthrough
