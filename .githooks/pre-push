@@ -75,18 +75,22 @@ fi
 
 # 2. The range's net diff, added lines only: a line being removed is not
 #    outgoing. `git diff @{u}...HEAD` is the card's command; the empty-tree
-#    case diffs the whole head, because every commit in it is outgoing.
+#    case diffs the whole head, because every commit in it is outgoing. The
+#    deny list itself is excluded: it carries its literals by definition, and
+#    the scanner skips it by path in tree and history mode.
 if [ "$BASE" = "$EMPTY_TREE" ]; then
-    if ! git diff --no-color "$EMPTY_TREE" HEAD | awk '/^\+/ && !/^\+\+\+/' | scan outgoing-diff; then
+    if ! git diff --no-color "$EMPTY_TREE" HEAD -- . ":(exclude)$FORBID" \
+            | awk '/^\+/ && !/^\+\+\+/' | scan outgoing-diff; then
         status=1
     fi
-elif ! git diff --no-color "$BASE...HEAD" | awk '/^\+/ && !/^\+\+\+/' | scan outgoing-diff; then
+elif ! git diff --no-color "$BASE...HEAD" -- . ":(exclude)$FORBID" \
+        | awk '/^\+/ && !/^\+\+\+/' | scan outgoing-diff; then
     status=1
 fi
 
 # 3. Each outgoing commit's own added lines, so a literal added and removed
 #    again inside one push is still caught: it is in the pushed history.
-if ! git log --format= --no-color --unified=0 -p "$MESSAGES" \
+if ! git log --format= --no-color --unified=0 -p "$MESSAGES" -- . ":(exclude)$FORBID" \
         | awk '/^\+/ && !/^\+\+\+/' | scan outgoing-history; then
     status=1
 fi

@@ -262,6 +262,16 @@ class PrePushHook(unittest.TestCase):
         git("commit", "--amend", "-qm", "a clean message", cwd=self.work)
         self.assertEqual(self.push().returncode, 0)
 
+    def test_the_deny_list_itself_can_be_pushed(self) -> None:
+        # The list carries the literals by definition; a commit that edits it
+        # (even a comment naming one) must not be blocked by its own rows.
+        box_id = "1680" + "20b4"
+        with (self.work / "leak-forbid.txt").open("a", encoding="utf-8") as handle:
+            handle.write(f"# the box id {box_id} is denied by the row above\n")
+        commit_all(self.work, "a comment in the deny list")
+        pushed = self.push()
+        self.assertEqual(pushed.returncode, 0, pushed.stdout + pushed.stderr)
+
 
 class HostsExample(unittest.TestCase):
     """The `.env.example` equivalent: every key, every value a placeholder."""
