@@ -1,17 +1,26 @@
-# ADR-004 — The account password is not the instance sign-in
+# ADR-006 — The account password is not the instance sign-in
 
 **Status:** Accepted · 17 November 2026 · Architect · revised 18 November 2026
-after review round 1 (host naming per environment, counts, annex output)
+after two review rounds (host naming per environment, counts, annex output,
+identifier, line pins)
+**Number:** ADR-006. `main` already holds ADR-001–004 (`ADR-backup.md` is
+ADR-004, ODL-570); ADR-005 is allocated to the destroyed-slug ADR
+(`ADR-004-destroyed-slug.md`, t_ce52bb8d). `ADR-upgrades-and-model.md`
+(ODL-571) still carries ADR-004 on its branch and takes 007, the next free id
+after this one.
 **Answers:** ODL-569 · G3 of `docs/product/ROADMAP-ALPHA0.md` §4 — “is the
 account password the instance sign-in, or are they two credentials?”
 **Short answer:** no. **Two credentials, one link.** A2's registration collects an
 email and a password that open the **account page and nothing else**; the
 machine's sign-in is still set on the guest at first visit and hashed there, and
-HQ holds nothing that opens it. The account is new, so one CLAIMS sentence is
-falsified (“There is no password and no account at HQ”) and one inventory list
-gains a row (“At HQ we hold …”, adding the account and a hash of its password);
-A2 forces both whichever option wins. Every other access sentence in the deck
-stays literal.
+HQ holds nothing that opens it. The account is new, so one approved **access**
+sentence is falsified (“There is no password and no account at HQ”) and one
+inventory list gains a row (“At HQ we hold …”, adding the account and a hash of
+its password); A2 forces both whichever option wins. Outside the access deck,
+A2's session also re-cuts the cookie sentence (“No cookies, no trackers, no
+third-party requests”, `docs/CLAIMS.md:154`) — one first-party session cookie;
+the CSP does not have to move (§2 item 2). Every other access sentence in the
+deck stays literal.
 **Related:** `docs/MVP-V0.1.md` §2 (the access principle), §4 R1/R3/R6, §6.1
 Invariants 2 and 4, §7 gap 3, §12 D14/D20/D23/D26; `docs/CLAIMS.md` §1 Access,
 §1 First run, §1 Data handling, §1a, §4.11, §5; `docs/product/ROADMAP-ALPHA0.md`
@@ -52,7 +61,11 @@ ODL-572 — but it binds it, and §5 states the constraint.
 
 ## 2. What exists today, and what it already promises
 
-The pieces A2 must fit, with the lines that matter:
+The pieces A2 must fit, with the lines that matter. **Line numbers in this
+section and the rest of the body are pinned to the card's base**, `main`
+`d3c372b` (17 November 2026) — the same snapshot the annex reproduces — because
+`main` moves under them. Cite the symbol named beside each number; `git show
+d3c372b:<file>` reproduces every number in this ADR.
 
 | Piece | Today | Where |
 |---|---|---|
@@ -81,10 +94,19 @@ Two consequences the options must live with:
    re-cut, outside this card's `touches`; this ADR names them so the deck is not
    read as cleared while the token window is open.
 2. **A2 must put a session somewhere.** The public pages carry “No cookies, no
-   trackers, no third-party requests” and a CSP of `default-src 'none'`
-   (`docs/CLAIMS.md:154`, `app.py:742-745`). A registration page with a session
-   cookie and a form becomes `default-src 'self'` and one first-party cookie.
-   That is an A2 cost under every option, and it is the Product Lead's re-cut.
+   trackers, no third-party requests” (`docs/CLAIMS.md:154`). A registration
+   page with a session sets one first-party session cookie, so that sentence is
+   re-cut — the cookie clause dies, the tracker and third-party clauses survive.
+   The CSP does **not** have to move: the shipped header already is
+   `default-src 'none'; style-src 'unsafe-inline'; img-src 'self' data:;
+   font-src data:; form-action 'self'; base-uri 'none'; frame-ancestors 'none'`
+   (`app.py:742-745`), which admits the house page — inline styles, the
+   same-origin backdrop under `img-src 'self'`, and a same-origin POST under
+   `form-action 'self'`; `Set-Cookie` is not a CSP-governed fetch. `default-src
+   'self'` (or a named `script-src`/`style-src`) becomes necessary only if the
+   registration page loads a first-party asset by URL, such as a script; the
+   builder should treat that as a new cost, not as already paid. The sentence
+   re-cut is the Product Lead's.
 
 ## 3. The three options
 
@@ -108,9 +130,10 @@ may open a machine.* The account is the person; the tenant row is the machine; a
 rebuild replaces the machine under the same account.
 
 What it buys is exactly the four invariants plus one thing no other option has:
-the user's password is chosen **after** the machine's report is checked
-(“you set your sign-in only after PASS”, `docs/CLAIMS.md:143`), so a password is
-never typed into a surface the user has not verified. And the split is the right
+the machine's sign-in is chosen **after** the machine's report is checked
+(“you set your sign-in only after PASS”, `docs/CLAIMS.md:143`), so the machine's
+password is never typed into a surface the user has not verified — the account
+password is typed at HQ and opens only the account. And the split is the right
 way round for a user's memory: the password typed **daily** is the machine's,
 and the one typed twice a year is the account's, which is also the one that is
 cheap to reset.
@@ -205,9 +228,10 @@ the Product Lead's, and its honest form is one sentence, not a retreat:
 > page — never your machine. The sign-in on the machine is set there and hashed
 > there; Odile never sees it.”
 
-Everything else in the access deck stays literal, except `:156`'s inventory
-list, which gains the account and its password hash in the same re-cut (the
-`:156` row below). Read against the options:
+Nothing else in the access deck moves, except `:156`'s inventory list, which
+gains the account and its password hash in the same re-cut (the `:156` row
+below). Outside the deck, and for the same A2 reason, `docs/CLAIMS.md:154`'s
+cookie clause is re-cut (§2 item 2). Read against the options:
 
 | Approved sentence (`docs/CLAIMS.md`) | A | B |
 |---|---|---|
