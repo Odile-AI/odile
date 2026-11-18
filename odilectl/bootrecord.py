@@ -23,6 +23,22 @@ write no event when the state does not move, and touch `updated_at` only when a
 value actually changes. A tenant that never first-boots sends nothing and keeps
 its old row — the failure is closed, not guessed.
 
+`detail.recorded_at` is the **first** record's stamp — the moment this row's
+boot record was written, like `tenants.installed_at` — and a later observation
+only fills it when it is absent. A replay is therefore a no-op in the row as
+well as in the events: `recorded_at` is the only key that would otherwise be a
+function of *when* the writer ran rather than of the facts it carries, and one
+such key is enough to break "the same facts write the same row". It is not a
+last-seen stamp: liveness already has exactly one home,
+`tenant_state.last_heartbeat`, refreshed by the guest every five minutes; a
+second, coarser stamp under a different name and type would only disagree with
+it, and an operator reading the wrong one would call a live machine stale. If a
+last-seen time is ever needed, it belongs beside the heartbeat under a last-seen
+name, not in this key. `detail.record_source` is the one key that moves when no
+machine fact does: it names *who* wrote the record the row holds (the guest's
+`first_boot` report or an operator's `boot-record` repair), so a different
+writer is a different fact, while a replay by the same writer is still a no-op.
+
     from odilectl.bootrecord import parse_record, record_boot
     record_boot(connection, slug="odl-7f3a2c", record=parsed)
 """
@@ -263,11 +279,16 @@ def record_boot(
     record: dict[str, str],
     slug: str | None = None,
     source: str = "first_boot",
+    now: datetime | None = None,
 ) -> dict[str, Any]:
     """Write one validated record to the tenant and state rows; idempotent.
 
     `record` is `parse_record`'s output. The caller passes `slug` (the CLI) or
     derives it from the token (the seed service passes the token's tenant).
+    `now` is the caller's clock: the seed passes its request time, so the token
+    expiry check and the row's stamps cannot land in different seconds. A
+    record's own `at` wins over the clock on the first write, and no later
+    write moves either stamp.
     """
     if not isinstance(record, dict):
         raise BootRecordError("the boot record is not an object")
@@ -318,16 +339,20 @@ def record_boot(
     detail = dict(_detail(con.execute(
         "SELECT detail FROM tenant_state WHERE slug = ?", (name,)
     ).fetchone()[0]))
-    stamp = record.get("at") or datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    moment = now or datetime.now(timezone.utc)
+    stamp = record.get("at") or moment.strftime("%Y-%m-%dT%H:%M:%SZ")
     detail.update({
         "boot_key": measured["boot_key"],
         "boot_key_fingerprint": measured["boot_key_fingerprint"],
         "boot_release": release,
         "first_visit": first_visit,
         "record_source": source,
-        "recorded_at": stamp,
         "cmdline_sha256": measured["cmdline_sha256"],
     })
+    # The row's first record stamps it; a replay keeps what is already there.
+    # A first write prefers the record's own `at` to the writer's clock.
+    if not detail.get("recorded_at"):
+        detail["recorded_at"] = stamp
     if record.get("host_key"):
         detail["host_key"] = record["host_key"]
     if record.get("serving"):
@@ -335,7 +360,8 @@ def record_boot(
 
     # The web row first: the throwaway key and the pinned release are the
     # record CLAIMS 4.11 names. `release` is COALESCE'd so the order is never
-    # rewritten by an observation. `installed_at` is the first record's time.
+    # rewritten by an observation. `installed_at` and `detail.recorded_at` are
+    # the first record's time; a replay keeps both.
     current = tenant["state"]
     if first_visit == "done" and spine.state != "destroyed":
         target_web = "active"
@@ -443,7 +469,8 @@ def add_arguments(parser: ArgumentParser) -> None:
     parser.add_argument(
         "--at",
         metavar="STAMP",
-        help="the record's UTC time (default: now); used for installed_at",
+        help="the record's UTC time (default: now); the first record stamps"
+             " installed_at and detail.recorded_at, a replay moves neither",
     )
     parser.add_argument(
         "--db",
