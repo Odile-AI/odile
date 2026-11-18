@@ -324,10 +324,20 @@ class InstallerExportProgramTest(unittest.TestCase):
         self.assertIn(block, INSTALLER.read_text(encoding="utf-8"))
 
     def test_the_copy_is_what_odilectl_export_script_prints(self):
-        result = subprocess.run(
-            [sys.executable, "-m", "odilectl", "export", "odl-copy-test", "--script"],
-            cwd=ROOT, capture_output=True, check=False,
-        )
+        # `export --script` prints the guest program and reads nothing from a
+        # tenant, but the CLI loads its config before the command runs. On a
+        # machine with no /root/.odile/config.yaml (CI, a fresh clone) the
+        # command exits 5; give it a minimal one so the test measures the
+        # bytes, not the host.
+        with tempfile.TemporaryDirectory(prefix="odile-export-config-") as tmp:
+            config = Path(tmp) / "config.yaml"
+            config.write_text("provider: servury\n", encoding="utf-8")
+            config.chmod(0o600)
+            result = subprocess.run(
+                [sys.executable, "-m", "odilectl", "export", "odl-copy-test",
+                 "--script", "--config", str(config)],
+                cwd=ROOT, capture_output=True, check=False,
+            )
         self.assertEqual(result.returncode, 0, result.stderr.decode("utf-8", "replace"))
         self.assertEqual(result.stdout, self.bytes)
 
