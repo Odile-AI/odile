@@ -106,6 +106,22 @@ class GuardTests(unittest.TestCase):
         self.assertIn("submit_order", panel.ORDER_FIELDS)
 
 
+SETTINGS_HTML = """
+<main id="main"><h1>Settings</h1>
+<dl class="bb-kv"><dt>User ID</dt><dd>lkbxu6i9</dd>
+<dt>Balance</dt><dd>$20.00</dd></dl></main>
+"""
+
+# The dashboards the panel renders: one /manage/<id>/ link per machine the
+# session's account owns, and nothing else is a machine of ours.
+DASHBOARD_HTML = """
+<main><h2>Your servers</h2>
+<a href="/manage/168020b4/">odlukitest</a>
+<a href="/manage/168020b4/renewal/">Renewal</a>
+</main>
+"""
+
+
 class ConsoleTextTests(unittest.TestCase):
     def test_the_pre_block_is_the_transcript(self) -> None:
         html = '<section><h2>Serial output</h2><pre class="x">[ 1.0] bb-sealed-unlock: opened &amp; ok\nline2</pre></section>'
@@ -198,9 +214,251 @@ class AuditIsolatedTests(unittest.TestCase):
         except OSError:
             return 0
 
+    def stub_account(self, owned: tuple[str, ...] = ("a1b2c3d4",)) -> None:
+        """Put the fixture machine on a named account, without a second page fetch.
+
+        The account and its dashboard are the subject of `AccountTests`, which
+        drives the real `owned_servers`/`account_of`; the older write tests only
+        need the fence to pass, so they stub the two answers here.
+        """
+        for patcher in (
+            mock.patch.object(panel, "_ACCOUNT", "lkbxu6i9"),
+            mock.patch.object(panel, "owned_servers", lambda opener: frozenset(owned)),
+        ):
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+
+class OrderRouteTests(AuditIsolatedTests):
+    """The referral discount is attached by a page visit, not by the coupon field."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        patcher = mock.patch.object(panel, "_ACCOUNT", "lkbxu6i9")
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_the_order_visits_the_referral_route_before_the_form(self) -> None:
+        # Measured 2026-11-18: posting coupon=WEB without the route charged
+        # $9.99 (list); the 12 November order, placed after the referral page,
+        # was $8.99. The visit is what carries the discount.
+        seen: list[str] = []
+
+        def fake_get(opener, url: str) -> str:
+            seen.append(url)
+            return '<input name="csrf_token" value="t">'
+
+        posted: list[str] = []
+        with mock.patch.object(panel, "get", fake_get), \
+                mock.patch.object(panel, "post", side_effect=lambda opener, url, f: posted.append(url) or "<p>ok</p>"):
+            code = panel.order(None, "108", "2", "debian13", "31", "odl600",
+                               panel.DEFAULT_COUPON, apply=True, ssh_key_file="")
+
+        self.assertEqual(code, 0)
+        self.assertEqual(seen[0], panel.PURCHASE_URL, seen)
+        self.assertIn("/order/", seen[1])
+        self.assertTrue(posted and posted[0].startswith(panel.BASE + "/order/"))
+
+    def test_the_order_line_names_the_account_and_the_coupon(self) -> None:
+        with mock.patch.object(panel, "get", return_value='<input name="csrf_token" value="t">'), \
+                mock.patch.object(panel, "post", return_value="<p>ok</p>"):
+            panel.order(None, "108", "2", "debian13", "31", "odl600", "WEB",
+                        apply=True, ssh_key_file="")
+
+        line = self.audit_lines()[0]
+        self.assertIn("ORDER plan=108", line)
+        self.assertIn("coupon=WEB", line)
+        self.assertIn("account=lkbxu6i9", line)
+
+
+class AccountTests(AuditIsolatedTests):
+    """Every write names the account it landed in, and only that account's boxes.
+
+    The panel credential is one login for a whole account. Once the tenant lives
+    on the account the team owns, a line that says `server=<id>` no longer says
+    enough: two accounts hold machines, and the log has to answer "which
+    account did this land in" without the reader running `--whoami` afterwards.
+    """
+
+    def setUp(self) -> None:
+        super().setUp()
+        patcher = mock.patch.object(panel, "_ACCOUNT", None)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def pages(self, dashboard: str = DASHBOARD_HTML, settings: str = SETTINGS_HTML):
+        """A fake `get` that answers the dashboard and settings pages, and counts."""
+        seen: list[str] = []
+
+        def fake_get(opener, url: str) -> str:
+            seen.append(url)
+            if url.rstrip("/").endswith("settings"):
+                return settings
+            if url.rstrip("/").endswith("dashboard"):
+                return dashboard
+            return ATTACH_FORM
+
+        return fake_get, seen
+
+    def test_the_owned_set_is_the_dashboard_links(self) -> None:
+        fake_get, _ = self.pages()
+        with mock.patch.object(panel, "get", fake_get):
+            self.assertEqual(panel.owned_servers(None), frozenset({"168020b4"}))
+
+    def test_the_account_is_read_once_per_run(self) -> None:
+        fake_get, seen = self.pages()
+        with mock.patch.object(panel, "get", fake_get):
+            self.assertEqual(panel.account_of(None), "lkbxu6i9")
+            self.assertEqual(panel.account_of(None), "lkbxu6i9")
+
+        self.assertEqual(sum(url.rstrip("/").endswith("settings") for url in seen), 1)
+
+    def test_a_boot_write_names_the_account_in_its_line(self) -> None:
+        fake_get, _ = self.pages()
+        with mock.patch.object(panel, "get", fake_get), \
+                mock.patch.object(panel, "post", return_value=ATTACHED):
+            code = panel.write_boot_image(None, "168020b4", URL, SHA, "", apply=True,
+                                          wait=0, interval=0)
+
+        self.assertEqual(code, 0)
+        lines = self.audit_lines()
+        self.assertEqual(len(lines), 1, lines)
+        self.assertIn("account=lkbxu6i9", lines[0])
+        self.assertIn("BOOT_IMAGE server=168020b4", lines[0])
+
+    def test_a_disk_write_names_the_account_in_its_line(self) -> None:
+        fake_get, _ = self.pages()
+        with mock.patch.object(panel, "get", fake_get), \
+                mock.patch.object(panel, "post", return_value="<p>queued</p>"):
+            code = panel.write_disk(None, "168020b4", "https://odile.fyi/x.raw", "raw",
+                                    apply=True, sha256=SHA)
+
+        self.assertEqual(code, 0)
+        lines = self.audit_lines()
+        self.assertTrue(lines)
+        self.assertIn("account=lkbxu6i9", lines[0])
+        self.assertIn("DISK_WRITE server=168020b4", lines[0])
+
+    def test_a_machine_from_another_account_is_refused(self) -> None:
+        # 31a63bbb is the demo tenant on the reseller account: another login owns
+        # it, so it is not in this session's dashboard and no form may name it.
+        fake_get, _ = self.pages()
+        posted: list[tuple] = []
+        with mock.patch.object(panel, "get", fake_get), \
+                mock.patch.object(panel, "post", side_effect=lambda *a: posted.append(a) or ""):
+            boot = panel.write_boot_image(None, "31a63bbb", URL, SHA, "", apply=True,
+                                          wait=0, interval=0)
+            disk = panel.write_disk(None, "31a63bbb", "https://odile.fyi/x.raw", "raw",
+                                    apply=True, sha256=SHA)
+
+        self.assertEqual((boot, disk), (2, 2))
+        self.assertEqual(posted, [], "a foreign machine must not be named in a POST")
+        self.assertFalse(any("31a63bbb" in line for line in self.audit_lines()))
+
+    def test_a_dry_run_on_a_foreign_machine_is_refused_too(self) -> None:
+        fake_get, _ = self.pages()
+        with mock.patch.object(panel, "get", fake_get):
+            code = panel.write_disk(None, "31a63bbb", "https://odile.fyi/x.raw", "raw",
+                                    apply=False)
+
+        self.assertEqual(code, 2)
+
+    def test_an_unreadable_account_refuses_the_write(self) -> None:
+        # A settings page that does not name the id (a panel change, or a session
+        # that is not really logged in) must not produce a write with no account.
+        fake_get, _ = self.pages(settings="<main><h1>Settings</h1></main>")
+        with mock.patch.object(panel, "get", fake_get), \
+                mock.patch.object(panel, "post", return_value="<p>queued</p>"):
+            code = panel.write_disk(None, "168020b4", "https://odile.fyi/x.raw", "raw",
+                                    apply=True, sha256=SHA)
+
+        self.assertEqual(code, 2)
+
+    def test_power_and_console_name_the_account(self) -> None:
+        fake_get, _ = self.pages()
+
+        def fake_get_console(opener, url: str) -> str:
+            if "/console/" in url:
+                return '<input name="csrf_token" value="t"><p>Console log: on</p>'
+            return fake_get(opener, url)
+
+        with mock.patch.object(panel, "get", fake_get_console), \
+                mock.patch.object(panel, "post", return_value="<p>Console log is on.</p>"):
+            power = panel.power(None, "168020b4", "restart")
+            console = panel.console(None, "168020b4", "on")
+
+        self.assertEqual((power, console), (0, 0))
+        lines = self.audit_lines()
+        self.assertEqual(len(lines), 2, lines)
+        for line in lines:
+            self.assertIn("account=lkbxu6i9", line)
+
+
+class _FakeResponse:
+    def __init__(self, body: str) -> None:
+        self._body = body.encode("utf-8")
+
+    def read(self) -> bytes:
+        return self._body
+
+
+class _FakeOpener:
+    """The one call `post` makes: `open(request, timeout=…)` as a context."""
+
+    def __init__(self, body: str = "<p>ok</p>") -> None:
+        self.requests: list[object] = []
+        self.body = body
+
+    def open(self, request, timeout=None):  # noqa: ARG002 - the tool's timeout
+        self.requests.append(request)
+        return contextlib.nullcontext(_FakeResponse(self.body))
+
+
+class PostLineTests(AuditIsolatedTests):
+    """The POST line itself names the account, so no reader has to infer it.
+
+    The DoD is read from the log alone, and the write line is not the only line
+    a reader sees: each write is followed by a `POST` line. Reading the account
+    through `account_of` (not the module global) means a write path that ever
+    posts before its audit line still leaves a line naming the account.
+    """
+
+    def setUp(self) -> None:
+        super().setUp()
+        patcher = mock.patch.object(panel, "_ACCOUNT", None)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_the_post_line_names_the_account_without_a_prior_audit_line(self) -> None:
+        opener = _FakeOpener()
+        with mock.patch.object(panel, "get", return_value=SETTINGS_HTML):
+            text = panel.post(opener, panel.BASE + "/manage/168020b4/admin/",
+                              {"action": "restart", "csrf_token": "t"})
+
+        self.assertEqual(text, "<p>ok</p>")
+        lines = self.audit_lines()
+        self.assertEqual(len(lines), 1, lines)
+        self.assertIn("POST " + panel.BASE + "/manage/168020b4/admin/", lines[0])
+        self.assertIn("account=lkbxu6i9", lines[0])
+        self.assertEqual(len(opener.requests), 1, "the form was posted once")
+
+    def test_an_unreadable_account_is_named_unknown_never_omitted(self) -> None:
+        # The line must still carry the field, so a reader cannot mistake a
+        # missing account for a write made by an account they do not know of.
+        with mock.patch.object(panel, "get", return_value="<main><h1>Settings</h1></main>"):
+            panel.post(_FakeOpener(), panel.BASE + "/manage/168020b4/admin/",
+                       {"action": "restart"})
+
+        line = self.audit_lines()[0]
+        self.assertIn("account=?", line)
+
 
 class BootImageWriteTests(AuditIsolatedTests):
     """Replacing the boot image needs detach → attach → wait for ready."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.stub_account()
 
     def run_write(self, pages: list[str], results: list[str], **kwargs):
         calls: list[dict] = []
@@ -318,6 +576,10 @@ class SessionTests(unittest.TestCase):
 
 
 class PowerTests(AuditIsolatedTests):
+    def setUp(self) -> None:
+        super().setUp()
+        self.stub_account()
+
     def test_a_504_is_sent_not_failed(self) -> None:
         # Measured: the gateway gives up at 30 s, the node reboots anyway.
         error = urllib.error.HTTPError("https://servury.com", 504, "Gateway Timeout", None, None)
