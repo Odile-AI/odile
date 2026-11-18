@@ -116,6 +116,8 @@ the fact.
    - appends one `claimed` event with `from_state='destroyed'` and
      `detail={"reason": …, "reprovision": true}`;
    - keeps every earlier event — the log still proves the machine died.
+   `StateStore.claim()` refuses a `destroyed` row and names `reopen()`, so the
+   edge has one door even for a caller that reaches for the older method.
 3. **Entering `claimed` clears the machine columns** (`server_id`, `hostname`,
    `ipv4`, `plan_id`, `release`, `expires_at`, `initramfs_host_key`,
    `last_heartbeat`). A claim is *before* the order; a row at `claimed` names
@@ -219,8 +221,10 @@ it back.
 Hermetic, no order and no money (branch head of this card):
 
 ```
+/usr/bin/python3 -m unittest tests.test_state
+  Ran 65 tests … OK
 /usr/bin/python3 -m unittest tests.test_state tests.test_bootrecord tests.test_offboard
-  Ran 101 tests … OK
+  Ran 103 tests … OK
 /usr/bin/python3 -m unittest tests.test_odilectl
   Ran 92 tests … OK
 /usr/bin/python3 -m unittest tests.test_odilectl.FixtureFlowTest
@@ -228,7 +232,7 @@ Hermetic, no order and no money (branch head of this card):
 /usr/bin/python3 -m unittest tests.test_claim
   Ran 39 tests … OK
 /usr/bin/python3 -m unittest tests.test_seed
-  Ran 45 tests … OK
+  Ran 46 tests … OK
 make check
   OK (skipped=7); self-test: PASS; claims lint: OK; brand lint: OK;
   make check: OK (the run's full line is in the card's evidence)
@@ -260,4 +264,10 @@ idempotency, its refusal of a live tenant and the reconcile finding are in
 `test_every_state_is_reachable_from_invited_and_destroyed_reopens` and the edge
 loop's count, the four `ReprovisionTest` cases error, and the two CLI tests
 (the reopen and the both-schema rebuild) fail on exit 4 — 4 failures, 4 errors.
+
+**One door.** `test_claim_refuses_a_destroyed_tenant_and_names_reopen` pins the
+method boundary: a direct `claim()` on a destroyed row raises
+`InvalidTransition`, the message names `reopen`, no event is written and the
+row stays `destroyed`.
+
 The new edge is not decorative: remove it and both schemas' tests go red.
