@@ -5,7 +5,11 @@
 # covers the two surfaces a file scan cannot see: the commit messages and the
 # content of the commits about to leave the machine. It reads the same deny list
 # as `make leak` — HQ's `docs/ops/leak-forbid.txt`, or the root `leak-forbid.txt`
-# that the repository publishes — and blocks on the first hit.
+# that the repository publishes — and the same allowlist, by path: a live
+# identifier the tree keeps (a tenant slug a program reads) is pinned at its own
+# path in `leak-allow.tsv`, so the commit that carries it is not a leak while
+# the same value at any other path is. The commit-message surface has no path,
+# so a message naming a literal blocks wherever it is written.
 #
 # Git does not version hook installation, so enable it once per clone:
 #
@@ -66,6 +70,13 @@ scan() {
     "$PYTHON" "$SCANNER" --stdin --label "$1" --forbid-file "$FORBID"
 }
 
+# A patch is scanned per path: the scanner files each added line under the
+# `+++ b/<path>` header it followed, so an allowlist row pinned at that path
+# waives it and the same value at another path is still a finding.
+scan_patch() {
+    "$PYTHON" "$SCANNER" --stdin-patch --label "$1" --forbid-file "$FORBID"
+}
+
 # Every diff scan skips BOTH copies of the deny list, not just the resolved
 # one. The list carries its literals by definition, so scanning it would report
 # its own rows; and at HQ the resolved name is the canonical
@@ -90,19 +101,16 @@ fi
 #    outgoing. `git diff @{u}...HEAD` is the card's command; the empty-tree
 #    case diffs the whole head, because every commit in it is outgoing.
 if [ "$BASE" = "$EMPTY_TREE" ]; then
-    if ! without_the_lists diff --no-color "$EMPTY_TREE" HEAD \
-            | awk '/^\+/ && !/^\+\+\+/' | scan outgoing-diff; then
+    if ! without_the_lists diff --no-color "$EMPTY_TREE" HEAD | scan_patch outgoing-diff; then
         status=1
     fi
-elif ! without_the_lists diff --no-color "$BASE...HEAD" \
-        | awk '/^\+/ && !/^\+\+\+/' | scan outgoing-diff; then
+elif ! without_the_lists diff --no-color "$BASE...HEAD" | scan_patch outgoing-diff; then
     status=1
 fi
 
 # 3. Each outgoing commit's own added lines, so a literal added and removed
 #    again inside one push is still caught: it is in the pushed history.
-if ! without_the_lists log --format= --no-color --unified=0 -p "$MESSAGES" \
-        | awk '/^\+/ && !/^\+\+\+/' | scan outgoing-history; then
+if ! without_the_lists log --format= --no-color -p "$MESSAGES" | scan_patch outgoing-history; then
     status=1
 fi
 

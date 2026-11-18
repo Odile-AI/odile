@@ -60,7 +60,7 @@ import create_dns  # noqa: E402
 import tenant_console  # noqa: E402
 
 DEMO_NAME = "demo.odile.fyi"
-MACHINE_NAME = "odl-fake01.odile.fyi"
+MACHINE_NAME = "odl-7971a8.odile.fyi"
 DEMO = "https://" + DEMO_NAME
 MACHINE = "https://" + MACHINE_NAME
 #: The address the two public names must answer. The tree carries the tenant's

@@ -57,6 +57,14 @@ LIST_TEXT = (
     + LIST_LINE
 )
 
+# The synthetic live constant the allowlist tests pin: one value, one path.
+BOX = "1680" + "20b4"
+
+
+def digest(value: str) -> str:
+    return "sha256:" + hashlib.sha256(value.encode()).hexdigest()[:12]
+
+
 PLACEHOLDERS = (
     "192.0.2.10",
     "198.51.100.7",
@@ -160,6 +168,50 @@ class ForbidClass(unittest.TestCase):
         other = scan(self.repo)
         self.assertEqual(other.returncode, 1, other.stdout)
         self.assertIn("(probe-box)", other.stdout)
+
+
+class PatchRecords(unittest.TestCase):
+    """`--stdin-patch`: an added line is filed under the path it came from."""
+
+    def setUp(self) -> None:
+        self.temp = tempfile.TemporaryDirectory()
+        self.repo = Path(self.temp.name) / "repo"
+        self.repo.mkdir()
+        git("init", "-q", "-b", "main", cwd=self.repo)
+        (self.repo / "leak-forbid.txt").write_text(LIST_LINE, encoding="utf-8")
+        (self.repo / "keep.txt").write_text("nothing private here\n", encoding="utf-8")
+        (self.repo / "live").mkdir()
+        (self.repo / "live" / "host.txt").write_text(f"host {HQ_IP}\n", encoding="utf-8")
+        (self.repo / "leak-allow.tsv").write_text(
+            "# rule\tpath\tsha256\tclass\tcredential\treason\texpires\n"
+            f"forbidden-value\tlive/host.txt\t{digest(HQ_IP)}\tconstant\tno\t"
+            "the live address this path reads\tnever\n", encoding="utf-8")
+
+    def tearDown(self) -> None:
+        self.temp.cleanup()
+
+    def patch(self, path: str) -> subprocess.CompletedProcess[str]:
+        body = (
+            f"diff --git a/{path} b/{path}\n"
+            f"--- a/{path}\n"
+            f"+++ b/{path}\n"
+            "@@ -0,0 +1 @@\n"
+            f"+host {HQ_IP}\n"
+        )
+        return run([sys.executable, str(SCANNER), "--stdin-patch", "--label",
+                    "outgoing-diff", "--forbid-file", "leak-forbid.txt"],
+                   cwd=self.repo, input=body)
+
+    def test_the_header_names_the_path_the_row_pins(self) -> None:
+        allowed = self.patch("live/host.txt")
+        self.assertEqual(allowed.returncode, 0, allowed.stdout)
+        self.assertIn("allowlisted:    1", allowed.stdout)
+        self.assertIn("outgoing-diff (1 paths", allowed.stdout)
+        other = self.patch("elsewhere/host.txt")
+        self.assertEqual(other.returncode, 1, other.stdout)
+        self.assertIn("FINDING forbidden-value", other.stdout)
+        self.assertIn("elsewhere/host.txt:1", other.stdout)
+        self.assertIn("(hq-address)", other.stdout)
 
 
 class HistoryPrivate(unittest.TestCase):
@@ -307,6 +359,46 @@ class PrePushHook(unittest.TestCase):
         (self.work / "probe.md").unlink()
         git("add", "-A", cwd=self.work)
         git("commit", "--amend", "-qm", "publish the deny list", cwd=self.work)
+        self.assertEqual(self.push().returncode, 0)
+
+    def test_a_live_value_pinned_at_its_path_pushes_and_elsewhere_blocks(self) -> None:
+        # The tree keeps the identifiers a program reads and pins each one in
+        # `leak-allow.tsv` at its own path. The diff scan must honour that row
+        # by path — otherwise the commit that restores a live constant is
+        # blocked — and must not turn it into a path-wide waiver.
+        (self.work / "live").mkdir()
+        (self.work / "live" / "host.txt").write_text(f"box {BOX}\n", encoding="utf-8")
+        (self.work / "leak-allow.tsv").write_text(
+            "# rule\tpath\tsha256\tclass\tcredential\treason\texpires\n"
+            f"forbidden-value\tlive/host.txt\t{digest(BOX)}\tconstant\tno\t"
+            "the live constant this path reads\tnever\n", encoding="utf-8")
+        commit_all(self.work, "a live constant at its own path")
+        direct = run([str(self.work / ".githooks" / "pre-push")], cwd=self.work)
+        self.assertEqual(direct.returncode, 0, direct.stdout + direct.stderr)
+        self.assertIn("allowlisted:    1", direct.stdout)
+        self.assertEqual(self.push().returncode, 0)
+
+        (self.work / "other.txt").write_text(f"box {BOX}\n", encoding="utf-8")
+        commit_all(self.work, "the same value at another path")
+        blocked = self.push()
+        self.assertNotEqual(blocked.returncode, 0, blocked.stdout + blocked.stderr)
+        self.assertIn("other.txt", blocked.stdout + blocked.stderr)
+        self.assertIn("(servury-box-id)", blocked.stdout + blocked.stderr)
+
+    def test_a_path_pinned_value_in_a_commit_message_still_blocks(self) -> None:
+        # The message surface has no path, so a row pinned at one path cannot
+        # waive it: the value may live in that file and nowhere else.
+        (self.work / "clean.txt").write_text("nothing private\n", encoding="utf-8")
+        (self.work / "leak-allow.tsv").write_text(
+            "# rule\tpath\tsha256\tclass\tcredential\treason\texpires\n"
+            f"forbidden-value\tlive/host.txt\t{digest(BOX)}\tconstant\tno\t"
+            "the live constant this one path reads\tnever\n", encoding="utf-8")
+        commit_all(self.work, f"the box {BOX} moved")
+        blocked = self.push()
+        self.assertNotEqual(blocked.returncode, 0, blocked.stdout + blocked.stderr)
+        self.assertIn("commit-message", blocked.stdout + blocked.stderr)
+        self.assertIn("(servury-box-id)", blocked.stdout + blocked.stderr)
+        git("commit", "--amend", "-qm", "a clean message", cwd=self.work)
         self.assertEqual(self.push().returncode, 0)
 
 

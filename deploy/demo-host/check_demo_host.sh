@@ -1,7 +1,7 @@
 #!/bin/bash
 # Assert the demo's definition of done on the machine that serves demo.odile.fyi.
 #
-# demo.odile.fyi is Odile's tenant machine (odl-fake01): a custom-UKI guest
+# demo.odile.fyi is Odile's tenant machine (odl-7971a8): a custom-UKI guest
 # running the signed release, one shared `judge` account, the meter removed,
 # no boot re-assert and no demo-owned caps — the machine keeps the state its
 # owner leaves (t_ee5aac66). Card: ODL-318, re-cut by t_2a847ea3 after HQ's
@@ -34,7 +34,7 @@ DEMO_URL=${DEMO_URL:-https://$DEMO_HOST}
 #: The machine's own name, for the alias legs. Not an address: the demo host
 #: must resolve to this machine, which is asserted from the machine's own
 #: interfaces (see "dns and units") rather than from a literal in this file.
-MACHINE_HOST=${MACHINE_HOST:-odl-fake01.odile.fyi}
+MACHINE_HOST=${MACHINE_HOST:-odl-7971a8.odile.fyi}
 MACHINE_URL=${MACHINE_URL:-https://$MACHINE_HOST}
 DEMO_ADDRESS=${DEMO_ADDRESS:-}
 DEMO_HOME=${DEMO_HOME:-/home/$DEMO_USER}
@@ -296,7 +296,7 @@ def seed_hq() -> tuple[bool, str]:
     HQ.  A converged machine prints `same` and skips the backup.
     """
     print("== the HQ half (seeding)")
-    slug = "odl-fake01"
+    slug = "odl-7971a8"
     try:
         seed = json.loads(read_remote("/etc/odile/seed.json"))
         slug = seed.get("slug") or slug

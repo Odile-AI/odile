@@ -42,6 +42,14 @@ Every private host value lives in `deploy/hosts.local` (gitignored), with
 either. Real values live in the untracked file or the secret store (SOPS/age,
 1Password, Vault), never in git.
 
+The one exception is a live constant a program reads — the demo tenant's slug
+`status/status.py` excludes, the boot command line `deploy/image/tenant-image.pin`
+records. It stays the real value at its own path and gets a path-pinned row in
+`leak-allow.tsv` (`forbidden-value` + that path + the value's digest + why);
+anywhere else the same value is still a finding, and the published build scrubs
+it to the stand-in. Files that do not read the value get the placeholder, never
+a row.
+
 ## Style
 
 - Python: standard library only where the tree already is; no new dependency

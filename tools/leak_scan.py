@@ -90,8 +90,11 @@ the card that clears it, is recorded.
 ``--forbid-only`` runs that one class and skips the tree classes: it is what
 the CI history job uses, so an already-public address in an old root does not
 fail a job about the deny list. ``--stdin`` scans a stream with ``--label``
-naming it; the pre-push hook pipes the outgoing diff and commit messages
-through it.
+naming it — the pre-push hook's commit-message surface. ``--stdin-patch``
+scans a git patch and files each added line under the path its ``+++ b/…``
+header names, so the allowlist's path column applies to an outgoing diff the
+same way it applies to a whole file: a live constant pinned at its own path
+is not a leak, and the same value at any other path still is.
 
 Usage:
 
@@ -992,6 +995,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--stdin", action="store_true",
                         help="scan stdin for forbidden literals only; with --label, the "
                              "path the findings are reported under (the pre-push hook)")
+    parser.add_argument("--stdin-patch", action="store_true",
+                        help="scan a git patch on stdin for forbidden literals, filing each "
+                             "added line under the path its +++ header names, so an "
+                             "allowlist row's path applies (the pre-push hook's diffs)")
     parser.add_argument("--label", default="<stdin>",
                         help="path label for --stdin findings (default: <stdin>)")
     args = parser.parse_args(argv)
@@ -1054,6 +1061,34 @@ def main(argv: list[str] | None = None) -> int:
         scan_forbidden(report, allows, today, text, args.label, forbid)
         print(f"leak scan: stdin ({args.label})")
         print(f"  lines scanned:  {len(text.splitlines()):,}")
+        for finding in report.findings:
+            print(finding.render())
+        if report.findings:
+            print(f"FAIL: {len(report.findings)} finding(s) in {args.label}")
+            return 1
+        print(f"PASS: nothing forbidden in {args.label}")
+        return 0
+
+    if args.stdin_patch:
+        report = Report("stdin")
+        added: dict[str, list[str]] = {}
+        path = ""
+        for line in sys.stdin:
+            if line.startswith("+++ "):
+                target = line[4:].rstrip("\n")
+                path = "" if target == "/dev/null" else re.sub(r"^b/", "", target)
+            elif line.startswith("+") and path:
+                added.setdefault(path, []).append(line[1:].rstrip("\n"))
+        for relative, lines in added.items():
+            if relative in skip:
+                continue
+            report.files += 1
+            text = "\n".join(lines) + "\n"
+            report.bytes_scanned += len(text.encode("utf-8", "replace"))
+            scan_forbidden(report, allows, today, text, relative, forbid)
+        print(f"leak scan: {args.label} ({report.files:,} paths with added lines)")
+        print(f"  lines scanned:  {report.bytes_scanned:,} bytes")
+        print(f"  allowlisted:    {report.allowed}")
         for finding in report.findings:
             print(finding.render())
         if report.findings:

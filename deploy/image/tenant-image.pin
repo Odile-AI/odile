@@ -2,7 +2,7 @@
   "boot_key": "SHA256:1mRGsPrQ4d8QQlvRTKTpOFrtIhfXpcGCYqq0Kv4qAGs",
   "boot_key_private_half": "shredded",
   "card": "ODL-456",
-  "cmdline": "root=/dev/mapper/root_crypt ro console=tty0 console=ttyS0,115200 consoleblank=0 systemd.show_status=1 ip=203.0.113.87::203.0.113.1:255.255.255.0:odl-fake01:ens18:off bb.release=2026.11.2 bb.host=odl-fake01 bb.iid=0badc0de bb.key=c3NoLWVkMjU1MTkgQUFBQUMzTnphQzFsWkRJMU5URTVBQUFBSU9rNU9zS0pOSzJzZWV4VXZWZ3QzU0sxRHR2VHRIdkpyb1I3WUNZSjE2VnYgb2RpbGUtYmVuY2ggdGhyb3dhd2F5IGJvb3Qga2V5Cg== seal_id=37fa4c5d5fd74163 odile.token=9b5fa901ceab53df7103e7d1d67fdc1a1381c19f21d666d421c23f6c5171a586 odile.seed_url=https://odile.fyi/seed",
+  "cmdline": "root=/dev/mapper/root_crypt ro console=tty0 console=ttyS0,115200 consoleblank=0 systemd.show_status=1 ip=203.0.113.87::203.0.113.1:255.255.255.0:odl-7971a8:ens18:off bb.release=2026.11.2 bb.host=odl-7971a8 bb.iid=31a63bbb bb.key=c3NoLWVkMjU1MTkgQUFBQUMzTnphQzFsWkRJMU5URTVBQUFBSU9rNU9zS0pOSzJzZWV4VXZWZ3QzU0sxRHR2VHRIdkpyb1I3WUNZSjE2VnYgb2RpbGUtYmVuY2ggdGhyb3dhd2F5IGJvb3Qga2V5Cg== seal_id=37fa4c5d5fd74163 odile.token=9b5fa901ceab53df7103e7d1d67fdc1a1381c19f21d666d421c23f6c5171a586 odile.seed_url=https://odile.fyi/seed",
   "guest_features": "0x1",
   "hook_sha256": "949adeb23145a0f25f5b018bd1d86a0030b32e8e355f67a1d68f2c7f2ea4803c",
   "initrd_sha256": "3f4ebc5203dd681762e854a82638ef38310d0118f8616470a12ed353134c260f",
@@ -35,7 +35,7 @@
   "schema": 1,
   "seal_blob_sha256": "64c994436378abdeb13d273223de2b855fe4b55a7474dd0d597b10981700c6c5",
   "seal_id": "37fa4c5d5fd74163",
-  "seal_key_id": "key_sha256=401295226ecd18a3e5e30ccbbfc11990c4f09b0ea5e340bf67ea9b9139582b5a",
+  "seal_key_id": "key_sha256=0c5e415a968a99f18d757adbe892d7352f77175790566dcd67e470a255caee9a",
   "signature": {
     "cert_fingerprint_sha256": "5A:21:B4:7F:D5:26:B6:E0:21:15:B1:E6:23:78:16:B1:D1:E5:63:67:CC:B5:B2:E8:22:F2:70:A7:7F:47:75:C0",
     "cert_sha256": "aea9052cf8d2d0f404c5320848eb0f5402cea090248f05a51bbb5cfdbd2b1a06",
