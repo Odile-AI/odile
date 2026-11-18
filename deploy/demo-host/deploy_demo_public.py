@@ -46,6 +46,7 @@ import re
 import secrets
 import socket
 import sys
+import tempfile
 import time
 import urllib.error
 import urllib.parse
@@ -68,6 +69,35 @@ MACHINE_HOST = "odl-7971a8.odile.fyi"
 NEAR_BASE_URL = "https://cloud-api.near.ai/v1"
 NEAR_KEY_ENV = "HERMES_CUSTOM_CLOUD_API_NEAR_AI_API_KEY"
 COMMITTED_BLOCK = REPO / "deploy/caddy/demo-tenant-site.caddy"
+
+#: The apply's no-rewrite contract (t_ee5aac66), spelled in
+#: `apply_demo_public.py`'s own module constant. This program uploads the file
+#: that sits beside it, so a tree whose copy predates that fix would put the
+#: pruning program back on the tenant — measured 2026-11-17: the live check lost
+#: the seed's messages, found one session more than it opened, and the apply read
+#: `demo provisioned` where a converged machine reads `demo converged`. The test
+#: suite's fence pins `main`, which cannot see a deploy run from a branch; this
+#: reads the bytes about to be uploaded, whatever branch they came from.
+APPLY_SOURCE = HERE / "apply_demo_public.py"
+APPLY_MARKER = "odile-demo-public-apply/2: seed written once, nothing pruned"
+
+
+def apply_problem(source: Path | None = None) -> str:
+    """Why this tree's apply must not be deployed; '' when it may be.
+
+    A marker rather than the program's shape: the deploy ships the file, not a
+    hash of it, so the check is "does the copy about to run carry the contract".
+    A missing file is a refusal too — an uploaded program is what runs as root.
+    """
+    path = source if source is not None else APPLY_SOURCE
+    if not path.is_file():
+        return f"this tree has no {path.name} beside the deploy program"
+    text = path.read_text(encoding="utf-8", errors="replace")
+    if APPLY_MARKER not in text:
+        return (f"{path} carries no no-rewrite marker ({APPLY_MARKER!r}): this "
+                "copy cannot prove it stops the prune and the seed rewrite")
+    return ""
+
 
 #: Files the tenant needs, by name. The apply program checks the sign-in page
 #: for its markers before installing it; the others are data. `login.html` is
@@ -557,6 +587,15 @@ def self_test() -> int:
     check(RELEASE_SETUP_SOURCE.is_file()
           and "release-setup.done" in RELEASE_SETUP_SOURCE.read_text(encoding="utf-8"),
           "the release setup script this deploy installs writes its done marker once")
+    check(apply_problem() == "",
+          "this tree's apply carries the no-rewrite marker the deploy ships")
+    with tempfile.TemporaryDirectory(prefix="odile-old-apply-") as tmp:
+        planted = Path(tmp) / "apply_demo_public.py"
+        planted.write_text(APPLY_SOURCE.read_text(encoding="utf-8").replace(APPLY_MARKER, ""),
+                           encoding="utf-8")
+        problem = apply_problem(planted)
+        check(bool(problem) and "no-rewrite" in problem,
+              "a planted apply without the marker is refused")
 
     spec = importlib.util.spec_from_file_location("apply_demo_public",
                                                   HERE / "apply_demo_public.py")
@@ -620,6 +659,14 @@ def _run(argv: list[str] | None = None) -> int:
 
     if args.self_test:
         return self_test()
+
+    # 0. the tree's own apply. It is the program that will run as root, and
+    # this deploy ships whatever copy sits beside it — a branch tree's older
+    # copy is the regression of 2026-11-17. Refused before DNS or any upload.
+    problem = apply_problem()
+    if problem:
+        print(f"error: refusing this tree: {problem}", file=sys.stderr)
+        return 2
 
     judge_password = (Path(args.judge_password_file).read_text(encoding="utf-8").strip()
                       if args.judge_password_file else published_password())

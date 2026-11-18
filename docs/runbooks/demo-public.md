@@ -105,6 +105,20 @@ over) and then `odile-agent`; the gateway takes ~35 s to answer again, and its
 graceful shutdown can take up to `TimeoutStopSec=90`, so a restart is a
 one-to-two-minute outage of the demo.
 
+**The tree's own apply is gated (t_262f7168).** This deploy uploads the
+`apply_demo_public.py` that sits beside it, so a checkout of another branch
+carries that branch's copy. A copy from before t_ee5aac66 writes the seeded row
+again and prunes sessions, and that is the shape of the 2026-11-17 failure: the
+live check lost the seed's messages, found one session more than it opened, and
+read `demo provisioned` where a converged machine reads `demo converged`.
+`main`'s own fence test pins `main`'s copy, not the tree that deploys. Before
+the DNS step the deploy now reads the file's contract line — `APPLY_CONTRACT` in
+the apply, spelled `odile-demo-public-apply/2: seed written once, nothing
+pruned` — and exits 2 with `error: refusing this tree: … carries no no-rewrite
+marker` when it is absent. A refused tree changes nothing: no DNS call, no
+console, no upload. The same refusal covers a tree with no apply beside the
+deploy at all.
+
 ### The report refreshes every five minutes — measured
 
 The claims row "The report refreshes every five minutes" (`docs/CLAIMS.md` §1
