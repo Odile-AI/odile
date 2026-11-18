@@ -168,6 +168,59 @@ def refuse_path(path: str) -> str | None:
     return None
 
 
+DASHBOARD = f"{BASE}/dashboard/"
+# One `/manage/<id>/` link per machine **the session's account owns**. The
+# dashboard is the only page that answers "whose machine is this": the manage
+# page itself renders identically for an id on another account, so ownership is
+# read from here and a foreign id is a refusal.
+MANAGE_LINK = re.compile(r"/manage/([0-9a-f]{8})/")
+_ACCOUNT: str | None = None
+
+
+def owned_servers(opener) -> frozenset[str]:
+    """The ids this session's account owns, from the dashboard's manage links."""
+    return frozenset(MANAGE_LINK.findall(get(opener, DASHBOARD)))
+
+
+def account_of(opener) -> str:
+    """The account this session belongs to, read once per run.
+
+    Readings are cached because every write needs it and each one is a page
+    fetch; `?` (the settings page did not name an id) is **not** cached, so a
+    blank read leaves the account unknown and the write refuses.
+    """
+    global _ACCOUNT
+    if _ACCOUNT is None:
+        user, _ = whoami(opener)
+        if user != "?":
+            _ACCOUNT = user
+    return _ACCOUNT or "?"
+
+
+def require_owned(opener, server: str) -> int | None:
+    """`None` when `server` is this account's, else 2 after saying why.
+
+    Two logins exist on the vendor: the reseller account that owns HQ and the
+    old demo tenant, and the account the tenant now lives on. A POST naming a
+    machine the session does not own is the one mistake that reaches another
+    account, so it is refused before any form is posted.
+    """
+    account = account_of(opener)
+    if account == "?":
+        print("panel: the session's account could not be read — refusing to write",
+              file=sys.stderr)
+        return 2
+    owned = owned_servers(opener)
+    if server not in owned:
+        print(
+            f"panel: {server} is not a machine on account {account} "
+            f"(the dashboard lists {sorted(owned) or 'none'}) — refusing",
+            file=sys.stderr,
+        )
+        return 2
+    return None
+
+
 def allowed_servers() -> frozenset[str]:
     """The server ids this tool may touch, from the untracked file.
 
@@ -191,6 +244,16 @@ def audit(line: str) -> None:
             handle.write(line.rstrip() + "\n")
     except OSError:
         pass
+
+
+def audit_line(opener, message: str) -> str:
+    """The line every write leaves: UTC stamp, **the account**, then the write.
+
+    A `server=<id>` alone stopped being enough once the tenant moved onto the
+    account the team owns: two logins hold machines, and the log has to answer
+    "which account did this land in" without a second command.
+    """
+    return f"{datetime_stamp()} account={account_of(opener)} {message}"
 
 
 COOKIE_HEADER = Path("/root/.odile/servury_panel.cookie")   # "name=value; name=value", 0600
@@ -256,7 +319,8 @@ def post(opener, url: str, fields: dict[str, str]) -> str:
     unknown = set(fields) - allowed
     if unknown:
         raise SystemExit(f"panel: refusing unknown form field(s) {sorted(unknown)}")
-    audit(f"{datetime_stamp()} POST {url} fields={sorted(fields)}")
+    account = f" account={_ACCOUNT}" if _ACCOUNT else ""
+    audit(f"{datetime_stamp()} POST {url} fields={sorted(fields)}{account}")
     body = urllib.parse.urlencode(fields).encode()
     with opener.open(request_for(url, data=body), timeout=40) as response:
         text = response.read().decode("utf-8", "replace")
@@ -338,6 +402,9 @@ def dump(opener, server: str) -> int:
 
 def write_disk(opener, server: str, url: str, fmt: str, apply: bool, sha256: str = "") -> int:
     """Point the machine's disk at a published image. Two flags are needed, on purpose."""
+    refused = require_owned(opener, server)
+    if refused is not None:
+        return refused
     page = admin_url(server)
     html = get(opener, page)
     token = parse_csrf(html)
@@ -354,7 +421,7 @@ def write_disk(opener, server: str, url: str, fmt: str, apply: bool, sha256: str
     }
     if sha256:
         fields["disk_sha256"] = sha256
-    audit(f"{datetime_stamp()} DISK_WRITE server={server} url={url} format={fmt} apply={apply}")
+    audit(audit_line(opener, f"DISK_WRITE server={server} url={url} format={fmt} apply={apply}"))
     print(f"panel: {'wrote' if apply else 'would write'} {server} ← {url} ({fmt})")
     if not apply:
         print("panel: dry run — pass --apply and --confirm to submit")
@@ -389,6 +456,9 @@ def write_boot_image(
     so replacing an image is detach, attach, then wait for the node to report the
     download ready. Rushing the power action before that boots the old image.
     """
+    refused = require_owned(opener, server)
+    if refused is not None:
+        return refused
     page = admin_url(server)
     html = get(opener, page)
     token = parse_csrf(html)
@@ -407,10 +477,11 @@ def write_boot_image(
         "image_initrd_sha256": "",
         "image_cmdline": cmdline,
     }
-    audit(
-        f"{datetime_stamp()} BOOT_IMAGE server={server} url={url} "
-        f"sha256={sha256[:16]} cmdline={'yes' if cmdline else 'empty'} apply={apply}"
-    )
+    audit(audit_line(
+        opener,
+        f"BOOT_IMAGE server={server} url={url} "
+        f"sha256={sha256[:16]} cmdline={'yes' if cmdline else 'empty'} apply={apply}",
+    ))
     print(f"panel: {'set' if apply else 'would set'} {server} boot image ← {url}")
     print(f"panel:   sha256 {sha256 or '(not given)'}")
     print(f"panel:   cmdline {'passed verbatim' if cmdline else 'empty (the UKI carries its own)'}")
@@ -462,13 +533,16 @@ def write_boot_image(
 
 def power(opener, server: str, action: str, *, dry_run: bool = False) -> int:
     """Press one of the manage page's power buttons (start/stop/restart/forcestop)."""
+    refused = require_owned(opener, server)
+    if refused is not None:
+        return refused
     page = admin_url(server)
     html = get(opener, page)
     token = parse_csrf(html)
     if not token:
         print("panel: no csrf_token on the admin page — the session may have expired", file=sys.stderr)
         return 1
-    audit(f"{datetime_stamp()} POWER server={server} action={action} apply={not dry_run}")
+    audit(audit_line(opener, f"POWER server={server} action={action} apply={not dry_run}"))
     print(f"panel: {'would press' if dry_run else 'pressing'} {action} on {server}")
     if dry_run:
         return 0
@@ -515,13 +589,16 @@ def console(opener, server: str, action: str, *, dry_run: bool = False) -> int:
     if action == "read":
         print(console_text(get(opener, url)), end="")
         return 0
+    refused = require_owned(opener, server)
+    if refused is not None:
+        return refused
     html = get(opener, url)
     token = parse_csrf(html)
     if not token:
         print("panel: no csrf_token on the console page — the session may have expired", file=sys.stderr)
         return 1
     enabled = "1" if action == "on" else "0"
-    audit(f"{datetime_stamp()} CONSOLE server={server} enabled={enabled} apply={not dry_run}")
+    audit(audit_line(opener, f"CONSOLE server={server} enabled={enabled} apply={not dry_run}"))
     print(f"panel: {'would turn' if dry_run else 'turning'} the console log {action} for {server}")
     if dry_run:
         return 0
@@ -540,9 +617,23 @@ def console(opener, server: str, action: str, *, dry_run: bool = False) -> int:
     return 0
 
 
+def purchase_route(opener) -> str:
+    """Visit the referral route, which is what actually attaches the discount.
+
+    Measured 2026-11-18: an order posted with `coupon=WEB` and no route visit
+    was charged list price ($9.99), while the 12 November order on the same
+    account — placed after this page — was $8.99. The coupon field alone is not
+    the route, so the order path takes it before it reads the form.
+    """
+    get(opener, PURCHASE_URL)
+    return PURCHASE_URL
+
+
 def order(opener, plan: str, location: str, os_name: str, days: str, hostname: str,
           coupon: str, apply: bool, ssh_key_file: str) -> int:
     """Buy one machine through the referral route. Dry run unless --apply."""
+    route = purchase_route(opener)
+    print(f"panel: referral route {route}")
     page = f"{BASE}/order/?location={location}&plan={plan}&os={os_name}"
     html = get(opener, page)
     token = parse_csrf(html)
@@ -557,7 +648,11 @@ def order(opener, plan: str, location: str, os_name: str, days: str, hostname: s
     }
     if ssh_key_file:
         fields["ssh_key"] = Path(ssh_key_file).read_text(encoding="utf-8").strip()
-    audit(f"{datetime_stamp()} ORDER plan={plan} loc={location} days={days} coupon={coupon} host={hostname} apply={apply}")
+    audit(audit_line(
+        opener,
+        f"ORDER plan={plan} loc={location} days={days} coupon={coupon} "
+        f"host={hostname} apply={apply}",
+    ))
     print(f"panel: {'ordering' if apply else 'would order'} plan {plan} in {location} for {days} days,"
           f" coupon {coupon} — {PURCHASE_URL}")
     if not apply:
