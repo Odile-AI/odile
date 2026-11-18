@@ -29,6 +29,7 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 TOOL_MISSING = "merge_card.py is HQ-only machinery and is not in this tree"
@@ -271,10 +272,20 @@ class GateSemanticsTests(unittest.TestCase):
 @unittest.skipUnless(TOOL, TOOL_MISSING)
 class PolicyTests(unittest.TestCase):
     def test_the_subprocess_outlives_the_gate_lock_wait(self) -> None:
+        """The tool's defaults, not the knobs its caller exported.
+
+        `merge_card` hands its own environment to the gate, so a suite that
+        read these constants in-process measured the operator's overrides. An
+        ODL-339 merge launched with `ODILE_MERGE_CHECK_LOCK_WAIT=3600
+        ODILE_MERGE_CHECK_TIMEOUT=3600` failed here — `3600 not greater than
+        3600` — and had its merge reset (2026-11-18, the ODL-910 gate run).
+        Load the module with those variables removed.
+        """
         spec = importlib.util.spec_from_file_location("merge_card_under_test", TOOL)
         assert spec and spec.loader
         module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
+        with mock.patch.dict(os.environ, clean_env(), clear=True):
+            spec.loader.exec_module(module)
 
         self.assertGreater(module.CHECK_TIMEOUT, module.CHECK_LOCK_WAIT)
         self.assertLess(module.CHECK_LOCK_WAIT, 3600, "the queue must be bounded below the Makefile default")
