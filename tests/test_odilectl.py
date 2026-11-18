@@ -1014,7 +1014,7 @@ class FixtureFlowTest(TempConfigMixin):
         self.assertEqual(transport.calls[2]["id"], SERVER_ID)
 
     def _destroyed_row(self, config_path) -> Path:
-        """A tenant that reached ready and was then destroyed (ADR-004)."""
+        """A tenant that reached ready and was then destroyed (ADR-007)."""
         db = Path(config_path).parent / "waitlist.db"
         store = state.StateStore.open(db)
         try:

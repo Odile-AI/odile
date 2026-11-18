@@ -807,7 +807,7 @@ sentence is quoted (ODL-474 lands it).
   carries a stale secret. Measured on the bench (§5.2): the rebuilt guest's own
   file opens the repository, `backup.py init` prints `same`, and the user's old
   file still opens it. The live tenant's rebuild is ODL-218's destroy-and-re-provision path
-  (`docs/runbooks/offboard.md` §5), a human step. ADR-004 (`t_ce52bb8d`) makes
+  (`docs/runbooks/offboard.md` §5), a human step. ADR-007 (`t_ce52bb8d`) makes
   it the same slug: `destroyed -> claimed` is the one edge back, `provision
   <slug>` reopens the row before it orders, points the web row and the state
   row at the new machine and moves the state row to `first_boot` (so the new

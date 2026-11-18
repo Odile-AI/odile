@@ -415,7 +415,7 @@ refund for the days left, address released, `404` within a minute), or
 pre-order cannot be terminated — it is final. `destroy` moves the state row to
 `destroyed` and deletes the A record; it does **not** replace the tenant, so the
 web row keeps naming the last machine until the rebuild. Re-provisioning is the
-**same slug** and a new order (ADR-004): `odilectl provision <slug> --key
+**same slug** and a new order (ADR-007): `odilectl provision <slug> --key
 <user.pub> --pin odile-verify.pin [--backup-password-file
 <the user's old odile-recovery-<slug>.txt>] --apply` reopens the row
 (`destroyed -> claimed`), orders the machine, points the web row at its

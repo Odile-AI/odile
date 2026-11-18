@@ -557,7 +557,7 @@ class StateMachineTest(TempStoreMixin):
 class ReprovisionTest(TempStoreMixin):
     """The one edge back: a destroyed slug comes back under the same slug.
 
-    ADR-004 / ODL-218 follow-up. `destroyed` is the end of a machine, not of
+    ADR-007 / ODL-218 follow-up. `destroyed` is the end of a machine, not of
     the tenant: the reopen keeps every earlier event, writes one `claimed`
     event with the reason, clears the dead machine's columns, and leaves the
     slug — and therefore the URL, the recovery file's name and the repository
@@ -654,6 +654,18 @@ class ReprovisionTest(TempStoreMixin):
         with self.assertRaises(state.InvalidTransition):
             self.store.reopen(SLUG, reason="rebuild")
         self.assertEqual(self.store.get(SLUG).state, "ready")
+
+    def test_claim_refuses_a_destroyed_tenant_and_names_reopen(self):
+        self.active_tenant()
+        self.store.destroy(SLUG, reason="owner cancelled")
+        before = self.count_events(SLUG)
+        with self.assertRaises(state.InvalidTransition) as caught:
+            self.store.claim(SLUG)
+        self.assertIn("reopen", str(caught.exception))
+        self.assertEqual(self.store.get(SLUG).state, "destroyed")
+        self.assertEqual(
+            self.count_events(SLUG), before, "a refused claim writes no event"
+        )
 
     def test_reconcile_apply_marks_missing_destroyed_and_names_the_same_slug(self):
         self.active_tenant()

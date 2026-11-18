@@ -1,7 +1,10 @@
-# ADR-004 — A destroyed tenant comes back on its own slug: `destroyed -> claimed`
+# ADR-007 — A destroyed tenant comes back on its own slug: `destroyed -> claimed`
 
 **Status:** Accepted · 15 November 2026 · Architect · card `t_ce52bb8d` (ODL-218
-follow-up). Implemented on this branch: `odilectl/state.py`,
+follow-up). Number 007 is the merge-time assignment: `main` holds `ADR-004` (the
+Backblaze B2 backup), `ADR-005` (upgrade inventory) and `ADR-006` (the account
+password), so this decision — drafted while `main` still ended at 003 — was
+renumbered before merge. Implemented on this branch: `odilectl/state.py`,
 `odilectl/provision.py`, `tests/test_state.py`, `tests/test_odilectl.py`,
 `docs/runbooks/backup.md` §9, `docs/runbooks/offboard.md` §5 and
 `docs/runbooks/provision.md` §9.
@@ -23,7 +26,7 @@ machine-record and append-only-log rows), §4.9, §5; `docs/MVP-V0.1.md` §6.2
 (provisioning), §6.7 (backups), §12 D11 (random subdomains), D14 (the access
 model, untouched); `docs/runbooks/backup.md` §5.2 and §9;
 `docs/runbooks/offboard.md` §5 ("The mechanics — the same slug comes back
-(ADR-004)", "The signed image is the panel's, not the API's", "The live
+(ADR-007)", "The signed image is the panel's, not the API's", "The live
 tenant"); `docs/runbooks/provision.md` §9 (rollback).
 **Decision owner:** Architect. This ADR adds no provider, network path,
 standing credential or trust boundary, and it strengthens no claim: it makes

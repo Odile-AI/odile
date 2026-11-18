@@ -353,7 +353,7 @@ checkable in the meantime.
 This is the step that `docs/runbooks/backup.md` §9 calls "ODL-218's path", and
 it has two halves.
 
-### The mechanics — the same slug comes back (ADR-004)
+### The mechanics — the same slug comes back (ADR-007)
 
 After a destroy, `odilectl provision <slug> --key <user.pub> --pin
 odile-verify.pin --backup-password-file <the user's old
@@ -366,7 +366,7 @@ same row. The same write points the web `tenants` row at the new `server_id`
 to `first_boot`, so the machine's own first boot has a row to land on
 (`odilectl/bootrecord.py` checks `tenants.server_id` and refuses a
 `provisioning` spine). **The slug does not change**: the URL, the recovery
-file's name and the `tenants/<slug>` repository survive (ADR-004;
+file's name and the `tenants/<slug>` repository survive (ADR-007;
 `docs/CLAIMS.md` §1). A dry run on a destroyed slug lists `state.reopen` as
 its first action and writes nothing. Without the `--backup-password-file` flag
 the rebuilt machine mints a new repository password (Drill 2's C); with it the
@@ -398,7 +398,7 @@ $ python3 -c '… provision._record_machine(ctx, spec, machine, "2026.11.1")'
 StateError: odl-218a1b is destroyed; its release cannot be recorded
 ```
 
-ADR-004 removed that refusal before the first provider call: a destroyed row is
+ADR-007 removed that refusal before the first provider call: a destroyed row is
 reopened to `claimed` first, so the order always lands on a row that can record
 it. The re-provision is now:
 
@@ -451,7 +451,7 @@ tenant is §2 — complete, with the record id, the server id and the backup dat
 
 | Gap | Why it is not here | Card |
 |---|---|---|
-| ~~a destroyed slug cannot come back~~ **resolved** | ADR-004: `destroyed -> claimed`, the named `reopen()`, and `provision` reopens before the order, points the web row and the state row at the new machine and reaches `first_boot` (so its boot record lands); the slug, the URL and the `tenants/<slug>` repository keep their names | **t_ce52bb8d** |
+| ~~a destroyed slug cannot come back~~ **resolved** | ADR-007: `destroyed -> claimed`, the named `reopen()`, and `provision` reopens before the order, points the web row and the state row at the new machine and reaches `first_boot` (so its boot record lands); the slug, the URL and the `tenants/<slug>` repository keep their names | **t_ce52bb8d** |
 | the live tenant's destroy + rebuild | $18.99 and the panel's disk image — a real-world action | **t_8d50106b** |
 | the live tenant's Webapp refuses `/login` (`400 Invalid Host header`) | measured 2026-11-13T05:33Z after a boot-time release install; the same boot's release setup ended `rc=1` at `odile-access-report` — installer/release work, not the offboard path | **t_d95b8c13** |
 | the 30-day purge is an operator step | the box is off-site and has no agent; the date on the row makes it checkable | **t_9d6fb595** |
@@ -493,7 +493,7 @@ as a console script. `dns` is the one exception: it runs as
 | `dry-run-live.txt` (03:32:59Z), `dry-run-live.json` (03:22:13Z) | §2, the plan against the live tenant — two separate runs; the text one is quoted, the JSON one carries the same seven steps with its own `keep_until` clock |
 | `provision-a.json`, `destroy-a.json` | drill 1: the order, the destroy's JSON |
 | `provision-b.json`, `destroy-b.json` | drill 2 (the re-provision): the order, the destroy's JSON |
-| `same-slug-refusal.txt` | the `StateError` a destroyed slug raised in `_record` after the order — the **pre-ADR-004** behaviour §5 removes |
+| `same-slug-refusal.txt` | the `StateError` a destroyed slug raised in `_record` after the order — the **pre-ADR-007** behaviour §5 removes |
 | `servers-before.txt`, `servers-after.txt` | `?action=servers`, before and after (the same account read as `evidence/provider-after.txt`) |
 | `scratch.yaml` | the drill's config (0600): the host account, its own state DB in `/var/tmp`, plan 120 / 7 days |
 

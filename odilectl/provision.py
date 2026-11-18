@@ -25,7 +25,7 @@ print the fresh token). If the slug has no tenant row yet, the claim worker
 mints the token when the claim exists (ODL-220) — the fallback, and the report
 names it instead of inventing a tenant row.
 
-**A destroyed tenant is reopened, not replaced (ODL-218 follow-up, ADR-004).**
+**A destroyed tenant is reopened, not replaced (ODL-218 follow-up, ADR-007).**
 `destroyed -> claimed` is the one edge back: `_reopen_destroyed` moves the row
 before the first provider call, so the order always lands on a row that can
 record it. The slug — and therefore `https://<slug>.odile.fyi`, the recovery
@@ -86,7 +86,7 @@ DEFAULT_INTERVAL = 10.0
 DEFAULT_PIN = Path(__file__).resolve().parent.parent / "odile-verify.pin"
 SETUP_TOKEN_TTL_HOURS = 24
 # Written to the `claimed` event when provision brings a destroyed tenant back
-# (ADR-004). The slug, and therefore the URL, does not change.
+# (ADR-007). The slug, and therefore the URL, does not change.
 REPROVISION_REASON = (
     "odilectl provision: a destroyed machine is replaced under the same slug"
 )
@@ -264,7 +264,7 @@ def _write_rebuild_entry(ctx: Context, seed, slug: str, issued: dict,
 
 
 def _reopen_line(slug: str) -> str:
-    """The one line a rebuild adds: same slug, same URL (ADR-004)."""
+    """The one line a rebuild adds: same slug, same URL (ADR-007)."""
     return (
         f"  reprovision: destroyed -> claimed (same slug, {slug}); "
         "the URL and the recovery file keep their names"
@@ -427,7 +427,7 @@ def _state_of(ctx: Context, slug: str) -> str | None:
 
 
 def _reopen_destroyed(ctx: Context, slug: str) -> bool:
-    """Move a destroyed row to `claimed` before the order (ADR-004).
+    """Move a destroyed row to `claimed` before the order (ADR-007).
 
     The order must land on a row that can record it. A destroyed row is
     reopened first, so a failed `create` leaves a retryable claim rather than a
@@ -540,7 +540,7 @@ def _record_machine(
     move the state again, and `record_release` fills a NULL release only, so
     the release the machine was actually ordered under is never rewritten.
 
-    An order is recorded in both schemas (ODL-218 follow-up, ADR-004). The
+    An order is recorded in both schemas (ODL-218 follow-up, ADR-007). The
     state row carries the machine and then reaches `first_boot` — the order
     exists, the machine runs its zero-touch boot — and the web row is pointed
     at the same machine. Only then can `record_boot` take the machine's
@@ -736,7 +736,7 @@ def run(ctx: Context, args) -> Report:
         )
 
     # Before the first provider call: a destroyed row is reopened, so every
-    # order this run places has a row that can record it (ADR-004).
+    # order this run places has a row that can record it (ADR-007).
     reopened = _reopen_destroyed(ctx, spec.hostname)
 
     existing = [machine for machine in ctx.provider.list() if machine.hostname == spec.hostname]
