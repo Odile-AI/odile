@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import hashlib
 import importlib.util
 import json
 import os
@@ -338,6 +339,46 @@ def assert_login(module, root: Path, user: str, port: int) -> None:
     expect("the gate has the 302/401/200 shape",
            module.gate_ok(int(html.split()[0]), int(api.split()[0]), int(session.split()[0])),
            f"{html}/{api}/{session}")
+    # The FQDN above is accepted because the written config declares it in
+    # webapp.public_url, the key the Webapp listener reads to set its own
+    # listener_public_url (t_d95b8c13). dashboard.public_url names the same
+    # host but is not the Webapp's fallback: measured 2026-11-15, it alone
+    # answers 400. Both blocks name the simulation's public host here.
+    config = layout.hermes_home / "config.yaml"
+    text = config.read_text(encoding="utf-8") if config.is_file() else ""
+    _, blocks = module.split_blocks(text)
+    flat = {key: [module.setting_line(line).strip() for line in module.settings(lines)]
+            for key, lines in blocks.items()}
+    wanted = f"public_url: {layout.webapp_public_url}"
+    expect("the config declares the public host the Webapp reads",
+           wanted in flat.get("webapp", []) and wanted in flat.get("dashboard", []),
+           f"webapp {layout.webapp_public_url} · dashboard "
+           + ("yes" if wanted in flat.get("dashboard", []) else "no"))
+
+
+def assert_export_program(root: Path) -> None:
+    """The installer places `odile-export`, and it is the checkout's bytes.
+
+    The pair printed here is the card's evidence: the scratch root's copy and
+    the bytes `odilectl export <slug> --script` prints, both as SHA-256. The
+    program is what the tenant runs to take its data with it (ODL-218).
+    """
+    target = root / "usr/local/bin/odile-export"
+    printed = run([sys.executable, "-m", "odilectl", "export", SLUG, "--script"], cwd=REPO)
+    expected = printed.stdout.encode("utf-8") if printed.returncode == 0 else b""
+    placed = target.read_bytes() if target.is_file() else b""
+    mode = target.stat().st_mode & 0o777 if target.is_file() else 0
+    print("== the guest export program (ODL-218 follow-up)")
+    print(f"export       {target} mode {oct(mode)} "
+          f"sha256 {hashlib.sha256(placed).hexdigest()}")
+    print(f"odilectl export {SLUG} --script | sha256sum -> "
+          f"{hashlib.sha256(expected).hexdigest()}")
+    expect("the installer places /usr/local/bin/odile-export", target.is_file(),
+           printed.stderr.strip())
+    expect("the placed odile-export is 0755", mode == 0o755, oct(mode))
+    expect("the placed odile-export is byte-identical to `odilectl export "
+           "<slug> --script`", placed == expected and bool(expected),
+           f"{len(placed)} vs {len(expected)} bytes")
 
 
 def assert_smoke(root: Path, user: str) -> None:
@@ -489,6 +530,7 @@ def main(argv: list[str] | None = None) -> int:
         expect("the first run provisioned", "tenant: provisioned" in first.stdout)
         module = load_installer()
         assert_login(module, root, args.user, args.port)
+        assert_export_program(root)
         assert_smoke(root, args.user)
         assert_seed_pairs(db, config, args.seed_port, token)
 

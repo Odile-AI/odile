@@ -12,9 +12,14 @@ It puts, as root:
 
   * ``installer/first_visit.py``           -> the page server, with the routes
   * ``web/verify.html``                     -> the release /verify template
+  * ``verify-lede.html``, ``verify-command.html`` -> the demo's two paragraphs,
+    beside the apply that injects them (an icons deploy leaves the page the
+    demo-public deploy does: the demo lede and one ``<!--demo-check-->``
+    section, ODL-563 follow-up)
   * ``web/first-visit.html``                -> the first-visit page
   * ``web/{favicon.ico,icon-32.png,…}``     -> ``/usr/local/lib/odile/icons``
   * ``deploy/image/odile-webapp-brand.py``  -> the union re-assert (name, chrome, tab)
+  * ``deploy/demo-host/webapp-chrome.js``   -> ``/usr/local/lib/odile/webapp-chrome.js``
   * ``deploy/demo-host/login.html``         -> ``/srv/odile-demo/login.html``
   * ``deploy/caddy/demo-tenant-site.caddy`` -> the three static tab-icon routes
     and the two the shell links
@@ -22,6 +27,13 @@ It puts, as root:
 Then it converges with ``apply_demo_public.py``'s own functions (the demo
 lede, the sign-in page and the Caddy block), restarts ``odile-first-visit``,
 and runs the re-assert twice so a second run proves ``same``.
+
+The chrome rides along because the titlebar's ``Verify this machine`` link is
+the demo's own ``/verify`` on this host (ODL-564). The installed script is the
+re-assert helper's source — it copies it into the bundle as
+``odile-demo-chrome.js`` — so a stale copy on the machine would send a judge to
+HQ's ``odile.fyi/verify`` and back through its 302, with another host in the
+address bar.
 
 Idempotent: every put is content-compared by the installer on the machine's
 side (``install`` rewrites only the bytes given), the helper prints ``same``
@@ -82,8 +94,17 @@ PUTS = (
     *[(REPO / "web" / name, f"{DEMO_LIB}/{name}", "0644") for name in TAB_ICONS],
     (REPO / "deploy" / "image" / "odile-webapp-brand.py",
      f"{LIB}/odile-webapp-brand.py", "0755"),
+    (REPO / "deploy" / "demo-host" / "webapp-chrome.js",
+     f"{LIB}/webapp-chrome.js", "0644"),
     (REPO / "deploy" / "demo-host" / "login.html",
      f"{DEMO_LIB}/login.html", "0644"),
+    # The two demo paragraphs the apply injects. They travel with the apply so
+    # an icons deploy reads its own committed copy, not an older one the last
+    # demo-public deploy left on the machine (ODL-563 follow-up).
+    (REPO / "deploy" / "demo-host" / "verify-lede.html",
+     f"{DEMO_LIB}/verify-lede.html", "0644"),
+    (REPO / "deploy" / "demo-host" / "verify-command.html",
+     f"{DEMO_LIB}/verify-command.html", "0644"),
     (REPO / "deploy" / "caddy" / "demo-tenant-site.caddy",
      f"{DEMO_LIB}/demo-tenant-site.caddy", "0644"),
     (REPO / "deploy" / "demo-host" / "apply_demo_icons.py",
@@ -151,22 +172,49 @@ def local_checks() -> None:
     for name in ("icon-192.png", "icon-512.png"):
         if f"handle /{name} {{" not in block:
             raise SystemExit(f"error: the demo Caddy block has no /{name} route")
+    # The apply re-injects both demo paragraphs after the upload; the page it
+    # leaves must carry exactly one command pair, or stop before a byte travels
+    # (ODL-563 follow-up: the icons deploy used to drop the section).
+    page = template_bytes().decode("utf-8")
+    opens, closes = page.count(demo_apply.COMMAND_BEGIN), page.count(demo_apply.COMMAND_END)
+    if (opens, closes) != (1, 1):
+        raise SystemExit(
+            f"error: the converged /verify page carries {opens} demo-check "
+            f"marker(s) and {closes} closer(s), expected one of each")
+    chrome = (REPO / "deploy" / "demo-host" / "webapp-chrome.js").read_text(encoding="utf-8")
+    if "const VERIFY_HREF_DEMO = 'https://demo.odile.fyi/verify'" not in chrome:
+        raise SystemExit("error: the chrome's demo Verify link is not the demo's own /verify")
+
+
+def template_bytes(repo: Path = REPO) -> bytes:
+    """The converged /verify template: release page + demo lede + one command.
+
+    The machine's file is never the raw release page — the apply injects both
+    demo paragraphs after the deploy installs it. Comparing the remote against
+    the raw page rewrote the template on every run and left the command off
+    until the apply re-added it (ODL-563's root cause, and the reason the
+    deploy's `same` line has to compare against this result).
+    """
+    release = (repo / "web" / "verify.html").read_text(encoding="utf-8")
+    lede = (repo / "deploy" / "demo-host" / "verify-lede.html").read_text(encoding="utf-8")
+    command = (repo / "deploy" / "demo-host" / "verify-command.html").read_text(encoding="utf-8")
+    try:
+        return demo_apply.inject_command(
+            demo_apply.inject_lede(release, lede), command).encode("utf-8")
+    except ValueError as exc:
+        raise SystemExit(f"error: cannot build the demo /verify template: {exc}") from exc
 
 
 def converge_verify_template(console, say) -> bool:
-    """Put the release /verify page only when its lede-injected result differs.
+    """Put the release /verify page only when its converged result differs.
 
-    The machine's file is the release page with the demo's lede inside its
-    tenant block, so comparing the raw release page would rewrite on every
-    run. `inject_lede` is `apply_demo_public.py`'s own function; the desired
-    bytes are computed here and the remote hash decides.
+    The machine's file is the release page with the demo's lede and command
+    section inside its tenant block, so comparing the raw release page would
+    rewrite on every run. `template_bytes` is the target; the upload is still
+    the release page, because the apply writes the rollback copy from it (the
+    page a customer machine would have).
     """
-    release = (REPO / "web" / "verify.html").read_text(encoding="utf-8")
-    lede = (REPO / "deploy" / "demo-host" / "verify-lede.html").read_text(encoding="utf-8")
-    try:
-        desired = demo_apply.inject_lede(release, lede).encode("utf-8")
-    except ValueError as exc:
-        raise SystemExit(f"error: cannot inject the demo lede: {exc}") from exc
+    desired = template_bytes()
     remote = f"{LIB}/verify.html"
     current = console.run(f"sudo sha256sum {remote}", check=False).get("stdout", "").split()
     wanted = sha256(desired)
@@ -174,7 +222,7 @@ def converge_verify_template(console, say) -> bool:
         say("same", f"{remote} ({wanted[:16]}…)")
         return False
     console.put(str(REPO / "web" / "verify.html"), remote, mode="0644")
-    say("write", f"{remote} (the release page; the demo lede follows)")
+    say("write", f"{remote} (the release page; the demo lede and command follow)")
     return True
 
 
@@ -238,6 +286,16 @@ def verify(password: str) -> int:
         for line in links:
             check(line in text, f"{path} links {line.split('href=')[1].split(' ')[0]}")
 
+    # ODL-563 follow-up: the icons deploy is a writer of /verify, so it
+    # measures the section it must keep — no pair or two pairs fails here.
+    status, _headers, body = get("/verify")
+    text = body.decode("utf-8", "replace")
+    opens, closes = text.count(demo_apply.COMMAND_BEGIN), text.count(demo_apply.COMMAND_END)
+    check(status == 200 and (opens, closes) == (1, 1),
+          f"GET /verify carries one demo-check pair -> {opens} open, {closes} close")
+    check("./odile-verify https://demo.odile.fyi --expect" in text,
+          "GET /verify prints the --expect line")
+
     cookie = sign_in(password)
     check(bool(cookie), "POST /auth/password-login as judge -> a session cookie")
     if cookie:
@@ -250,6 +308,13 @@ def verify(password: str) -> int:
         check("./apple-touch-icon.png" not in text.replace(
             "./odile-apple-touch-icon.png", ""),
             "the shell no longer links the vendor's mark as a tab icon")
+        # The href the browser runs: the link is built client-side, so the
+        # served script is the measurement (ODL-564).
+        status, _headers, body = get("/odile-demo-chrome.js", cookie=cookie)
+        script = body.decode("utf-8", "replace")
+        check(status == 200, f"GET /odile-demo-chrome.js -> {status}")
+        check("const VERIFY_HREF_DEMO = 'https://demo.odile.fyi/verify'" in script,
+              "the served chrome links the demo's own /verify (same host, one hop)")
 
     return 0 if failures == 0 else 1
 

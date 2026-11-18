@@ -20,6 +20,7 @@ import sqlite3
 import sys
 import tempfile
 import unittest
+from datetime import datetime, timezone
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -200,6 +201,27 @@ class RecordWriterTests(BootRecordFixture):
         after = self.rows(con)
         self.assertEqual(again["changed"], [])
         self.assertEqual(before[0]["ssh_public_key"], after[0]["ssh_public_key"])
+        self.assertEqual(before[1]["detail"], after[1]["detail"])
+        self.assertEqual(before[1]["updated_at"], after[1]["updated_at"])
+        self.assertEqual(len(self.events(con)), 2)
+
+    def test_a_replay_without_a_stamp_keeps_the_first_recorded_at(self) -> None:
+        """A boot report carries no `at`; the row keeps the first write's stamp.
+
+        The clock is pinned and moves between the calls, so a per-call key in
+        `detail` (the old `recorded_at`) would make the two rows differ.
+        """
+        con = self.make_db()
+        parsed = bootrecord.parse_record(record(at=None), instance_id=INSTANCE, slug=SLUG)
+        first = datetime(2026, 11, 12, 14, 57, 46, tzinfo=timezone.utc)
+        later = datetime(2026, 11, 12, 16, 0, 0, tzinfo=timezone.utc)
+        bootrecord.record_boot(con, slug=SLUG, record=parsed, now=first)
+        before = self.rows(con)
+        again = bootrecord.record_boot(con, slug=SLUG, record=parsed, now=later)
+        after = self.rows(con)
+        self.assertEqual(again["changed"], [])
+        self.assertEqual(json.loads(after[1]["detail"])["recorded_at"],
+                         "2026-11-12T14:57:46Z")
         self.assertEqual(before[1]["detail"], after[1]["detail"])
         self.assertEqual(before[1]["updated_at"], after[1]["updated_at"])
         self.assertEqual(len(self.events(con)), 2)

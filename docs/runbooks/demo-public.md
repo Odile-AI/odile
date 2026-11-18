@@ -26,6 +26,7 @@ page a judge should be sent to. It does not demonstrate a user-held key.
 | Sign-in page | `/srv/odile-demo/login.html`, Caddy's `handle /login*`. Committed and live are **one file**: sha256 `077f47d541b8a9daab33cf7e607f1a2e7e03c561342230f62fa5f25437b89253` (167,642 B), t_9896a577's artwork page with ODL-504's icon head (three links + the credit comment) and ODL-505's three paths (t_6b25f6e5), installed from `deploy/demo-host/login.html`. `--no-login` remains for a deploy that must keep the machine's current page |
 | Tab icon | three files beside the page — `web/favicon.ico` 11,790 B, `web/icon-32.png` 2,302 B, `web/apple-touch-icon.png` 47,543 B — put in `/srv/odile-demo` by the apply and answered by Caddy's `@tabicons` handle (`image/x-icon` for the `.ico`; one-year immutable). `/icon-192.png` and `/icon-512.png` stay the page server's, for the Webapp shell (§4) |
 | Caddy block | `deploy/caddy/demo-tenant-site.caddy`, sha256 `a38c22658436965126d9b234cdc422e1cf48d303c19f6c8f5d1124e1f7a5c0c6`, 4,465 B; no mutation matcher and no self-update matcher — every write reaches Hermes (§4) |
+| Report refresh | `odile-attest-refresh.timer` on the tenant: every five minutes, root runs `/usr/local/lib/odile/attest.py` into `/var/lib/odile/attestation.json` (atomic rename). This is the row's "refreshes every five minutes" made true (t_145ca49c); the check fails any served `fetched_at` older than ten minutes |
 | Seeded session | `Start here — Odile demo`, pinned, two messages, id `local-931d9e32…` (the constant `/judge` deep-links); written **once**, when the row is absent, and never rewritten |
 | Sessions | every session a judge opens persists across deploys and reboots; a deploy writes no session and deletes none |
 | Meter | none in the path: model route is Near AI direct, `.env` carries one key; on this machine the meter is **removed** (unit not installed, no key file, user gone — t_e237e261), so nothing masks or starts it |
@@ -38,7 +39,7 @@ page a judge should be sent to. It does not demonstrate a user-held key.
 | `deploy/demo-host/deploy_demo_public.py` | one command: DNS, the tenant files over its own Webapp socket, the apply, the restart, the HTTPS verify; `--dry-run`, `--self-test` |
 | `deploy/demo-host/apply_demo_public.py` | runs as root **on the tenant**: sign-in page, Caddy block, Hermes settings, judge account, seeded session (written once), and the removal of the old boot unit; `--dry-run`, `--self-test`, `--report`, `--report --session-id` |
 | `deploy/demo-host/tenant_console.py` | the transport: login, WS ticket, one `shell.exec` per command (a tenant has no SSH key) |
-| `deploy/demo-host/check_demo_public.py` | the card's DoD over HTTPS plus the tenant's own report; `--persistence`, `--sessions` |
+| `deploy/demo-host/check_demo_public.py` | the card's DoD over HTTPS plus the tenant's own report; `--target` for the two DNS rows (default: the tree's redacted `203.0.113.87`), `--persistence`, `--sessions` |
 | `deploy/demo-host/create_dns.py` | the one Cloudflare record; idempotent; `--target 203.0.113.139` moves it to HQ's address (no demo there since 2026-11-13) |
 | `deploy/demo-host/login.html` | Odile's sign-in page |
 | `web/favicon.ico`, `web/icon-32.png`, `web/apple-touch-icon.png` | the three tab files the sign-in page links; the deploy ships them under pinned hashes and the apply puts them beside the page (t_6b25f6e5) |
@@ -46,6 +47,8 @@ page a judge should be sent to. It does not demonstrate a user-held key.
 | `deploy/demo-host/seed/session-receipt.json` | the reviewed receipt template the seeded session's row is minted from (cwd, route and caps rewritten for this machine) |
 | `deploy/demo-host/seed/start-here-tenant.md` | the seeded session's answer |
 | `deploy/caddy/demo-tenant-site.caddy` | the tenant's site block, committed source of truth |
+| `deploy/demo-host/odile-attest-refresh.service`, `.timer` | the demo's five-minute report refresh; the wrapper is `deploy/attest-refresh/refresh.sh`, the same one HQ runs. Installed by the apply (§6b) |
+| `deploy/attest-refresh/refresh.sh` | the atomic refresh wrapper: `attest.py` into a sibling temp file, `chmod 0644`, `mv` over the served copy |
 
 ## 2. Apply
 
@@ -67,7 +70,8 @@ the live page's markers either way, so a stale page still fails the gate check.
 `203.0.113.87` (§5) and the live zone's record holds the machine's real address,
 so a run without `--target` would *update* the record to the redaction. The base
 form above passes the live address; check the zone first and pass the same
-value, so a converged zone prints `same`:
+value, so a converged zone prints `same`. The check's two DNS rows take the same
+value as `--target` (§4), so the live proof is one flag on both programs:
 
 ```sh
 ./deploy/demo-host/create_dns.py --dry-run --target "$(dig +short demo.odile.fyi)"  # must print `same`
@@ -75,18 +79,20 @@ value, so a converged zone prints `same`:
     --judge-password-file /path/to/judge-password
 ```
 
-**Two other writers to the `/verify` template (both measured 2026-11-15).**
-`deploy/demo-host/deploy_demo_icons.py` (t_6b25f6e5) uploads `web/verify.html`
-as the release template, and `apply_demo_icons.py` re-injects only the lede.
-A forced release re-cut does the same by a different route: `odile-recut-run2`
+**The other writer to the `/verify` template (measured 2026-11-15).** A forced
+release re-cut writes the release page over the template: `odile-recut-run2`
 ran `odile-release-setup.sh --force` at 20:12:29Z and the release installer
-wrote its own `/verify` page over the template. The icons deploy keeps the
-demo lede but drops the `<!--demo-check-->` section; the re-cut drops both.
-The journal shows the first at 01:09:17Z installing `/tmp/verify.html`;
-`apply_demo_public.py --report` read `"demo_command": false` after the second
-until the next deploy. Run the demo-public deploy after either: its verify step
-now records a FAIL for a `/verify` that does not carry exactly one
-`<!--demo-check-->` section (ODL-563), so a stale page cannot print PASS.
+wrote its own `/verify` page (customer lede, no command) over
+`/usr/local/lib/odile/verify.html`; `apply_demo_public.py --report` then read
+`"demo_command": false` until the next deploy. `deploy/demo-host/deploy_demo_icons.py`
+(t_6b25f6e5) also installs `web/verify.html` as the release template, but its
+`apply_demo_icons.py` now re-injects both demo paragraphs — the lede and the
+`<!--demo-check-->` section — so an icons deploy keeps the page the
+demo-public deploy left (ODL-563 follow-up; the pre-fix run was measured
+dropping the section at 01:09:17Z). Run the demo-public deploy after a forced
+re-cut: its verify step records a FAIL for a `/verify` that does not carry
+exactly one `<!--demo-check-->` section (ODL-563), so a stale page cannot print
+PASS.
 
 The same re-cut also exposed an old image's listener: the machine's
 `odile-manifest.service` predates ODL-521 and its dynamic user cannot traverse
@@ -98,6 +104,26 @@ and the verify. The apply restarts Caddy (which drops the socket it is talking
 over) and then `odile-agent`; the gateway takes ~35 s to answer again, and its
 graceful shutdown can take up to `TimeoutStopSec=90`, so a restart is a
 one-to-two-minute outage of the demo.
+
+### The report refreshes every five minutes — measured
+
+The claims row "The report refreshes every five minutes" (`docs/CLAIMS.md` §1
+*The demo machine*) is a row about this machine, and the tenant image alone does
+not satisfy it: ODL-397 writes `/var/lib/odile/attestation.json` from the boot
+report once, and the demo boot of 13 November was still being served on 16
+November. The demo therefore runs the same root timer HQ's `/verify` has run
+since ODL-322 — `odile-attest-refresh.timer`, every five minutes, the tenant's
+own `/usr/local/lib/odile/attest.py`, an atomic rename over the file Caddy
+serves. `apply_demo_public.py` §6b installs it (enabled, started, one refresh
+now); `check_demo_public.py` fails a served `fetched_at` older than ten minutes
+and fails the tenant's own file the same way, so a stopped timer cannot pass a
+green gate. Inspect it on the machine with:
+
+```sh
+systemctl list-timers odile-attest-refresh.timer
+systemctl show -p Result --value odile-attest-refresh.service
+journalctl -u odile-attest-refresh.service -n 20 --no-pager
+```
 
 ### The `/verify` lede is demo-only — the choice
 
@@ -135,12 +161,13 @@ change what every customer machine verifies. Instead:
   the release page at
   `/usr/local/lib/odile-demo-public/verify.html.release` for the rollback;
 - the demo-public deploy's `apply --write` and the t_6b25f6e5 icons deploy are
-  the two writers of this paragraph. `odile-release-setup.service` converges
+  the two writers of this page. `odile-release-setup.service` converges
   **once** (t_ee5aac66 writes a done marker under `/var/lib/odile`), so after
   the first boot the release installer no longer rewrites the template; there
   is no boot unit and no `--tune` re-assert. The icons deploy installs
-  `web/verify.html` and re-injects only the lede (§2, measured 2026-11-15);
-  run the demo-public deploy after it, and after a forced re-cut;
+  `web/verify.html` and its `apply_demo_icons.py` re-injects both the lede and
+  the `<!--demo-check-->` section (§2), so it keeps this page; run the
+  demo-public deploy after a forced re-cut;
 - a customer machine never runs `apply_demo_public.py`, so its `/verify` keeps
   the general row. `tests/test_demo_public.py` renders both pages through the
   release renderer and pins the sentence each one shows. The same test runs
@@ -294,10 +321,18 @@ does not program nft/iptables — would pass the block (verdict §5).
 ## 4. Verify
 
 ```sh
-./deploy/demo-host/check_demo_public.py --password-file /path/to/judge-password
-./deploy/demo-host/check_demo_public.py --password-file … --persistence
-./deploy/demo-host/check_demo_public.py --password-file … --sessions
+TARGET="$(dig +short demo.odile.fyi)"           # the zone's current A record
+./deploy/demo-host/check_demo_public.py --target "$TARGET" --password-file /path/to/judge-password
+./deploy/demo-host/check_demo_public.py --target "$TARGET" --password-file … --persistence
+./deploy/demo-host/check_demo_public.py --target "$TARGET" --password-file … --sessions
 ```
+
+The two DNS rows compare both public names with `--target`; its default is the
+tree's redacted `203.0.113.87` (`create_dns.TENANT_IP`, the value the deploy's
+own `--target` defaults to), so a live zone needs the flag. Without it those two
+rows are the only failures — measured `FAIL (23 passed, 2 failed)`, both naming
+`expected 203.0.113.87`; with it the public half is `PASS (25 passed, 0
+failed)`, exit 0 (ODL-563 follow-up, t_48e59c67; §8).
 
 `--persistence` writes a file in `/home/tenant/workspace` through the Webapp's
 own shell, restarts `odile-agent`, reconnects and reads the file back (measured
@@ -525,7 +560,7 @@ transcript.
 |---|---|
 | The page's line | `https://demo.odile.fyi/verify` 200, 43,159 B, sha256 `3cdd7427…` (measured 20:28Z, after the forced re-cut below was repaired and the deploy re-converged; the report card is live, so its byte count moves with the report). Exactly one `<!--demo-check-->` / `<!--/demo-check-->` pair; the section is `deploy/demo-host/verify-command.html` with the measurement it serves, `9f01725a…f137` = `/attestation` |
 | The lede | the deck row verbatim — `Every judge sees these sessions and files.` — `grep -c 'lands in the same workspace'` = 0 and `grep -c 'No one at Odile can log in'` = 0 |
-| The check, before and after | public half before the deploy: 20 passed / 4 failed (no command section, the sign-in page's missing credit comment, the two DNS rows); after: 23 passed / 2 failed — both are the DNS rows, which compare the tree's redacted `203.0.113.87` to the live A record (`dig +short demo.odile.fyi`). The command row prints `ok` and the page's own line, run out of the published bundle, exits 0 |
+| The check, before and after | public half before the deploy: 20 passed / 4 failed (no command section, the sign-in page's missing credit comment, the two DNS rows); after ODL-563: 23 passed / 2 failed — both were the DNS rows, which then compared the tree's redacted `203.0.113.87` to the live A record. The ODL-563 follow-up (t_48e59c67) gives the rows `--target`, whose default is that redacted `create_dns.TENANT_IP`: on the live zone `./deploy/demo-host/check_demo_public.py --target "$(dig +short demo.odile.fyi)"` is `PASS (25 passed, 0 failed)`, exit 0, and the same file without the flag is `FAIL (23 passed, 2 failed)` with both rows naming `expected 203.0.113.87`. The command row prints `ok` and the page's own line, run out of the published bundle, exits 0 |
 | The second run | `deploy_demo_public.py` prints `same` for `/usr/local/lib/odile/verify.html (the demo lede)` and `(the demo command)` — including the 20:28Z run after the re-cut repair — plus the login page, the icons, the Caddyfile block, the config, the `.env` and `state.db`; the page's sha256 is unchanged. In the three run-window readings (19:00:31, 19:02:57, 19:04:15Z — before, between and after the two runs) the seeded session `local-931d9e32…` kept its 22 messages, `messages_sha256 870fa53c…` and both timestamps. A live count moves after the card — a check's turn appends to the seed by design (21:05Z read 28 messages, `c3746671…`) — so quote the run-window transcript, not a live read |
 | The two other writers | 2026-11-15T01:09:17Z: `deploy_demo_icons.py` installs `/tmp/verify.html` over `/usr/local/lib/odile/verify.html`; `apply_demo_public.py --report` then reads `"demo_lede": true, "demo_command": false`. 20:12:29Z: `odile-recut-run2` runs `odile-release-setup.sh --force` and the release installer writes the release page (customer lede, no section) over the template; the deploy restores both (`write … (the demo lede)` / `(the demo command)`) and the next run prints `same` (§2) |
 | The re-cut's side effect | the same re-cut set `/etc/odile` to 0750 root:odile-manifest; the machine's old listener (no `SupplementaryGroups=odile-manifest`) answered `/manifest` 503 until `deploy/image/odile-manifest.service` was installed and the unit restarted (loopback and `odl-7971a8.odile.fyi` both 200, §6) |

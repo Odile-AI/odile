@@ -31,9 +31,8 @@ row are each reported as already done. `--skip-export` is for a tenant that
 never held data (a scratch machine); every other destroy needs the bundle.
 
 The guest's `odile-export` is `EXPORT_PROGRAM` below, printed byte-for-byte by
-`odilectl export <slug> --script`. It lives here because the installer does not
-place guest commands yet (the same gap `support/odile_support.py` records); the
-installer embed is a follow-up, and until then the runbook places it by hand.
+`odilectl export <slug> --script` and embedded in the signed installer by
+`installer/embed_export.py`, which places it at `/usr/local/bin/odile-export`.
 """
 
 from __future__ import annotations

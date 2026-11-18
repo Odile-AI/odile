@@ -22,14 +22,19 @@ These tests pin three things:
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import importlib.util
+import io
+import json
 import re
 import shutil
 import sys
 import tempfile
 import unittest
+import urllib.parse
 from pathlib import Path
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parent.parent
 DEMO = ROOT / "deploy" / "demo-host"
@@ -302,6 +307,220 @@ class DeployAndCheckTests(unittest.TestCase):
         self.assertIn("demo-check", deploy.demo_check_problem(page))
         self.assertEqual(deploy.demo_check_problem(page + section), "")
         self.assertIn("2", deploy.demo_check_problem(page + section + section))
+
+    def test_the_freshness_gate_pins_the_five_minute_row(self):
+        """A stale report fails the gate, not just a missing one (t_145ca49c).
+
+        The regression was a green gate over a three-day-old report: the
+        measurement matched, so every existing row passed. The age itself has
+        to be a row, bounded by the claims sentence, not by a timer's say-so.
+        """
+        from datetime import datetime, timezone
+
+        check = load(DEMO / "check_demo_public.py", "demo_check_freshness_test")
+        self.assertEqual(check.REPORT_MAX_AGE_SECONDS, 600)
+        base = datetime(2026, 11, 17, 12, 0, tzinfo=timezone.utc).timestamp()
+        report = {"fetched_at": "2026-11-17T11:55:00Z"}
+        self.assertEqual(check.freshness_problem(report, now=base), "")
+        self.assertEqual(check.freshness_problem(report, now=base + 300), "")
+        self.assertIn("11.0 minutes", check.freshness_problem(report, now=base + 360))
+        self.assertIn("no fetched_at", check.freshness_problem({}, now=base))
+        self.assertIn("ISO-8601", check.freshness_problem(
+            {"fetched_at": "yesterday"}, now=base))
+        self.assertIn("future", check.freshness_problem(
+            {"fetched_at": "2026-11-17T12:05:00Z"}, now=base))
+
+    def test_the_deploy_ships_the_refresh_units_the_apply_installs(self):
+        """The demo's timer is committed, uploaded and installed in one deploy.
+
+        A machine rebuilt from the image has the boot report only (ODL-397);
+        the five-minute row is true only if the deploy puts the timer back.
+        """
+        deploy = load(DEMO / "deploy_demo_public.py", "demo_deploy_refresh_test")
+        apply = load(DEMO / "apply_demo_public.py", "demo_apply_refresh_test")
+        names = [name for name, _ in deploy.UPLOADS]
+        for name in ("attest-refresh.sh", "odile-attest-refresh.service",
+                     "odile-attest-refresh.timer"):
+            self.assertIn(name, names)
+        self.assertTrue((ROOT / "deploy" / "attest-refresh" / "refresh.sh").is_file())
+        self.assertTrue((DEMO / "odile-attest-refresh.service").is_file())
+        self.assertTrue((DEMO / "odile-attest-refresh.timer").is_file())
+        self.assertEqual(apply.ATTEST_TIMER_UNIT, "odile-attest-refresh.timer")
+        self.assertEqual(apply.ATTEST_REFRESH_TARGET.name, "attest-refresh.sh")
+        self.assertEqual(apply.ATTEST_FILE.name, "attestation.json")
+
+
+MATCH = "9f" * 48
+
+
+class _StubTransport:
+    """The deploy's `http`, answered from one stubbed `/verify` body.
+
+    Every other row `verify_public` records is made to pass, so the only
+    possible FAIL is the marker row under test. That is the shape that makes
+    deleting the `record(section_problem == "", …)` call redden the suite.
+    """
+
+    def __init__(self, module, verify_body: str) -> None:
+        self.module = module
+        self.verify_body = verify_body
+
+    def _login_page(self) -> bytes:
+        head = "".join(f'<link rel="icon" href="./{name}">'
+                       for name in ("favicon.ico", "icon-32.png",
+                                    "apple-touch-icon.png"))
+        return ("<!doctype html><html><head><title>Sign in — Odile</title>"
+                + head + self.module.CREDIT_COMMENT + "</head><body>"
+                '<form data-provider="basic" aria-label="Sign in">'
+                "This is an Odile demo instance.</form></body></html>").encode()
+
+    def __call__(self, url: str, *, method: str = "GET", body: bytes | None = None,
+                 headers: dict[str, str] | None = None,
+                 cookie: str = "") -> tuple[int, bytes, dict]:
+        parts = urllib.parse.urlsplit(url)
+        route = parts.path
+        if parts.netloc == self.module.MACHINE_HOST:
+            return 200, b"the machine's own name answers", {}
+        if route == "/login":
+            return 200, self._login_page(), {
+                "Strict-Transport-Security": "max-age=31536000",
+                "X-Robots-Tag": "noindex"}
+        for name, _pin, content_type in self.module.ICONS:
+            if route == "/" + name:
+                if method == "HEAD":
+                    return 200, b"", {"Content-Length": "1"}
+                return 200, (ROOT / "web" / name).read_bytes(), {
+                    "Content-Type": content_type,
+                    "Cache-Control": "public, max-age=31536000, immutable"}
+        if route in ("/favicon.ico/../../etc/passwd", "/..%2f..%2fetc%2fpasswd"):
+            return 404, b"not found", {}
+        if route == "/":
+            if cookie:
+                return 200, b'<div id="root"></div>', {}
+            return 302, b"", {"Location": "https://demo.odile.fyi/login"}
+        if route == "/api/sessions":
+            if not cookie:
+                return 401, b"", {}
+            return 200, json.dumps(
+                {"sessions": [{"title": "Start here — Odile demo"}]}).encode(), {}
+        if route == "/verify":
+            return 200, self.verify_body.encode("utf-8"), {}
+        if route == "/attestation":
+            return 200, json.dumps({"measurement": MATCH}).encode(), {}
+        raise AssertionError(f"the stub got an unexpected URL: {url}")
+
+
+def served_page(pairs: int) -> str:
+    """A /verify body with *pairs* demo-check sections and the live measurement.
+
+    The command line is present even at zero pairs, so a no-section page still
+    passes the command row and the marker row is the only FAIL.
+    """
+    lede = (DEMO / "verify-lede.html").read_text(encoding="utf-8").strip()
+    command = ((DEMO / "verify-command.html").read_text(encoding="utf-8")
+               .strip().replace("{{MEASUREMENT}}", MATCH))
+    line = f'<p class="caption">./odile-verify https://demo.odile.fyi --expect {MATCH}</p>'
+    return (f'<main>{lede}<p>{MATCH}</p>{line}'
+            + (command + "\n") * pairs + "</main>")
+
+
+class VerifyPublicSectionTests(unittest.TestCase):
+    """ODL-563 N3: the deploy's marker gate is driven, not just its helper.
+
+    `demo_check_problem`'s own tests stay green if the `record(section_problem
+    == "", …)` line in `verify_public` is deleted, and the deploy then stops
+    failing a stale page. These tests call `verify_public` over a stub whose
+    every other row passes, so the marker record is the only thing that can
+    produce a FAIL.
+    """
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.deploy = load(DEMO / "deploy_demo_public.py",
+                          "demo_deploy_marker_wiring_test")
+
+    def run_verify(self, pairs: int) -> tuple[bool, list[str]]:
+        stub = _StubTransport(self.deploy, served_page(pairs))
+        with mock.patch.object(self.deploy, "http", stub), \
+                mock.patch.object(self.deploy, "sign_in",
+                                  lambda base, password: "session=stub"):
+            return self.deploy.verify_public("x" * 16)
+
+    def test_the_stub_page_with_one_section_passes_every_row(self) -> None:
+        ok, lines = self.run_verify(1)
+        self.assertTrue(ok, "\n".join(lines))
+        self.assertEqual([line for line in lines if line.startswith("FAIL")], [])
+
+    def test_a_page_with_no_section_fails_and_names_the_marker_counts(self) -> None:
+        ok, lines = self.run_verify(0)
+        self.assertFalse(ok)
+        failures = [line for line in lines if line.startswith("FAIL")]
+        self.assertEqual(len(failures), 1, "\n".join(lines))
+        self.assertIn("exactly one demo-check section", failures[0])
+        self.assertIn("0 '<!--demo-check-->' marker(s)", failures[0])
+        self.assertIn("0 '<!--/demo-check-->' closer(s)", failures[0])
+
+    def test_a_page_with_two_sections_fails_and_names_the_marker_counts(self) -> None:
+        ok, lines = self.run_verify(2)
+        self.assertFalse(ok)
+        failures = [line for line in lines if line.startswith("FAIL")]
+        self.assertEqual(len(failures), 1, "\n".join(lines))
+        self.assertIn("2 '<!--demo-check-->' marker(s)", failures[0])
+        self.assertIn("2 '<!--/demo-check-->' closer(s)", failures[0])
+
+
+class DnsRowTests(unittest.TestCase):
+    """The two DNS rows take the run's expected address, not the redaction.
+
+    The public tree carries the tenant's redacted address (create_dns.TENANT_IP),
+    so the check's default must be that value and a live zone must pass the
+    machine's real address explicitly. Both names have to answer the same one.
+    The non-redacted address is TEST-NET-2: the leak gate forbids the machine's
+    real address in the tree, and a row only compares strings.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.check = load(DEMO / "check_demo_public.py", "demo_check_dns_test")
+
+    def rows(self, expected: str, demo: list[str], machine: list[str]):
+        answers = {self.check.DEMO_NAME: demo, self.check.MACHINE_NAME: machine}
+        return self.check.dns_checks(expected, lambda name: list(answers[name]))
+
+    def test_the_tree_default_is_the_redacted_tenant_address(self):
+        self.assertEqual(self.check.DEFAULT_DNS, "203.0.113.87")
+        rows = self.rows(self.check.DEFAULT_DNS, ["203.0.113.87"], ["203.0.113.87"])
+        self.assertEqual([ok for ok, _ in rows], [True, True])
+        self.assertIn("203.0.113.87", rows[0][1])
+
+    def test_a_live_zone_passed_explicitly_passes(self):
+        rows = self.rows("198.51.100.7", ["198.51.100.7"], ["198.51.100.7"])
+        self.assertEqual([ok for ok, _ in rows], [True, True])
+        self.assertIn("198.51.100.7", rows[0][1])
+
+    def test_the_live_zone_fails_the_redacted_default(self):
+        rows = self.rows(self.check.DEFAULT_DNS, ["198.51.100.7"], ["198.51.100.7"])
+        self.assertEqual([ok for ok, _ in rows], [False, False])
+
+    def test_two_names_that_disagree_fail_the_second_row(self):
+        rows = self.rows("198.51.100.7", ["198.51.100.7"], ["198.51.100.8"])
+        self.assertEqual([ok for ok, _ in rows], [True, False])
+        self.assertIn("198.51.100.8", rows[1][1])
+
+    def test_main_passes_its_target_to_the_public_half(self):
+        seen: list[str] = []
+
+        def fake_public(password: str, target: str = "") -> str:
+            seen.append(target)
+            return ""
+
+        original = self.check.public_checks
+        self.check.public_checks = fake_public
+        self.addCleanup(setattr, self.check, "public_checks", original)
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(self.check.main([]), 0)
+            self.assertEqual(self.check.main(["--target", "198.51.100.7"]), 0)
+        self.assertEqual(seen, [self.check.DEFAULT_DNS, "198.51.100.7"])
 
 
 if __name__ == "__main__":

@@ -19,9 +19,9 @@
 # marker under /var/lib/odile; every later boot reads the marker and exits
 # without running the installer. That is what makes the owner's config survive
 # a reboot: the installer's managed blocks (model, agent, custom_providers,
-# webapp, onboarding) and its .env allowlist are written on the first boot
-# only, so a key the owner changed afterwards — `webapp.public_url`, the
-# provider row, a key in `.env` — is not rewritten. The marker records the
+# dashboard, webapp, onboarding) and its .env allowlist are written on the
+# first boot only, so a key the owner changed afterwards — `webapp.public_url`,
+# the provider row, a key in `.env` — is not rewritten. The marker records the
 # run's exit code. A failed first run is not retried automatically; to retry it
 # on purpose, remove the marker and run this script with `--force` (or
 # ODILE_RELEASE_FORCE=1) — the log's earlier run line would otherwise make the
@@ -41,6 +41,14 @@
 # machine (tests/test_release_setup.py); the defaults are the image's.
 #
 # Exit codes: 0 always. The boot depends on the page, not on ACME.
+#
+# Two arguments the boot cannot get from a terminal (t_d95b8c13): the installer
+# ends `rc=4` when the recovery file has not been confirmed and stdin is not a
+# TTY, so this script passes `--i-have-copied-it` — the first-visit page and
+# /verify are where the user downloads that file, and the machine keeps it at
+# /etc/odile/recovery.txt. And `ODILE_RELEASE_PUBLIC_URL` overrides the public
+# name the config carries: `bb.host` is the machine's slug, which is not the
+# name an owner who moved the Webapp (ODL-503) answers on.
 set -u
 
 CMDLINE=${ODILE_RELEASE_CMDLINE:-/proc/cmdline}
@@ -114,6 +122,13 @@ done
 [ -n "$HOST" ] || { echo "odile-release-setup: no bb.host in the command line" >&2; exit 0; }
 [ -s "$PIN" ] || { echo "odile-release-setup: no $PIN" >&2; exit 0; }
 
+# The public name the Webapp answers to. `bb.host` is the machine's own slug;
+# a machine whose owner moved its public name (`webapp.public_url`, ODL-503)
+# keeps it when this script is re-run by hand, or the install would rewrite
+# the config back to the slug and the owner's Host would answer 400
+# `Invalid Host header` (t_d95b8c13).
+PUBLIC_URL=${ODILE_RELEASE_PUBLIC_URL:-https://$HOST.odile.fyi}
+
 # The measurement this image was pinned to; the installer writes it into the
 # boot record and /verify compares the machine with it.
 MEAS=$(/usr/bin/python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["uki_signed"]["measurement"])' "$PIN" 2>/dev/null) || MEAS=""
@@ -152,7 +167,7 @@ done
         --instance-id "$IID" --expect "$EXPECT" \
         --signature "$SIGNATURE" --pubkey "$PUBKEY" \
         --slug "$HOST" --user tenant --port 9130 \
-        --public-url "https://$HOST.odile.fyi" --json 2>&1
+        --public-url "$PUBLIC_URL" --i-have-copied-it --json 2>&1
     rc=$?
     echo "=== rc=$rc"
     printf 'ran %s · %s · instance %s · rc=%s\n' \
