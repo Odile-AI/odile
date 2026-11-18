@@ -242,6 +242,14 @@ ALLOW: tuple[Allow, ...] = (
         "NEAR testnet transaction id, block hash and public key — public chain data",
         values=("333510ca0353", "d30742eb5af9", "1c91875af7ff", "58469404c965"),
     ),
+    Allow(
+        "high-entropy",
+        "docs/runbooks/image.md",
+        "history only: the scrypt hash of the published bench fixture password "
+        "(odile-bench-not-a-secret), retired with the 2026.11.14-5 image; value-scoped, "
+        "so a different value at this path is still a finding",
+        values=("6a3d71aa28cc",),
+    ),
 )
 
 
