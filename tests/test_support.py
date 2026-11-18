@@ -810,6 +810,53 @@ class SessionTests(SupportTestCase):
         self.assertIn("rc=143", text)
         self.assertIn("signal=SIGTERM", text)
 
+    def test_killing_the_wrapper_the_moment_the_start_line_appears_never_leaves_it_open(self) -> None:
+        """Kill on the visible start line, 25 times: every start still gets an end.
+
+        This is the production race, not a window a harness holds open. Each
+        iteration polls the log tightly, sends SIGTERM the instant this
+        iteration's `event=start` is readable, and only then waits. Pre-fix the
+        wrapper has no handler at that point, dies with the default disposition
+        and leaves a start line with no end line; 25 back-to-back kills make
+        that gap wide enough to see without a sleep in the test.
+        """
+        self.grant()
+        log = self.fake.root / "var/log/odile-support.log"
+        kills = 25
+
+        def text() -> str:
+            return log.read_text(encoding="utf-8") if log.exists() else ""
+
+        for attempt in range(1, kills + 1):
+            starts = text().count("event=start")
+            process = subprocess.Popen(
+                [sys.executable, str(SCRIPT), "--root", str(self.fake.root), "session",
+                 "--shell", "/bin/sh"],
+                stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
+                env=self.fake.env(now=self.now), text=True)
+            try:
+                deadline = time.monotonic() + 10
+                while text().count("event=start") == starts:
+                    if time.monotonic() > deadline:
+                        self.fail(f"attempt {attempt}: no start line: {text()}")
+                    time.sleep(0.001)
+                process.terminate()          # the start line is visible; signal, no sleep
+                _, stderr = process.communicate(timeout=10)
+            finally:
+                if process.poll() is None:
+                    process.kill()
+                    process.wait()
+            deadline = time.monotonic() + 10
+            while text().count("event=end") < attempt and time.monotonic() < deadline:
+                time.sleep(0.001)
+            log_text = text()
+            self.assertEqual(log_text.count("event=start"), attempt, f"attempt {attempt}: {log_text}")
+            self.assertEqual(log_text.count("event=end"), attempt,
+                             f"attempt {attempt} left a start with no end: {log_text}")
+            last_end = [line for line in log_text.splitlines() if "event=end" in line][-1]
+            self.assertRegex(last_end, r"event=end .* rc=143 .* signal=SIGTERM")
+            self.assertEqual(process.returncode, 143, f"attempt {attempt}: {stderr}\n{log_text}")
+
     def test_a_sigterm_before_the_shell_exists_still_writes_the_end_line(self) -> None:
         """The signal lands after the start line and before a shell could exist.
 
