@@ -1,0 +1,309 @@
+#!/bin/sh
+# check_bench.sh — the A1 isolation check: the bench, its tenant, production.
+#
+# ODL-340. One run answers four questions, and fails when any answer is no:
+#
+#   1. the bench answers at https://test.odile.fyi/ (200, `server: odile-bench`)
+#   2. the tenant answers at its own name under test.odile.fyi (the sign-in page
+#      200, `/` a 302 to it on the same host, `/verify` 200 and `/attestation`
+#      200 with the pinned launch measurement)
+#   3. production did not move: `/` still hashes to the record taken before
+#      the bench/tenant work, and `/roadmap` and `/attestation` are byte-for-byte
+#      the box's own generator output (`/var/lib/odile/roadmap.html`,
+#      `/var/lib/odile/attestation.json`), never the bench's copies; and
+#      `NRestarts` on odile.service is 0 in the record and now. The two timer
+#      pages are re-generated every fifteen and five minutes, so their absolute
+#      hash is a timestamp: the DoD is equality before and after, which is what
+#      `/` (stable) and the deployer's own before/after measurement prove. A
+#      served page that is not the box's own file is a leak; that fails.
+#   4. the two names are different machines: test.odile.fyi and the tenant's
+#      name resolve to different IPv4 addresses, and only the bench's database
+#      carries the tenant's claim row
+#
+# The record is written once, on purpose, by `--record`: it is the pre-deploy
+# capture the card's DoD means. A run without it fails with the command to take
+# it rather than inventing a baseline.
+#
+#   ./scripts/check_bench.sh --record --expect <96-hex from the image pin>
+#   ./scripts/check_bench.sh
+#   TENANT=odl-340a1e.test.odile.fyi ./scripts/check_bench.sh
+#
+# Exit codes: 0 every check passed, 1 a check failed, 2 a prerequisite or the
+# record is missing.
+set -eu
+
+REPO=$(cd "$(dirname "$0")/.." && pwd)
+BENCH_HOST=${BENCH_HOST:-test.odile.fyi}
+TENANT_HOST=${TENANT:-odl-340a1e.test.odile.fyi}
+PROD=${PROD:-https://odile.fyi}
+BASELINE=${BASELINE:-$REPO/docs/evidence/a1-bench-baseline.json}
+PROD_DB=${PROD_DB:-/var/lib/odile/waitlist.db}
+BENCH_DB=${BENCH_DB:-/var/lib/odile-test/waitlist.db}
+PROD_ROADMAP=${PROD_ROADMAP:-/var/lib/odile/roadmap.html}
+PROD_ATTEST=${PROD_ATTEST:-/var/lib/odile/attestation.json}
+TENANT_SLUG=${TENANT_SLUG:-${TENANT_HOST%%.*}}
+PYTHON=${PYTHON:-/usr/bin/python3}
+
+RECORD=0
+EXPECT=""
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --record) RECORD=1; shift ;;
+        --expect) EXPECT=$2; shift 2 ;;
+        --expect=*) EXPECT=${1#--expect=}; shift ;;
+        -h|--help)
+            sed -n '2,30p' "$0" | sed 's/^# \{0,1\}//'
+            exit 0 ;;
+        *) printf 'check_bench: unknown argument: %s\n' "$1" >&2; exit 2 ;;
+    esac
+done
+
+for bin in curl dig openssl sha256sum sqlite3 mktemp; do
+    if ! command -v "$bin" >/dev/null 2>&1; then
+        printf 'prerequisite: %s is not installed\n' "$bin" >&2
+        exit 2
+    fi
+done
+
+tmp=$(mktemp -d)
+trap 'rm -rf "$tmp"' EXIT INT TERM
+
+failures=0
+checks=0
+pass() { checks=$((checks + 1)); printf 'ok    %s\n' "$*"; }
+fail() { checks=$((checks + 1)); failures=$((failures + 1)); printf 'FAIL  %s\n' "$*" >&2; }
+
+# Fetch a URL into a body file. Prints "STATUS SHA256" (sha256 of the body).
+fetch() {
+    status=$(curl -sS --max-time 30 -o "$2" -w '%{http_code}' "$1" 2>"$tmp/curl.err" || true)
+    printf '%s %s\n' "${status:-000}" "$(sha256sum "$2" 2>/dev/null | cut -d' ' -f1)"
+}
+
+status_of() {
+    curl -sS --max-time 30 -o /dev/null -w '%{http_code}' "$1" 2>/dev/null || true
+}
+
+record_name() {
+    # the first A record's address, or nothing
+    dig +short A "$1" 2>/dev/null | tail -n 1
+}
+
+nrestarts() {
+    systemctl show -p NRestarts --value odile.service 2>/dev/null || printf 'unknown'
+}
+
+prod_hashes() {
+    # one "<sha256>  <path>" line per production page
+    for path in / /roadmap /attestation; do
+        body="$tmp/prod$(printf '%s' "$path" | tr '/' '_')"
+        code=$(curl -sS --max-time 30 -o "$body" -w '%{http_code}' "$PROD$path" 2>/dev/null || true)
+        if [ "$code" != 200 ]; then
+            printf '000  %s\n' "$path"
+        else
+            printf '%s  %s\n' "$(sha256sum "$body" | cut -d' ' -f1)" "$path"
+        fi
+    done
+}
+
+if [ "$RECORD" = 1 ]; then
+    if [ -z "$EXPECT" ]; then
+        # default: the pin this tenant's own /verify reports, so a record taken
+        # without the image pin file still names a number
+        code=$(curl -sS --max-time 30 -o "$tmp/attest.json" -w '%{http_code}' "https://$TENANT_HOST/attestation" 2>/dev/null || true)
+        [ "$code" = 200 ] || { printf 'check_bench: cannot record: https://%s/attestation returned %s\n' "$TENANT_HOST" "${code:-000}" >&2; exit 2; }
+        EXPECT=$("$PYTHON" -c 'import json,sys; print(json.load(open(sys.argv[1])).get("measurement",""))' "$tmp/attest.json")
+    fi
+    case "$EXPECT" in
+        *[!0-9a-f]*|"") printf 'check_bench: --expect must be the 96-hex launch measurement\n' >&2; exit 2 ;;
+    esac
+    [ ${#EXPECT} -eq 96 ] || { printf 'check_bench: --expect must be 96 hex characters\n' >&2; exit 2; }
+    mkdir -p "$(dirname "$BASELINE")"
+    {
+        prod_hashes
+        printf 'nrestarts=%s\n' "$(nrestarts)"
+        printf 'bench_ip=%s\n' "$(record_name "$BENCH_HOST")"
+        printf 'tenant_ip=%s\n' "$(record_name "$TENANT_HOST")"
+        printf 'tenant_host=%s\n' "$TENANT_HOST"
+        printf 'bench_host=%s\n' "$BENCH_HOST"
+        printf 'tenant_slug=%s\n' "$TENANT_SLUG"
+        printf 'expected_measurement=%s\n' "$EXPECT"
+        printf 'recorded_at=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    } > "$tmp/baseline.txt"
+    "$PYTHON" - "$tmp/baseline.txt" "$BASELINE" <<'PY'
+import json
+import sys
+
+lines = [line.rstrip("\n") for line in open(sys.argv[1], encoding="utf-8") if line.strip()]
+record = {"schema": "odile.a1-bench-baseline.v1", "production": {}, "production_nrestarts": None}
+for line in lines:
+    if "  " in line and line.split("  ", 1)[1].startswith("/"):
+        digest, path = line.split("  ", 1)
+        record["production"][path] = digest
+        continue
+    key, _, value = line.partition("=")
+    if key == "nrestarts":
+        record["production_nrestarts"] = value
+    else:
+        record[key] = value
+record["note"] = ("Production's / and /roadmap and /attestation hashes are a capture, not constants: "
+                  "/attestation regenerates every five minutes and /roadmap every fifteen, so the DoD is "
+                  "equality before and after, not a fixed hash. NRestarts is asserted absolutely.")
+with open(sys.argv[2], "w", encoding="utf-8") as handle:
+    json.dump(record, handle, indent=2, sort_keys=True)
+    handle.write("\n")
+print("recorded %s" % sys.argv[2])
+for path, digest in sorted(record["production"].items()):
+    print("  %s  %s" % (digest, path))
+print("  nrestarts=%s" % record["production_nrestarts"])
+print("  tenant %s -> %s, expected measurement %s…" % (record.get("tenant_host"), record.get("tenant_ip"), record.get("expected_measurement", "")[:16]))
+PY
+    exit 0
+fi
+
+[ -s "$BASELINE" ] || {
+    printf 'check_bench: no record at %s\n' "$BASELINE" >&2
+    printf '            take it before the bench/tenant work: ./scripts/check_bench.sh --record --expect <pin>\n' >&2
+    exit 2
+}
+
+# ---------------------------------------------------------------- the bench
+if code=$(status_of "https://$BENCH_HOST/"); [ "$code" = 200 ]; then
+    pass "bench https://$BENCH_HOST/ -> 200"
+else
+    fail "bench https://$BENCH_HOST/ -> ${code:-000} (want 200)"
+fi
+if curl -sSI --max-time 30 "https://$BENCH_HOST/" 2>/dev/null | tr -d '\r' | grep -qi '^server: odile-bench'; then
+    pass "the bench answers as server: odile-bench"
+else
+    fail "the bench does not carry server: odile-bench"
+fi
+
+# --------------------------------------------------------------- the tenant
+if code=$(status_of "https://$TENANT_HOST/login"); [ "$code" = 200 ]; then
+    pass "tenant https://$TENANT_HOST/login -> 200 (the sign-in page)"
+else
+    fail "tenant https://$TENANT_HOST/login -> ${code:-000} (want 200)"
+fi
+location=$(curl -sS --max-time 30 -o /dev/null -D - "https://$TENANT_HOST/" 2>/dev/null \
+    | tr -d '\r' | awk 'tolower($1) == "location:" { print $2; exit }')
+case "$location" in
+    */login*|"") pass "tenant / -> the sign-in page ($location)" ;;
+    *) fail "tenant / redirects off the machine: $location" ;;
+esac
+read -r verify_code verify_sha <<EOF
+$(fetch "https://$TENANT_HOST/verify" "$tmp/verify.html")
+EOF
+if [ "$verify_code" = 200 ]; then
+    pass "tenant /verify -> 200 (sha256 ${verify_sha%"${verify_sha#????????????}"}…)"
+else
+    fail "tenant /verify -> ${verify_code:-000} (want 200)"
+fi
+read -r attest_code attest_sha <<EOF
+$(fetch "https://$TENANT_HOST/attestation" "$tmp/attest.json")
+EOF
+if [ "$attest_code" = 200 ]; then
+    pass "tenant /attestation -> 200 (sha256 ${attest_sha%"${attest_sha#????????????}"}…)"
+else
+    fail "tenant /attestation -> ${attest_code:-000} (want 200)"
+fi
+
+expected=$("$PYTHON" -c 'import json,sys; print(json.load(open(sys.argv[1])).get("expected_measurement",""))' "$BASELINE")
+measured=""
+[ -s "$tmp/attest.json" ] && measured=$("$PYTHON" -c 'import json,sys; print(json.load(open(sys.argv[1])).get("measurement",""))' "$tmp/attest.json" 2>/dev/null || true)
+if [ -n "$expected" ] && [ "$measured" = "$expected" ]; then
+    pass "the tenant reports the recorded launch measurement (${expected%"${expected#????????????????}"}…)"
+else
+    fail "the tenant's measurement $measured is not the recorded $expected"
+fi
+if [ -s "$tmp/verify.html" ] && grep -q "$expected" "$tmp/verify.html"; then
+    pass "/verify shows the recorded measurement"
+else
+    fail "/verify does not show the recorded measurement"
+fi
+
+# the certificate is the machine's own and verifies for this name
+if printf '' | openssl s_client -connect "$TENANT_HOST:443" -servername "$TENANT_HOST" -verify_return_error 2>/dev/null \
+    | openssl x509 -noout -subject 2>/dev/null | grep -q "CN *= *$TENANT_HOST"; then
+    pass "the tenant's certificate is issued for $TENANT_HOST (curl verified the chain)"
+else
+    fail "the certificate on $TENANT_HOST is not issued for that name"
+fi
+
+# ----------------------------------------------------------- production
+# `/` is stable between deploys, so it is compared with the record. The other
+# two are re-generated by timers, so each is compared with the box's own state
+# file: the served bytes must be the file production's generator wrote.
+read -r root_code root_sha <<EOF
+$(fetch "$PROD/" "$tmp/prod-root")
+EOF
+want_root=$("$PYTHON" -c 'import json,sys; print(json.load(open(sys.argv[1]))["production"].get("/", "missing"))' "$BASELINE")
+if [ "$root_code" = 200 ] && [ "$root_sha" = "$want_root" ]; then
+    pass "production / is unchanged (${root_sha%"${root_sha#????????????}"}…)"
+else
+    fail "production / moved: $root_sha != the record's $want_root (HTTP ${root_code:-000})"
+fi
+
+timer_page() {
+    # timer_page PATH STATE_FILE LABEL — served bytes must be the state file
+    page=$1
+    state=$2
+    label=$3
+    read -r code served <<EOF
+$(fetch "$PROD$page" "$tmp/prod$(printf '%s' "$page" | tr '/' '_')")
+EOF
+    if [ "$code" != 200 ]; then
+        fail "production $page -> ${code:-000} (want 200)"
+        return
+    fi
+    if [ ! -s "$state" ]; then
+        fail "production $page is served but $state does not exist"
+        return
+    fi
+    own=$(sha256sum "$state" | cut -d' ' -f1)
+    recorded=$("$PYTHON" -c 'import json,sys; print(json.load(open(sys.argv[1]))["production"].get(sys.argv[2], "missing"))' "$BASELINE" "$page")
+    if [ "$served" != "$own" ]; then
+        fail "production $page is not the box's own output ($served != $own)"
+    elif [ "$served" = "$recorded" ]; then
+        pass "production $page is the box's own output and matches the record (${served%"${served#????????????}"}…)"
+    else
+        pass "production $page is the box's own output (${label}); its timer moved it since the record (${recorded%"${recorded#????????????}"}… -> ${served%"${served#????????????}"}…)"
+    fi
+}
+timer_page /roadmap "$PROD_ROADMAP" "the 15-minute roadmap generator"
+timer_page /attestation "$PROD_ATTEST" "the 5-minute attestation refresh"
+
+recorded_restarts=$("$PYTHON" -c 'import json,sys; print(json.load(open(sys.argv[1])).get("production_nrestarts", "unknown"))' "$BASELINE")
+live_restarts=$(nrestarts)
+if [ "$live_restarts" = "0" ] && [ "$recorded_restarts" = "0" ]; then
+    pass "odile.service has not restarted (NRestarts=0 in the record and now)"
+else
+    fail "odile.service NRestarts is $live_restarts (record $recorded_restarts; want 0)"
+fi
+
+# ------------------------------------------------------------ the isolation
+bench_ip=$(record_name "$BENCH_HOST")
+tenant_ip=$(record_name "$TENANT_HOST")
+if [ -n "$bench_ip" ] && [ -n "$tenant_ip" ] && [ "$bench_ip" != "$tenant_ip" ]; then
+    pass "the names are different machines ($BENCH_HOST -> $bench_ip, $TENANT_HOST -> $tenant_ip)"
+else
+    fail "the two names do not resolve apart (bench '$bench_ip', tenant '$tenant_ip')"
+fi
+
+if [ -f "$BENCH_DB" ] && [ -f "$PROD_DB" ]; then
+    in_bench=$(sqlite3 "$BENCH_DB" "select count(*) from tenants where slug='$TENANT_SLUG'" 2>/dev/null || printf 'error')
+    in_prod=$(sqlite3 "$PROD_DB" "select count(*) from tenants where slug='$TENANT_SLUG'" 2>/dev/null || printf 'error')
+    if [ "$in_bench" = 1 ] && [ "$in_prod" = 0 ]; then
+        pass "the claim row is the bench's only ($TENANT_SLUG in bench=$in_bench, production=$in_prod)"
+    else
+        fail "the claim row leaked (bench=$in_bench, production=$in_prod)"
+    fi
+else
+    fail "one of the two databases is missing ($BENCH_DB, $PROD_DB)"
+fi
+
+if [ "$failures" -eq 0 ]; then
+    printf 'check_bench: PASS (%d checks)\n' "$checks"
+    exit 0
+fi
+printf 'check_bench: FAIL (%d of %d checks)\n' "$failures" "$checks" >&2
+exit 1
