@@ -44,9 +44,10 @@ On a bench, point it at a mounted machine root and the dump the audit uses:
         --luks-dump /tmp/luks.txt --now 2026-11-13T12:00:00Z
 
 `--now` pins the provenance line. Nothing is written except `--out`, which is
-atomic and 0644. `--serve` answers `/` with the page, `/health` with `ok` and
-everything else with 404, `Cache-Control: no-store`; it holds no state and runs
-no timer. On a guest the `odile-verify.service` unit runs it as root because
+atomic and 0644. `--serve` answers `/`, `/verify` and `/verify/` with the
+page (Caddy proxies the last two), `/health` with `ok` and everything else
+with 404, `Cache-Control: no-store`; it holds no state and runs no timer. On a
+guest the `odile-verify.service` unit runs it as root because
 the handoff audit reads `/etc/shadow` and sshd's journal, and it binds loopback
 on 127.0.0.1:8098: Caddy is the public listener at `/verify`.
 """

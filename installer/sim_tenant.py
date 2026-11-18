@@ -339,6 +339,21 @@ def assert_login(module, root: Path, user: str, port: int) -> None:
     expect("the gate has the 302/401/200 shape",
            module.gate_ok(int(html.split()[0]), int(api.split()[0]), int(session.split()[0])),
            f"{html}/{api}/{session}")
+    # The FQDN above is accepted because the written config declares it in
+    # webapp.public_url, the key the Webapp listener reads to set its own
+    # listener_public_url (t_d95b8c13). dashboard.public_url names the same
+    # host but is not the Webapp's fallback: measured 2026-11-15, it alone
+    # answers 400. Both blocks name the simulation's public host here.
+    config = layout.hermes_home / "config.yaml"
+    text = config.read_text(encoding="utf-8") if config.is_file() else ""
+    _, blocks = module.split_blocks(text)
+    flat = {key: [module.setting_line(line).strip() for line in module.settings(lines)]
+            for key, lines in blocks.items()}
+    wanted = f"public_url: {layout.webapp_public_url}"
+    expect("the config declares the public host the Webapp reads",
+           wanted in flat.get("webapp", []) and wanted in flat.get("dashboard", []),
+           f"webapp {layout.webapp_public_url} · dashboard "
+           + ("yes" if wanted in flat.get("dashboard", []) else "no"))
 
 
 def assert_export_program(root: Path) -> None:

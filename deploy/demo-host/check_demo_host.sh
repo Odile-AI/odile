@@ -101,7 +101,7 @@ if [ "$MODE" = tenant ]; then
     # transient; only a 401 (the password) is fatal. The restart leg closes
     # this socket on purpose, and the run's own log file is its record.
     VERDICT=$(python3 - "$CONSOLE" "$PW_FILE" "$0" "$LOGIN_SHA" \
-        "$REPO/scripts/backup.py" "$BACKUP_SHA" <<'PY'
+        "$REPO/scripts/backup.py" "$BACKUP_SHA" "$DEMO_USER" "$DEMO_HOME" <<'PY'
 import json
 import os
 import sqlite3
@@ -109,6 +109,7 @@ import sys
 import time
 
 console_path, password_path, script_path, login_sha, backup_path, backup_sha = sys.argv[1:7]
+console_user, console_home = sys.argv[7:9]
 sys.path.insert(0, os.path.dirname(os.path.abspath(console_path)))
 import tenant_console  # noqa: E402
 
@@ -127,6 +128,25 @@ REMOTE_FILES = ("odile-check-demo-host.sh odile-check-demo-host.pass"
 DEADLINE = time.monotonic() + 2400
 #: The wait between sign-in attempts while the gateway restarts.
 RETRY = 5.0
+#: Every console session this driver opened, in order. `Console` leaves the
+#: session to its caller — t_addab701 fixes the CLI's own lifecycle, not this
+#: class — and the restart leg forces a reconnect, so one run can open two.
+CONSOLES: list[str] = []
+
+
+def tracked(console):
+    """Record every session this console opens (its `shell.exec` row)."""
+    open_session = console.open_session
+
+    def remember() -> str:
+        session_id = open_session()
+        if session_id and session_id not in CONSOLES:
+            CONSOLES.append(session_id)
+            print(f"console      session {session_id}")
+        return session_id
+
+    console.open_session = remember
+    return console
 
 
 def connect():
@@ -138,7 +158,7 @@ def connect():
     """
     while True:
         try:
-            return tenant_console.connect_any("judge", password)
+            return tracked(tenant_console.connect_any("judge", password))
         except (tenant_console.ConsoleError, OSError) as exc:
             text = str(exc)
             if "401" in text or time.monotonic() >= DEADLINE:
@@ -150,21 +170,45 @@ def connect():
 
 
 def cleanup(client):
-    """Remove this run's three /run files, best effort.
+    """Remove this run's /run files and the console sessions it opened.
 
     The .pass is the judge password and the .log is the run's transcript; a
-    run whose gateway died leaves them only until the next one. Cleanup never
-    masks the verdict.
+    run whose gateway died leaves them only until the next one. The console's
+    own `shell.exec` session is a row on the machine as surely as a judge's is:
+    t_addab701 owns the CLI's lifecycle, but `Console` leaves every session to
+    its caller, so this driver deletes the ids it opened — by id, with the
+    tenant's own CLI — and proves each with the machine's own report. Measured
+    2026-11-17: deleting a live console's own row answers `Deleted session`,
+    the socket keeps answering, and `--report --session-id` says exists:false.
+    Cleanup never masks the verdict.
     """
     try:
         client.run(f"cd /run && sudo rm -f {REMOTE_FILES}", check=False)
-        return
     except (tenant_console.ConsoleError, OSError):
-        pass
-    try:
-        connect().run(f"cd /run && sudo rm -f {REMOTE_FILES}", check=False)
-    except SystemExit:
-        pass
+        try:
+            client = connect()
+            client.run(f"cd /run && sudo rm -f {REMOTE_FILES}", check=False)
+        except (tenant_console.ConsoleError, OSError, SystemExit):
+            return
+    for session_id in list(CONSOLES):
+        try:
+            deleted = client.run(
+                f"sudo -u {console_user} env HOME={console_home}"
+                f" HERMES_HOME={console_home}/.hermes"
+                f" {console_home}/.hermes/hermes-agent/hermes"
+                f" sessions delete --yes {session_id}", check=False)
+            print(f"cleanup      console session {session_id[:20]}…: "
+                  f"{(deleted.get('stdout') or deleted.get('stderr') or '').strip()[:80]}")
+            report = client.run(
+                "sudo /usr/bin/python3 /usr/local/lib/odile-demo-public"
+                f"/apply_demo_public.py --report --session-id {session_id}",
+                check=False)
+            row = json.loads((report.get("stdout") or "").strip() or "{}")
+            print(f"cleanup      console session {session_id[:20]}… "
+                  f"exists:{str(row.get('exists')).lower()}")
+        except (tenant_console.ConsoleError, OSError, ValueError) as error:
+            print(f"cleanup      console session {session_id[:20]}… -> {error}")
+    print(f"cleanup      console sessions this run opened: {len(CONSOLES)}")
 
 
 client = connect()
@@ -545,7 +589,77 @@ fi
 ENV_PATH=$DEMO_HOME/.hermes/.env
 CONFIG_PATH=$DEMO_HOME/.hermes/config.yaml
 LIB=/usr/local/lib/odile-demo-public
+STATE_DB=$DEMO_HOME/.hermes/state.db
+CHECK_PROMPT='Reply with exactly: ok'
 demo_env() { sed -n "s/^$1=//p" "$ENV_PATH" | head -n 1; }
+
+# The session this check mints is a row in the judge's sidebar as surely as a
+# judge's own is. The socket leg creates it, and step 11 restarts odile-agent,
+# which reaps it as a startup orphan; measured 2026-11-16, one row per run and
+# ~20 of them on the live machine (Savio). These three functions are the
+# lifecycle: count the rows that carry this check's prompt, delete one by id
+# with the tenant's own CLI, and prove the delete with the machine's own
+# report. Existence is never read from `/api/sessions` — that endpoint is a
+# 20-row window (t_ee5aac66).
+SESSION_ID=""
+SESSION_CLEANED=0
+
+# The store's own count of rows whose first user message is the check prompt.
+# Read-only (`mode=ro`): a check never writes a row.
+count_check_prompt_rows() {
+    /usr/bin/python3 - "$STATE_DB" "$CHECK_PROMPT" <<'PY'
+import sqlite3
+import sys
+
+con = sqlite3.connect("file:" + sys.argv[1] + "?mode=ro", uri=True)
+try:
+    print(con.execute(
+        "SELECT count(*) FROM sessions s WHERE (SELECT content FROM messages m"
+        " WHERE m.session_id = s.id AND m.role = 'user'"
+        " ORDER BY m.display_order, m.id LIMIT 1) = ?", (sys.argv[2],)).fetchone()[0])
+finally:
+    con.close()
+PY
+}
+
+# The owner path the runbook documents for a row whose Delete a judge cannot
+# take (§4): the tenant's own CLI, as the machine's owner.
+delete_check_session() { # id
+    sudo -u "$DEMO_USER" env HOME="$DEMO_HOME" HERMES_HOME="$DEMO_HOME/.hermes" \
+        "$DEMO_HOME/.hermes/hermes-agent/hermes" sessions delete --yes "$1"
+}
+
+# Delete the id this check minted and prove it with `--report --session-id`.
+# `quiet` is the EXIT trap's form: it must not move PASS/FAIL after the
+# verdict line has been printed.
+cleanup_check_session() { # id [quiet]
+    local session_id=$1 output
+    if ! output=$(delete_check_session "$session_id" 2>&1); then
+        [ "${2:-}" = quiet ] || bad "hermes sessions delete --yes $session_id -> ${output:-no output}"
+        return 1
+    fi
+    SESSION_CLEANED=1
+    if output=$(/usr/bin/python3 "$LIB/apply_demo_public.py" \
+            --report --session-id "$session_id" 2>&1) \
+            && printf '%s' "$output" | grep -Eq '"exists"[[:space:]]*:[[:space:]]*false'; then
+        [ "${2:-}" = quiet ] || ok "the session this check minted is gone: $session_id (report exists:false)"
+        return 0
+    fi
+    [ "${2:-}" = quiet ] || bad "the session this check minted still exists: ${output:-no report}"
+    return 1
+}
+
+# The failure path: a run that dies between `session.create` and the cleanup
+# still deletes the row it minted (the id is parsed from the transcript the
+# socket leg printed before it died).
+# shellcheck disable=SC2329  # invoked by the EXIT trap
+cleanup_on_exit() {
+    rm -f "${JAR:-}"
+    if [ -n "${SESSION_ID:-}" ] && [ "${SESSION_CLEANED:-0}" != 1 ]; then
+        cleanup_check_session "$SESSION_ID" quiet >/dev/null 2>&1 || true
+    fi
+}
+
 
 # 1. The account and its home. There is one OS user on this machine: the
 # machine's owner, and the judge's Webapp shell runs as it (ODL-503 §3).
@@ -1173,7 +1287,7 @@ expect "GET $MACHINE_URL/manifest" "200" \
 
 DEMO_USERNAME=$(demo_env HERMES_DASHBOARD_BASIC_AUTH_USERNAME)
 JAR=$(mktemp)
-trap 'rm -f "$JAR"' EXIT
+trap cleanup_on_exit EXIT
 # No wrong-password attempt here, unlike the HQ script. Measured 2026-11-14:
 # one bad sign-in answers 401 and then rate-limits the route (`429 Too many
 # login attempts`) for about a minute, so a check that spent one would leave
@@ -1193,6 +1307,18 @@ else
     bad "the 200 body is not the Hermes Webapp shell (root marker: $(grep -c 'id="root"' "$SHELL_BODY"), title: $(grep -c '<title>Hermes</title>' "$SHELL_BODY"))"
 fi
 rm -f "$SHELL_BODY"
+
+# The fence this leg is measured by: one full run leaves no row whose first
+# user message is the check prompt. The before-count is the store's own, taken
+# before the socket mints a row.
+echo "== the session this check mints"
+SESSION_BEFORE="?"
+if [ -f "$STATE_DB" ]; then
+    SESSION_BEFORE=$(count_check_prompt_rows)
+else
+    bad "$STATE_DB is missing; the check-prompt rows cannot be counted"
+fi
+note "check-prompt rows before this run: $SESSION_BEFORE"
 
 # The Webapp's socket is the same-origin /api/ws. A gated Webapp refuses the
 # cookie alone: the SPA mints a 30 s single-use ticket (/api/auth/ws-ticket)
@@ -1333,7 +1459,7 @@ try:
             send_request(tls, 2, "session.create", {"source": "gui", "profile": "default"})
             response, buf = wait_for(tls, buf, want_id=2, timeout=60)
             session_id = ((response or {}).get("result") or {}).get("session_id", "")
-            print(f"session: {session_id[:24]}…")
+            print(f"session: {session_id}")
             if not session_id:
                 print(f"chat: session.create -> {json.dumps(response)[:300]}")
                 raise SystemExit(0)
@@ -1391,6 +1517,29 @@ except (OSError, ValueError) as exc:
     print(f"status: error: {exc}")
 PY
 )
+
+# The socket leg minted a session and Hermes keeps its row. Delete it here, by
+# id, on every path — the transcript above carries the id even when the turn
+# failed (`session.create` prints it before the chat) — and prove the delete
+# with the machine's own report. This sits before step 9 and the restart so a
+# cleanup failure is in the transcript next to the leg that caused it, and
+# before step 11 so the restart cannot orphan the row first.
+SESSION_ID=$(printf '%s\n' "$WS" | sed -n 's/^session: //p' | head -n 1)
+if [ -n "$SESSION_ID" ]; then
+    cleanup_check_session "$SESSION_ID"
+else
+    note "the socket leg minted no session (nothing to delete)"
+fi
+SESSION_AFTER="?"
+if [ -f "$STATE_DB" ]; then
+    SESSION_AFTER=$(count_check_prompt_rows)
+fi
+note "check-prompt rows after this run: $SESSION_AFTER"
+expect "the run leaves the check-prompt row count where it found it" \
+    "$SESSION_BEFORE" "$SESSION_AFTER"
+expect "no row whose first user message is the check prompt is left" \
+    "0" "$SESSION_AFTER"
+
 case "$WS" in
     *"101"*) ok "GET /api/ws with a minted ticket -> 101 Switching Protocols" ;;
     *) bad "GET /api/ws with a minted ticket -> $WS" ;;

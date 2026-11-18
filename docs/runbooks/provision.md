@@ -371,6 +371,12 @@ three append-only events (`invited`, `claimed`, `provisioning`). The two state
 words differ because the web row says "a machine was ordered" and the state
 machine says "waiting for the ceremony"; both are true at once.
 
+The boot record the machine posts after its first boot (`odilectl boot-record`
+is the operator's repair path) adds `detail.boot_key`, `detail.boot_release`
+and `detail.recorded_at` — the stamp of the **first** record, kept against
+every replay like `installed_at`. Liveness is `tenant_state.last_heartbeat`,
+never this field.
+
 ```
 $ /usr/bin/python3 manage.py funnel
 signups                2
@@ -412,10 +418,19 @@ the state machine. The first boot encrypts the disk (the provider then reports
 An active machine is destroyed with `POST ?action=terminate&id=31a63bbb` (no
 refund for the days left, address released, `404` within a minute), or
 `odilectl destroy odl-7971a8 --apply` once `/root/.odile/config.yaml` exists. A
-pre-order cannot be terminated — it is final. `destroy` does not move the state
-row yet (ODL-218): until then, call `odilectl.state.StateStore.destroy(slug)`
-after the terminate, and keep the web row as history. Re-provisioning is a new
-slug and a new order; addresses do not survive.
+pre-order cannot be terminated — it is final. `destroy` moves the state row to
+`destroyed` and deletes the A record; it does **not** replace the tenant, so the
+web row keeps naming the last machine until the rebuild. Re-provisioning is the
+**same slug** and a new order (ADR-007): `odilectl provision <slug> --key
+<user.pub> --pin odile-verify.pin [--backup-password-file
+<the user's old odile-recovery-<slug>.txt>] --apply` reopens the row
+(`destroyed -> claimed`), orders the machine, points the web row at its
+`server_id` and moves the state row to `first_boot`, so the new machine's first
+boot records itself. The URL, the recovery file's name and the
+`tenants/<slug>` repository keep their names; the address does not survive —
+re-create the A record for the same slug (`docs/runbooks/offboard.md` §5).
+`claim._advance_state_provisioned` (`claim.py`) already took the same
+`provisioning -> first_boot` step after an order; this path now does too.
 
 ## 10. What this page does not prove
 

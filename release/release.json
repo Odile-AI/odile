@@ -1,8 +1,8 @@
 {
   "artifacts": {
     "installer": {
-      "sha256": "03fca7c3a01dcfbc682ddad073df30592fbbf97a8575ba3a715956fa5fc9364e",
-      "size": 1478098,
+      "sha256": "8ee68841e0abab67136efcf573e41713389030f1418a55af34058a7991a19c4b",
+      "size": 1482018,
       "url": "odile_install.py"
     },
     "skills": {
@@ -14,14 +14,14 @@
   "boot": {
     "kernel": "6.12.115+deb13.1-amd64"
   },
-  "generated_at": "2026-11-17T19:30:00Z",
+  "generated_at": "2026-11-18T18:30:00Z",
   "manifest": {
-    "sha256": "6139cc7f694ade3d087ef2b4e5a2a13c3ae3d726180058a77b4d0d1f907ab19b",
+    "sha256": "cee5dda59cb0c972a6d381f4de9f98d1b6ad944ab7aa7305676e29880d342eb0",
     "signature_url": "manifest.json.sig",
     "url": "manifest.json"
   },
-  "notes": "t_4fcd465f (ODL-236 follow-up): the guest's /verify is now the reviewed page program, not the first-visit service's access-report render. The installer embeds verify/verify.py and templates/verify.html (pinned; --self-test fails on a one-byte edit), places them at /usr/local/lib/odile/verify.{py,html}, writes odile-verify.service as root on 127.0.0.1:8098, and splices one no-store /verify route to it; the first-visit service keeps only /first-visit* and the five icon paths. The page adds CLAIMS \u00a74.4's seal-policy and sign-in-hash rows and carries the two brand-review fixes (26% provenance column, 32 px foot). The demo layer injects its lede and --expect command into the new template's one tenant block; its Caddy block proxies /verify to 8098. release/manifest.json is -9's fresh-root document with only installer_sha256 re-derived by tools/recut_release.py, so this is a surgical re-cut, not a root rebuild. The id is 2026.11.17-1: later than the live 2026.11.15-9 by generated_at. It is committed, not deployed.",
+  "notes": "t_4fcd465f (ODL-236 follow-up) at the head that merges main's 2026.11.16-1; it carries both signed changes. (1) This card: the guest's /verify is the reviewed page program, not the first-visit service's access-report render. The installer embeds verify/verify.py and templates/verify.html (pinned; --self-test fails on a one-byte edit), places them at /usr/local/lib/odile/verify.{py,html}, writes odile-verify.service as root on 127.0.0.1:8098, and splices one no-store /verify route to it; the first-visit service keeps only /first-visit* and the five icon paths. The page adds CLAIMS \u00a74.4's seal-policy and sign-in-hash rows and carries the two brand-review fixes (26% provenance column, 32 px foot). The demo layer injects its lede and --expect command into the new template's one tenant block; its Caddy block proxies /verify to 8098. (2) main's 2026.11.16-1: t_2efbd6e3's EXPORT_PROGRAM embed (/usr/local/bin/odile-export, pinned by installer/embed_export.py) and t_d95b8c13's tenant-template public-host comment plus ensure_systemd_services restarting odile-agent when any file the gateway reads changed. release/manifest.json is -9's fresh-root document with only installer_sha256 re-derived by tools/recut_release.py, so this is a surgical re-cut, not a root rebuild. The id is 2026.11.18-1: later than every cut by generated_at (main's 2026.11.16-1 at 2026-11-16T01:40:00Z and this card's pre-merge 2026.11.17-1 at 2026-11-17T19:30:00Z). It is committed, not deployed: measured 2026-11-18T18:15Z the release URL still served 2026.11.15-9 (installer 2cdf0801\u2026, 1,424,179 bytes; release.json 5bee6fd3\u2026).",
   "product": "odile",
-  "release": "2026.11.17-1",
+  "release": "2026.11.18-1",
   "schema": 1
 }

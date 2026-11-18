@@ -40,13 +40,14 @@ The token is read at run time — ``dns_token`` in the 0600 config, or the file
 Config keys this file reads (all optional): ``dns_token``, ``dns_token_file``,
 ``dns_zone``, ``dns_zone_id``.
 
-    python3 -m odilectl.dns create odl-7f3a2c --ip 203.0.113.120 --apply
-    python3 -m odilectl.dns settle odl-7f3a2c --apply
-    python3 -m odilectl.dns delete odl-7f3a2c --apply
+    odilectl dns create odl-7f3a2c --ip 203.0.113.120 --apply
+    odilectl dns settle odl-7f3a2c --apply
+    odilectl dns delete odl-7f3a2c --apply
 
 The module follows the command-module protocol (``NAME``, ``HELP``,
-``EXAMPLE``, ``add_arguments``, ``run``) so ``cli.py`` can register it with one
-line; until then ``python3 -m odilectl.dns`` is the entry point.
+``EXAMPLE``, ``add_arguments``, ``run``): ``cli.py`` registers it in
+``MODULES``, and ``python3 -m odilectl.dns`` stays an entry point for scripts
+that already call it.
 """
 
 from __future__ import annotations

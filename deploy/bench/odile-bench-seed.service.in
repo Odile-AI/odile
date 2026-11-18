@@ -1,0 +1,34 @@
+[Unit]
+Description=Odile test bench seed service (test.odile.fyi/seed, ODL-339)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=odile
+Group=odile
+WorkingDirectory={{ROOT}}/current
+StateDirectory={{STATE_NAME}}
+StateDirectoryMode=0700
+EnvironmentFile={{ETC}}/bench.env
+Environment=PYTHONUNBUFFERED=1
+# The bench signs with the same seed key as production so a test tenant's
+# installer verifies, but it loads the key and its own config through
+# LoadCredential — neither file is copied into the release or into git.
+LoadCredential=seed-config:{{CONFIG}}
+LoadCredential=seed-key:{{SEED_KEY}}
+ExecStart=/usr/bin/python3 {{ROOT}}/current/seed/seed.py serve
+Restart=always
+RestartSec=2
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=yes
+LockPersonality=yes
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

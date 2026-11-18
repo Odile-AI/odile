@@ -27,10 +27,12 @@ from typing import Callable, Sequence, TextIO
 from . import (
     bootrecord,
     destroy,
+    dns,
     export,
     health,
     invite,
     provision,
+    purge,
     reconcile,
     restore,
     rotate_token,
@@ -51,12 +53,14 @@ MODULES = (
     status,
     health,
     destroy,
+    purge,
     rotate_token,
     reconcile,
     restore,
     support,
     export,
     bootrecord,
+    dns,
 )
 BY_NAME = {module.NAME: module for module in MODULES}
 
@@ -112,7 +116,8 @@ def _epilog() -> str:
         "Every command accepts --dry-run and --json, before or after the command.\n"
         "Mutating commands change nothing unless --apply is passed; --dry-run wins.\n"
         f"Config: {DEFAULT_CONFIG_PATH} (0600), or --config PATH / ${ENV_CONFIG_PATH}.\n"
-        "Exit codes: 0 ok, 2 usage, 3 not wired yet, 4 provider, 5 config."
+        "Exit codes: 0 ok, 2 usage, 3 not wired yet, 4 provider (or a repository "
+        "restic cannot open, `purge`), 5 config."
     )
 
 

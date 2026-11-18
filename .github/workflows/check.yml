@@ -14,8 +14,8 @@
 #
 # This file is a shipped path in the repository, and the repository is the
 # source of truth: the copy these five jobs run is the one in the tree at the
-# pushed head. An edit made here reaches it as an ordinary commit on `main` —
-# never a merge, never a replacement root.
+# pushed head. An edit made here reaches it as an ordinary commit on `main` or
+# on a card branch that is merged; never as a replacement root.
 #
 # The roadmap check is not a job. tools/roadmap_page.py and docs/backlog.yaml
 # are private, so a runner on the public tree cannot render the page; the check
@@ -306,23 +306,23 @@ jobs:
           test "$scanned" -eq "$expected"
           echo "scanned ${scanned} commits; matches git rev-list --count --all"
       # The repository is the source of truth: one root, cut once from `main`
-      # `65e2764` (`24ee323`), and every commit after it is an ordinary commit
-      # on top. On a push to main that shape is the assertion — exactly one
-      # root, no merges, and the head is the pushed sha. A second root or a
-      # merge is a red run; a new ordinary commit is not. (A pull request is a
-      # branch, so its own commits are what the scan above reads.)
+      # `65e2764` (`24ee323`), and every commit after it is ordinary work on
+      # top — a card's branch included, merged with --no-ff. On a push to main
+      # the assertion is the root count and the head: exactly one root and the
+      # head is the pushed sha. A second root or a stale head is a red run; a
+      # merge commit is not (ODL-910 retired the zero-merge rule). (A pull
+      # request is a branch, so its own commits are what the scan above reads.)
       - name: On a push to main, assert the history shape
         if: github.event_name == 'push'
         run: |
           set -euo pipefail
           # The first commit is a cut of the tree, and every commit after it is
-          # an ordinary commit on top. So: exactly one root, no merges, and the
-          # head is what was pushed.
+          # ordinary work on top. So: exactly one root, and the head is what was
+          # pushed. Merge commits are allowed: a card branch reaches main by a
+          # --no-ff merge, and the repository is the source of truth for both.
           roots=$(git rev-list --max-parents=0 origin/main | wc -l | tr -d ' ')
-          merges=$(git rev-list --merges origin/main | wc -l | tr -d ' ')
           count=$(git rev-list --count origin/main)
-          echo "commits=${count} roots=${roots} merges=${merges} head=$(git rev-parse --short origin/main)"
+          echo "commits=${count} roots=${roots} head=$(git rev-parse --short origin/main)"
           test "$roots" -eq 1
-          test "$merges" -eq 0
           test "$(git rev-parse origin/main)" = "${GITHUB_SHA}"
-          echo "one root, linear history, head is the pushed commit"
+          echo "one root, head is the pushed commit"
