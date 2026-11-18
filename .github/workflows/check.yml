@@ -204,12 +204,10 @@ jobs:
       # A PR that needs a new allowlist row (class, credential, reason and
       # expiry) therefore cannot grant it to itself; a maintainer lands the row
       # on main first. The second step still runs the tree's own scanner, so the
-      # pair catches both a weakened scanner and a widened allowlist. The forbid
-      # list holds the private literals themselves, so the source-of-truth
-      # repository does not carry it at its root — carrying it would publish what
-      # it forbids. Where the base has one (a built tree) this step installs it
-      # and the class runs; the tree's own step below names its own copy when it
-      # is present, and says so when it is absent. The job is read-only: it opens
+      # pair catches both a weakened scanner and a widened allowlist. The
+      # repository carries the deny list at its root, so this step installs the
+      # base's copy and the tree's own step below requires one (`test -f`): a
+      # list that is absent is exit 2, not a skip. The job is read-only: it opens
       # no PR and pushes nothing.
       - name: Gate the tree with the base branch's scanner, not the PR's
         env:
@@ -304,19 +302,64 @@ jobs:
           test -n "$scanned"
           test "$scanned" -eq "$expected"
           echo "scanned ${scanned} commits; matches git rev-list --count --all"
-      # The deny list over history. The job is scoped to the forbidden-value
-      # class (--forbid-only): the roots this repository replaced already
-      # published addresses and home paths, and a job about the deny list must
-      # not fail on a class its predecessor's history settled. Every blob in
+      # The deny list over history, run by the BASE branch's scanner with the
+      # BASE branch's allowlist and list. Same rule as publish-lint: the gate
+      # must not run the files it is gating. This step used to run the PR
+      # checkout's own scanner and allowlist, so a branch could add a literal in
+      # one commit and delete it
+      # in the next could waive its own history finding with one appended row —
+      # the "a commit that is later deleted" surface in
+      # docs/ops/LEAK-CONTROL.md, which is the case this job exists for. The
+      # workspace is ephemeral and the job pushes nothing, so copying the base
+      # files over the checkout changes no published byte; the PR's allowlist is
+      # restored afterwards.
+      #
+      # The class is scoped (--forbid-only): the roots this repository replaced
+      # already published addresses and home paths, and a job about the deny list
+      # must not fail on a class its predecessor's history settled. Every blob in
       # rev-list --all is read, so a literal in a commit that HEAD no longer
-      # carries is still a red run. The allowlist still applies: a row whose
-      # digest pins a value records an exception (the demo tenant's public ids,
-      # as debt with the card that clears them).
-      - name: Scan every blob for a private literal
+      # carries is still a red run. A base that predates the list has nothing to
+      # run, and the class landed together with the list, so that one base skips
+      # with a line — the same absent-list branch publish-lint takes.
+      - name: Gate every blob with the base branch's scanner, not the PR's
+        env:
+          BASE_REF: ${{ github.base_ref }}
+          EVENT_NAME: ${{ github.event_name }}
+          REF_NAME: ${{ github.ref_name }}
+          PUSH_BASE: ${{ github.event.before }}
         run: |
           set -euo pipefail
-          test -f leak-forbid.txt
-          /usr/bin/python3 tools/leak_scan.py --history --forbid-file leak-forbid.txt --forbid-only
+          if [ "$EVENT_NAME" = "pull_request" ]; then
+            # Full history is already here (fetch-depth 0), so the base is a
+            # plain fetch: a --depth=1 fetch would graft a shallow boundary
+            # onto this clone and quietly shorten rev-list --all.
+            git fetch --no-tags origin "$BASE_REF"
+            base_sha=$(git rev-parse FETCH_HEAD)
+          else
+            # A push: github.event.before is the commit this one lands on, and
+            # the checkout is the full history, so that commit is already
+            # present. A branch's first push has an all-zero before; fall back
+            # to HEAD's parent only then.
+            git fetch --no-tags origin "$REF_NAME"
+            base_sha="${PUSH_BASE:-}"
+            case "$base_sha" in
+              ""|0000000000000000000000000000000000000000)
+                base_sha=$(git rev-parse HEAD^ 2>/dev/null || git rev-parse HEAD) ;;
+            esac
+          fi
+          echo "base: ${EVENT_NAME} at $base_sha"
+          if ! git cat-file -e "$base_sha:leak-forbid.txt" 2>/dev/null; then
+            echo "forbid list: absent at base (the history deny-list class is off in this tree)"
+            exit 0
+          fi
+          git show "$base_sha:tools/leak_scan.py" > /tmp/base-leak_scan.py
+          git show "$base_sha:leak-allow.tsv" > /tmp/base-leak-allow.tsv
+          git show "$base_sha:leak-forbid.txt" > /tmp/base-leak-forbid.txt
+          cp leak-allow.tsv /tmp/pr-leak-allow.tsv
+          cp /tmp/base-leak-allow.tsv leak-allow.tsv
+          /usr/bin/python3 /tmp/base-leak_scan.py --history \
+            --forbid-file /tmp/base-leak-forbid.txt --forbid-only
+          cp /tmp/pr-leak-allow.tsv leak-allow.tsv
       # The repository is the source of truth: one root, cut once from `main`
       # `65e2764` (`24ee323`), and every commit after it is ordinary work on
       # top — a card's branch included, merged with --no-ff. On a push to main

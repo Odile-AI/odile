@@ -89,7 +89,7 @@ high-entropy	docs/runbooks/image.md	sha256:6a3d71aa28cc	constant	no	history only
 # blobs are in the public history and every clone's --history scan reads them.
 # Each row is one value at one path, so a re-introduction at a *different* path
 # is still a finding. Do not widen a row to a directory glob.
-forbidden-value	docs/runbooks/deploy.md	sha256:18b74e4c8911	constant	no	published history: the blob this path carried before ODL-911 replaced the value in the tree; the path is pinned, so another value there is still a finding	never
+forbidden-value	docs/runbooks/deploy.md	sha256:18b74e4c8911	constant	no	published history: the blob this path carried before ODL-906 dropped the value (`d8e15f3`); the path is pinned, so another value there is still a finding	never
 forbidden-value	deploy/caddy/demo-tenant-site.caddy	sha256:3890f50e6844	constant	no	published history: the blob this path carried before ODL-911 replaced the value in the tree; the path is pinned, so another value there is still a finding	never
 forbidden-value	deploy/demo-host/apply_demo_public.py	sha256:3890f50e6844	constant	no	published history: the blob this path carried before ODL-911 replaced the value in the tree; the path is pinned, so another value there is still a finding	never
 forbidden-value	deploy/demo-host/check_demo_host.sh	sha256:3890f50e6844	constant	no	published history: the blob this path carried before ODL-911 replaced the value in the tree; the path is pinned, so another value there is still a finding	never

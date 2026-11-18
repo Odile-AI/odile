@@ -16,7 +16,7 @@
 #     git push --no-verify
 #
 # It is for a push whose literal is already in the remote (a rewrite in
-# progress), never for "the hook is inconvenient": CI's `history-private` step
+# progress), never for "the hook is inconvenient": CI's `history-secrets` job
 # runs the same list over every blob, so a bypassed literal is a red run.
 set -eu
 
@@ -66,6 +66,19 @@ scan() {
     "$PYTHON" "$SCANNER" --stdin --label "$1" --forbid-file "$FORBID"
 }
 
+# Every diff scan skips BOTH copies of the deny list, not just the resolved
+# one. The list carries its literals by definition, so scanning it would report
+# its own rows; and at HQ the resolved name is the canonical
+# `docs/ops/leak-forbid.txt`, which would leave the published root copy
+# unscanned. That is not hypothetical: the commit that first adds the root copy
+# carries every row as an added line, so excluding only the resolved path
+# blocked the publication of the list itself (and `tools/merge_card.py`'s plain
+# `git push origin main` with it). The commit-message scan has no path to
+# exclude: a message naming a literal is a leak wherever it is written.
+without_the_lists() {
+    git "$@" -- . ":(exclude)docs/ops/leak-forbid.txt" ":(exclude)leak-forbid.txt"
+}
+
 status=0
 
 # 1. Every commit message in the outgoing range.
@@ -75,22 +88,20 @@ fi
 
 # 2. The range's net diff, added lines only: a line being removed is not
 #    outgoing. `git diff @{u}...HEAD` is the card's command; the empty-tree
-#    case diffs the whole head, because every commit in it is outgoing. The
-#    deny list itself is excluded: it carries its literals by definition, and
-#    the scanner skips it by path in tree and history mode.
+#    case diffs the whole head, because every commit in it is outgoing.
 if [ "$BASE" = "$EMPTY_TREE" ]; then
-    if ! git diff --no-color "$EMPTY_TREE" HEAD -- . ":(exclude)$FORBID" \
+    if ! without_the_lists diff --no-color "$EMPTY_TREE" HEAD \
             | awk '/^\+/ && !/^\+\+\+/' | scan outgoing-diff; then
         status=1
     fi
-elif ! git diff --no-color "$BASE...HEAD" -- . ":(exclude)$FORBID" \
+elif ! without_the_lists diff --no-color "$BASE...HEAD" \
         | awk '/^\+/ && !/^\+\+\+/' | scan outgoing-diff; then
     status=1
 fi
 
 # 3. Each outgoing commit's own added lines, so a literal added and removed
 #    again inside one push is still caught: it is in the pushed history.
-if ! git log --format= --no-color --unified=0 -p "$MESSAGES" -- . ":(exclude)$FORBID" \
+if ! without_the_lists log --format= --no-color --unified=0 -p "$MESSAGES" \
         | awk '/^\+/ && !/^\+\+\+/' | scan outgoing-history; then
     status=1
 fi

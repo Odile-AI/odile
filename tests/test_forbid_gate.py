@@ -47,6 +47,15 @@ PUBLIC_IP = ".".join(["45", "33", "32", "156"])
 # The list line is a regex: its own text has backslashes between the octets,
 # so the file does not match the pattern it carries.
 LIST_LINE = "hq-address\t" + r"23\.155\.44\.\d+" + "\n"
+# One list, two copies (HQ's canon and the published root copy are
+# byte-identical). The box-id row is a literal the row itself matches, which is
+# why a commit that publishes the list must not be scanned as content.
+LIST_TEXT = (
+    "# One list, two copies: docs/ops/leak-forbid.txt is canonical and the\n"
+    "# repository publishes a byte-identical copy at its root.\n"
+    "servury-box-id\t" + "1680" + "20b4" + "\n"
+    + LIST_LINE
+)
 
 PLACEHOLDERS = (
     "192.0.2.10",
@@ -207,7 +216,11 @@ class PrePushHook(unittest.TestCase):
         seed.mkdir()
         git("init", "-q", "-b", "main", cwd=seed)
         (seed / "leak-allow.tsv").write_text("# no exceptions\n", encoding="utf-8")
-        (seed / "leak-forbid.txt").write_text(LIST_LINE, encoding="utf-8")
+        # The HQ shape: the canonical list under docs/ops (excluded from git at
+        # HQ, so only HQ has it at the head) and no root copy yet. The hook
+        # resolves the canon here; the published copy arrives in the test.
+        (seed / "docs" / "ops").mkdir(parents=True)
+        (seed / "docs" / "ops" / "leak-forbid.txt").write_text(LIST_TEXT, encoding="utf-8")
         (seed / "keep.txt").write_text("nothing private here\n", encoding="utf-8")
         (seed / "tools").mkdir()
         shutil.copy2(SCANNER, seed / "tools" / "leak_scan.py")
@@ -262,15 +275,39 @@ class PrePushHook(unittest.TestCase):
         git("commit", "--amend", "-qm", "a clean message", cwd=self.work)
         self.assertEqual(self.push().returncode, 0)
 
-    def test_the_deny_list_itself_can_be_pushed(self) -> None:
-        # The list carries the literals by definition; a commit that edits it
-        # (even a comment naming one) must not be blocked by its own rows.
-        box_id = "1680" + "20b4"
-        with (self.work / "leak-forbid.txt").open("a", encoding="utf-8") as handle:
-            handle.write(f"# the box id {box_id} is denied by the row above\n")
-        commit_all(self.work, "a comment in the deny list")
+    def test_the_published_copy_can_be_added_by_its_own_commit(self) -> None:
+        # The HQ shape, which is what blocked this card's own publication: the
+        # hook resolves the canon under docs/ops, and the outgoing commit adds
+        # the published root copy — every row an added line, including the
+        # literals the rows match. Excluding only the resolved path made the
+        # list report itself, so `merge_card.py`'s plain `git push origin main`
+        # exited 5. Both paths are excluded now, so this pushes.
+        (self.work / "leak-forbid.txt").write_text(LIST_TEXT, encoding="utf-8")
+        commit_all(self.work, "publish the deny list")
         pushed = self.push()
         self.assertEqual(pushed.returncode, 0, pushed.stdout + pushed.stderr)
+        # The maintenance case the list's header requires ("never edit one
+        # without the other"): the copy is already published, and an edit that
+        # names a literal in a comment is still not scanned as content.
+        with (self.work / "leak-forbid.txt").open("a", encoding="utf-8") as handle:
+            handle.write(f"# the box id {'1680' + '20b4'} is denied by the row above\n")
+        commit_all(self.work, "a comment in the deny list")
+        edited = self.push()
+        self.assertEqual(edited.returncode, 0, edited.stdout + edited.stderr)
+
+    def test_the_published_copy_does_not_blind_the_rest_of_the_range(self) -> None:
+        # The exclusion is two paths, not the whole scan: the same commit that
+        # publishes the list, with one real literal beside it, is a red push.
+        (self.work / "leak-forbid.txt").write_text(LIST_TEXT, encoding="utf-8")
+        (self.work / "probe.md").write_text(f"host {HQ_IP}\n", encoding="utf-8")
+        commit_all(self.work, "publish the deny list")
+        blocked = self.push()
+        self.assertNotEqual(blocked.returncode, 0, blocked.stdout + blocked.stderr)
+        self.assertIn("(hq-address)", blocked.stdout + blocked.stderr)
+        (self.work / "probe.md").unlink()
+        git("add", "-A", cwd=self.work)
+        git("commit", "--amend", "-qm", "publish the deny list", cwd=self.work)
+        self.assertEqual(self.push().returncode, 0)
 
 
 class HostsExample(unittest.TestCase):
