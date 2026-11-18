@@ -16,13 +16,20 @@ unfinished`.
 
     ./tools/restart_window.py                      # dry run: verdict and live cards
     ./tools/restart_window.py --apply              # restart, if the gate allows
-    ./tools/restart_window.py --wait 300 --apply   # drain first, then restart
+    ./tools/restart_window.py --wait 300 --apply   # drain, then decide at the end
     ./tools/restart_window.py --for update --apply # update only at zero live runs
+
+The verdict is taken at the moment the command would run, not when the wait
+began: a `--wait` that ends outside 03:00–03:30Z refuses on a board that is
+still live, and one that ends inside the window allows it. `--at` pins the
+start of the clock and is advanced by the seconds actually waited (measured,
+`time.monotonic()`), so a transcript stays reproducible; without it the clock
+is simply re-read after the wait.
 
 Exit codes: 0 allowed (and the command ran, with `--apply`); 2 refused; 3 no
 board database at the resolved path.
-`--at` pins the clock for a reproducible transcript; `--db` and `--hermes-bin`
-exist for the tests, and default to this host's board and binary.
+`--db` and `--hermes-bin` exist for the tests, and default to this host's
+board and binary.
 """
 
 from __future__ import annotations
@@ -118,6 +125,12 @@ def in_window(now: dt.datetime) -> bool:
     """True inside 03:00–03:30Z; the window is half-open, as windows should be."""
     moment = now.astimezone(dt.timezone.utc).time().replace(tzinfo=None)
     return WINDOW_START <= moment < WINDOW_END
+
+
+def window_phrase(now: dt.datetime) -> str:
+    """The clock and which side of the window it is on, as one line."""
+    side = "inside" if in_window(now) else "outside"
+    return f"{iso(now)} — {side} 03:00–03:30Z"
 
 
 def next_window(now: dt.datetime) -> dt.datetime:
@@ -223,27 +236,37 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--hermes-bin", help="the hermes executable to run")
     args = parser.parse_args(argv)
 
-    now = parse_at(args.at) if args.at else dt.datetime.now(dt.timezone.utc)
+    pinned = parse_at(args.at) if args.at else None
+    now = pinned if pinned is not None else dt.datetime.now(dt.timezone.utc)
     db = Path(args.db).expanduser() if args.db else board_db()
     if not db.is_file():
         print(f"restart_window: no board database at {db}", file=sys.stderr)
         return 3
 
     print(f"restart_window: board {db}")
-    print(
-        f"restart_window: now {iso(now)} — "
-        + ("inside" if in_window(now) else "outside")
-        + " 03:00–03:30Z"
-    )
+    print(f"restart_window: now {window_phrase(now)}")
     live = live_runs(db)
     print(f"restart_window: {len(live)} live run(s)")
     print_runs(live)
 
     if args.wait > 0 and live:
         print(f"restart_window: draining up to {args.wait:g}s (poll {args.poll:g}s)")
+        started = time.monotonic()
         live = wait_for_idle(db, args.wait, args.poll)
+        waited = time.monotonic() - started
+        # Judge the window when the command would run, not when the wait began:
+        # a wait that ends at 03:30:02Z must not restart on a live board, and
+        # one that ends at 03:00:01Z must not refuse from before the window.
+        # A pinned `--at` advances by the seconds actually waited, so the
+        # transcript follows the same rule the wall clock does.
+        now = (
+            pinned + dt.timedelta(seconds=waited)
+            if pinned is not None
+            else dt.datetime.now(dt.timezone.utc)
+        )
         print(f"restart_window: {len(live)} live run(s) after the wait")
         print_runs(live)
+        print(f"restart_window: deciding at {window_phrase(now)}")
 
     allowed, reason = decide(args.action, live, now)
     if not allowed:

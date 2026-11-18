@@ -76,6 +76,16 @@ LIB = Path("/usr/local/lib/odile-demo-public")
 SITE_BLOCK = LIB / "demo-tenant-site.caddy"
 LOGIN_SOURCE = LIB / "login.html"
 START_HERE = LIB / "start-here.md"
+#: The contract this program keeps, spelled once so the HQ deploy can refuse a
+#: tree whose copy predates it (t_262f7168). Revisions before t_ee5aac66 pruned
+#: every session but the seed and rewrote the seed's own row; a deploy run from
+#: a branch tree carrying one of them put the old program back on the tenant and
+#: the live check lost the seed's messages, gained a session and read `demo
+#: provisioned`. `deploy_demo_public.py` reads this exact line out of the file
+#: it is about to upload, which is the only copy that matters — `main`'s own
+#: fence test cannot see a deploy that runs from a branch. Change the wording
+#: here and in the deploy's `APPLY_MARKER` together; a test pins the pair.
+APPLY_CONTRACT = "odile-demo-public-apply/2: seed written once, nothing pruned"
 #: The demo's boot re-assert unit, installed by revisions before t_ee5aac66.
 #: It re-ran this program with tune flags after the release installer; this
 #: program removes it (disable, delete, daemon-reload) so a boot cannot

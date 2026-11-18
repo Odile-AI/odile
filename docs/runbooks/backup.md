@@ -50,6 +50,15 @@ own Hermes cron, which is the same path the user has.
 file for exactly one restic invocation, and never prints it. `ps` shows no
 secret: the password is not on argv.
 
+The 30-day purge (`docs/runbooks/offboard.md` §4, **t_9d6fb595**) is the one
+command that touches a destroyed tenant's repository: `odilectl purge <slug>`
+reads only the row's `detail.backup`, runs `restic snapshots` as the control
+check (with the user's recovery file when the operator has it, and without it
+otherwise — restic's "wrong password" still proves the directory is a restic
+repository), deletes `/srv/odile-backup/tenants/<slug>` and the guest's
+`authorized_keys` line, and records the purge on the row. It reads no file
+name, decrypts nothing, and prints no password.
+
 **HQ cannot read the repository.** Measured 2026-11-12T23:24Z on the host that
 stores the bytes (the password is the live tenant's, from the recovery file
 ODL-332 downloaded):
@@ -753,7 +762,8 @@ sentence is quoted (ODL-474 lands it).
   Keep the old box for 30 days, then delete it.
 - **Exit:** the encrypted repository is kept 30 days after cancellation, then
   deleted. The user can download it with the password before then; Odile can
-  delete it, not read it.
+  delete it, not read it. The deletion is `odilectl purge <slug>`
+  (`docs/runbooks/offboard.md` §4, **t_9d6fb595**).
 
 ---
 
@@ -806,18 +816,29 @@ sentence is quoted (ODL-474 lands it).
   `--backup-password-file` removes the slug's entry, so a plain install never
   carries a stale secret. Measured on the bench (§5.2): the rebuilt guest's own
   file opens the repository, `backup.py init` prints `same`, and the user's old
-  file still opens it. The live tenant's rebuild is ODL-218's destroy-and-re-
-  provision path (`docs/runbooks/offboard.md` §5), a human step that until
-  **t_ce52bb8d** takes a new slug, so its `backup-repo.txt` names a new
-  repository; the same-repository rebuild §5.2 measures keeps the tenant slug.
-  That path's `provision` step must add the flag above with the user's old
-  file — without it the rebuilt machine mints a new password (Drill 2's C).
+  file still opens it. The live tenant's rebuild is ODL-218's destroy-and-re-provision path
+  (`docs/runbooks/offboard.md` §5), a human step. ADR-007 (`t_ce52bb8d`) makes
+  it the same slug: `destroyed -> claimed` is the one edge back, `provision
+  <slug>` reopens the row before it orders, points the web row and the state
+  row at the new machine and moves the state row to `first_boot` (so the new
+  machine's first boot records itself), and the URL, the recovery file's
+  name and the `tenants/<slug>` repository all survive — so `backup-repo.txt`
+  names the same repository and §5.2's same-repository rebuild is the live
+  path, not a bench-only one. That path's `provision` step must add the flag
+  above with the user's old file — without it the rebuilt machine mints a new
+  password (Drill 2's C).
 - **The Servury rebuild.** Drill 2 rebuilds a VM from the same signed recipe;
   destroying and re-provisioning the *live tenant* is ODL-218's path (destroy
   needs the provider API and a new order, i.e. Savio), and it reuses this
   runbook's §5.3–§5.4 unchanged.
+- **The 30-day purge** is a command now (**t_9d6fb595**):
+  `odilectl purge <slug>` keeps the row's `keep_until`, refuses before
+  it, and past it runs `restic snapshots`, deletes the box's directory and
+  drops the guest's key line; a second run says `already purged`
+  (`docs/runbooks/offboard.md` §4). The off-site box it will run against is
+  **t_8eb17a54**'s; the drill's chroot is on HQ.
 
 The follow-ups are board cards, not prose: **t_fec9f699** (rebuild keeps
 the repository), **t_19148cba** (installer places the program and the units,
-heartbeat reachable — this card) and **t_8eb17a54** (Savio buys the box and
-sets DNS).
+heartbeat reachable — this card), **t_8eb17a54** (Savio buys the box and
+sets DNS) and **t_9d6fb595** (the 30-day purge, §9).

@@ -349,6 +349,45 @@ class DeployAndCheckTests(unittest.TestCase):
         self.assertEqual(apply.ATTEST_REFRESH_TARGET.name, "attest-refresh.sh")
         self.assertEqual(apply.ATTEST_FILE.name, "attestation.json")
 
+    def test_the_deploy_refuses_a_tree_whose_apply_predates_the_no_rewrite_fix(self):
+        """The fence covers the tree that deploys, not only `main` (t_262f7168).
+
+        On 2026-11-17 the live check lost the seed's messages and gained one
+        session, while `main`'s own fence stayed green — the deploy had run from
+        a branch tree, and this program ships the `apply_demo_public.py` that
+        sits beside it. So the deploy reads the marker out of the file it is
+        about to upload and exits 2 before DNS or any upload.
+        """
+        deploy = load(DEMO / "deploy_demo_public.py", "demo_deploy_apply_gate_test")
+        apply_text = (DEMO / "apply_demo_public.py").read_text(encoding="utf-8")
+        self.assertEqual(deploy.apply_problem(DEMO / "apply_demo_public.py"), "")
+        # The pair cannot drift: the line the deploy looks for is the line the
+        # program says it keeps.
+        contract = [line for line in apply_text.splitlines()
+                    if line.startswith("APPLY_CONTRACT")]
+        self.assertEqual(len(contract), 1)
+        self.assertIn(deploy.APPLY_MARKER, contract[0])
+
+        with tempfile.TemporaryDirectory(prefix="odile-old-apply-") as tmp:
+            planted = Path(tmp) / "apply_demo_public.py"
+            planted.write_text(apply_text.replace(deploy.APPLY_MARKER, ""), encoding="utf-8")
+            self.assertIn("no-rewrite", deploy.apply_problem(planted))
+
+            # The whole program, not only the helper: no DNS and no console
+            # before the refusal.
+            deploy.APPLY_SOURCE = planted
+            with mock.patch.object(deploy.create_dns, "ensure",
+                                   side_effect=AssertionError("DNS ran before the gate")), \
+                 mock.patch.object(deploy.tenant_console, "connect_any",
+                                   side_effect=AssertionError("a console opened")), \
+                 contextlib.redirect_stderr(io.StringIO()) as stderr:
+                self.assertEqual(deploy.main([]), 2)
+            self.assertIn("no-rewrite", stderr.getvalue())
+            # A tree with no apply at all is refused for the same reason: the
+            # deploy would otherwise upload nothing and run the old program.
+            deploy.APPLY_SOURCE = Path(tmp) / "absent.py"
+            self.assertIn("beside the deploy program", deploy.apply_problem())
+
 
 MATCH = "9f" * 48
 
