@@ -7,22 +7,30 @@
 #   2. the tenant answers at its own name under test.odile.fyi (the sign-in page
 #      200, `/` a 302 to it on the same host, `/verify` 200 and `/attestation`
 #      200 with the pinned launch measurement)
-#   3. production did not move: `/` still hashes to the record taken before
-#      the bench/tenant work, and `/roadmap` and `/attestation` are byte-for-byte
-#      the box's own generator output (`/var/lib/odile/roadmap.html`,
-#      `/var/lib/odile/attestation.json`), never the bench's copies; and
-#      `NRestarts` on odile.service is 0 in the record and now. The two timer
-#      pages are re-generated every fifteen and five minutes, so their absolute
-#      hash is a timestamp: the DoD is equality before and after, which is what
-#      `/` (stable) and the deployer's own before/after measurement prove. A
-#      served page that is not the box's own file is a leak; that fails.
+#   3. production did not move: `/` still hashes to the bytes the ODL-339
+#      pre-deploy record took at 2026-11-18T12:07:14Z, before the bench or
+#      this tenant existed (`docs/evidence/a1-bench-deploy.md` §0/§1), and
+#      `/roadmap` and `/attestation` are byte-for-byte the box's own generator
+#      output (`/var/lib/odile/roadmap.html`, `/var/lib/odile/attestation.json`),
+#      never the bench's copies; and `NRestarts` on odile.service is 0 in the
+#      record and now. The homepage is not a timer page, so the pre-deploy value
+#      is a constant and is asserted as one (PRE_DEPLOY_ROOT below). The other
+#      two are re-generated every fifteen and five minutes, so their absolute
+#      hash is a timestamp: a served page that is not the box's own file is a
+#      leak and fails.
 #   4. the two names are different machines: test.odile.fyi and the tenant's
 #      name resolve to different IPv4 addresses, and only the bench's database
 #      carries the tenant's claim row
 #
-# The record is written once, on purpose, by `--record`: it is the pre-deploy
-# capture the card's DoD means. A run without it fails with the command to take
-# it rather than inventing a baseline.
+# The record is written once, on purpose, by `--record`: it pins the tenant's
+# expected launch measurement, the two names and their addresses, production's
+# NRestarts and a capture of the three production pages at that moment. It is a
+# capture, not by itself a pre-work snapshot (this card's was taken at
+# 2026-11-18T15:48:14Z, after the tenant was ready): production `/` is asserted
+# against the ODL-339 pre-deploy value above, and the record must agree with it,
+# so a record taken after a production change cannot redefine the baseline. A
+# run without a record fails with the command to take it rather than inventing
+# one.
 #
 #   ./scripts/check_bench.sh --record --expect <96-hex from the image pin>
 #   ./scripts/check_bench.sh
@@ -44,6 +52,13 @@ PROD_ATTEST=${PROD_ATTEST:-/var/lib/odile/attestation.json}
 TENANT_SLUG=${TENANT_SLUG:-${TENANT_HOST%%.*}}
 PYTHON=${PYTHON:-/usr/bin/python3}
 
+# The ODL-339 pre-deploy record (`docs/evidence/a1-bench-deploy.md` §0/§1,
+# 2026-11-18T12:07:14Z): production's `/` before the bench or this tenant
+# existed. The homepage is not a timer page, so these bytes are stable between
+# deploys and the DoD's "equal the pre-deploy record" is asserted as this
+# constant — not as a capture that a later run could quietly redefine.
+PRE_DEPLOY_ROOT=${PRE_DEPLOY_ROOT:-c8b0a25039b91776cd26c06a37ae32735365b7248c3136ad72d0f5354164b6dc}
+
 RECORD=0
 EXPECT=""
 while [ $# -gt 0 ]; do
@@ -52,7 +67,7 @@ while [ $# -gt 0 ]; do
         --expect) EXPECT=$2; shift 2 ;;
         --expect=*) EXPECT=${1#--expect=}; shift ;;
         -h|--help)
-            sed -n '2,30p' "$0" | sed 's/^# \{0,1\}//'
+            sed -n '2,40p' "$0" | sed 's/^# \{0,1\}//'
             exit 0 ;;
         *) printf 'check_bench: unknown argument: %s\n' "$1" >&2; exit 2 ;;
     esac
@@ -145,9 +160,11 @@ for line in lines:
         record["production_nrestarts"] = value
     else:
         record[key] = value
-record["note"] = ("Production's / and /roadmap and /attestation hashes are a capture, not constants: "
-                  "/attestation regenerates every five minutes and /roadmap every fifteen, so the DoD is "
-                  "equality before and after, not a fixed hash. NRestarts is asserted absolutely.")
+record["note"] = ("The record is a capture, not the DoD's baseline for production /: it holds the three production "
+                  "pages as served when it was taken, the tenant's expected measurement, the two names and their "
+                  "addresses, and NRestarts. The check asserts / against the ODL-339 pre-deploy value (PRE_DEPLOY_ROOT) "
+                  "and requires this record to agree with it; /roadmap and /attestation regenerate every fifteen and five "
+                  "minutes, so for those two the property is that the served bytes are production's own state file.")
 with open(sys.argv[2], "w", encoding="utf-8") as handle:
     json.dump(record, handle, indent=2, sort_keys=True)
     handle.write("\n")
@@ -187,7 +204,8 @@ fi
 location=$(curl -sS --max-time 30 -o /dev/null -D - "https://$TENANT_HOST/" 2>/dev/null \
     | tr -d '\r' | awk 'tolower($1) == "location:" { print $2; exit }')
 case "$location" in
-    */login*|"") pass "tenant / -> the sign-in page ($location)" ;;
+    */login*) pass "tenant / -> the sign-in page ($location)" ;;
+    "") fail "tenant / sent no Location header (want a redirect to /login on the same host)" ;;
     *) fail "tenant / redirects off the machine: $location" ;;
 esac
 read -r verify_code verify_sha <<EOF
@@ -230,17 +248,25 @@ else
 fi
 
 # ----------------------------------------------------------- production
-# `/` is stable between deploys, so it is compared with the record. The other
-# two are re-generated by timers, so each is compared with the box's own state
-# file: the served bytes must be the file production's generator wrote.
+# `/` is the homepage and is stable between deploys, so it is asserted against
+# the ODL-339 pre-deploy record's value — the DoD's "equal the pre-deploy
+# record" — and this check's own record must agree with that same constant.
+# The other two are re-generated by timers, so each is compared with the box's
+# own state file: the served bytes must be the file production's generator
+# wrote.
 read -r root_code root_sha <<EOF
 $(fetch "$PROD/" "$tmp/prod-root")
 EOF
-want_root=$("$PYTHON" -c 'import json,sys; print(json.load(open(sys.argv[1]))["production"].get("/", "missing"))' "$BASELINE")
-if [ "$root_code" = 200 ] && [ "$root_sha" = "$want_root" ]; then
-    pass "production / is unchanged (${root_sha%"${root_sha#????????????}"}…)"
+if [ "$root_code" = 200 ] && [ "$root_sha" = "$PRE_DEPLOY_ROOT" ]; then
+    pass "production / is unchanged (${root_sha%"${root_sha#????????????}"}…, the ODL-339 pre-deploy record)"
 else
-    fail "production / moved: $root_sha != the record's $want_root (HTTP ${root_code:-000})"
+    fail "production / moved: $root_sha != the pre-deploy record's $PRE_DEPLOY_ROOT (HTTP ${root_code:-000})"
+fi
+recorded_root=$("$PYTHON" -c 'import json,sys; print(json.load(open(sys.argv[1]))["production"].get("/", "missing"))' "$BASELINE")
+if [ "$recorded_root" = "$PRE_DEPLOY_ROOT" ]; then
+    pass "the record agrees with the pre-deploy / (${recorded_root%"${recorded_root#????????????}"}…)"
+else
+    fail "the record's / is $recorded_root, not the pre-deploy $PRE_DEPLOY_ROOT"
 fi
 
 timer_page() {
