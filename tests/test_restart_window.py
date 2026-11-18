@@ -242,6 +242,62 @@ class CommandTests(unittest.TestCase):
             ["-p", "default", "gateway", "restart", "-y"],
         )
 
+    def test_a_wait_that_crosses_the_window_end_refuses_on_live_work(self) -> None:
+        # 03:29:59 + a 3 s wait that does not drain = 03:30:02Z: outside the
+        # window with a live run. The pre-wait clock said "inside" and used to
+        # let the restart through; the decision now follows the wait.
+        board = FixtureBoard(
+            [{"id": "t_live", "title": "a card that outlasts the window"}]
+        )
+        try:
+            done = self.run_tool(
+                board,
+                "--at",
+                "2026-11-17T03:29:59Z",
+                "--wait",
+                "3",
+                "--poll",
+                "1",
+                "--apply",
+            )
+        finally:
+            board.close()
+        self.assertEqual(done.returncode, 2, done.stdout + done.stderr)
+        self.assertIn("REFUSED", done.stdout)
+        self.assertIn("needs zero live runs", done.stdout)
+        self.assertIn("deciding at 2026-11-17T03:30:0", done.stdout)
+        self.assertIn("outside 03:00–03:30Z", done.stdout)
+        self.assertNotIn("running:", done.stdout)
+        self.assertFalse(self.log.exists(), "hermes ran past 03:30Z on a live board")
+
+    def test_a_wait_that_crosses_the_window_start_allows_live_work(self) -> None:
+        # 02:59:58 + a 3 s wait that does not drain = 03:00:01Z: inside the
+        # window, so the drain-aware restart is allowed even though the run is
+        # still live. The pre-wait clock refused here.
+        board = FixtureBoard(
+            [{"id": "t_live", "title": "still working at 03:00"}]
+        )
+        try:
+            done = self.run_tool(
+                board,
+                "--at",
+                "2026-11-17T02:59:58Z",
+                "--wait",
+                "3",
+                "--poll",
+                "1",
+                "--apply",
+            )
+        finally:
+            board.close()
+        self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
+        self.assertIn("deciding at 2026-11-17T03:00:0", done.stdout)
+        self.assertIn("allowed — inside the 03:00–03:30Z window", done.stdout)
+        self.assertEqual(
+            self.log.read_text(encoding="utf-8").splitlines(),
+            ["-p", "default", "gateway", "restart", "-y"],
+        )
+
     def test_a_dry_run_names_the_command_and_changes_nothing(self) -> None:
         board = FixtureBoard([])
         try:

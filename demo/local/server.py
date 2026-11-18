@@ -565,6 +565,13 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         httpd = ThreadingHTTPServer(("127.0.0.1", args.port), make_handler(session, password))
+        # A handler thread reading the next request on a keep-alive connection
+        # must not hold Ctrl-C hostage: with the default block_on_close,
+        # server_close() waits for every request thread, and the stop window
+        # (10 s in the demo tests) can expire while an idle HTTP/1.1 handler is
+        # still blocked in readline(). That was the -9 in the full-suite gate.
+        httpd.daemon_threads = True
+        httpd.block_on_close = False
     except OSError as exc:
         session.stop_heartbeat()
         print(
