@@ -16,6 +16,7 @@ tested here and by the brand lint.
 
 from __future__ import annotations
 
+import base64
 import contextlib
 import hashlib
 import http.client
@@ -59,6 +60,9 @@ import first_visit as fv  # noqa: E402
 PASSWORD = "correct-horse-battery-staple"
 NEW_PASSWORD = "a-different-long-password-0002"
 CODE_RE = re.compile(r'<p class="code" id="code">([^<]+)</p>')
+# The one-time download token the done pages carry (ODL-579): 32 bytes, hex,
+# hashed in the state, single use, ten minutes.
+DOWNLOAD_RE = re.compile(r'href="/first-visit/recovery\?d=([0-9a-f]{64})"')
 
 
 def free_port() -> int:
@@ -286,8 +290,25 @@ class FirstVisitHarness:
         finally:
             connection.close()
 
-    def download(self, code: str, headers: dict[str, str] | None = None):
-        return self.call("GET", "/first-visit/recovery?c=" + code, headers=headers)
+    def download(self, token: str, headers: dict[str, str] | None = None):
+        """Fetch the recovery file with the one-time download token (ODL-579).
+
+        The code is never a bearer in a URL: the done page carries ``?d=`` and
+        the code is only ever POSTed.
+        """
+        return self.call("GET", "/first-visit/recovery?d=" + token, headers=headers)
+
+    def download_token(self, page: str) -> str:
+        """The one-time download token the response carries, or a failure."""
+        match = DOWNLOAD_RE.search(page)
+        if match is None:
+            raise AssertionError("the page carries no one-time download token")
+        return match.group(1)
+
+    def use_code(self, code: str, headers: dict[str, str] | None = None):
+        """Spend the code at the recovery page; the response shows a new one."""
+        return self.call("POST", "/first-visit/recovery", {"code": code},
+                         headers=headers)
 
     # -- state -----------------------------------------------------------
 
@@ -838,6 +859,31 @@ class ResetTests(unittest.TestCase):
         self.assertIsNotNone(match)
         return match.group(1)
 
+    def test_the_reset_rotates_the_session_secret(self):
+        """ODL-579: a reset ends the machine's other sessions.
+
+        ``write_env_hash`` rotates HERMES_DASHBOARD_BASIC_AUTH_SECRET in the
+        same write as the hash, so every cookie signed with the old value dies.
+        A session token minted by the vendored provider before the reset is
+        refused afterwards; the pre-reset provider is the control.
+        """
+        code = self.sign_in_and_read_code()
+        before = fv.env_values(self.harness.env_text())[fv.SECRET_KEY]
+        old_hash = self.harness.stored_hash()
+        status, _, page = self.harness.call(
+            "POST", "/first-visit/reset",
+            {"code": code, "password": NEW_PASSWORD, "password2": NEW_PASSWORD})
+        self.assertEqual(status, 200)
+        after = fv.env_values(self.harness.env_text())[fv.SECRET_KEY]
+        self.assertNotEqual(after, before, "the reset kept the machine's session secret")
+        self.assertEqual(len(base64.b64decode(after)), 32)
+        self.assertEqual(self.harness.env.stat().st_mode & 0o777, 0o600)
+        new_hash = self.harness.stored_hash()
+        self.assertNotEqual(new_hash, old_hash)
+        self.assertNotIn(before, self.harness.env_text())
+        self.assertNotIn(PASSWORD, self.harness.env_text())
+        self.assertNotIn(NEW_PASSWORD, self.harness.env_text())
+
     def test_the_reset_form_is_closed_before_the_sign_in_is_set(self):
         status, _, page = self.harness.call("GET", "/first-visit/reset")
         self.assertEqual(status, 409)
@@ -913,7 +959,8 @@ class ResetTests(unittest.TestCase):
         state = self.harness.load_state()
         self.assertFalse(fv.verify_password(fv.normalise_code(old_code), state["recovery_hash"]))
         self.assertTrue(fv.verify_password(fv.normalise_code(new_code), state["recovery_hash"]))
-        self.assertIsNotNone(state["recovery_used_at"])
+        self.assertIsNone(state["recovery_used_at"],
+                          "the new code is live: only a spent code carries used_at")
         self.assertNotIn(NEW_PASSWORD, self.harness.env_text())
         # The rotated-out code is dead; the new one still opens the reset form.
         status, _, page = self.harness.call(
@@ -956,7 +1003,7 @@ class RecoveryDownloadTests(unittest.TestCase):
         code, page = self.signed_in(harness)
         self.assertNotIn("/first-visit/recovery", page)
         self.assertIn("The recovery file is not available on this machine.", page)
-        status, headers, body = harness.download(code)
+        status, headers, body = harness.download("0" * 64)
         self.assertEqual(status, 404)
         self.assertIn("text/plain", headers.get("Content-Type", ""))
         self.assertTrue(body.strip(), "a 404 must still carry a body")
@@ -966,15 +1013,18 @@ class RecoveryDownloadTests(unittest.TestCase):
         code, page = self.signed_in(harness)
         self.assertNotIn('class="download"', page)
         self.assertIn("The recovery file is not available on this machine.", page)
-        status, _, body = harness.download(code)
+        status, _, body = harness.download("0" * 64)
         self.assertEqual(status, 404)
         self.assertTrue(body.strip())
 
     def test_the_done_page_offers_the_file_beside_the_recovery_code(self):
         harness = self.harness(recovery=recovery_text())
         code, page = self.signed_in(harness)
+        token = harness.download_token(page)
         self.assertIn('class="download"', page)
-        self.assertIn('href="/first-visit/recovery?c=%s"' % code, page)
+        self.assertIn('href="/first-visit/recovery?d=%s"' % token, page)
+        self.assertNotIn(code, page.split('class="download"')[1].split(">")[0],
+                         "the code is never a bearer in the download URL")
         self.assertIn('download="odile-recovery-odl-test.txt"', page)
         self.assertLess(page.index('id="code"'), page.index('class="download"'))
         self.assertIn(A9_DECIDED, page)
@@ -1004,9 +1054,10 @@ class RecoveryDownloadTests(unittest.TestCase):
 
     def test_the_download_is_the_recovery_file_text_plain_with_a_filename(self):
         harness = self.harness(recovery=recovery_text())
-        code, _ = self.signed_in(harness)
+        code, page = self.signed_in(harness)
+        token = harness.download_token(page)
         before = harness.recovery.stat()
-        status, headers, body = harness.download(code)
+        status, headers, body = harness.download(token)
         self.assertEqual(status, 200)
         self.assertEqual(headers.get("Content-Type"), "text/plain; charset=utf-8")
         self.assertEqual(headers.get("Content-Disposition"),
@@ -1031,13 +1082,14 @@ class RecoveryDownloadTests(unittest.TestCase):
             harness = self.harness(recovery=recovery_text(), caddy_stores=[store])
             headers = {"Host": "odl-test.example", "X-Forwarded-Proto": "https"}
             code, page = self.signed_in(harness, headers=headers)
+            token = harness.download_token(page)
             self.assertNotIn("pending on this machine", page)
             on_disk = harness.recovery.read_text(encoding="utf-8")
             self.assertIn("Certificate SHA-256: " + expected, on_disk)
             self.assertNotIn(PLACEHOLDER, on_disk)
             written = harness.recovery.stat().st_mtime_ns
 
-            status, _, body = harness.download(code, headers=headers)
+            status, _, body = harness.download(token, headers=headers)
             self.assertEqual(status, 200)
             self.assertIn(expected, body)
             self.assertEqual(body, on_disk)
@@ -1049,9 +1101,10 @@ class RecoveryDownloadTests(unittest.TestCase):
             harness = self.harness(recovery=recovery_text(), caddy_stores=[Path(tmp)])
             headers = {"Host": "odl-test.example", "X-Forwarded-Proto": "https"}
             code, page = self.signed_in(harness, headers=headers)
+            token = harness.download_token(page)
             self.assertIn("certificate fingerprint is pending on this machine", page)
             self.assertIn(PLACEHOLDER, harness.recovery.read_text(encoding="utf-8"))
-            status, _, body = harness.download(code, headers=headers)
+            status, _, body = harness.download(token, headers=headers)
             self.assertEqual(status, 200)
             self.assertIn(PLACEHOLDER, body)
 
@@ -1071,12 +1124,13 @@ class RecoveryDownloadTests(unittest.TestCase):
             harness = self.harness(recovery=recovery_text(), caddy_stores=[store])
             headers = {"Host": "odl-test.example", "X-Forwarded-Proto": "https"}
             code, page = self.signed_in(harness, headers=headers)
+            token = harness.download_token(page)
             self.assertNotIn("pending on this machine", page,
                              "a chain file is a certificate; the page says so")
             on_disk = harness.recovery.read_text(encoding="utf-8")
             self.assertIn("Certificate SHA-256: " + leaf, on_disk)
             self.assertNotIn(chained, on_disk)
-            status, _, body = harness.download(code, headers=headers)
+            status, _, body = harness.download(token, headers=headers)
             self.assertEqual(status, 200)
             self.assertIn(leaf, body)
             self.assertNotIn(chained, body)
@@ -1122,20 +1176,85 @@ class RecoveryDownloadTests(unittest.TestCase):
             self.assertNotIn(expected, page)
             self.assertIn(PLACEHOLDER, harness.recovery.read_text(encoding="utf-8"))
 
-    def test_the_download_requires_the_recovery_code(self):
+    def test_the_download_requires_a_live_one_time_token(self):
         harness = self.harness(recovery=recovery_text())
-        code, _ = self.signed_in(harness)
-        for wrong in ("AAAA-BBBB-CCCC-DDDD-EEEE", ""):
-            status, _, body = harness.download(wrong)
-            self.assertEqual(status, 404)
-            self.assertNotIn(BACKUP_PASSWORD, body)
-        status, _, body = harness.download(code)
+        code, page = self.signed_in(harness)
+        token = harness.download_token(page)
+        for wrong in ("0" * 64, "", "short", code):
+            with self.subTest(wrong=wrong):
+                status, _, body = harness.download(wrong)
+                self.assertEqual(status, 404)
+                self.assertNotIn(BACKUP_PASSWORD, body)
+        status, _, body = harness.download(token)
         self.assertEqual(status, 200)
         self.assertIn(BACKUP_PASSWORD, body)
 
-    def test_the_reset_done_page_offers_the_new_code(self):
+    def test_the_first_visits_download_does_not_spend_the_code(self):
+        """The done page's button is a download token; the code stays live."""
         harness = self.harness(recovery=recovery_text())
-        old_code, _ = self.signed_in(harness)
+        code, page = self.signed_in(harness)
+        self.assertEqual(harness.download(harness.download_token(page))[0], 200)
+        state = harness.load_state()
+        self.assertIsNone(state["recovery_used_at"],
+                          "the first visit's download spent the recovery code")
+        self.assertTrue(fv.verify_password(PASSWORD, harness.stored_hash()))
+        status, _, page = harness.call(
+            "POST", "/first-visit/reset",
+            {"code": code, "password": NEW_PASSWORD, "password2": NEW_PASSWORD})
+        self.assertEqual(status, 200)
+        self.assertTrue(fv.verify_password(NEW_PASSWORD, harness.stored_hash()))
+
+    def test_a_download_token_is_single_use_and_ten_minutes(self):
+        harness = self.harness(recovery=recovery_text())
+        _code, page = self.signed_in(harness)
+        token = harness.download_token(page)
+        state = harness.load_state()
+        self.assertEqual(len(token), 64)
+        self.assertEqual(state["download_sha256"], fv.hash_token(token))
+        self.assertNotIn(token, json.dumps(state))
+        self.assertEqual(len(state["download_expires_at"]), 20)
+        self.assertEqual(harness.download(token)[0], 200)
+        status, _, body = harness.download(token)
+        self.assertEqual(status, 410)
+        self.assertNotIn(BACKUP_PASSWORD, body, "a spent token served the file twice")
+        # A refresh of the done page mints no second token: the page is closed.
+        self.assertEqual(harness.call(
+            "GET", "/first-visit?t=" + harness.token)[0], 410)
+
+    def test_a_head_on_the_download_does_not_spend_the_token(self):
+        """A link previewer's HEAD must not burn the one use (ODL-579)."""
+        harness = self.harness(recovery=recovery_text())
+        _code, page = self.signed_in(harness)
+        token = harness.download_token(page)
+        connection = http.client.HTTPConnection("127.0.0.1", harness.port, timeout=20)
+        try:
+            connection.request("HEAD", "/first-visit/recovery?d=" + token)
+            response = connection.getresponse()
+            self.assertEqual(response.status, 200)
+            self.assertEqual(response.read(), b"")
+        finally:
+            connection.close()
+        self.assertIsNone(harness.load_state()["download_used_at"],
+                          "HEAD spent the one-time download token")
+        status, _, body = harness.download(token)
+        self.assertEqual(status, 200)
+        self.assertIn(BACKUP_PASSWORD, body)
+
+    def test_an_expired_download_token_mints_nothing_and_serves_nothing(self):
+        harness = self.harness(recovery=recovery_text())
+        _code, page = self.signed_in(harness)
+        token = harness.download_token(page)
+        state = harness.load_state()
+        state["download_expires_at"] = "2026-01-01T00:00:00Z"
+        harness.state.write_text(json.dumps(state), encoding="utf-8")
+        status, _, body = harness.download(token)
+        self.assertEqual(status, 410)
+        self.assertNotIn(BACKUP_PASSWORD, body)
+
+    def test_the_reset_done_page_offers_the_new_code_and_a_fresh_download_token(self):
+        harness = self.harness(recovery=recovery_text())
+        old_code, first = self.signed_in(harness)
+        first_token = harness.download_token(first)
         status, _, page = harness.call(
             "POST", "/first-visit/reset",
             {"code": old_code, "password": NEW_PASSWORD, "password2": NEW_PASSWORD})
@@ -1143,11 +1262,90 @@ class RecoveryDownloadTests(unittest.TestCase):
         match = CODE_RE.search(page)
         assert match is not None
         new_code = match.group(1)
-        self.assertIn('href="/first-visit/recovery?c=%s"' % new_code, page)
-        self.assertEqual(harness.download(old_code)[0], 404)
-        status, _, body = harness.download(new_code)
+        token = harness.download_token(page)
+        self.assertNotEqual(token, first_token, "the reset reused the first visit's token")
+        self.assertNotIn(new_code, token)
+        self.assertEqual(harness.download(first_token)[0], 404,
+                         "the reset kills the first visit's download token")
+        status, _, body = harness.download(token)
         self.assertEqual(status, 200)
         self.assertIn(BACKUP_PASSWORD, body)
+
+    def test_a_recovery_page_use_rotates_the_code_and_shows_it_once(self):
+        harness = self.harness(recovery=recovery_text())
+        old_code, _page = self.signed_in(harness)
+        status, headers, page = harness.use_code(old_code)
+        self.assertEqual(status, 200)
+        self.assertEqual(headers.get("Cache-Control"), "no-store")
+        match = CODE_RE.search(page)
+        self.assertIsNotNone(match, "a recovery-page use must show the new code once")
+        new_code = match.group(1)
+        self.assertNotEqual(new_code, old_code)
+        token = harness.download_token(page)
+        status, _, body = harness.download(token)
+        self.assertEqual(status, 200)
+        self.assertIn(BACKUP_PASSWORD, body)
+        state = harness.load_state()
+        self.assertFalse(fv.verify_password(fv.normalise_code(old_code),
+                                            state["recovery_hash"]))
+        self.assertTrue(fv.verify_password(fv.normalise_code(new_code),
+                                           state["recovery_hash"]))
+        # The code used at the recovery page is dead at both use sites.
+        status, _, page = harness.use_code(old_code)
+        self.assertEqual(status, 200)
+        self.assertIn("That recovery code does not match.", page)
+        status, _, page = harness.call(
+            "POST", "/first-visit/reset",
+            {"code": old_code, "password": "third-long-password-0003",
+             "password2": "third-long-password-0003"})
+        self.assertEqual(status, 200)
+        self.assertIn("That recovery code does not match.", page)
+        self.assertFalse(fv.verify_password("third-long-password-0003",
+                                            harness.stored_hash()))
+        # And a reset spends the code for the recovery page too.
+        status, _, page = harness.call(
+            "POST", "/first-visit/reset",
+            {"code": new_code, "password": "third-long-password-0003",
+             "password2": "third-long-password-0003"})
+        self.assertEqual(status, 200)
+        third = CODE_RE.search(page)
+        assert third is not None
+        self.assertNotEqual(third.group(1), new_code)
+        status, _, page = harness.use_code(new_code)
+        self.assertEqual(status, 200)
+        self.assertIn("That recovery code does not match.", page)
+
+    def test_the_recovery_page_renders_a_form_and_no_code_bearer(self):
+        harness = self.harness(recovery=recovery_text())
+        _code, _page = self.signed_in(harness)
+        status, headers, page = harness.call("GET", "/first-visit/recovery")
+        self.assertEqual(status, 200)
+        self.assertEqual(headers.get("Cache-Control"), "no-store")
+        self.assertIn('action="/first-visit/recovery"', page)
+        self.assertIn('name="code"', page)
+        self.assertNotIn("?c=", page)
+        self.assertNotIn("?d=", page)
+
+    def test_a_spent_code_is_refused_even_if_the_hash_still_matches(self):
+        """recovery_used_at is the single-use gate, not decoration (ODL-579).
+
+        This is the state a crash between the spend and the rotation leaves:
+        the stored hash still verifies, and the state says the code was used.
+        """
+        harness = self.harness(recovery=recovery_text())
+        code, _page = self.signed_in(harness)
+        state = harness.load_state()
+        state["recovery_used_at"] = state["recovery_issued_at"]
+        harness.state.write_text(json.dumps(state), encoding="utf-8")
+        self.assertTrue(fv.verify_password(fv.normalise_code(code), state["recovery_hash"]))
+        status, _, page = harness.use_code(code)
+        self.assertEqual(status, 200)
+        self.assertIn("That recovery code does not match.", page)
+        status, _, page = harness.call(
+            "POST", "/first-visit/reset",
+            {"code": code, "password": NEW_PASSWORD, "password2": NEW_PASSWORD})
+        self.assertEqual(status, 200)
+        self.assertIn("That recovery code does not match.", page)
 
 
 class ConnectionTests(unittest.TestCase):
@@ -1269,6 +1467,33 @@ class PageTests(unittest.TestCase):
             {"code": code, "password": NEW_PASSWORD, "password2": NEW_PASSWORD})
         self.assertEqual(status, 200)
         self.assertIn(A9_DECIDED, reset_done)
+
+    def test_the_reset_page_carries_the_decided_copy_and_the_checkbox(self):
+        """§3.4's copy, and a no-JavaScript gate on the workspace link."""
+        status, _, page = self.harness.set_signin()
+        self.assertEqual(status, 200)
+        code = CODE_RE.search(page).group(1)
+        page = self.harness.call("GET", "/first-visit/reset")[2]
+        self.assertIn("Reset your machine's sign-in", page)
+        self.assertIn("Enter the recovery code you saved at your first visit, then "
+                      "choose a new sign-in.", page)
+        self.assertIn("This changes the sign-in on this machine only.", page)
+        self.assertIn("Your account password is reset at your account site, under "
+                      "/forgot.", page)
+        self.assertIn("#saved:not(:checked)", page, "the checkbox does not gate the link")
+        self.assertEqual(CODE_RE.search(page), None, "the form shows no code")
+        status, _, done = self.harness.call(
+            "POST", "/first-visit/reset",
+            {"code": code, "password": NEW_PASSWORD, "password2": NEW_PASSWORD})
+        self.assertEqual(status, 200)
+        self.assertIn("Your sign-in is changed.", done)
+        self.assertIn("Every other signed-in browser on this machine has been "
+                      "signed out.", done)
+        self.assertIn("This is the only time the new code is shown. The page will "
+                      "not show it again.", done)
+        self.assertIn('input type="checkbox" id="saved"', done)
+        self.assertIn("I have saved the code and the file", done)
+        self.assertIn(A9_DECIDED, done)
 
     def test_the_wordmark_is_plain_until_the_sign_in_exists(self):
         form = self.harness.call("GET", "/first-visit?t=" + self.harness.token)[2]
@@ -1530,6 +1755,129 @@ class InstallerIntegrationTests(unittest.TestCase):
         self.assertNotIn(token, body)
         self.assertIn(hashlib.sha256(token.encode()).hexdigest(), body)
         self.assertIsNone(json.loads(body)["used_at"])
+
+
+class SessionEndTests(unittest.TestCase):
+    """The vendored dashboard provider is the oracle for "other sessions end".
+
+    A cookie is an HMAC blob signed with a key derived from the secret and the
+    credential; the provider the tenant runs is the thing that decides yes or
+    no. Mint a session before the reset, then ask the post-reset provider: the
+    answer must be no, and the pre-reset provider must still say yes.
+    """
+
+    PROGRAM = r'''
+import base64, sys, types
+sys.path.insert(0, sys.argv[1])
+class _Any(types.ModuleType):
+    def __getattr__(self, name):
+        return type(name, (), {})
+sys.modules.setdefault("httpx", _Any("httpx"))
+from plugins.dashboard_auth.basic import BasicAuthProvider
+mode, secret, username, password_hash = sys.argv[2:6]
+provider = BasicAuthProvider(username=username, password_hash=password_hash,
+                             secret=base64.b64decode(secret))
+if mode == "mint":
+    print(provider.complete_password_login(username=username,
+                                          password=sys.argv[6]).access_token)
+elif mode == "verify":
+    session = provider.verify_session(access_token=sys.argv[6])
+    print("yes" if session is not None else "no")
+else:
+    raise SystemExit(2)
+'''
+
+    def setUp(self):
+        self.root = hermes_agent_root()
+        if self.root is None:
+            self.skipTest("the Hermes checkout is not on this machine")
+        self.home = tempfile.TemporaryDirectory(prefix="odl579-home-")
+        self.addCleanup(self.home.cleanup)
+
+    def provider(self, *args: str) -> list[str]:
+        env = dict(os.environ, HERMES_HOME=str(Path(self.home.name) / "hermes"))
+        result = subprocess.run(
+            [sys.executable, "-c", self.PROGRAM, str(self.root), *args],
+            capture_output=True, text=True, timeout=120, env=env)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return result.stdout.strip().splitlines()
+
+    def test_a_session_minted_before_the_reset_is_refused_after_it(self):
+        harness = FirstVisitHarness()
+        self.addCleanup(harness.close)
+        status, _, page = harness.set_signin()
+        self.assertEqual(status, 200)
+        code = CODE_RE.search(page).group(1)
+        before = fv.env_values(harness.env_text())
+        old_hash = before[fv.PASSWORD_KEY]
+        old_secret = before[fv.SECRET_KEY]
+        token = self.provider("mint", old_secret, "odile", old_hash, PASSWORD)[0]
+        self.assertTrue(token)
+        self.assertEqual(
+            self.provider("verify", old_secret, "odile", old_hash, token), ["yes"],
+            "the control session is not valid before the reset")
+
+        status, _, _ = harness.call(
+            "POST", "/first-visit/reset",
+            {"code": code, "password": NEW_PASSWORD, "password2": NEW_PASSWORD})
+        self.assertEqual(status, 200)
+        after = fv.env_values(harness.env_text())
+        self.assertNotEqual(after[fv.SECRET_KEY], old_secret)
+        self.assertEqual(
+            self.provider("verify", after[fv.SECRET_KEY], "odile",
+                          after[fv.PASSWORD_KEY], token), ["no"],
+            "a browser signed in before the reset was not refused")
+
+
+class FirstBootLogTests(unittest.TestCase):
+    """Defect 4 (ADR-006 §5): the first-boot log carried the setup token.
+
+    The unit sets UMask=0077, the log is 0600, and the line that echoes the
+    installer's argv prints '--first-visit-token <redacted>'. This runs the
+    image's own program against a stub installer, so the assertion is the
+    bytes on disk and the mode, not the source text.
+    """
+
+    TOKEN = "b" * 64
+
+    @classmethod
+    def setUpClass(cls):
+        spec = importlib.util.spec_from_file_location(
+            "odile_firstboot_579", ROOT / "deploy" / "image" / "odile-firstboot.py")
+        assert spec is not None and spec.loader is not None
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[spec.name] = module
+        spec.loader.exec_module(module)
+        cls.firstboot = module
+
+    def test_the_log_is_0600_and_the_line_redacts_the_token(self):
+        with tempfile.TemporaryDirectory(prefix="odl579-firstboot-") as tmp:
+            root = Path(tmp)
+            stub = root / "odile_install.py"
+            stub.write_text("#!/bin/sh\necho stub-installer\n", encoding="utf-8")
+            stub.chmod(0o755)
+            seed = root / "seed.json"
+            seed.write_text("{}\n", encoding="utf-8")
+            log = root / "odile-firstboot.log"
+            # A log left 0644 by an older boot must be narrowed, not appended to.
+            log.write_text("earlier boot\n", encoding="utf-8")
+            log.chmod(0o644)
+            code = self.firstboot.run_installer(
+                str(stub), str(seed), self.TOKEN, 0, str(log))
+            self.assertEqual(code, 0)
+            self.assertEqual(stat.S_IMODE(log.stat().st_mode), 0o600)
+            text = log.read_text(encoding="utf-8")
+            self.assertIn("odile-firstboot", text)
+            self.assertIn("--first-visit-token <redacted>", text)
+            self.assertNotIn(self.TOKEN, text)
+            self.assertIsNone(re.search(r"\b[0-9a-f]{64}\b", text),
+                              "the log carries a 64-hex token")
+
+    def test_the_unit_sets_the_umask(self):
+        unit = (ROOT / "deploy" / "image" / "odile-firstboot.service").read_text(
+            encoding="utf-8")
+        self.assertIn("UMask=0077", unit)
+        self.assertNotRegex(unit, r"\b[0-9a-f]{64}\b")
 
 
 if __name__ == "__main__":

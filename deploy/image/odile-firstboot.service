@@ -26,6 +26,10 @@ ConditionPathExists=/usr/local/lib/odile-image/odile-firstboot.py
 [Service]
 Type=oneshot
 RemainAfterExit=yes
+# ODL-579 (ADR-006 §5 defect 4): everything this oneshot creates is owner-only.
+# /var/log/odile-firstboot.log is 0600 because of this umask, and the program
+# also fchmods it so a file an older boot left 0644 is narrowed.
+UMask=0077
 ExecStart=/usr/bin/python3 /usr/local/lib/odile-image/odile-firstboot.py
 # The installer converges the stack under emulation; a TCG guest takes minutes,
 # not seconds. The fail-closed paths return long before this.

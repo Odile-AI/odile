@@ -73,6 +73,10 @@ input[aria-invalid=true]{border-bottom-color:var(--error)}
   text-transform:uppercase;letter-spacing:.28em;transition:background .18s,color .18s}
 .download:hover{background:var(--ink-hover);border-color:var(--ink-hover);color:var(--paper)}
 .download:focus-visible{outline:2px solid var(--ink);outline-offset:3px}
+.consent{display:flex;align-items:flex-start;gap:10px;margin:16px 0 0;
+  font-size:16px;line-height:1.5;color:var(--soft);cursor:pointer;max-width:54ch}
+.consent input{width:20px;height:20px;margin:2px 0 0;accent-color:var(--ink)}
+#saved:not(:checked)~.act .quiet{pointer-events:none;opacity:.45}
 section{margin:0 0 8px}
 .rule{margin:24px 0 0;padding-top:16px;border-top:1px solid var(--line)}
 .foot{margin:32px 0 0;padding-top:16px;border-top:1px solid var(--line-soft);
@@ -131,13 +135,14 @@ h1,h2,h3,.brand,.mark,.wordmark,.focus{font-family:var(--serif)}
     {{RECOVERY_FILE}}
     <p class="note">A recovery code and a recovery file are the way back: the code resets your sign-in, the file opens your backup. Your first visit gives you both; keep them off the machine. While the machine is still running, the agent can show it again.</p>
   </section>
+  <label class="consent"><input type="checkbox" id="saved"> I have saved the code and the file</label>
   <div class="act">
     <a class="quiet" href="/">Open your workspace</a>
   </div>
 <!--/done-->
 <!--reset-->
-  <h1>Reset your sign-in</h1>
-  <p class="lede">Enter the recovery code you saved, then choose a new password.</p>
+  <h1>Reset your machine's sign-in</h1>
+  <p class="lede">Enter the recovery code you saved at your first visit, then choose a new sign-in. This changes the sign-in on this machine only. Your account password is reset at your account site, under /forgot.</p>
   <form method="post" action="/first-visit/reset">
     <div class="field">
       <label for="code">Recovery code</label>
@@ -146,7 +151,7 @@ h1,h2,h3,.brand,.mark,.wordmark,.focus{font-family:var(--serif)}
       <!--code-error-->
     </div>
     <div class="field">
-      <label for="password">New password</label>
+      <label for="password">New sign-in</label>
       <p class="hint" id="password-hint">At least 16 characters.</p>
       <input type="password" id="password" name="password" autocomplete="new-password"
              minlength="16" required{{PASSWORD_ATTRS}}>
@@ -158,24 +163,53 @@ h1,h2,h3,.brand,.mark,.wordmark,.focus{font-family:var(--serif)}
              minlength="16" required{{PASSWORD2_ATTRS}}>
       <!--password2-error-->
     </div>
-    <button class="primary" type="submit">Set a new password</button>
+    <button class="primary" type="submit">Set the sign-in</button>
   </form>
   <p class="foot">The code you used stops working; a new one is shown next.</p>
 <!--/reset-->
 <!--reset-done-->
-  <h1>Your sign-in is reset.</h1>
-  <p class="lede">The old password no longer opens the workspace.</p>
+  <h1>Your sign-in is changed.</h1>
+  <p class="lede">Every other signed-in browser on this machine has been signed out.</p>
   <section aria-labelledby="recovery">
     <p class="label" id="recovery">Your new recovery code</p>
     <p class="code" id="code">{{RECOVERY}}</p>
-    <p>This is the only time the new code is shown. The code you saved before no longer works.</p>
+    <p>This is the only time the new code is shown. The page will not show it again. The code you saved before no longer works.</p>
     {{RECOVERY_FILE}}
     <p class="note">A recovery code and a recovery file are the way back: the code resets your sign-in, the file opens your backup. Your first visit gives you both; keep them off the machine. While the machine is still running, the agent can show it again.</p>
   </section>
+  <label class="consent"><input type="checkbox" id="saved"> I have saved the code and the file</label>
   <div class="act">
     <a class="quiet" href="/">Open your workspace</a>
   </div>
 <!--/reset-done-->
+<!--recover-->
+  <h1>Download your recovery file</h1>
+  <p class="lede">Enter the recovery code you saved at your first visit. This file holds your backup password.</p>
+  <form method="post" action="/first-visit/recovery">
+    <div class="field">
+      <label for="code">Recovery code</label>
+      <input type="text" id="code" name="code" autocomplete="off" autocapitalize="characters"
+             spellcheck="false" required{{CODE_ATTRS}}>
+      <!--code-error-->
+    </div>
+    <button class="primary" type="submit">Show the download</button>
+  </form>
+  <p class="foot">Your sign-in does not change. The code you use stops working; a new one is shown next.</p>
+<!--/recover-->
+<!--recovery-done-->
+  <h1>Your recovery file is ready.</h1>
+  <p class="lede">Download it now: the button below works once, for ten minutes.</p>
+  <section aria-labelledby="recovery">
+    <p class="label" id="recovery">Your new recovery code</p>
+    <p class="code" id="code">{{RECOVERY}}</p>
+    <p>This is the only time the new code is shown. The page will not show it again. The code you saved before no longer works.</p>
+    {{RECOVERY_FILE}}
+  </section>
+  <label class="consent"><input type="checkbox" id="saved"> I have saved the code and the file</label>
+  <div class="act">
+    <a class="quiet" href="/">Open your workspace</a>
+  </div>
+<!--/recovery-done-->
 <!--refused-->
   <h1>This link is closed.</h1>
   <p class="lede">The sign-in was already set, or the link is not valid.</p>
