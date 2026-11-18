@@ -76,16 +76,28 @@ A row without a reason is itself a finding, and so is a row whose reason contain
 its own value: that row matches itself, so "every row matched" would prove
 nothing.
 
-The forbid list. The default is ``leak-forbid.txt`` at the root of the tree, and
-the public tree carries one (``tools/build_public_tree.py`` copies it). A missing
-default is printed in the header, so a skip is never silent; an explicitly named
-``--forbid-file`` that does not exist is a finding and exit 2, because the caller
-asked for that list and did not get it.
+The forbid list. The default is ``leak-forbid.txt`` at the root of the tree;
+the repository publishes that copy, and HQ keeps the canonical list under
+``docs/ops/`` and names it with ``--forbid-file`` (``make leak`` resolves
+whichever exists). The list itself is the one file that carries its literals, so
+its path is skipped. A missing default is printed, so a skip is never silent; an
+explicitly named ``--forbid-file`` that does not exist is a finding and exit 2,
+because the caller asked for that list and did not get it. A hit is waived only
+by an allowlist row whose digest pins that exact value and whose path glob
+matches; that is how a permanent public fixture, or a debt row with the date of
+the card that clears it, is recorded.
+
+``--forbid-only`` runs that one class and skips the tree classes: it is what
+the CI history job uses, so an already-public address in an old root does not
+fail a job about the deny list. ``--stdin`` scans a stream with ``--label``
+naming it; the pre-push hook pipes the outgoing diff and commit messages
+through it.
 
 Usage:
 
     tools/leak_scan.py --tree                 # tracked and untracked files
-    tools/leak_scan.py --history              # every commit in rev-list --all
+    tools/leak_scan.py --history --forbid-only --forbid-file leak-forbid.txt
+    tools/leak_scan.py --stdin --label commit-message < messages.txt
     tools/leak_scan.py --all --forbid-file docs/ops/leak-forbid.txt
 
 Exit codes: 0 clean, 1 a finding, 2 the scan could not run.
@@ -802,43 +814,65 @@ def is_binary(data: bytes) -> bool:
     return b"\0" in data[:8192]
 
 
+def matching_allow(allows: list[Allow], path: str, rule: str, value: str) -> Allow | None:
+    """The allowlist row that waives this value at this path, if one does.
+
+    The digest is over the matched value, so a row cannot hide a different
+    value at the same path. A ``*`` path is allowed because the digest still
+    pins the one value.
+    """
+    digest = "sha256:" + hashlib.sha256(value.encode("utf-8", "replace")).hexdigest()[:12]
+    for row in allows:
+        if row.rule == rule and fnmatch.fnmatch(path, row.path) and row.digest == digest:
+            return row
+    return None
+
+
+def record(report: Report, allows: list[Allow], today: date, rule: str, path: str,
+           line: int, value: str, note: str = "") -> None:
+    """File one candidate as a finding, an allowance, or a broken row."""
+    hit = matching_allow(allows, path, rule, value)
+    if hit is None:
+        report.findings.append(Finding(rule, path, line, value, note=note))
+        return
+    if not hit.live(today):
+        report.findings.append(Finding("stale-allow", path, line, value,
+                                       note=f"expired {hit.expires} (debt)"))
+    elif value.strip() and value.strip() in hit.reason:
+        # The reason quotes the value it waives, so the row matches its own
+        # evidence and "every row matched" proves nothing.
+        report.findings.append(Finding("self-satisfying", path, line, value,
+                                       note="the row's reason contains its own value"))
+    else:
+        report.allowed += 1
+
+
 def apply(report: Report, root: Path, allows: list[Allow], today: date,
           path: str, candidates: list[tuple[str, int, str, str]]) -> None:
     for rule, line, value, note in candidates:
-        hit = None
-        for row in allows:
-            if row.rule != rule or not fnmatch.fnmatch(path, row.path):
-                continue
-            if row.digest == "sha256:" + hashlib.sha256(value.encode("utf-8", "replace")).hexdigest()[:12]:
-                hit = row
-                break
-        if hit is not None:
-            if not hit.live(today):
-                report.findings.append(Finding("stale-allow", path, line, value,
-                                               note=f"expired {hit.expires} (debt)"))
-            elif value.strip() and value.strip() in hit.reason:
-                # The reason quotes the value it waives, so the row matches its
-                # own evidence and "every row matched" proves nothing.
-                report.findings.append(Finding("self-satisfying", path, line, value,
-                                               note="the row's reason contains its own value"))
-            else:
-                report.allowed += 1
-            continue
-        report.findings.append(Finding(rule, path, line, value, note=note))
+        record(report, allows, today, rule, path, line, value, note)
 
 
-def scan_forbidden(text: str, path: str, forbid: list[tuple[str, re.Pattern[str]]]) -> list[Finding]:
-    found = []
+def scan_forbidden(report: Report, allows: list[Allow], today: date, text: str,
+                   path: str, forbid: list[tuple[str, re.Pattern[str]]]) -> int:
+    """File the forbidden literals in one text; return how many matched.
+
+    A hit is a finding unless an allowlist row pins that value (a permanent
+    fixture, or a debt row with the date of the card that clears it). The
+    forbid list itself carries its own literals, so the caller skips its path.
+    """
+    seen = 0
     for label, pattern in forbid:
         for match in pattern.finditer(text):
-            found.append(Finding("forbidden-value", path, text[:match.start()].count("\n") + 1,
-                                 match.group(0), note=label))
-    return found
+            seen += 1
+            record(report, allows, today, "forbidden-value", path,
+                   text[:match.start()].count("\n") + 1, match.group(0), label)
+    return seen
 
 
 def scan_tree(root: Path, allows: list[Allow], today: date,
               forbid: list[tuple[str, re.Pattern[str]]],
-              skip: set[str] | None = None) -> Report:
+              skip: set[str] | None = None, forbid_only: bool = False) -> Report:
     report = Report("tree")
     skip = skip or set()
     listed = subprocess.run(["git", "-C", str(root), "ls-files", "-z"], capture_output=True).stdout.split(b"\0")
@@ -859,17 +893,18 @@ def scan_tree(root: Path, allows: list[Allow], today: date,
             continue
         report.files += 1
         report.bytes_scanned += len(data)
-        for scanned_path, candidates in scan_data(relative, data):
-            apply(report, root, allows, today, scanned_path, candidates)
+        if not forbid_only:
+            for scanned_path, candidates in scan_data(relative, data):
+                apply(report, root, allows, today, scanned_path, candidates)
         if not relative.endswith(ARCHIVE_SUFFIXES):
             text = data.decode("latin-1") if is_binary(data) else data.decode("utf-8", "replace")
-            report.findings.extend(scan_forbidden(text, relative, forbid))
+            scan_forbidden(report, allows, today, text, relative, forbid)
     return report
 
 
 def scan_history(root: Path, allows: list[Allow], today: date,
                  forbid: list[tuple[str, re.Pattern[str]]],
-                 skip: set[str] | None = None) -> Report:
+                 skip: set[str] | None = None, forbid_only: bool = False) -> Report:
     report = Report("history")
     skip = skip or set()
     commits = [c.decode() for c in subprocess.run(
@@ -909,10 +944,11 @@ def scan_history(root: Path, allows: list[Allow], today: date,
                 continue
             text = data.decode("latin-1") if is_binary(data) else data.decode("utf-8", "replace")
             before = len(report.findings)
-            for scanned_path, candidates in scan_data(path, data):
-                apply(report, root, allows, today, scanned_path, candidates)
+            if not forbid_only:
+                for scanned_path, candidates in scan_data(path, data):
+                    apply(report, root, allows, today, scanned_path, candidates)
             if not path.endswith(ARCHIVE_SUFFIXES):
-                report.findings.extend(scan_forbidden(text, path, forbid))
+                scan_forbidden(report, allows, today, text, path, forbid)
             for finding in report.findings[before:]:
                 finding.commit = commit[:7]
     finally:
@@ -950,6 +986,14 @@ def main(argv: list[str] | None = None) -> int:
                         help="file of private literals, one per line: label<TAB>regex "
                              "(default: leak-forbid.txt at the tree root; a missing "
                              "default is reported, a named file that is missing exits 2)")
+    parser.add_argument("--forbid-only", action="store_true",
+                        help="run only the forbidden-value class: the deny list, not the "
+                             "address/mailbox/credential classes (CI history, a push)")
+    parser.add_argument("--stdin", action="store_true",
+                        help="scan stdin for forbidden literals only; with --label, the "
+                             "path the findings are reported under (the pre-push hook)")
+    parser.add_argument("--label", default="<stdin>",
+                        help="path label for --stdin findings (default: <stdin>)")
     args = parser.parse_args(argv)
 
     root = Path(args.root).resolve()
@@ -986,15 +1030,37 @@ def main(argv: list[str] | None = None) -> int:
         print(f"FINDING allow-file  --forbid-file {forbid_name}: no such file")
         return 2
     else:
-        # The default is absent in the private checkout, where the list lives
-        # under docs/ops/. Say so, so a skip is never silent.
+        # A checkout from before the repository carried the list. Say so, so a
+        # skip is never silent; `make leak` always names one, so this is only
+        # reached by a hand-run scanner in an old tree.
         print(f"forbid list:     absent ({forbid_name}) — the forbidden-value class did not run")
     skip: set[str] = set()
-    try:
-        skip = {forbid_path.resolve().relative_to(root).as_posix()}
-    except ValueError:
-        skip = set()
+    # Two copies of the list exist at HQ: the canonical `docs/ops/leak-forbid.txt`
+    # (untracked) and the root copy the repository publishes. Both carry their
+    # own literals by definition, so both are skipped wherever they appear.
+    for name in (forbid_name, DEFAULT_FORBID):
+        candidate = Path(name)
+        if not candidate.is_absolute():
+            candidate = root / candidate
+        try:
+            skip.add(candidate.resolve().relative_to(root).as_posix())
+        except ValueError:
+            pass
     today = date.today()
+
+    if args.stdin:
+        text = sys.stdin.read()
+        report = Report("stdin")
+        scan_forbidden(report, allows, today, text, args.label, forbid)
+        print(f"leak scan: stdin ({args.label})")
+        print(f"  lines scanned:  {len(text.splitlines()):,}")
+        for finding in report.findings:
+            print(finding.render())
+        if report.findings:
+            print(f"FAIL: {len(report.findings)} finding(s) in {args.label}")
+            return 1
+        print(f"PASS: nothing forbidden in {args.label}")
+        return 0
 
     modes = ["tree", "history"] if args.all else (
         [m for m, on in (("tree", args.tree), ("history", args.history)) if on] or ["tree"])
@@ -1007,8 +1073,8 @@ def main(argv: list[str] | None = None) -> int:
         print(f"FINDING forbid-file {problem}")
         status = 1
     for mode in modes:
-        report = (scan_tree(root, allows, today, forbid, skip) if mode == "tree"
-                  else scan_history(root, allows, today, forbid, skip))
+        report = (scan_tree(root, allows, today, forbid, skip, args.forbid_only) if mode == "tree"
+                  else scan_history(root, allows, today, forbid, skip, args.forbid_only))
         render(report)
         if report.findings:
             status = 1

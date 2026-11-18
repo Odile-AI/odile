@@ -832,15 +832,15 @@ $ echo $?
 ```
 
 The live tenant is another chip, so the run fetches its own VCEK. This is the
-`odl-7971a8` report the server has served since its last boot; the verifier
+`odl-fake01` report the server has served since its last boot; the verifier
 fetched the VCEK for chip `3fa18b…` and TCB `bl=4 tee=0 snp=23 ucode=213`
 from `https://kdsintf.amd.com`, and the certificate chained to the same pinned
 ARK:
 
 ```
 $ ./odile-verify --expect 9f01725afd71968f74e6dec5f7768b9dfaf52a46cbcfe8a49e106b5cff94028080a47c3d7f56dd7c5c49e6781517f137 \
-    https://odl-7971a8.odile.fyi
-  source           https://odl-7971a8.odile.fyi/attestation
+    https://odl-fake01.odile.fyi
+  source           https://odl-fake01.odile.fyi/attestation
   fetched_at       2026-11-13T01:13:51Z
   measurement      9f01725afd71968f74e6dec5f7768b9dfaf52a46cbcfe8a49e106b5cff94028080a47c3d7f56dd7c5c49e6781517f137
   kds              https://kdsintf.amd.com/vcek/v1/Milan/<chip-id>?blSPL=4&teeSPL=0&snpSPL=23&ucodeSPL=213

@@ -80,8 +80,8 @@ UTC = timezone.utc
 # judge can stop or break it; its uptime is Odile's demo, not a tenant's, and
 # publishing it would make the reliability figure depend on who visited.  The
 # page leaves these tenancy ids out of the aggregate and the incident list.
-# `odl-7971a8` is the demo's tenancy id and survives a rebuild of the machine.
-DEMO_SLUGS = frozenset({"odl-7971a8"})
+# `odl-fake01` is the demo's tenancy id and survives a rebuild of the machine.
+DEMO_SLUGS = frozenset({"odl-fake01"})
 
 # The three questions the page answers, as SQL.  They are kept here rather
 # than hidden in the module so `--json` can print them: the evidence for a

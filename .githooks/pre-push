@@ -1,0 +1,101 @@
+#!/bin/sh
+# Odile pre-push gate: the outgoing range must not carry a private literal.
+#
+# The pre-commit hook runs `make check`, which scans the whole tree. This hook
+# covers the two surfaces a file scan cannot see: the commit messages and the
+# content of the commits about to leave the machine. It reads the same deny list
+# as `make leak` — HQ's `docs/ops/leak-forbid.txt`, or the root `leak-forbid.txt`
+# that the repository publishes — and blocks on the first hit.
+#
+# Git does not version hook installation, so enable it once per clone:
+#
+#     make hooks
+#
+# The deliberate bypass is:
+#
+#     git push --no-verify
+#
+# It is for a push whose literal is already in the remote (a rewrite in
+# progress), never for "the hook is inconvenient": CI's `history-private` step
+# runs the same list over every blob, so a bypassed literal is a red run.
+set -eu
+
+cd "$(git rev-parse --show-toplevel)"
+
+PYTHON=${PYTHON:-/usr/bin/python3}
+SCANNER=tools/leak_scan.py
+
+FORBID=
+for candidate in docs/ops/leak-forbid.txt leak-forbid.txt; do
+    if [ -f "$candidate" ]; then
+        FORBID=$candidate
+        break
+    fi
+done
+if [ -z "$FORBID" ]; then
+    printf 'pre-push: no deny list (docs/ops/leak-forbid.txt or leak-forbid.txt)\n' >&2
+    printf 'pre-push: refusing to push a range that cannot be scanned.\n' >&2
+    exit 1
+fi
+if [ ! -f "$SCANNER" ]; then
+    printf 'pre-push: %s is missing; refusing to push an unscanned range.\n' "$SCANNER" >&2
+    exit 1
+fi
+
+# The base of the outgoing range. An upstream is the card's form:
+# `git log @{u}..HEAD --format=%B` and `git diff @{u}...HEAD`. A new branch has
+# no upstream yet, so fall back to the merge base with origin/main; a repository
+# with neither has no ref to compare against, so every commit in HEAD is
+# outgoing and the empty tree is the base.
+EMPTY_TREE=$(git hash-object -t tree /dev/null)
+BASE=
+if git rev-parse --verify --quiet '@{u}' >/dev/null 2>&1; then
+    BASE='@{u}'
+elif git rev-parse --verify --quiet refs/remotes/origin/main >/dev/null 2>&1; then
+    BASE=$(git merge-base HEAD refs/remotes/origin/main)
+else
+    BASE=$EMPTY_TREE
+fi
+if [ "$BASE" = "$EMPTY_TREE" ]; then
+    MESSAGES=HEAD
+else
+    MESSAGES="$BASE..HEAD"
+fi
+
+scan() {
+    "$PYTHON" "$SCANNER" --stdin --label "$1" --forbid-file "$FORBID"
+}
+
+status=0
+
+# 1. Every commit message in the outgoing range.
+if ! git log --format=%B "$MESSAGES" | scan commit-message; then
+    status=1
+fi
+
+# 2. The range's net diff, added lines only: a line being removed is not
+#    outgoing. `git diff @{u}...HEAD` is the card's command; the empty-tree
+#    case diffs the whole head, because every commit in it is outgoing.
+if [ "$BASE" = "$EMPTY_TREE" ]; then
+    if ! git diff --no-color "$EMPTY_TREE" HEAD | awk '/^\+/ && !/^\+\+\+/' | scan outgoing-diff; then
+        status=1
+    fi
+elif ! git diff --no-color "$BASE...HEAD" | awk '/^\+/ && !/^\+\+\+/' | scan outgoing-diff; then
+    status=1
+fi
+
+# 3. Each outgoing commit's own added lines, so a literal added and removed
+#    again inside one push is still caught: it is in the pushed history.
+if ! git log --format= --no-color --unified=0 -p "$MESSAGES" \
+        | awk '/^\+/ && !/^\+\+\+/' | scan outgoing-history; then
+    status=1
+fi
+
+if [ "$status" -ne 0 ]; then
+    printf '\npre-push: a private literal is in the outgoing range; the push did not happen.\n' >&2
+    printf 'pre-push: rewrite the commit (or remove the literal), or bypass deliberately with:\n' >&2
+    printf 'pre-push:     git push --no-verify\n' >&2
+    exit 1
+fi
+
+printf 'pre-push: the outgoing range carries no literal from %s\n' "$FORBID"

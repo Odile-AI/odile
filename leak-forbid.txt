@@ -1,0 +1,21 @@
+# Literals that must never appear in a public tree. One per line: label<TAB>regex.
+# One list, two copies: this file is canonical (HQ; docs/ops/ is excluded from
+# git), and the repository publishes a byte-identical copy as `leak-forbid.txt`
+# at its root, where a clone and CI find it by default. The build also carries
+# it into a built tree. tests/test_forbid_gate.py fails when the two copies at
+# HQ differ; never edit one without the other. The list itself is not scanned
+# for its own literals (it is the one file that carries them).
+servury-box-id	168020b4
+servury-dev-account	lkbxu6i9
+servury-host-account	3crgpww2
+servury-account	34bc6c43
+hq-address	23\.155\.44\.\d+
+demo-address	69\.80\.225\.\d+
+demo-tenant	192\.88\.180\.\d+
+provider-ipv6	2602:F41C:
+personal-mailbox	thessalonians2313@
+checkout-path	/root/odile
+tenant-instance-id	31a63bbb
+host-box-id	oqwaclzm
+tenant-slug	odl-7971a8
+bench-instance-id	24b35c62

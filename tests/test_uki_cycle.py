@@ -62,9 +62,9 @@ marker.write_text("yes")
 out.parent.mkdir(parents=True, exist_ok=True)
 out.with_name("cycle-args.txt").write_text("\\n".join(args))
 out.write_text(
-    "# servury_cycle 31a63bbb action=restart\\n"
+    "# servury_cycle 0badc0de action=restart\\n"
     "# image_sha256 %s\\n\\n"
-    "[    1.0] Kernel command line: bb.host=odl-7971a8\\n"
+    "[    1.0] Kernel command line: bb.host=odl-fake01\\n"
     "[    2.0] bb-sealed-unlock: root_crypt opened with the SNP-derived key\\n"
     "[   45.0] odile-release-setup.sh: measurement %s\\n" % (sha, "%MEASUREMENT%")
 )
@@ -77,7 +77,7 @@ from pathlib import Path
 args = sys.argv[1:]
 out = Path(args[args.index("--serial-out") + 1])
 out.parent.mkdir(parents=True, exist_ok=True)
-out.write_text("# servury_cycle 31a63bbb action=restart\\n# stage never reached\\n")
+out.write_text("# servury_cycle 0badc0de action=restart\\n# stage never reached\\n")
 print("transcript %s" % out)
 sys.exit(1)
 '''
@@ -179,7 +179,7 @@ class CycleSequenceTests(unittest.TestCase):
         argv = [
             "--uki", str(self.uki),
             "--card", "t_test",
-            "--server-id", "31a63bbb",
+            "--server-id", "0badc0de",
             "--evidence-dir", str(self.evidence),
             "--publish-tool", str(self.publish),
             "--cycle-tool", str(self.cycle),
@@ -235,7 +235,7 @@ class CycleSequenceTests(unittest.TestCase):
         # The cycle tool prints the path it chose; the evidence quotes it.
         body = CYCLE_STUB.replace("%MEASUREMENT%", MEASUREMENT).replace(
             'print("transcript %s" % out)',
-            'print("via         the key does not answer for 31a63bbb (Server not found): using the panel")\n'
+            'print("via         the key does not answer for 0badc0de (Server not found): using the panel")\n'
             'print("transcript %s" % out)')
         self.cycle = self.write_tool("cycle_stub_panel.py", body)
 
@@ -317,7 +317,7 @@ class FreshTranscriptTests(unittest.TestCase):
             key.write_text("k", encoding="utf-8")
             out = Path(tmp) / "boot.txt"
             argv = [
-                "--server-id", "31a63bbb", "--action", "restart",
+                "--server-id", "0badc0de", "--action", "restart",
                 "--serial-out", str(out), "--wait-for", "bb-sealed-unlock",
                 "--timeout", "1", "--interval", "0", "--key-file", str(key), "--fresh",
                 "--via", "api",
@@ -348,7 +348,7 @@ class FreshTranscriptTests(unittest.TestCase):
             key = Path(tmp) / "key"
             key.write_text("k", encoding="utf-8")
             argv = [
-                "--server-id", "31a63bbb", "--serial-out", str(Path(tmp) / "b.txt"),
+                "--server-id", "0badc0de", "--serial-out", str(Path(tmp) / "b.txt"),
                 "--wait-for", "bb-sealed-unlock", "--timeout", "1", "--interval", "0",
                 "--key-file", str(key), "--via", "api",
             ]
@@ -382,7 +382,7 @@ class PowerTests(unittest.TestCase):
             key = Path(tmp) / "key"
             key.write_text("k", encoding="utf-8")
             argv = [
-                "--server-id", "31a63bbb", "--serial-out", str(Path(tmp) / "b.txt"),
+                "--server-id", "0badc0de", "--serial-out", str(Path(tmp) / "b.txt"),
                 "--wait-for", "bb-sealed-unlock", "--timeout", "1", "--interval", "0",
                 "--key-file", str(key), "--via", "api",
             ]
@@ -405,7 +405,7 @@ class PowerTests(unittest.TestCase):
             key = Path(tmp) / "key"
             key.write_text("k", encoding="utf-8")
             argv = [
-                "--server-id", "31a63bbb", "--serial-out", str(Path(tmp) / "b.txt"),
+                "--server-id", "0badc0de", "--serial-out", str(Path(tmp) / "b.txt"),
                 "--timeout", "1", "--interval", "0", "--key-file", str(key),
             ]
             with mock.patch.object(servury_cycle, "call", fake_call), \
@@ -444,10 +444,10 @@ class ServerIdTests(unittest.TestCase):
 class ViaTests(unittest.TestCase):
     def test_a_key_that_answers_keeps_the_api(self) -> None:
         with mock.patch.object(servury_cycle, "boot_image_state", return_value={"next_start": "custom"}):
-            self.assertEqual(servury_cycle.choose_via("auto", "k", "31a63bbb"), "api")
+            self.assertEqual(servury_cycle.choose_via("auto", "k", "0badc0de"), "api")
 
     def test_server_not_found_falls_back_to_the_panel(self) -> None:
-        # Measured 12 November: the reseller key owns 31a63bbb; the ukitest box
+        # Measured 12 November: the reseller key owns 0badc0de; the ukitest box
         # belongs to the account with a panel session and no key.
         with mock.patch.object(servury_cycle, "boot_image_state", side_effect=RuntimeError("Server not found.")):
             self.assertEqual(servury_cycle.choose_via("auto", "k", SERVER), "panel")
@@ -475,7 +475,7 @@ class BootImageApiTests(unittest.TestCase):
         with mock.patch.object(servury_cycle, "call", fake_call), \
                 mock.patch.object(servury_cycle.time, "sleep", lambda seconds: None):
             path = servury_cycle.set_boot_image_api(
-                "k", "31a63bbb", "https://example.test/x.efi", MEASUREMENT, timeout=10, interval=0)
+                "k", "0badc0de", "https://example.test/x.efi", MEASUREMENT, timeout=10, interval=0)
 
         self.assertEqual(path, "api")
         self.assertEqual(calls[0], ("boot-image", {"url": "https://example.test/x.efi", "sha256": MEASUREMENT}))
@@ -489,7 +489,7 @@ class BootImageApiTests(unittest.TestCase):
                 mock.patch.object(servury_cycle.time, "sleep", lambda seconds: None):
             with self.assertRaisesRegex(RuntimeError, "never reported download.state=ready"):
                 servury_cycle.set_boot_image_api(
-                    "k", "31a63bbb", "https://example.test/x.efi", MEASUREMENT, timeout=0, interval=0)
+                    "k", "0badc0de", "https://example.test/x.efi", MEASUREMENT, timeout=0, interval=0)
 
 
 class PanelFreshnessTests(unittest.TestCase):

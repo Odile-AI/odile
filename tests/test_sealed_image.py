@@ -3511,7 +3511,7 @@ class RecoverySeedTests(unittest.TestCase):
         self.cmdline = self.dir / "cmdline"
         self.cmdline.write_text(
             "root=/dev/mapper/root_crypt ro console=ttyS0 bb.release=2026.11.2"
-            " bb.host=odl-7971a8 bb.iid=31a63bbb seal_id=0123456789abcdef\n",
+            " bb.host=odl-fake01 bb.iid=0badc0de seal_id=0123456789abcdef\n",
             encoding="utf-8")
         self.installer = _load("odile_install_recovery_seed",
                                ROOT / "installer" / "odile_install.py")
@@ -3526,7 +3526,7 @@ class RecoverySeedTests(unittest.TestCase):
         """A rebuild's call: the password on stdin, never on argv."""
         return subprocess.run(
             [sys.executable, str(self.SCRIPT), "--path", str(self.path),
-             "--tenant", "odl-7971a8", "--instance", "31a63bbb", "--password-stdin"],
+             "--tenant", "odl-fake01", "--instance", "0badc0de", "--password-stdin"],
             input=password, capture_output=True, text=True, timeout=60)
 
     def test_a_seeded_password_replaces_a_generated_one_and_keeps_written(self) -> None:
@@ -3567,8 +3567,8 @@ class RecoverySeedTests(unittest.TestCase):
         self.assertEqual(
             text,
             self.installer.render_recovery(
-                "odl-7971a8", "31a63bbb", parsed["backup_password"], None,
-                "odl-7971a8.odile.fyi", written=parsed["written"]))
+                "odl-fake01", "0badc0de", parsed["backup_password"], None,
+                "odl-fake01.odile.fyi", written=parsed["written"]))
         self.assertIn("Certificate SHA-256: (pending", text)
 
     def test_a_second_run_leaves_the_file_byte_identical(self) -> None:
@@ -3583,8 +3583,8 @@ class RecoverySeedTests(unittest.TestCase):
 
     def test_an_installers_recovery_file_is_not_replaced(self) -> None:
         canonical = self.installer.render_recovery(
-            "odl-7971a8", "31a63bbb", "Z" * 32, "sha256:" + "a" * 64,
-            "odl-7971a8.odile.fyi", written="2026-11-12T09:17:37Z")
+            "odl-fake01", "0badc0de", "Z" * 32, "sha256:" + "a" * 64,
+            "odl-fake01.odile.fyi", written="2026-11-12T09:17:37Z")
         self.path.write_text(canonical, encoding="utf-8")
         os.chmod(self.path, 0o600)
         result = self.run_seed()
@@ -3595,8 +3595,8 @@ class RecoverySeedTests(unittest.TestCase):
         result = self.run_seed()
         self.assertEqual(result.returncode, 0, result.stderr)
         parsed = self.installer.parse_recovery(self.path.read_text(encoding="utf-8"))
-        self.assertIn("odl-7971a8", self.path.read_text(encoding="utf-8"))
-        self.assertIn("31a63bbb", self.path.read_text(encoding="utf-8"))
+        self.assertIn("odl-fake01", self.path.read_text(encoding="utf-8"))
+        self.assertIn("0badc0de", self.path.read_text(encoding="utf-8"))
         self.assertIn("written", parsed)
         # A command line with no bb.host writes nothing rather than a file
         # naming the wrong machine.

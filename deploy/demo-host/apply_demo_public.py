@@ -1,7 +1,7 @@
 #!/usr/bin/python3
 """Apply the public demo surface on Odile's tenant machine — ODL-503.
 
-This program runs **as root on the tenant** (odl-7971a8). The HQ-side deploy
+This program runs **as root on the tenant** (odl-fake01). The HQ-side deploy
 (`deploy/demo-host/deploy_demo_public.py`) uploads it and these files
 
     /usr/local/lib/odile-demo-public/apply_demo_public.py    this program

@@ -38,7 +38,7 @@ API = "https://api.cloudflare.com/client/v4"
 ZONE_NAME = "odile.fyi"
 RECORD_NAME = "demo.odile.fyi"
 RECORD_TYPE = "A"
-#: The tenant machine (odl-7971a8) — the demo's home since ODL-503.
+#: The tenant machine (odl-fake01) — the demo's home since ODL-503.
 TENANT_IP = "203.0.113.87"
 #: The HQ box — the fallback, one flag away: `--target 203.0.113.139`.
 HQ_IP = "203.0.113.139"

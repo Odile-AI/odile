@@ -1,6 +1,6 @@
 # BEGIN odile-demo-public
 # demo.odile.fyi — the hosted demo, served by Odile's own tenant machine
-# (odl-7971a8, 203.0.113.87): the `tenant` gateway on 127.0.0.1:9130 and the
+# (odl-fake01, 203.0.113.87): the `tenant` gateway on 127.0.0.1:9130 and the
 # first-visit service on 127.0.0.1:8091. Card: ODL-503.
 #
 # Committed source of truth for the live block in the tenant's

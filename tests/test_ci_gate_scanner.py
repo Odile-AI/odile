@@ -122,12 +122,20 @@ class PublishLintUsesTheBaseScanner(unittest.TestCase):
 
     def test_the_job_still_scans_with_the_tree_scanner(self):
         self.assertIn("tools/leak_scan.py --tree", self.block)
-        # The tree's own scan names the forbid list when the tree carries one
-        # (a built tree), so a missing list is a finding there; the
-        # source-of-truth repository cannot carry the list, so the step says
-        # the class did not run instead of skipping it in silence.
+        # The repository publishes the deny list at its root, so the tree's own
+        # scan always names it; a missing list is a finding (exit 2), not a
+        # silent skip. The comment in the workflow says so; the `test -f` is
+        # the same promise made by the shell.
         self.assertIn("--forbid-file leak-forbid.txt", self.block)
-        self.assertIn("the forbidden-value class did not run in this tree", self.block)
+        self.assertIn("test -f leak-forbid.txt", self.block)
+
+    def test_history_scans_every_blob_against_the_deny_list(self):
+        block = job_block("history-secrets")
+        self.assertIn("--history --forbid-file leak-forbid.txt --forbid-only", block)
+        self.assertIn("test -f leak-forbid.txt", block)
+        # The class is scoped: the replaced roots' public addresses must not
+        # fail a job about the deny list.
+        self.assertNotIn("--history --forbid-file leak-forbid.txt\n", block)
 
     # -- behaviour: run the step's own shell against a fixture tree ----------
     def test_the_step_fails_a_pr_that_weakens_its_own_scanner(self):

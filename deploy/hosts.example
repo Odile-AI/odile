@@ -1,0 +1,37 @@
+# Odile host values — the committed template.
+#
+# Every private machine value the runbooks need, with a placeholder. Copy this
+# file to `deploy/hosts.local` (gitignored) and fill it from the secret store
+# (SOPS/age, 1Password, Vault); the real file is the only place a live value
+# belongs. `tools/hosts_file.py` reads either one, refuses a missing, unknown,
+# duplicate or non-placeholder key, and names the line.
+#
+# Placeholder vocabulary (docs/ops/LEAK-CONTROL.md §"Placeholders"):
+#   an address     RFC 5737 (192.0.2.0/24, 198.51.100.0/24, 203.0.113.0/24)
+#   an IPv6        RFC 3849 (2001:db8::/32)
+#   a vendor id    <servury-account:dev>, <servury-account:host>,
+#                  <servury-account:main>, <servury-box:hq>, <servury-box:host>
+#   a machine      <server:ukitest>, <instance:tenant>, <instance:bench>
+#   a path         <checkout>
+#   a slug         odl-000000 (the scanner's own stand-in)
+#   a mailbox      owner@example.com
+#
+# One key per label in the deny list (leak-forbid.txt), so a value that reaches
+# a file, a commit message or a diff is caught by the same list the gate runs.
+# The UKI test machine is the one key the Makefile also reads from
+# /root/.odile/servury_uki_server_id.
+SERVURY_BOX_ID=<servury-box:hq>
+SERVURY_ACCOUNT_DEV=<servury-account:dev>
+SERVURY_ACCOUNT_HOST=<servury-account:host>
+SERVURY_ACCOUNT=<servury-account:main>
+HQ_ADDRESS=203.0.113.139
+DEMO_ADDRESS=203.0.113.87
+DEMO_TENANT_ADDRESS=203.0.113.10
+PROVIDER_IPV6=2001:db8:0:263::1
+PERSONAL_MAILBOX=owner@example.com
+CHECKOUT_PATH=<checkout>
+TENANT_INSTANCE_ID=<instance:tenant>
+HOST_BOX_ID=<servury-box:host>
+TENANT_SLUG=odl-000000
+BENCH_INSTANCE_ID=<instance:bench>
+SERVER_ID=<server:ukitest>

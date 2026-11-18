@@ -10,11 +10,11 @@ node's download to report `ready`, turn the console log on, apply the power
 action, wait for the line that means the boot reached the stage under test, and
 save the transcript as evidence.
 
-    ./tools/servury_cycle.py --server-id 31a63bbb --action restart \\
+    ./tools/servury_cycle.py --server-id 0badc0de --action restart \\
         --wait-for "bb-sealed-unlock" --serial-out docs/evidence/uki-boot.txt
 
 **The key is account-scoped.** `/root/.odile/servury_reseller_key` owns
-`31a63bbb` and `<server:hq>`; `<server:ukitest>` (the image box) belongs to
+`0badc0de` and `<server:hq>`; `<server:ukitest>` (the image box) belongs to
 `<servury-account:dev>`, which has a panel session and no reseller key — the API
 answers `Server not found` for it. So `--via auto` (the default) uses the API
 where the key answers and falls back to `tools/servury_panel.py` otherwise, and

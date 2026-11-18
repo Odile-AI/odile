@@ -85,7 +85,7 @@ and sell a sentence the deck does not already own.
 
 ## 2. What exists today, measured
 
-The live tenant `odl-7971a8`, as the runbooks record it. Nothing in this table is
+The live tenant `odl-fake01`, as the runbooks record it. Nothing in this table is
 a projection; each line is a measurement with a date and a source.
 
 | Fact | Value | Where |

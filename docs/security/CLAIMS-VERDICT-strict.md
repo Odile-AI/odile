@@ -1,7 +1,7 @@
 # ODL-466 — Access claims verdict: the strict bar against the tenant evidence
 
 **Seat:** security · **Card:** ODL-466 · **Decided text:** `docs/product/CLAIMS-RECUT-STRICT.md` (ODL-461, 2026-11-10), not the v3.7/v3.8 deck
-**Evidence base:** `main` `8c2ad99` (ODL-332 merged) · tenant `odl-7971a8` · `203.0.113.87` · Servury Blackbox Plus `31a63bbb`
+**Evidence base:** `main` `8c2ad99` (ODL-332 merged) · tenant `odl-fake01` · `203.0.113.87` · Servury Blackbox Plus `0badc0de`
 **Gate:** `make acceptance CARD=ODL-466` at `main` `898d493` (ODL-208 + ODL-335 + the UKI-cycle merge); the gate lines are in §10 and the full output is pasted in the handoff.
 **Live checks:** 2026-11-12T17:31Z – 23:13Z UTC (every timestamp below is UTC). ODL-217's grant drill ran 21:09:48Z – 21:24:49Z and restored the guest at 21:39:57Z / 22:00:08Z; the 23:12Z re-read is the post-drill handoff state (§1 A10, §4.7).
 **Scope:** A1–A11, the audience and first-run rows (§3), §4.1–§4.11, the §2 forbidden-table replacement, every §5 re-cut (the §1 rows, the FAQ answers, the privacy-inventory row), and gaps 1–3. A cut row still gets a verdict (it must be consistent with the evidence).
@@ -17,7 +17,7 @@ No verdict row is rewritten.
 
 **The two findings that decide the most rows** are §0.1 (the disk key is still the build key) and §0.2 (the published image carries a usable pre-first-visit sign-in and the live session secret). Both were reproduced with the commands in §9; §0.1 was in the 19:27Z draft, §0.2 is new.
 
-**Addendum, 13 November 2026 (`t_8a0ef011`, ODL-319 follow-up).** The §4.4 optional command is now PASS, and the §7 row below is closed. The published bundle `https://odile.fyi/odile-verify.tar.gz` (sha256 `d200329260d66ce4ec545b8d34e05b262c06111ee506449c6c44958937250b53`, built with `mtime=0` so the hash moves only with the reviewed files) was run on `odl-7971a8` at 13 November 2026: it fetched the tenant's own VCEK from AMD's KDS for chip `3fa18b…` and TCB `bl=4 tee=0 snp=23 ucode=213` (`vcek PASS`), chained it to the pinned ARK (`chain PASS`), bound it to the report (`cpu binding PASS`), verified the signature (`signature PASS`), read policy `0x30000`, checked the committed TCB (`tcb PASS committed snp=28 >= 27`), took the tenant release from the served document (`release PASS 2026.11.2 is pinned`), matched the ready-email number (`expected PASS 9f01725a…f137`) and exited 0. A byte changed at `0x90` fails the signature and exits 1; the demo `./odile-verify https://odile.fyi` still passes with no argument (measurement `e99728ef…3fbc`, exit 0). The independent `sev-snp-measure` over the published UKI (`odile-tenant.efi` `5cb31808…` + OVMF `8731846c…`, 4 vCPU, `EPYC-v4`, guest features `0x1`) reproduces `9f01725a…f137`, and the KDS VCEK chain walk prints `Verify OK`. §4.4's command now carries the tarball hash and `--expect` (`docs/product/CLAIMS-RECUT-STRICT.md` §4.4; the runbook is `docs/runbooks/verify.md` §"A tenant run, from a laptop"). The row below keeps the 12 November finding as history.
+**Addendum, 13 November 2026 (`t_8a0ef011`, ODL-319 follow-up).** The §4.4 optional command is now PASS, and the §7 row below is closed. The published bundle `https://odile.fyi/odile-verify.tar.gz` (sha256 `d200329260d66ce4ec545b8d34e05b262c06111ee506449c6c44958937250b53`, built with `mtime=0` so the hash moves only with the reviewed files) was run on `odl-fake01` at 13 November 2026: it fetched the tenant's own VCEK from AMD's KDS for chip `3fa18b…` and TCB `bl=4 tee=0 snp=23 ucode=213` (`vcek PASS`), chained it to the pinned ARK (`chain PASS`), bound it to the report (`cpu binding PASS`), verified the signature (`signature PASS`), read policy `0x30000`, checked the committed TCB (`tcb PASS committed snp=28 >= 27`), took the tenant release from the served document (`release PASS 2026.11.2 is pinned`), matched the ready-email number (`expected PASS 9f01725a…f137`) and exited 0. A byte changed at `0x90` fails the signature and exits 1; the demo `./odile-verify https://odile.fyi` still passes with no argument (measurement `e99728ef…3fbc`, exit 0). The independent `sev-snp-measure` over the published UKI (`odile-tenant.efi` `5cb31808…` + OVMF `8731846c…`, 4 vCPU, `EPYC-v4`, guest features `0x1`) reproduces `9f01725a…f137`, and the KDS VCEK chain walk prints `Verify OK`. §4.4's command now carries the tarball hash and `--expect` (`docs/product/CLAIMS-RECUT-STRICT.md` §4.4; the runbook is `docs/runbooks/verify.md` §"A tenant run, from a laptop"). The row below keeps the 12 November finding as history.
 
 ---
 
@@ -195,7 +195,7 @@ The same `.env` carries the session-signing secret, and it is the **live** secre
 |---|---|---|
 | 1. "The app layer is not hardware-measured yet." | **PASS** | The UKI measures firmware/kernel/initramfs/cmdline (the report's 48-byte launch digest 9f01725a…); Hermes/the installer/skills are inside the LUKS disk and pinned by the signed manifest (`/manifest` 200, `installer_sha256` 4aee80c5…; `release/manifest.json` 1ed9dcad…), not by the CPU; `/verify` carries gap 1 verbatim. |
 | 2. "The console passes through the host." | **PASS** | The serial transcript is Servury's console (armed via `?action=serial`; used for the round-8 boot); the sign-in goes over HTTPS to the guest (first visit 14:57:46Z over the cert); the console caution is true. The live `/verify` page still carries the v3.7 "use SSH" wording — ODL-462 lands the decided gap 2; the decided sentence is proven. |
-| 3. "Odile keeps three powers." — stop/delete, DNS, a different boot image ("detectable via the measurement … A changed image or firmware breaks the seal; the machine is rebuilt.") | **BLOCK** | Stop/delete PASS (the panel restarted the machine at 15:05:12Z; ODL-217's restarts at 20:43 and 21:24); DNS PASS (the `odl-7971a8` record is DNS-only, 203.0.113.87); a different boot image PASS (eight panel pairs, eight measurements; the panel fields). The **power is understated**: a changed image carrying the recovered master key reads the disk without the seal (§0.1). **Missing proof:** first-boot re-key; **card: `t_28dda3b7`.** |
+| 3. "Odile keeps three powers." — stop/delete, DNS, a different boot image ("detectable via the measurement … A changed image or firmware breaks the seal; the machine is rebuilt.") | **BLOCK** | Stop/delete PASS (the panel restarted the machine at 15:05:12Z; ODL-217's restarts at 20:43 and 21:24); DNS PASS (the `odl-fake01` record is DNS-only, 203.0.113.87); a different boot image PASS (eight panel pairs, eight measurements; the panel fields). The **power is understated**: a changed image carrying the recovered master key reads the disk without the seal (§0.1). **Missing proof:** first-boot re-key; **card: `t_28dda3b7`.** |
 
 ---
 
@@ -269,10 +269,10 @@ The evidence files are under `/var/tmp/odile-466-run/` (audit logs; the master k
 
 ```sh
 # live report, page, manifest, gate (re-read 23:12Z: report fetched_at 21:24:00Z, /verify five PASS on the 21:27:15Z access report)
-curl -sS https://odl-7971a8.odile.fyi/attestation | jq '{measurement,fetched_at,release,report_version,report_size}''
-curl -sS https://odl-7971a8.odile.fyi/verify | grep -E 'usable keys|boot key|seal|sign-in hash|operator key'
-curl -sS https://odl-7971a8.odile.fyi/manifest | sha256sum
-curl -sS -o /dev/null -w '%{http_code} %{redirect_url}\n' https://odl-7971a8.odile.fyi/
+curl -sS https://odl-fake01.odile.fyi/attestation | jq '{measurement,fetched_at,release,report_version,report_size}''
+curl -sS https://odl-fake01.odile.fyi/verify | grep -E 'usable keys|boot key|seal|sign-in hash|operator key'
+curl -sS https://odl-fake01.odile.fyi/manifest | sha256sum
+curl -sS -o /dev/null -w '%{http_code} %{redirect_url}\n' https://odl-fake01.odile.fyi/
 ssh -F /dev/null -o BatchMode=yes -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no root@203.0.113.87 true; echo exit=$?
 # the tenant's own state through the Webapp session (the keyless read path)
 /usr/bin/python3 /var/tmp/odile-466-run/live_read.py

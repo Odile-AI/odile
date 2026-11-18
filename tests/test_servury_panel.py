@@ -85,12 +85,12 @@ class GuardTests(unittest.TestCase):
             self.assertIsNotNone(panel.refuse_path(path), path)
 
     def test_a_boot_image_path_is_allowed(self) -> None:
-        self.assertIsNone(panel.refuse_path("/servers/31a63bbb/boot-image"))
+        self.assertIsNone(panel.refuse_path("/servers/0badc0de/boot-image"))
 
     def test_only_the_test_box_is_allowed_by_default(self) -> None:
         self.assertTrue(panel.server_allowed("a1b2c3d4"))   # the fixture allow-list entry
         self.assertFalse(panel.server_allowed("e5f6a7b8"))   # the HQ fixture
-        self.assertFalse(panel.server_allowed("31a63bbb"))   # the demo tenant, other account
+        self.assertFalse(panel.server_allowed("0badc0de"))   # the demo tenant, other account
         self.assertTrue(panel.server_allowed("e5f6a7b8", frozenset({"e5f6a7b8"})))
 
     def test_a_missing_id_file_allows_nothing(self) -> None:

@@ -44,7 +44,7 @@ DEFAULT_BASE = "https://demo.odile.fyi"
 #: The machine's own name. Caddy on the tenant serves it as an alias; its
 #: Webapp path is refused once public_url is the demo host, so it is only the
 #: bootstrap route (before the demo block exists) and the recovery route.
-MACHINE_BASE = "https://odl-7971a8.odile.fyi"
+MACHINE_BASE = "https://odl-fake01.odile.fyi"
 #: `shell.exec` runs one command with a 30-second ceiling (session_shell.py).
 SHELL_TIMEOUT = 30.0
 #: One printf carries at most ~2 KB of base64; the reply caps stdout at 4 KB.

@@ -121,7 +121,7 @@ class AllowListTests(ToolCase):
     """The key owns the production tenant, so the tool names one id by default."""
 
     def test_the_production_tenant_is_the_only_default(self) -> None:
-        self.assertTrue(tool.allowed("31a63bbb"))
+        self.assertTrue(tool.allowed("0badc0de"))
 
     def test_another_id_is_refused(self) -> None:
         self.assertFalse(tool.allowed("e5f6a7b8"))
@@ -150,7 +150,7 @@ class TwoFlagTests(ToolCase):
     def test_apply_without_confirm_is_a_usage_error(self) -> None:
         calls: list = []
         code, _, err = self.run_tool(
-            ["--set", "--server", "31a63bbb", "--url", URL, "--sha256", SHA, "--apply"],
+            ["--set", "--server", "0badc0de", "--url", URL, "--sha256", SHA, "--apply"],
             calls=calls)
 
         self.assertEqual(code, 2)
@@ -161,7 +161,7 @@ class TwoFlagTests(ToolCase):
     def test_a_bare_set_is_a_dry_run(self) -> None:
         calls: list = []
         code, out, _ = self.run_tool(
-            ["--set", "--server", "31a63bbb", "--url", URL, "--sha256", SHA], calls=calls)
+            ["--set", "--server", "0badc0de", "--url", URL, "--sha256", SHA], calls=calls)
 
         self.assertEqual(code, 0)
         self.assertIn("dry run", out)
@@ -171,7 +171,7 @@ class TwoFlagTests(ToolCase):
     def test_both_flags_submit_the_pair(self) -> None:
         calls: list = []
         code, out, _ = self.run_tool(
-            ["--set", "--server", "31a63bbb", "--url", URL, "--sha256", SHA,
+            ["--set", "--server", "0badc0de", "--url", URL, "--sha256", SHA,
              "--apply", "--confirm"], calls=calls)
 
         self.assertEqual(code, 0)
@@ -195,7 +195,7 @@ class TwoFlagTests(ToolCase):
             with mock.patch.object(tool, "call", fake_call), \
                     mock.patch.object(tool, "read_key", return_value=self.KEY), \
                     contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
-                code = tool.main(["--set", "--server", "31a63bbb", "--url", URL,
+                code = tool.main(["--set", "--server", "0badc0de", "--url", URL,
                                   "--sha256", SHA, "--apply", "--confirm"])
 
             self.assertEqual(code, 0)
@@ -204,7 +204,7 @@ class TwoFlagTests(ToolCase):
     def test_a_short_hash_is_refused_before_the_api(self) -> None:
         calls: list = []
         code, _, err = self.run_tool(
-            ["--set", "--server", "31a63bbb", "--url", URL, "--sha256", "5cb31808",
+            ["--set", "--server", "0badc0de", "--url", URL, "--sha256", "5cb31808",
              "--apply", "--confirm"], calls=calls)
 
         self.assertEqual(code, 2)
@@ -213,18 +213,18 @@ class TwoFlagTests(ToolCase):
 
     def test_a_sha_that_is_not_hex_is_refused(self) -> None:
         code, _, _ = self.run_tool(
-            ["--set", "--server", "31a63bbb", "--url", URL, "--sha256", "z" * 64,
+            ["--set", "--server", "0badc0de", "--url", URL, "--sha256", "z" * 64,
              "--apply", "--confirm"])
         self.assertEqual(code, 2)
 
     def test_set_needs_a_url_and_a_hash(self) -> None:
-        for argv in (["--set", "--server", "31a63bbb", "--url", URL],
-                     ["--set", "--server", "31a63bbb", "--sha256", SHA]):
+        for argv in (["--set", "--server", "0badc0de", "--url", URL],
+                     ["--set", "--server", "0badc0de", "--sha256", SHA]):
             code, _, _ = self.run_tool(argv)
             self.assertEqual(code, 2, argv)
 
     def test_one_verb_at_a_time(self) -> None:
-        code, _, _ = self.run_tool(["--show", "--set", "--server", "31a63bbb",
+        code, _, _ = self.run_tool(["--show", "--set", "--server", "0badc0de",
                                     "--url", URL, "--sha256", SHA])
         self.assertEqual(code, 2)
 
@@ -238,13 +238,13 @@ class LogTests(ToolCase):
 
     def test_a_dry_run_is_logged_with_the_pair_it_would_replace(self) -> None:
         code, _, _ = self.run_tool(
-            ["--set", "--server", "31a63bbb", "--url", URL, "--sha256", SHA])
+            ["--set", "--server", "0badc0de", "--url", URL, "--sha256", SHA])
 
         self.assertEqual(code, 0)
         self.assertEqual(len(self.lines()), 1, self.lines())
         line = self.lines()[0]
         self.assertRegex(line, STAMP)
-        self.assertIn("server=31a63bbb", line)
+        self.assertIn("server=0badc0de", line)
         self.assertIn(f"url={URL}", line)
         self.assertIn(f"sha256={SHA}", line)
         self.assertIn("apply=0", line)
@@ -256,7 +256,7 @@ class LogTests(ToolCase):
         before = payload(state(sha256=OTHER_SHA, added="2026-11-12T19:19:08Z"))
 
         code, _, _ = self.run_tool(
-            ["--set", "--server", "31a63bbb", "--url", URL, "--sha256", SHA,
+            ["--set", "--server", "0badc0de", "--url", URL, "--sha256", SHA,
              "--apply", "--confirm"], before=before)
 
         self.assertEqual(code, 0)
@@ -267,11 +267,11 @@ class LogTests(ToolCase):
         self.assertIn("replaced_added=2026-11-12T19:19:08Z", line)
 
     def test_the_key_is_never_in_the_line(self) -> None:
-        self.run_tool(["--set", "--server", "31a63bbb", "--url", URL, "--sha256", SHA])
+        self.run_tool(["--set", "--server", "0badc0de", "--url", URL, "--sha256", SHA])
         self.assertNotIn(self.KEY, self.lines()[0])
 
     def test_the_log_is_private(self) -> None:
-        self.run_tool(["--set", "--server", "31a63bbb", "--url", URL, "--sha256", SHA])
+        self.run_tool(["--set", "--server", "0badc0de", "--url", URL, "--sha256", SHA])
 
         self.assertEqual(self.log.stat().st_mode & 0o777, 0o600)
 
@@ -286,7 +286,7 @@ class LogTests(ToolCase):
         with mock.patch.object(tool, "call", failing), \
                 mock.patch.object(tool, "read_key", return_value=self.KEY), \
                 contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
-            code = tool.main(["--set", "--server", "31a63bbb", "--url", URL, "--sha256", SHA,
+            code = tool.main(["--set", "--server", "0badc0de", "--url", URL, "--sha256", SHA,
                               "--apply", "--confirm"])
 
         self.assertEqual(code, 1, "an unreadable predecessor fails closed")
@@ -299,13 +299,13 @@ class LogTests(ToolCase):
         out, err = io.StringIO(), io.StringIO()
         with mock.patch.object(tool, "read_key", side_effect=FileNotFoundError("nope")), \
                 contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
-            code = tool.main(["--show", "--server", "31a63bbb"])
+            code = tool.main(["--show", "--server", "0badc0de"])
 
         self.assertEqual(code, 2)
         self.assertIn(str(tool.KEY_FILE), err.getvalue())
 
     def test_two_attempts_are_two_lines(self) -> None:
-        argv = ["--set", "--server", "31a63bbb", "--url", URL, "--sha256", SHA]
+        argv = ["--set", "--server", "0badc0de", "--url", URL, "--sha256", SHA]
         self.run_tool(argv)
         self.run_tool(argv)
 
@@ -321,7 +321,7 @@ class LogTests(ToolCase):
         broken.write_text("", encoding="utf-8")
         with mock.patch.object(tool, "LOG", broken / "log"):
             code, _, err = self.run_tool(
-                ["--set", "--server", "31a63bbb", "--url", URL, "--sha256", SHA,
+                ["--set", "--server", "0badc0de", "--url", URL, "--sha256", SHA,
                  "--apply", "--confirm"], calls=calls)
 
         self.assertEqual(code, 1)
@@ -339,7 +339,7 @@ class ShowTests(ToolCase):
     """`--show` answers what the machine carries now, in four fields."""
 
     def test_the_pair_the_state_and_the_added_stamp_are_printed(self) -> None:
-        code, out, _ = self.run_tool(["--show", "--server", "31a63bbb"])
+        code, out, _ = self.run_tool(["--show", "--server", "0badc0de"])
 
         self.assertEqual(code, 0)
         self.assertIn(URL, out)
@@ -349,14 +349,14 @@ class ShowTests(ToolCase):
         self.assertIn("next_start=custom", out)
 
     def test_a_download_still_running_says_so(self) -> None:
-        code, out, _ = self.run_tool(["--show", "--server", "31a63bbb"],
+        code, out, _ = self.run_tool(["--show", "--server", "0badc0de"],
                                      before=payload(state(download="downloading")))
 
         self.assertEqual(code, 0)
         self.assertIn("downloading", out)
 
     def test_show_writes_no_line(self) -> None:
-        self.run_tool(["--show", "--server", "31a63bbb"])
+        self.run_tool(["--show", "--server", "0badc0de"])
 
         self.assertEqual(self.lines(), [], "a read is not an attempt")
 
@@ -371,7 +371,7 @@ class NoKeyOnTheCommandLineTests(ToolCase):
 
     def test_an_unknown_key_flag_is_refused(self) -> None:
         with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
-            tool.main(["--show", "--server", "31a63bbb", "--key", "deadbeef"])
+            tool.main(["--show", "--server", "0badc0de", "--key", "deadbeef"])
 
 
 class StdlibOnlyTests(unittest.TestCase):

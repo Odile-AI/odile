@@ -411,8 +411,8 @@ class StatusTestCase(unittest.TestCase):
         last five incidents.
         """
         start = NOW - 10 * HOUR
-        self.fixture.tenant("odl-7971a8", activated_at=start)
-        self.fixture.alert("odl-7971a8", "down", at=NOW - 4 * HOUR)
+        self.fixture.tenant("odl-fake01", activated_at=start)
+        self.fixture.alert("odl-fake01", "down", at=NOW - 4 * HOUR)
         # A real tenant, beating every five minutes for the same ten hours.
         self.fixture.tenant("odl-aa11bb", activated_at=start)
         self.fixture.beats_between("odl-aa11bb", start=start, end=NOW)
@@ -429,7 +429,7 @@ class StatusTestCase(unittest.TestCase):
         self.assertIn("100.0%", body)
         self.assertIn("0 min", body)
         self.assertIn("1 machine · measured since", body)
-        self.assertNotIn("odl-7971a8", body)
+        self.assertNotIn("odl-fake01", body)
         self.assertIn("No incidents in the last 30 days.", body)
 
     def test_a_demo_only_history_reads_as_no_machine_in_service(self) -> None:
@@ -439,8 +439,8 @@ class StatusTestCase(unittest.TestCase):
         history renders the same dash the page already used for no history.
         """
         start = NOW - 10 * HOUR
-        self.fixture.tenant("odl-7971a8", activated_at=start)
-        self.fixture.alert("odl-7971a8", "down", at=NOW - 4 * HOUR)
+        self.fixture.tenant("odl-fake01", activated_at=start)
+        self.fixture.alert("odl-fake01", "down", at=NOW - 4 * HOUR)
 
         body, totals = self.page()
 
@@ -449,21 +449,21 @@ class StatusTestCase(unittest.TestCase):
         self.assertEqual(totals.down_seconds, 0)
         self.assertIn("No machine has been in service in the last 30 days.", body)
         self.assertIn("No incidents in the last 30 days.", body)
-        self.assertNotIn("odl-7971a8", body)
+        self.assertNotIn("odl-fake01", body)
         self.assertNotRegex(body, r"\b[0-9],[0-9]{3} min\b")
 
     def test_the_demo_exclusion_is_not_a_slug_on_the_page_or_in_json(self) -> None:
         """The exclusion is a decision in code, never a name on the page."""
         start = NOW - 3 * HOUR
-        self.fixture.tenant("odl-7971a8", activated_at=start)
-        self.fixture.beats_between("odl-7971a8", start=start, end=NOW)
+        self.fixture.tenant("odl-fake01", activated_at=start)
+        self.fixture.beats_between("odl-fake01", start=start, end=NOW)
         captured = io.StringIO()
         with contextlib.redirect_stdout(captured):
             code = status_page.main(
                 ["--db", str(self.fixture.db), "--now", str(NOW), "--json"]
             )
         self.assertEqual(code, 0)
-        self.assertNotIn("odl-7971a8", captured.getvalue())
+        self.assertNotIn("odl-fake01", captured.getvalue())
         payload = json.loads(captured.getvalue())
         self.assertEqual(payload["totals"]["tenants"], 0)
         self.assertEqual(payload["inputs"]["excluded_tenants"], 1)
@@ -484,7 +484,7 @@ class StatusTestCase(unittest.TestCase):
                 resolved_at=NOW - (index + 1) * HOUR + 20 * 60,
             )
         self.fixture.alert(
-            "odl-7971a8", "down", at=NOW - 10 * 60, resolved_at=NOW - 5 * 60
+            "odl-fake01", "down", at=NOW - 10 * 60, resolved_at=NOW - 5 * 60
         )
 
         totals = self.collect()

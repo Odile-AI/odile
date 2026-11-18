@@ -7,8 +7,8 @@ API's own 404 prints, and it was exercised from a shell on 2026-11-12 with
 nothing at Odile recording it (ADR-image-vs-installer §15.1). This tool is that
 write with a fence and a record:
 
-    ./tools/servury_boot_image.py --show --server 31a63bbb
-    ./tools/servury_boot_image.py --set --server 31a63bbb \\
+    ./tools/servury_boot_image.py --show --server 0badc0de
+    ./tools/servury_boot_image.py --set --server 0badc0de \\
         --url https://odile.fyi/releases/m1/odile-tenant.efi --sha256 5cb31808…
 
 A `--set` is a **dry run** unless `--apply` is given, and `--apply` also needs
@@ -28,7 +28,7 @@ before the POST and the log is created 0600, so an unwritable log aborts the
 write instead of silently losing it.
 
 The fence is the panel tool's, narrowed to this one power: one server id is
-allowed by default (`31a63bbb`, the production tenant this record was opened
+allowed by default (`0badc0de`, the production tenant this record was opened
 for), anything else needs `--allow-server`, and the key is read from
 `/root/.odile/servury_reseller_key` — never from argv, which `ps` shows to
 every user on the box. The key is never printed or logged.
@@ -60,7 +60,7 @@ LOG = Path("/root/.odile/servury-reseller.log")
 # The one id this tool may touch, written out rather than read from a file: the
 # record exists for this tenant, and a fresh clone must be able to name it.
 # --allow-server widens the fence deliberately, the way the panel tool does.
-ALLOWED_SERVERS = frozenset({"31a63bbb"})
+ALLOWED_SERVERS = frozenset({"0badc0de"})
 SHA256 = re.compile(r"[0-9a-fA-F]{64}", re.ASCII)
 UNKNOWN = "unknown"
 NONE = "none"

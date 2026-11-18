@@ -15,7 +15,7 @@ SEV-SNP, LUKS and measured boot on. There is no operator key to add later.
 
 The seed token is bound the moment the provider answers `create` (ODL-455).
 The provider answers an order before it builds the machine: the live capture in
-`docs/runbooks/provision.md` (16:01:30Z) got `server_id=31a63bbb
+`docs/runbooks/provision.md` (16:01:30Z) got `server_id=0badc0de
 status=deploying` in 0.232 s and `active` 120.7 s later. `_bind_seed_token`
 writes one single-use token to the seed ledger, bound to that id, and only its
 SHA-256 hash on the tenant row, before the machine is polled — long before it

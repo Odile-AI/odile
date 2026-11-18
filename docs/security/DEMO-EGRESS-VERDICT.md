@@ -77,7 +77,7 @@ probe directory is removed with this card.
 
 ## 3. Today's demo machine
 
-The demo is Odile's tenant machine (`odl-7971a8`, `demo.odile.fyi`), not the HQ
+The demo is Odile's tenant machine (`odl-fake01`, `demo.odile.fyi`), not the HQ
 profile the sentence describes. Measured 2026-11-15 through `tenant_console.py`
 (sign-in as `judge`, `shell.exec` as `tenant`):
 

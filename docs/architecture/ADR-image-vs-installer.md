@@ -446,7 +446,7 @@ Measured on the live API with the production account's reseller key,
 
 ```sh
 KEY=$(cat /root/.odile/servury_reseller_key); B=https://servury.com/api/reseller.php
-curl -s -H "X-Reseller-Key: $KEY" "$B?action=boot-image&id=31a63bbb"
+curl -s -H "X-Reseller-Key: $KEY" "$B?action=boot-image&id=0badc0de"
 # 200 {"success":true,"data":{"boot_image":{"next_start":"custom",
 #      "release":"2026.11.2","image":{"url":"https://odile.fyi/releases/m1/odile-tenant.efi",
 #      "sha256":"5cb318083d2ce0555132a008b0d5dfb7613e6bd0a3fb19d0ae29adac8b1b6a5e",
@@ -454,7 +454,7 @@ curl -s -H "X-Reseller-Key: $KEY" "$B?action=boot-image&id=31a63bbb"
 #      "download":{"state":"ready","finished":"2026-11-12T14:42:00Z", …},
 #      "limits":{"max_bytes":1073741824,"max_cmdline":4096,"min_kernel_bytes":131072},
 #      "network":{…,"suggested_cmdline":"console=ttyS0,115200 ip=203.0.113.87::…"}}, …}}
-curl -s -H "X-Reseller-Key: $KEY" "$B?action=disk-image&id=31a63bbb"
+curl -s -H "X-Reseller-Key: $KEY" "$B?action=disk-image&id=0badc0de"
 # 404 {"success":false,"error":"Unknown action. Available: plans, locations, os,
 #      account, status, servers, server, graphs, serial, rdns, console, invoice,
 #      invoices, create, renew, upgrade, ip, deposit, power, reinstall, hostname,
@@ -480,7 +480,7 @@ round-8 pair. The body quoted above is the 17:52Z/19:07Z state, kept as
 measured.
 
 **The write path, exercised 2026-11-12T20:08:03Z by this card's probe.**
-`POST ?action=boot-image&id=31a63bbb` with the round-8 pair (`{"url":
+`POST ?action=boot-image&id=0badc0de` with the round-8 pair (`{"url":
 "https://odile.fyi/releases/m1/odile-tenant.efi", "sha256": "5cb31808…"}`)
 answered `success: true`, `"Download started. Poll GET … until download.state
 is ready"`, and the GET showed `download.state: ready` at 20:08:06Z with the
@@ -489,17 +489,17 @@ field already carried at 20:04:49Z, so it re-fetched the same bytes and left
 the tenant's state unchanged.
 
 **The same power moved this tenant once already, and nothing logged it.** At
-19:41Z the field on `31a63bbb` carried `f7bc0ceb…` (`added` 19:19:08Z) —
+19:41Z the field on `0badc0de` carried `f7bc0ceb…` (`added` 19:19:08Z) —
 the `odlukitest` test UKI from `t_c1e0f336` (*Automate the UKI test cycle*,
 `odl/uki-cycle` @ `007eeef`), whose command line differs
 (`bb.host=odlukitest`, `bb.ip4=203.0.113.117`). Its measurement therefore
 differs from the round-8 `9f01725a…` the disk is sealed to, and a start in
 that window would have failed to unseal. The field was back on the round-8
-pair at 20:04:49Z, and no restart of `31a63bbb` is recorded in
+pair at 20:04:49Z, and no restart of `0badc0de` is recorded in
 19:19:08Z–20:04:49Z — the last documented boot is the 15:05:12Z restart
 (`docs/evidence/m1-tenant.md` §10.2). No record names who set it: the fenced
 panel route did not — `/root/.odile/servury-panel.log` holds no line for
-`31a63bbb` — and the API path appends nothing to any Odile log, so whether the
+`0badc0de` — and the API path appends nothing to any Odile log, so whether the
 call was the reseller API or the vendor's own web panel is not recoverable
 from the evidence. That is the operator power in one paragraph — one call, one
 tenant, next start, no log — and the same call puts it back. `?action=disk-image`
@@ -536,8 +536,8 @@ signed custom UKI **and a pre-sealed disk image written by the panel**.
 - **The card:** ODL-332, *First tenant on the custom measured image*, merged
   `8c2ad99` on 2026-11-12T17:16Z. The UKI and disk build is ODL-454's
   (`deploy/image/sealed-image.sh`, `deploy/image/uki.sh`); the production
-  build record is `docs/evidence/m1-image.md`; the machine is `odl-7971a8` /
-  `31a63bbb`. `docs/runbooks/image.md` §1 already opens with the custom
+  build record is `docs/evidence/m1-image.md`; the machine is `odl-fake01` /
+  `0badc0de`. `docs/runbooks/image.md` §1 already opens with the custom
   measured UKI at this head and carries the same dated correction in its §9
   panel step; §9 is the part corrected for the API verb.
 - **The date the seal landed:** `deploy/image/bb-sealed-provision`
@@ -641,7 +641,7 @@ served image still carries the old keyslot seal.
   it became safe.
 - **One thing it opens.** The API write leaves no record at Odile: the fenced
   panel route appends every write to `/root/.odile/servury-panel.log`, the API
-  route appends nothing, and the log holds no line for `31a63bbb`. A boot-image
+  route appends nothing, and the log holds no line for `0badc0de`. A boot-image
   change is unattributable today. Card `t_57196155` wraps the call in one
   fenced helper that logs the pair it replaced; until it lands, record a
   `--set` by hand the way §15.1 does.
@@ -649,7 +649,7 @@ served image still carries the old keyslot seal.
 ### 15.4 Evidence
 
 - The two `curl` calls and their 200/404 outputs in §15.1, reproduced
-  2026-11-12T19:07Z against `31a63bbb` with the production reseller key;
+  2026-11-12T19:07Z against `0badc0de` with the production reseller key;
   re-checked at 20:37:54Z and again at 20:53:42Z — **200**/**404** both times,
   the round-8 pair in place (`added` 20:08:04Z). The GET was re-measured at
   19:41Z (the image had moved at 19:19:08Z to the `odlukitest` UKI from
@@ -657,7 +657,7 @@ served image still carries the old keyslot seal.
   20:08:03Z (POST → `success: true`,
   `download.state: ready` at 20:08:06Z). The same measurement is in
   `docs/ops/PANEL-ACCESS.md` §"Update, 2026-11-12 17:55Z".
-- The audit gap: `grep -c 31a63bbb /root/.odile/servury-panel.log` → **0**,
+- The audit gap: `grep -c 0badc0de /root/.odile/servury-panel.log` → **0**,
   against `BOOT_IMAGE`/`DISK_WRITE` lines for `<server:ukitest>` in the same file. The
   fenced panel route logs every write; the API route logs nothing.
 - **The seal's limit (security verdict, 12 November 2026):**
@@ -695,5 +695,5 @@ served image still carries the old keyslot seal.
   built at `/var/tmp/odile-t_c1e0f336-build/odile-tenant.efi`). An earlier
   draft of §15.1 and of the shift-2 correction named ODL-456, which has no
   record of the hash; `tests/test_record_corrections.py` now holds the hash and
-  its owner together. The writer who set it on `31a63bbb` at 19:19:08Z is not
+  its owner together. The writer who set it on `0badc0de` at 19:19:08Z is not
   named by any record.

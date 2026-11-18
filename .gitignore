@@ -17,6 +17,8 @@ venv/
 .odile/
 *.key
 *-signing.pem
+# The live host values; the committed template beside it is deploy/hosts.example
+/deploy/hosts.local
 
 # Runtime state
 *.db

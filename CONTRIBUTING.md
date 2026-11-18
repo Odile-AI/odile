@@ -16,6 +16,32 @@ make check     # prereqs, secret scan, publication scan, tests, self-test,
 `make check` is the gate. A pull request is ready when it is green on a clean
 clone (`make fresh-check`) and the change is named in the commit subject.
 
+## The leak gates
+
+`make hooks` installs two hooks: the pre-commit gate (`make check`) and the
+pre-push gate, which scans the outgoing diff and commit messages against
+`leak-forbid.txt`, the deny list of private machine literals. A hit blocks the
+push. `git commit --no-verify` and `git push --no-verify` are the deliberate
+bypasses; CI runs the same list over the tree and over every blob, so a
+bypassed literal is a red run.
+
+Never write a real address, account id, box id, tenant slug, mailbox or
+checkout path. Use the placeholder vocabulary:
+
+| Value | Placeholder |
+|---|---|
+| an IPv4 address | `192.0.2.0/24`, `198.51.100.0/24` or `203.0.113.0/24` (RFC 5737) |
+| an IPv6 address | `2001:db8::/32` (RFC 3849) |
+| a vendor account id | `<servury-account:dev>`, `<servury-account:host>`, `<servury-account:main>` |
+| a machine | `<server:ukitest>` |
+| a tenant slug | `odl-000000` |
+| any other private value | `<what-it-is>` |
+
+Every private host value lives in `deploy/hosts.local` (gitignored), with
+`deploy/hosts.example` as the committed template; `tools/hosts_file.py` reads
+either. Real values live in the untracked file or the secret store (SOPS/age,
+1Password, Vault), never in git.
+
 ## Style
 
 - Python: standard library only where the tree already is; no new dependency

@@ -10,7 +10,10 @@
 #   publish-lint     the publication gate over the built tree: the BASE
 #                    branch's leak_scan and allowlist ran over this tree, then
 #                    the tree's own scanner — a PR cannot widen its own gate
-#   history-secrets  scan every commit, not the one-commit shallow default
+#   history-secrets  scan every commit, not the one-commit shallow default,
+#                    and run the deny list over every blob (--forbid-only):
+#                    an address or account id in an old root is a leak even
+#                    when the head's tree is clean
 #
 # This file is a shipped path in the repository, and the repository is the
 # source of truth: the copy these five jobs run is the one in the tree at the
@@ -250,15 +253,11 @@ jobs:
           fi
           /usr/bin/python3 /tmp/base-leak_scan.py --tree --root "$PWD"
           cp /tmp/pr-leak-allow.tsv leak-allow.tsv
-      - name: Scan the built tree with its own allowlist
+      - name: Scan the tree with its own deny list
         run: |
           set -euo pipefail
-          if [ -f leak-forbid.txt ]; then
-            /usr/bin/python3 tools/leak_scan.py --tree --forbid-file leak-forbid.txt
-          else
-            /usr/bin/python3 tools/leak_scan.py --tree
-            echo "forbid list: absent (leak-forbid.txt) — the forbidden-value class did not run in this tree"
-          fi
+          test -f leak-forbid.txt
+          /usr/bin/python3 tools/leak_scan.py --tree --forbid-file leak-forbid.txt
 
   history-secrets:
     name: history-secrets
@@ -305,6 +304,19 @@ jobs:
           test -n "$scanned"
           test "$scanned" -eq "$expected"
           echo "scanned ${scanned} commits; matches git rev-list --count --all"
+      # The deny list over history. The job is scoped to the forbidden-value
+      # class (--forbid-only): the roots this repository replaced already
+      # published addresses and home paths, and a job about the deny list must
+      # not fail on a class its predecessor's history settled. Every blob in
+      # rev-list --all is read, so a literal in a commit that HEAD no longer
+      # carries is still a red run. The allowlist still applies: a row whose
+      # digest pins a value records an exception (the demo tenant's public ids,
+      # as debt with the card that clears them).
+      - name: Scan every blob for a private literal
+        run: |
+          set -euo pipefail
+          test -f leak-forbid.txt
+          /usr/bin/python3 tools/leak_scan.py --history --forbid-file leak-forbid.txt --forbid-only
       # The repository is the source of truth: one root, cut once from `main`
       # `65e2764` (`24ee323`), and every commit after it is ordinary work on
       # top — a card's branch included, merged with --no-ff. On a push to main
