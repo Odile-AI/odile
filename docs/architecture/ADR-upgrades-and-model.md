@@ -2,6 +2,12 @@
 
 **Status:** Proposed — the inventory and the trigger default wait on Savio's
 confirmation, which A4's exit criterion 2 names · 17 November 2026 · Architect
+**Revision 4** — 18 November 2026, review round 3 folded in: `main` merged at
+`9a29fdf` (the ODL-910 rewrite is in `main`'s history, so the round-3 baseline
+`a6b6bed` no longer resolves); §2 and §11 re-cut at that tree and the two
+transcript commands re-run there; two pointers corrected —
+`PRE_ONBOARDING_KEYS` is `:228` and the heartbeat body is `:1247`–`:1259`, the
+slug at `:1259`. No decision changes.
 **Revision 3** — 18 November 2026, review round 2 folded in and `main` merged:
 renumbered to **ADR-005** (main's ADR-004 is the backup decision,
 `docs/architecture/ADR-backup.md`); §11 and every in-text pointer re-cut at the
@@ -69,8 +75,8 @@ Four sentences the product is built on, and what this change does to each:
 ## 2. What exists today, at this head
 
 The inventory in §3 is not a wish list; it is a reading of the tree at the
-merge commit `a6b6bed` — this branch's prior head `24f06f2` merged with
-`main`'s `9d9149c` — and every later commit on the branch changes this ADR only
+merge commit `9a29fdf` — this branch's prior head `9bcc54c` merged with
+`main`'s `c97c4bc` — and every later commit on the branch changes this ADR only
 (§11). Eight facts shape it, and each is cited because a later card will
 change one of them.
 
@@ -135,7 +141,7 @@ prevent, and it is invisible to a test that only switches a model.
 `dashboard` is the sixth key, and the one a line-level rewrite is most likely to
 drop: it was added after the first tenant (t_d95b8c13), the template carries
 `dashboard.public_url` at `:8532` beside `webapp.public_url` at `:8538`, and a
-config written before it has the earlier four (`PRE_ONBOARDING_KEYS`, `:229`).
+config written before it has the earlier four (`PRE_ONBOARDING_KEYS`, `:228`).
 Both hosts name the same machine, and neither is a fallback for the other.
 
 **2.6 What HQ already knows, and what it does not.** HQ's heartbeat contract
@@ -143,7 +149,7 @@ accepts an optional `versions` map of names to strings (`odilectl/health.py:964`
 and the approved privacy row already names "versions" among what a heartbeat
 carries. But the tenant's own sender is the installer's embedded
 `backup.py heartbeat`, and it sends only the backup facts and the slug
-(`installer/odile_install.py:1247`–`1257`): no app release, no model, and none of
+(`installer/odile_install.py:1247`–`1259`): no app release, no model, and none of
 the other facts the row lists. `scripts/heartbeat.py` is the richer sender, with
 a `versions` map at `:263`, and the tenant does not run it. HQ's one drift
 detector, `release_report` (`odilectl/health.py:1020`), compares the **boot**
@@ -820,22 +826,24 @@ its own card, and two of them (A3's provider, a per-response proxy) are Savio's.
 
 ## 11. Evidence
 
-Read and run at the merge commit `a6b6bed`
-(`a6b6bed4827a88cc0659182a9367e8dcdd7bd01e`), whose parents are this branch's
-prior head `24f06f2` and `main`'s `9d9149c` (18 November 2026). Every commit
-after the merge changes this ADR and nothing else, so the code readings below
-are the tree the ADR lands on:
+Read and run at the merge commit `9a29fdf`
+(`9a29fdf5ad17b943e98fb2220e069dd38b473617`), whose parents are this branch's
+prior head `9bcc54c` and `main`'s `c97c4bc` (18 November 2026). `main`'s
+history was rewritten earlier that day (ODL-910), so the round-3 baseline
+`a6b6bed` and its parents `24f06f2`/`9d9149c` no longer resolve; this is the
+current tree. Every commit after the merge changes this ADR and nothing else, so
+the code readings below are the tree the ADR lands on:
 
 ```sh
-$ git diff --name-only a6b6bed..HEAD
+$ git diff --name-only 9a29fdf..HEAD
 docs/architecture/ADR-upgrades-and-model.md
 ```
 
 Read-only: no file outside this ADR is touched.
 
 ```sh
-$ git rev-parse a6b6bed
-a6b6bed4827a88cc0659182a9367e8dcdd7bd01e
+$ git rev-parse 9a29fdf
+9a29fdf5ad17b943e98fb2220e069dd38b473617
 $ sha256sum update/odile_update.py installer/odile_install.py app.py \
     scripts/manifest.py scripts/heartbeat.py
 dd70d0de863c6ce16e1bc34cc220605bde5d1643b9296d90a3f3615690508e72  update/odile_update.py
@@ -889,7 +897,7 @@ $ sed -n '8510p;8515p;8521p;8532p;8538p' installer/odile_install.py
   public_url: "{public_url}"
 $ sed -n '502p' scripts/manifest.py
         model_name = seed.get("model")
-$ sed -n '1247,1257p' installer/odile_install.py   # the tenant's own heartbeat body
+$ sed -n '1247,1259p' installer/odile_install.py   # the tenant's own heartbeat body
     facts = {
         "last_backup_at": status.get("last_success_at"),
         "backup": {
@@ -901,6 +909,8 @@ $ sed -n '1247,1257p' installer/odile_install.py   # the tenant's own heartbeat 
             "at": status.get("last_success_at"),
         },
     }
+    if args.slug:
+        facts["slug"] = args.slug
 $ sed -n '964,965p' odilectl/health.py                # HQ accepts a versions map, optional
     versions = facts.get("versions")
     if versions is not None:
