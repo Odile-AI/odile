@@ -21,6 +21,11 @@ Nice=10
 NoNewPrivileges=yes
 PrivateTmp=yes
 ProtectSystem=strict
-# The board database lives in root's home; read is all this unit needs there.
+# The board database lives in root's home. A `mode=ro` open of a WAL database
+# still writes the -shm index beside it, and with /root read-only SQLite fails
+# with "unable to open database file" whenever the index has to be rebuilt
+# (measured 2026-11-17: 0/5 runs passed without the writable directory, 3/3
+# with it). The database itself is opened read-only and never written.
 ProtectHome=read-only
 ReadWritePaths=/var/lib/odile
+ReadWritePaths=/root/.hermes/kanban/boards/odile

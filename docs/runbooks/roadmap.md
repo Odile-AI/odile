@@ -44,7 +44,9 @@ The order is the contract: status sentence, **Now**, **What needs you**,
   the Monday gate packet, not here.`
 - **One `<details>` per gate** — id, name, dates and `done/total` in the
   `<summary>`; objective, gate question, demo and every exit criterion inside,
-  verbatim from `docs/backlog.yaml`. Exactly one is open: the focus gate's.
+  verbatim from `docs/backlog.yaml`, then the gate's `open` questions as a
+  final list when the milestone defines any. Exactly one is open: the focus
+  gate's.
 - **How this page is made** — the counting and redaction rules, in six
   sentences, behind a closed disclosure.
 - **The footer** — `generated <ISO-8601 UTC> · source <short sha> · odile.fyi`.
@@ -123,7 +125,9 @@ cd <checkout>
 The units are committed under `deploy/roadmap/`:
 
 - `odile-roadmap.service` — oneshot, root, `ProtectSystem=strict`,
-  `ProtectHome=read-only`, `ReadWritePaths=/var/lib/odile`.
+  `ProtectHome=read-only`, `ReadWritePaths=/var/lib/odile` and the board's
+  directory (`/root/.hermes/kanban/boards/odile`), because a `mode=ro` open of
+  a WAL database still writes the `-shm` index beside it.
 - `odile-roadmap.timer` — `OnCalendar=*:0/15`, `Persistent=true`.
 
 ## 5. Check it

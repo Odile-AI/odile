@@ -1,0 +1,40 @@
+# BEGIN odile-bench
+# test.odile.fyi — the A1 test bench (ODL-339).
+#
+# A second copy of the account site and the seed service, on their own ports
+# and their own database, so a development deploy never lands on production.
+# The site answers from 127.0.0.1:8082 and /seed from 127.0.0.1:8083;
+# production keeps 8080/8081. Caddy obtains and renews the certificate for
+# this name itself — no certificate file is managed here, and the site is
+# DNS-only (not proxied), so the certificate is the box's own.
+#
+# Committed source of truth for the live block in /etc/caddy/Caddyfile; apply
+# with deploy/bench/deploy_bench.py. Caddy runs with `admin off`, so a change
+# needs `systemctl restart caddy`; the deployer validates the whole file,
+# keeps a timestamped backup and restores it when Caddy rejects the result.
+test.odile.fyi {
+	encode zstd gzip
+
+	header {
+		Server odile-bench
+		X-Robots-Tag "noindex, nofollow"
+	}
+
+	# POST /seed — the bench's own seed service. The token travels in the
+	# body, never in the URL, so no proxy log sees it (docs/runbooks/seed.md).
+	@seed path /seed
+	handle @seed {
+		reverse_proxy 127.0.0.1:8083
+	}
+
+	# Everything else is the account site: the same app.py as production,
+	# pointed at /var/lib/odile-test/waitlist.db by bench.env.
+	handle {
+		reverse_proxy 127.0.0.1:8082
+	}
+
+	log {
+		output discard
+	}
+}
+# END odile-bench

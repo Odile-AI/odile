@@ -971,7 +971,8 @@ def record_for_token(con: sqlite3.Connection, token: str, instance_id: str,
     machine is in. The token is the bearer and the instance binding is the
     scope: a record for another instance is refused, and a token that was never
     exchanged has no boot to describe. The record is idempotent — a reboot
-    sends it again and the writer changes nothing it already holds.
+    sends it again and the writer changes nothing it already holds, the row's
+    `recorded_at` included (it is the first record's stamp, not the replay's).
     """
     if not isinstance(record, dict):
         raise SeedError(400, "bad_record", "the boot record must be a JSON object")
@@ -1001,7 +1002,7 @@ def record_for_token(con: sqlite3.Connection, token: str, instance_id: str,
             record, instance_id=row["instance_id"], slug=tenant["slug"]
         )
         return bootrecord.record_boot(
-            con, slug=tenant["slug"], record=parsed, source="first_boot"
+            con, slug=tenant["slug"], record=parsed, source="first_boot", now=now
         )
     except bootrecord.BootRecordError as error:
         raise SeedError(400, "bad_record", str(error)) from None

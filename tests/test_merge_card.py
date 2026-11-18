@@ -22,12 +22,14 @@ from __future__ import annotations
 import importlib.util
 import os
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
 import time
 import unittest
 from pathlib import Path
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 TOOL_MISSING = "merge_card.py is HQ-only machinery and is not in this tree"
@@ -86,6 +88,12 @@ class Fixture:
         self.bin_dir = self.tmp / "bin"
         self.record = self.tmp / "gate-env.txt"
         self.bin_dir.mkdir()
+        self.probe = self.tmp / "signal_probe.py"
+        self.probe.write_text(
+            "import signal\n"
+            "print('ignored' if signal.getsignal(signal.SIGINT) is signal.SIG_IGN else 'default')\n",
+            encoding="utf-8",
+        )
         self.git("init", "-q", "-b", "main", str(self.repo), cwd=self.tmp)
         self.git("config", "user.email", "merge-test@example.invalid")
         self.git("config", "user.name", "merge card test")
@@ -96,6 +104,17 @@ class Fixture:
         self.git("checkout", "-q", "-b", self.BRANCH)
         self.git("commit", "-q", "--allow-empty", "-m", "probe: an empty commit")
         self.git("checkout", "-q", "main")
+
+    def add_origin(self) -> Path:
+        """A bare repository wired as `origin`, holding the fixture's `main`."""
+        bare = self.tmp / "origin.git"
+        self.git("init", "-q", "--bare", str(bare), cwd=self.tmp)
+        self.git("remote", "add", "origin", str(bare))
+        self.git("push", "-q", "-u", "origin", "main")
+        return bare
+
+    def origin_main(self) -> str:
+        return self.git("rev-parse", "main", cwd=self.tmp / "origin.git").stdout.strip()
 
     def git(self, *args: str, cwd: Path | None = None) -> subprocess.CompletedProcess[str]:
         return subprocess.run(
@@ -253,13 +272,148 @@ class GateSemanticsTests(unittest.TestCase):
 @unittest.skipUnless(TOOL, TOOL_MISSING)
 class PolicyTests(unittest.TestCase):
     def test_the_subprocess_outlives_the_gate_lock_wait(self) -> None:
+        """The tool's defaults, not the knobs its caller exported.
+
+        `merge_card` hands its own environment to the gate, so a suite that
+        read these constants in-process measured the operator's overrides. An
+        ODL-339 merge launched with `ODILE_MERGE_CHECK_LOCK_WAIT=3600
+        ODILE_MERGE_CHECK_TIMEOUT=3600` failed here — `3600 not greater than
+        3600` — and had its merge reset (2026-11-18, the ODL-910 gate run).
+        Load the module with those variables removed.
+        """
+        spec = importlib.util.spec_from_file_location("merge_card_under_test", TOOL)
+        assert spec and spec.loader
+        module = importlib.util.module_from_spec(spec)
+        with mock.patch.dict(os.environ, clean_env(), clear=True):
+            spec.loader.exec_module(module)
+
+        self.assertGreater(module.CHECK_TIMEOUT, module.CHECK_LOCK_WAIT)
+        self.assertLess(module.CHECK_LOCK_WAIT, 3600, "the queue must be bounded below the Makefile default")
+
+
+@unittest.skipUnless(TOOL, TOOL_MISSING)
+class SignalDispositionTests(unittest.TestCase):
+    """The gate child starts with a default SIGINT, whatever launched the tool.
+
+    A launcher that starts the tool as an asynchronous job (`nohup ./tools/
+    merge_card.py … &` in a non-interactive shell) leaves SIGINT ignored in
+    every descendant. The suite stops its demo server with SIGINT, so under
+    that disposition the server never stops and two tests fail `-9` — measured
+    at the ODL-910 review (2026-11-18): five proof merges were launched that
+    way and every one failed the full-suite gate. The tool must not depend on
+    how its caller's shell launched it.
+    """
+
+    def setUp(self) -> None:
+        self.fixture = Fixture()
+
+    def tearDown(self) -> None:
+        self.fixture.cleanup()
+
+    def test_the_gate_child_gets_a_default_sigint_when_its_launcher_ignores_it(self) -> None:
+        make = f'"{sys.executable}" "{self.fixture.probe}" > "$MERGE_TEST_RECORD"\nexit 0\n'
+        previous = signal.signal(signal.SIGINT, signal.SIG_IGN)
+        try:
+            proc, _ = self.fixture.run_tool(make=make)
+        finally:
+            signal.signal(signal.SIGINT, previous)
+
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        self.assertEqual(
+            self.fixture.record.read_text(encoding="utf-8").strip(),
+            "default",
+            "the gate inherited an ignored SIGINT; the suite's stop paths would never stop",
+        )
+
+
+@unittest.skipUnless(TOOL, TOOL_MISSING)
+class PublicationTests(unittest.TestCase):
+    """A merge is published after a green gate, and only then."""
+
+    def setUp(self) -> None:
+        self.fixture = Fixture()
+        self.fixture.add_origin()
+
+    def tearDown(self) -> None:
+        self.fixture.cleanup()
+
+    def test_a_green_merge_is_pushed_to_origin(self) -> None:
+        proc, _ = self.fixture.run_tool(
+            make=(
+                'case "$1" in\n'
+                '  check) echo "make check: OK" ;;\n'
+                '  leak) echo "make leak: OK" ;;\n'
+                "esac\n"
+                "exit 0\n"
+            ),
+        )
+
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        self.assertEqual(self.fixture.origin_main(), self.fixture.head(),
+                         "the merge landed on main but origin/main did not move")
+        self.assertNotEqual(self.fixture.origin_main(), self.fixture.before)
+
+    def test_a_failing_leak_scan_resets_main_and_leaves_origin_alone(self) -> None:
+        proc, _ = self.fixture.run_tool(
+            make=(
+                'case "$1" in\n'
+                '  check) echo "make check: OK" ;;\n'
+                '  leak) echo "make leak: FAIL"; exit 1 ;;\n'
+                "esac\n"
+                "exit 0\n"
+            ),
+        )
+
+        self.assertEqual(proc.returncode, 5, proc.stdout + proc.stderr)
+        self.assertEqual(self.fixture.head(), self.fixture.before,
+                         "main was left at a merge that was not published")
+        self.assertEqual(self.fixture.origin_main(), self.fixture.before,
+                         "origin moved even though the publication gate failed")
+        self.assertIn("make leak failed", proc.stdout)
+
+
+@unittest.skipUnless(TOOL, TOOL_MISSING)
+class NoBranchCardTests(unittest.TestCase):
+    """A `dir`-workspace card commits on main; its merge is its publish.
+
+    Cards that run in a shared directory have no branch, so `merge_card --card`
+    had nothing to merge and printed "has no branch" while `main` stayed ahead
+    of `origin/main` (t_0284f0cf, 2026-11-18 09:55Z — the review measured 277
+    local commits against 276 on origin). The same tool now publishes the
+    direct commit instead of returning silently.
+    """
+
+    def setUp(self) -> None:
+        self.fixture = Fixture()
+        self.fixture.add_origin()
+        self.fixture.git("commit", "-q", "--allow-empty", "-m", "card: a direct commit")
+
+    def tearDown(self) -> None:
+        self.fixture.cleanup()
+
+    def load_tool(self):
         spec = importlib.util.spec_from_file_location("merge_card_under_test", TOOL)
         assert spec and spec.loader
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
+        return module
 
-        self.assertGreater(module.CHECK_TIMEOUT, module.CHECK_LOCK_WAIT)
-        self.assertLess(module.CHECK_LOCK_WAIT, 3600, "the queue must be bounded below the Makefile default")
+    def test_a_card_without_a_branch_publishes_main(self) -> None:
+        module = self.load_tool()
+        setattr(module, "card_details", lambda card: {"branch_name": None, "workspace_path": None,
+                                                      "title": "a dir-workspace card"})
+        previous = os.environ.copy()
+        self.fixture.write_make('case "$1" in\n  leak) echo "make leak: OK" ;;\nesac\nexit 0\n')
+        os.environ["PATH"] = f"{self.fixture.bin_dir}{os.pathsep}{previous['PATH']}"
+        try:
+            code = module.main(["--card", "t_000000", "--repo", str(self.fixture.repo)])
+        finally:
+            os.environ.clear()
+            os.environ.update(previous)
+
+        self.assertEqual(code, 0)
+        self.assertEqual(self.fixture.origin_main(), self.fixture.head(),
+                         "the branch-less card's commit was not published")
 
 
 if __name__ == "__main__":
