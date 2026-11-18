@@ -659,23 +659,26 @@ artwork is allowed in an empty state or onboarding: longest side ≤320 px at 39
 and ≤480 px at 1440, at least 24 px from text, never behind controls, tables or
 terminal output, no frame, no shadow, no caption.
 
-The demo's `/verify` and the hosted demo sign-in carry one **plate
-band** instead: a detail crop of the same Ruysch file above the first section,
-full column width, `clamp(120px,18vw,180px)` on verify and
-`clamp(120px,14vw,140px)` on the sign-in (a flat 120 px on verify at ≤560; the
-sign-in is 120 px at 390, 140 px at 1440 and 84 px below 360 px, where the fold
-needs the room), `object-position: center 70%` and `center 50%`, decorative
-(`alt=""`), no frame, no caption, never behind text, controls, tables or
-terminal output. Measured: 180 × 712 px on the demo's verify at 1440; 120 ×
-354 px at 390; the sign-in 140 × 520 px at 1440 and 120 × 354 px at 390.
-The sign-in is the one band carried **inline**, as a `data:image/webp` URI and
+The hosted demo sign-in carries one **plate
+band** instead: a detail crop of the same Ruysch file above the landing line,
+full column width, `clamp(120px,14vw,140px)` (120 px at 390, 140 px at 1440 and
+84 px below 360 px, where the fold needs the room), `object-position: center
+50%`, decorative (`alt=""`), no frame, no caption, never behind text, controls,
+tables or terminal output. HQ's page that answers `demo.odile.fyi/verify` when
+the name falls back to HQ (`web/verify-public.html`, the demo role's copy of the
+retired `web/verify.html`) keeps the verify band it carried: the same crop above
+the first section, `clamp(120px,18vw,180px)` (a flat 120 px at ≤560),
+`object-position: center 70%`, measured 180 × 712 px at 1440 and 120 × 354 px at
+390. The sign-in is the one band carried **inline**, as a `data:image/webp` URI and
 not a second file: the demo host serves that page from one file behind
 `handle /login*` and has no static route for `web/bg-ruysch.webp`, so a sibling
 image would need a Caddy route and a restart. It is the same 96,726-byte file,
-not a re-cut, so the grade targets above hold byte for byte. A tenant's
-`/verify` is paper only: the machine's
-first-visit server carries no static route for the painting, and the machine's
-own report page is a document before it is a room. No other product surface
+not a re-cut, so the grade targets above hold byte for byte. A machine's
+`/verify` is paper only — a tenant's and the demo tenant's alike: the page
+program (`verify/verify.py`, `templates/verify.html`) carries no static route
+for the painting, and the machine's own report page is a document before it is a
+room. Measured on the live demo tenant, 2026-11-18: `demo.odile.fyi/verify`
+200, 43,159 B, 0 `<img>`. No other product surface
 carries the painting, and no painting is used behind product controls. On phones
 a note keeps its rule and loses its fill, so the only filled object on the
 screen is the primary action.
@@ -1004,7 +1007,7 @@ the literal `Repo: <REPO_URL>` and is replaced with one command; never
 | Surface | Art | Type | Palette |
 |---|---|---|---|
 | Marketing / waitlist | One full-bleed painting, paper veil, no other image | Display for the wordmark and headings; text serif for the description; caps for buttons | Core |
-| Claim, verify, status | Paper field. The demo's verify carries one contained plate band (a detail of the Ruysch) above the first section; a tenant's verify is paper only | Text serif for prose; display for headings; mono for credentials and machine values | Core + product extension |
+| Claim, verify, status | Paper field. The hosted demo sign-in and HQ's `demo.odile.fyi/verify` fallback page carry one contained plate band (a detail of the Ruysch) above the first section; every machine's `/verify` — tenant and demo tenant — is paper only | Text serif for prose; display for headings; mono for credentials and machine values | Core + product extension |
 | Webapp | First run, workspace, brief, verify, reboot, support and status; paper field; one contained artwork allowed in an empty state or onboarding, never behind text or controls | UI sans for interface and chat prose; display for the wordmark and headings; mono for terminal and metadata | Core + product extension |
 | Demo (`demo/local`) | Paper field; no painting; a reproduction of the surface, not the machine | Display + text serif + mono | Core + product extension |
 | Hosted demo sign-in (`demo.odile.fyi/login`) | Paper field; one contained plate band — the same Ruysch, `center 50%`, 84 px at 320, 120 px at 390 and 140 px at 1440, inlined as a data URI between the landing line and the boundary note; the 32 px wordmark, the h1 role for `The demo machine`, the landing line, the boundary note with its 2 px oxblood rule, one filled **Sign in** and one quiet `Check the boot report →` to the same host's `/verify`; no card | Display for the wordmark and h1; text serif for the landing line, the boundary note and the button; the one arrow glyph in mono | Core + product extension |
@@ -1115,6 +1118,7 @@ names the `docs/CLAIMS.md` row that moved with it.
 | 2026-11-15 | **The demo sign-in page's tab is first-party from its own root.** `demo.odile.fyi/login` carries the three `rel=icon` links and the credit comment beside them (the credit line is byte-identical to the one on the eleven `web/` pages), and the three committed `web/` renditions — `favicon.ico`, `icon-32.png`, `apple-touch-icon.png` — sit beside the page in `/srv/odile-demo`; the demo block's one `@tabicons` static handle answers those three paths from that root with `image/x-icon` / `image/png` and the one-year immutable cache, so the demo's tab does not depend on the first-visit service. `/icon-192.png` and `/icon-512.png` stay the page server's for the Webapp shell. §Name and mark's Files bullet is scoped to match. The sign-in page's body, palette, type and copy are unchanged; no public sentence in `docs/CLAIMS.md` changed. | Designer | verifier, t_6b25f6e5 |
 | 2026-11-15 | **Voice, the pairs re-quoted at HEAD.** The six pairs become five, each After quoted from the file that renders it at HEAD: pair 1 the landing lede (`web/index.html`, `d2938b3`, deck v3.9d); pair 2 the claim page's browser rule (`web/claim.html`, §3), replacing the retired host-key modal; pair 3 the FAQ's reboot answer (`web/faq.html`, A11), replacing the retired brief headline; pair 4 the ceremony page's passphrase rule (`web/ceremony.html`, A4), replacing the retired claim screen's key-leak sentence; pair 5 the claim lede (`web/claim.html`, v3.9), replacing the retired "minute thirty" kicker. The old pair 4 (the demo's "99.0% target · 30-day") is dropped: the line left the tree with the prototype, `/status` publishes a computed uptime from heartbeats instead, and the target is the §1 reliability row. The vintage note is replaced by the landed provenance — ODL-462 pre-flip `3355f2c` and t_13cacab8's re-cut (`84a4fa9`, merged pre-flip `94ee0477`), which retired the four v3.4 items — and by the one-root cut `24ee323` (2026-11-14), which carries each of the four After strings in pairs 2–5; pair 1's sentence arrived later, at `d2938b3`. **Also re-cut:** the overflow state names the 249-character email that scrolls inside its field and the 248-character confirmation address that wraps in its line, not "a long key"; the invite's provenance says the prototype's mock left the tree; `docs/brand/ST-ODILE.md` §12's landing and prototype rows name the landed sentences and the one-root cut (HQ-only, outside this commit). No palette, face, artwork or surface rule changed; no public sentence in `docs/CLAIMS.md` changed. | Designer | verifier, t_96bdaf09 |
 | 2026-11-16 | **Product surfaces**: the demo workspace's `Verify this machine` link is the demo's own page on the demo's own host — `https://demo.odile.fyi/verify` — so a judge reaches the report in one hop and HQ's host never appears in the address bar. The 2026-11-13 product-surfaces row is re-cut to that target; the link's 44 px box, its ≤560 visible label `Verify` with the full aria-label, ink on the vendor shell and the tenant's relative `/verify` are unchanged. Both chrome copies (`deploy/demo-host/webapp-chrome.js`, `deploy/image/webapp-chrome.js`, byte-identical, sha256 `f73b90d2…`, 26,836 B) carry the constant once, and the comment above it names the demo's own page. On the demo host the installed script and the bundle's `odile-demo-chrome.js` are the same bytes, and `GET /odile-demo-chrome.js` with a judge session serves that constant. Measured in a browser at 1440×900 and 390×844: `href` `https://demo.odile.fyi/verify`, box 188 × 44 px at x 1184 and 55 × 44 px at x 267, ink `rgb(28,24,19)` on paper `rgb(234,223,196)` 13.33:1, the 2 px ink focus ring at 3 px offset, `scrollWidth == clientWidth` at both widths, and one hop to the page (200, 43,159 B, sha256 `3cdd7427…`, one `<!--demo-check-->` pair). `deploy/demo-host/deploy_demo_icons.py` uploads the chrome — the re-assert helper's source — and reads the served script, so the link the browser runs is measured, not assumed. No palette, face, artwork or surface rule changed; no public sentence in `docs/CLAIMS.md` changed (v3.10e already records the 302). | Designer | verifier, ODL-564 |
+| 2026-11-18 | **The `/verify` plate band names its surface.** The band the sheet called "the demo's `/verify`" is HQ's demo-role page — `web/verify-public.html`, which answers `demo.odile.fyi/verify` only when the name falls back to HQ — and it keeps that band unchanged (`clamp(120px,18vw,180px)`, 180 × 712 px at 1440 / 120 × 354 px at 390, `center 70%`). A machine's `/verify` is paper only on every machine, a tenant's and the demo tenant's alike: the page is `verify/verify.py` + `templates/verify.html` under `odile-verify.service` on loopback (t_4fcd465f), whose server carries no static route for the painting, and its rows are a document before they are a room. Measured on the live demo tenant 2026-11-18: `demo.odile.fyi/verify` 200, 43,159 B, 0 `<img>`; the demo block's `/verify` proxies 8098, the machine's page. The hosted demo sign-in keeps its inline band (140 × 520 px at 1440 / 120 × 354 px at 390) unchanged. §Product surfaces, the surface table and §Do/Don't's one-painting row are re-cut to match, and `docs/brand/REVIEW.md`'s art test names the same surfaces (HQ-only). No palette, face or public sentence changed. | Designer | verifier, t_4fcd465f |
 
 ## Do / Don't
 
@@ -1122,7 +1126,7 @@ names the `docs/CLAIMS.md` row that moved with it.
 |---|---|
 | One filled button per screen; everything else quiet. | Two filled buttons, or a primary below the fold. |
 | Paper `#EADFC4`, ink `#1C1813`, soft `#4A4136`, oxblood rules `#6E2A2A`. | Pure white `#FFF` or neutral black `#000`; both fight the paper. |
-| One painting on a page: full-bleed on marketing, one contained detail band on the demo's verify and the demo sign-in; one painted head in the tab. | A second image on a page, a collage, a carousel, a frame, a vignette, a gold border. |
+| One painting on a page: full-bleed on marketing, one contained detail band on the hosted demo sign-in and HQ's demo `/verify` fallback page; one painted head in the tab. | A second image on a page, a collage, a carousel, a frame, a vignette, a gold border. |
 | The wordmark alone, live text in Cormorant 500. | A lockup, a monogram, a tagline beside it, or the wordmark set in a sans. |
 | Put the trust moment above the fold on the tenant surfaces: no one at Odile holds the disk key, the seal is the key, there is no reboot wait; the grant returns with ODL-474. | Bury it under decoration or explain the flow with a disclaimer. |
 | 44×44 px targets and a 2 px ink focus ring at 3 px offset. | 32 px links, `outline: none`, or focus signalled by colour alone. |
