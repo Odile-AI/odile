@@ -30,8 +30,9 @@ why nothing here reads a file name or a byte.
 
 The box registers each guest's key with the tenant in its comment —
 `odile-backup <slug>` — and the purge drops every line whose comment carries
-the slug (or a word named with `--sftp-key-comment`, for a box that registered
-the image's hostname). A key file with no such line refuses before the
+the slug (or the token named with `--sftp-key-comment` — a token that names
+only this tenant, since every line carrying it is dropped — for a box that
+registered the image's hostname). A key file with no such line refuses before the
 repository is deleted: dropping the access is part of the purge, not a silent
 zero. A missing file, or a repository directory that is already gone, is the
 converged case and records what it found.
@@ -174,8 +175,10 @@ def sftp_key_lines(text: str, tokens: list[str]) -> list[tuple[int, str, str]]:
     `odile-backup <slug>` is the convention, and the live box's lines carry it
     — but `backup.py init` writes the guest's kernel hostname, which on the
     image is the same `odile-bench` for every tenant. `--sftp-key-comment`
-    names that word when a box used it. A line matches only when one of the
-    tokens is a whole word of the comment: `odl-1` must not match `odl-12`.
+    names that word when a box used it; the token must name only this tenant,
+    because every key line carrying it is dropped. A line matches only when
+    one of the tokens is a whole word of the comment: `odl-1` must not match
+    `odl-12`.
     """
     found: list[tuple[int, str, str]] = []
     wanted = {token for token in tokens if token}
@@ -512,7 +515,9 @@ def run(ctx: Context, args) -> Report:
             # zero would leave the tenant's key working on the box.
             raise UsageError(
                 f"no line of {authorized} names {slug}; pass --sftp-key-comment TOKEN "
-                "(a box that registered the image's hostname) or drop the line by hand"
+                "(a token that names only this tenant — every line carrying it is "
+                "dropped — for a box that registered the image's hostname) or drop "
+                "the line by hand"
             )
         password = _read_password(args.password_file) if args.password_file else None
         check = check_repository(path, password=password, snapshot=snapshot)

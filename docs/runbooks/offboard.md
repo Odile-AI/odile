@@ -387,7 +387,9 @@ own date, and past it:
    each guest's key with the tenant in its comment (`odile-backup odl-…`), and
    the purge drops every line whose comment carries the slug. `backup.py init`
    writes the guest's kernel hostname instead (`odile-bench` on the image), so
-   a box that registered that word names it with `--sftp-key-comment`. A key
+   a box that registered that word names it with `--sftp-key-comment` — a
+   token that names only this tenant, because the purge drops every line
+   carrying the word. A key
    file with no line for the tenant **refuses** before the repository is
    deleted; a missing file, or a repository directory already gone, is the
    converged case and records what it found.
@@ -467,6 +469,14 @@ so the first run exits 2 with
 
 ```
 odilectl purge: no line of /var/tmp/odile-t_9d6fb595/box/.ssh/authorized_keys-image names odl-218key; pass --sftp-key-comment TOKEN (a box that registered the image's hostname) or drop the line by hand
+```
+
+Re-measured 2026-11-18 after the wording was scoped (`odl-218key2`, a fresh
+row, repository and key file in the same scratch root; the same
+`key-comment.txt` carries the section), the refusal now names the scope:
+
+```
+odilectl purge: no line of /var/tmp/odile-t_9d6fb595/box/.ssh/authorized_keys-rekey names odl-218key2; pass --sftp-key-comment TOKEN (a token that names only this tenant — every line carrying it is dropped — for a box that registered the image's hostname) or drop the line by hand
 ```
 
 and the same command with `--sftp-key-comment odile-bench` drops exactly that
