@@ -27,6 +27,7 @@ from typing import Callable, Sequence, TextIO
 from . import (
     bootrecord,
     destroy,
+    dns,
     export,
     health,
     invite,
@@ -57,6 +58,7 @@ MODULES = (
     support,
     export,
     bootrecord,
+    dns,
 )
 BY_NAME = {module.NAME: module for module in MODULES}
 
