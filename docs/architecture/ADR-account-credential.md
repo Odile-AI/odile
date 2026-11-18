@@ -1,14 +1,17 @@
 # ADR-004 — The account password is not the instance sign-in
 
-**Status:** Accepted · 17 November 2026 · Architect
+**Status:** Accepted · 17 November 2026 · Architect · revised 18 November 2026
+after review round 1 (host naming per environment, counts, annex output)
 **Answers:** ODL-569 · G3 of `docs/product/ROADMAP-ALPHA0.md` §4 — “is the
 account password the instance sign-in, or are they two credentials?”
 **Short answer:** no. **Two credentials, one link.** A2's registration collects an
 email and a password that open the **account page and nothing else**; the
 machine's sign-in is still set on the guest at first visit and hashed there, and
-HQ holds nothing that opens it. The account is new, so one CLAIMS sentence moves
-(“There is no password and no account at HQ”) — and A2 moves it whichever option
-wins. Every other access sentence in the deck stays literal.
+HQ holds nothing that opens it. The account is new, so one CLAIMS sentence is
+falsified (“There is no password and no account at HQ”) and one inventory list
+gains a row (“At HQ we hold …”, adding the account and a hash of its password);
+A2 forces both whichever option wins. Every other access sentence in the deck
+stays literal.
 **Related:** `docs/MVP-V0.1.md` §2 (the access principle), §4 R1/R3/R6, §6.1
 Invariants 2 and 4, §7 gap 3, §12 D14/D20/D23/D26; `docs/CLAIMS.md` §1 Access,
 §1 First run, §1 Data handling, §1a, §4.11, §5; `docs/product/ROADMAP-ALPHA0.md`
@@ -70,10 +73,13 @@ Two consequences the options must live with:
    `/var/log/odile-firstboot.log` at the image's default umask. So *before* the
    owner sets their sign-in, an operator can set one and log in. The promise is
    true **from the first visit onwards**; §4 states it that way, and the second
-   copy of the token is one of the fixes §5 item 4 names. `docs/CLAIMS.md` §1a
-   still holds A1 for the image's bench password (fixed by ODL-521/522/523), not
-   for the token; that second reason needs a row before the sentence is
-   published.
+   copy of the token is one of the fixes §5 item 4 names. `docs/CLAIMS.md` §1a's
+   A1 row still gives the image's bench password as its reason and names
+   `t_adcdec31` as the card that lands it; that reason is cleared
+   (ODL-521/522/523, all done) and the card is SUPERSEDED on the board, while
+   the setup-token reason above survives. The row's why and landing line are the Product Lead's
+   re-cut, outside this card's `touches`; this ADR names them so the deck is not
+   read as cleared while the token window is open.
 2. **A2 must put a session somewhere.** The public pages carry “No cookies, no
    trackers, no third-party requests” and a CSP of `default-src 'none'`
    (`docs/CLAIMS.md:154`, `app.py:742-745`). A registration page with a session
@@ -85,7 +91,7 @@ Two consequences the options must live with:
 | | What it buys | What it costs | Who pays |
 |---|---|---|---|
 | **A — two credentials, one link** (recommended) | The four invariants, unchanged; the guest's first-visit flow, already built and proven, is reused as-is; the account and the machine can be reset independently | One more password to remember and one more form, reached from the ready email the user already opens; the machine's reset does not follow the account; a real copy problem (“which password?”) | **The user** (a password), **Product Lead** (copy and one criterion re-cut), **support** (the lost-recovery-code path) |
-| **B — one credential, set at registration** | One password, one reset story, the account is the authority; the pre-first-visit token retires; “the instance follows the account” is true by construction | HQ sees the password once (B1) or holds a verifier (B2); HQ can set any tenant's sign-in at any time, so the machine's gate is inside the operator's power; seven CLAIMS sentences and two embedded surfaces move; a new HQ→guest write path; a migration across every machine already seeded | **The product** (the promise and `/verify`'s proof), **Builder** (seed contract, installer, A5 push path), **security** (an offline-crackable copy of the machine credential at HQ) |
+| **B — one credential, set at registration** | One password, one reset story, the account is the authority; the pre-first-visit token retires; “the instance follows the account” is true by construction | HQ sees the password once (B1) or holds a verifier (B2); HQ can set any tenant's sign-in at any time, so the machine's gate is inside the operator's power; eight approved CLAIMS sentences — seven of them unique to B — and two embedded surfaces move; a new HQ→guest write path; a migration across every machine already seeded | **The product** (the promise and `/verify`'s proof), **Builder** (seed contract, installer, A5 push path), **security** (an offline-crackable copy of the machine credential at HQ) |
 | **C — an auth proxy in front of the instance** | SSO; resets trivial; one place to gate every workspace; can hide the instance's own page entirely | Odile is in the login path **and in every request**: Invariant 4 and “your prompts do not pass through Odile's servers” both die; HQ holds an assertion key that mints a session for any tenant; HQ's availability becomes every tenant's sign-in; a new service, cookie domain, TLS and CSP surface | **The product** (the access model), **Builder** (a new service and path), **Savio** (access change) |
 
 ### 3.1 A — two credentials, one link
@@ -191,19 +197,21 @@ B is a one-way door on the promise**, and the promise is the product.
 > its hash is stored, on the machine. **There is no password and no account at
 > HQ.**”
 
-The clause in bold moves, and **A2 moves it, not this ADR**: registration creates
-an account, and the account has a password. The re-cut is the Product Lead's, and
-its honest form is one sentence, not a retreat:
+The clause in bold is falsified, and **A2 falsifies it, not this ADR**:
+registration creates an account, and the account has a password. The re-cut is
+the Product Lead's, and its honest form is one sentence, not a retreat:
 
 > “Your Odile account holds your email and a password that opens your account
 > page — never your machine. The sign-in on the machine is set there and hashed
 > there; Odile never sees it.”
 
-Everything else in the access deck stays literal. Read against the options:
+Everything else in the access deck stays literal, except `:156`'s inventory
+list, which gains the account and its password hash in the same re-cut (the
+`:156` row below). Read against the options:
 
 | Approved sentence (`docs/CLAIMS.md`) | A | B |
 |---|---|---|
-| §1 “No one at Odile can log in to a tenant machine. The only sign-in is yours.” (:51) | survives **between the first visit and a rebuild** (§2.1, §6) | dies — HQ can set a sign-in at any time |
+| §1 “No one at Odile can log in to a tenant machine. The only sign-in is yours.” (:51) | survives **between the first visit and a rebuild** (§2 item 1, §6) | dies — HQ can set a sign-in at any time |
 | §1 “Your Odile sign-in is set on your machine at first visit and hashed there. We never see it.” (:57) | survives verbatim | dies in both shapes (B1 sees it; B2 hashes it elsewhere) |
 | §1 “only its hash is stored, on the machine. There is no password and no account at HQ.” (:106) | last clause moves, **forced by A2** | dies: the verifier is at HQ |
 | §1 “A lost Odile sign-in is reset on the machine with your recovery code. There is no HQ reset.” (:107) | survives | dies — the reset is at HQ |
@@ -215,9 +223,9 @@ Everything else in the access deck stays literal. Read against the options:
 B also costs two embedded surfaces a re-embed and a re-sign: the first-visit page
 (`web/first-visit.html`, `installer/odile_install.py:4534`) and the installed
 help skill (`skills/odile-help/SKILL.md` in the installer), plus the generated
-copies in `release/`. A costs one deck sentence, the account's rows in the
-privacy inventory (`tests/test_legal.py` binds them), and the copy that explains
-which password is which.
+copies in `release/`. A costs one deck clause and one inventory addition, the
+account's rows in the privacy inventory (`tests/test_legal.py` binds them), and
+the copy that explains which password is which.
 
 ### 4.2 What A does not buy
 
@@ -246,11 +254,24 @@ Under A there are two resets, and the card must say which is which on every
 screen. The constraint is not “pick one”; it is **two flows with two authorities,
 and the machine's flow needs the machine**.
 
+**Name the host per environment.** A2 and A5 are judged on the bench: A1 puts
+the account site at `test.odile.fyi` and a test tenant at
+`<slug>.test.odile.fyi` (ODL-339/ODL-340; A1's exit criteria 1 and 2), A2's demo
+registers a new account “on the bench”, and A5's demo changes the email and the
+password “on the bench”. A link minted on the bench must name the bench host: a
+tester who clicks `https://odile.fyi/reset?t=…` lands on the production app,
+which has no such account, and nothing is reset.
+
 **Account password (HQ authority).**
 
-- A single-use emailed link to `https://odile.fyi/reset?t=<token>`, valid 30
-  minutes, the token stored as a SHA-256 hash, invalidated by a new request or an
-  email change. It works with the instance down, which is its whole point.
+- A single-use emailed link to the account host — on the bench
+  `https://test.odile.fyi/reset?t=<token>`, in production
+  `https://odile.fyi/reset?t=<token>` — valid 30 minutes, the token stored as a
+  SHA-256 hash, invalidated by a new request or an email change. It works with
+  the instance down, which is its whole point. The link is a bearer in a URL,
+  the same shape as the recovery code below; it is safe only because it is
+  single-use, short-lived and stored as a hash, and A5's link must keep all
+  three or it becomes defect 2.
 - It ends the account's other sessions. It does **not** touch the machine.
 - A signed-in user changes the email at the account: confirm at both addresses
   (`old` and `new`), then invalidate live links sent to the old one. The machine
@@ -259,10 +280,12 @@ and the machine's flow needs the machine**.
 
 **Machine sign-in (the guest's authority).**
 
-- `https://<slug>.odile.fyi/first-visit/reset`, a recovery code, a new password.
-  The page is served by the guest, so **the machine must be up**. When it is
-  down, say exactly that: the sign-in reset waits for the machine; nothing else
-  the user does is lost, because they could not use the machine anyway.
+- The machine's own first-visit reset, `https://<slug>.test.odile.fyi/first-visit/reset`
+  on the bench and `https://<slug>.odile.fyi/first-visit/reset` in production —
+  a recovery code, a new password. The page is served by the guest, so **the
+  machine must be up**. When it is down, say exactly that: the sign-in reset
+  waits for the machine; nothing else the user does is lost, because they could
+  not use the machine anyway.
 - The code rotates on success, and the response must show the new one once, like
   the first visit does.
 - If the user has lost the code: there is no operator reset (D20). The path is
@@ -326,12 +349,12 @@ The account is a new store at HQ. What it does and does not do:
 | **Servury** | Console, ciphertext, stop, delete | Log in; read the disk |
 | **NEAR AI** | Prompts inside the TEE | The machine |
 
-Two windows exist and are stated, not hidden: the pre-first-visit token (§2.1),
-and a **rebuild**, where `odilectl/provision.py` mints a new setup token and
-seals the old backup password under it, so the operator who mints it can unseal
-it. The rebuild is a handover by design (the machine is replaced and the user
-restores); it is not the credential this ADR decides, and a later ADR may retire
-the sealed copy.
+Two windows exist and are stated, not hidden: the pre-first-visit token (§2
+item 1), and a **rebuild**, where `odilectl/provision.py` mints a new setup
+token and seals the old backup password under it, so the operator who mints it
+can unseal it. The rebuild is a handover by design (the machine is replaced and
+the user restores); it is not the credential this ADR decides, and a later ADR
+may retire the sealed copy.
 
 **The account record** (the interface this ADR owns):
 
@@ -396,16 +419,20 @@ worth more than a paragraph in this ADR.
 - **A6's console must “log in as” a tenant**: that is C, and it breaks I1 and I3.
   A6 should only delete and inspect the record; if it needs to see a workspace,
   it uses a support grant like anyone else.
-- **A passkey later** (R3's upgrade, D26): it replaces the *account* credential
-  and leaves the machine's sign-in alone — A is the option that makes that a
-  local change, because the machine's gate was never the account's.
+- **A passkey later.** R3's “a passkey is a later upgrade” and D26's “password
+  now, passkey later” both name the **machine's** Odile sign-in, so under A a
+  passkey is a guest change to the first-visit credential and leaves the
+  account's password alone. Reading it as the account credential is a re-cut of
+  R3/D26, not their text; and R3's “no HQ account or password” and D26's “only
+  credential” are changed by A2's account under every option, so the MVP re-cut
+  (`docs/MVP-V0.1.md`, ODL-576) must name both rows.
 
 ## 9. Alternatives rejected
 
 - **B, now.** Rejected because it makes HQ the authority for a tenant's sign-in
-  for the life of the machine, and because seven public sentences, two embedded
-  surfaces and `/verify`'s proof move with it. Adoptable later; §4.3 is its
-  design note.
+  for the life of the machine, and because eight approved public sentences (seven
+  of them unique to B), two embedded surfaces and `/verify`'s proof move with it.
+  Adoptable later; §4.3 is its design note.
 - **C, at all.** Rejected because an operator-held assertion key is a credential
   that opens every machine, and because a proxy in the request path ends
   Invariant 4 and the prompts sentence together. It is a different product.
@@ -428,16 +455,24 @@ At the card's base, `main` `d3c372b` (17 November 2026), in a clean checkout:
 $ grep -n 'SEED_FORBIDDEN = ' installer/odile_install.py
 188:SEED_FORBIDDEN = ("password", "passphrase", "private_key", "ssh_private_key", "luks")
 
-$ grep -n 'first-visit-token\|open(log_path' deploy/image/odile-firstboot.py
+$ grep -n 'first-visit-token' deploy/image/odile-firstboot.py
+54:       install-stack.sh --seed /etc/odile/seed.json --first-visit-token <token>
 1133:    command = [installer, "--seed", seed_path, "--first-visit-token", token]
+
+$ grep -n 'open(log_path' deploy/image/odile-firstboot.py
+1033:    with open(log_path, "a", encoding="utf-8") as log:
 1137:    with open(log_path, "ab") as log:
+# 54 is the module docstring; 1033 is the recovery-file writer's log (no token);
+# 1137 appends the 1133 argv, token included, to log_path.
 
 $ grep -n 'recovery_used_at' installer/odile_install.py
 3303:        "recovery_used_at": None,
 3316:    for key in ("used_at", "signin_set_at", "recovery_issued_at", "recovery_used_at"):
 4303:                state["recovery_used_at"] = state["recovery_issued_at"]
 4371:        "recovery_used_at": state["recovery_used_at"],
-# no line reads it as a condition: the code is written, never enforced
+11414:        "recovery_used_at": None,
+# 11414 is the fresh state dict; no line reads the field as a condition —
+# the code is written, never enforced.
 
 $ sed -n '3604,3611p' installer/odile_install.py
 def write_env_hash(env_path: Path, password_hash: str) -> str:
@@ -453,6 +488,13 @@ $ grep -n 'first-visit?t=' odilectl/claim.py
 1185:        first_visit_url = f"{url}/first-visit?t={token}"
 ```
 
-The sentence this ADR moves has no test and no lint phrase binding it:
-`grep -rn 'no account at HQ'` finds `docs/CLAIMS.md:106`, one old evidence
-walkthrough and one design doc, and nothing under `tests/` or `web/`.
+The CLAIMS clause this ADR falsifies has no test and no lint phrase binding it:
+
+$ git grep -n 'no account at HQ' d3c372b
+d3c372b:docs/CLAIMS.md:106:- "Your Odile sign-in is the username and password that open the workspace; only its hash is stored, on the machine. There is no password and no account at HQ."
+
+The tracked tree at the base has exactly one hit, and nothing under `tests/` or
+`web/`. The two other places that discuss the idea are HQ-only files no checkout
+carries — `docs/product/RECUT-2026-11-07-model-a.md`'s “Odile account at HQ”
+row (the idea, not the phrase) and the untracked 2026-11-08 evidence walkthrough
+that quotes it.
