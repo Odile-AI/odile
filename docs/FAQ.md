@@ -117,16 +117,22 @@ backup password and the certificate fingerprint." (deck, A9)
 
 **Deck:** "Stripe holds the card; Odile holds the customer id, the subscription
 id and whether it is paid." · "Support and abuse mail goes to help@odile.fyi and
-is read by a person; the target is an answer within 24 hours." Price:
-`docs/MVP-V0.1.md` §0, $49/month. **The allowance sentence is held** (17
-November 2026, `t_ddcb00fc`): "The $12 inference allowance is included and
-hard-capped; at the cap the agent stops and tells you." is §1 Money and place,
-now in §1a — `web/terms.html` (`4b09cac`) and `web/faq.html` (`407d4a8`) no
-longer carry it, its proof (ODL-242, `t_8ec06788`) has not run, and Savio is
-re-cutting the machine-and-price details. Do not quote an allowance until it
-returns; the installed help (`skills/odile-help/SKILL.md`) and the support
-template (`templates/emails/support.md`) still carry it and are re-cut with
-Savio's number.
+is read by a person; the target is an answer within 24 hours." Price: alpha.0
+has none — `docs/MVP-V0.1.md` §0 says so, and §8 keeps the v5 $49/month as
+**not current**. The reply above and the one-line answer in the table still
+quote the v5 price; the two live homes that still say it (`web/claim.html`,
+`templates/emails/ready.txt`) are `t_02310cbf`'s, and that card re-cuts the
+support answer (`templates/emails/support.md`) and this moment with them.
+**The allowance sentence is held** (17 November 2026,
+`t_ddcb00fc`): "The $12 inference allowance is included and hard-capped; at the
+cap the agent stops and tells you." is §1 Money and place, now in §1a —
+`web/terms.html` (`4b09cac`) and `web/faq.html` (`c8fe39b`) no longer carry it,
+its proof (ODL-242, `t_8ec06788`) has not run, and the allowance's return to the
+two pages waits on Savio's re-cut of the machine-and-price details. Do not quote
+an allowance until it returns; the installed help (`skills/odile-help/SKILL.md`)
+still carries it and is re-cut with Savio's number, and the support template
+(`templates/emails/support.md`) still carries it and is `t_02310cbf`'s to
+re-cut.
 
 Do not promise a refund, a credit or a discount. Refunds are Savio's; forward
 the message and say the target is an answer within 24 hours.
