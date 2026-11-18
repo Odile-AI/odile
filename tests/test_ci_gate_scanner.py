@@ -269,12 +269,17 @@ class HistoryUsesTheBaseScanner(unittest.TestCase):
         env = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
         env.update({"EVENT_NAME": "push", "REF_NAME": "pr", "BASE_REF": "main",
                     "PUSH_BASE": base_sha})
+        pr_allowlist = (tree / "leak-allow.tsv").read_text(encoding="utf-8")
         result = subprocess.run(["/bin/sh", "-c", history_gate_script()], cwd=tree,
                                 text=True, capture_output=True, env=env)
         self.assertNotEqual(result.returncode, 0,
                             "the history gate let a PR waive its own finding")
         self.assertIn("FINDING forbidden-value", result.stdout + result.stderr)
         self.assertIn("probe.md:1", result.stdout + result.stderr)
+        # The restore is an EXIT trap, not a command the scan's non-zero exit
+        # would skip, so the red path leaves the PR's own allowlist in place.
+        self.assertEqual((tree / "leak-allow.tsv").read_text(encoding="utf-8"), pr_allowlist,
+                         "the red path left the base's allowlist in the checkout")
 
 
 if __name__ == "__main__":

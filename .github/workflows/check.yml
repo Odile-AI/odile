@@ -306,13 +306,14 @@ jobs:
       # BASE branch's allowlist and list. Same rule as publish-lint: the gate
       # must not run the files it is gating. This step used to run the PR
       # checkout's own scanner and allowlist, so a branch could add a literal in
-      # one commit and delete it
-      # in the next could waive its own history finding with one appended row —
+      # one commit and delete it in the next (a clean tree) and waive its own
+      # history finding with one appended allowlist row —
       # the "a commit that is later deleted" surface in
       # docs/ops/LEAK-CONTROL.md, which is the case this job exists for. The
       # workspace is ephemeral and the job pushes nothing, so copying the base
       # files over the checkout changes no published byte; the PR's allowlist is
-      # restored afterwards.
+      # restored afterwards, through an `EXIT` trap so the red path restores it
+      # too.
       #
       # The class is scoped (--forbid-only): the roots this repository replaced
       # already published addresses and home paths, and a job about the deny list
@@ -356,10 +357,12 @@ jobs:
           git show "$base_sha:leak-allow.tsv" > /tmp/base-leak-allow.tsv
           git show "$base_sha:leak-forbid.txt" > /tmp/base-leak-forbid.txt
           cp leak-allow.tsv /tmp/pr-leak-allow.tsv
+          # `set -e` aborts on the scan's non-zero exit, so the restore is a
+          # trap: a plain `cp` after the scan would be skipped on the red path.
+          trap 'cp /tmp/pr-leak-allow.tsv leak-allow.tsv' EXIT
           cp /tmp/base-leak-allow.tsv leak-allow.tsv
           /usr/bin/python3 /tmp/base-leak_scan.py --history \
             --forbid-file /tmp/base-leak-forbid.txt --forbid-only
-          cp /tmp/pr-leak-allow.tsv leak-allow.tsv
       # The repository is the source of truth: one root, cut once from `main`
       # `65e2764` (`24ee323`), and every commit after it is ordinary work on
       # top — a card's branch included, merged with --no-ff. On a push to main
