@@ -68,6 +68,28 @@ ok   the placed odile-export is 0755: 0o755
 ok   the placed odile-export is byte-identical to `odilectl export <slug> --script`: 3897 vs 3897 bytes
 ```
 
+The copy placed on the live tenant for the drill is
+`f128a3c95bf25e9290fb607b8f5cd4df00403618bab890ae2ead950fad060f49`, equal to the
+checkout's `odilectl export odl-7971a8 --script | sha256sum` at the time. The
+checkout now prints
+`c635c4323ef404b4532e1cbb95bd9a80f1e69357b88c4e11fc598c6493132dae`: the review
+added two fixes to the program — the staging tar is a file, not a pipe (so a
+tar that exits 2 stops the run instead of letting `tar | tar` print "wrote"),
+and `kanban.db` is copied through SQLite's backup API with its `-wal`/`-shm`
+excluded, the same way as `state.db`. Both are pinned by
+`tests/test_offboard.py` (a stub tar that exits 2; a task board whose row is
+only in the WAL at copy time). The checkout's program run on a fixture home is
+`evidence/program-current.txt`: its printed program is the same bytes as
+`export --script` (`c635c432…`), and its bundle — 722 bytes, 13 entries, no
+`kanban.db-wal`/`-shm` members — passes `export --verify` as complete. The live
+tenant still holds the earlier copy: its Webapp began refusing `/login` with
+`400 Invalid Host header` at 2026-11-13T05:33Z after a boot-time release
+install (§6), which was an installer defect and is fixed and recovered
+(t_d95b8c13, 2026-11-15T20:12Z: `=== rc=0`, `/login` 200, the sign-in 200 with
+four `__Host-` cookies), and the new program now travels inside the signed
+installer itself (**t_2efbd6e3**, merged), so it reaches a tenant on the next
+install rather than by hand placement.
+
 The first run prints the write and the second reads `same`:
 
 ```
@@ -95,6 +117,7 @@ The first argument is the bundle's name (`name=${1:-$(hostname)}`), so `-h` and
 `--help` are not special: `odile-export --help` writes a bundle named
 `odile-export---help-<stamp>.tar.gz` rather than printing usage. Pass a name
 only: `odile-export odl-7971a8`.
+
 
 The first drill run failed because the staging directory landed in `TMPDIR`
 (`${HOME}/.hermes/cache/scratch` on a tenant) and `tar .hermes` then copied a
@@ -446,7 +469,7 @@ tenant is §2 — complete, with the record id, the server id and the backup dat
 |---|---|---|
 | a destroyed slug cannot come back | `TRANSITIONS["destroyed"]` is empty; the decision and its URL consequence belong to the state machine | **t_ce52bb8d** |
 | the live tenant's destroy + rebuild | $18.99 and the panel's disk image — a real-world action | **t_8d50106b** |
-| the live tenant's Webapp refuses `/login` (`400 Invalid Host header`) | measured 2026-11-13T05:33Z after a boot-time release install; the same boot's release setup ended `rc=1` at `odile-access-report` — installer/release work, not the offboard path | **t_d95b8c13** |
+| the live tenant's Webapp refuses `/login` (`400 Invalid Host header`) | measured 2026-11-13T05:33Z after a boot-time release install; that boot's release setup ended `rc=1` at `odile-access-report` and the 10:29Z retry ended `rc=4` at the recovery confirmation. It was installer/release work, not the offboard path: the agent is restarted whenever a file the gateway reads at start changed (so a rewritten `webapp.public_url` goes live), a failed access report no longer aborts that restart, and the boot half passes `--i-have-copied-it`. **Recovered on the live tenant 2026-11-15T20:12Z**: `=== rc=0`, `/login?next=%2F` 200, `POST /auth/password-login` 200 with four `__Host-` cookies, `/verify` 200. The machine's own name `odl-7971a8.odile.fyi` still answers 400 by design (`demo-public.md` §Host check) | **t_d95b8c13** fixed and recovered 2026-11-15 |
 | the 30-day purge is an operator step | the box is off-site and has no agent; the date on the row makes it checkable | **t_9d6fb595** |
 | `odilectl dns` is not a subcommand | `dns.py` is a command module with its own `python3 -m` entry point; `cli.MODULES` does not register it yet, so the runbook names the module | **t_1520be38** |
 

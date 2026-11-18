@@ -2547,7 +2547,12 @@ class ProductionImageTests(unittest.TestCase):
         # sets; without it the installer exits 1 after the boot check passes.
         self.assertIn('--token "$TOKEN"', script)
         self.assertIn("the recovery kit has no 64-hex setup token", script)
-        self.assertIn("--public-url \"https://$HOST.odile.fyi\"", script)
+        # t_d95b8c13: the public name is an override defaulting to the slug, so
+        # a machine whose owner moved its Webapp keeps it, and the boot passes
+        # the recovery confirmation a machine with no TTY cannot give.
+        self.assertIn('PUBLIC_URL=${ODILE_RELEASE_PUBLIC_URL:-https://$HOST.odile.fyi}', script)
+        self.assertIn('--public-url "$PUBLIC_URL"', script)
+        self.assertIn("--i-have-copied-it", script)
         self.assertIn("--user tenant --port 9130", script)
         self.assertLess(script.index("--instance-id"), script.index("--slug"))
         image = (IMAGE / "sealed-image.sh").read_text()
