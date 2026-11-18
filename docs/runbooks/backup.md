@@ -50,6 +50,15 @@ own Hermes cron, which is the same path the user has.
 file for exactly one restic invocation, and never prints it. `ps` shows no
 secret: the password is not on argv.
 
+The 30-day purge (`docs/runbooks/offboard.md` §4, **t_9d6fb595**) is the one
+command that touches a destroyed tenant's repository: `odilectl purge <slug>`
+reads only the row's `detail.backup`, runs `restic snapshots` as the control
+check (with the user's recovery file when the operator has it, and without it
+otherwise — restic's "wrong password" still proves the directory is a restic
+repository), deletes `/srv/odile-backup/tenants/<slug>` and the guest's
+`authorized_keys` line, and records the purge on the row. It reads no file
+name, decrypts nothing, and prints no password.
+
 **HQ cannot read the repository.** Measured 2026-11-12T23:24Z on the host that
 stores the bytes (the password is the live tenant's, from the recovery file
 ODL-332 downloaded):
@@ -753,7 +762,8 @@ sentence is quoted (ODL-474 lands it).
   Keep the old box for 30 days, then delete it.
 - **Exit:** the encrypted repository is kept 30 days after cancellation, then
   deleted. The user can download it with the password before then; Odile can
-  delete it, not read it.
+  delete it, not read it. The deletion is `odilectl purge <slug>`
+  (`docs/runbooks/offboard.md` §4, **t_9d6fb595**).
 
 ---
 
@@ -821,8 +831,14 @@ sentence is quoted (ODL-474 lands it).
   destroying and re-provisioning the *live tenant* is ODL-218's path (destroy
   needs the provider API and a new order, i.e. Savio), and it reuses this
   runbook's §5.3–§5.4 unchanged.
+- **The 30-day purge** is a command now (**t_9d6fb595**):
+  `odilectl purge <slug>` keeps the row's `keep_until`, refuses before
+  it, and past it runs `restic snapshots`, deletes the box's directory and
+  drops the guest's key line; a second run says `already purged`
+  (`docs/runbooks/offboard.md` §4). The off-site box it will run against is
+  **t_8eb17a54**'s; the drill's chroot is on HQ.
 
 The follow-ups are board cards, not prose: **t_fec9f699** (rebuild keeps
 the repository), **t_19148cba** (installer places the program and the units,
-heartbeat reachable — this card) and **t_8eb17a54** (Savio buys the box and
-sets DNS).
+heartbeat reachable — this card), **t_8eb17a54** (Savio buys the box and
+sets DNS) and **t_9d6fb595** (the 30-day purge, §9).

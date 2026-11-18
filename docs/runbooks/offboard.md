@@ -351,23 +351,165 @@ going away anyway (an expiring tenant); the unit test
 The encrypted repository is the tenant's, and HQ holds no password for it
 (`docs/runbooks/backup.md` §1). The destroy records the **date** — 30 days from
 the run — and the last heartbeat's repository and snapshot, so the deletion is
-a dated operator step, not a memory:
+a dated step, not a memory:
 
 - `keep_until` is on the destroyed row's `detail.backup.keep_until` and in
   `destroy --json` (live tenant: `2026-12-13T03:32:59Z`, snapshot `828e8fab…`,
   in the 03:32:59Z text run; the 03:22:13Z `--json` run printed its own clock,
   `2026-12-13T03:22:13Z` — the date is 30 days from the run that made it).
-- On the backup box, after that date: `restic -r <repo> snapshots` as the
-  control check, then remove the repository directory
-  (`/srv/odile-backup/tenants/<slug>` on the drill box), then drop the SFTP
-  account's access. The bytes are ciphertext; nothing else has to be rotated.
 - Before the date, nothing touches it. `destroy` never deletes the repository —
   it only prints the date and the path.
 
-V0.1 leaves the deletion to the operator: the box is off-site and its owner is
-the only one with a shell there. Automating it is **t_9d6fb595** (a command that
-reads `keep_until` and purges past it); the date on the row is what makes it
-checkable in the meantime.
+### The command — `odilectl purge <slug>`
+
+**t_9d6fb595** is the command: `odilectl purge`, a control-plane verb beside
+`destroy` (`odilectl/purge.py`). It is deliberately not a `scripts/backup.py`
+verb — that program is embedded byte-for-byte in the signed installer, so a
+purge verb there would ship to every tenant and force a re-signed installer,
+and the fact this command reads (the tenant row) lives on HQ. It runs **where
+the box's chroot is visible**: the drill box's chroot is `/srv/odile-backup` on
+HQ; the real off-site box is **t_8eb17a54**'s (§6). It reads one destroyed row
+from the state store (`tenant_state.detail.backup`), refuses before the row's
+own date, and past it:
+
+1. `restic -r <path> snapshots --no-lock` as the control check — the row
+   records the guest's URL, and on the box the same bytes are the local path
+   below `--root`. With `--password-file` (the user's recovery file) the
+   repository opens and the recorded snapshot is looked for by id (reported, not
+   required: `restic forget --prune` may have removed it); without the file
+   restic answers "wrong password" (exit 12), which proves the directory is a
+   restic repository that this password does not open — the key is the user's.
+   The purge never reads a file name or a byte.
+2. deletes the repository directory (the URL's `/tenants/<slug>` below
+   `--root`; the last path component must be the slug, so a row naming another
+   tenant's directory refuses).
+3. drops the guest's line from the box's `authorized_keys` — the box registers
+   each guest's key with the tenant in its comment (`odile-backup odl-…`), and
+   the purge drops every line whose comment carries the slug. `backup.py init`
+   writes the guest's kernel hostname instead (`odile-bench` on the image), so
+   a box that registered that word names it with `--sftp-key-comment` — a
+   token that names only this tenant, because the purge drops every line
+   carrying the word. A key
+   file with no line for the tenant **refuses** before the repository is
+   deleted; a missing file, or a repository directory already gone, is the
+   converged case and records what it found.
+4. records `detail.backup.purged` on the row (`at`, `path`, `repo`, `snapshot`,
+   `restic`, `snapshots`, `snapshot_present`, `sftp_keys_dropped`). It is a
+   detail, not a new event: `tenant_state_events.kind` is the state vocabulary,
+   so a `purged` event would be a schema change. `keep_until`, the repository
+   and the snapshot stay where `destroy` wrote them, and so do `dns`, `export`,
+   `grant`, `machine` and `reason`.
+
+With no `--apply` the command is the dry run: it prints every action, numbered,
+and changes nothing; `--apply` executes, and `--dry-run` wins over it. A second
+run prints `already purged` and writes nothing, down to the byte. The date is
+the **row's**: a re-run cannot push it forward.
+
+The dry run on a scratch repository and a copy of the state store,
+2026-11-16T02:38Z — the row's date 15 days past, four lines in the box's
+`authorized_keys`, one of them this tenant's:
+
+```
+$ /usr/bin/python3 -m odilectl purge odl-218purge --config /var/tmp/odile-t_9d6fb595/config.yaml --db /var/tmp/odile-t_9d6fb595/waitlist-copy.db --root /var/tmp/odile-t_9d6fb595/box --dry-run
+purge: dry run (pass --apply to execute)
+  1. backup.verify: repository="sftp:odile-backup@backup.odile.fyi:/tenants/odl-218purge", path="/var/tmp/odile-t_9d6fb595/box/tenants/odl-218purge", snapshot="b806dcd180c0dcf0850fa2c772ee376df860fce81df95ce60a30a30e6743cd07", command="restic -r /var/tmp/odile-t_9d6fb595/box/tenants/odl-218purge snapshots --no-lock", password_file=null
+  2. backup.delete: path="/var/tmp/odile-t_9d6fb595/box/tenants/odl-218purge", result="present"
+  3. sftp.revoke: file="/var/tmp/odile-t_9d6fb595/box/.ssh/authorized_keys", lines=[4], comments=["odl-218purge"], result="1 line(s)"
+  4. state.purge: slug="odl-218purge", detail="detail.backup.purged", keep_until="2026-11-01T00:00:00Z"
+note: the repository password is the user's: --password-file opens the repository for the check, and without it restic's wrong-password answer still proves the directory is a restic repository
+note: run: odilectl purge odl-218purge --root /var/tmp/odile-t_9d6fb595/box --apply
+note: a second run says already purged; the date is the row's
+```
+
+The state store and the key file hash the same before and after it
+(`64567dba…`, `c221d0a3…`; `dry-run.txt` carries both `sha256sum` runs). The
+row, before the run, is the destroy's own record:
+
+```
+odl-218purge|destroyed|{"days":30,"keep_until":"2026-11-01T00:00:00Z","repo":"sftp:odile-backup@backup.odile.fyi:/tenants/odl-218purge","snapshot":"b806dcd180c0dcf0850fa2c772ee376df860fce81df95ce60a30a30e6743cd07"}
+```
+
+The purge, with the recovery file, then the second run:
+
+```
+$ /usr/bin/python3 -m odilectl purge odl-218purge --config /var/tmp/odile-t_9d6fb595/config.yaml --db /var/tmp/odile-t_9d6fb595/waitlist-copy.db --root /var/tmp/odile-t_9d6fb595/box --password-file /var/tmp/odile-t_9d6fb595/recovery.txt --apply
+purge: applied
+  repository: sftp:odile-backup@backup.odile.fyi:/tenants/odl-218purge
+  path:       /var/tmp/odile-t_9d6fb595/box/tenants/odl-218purge
+  restic:     opened, 1 snapshot(s); the recorded b806dcd1 is present
+  delete:     removed /var/tmp/odile-t_9d6fb595/box/tenants/odl-218purge
+  sftp:       dropped 1 line(s) from /var/tmp/odile-t_9d6fb595/box/.ssh/authorized_keys
+  state:      detail.backup.purged at 2026-11-16T02:39:19Z in /var/tmp/odile-t_9d6fb595/waitlist-copy.db
+$ /usr/bin/python3 -m odilectl purge odl-218purge --config /var/tmp/odile-t_9d6fb595/config.yaml --db /var/tmp/odile-t_9d6fb595/waitlist-copy.db --root /var/tmp/odile-t_9d6fb595/box --apply
+purge: already purged
+  purged_at:  2026-11-16T02:39:19Z
+  repository: sftp:odile-backup@backup.odile.fyi:/tenants/odl-218purge
+  path:       /var/tmp/odile-t_9d6fb595/box/tenants/odl-218purge
+```
+
+The directory is gone, the tenant's key line is gone and the other three lines
+are unchanged; the state store and the key file hash the same before and after
+the second run (`b287eaee…`, `9c6b964a…`; `second-run.txt`). The row now
+carries the purge beside the retention, and the event count is still 1 (the
+destroy's), with `dns`, `export`, `grant`, `machine` and `reason` untouched:
+
+```
+{"absent_at": "2026-11-02T00:00:00Z", "backup": {"days": 30, "keep_until": "2026-11-01T00:00:00Z", "purged": {"already_absent": false, "at": "2026-11-16T02:39:19Z", "path": "/var/tmp/odile-t_9d6fb595/box/tenants/odl-218purge", "repo": "sftp:odile-backup@backup.odile.fyi:/tenants/odl-218purge", "restic": "opened", "sftp_keys_dropped": 1, "snapshot": "b806dcd180c0dcf0850fa2c772ee376df860fce81df95ce60a30a30e6743cd07", "snapshot_present": true, "snapshots": 1}, "repo": "sftp:odile-backup@backup.odile.fyi:/tenants/odl-218purge", "snapshot": "b806dcd180c0dcf0850fa2c772ee376df860fce81df95ce60a30a30e6743cd07"}, "dns": {"action": "deleted", "name": "odl-218purge.odile.fyi", "record_id": "fixture-record-1", "zone": "odile.fyi"}, "export": {"skipped": true}, "grant": {"source": "https://odl-218purge.odile.fyi/verify", "status": "unknown"}, "machine": {"ipv4": "203.0.113.99", "server_id": "purge001"}, "reason": "ODL-218 follow-up drill"}
+```
+
+Without the recovery file — the production case, where the user keeps the
+password — the same run says `restic: present, not opened (its password is the
+user's)` and deletes anyway; it is the delete that Odile is allowed to do, not
+the read (`docs/runbooks/backup.md` §7). The scratch run for `odl-218nopass`
+did exactly that, and no password appeared in the output.
+
+A box that registered the guest's kernel hostname refuses until the word is
+named (`key-comment.txt`): `odl-218key`'s line says `odile-backup odile-bench`,
+so the first run exits 2 with
+
+```
+odilectl purge: no line of /var/tmp/odile-t_9d6fb595/box/.ssh/authorized_keys-image names odl-218key; pass --sftp-key-comment TOKEN (a box that registered the image's hostname) or drop the line by hand
+```
+
+Re-measured 2026-11-18 after the wording was scoped (`odl-218key2`, a fresh
+row, repository and key file in the same scratch root; the same
+`key-comment.txt` carries the section), the refusal now names the scope:
+
+```
+odilectl purge: no line of /var/tmp/odile-t_9d6fb595/box/.ssh/authorized_keys-rekey names odl-218key2; pass --sftp-key-comment TOKEN (a token that names only this tenant — every line carrying it is dropped — for a box that registered the image's hostname) or drop the line by hand
+```
+
+and the same command with `--sftp-key-comment odile-bench` drops exactly that
+line and the drill key stays. The refusal comes before the delete, so the
+repository and the key are both unchanged when it fires.
+
+Refusals, each with the row's own reason:
+
+| Refusal | Exit | When |
+|---|---|---|
+| no tenant row | 2 | `no tenant named 'odl-…' in <db>` |
+| the row is not `destroyed` | 2 | `<slug> is ready, not destroyed; nothing is due` |
+| the row records no repository | 2 | `records no repository (detail.backup.repo is null)` — the machine never backed up |
+| `keep_until` is in the future | 2 | `not due: keep_until 2099-01-01T00:00:00Z (26343.9 days away)` |
+| no key line names the tenant | 2 | `no line of <file> names <slug>; pass --sftp-key-comment …` — before the delete |
+| the repository path is not a directory | 4 | names it; restic 0.18 retries a non-directory path for hours, so the check refuses first |
+| the directory is not a repository | 4 | names it (`it has no config file or no key`; or restic's own `Fatal: …` line) |
+| the URL's path does not end in the slug | 2 | `<path> ends in 'odl-2', not 'odl-1'; refusing to delete it` |
+
+A destroyed row whose directory is already gone converges: the check says
+`already absent`, the key line is still dropped, and the purge is recorded — a
+half-finished run is finished by the next one, and the next one says
+`already purged`.
+
+The transcripts are the card's evidence files on **t_9d6fb595**
+(`dry-run.txt`, `purge.txt`, `second-run.txt`, `refusals.txt`,
+`no-password.txt`, `key-comment.txt`).
+
+The live box is **t_8eb17a54**'s. The drill's chroot is on HQ, so the command
+runs on HQ and records on the live row; the real box has no agent (the card
+that buys it owns how its chroot and HQ's state store meet), and until then no
+tenant's repository is due — the live tenant is not destroyed, and its destroy
+plan named `2026-12-13T03:32:59Z`.
 
 ---
 
@@ -478,7 +620,7 @@ tenant is §2 — complete, with the record id, the server id and the backup dat
 | ~~a destroyed slug cannot come back~~ **resolved** | ADR-007: `destroyed -> claimed`, the named `reopen()`, and `provision` reopens before the order, points the web row and the state row at the new machine and reaches `first_boot` (so its boot record lands); the slug, the URL and the `tenants/<slug>` repository keep their names | **t_ce52bb8d** |
 | the live tenant's destroy + rebuild | $18.99 and the panel's disk image — a real-world action | **t_8d50106b** |
 | the live tenant's Webapp refuses `/login` (`400 Invalid Host header`) | measured 2026-11-13T05:33Z after a boot-time release install; that boot's release setup ended `rc=1` at `odile-access-report` and the 10:29Z retry ended `rc=4` at the recovery confirmation. It was installer/release work, not the offboard path: the agent is restarted whenever a file the gateway reads at start changed (so a rewritten `webapp.public_url` goes live), a failed access report no longer aborts that restart, and the boot half passes `--i-have-copied-it`. **Recovered on the live tenant 2026-11-15T20:12Z**: `=== rc=0`, `/login?next=%2F` 200, `POST /auth/password-login` 200 with four `__Host-` cookies, `/verify` 200. The machine's own name `odl-7971a8.odile.fyi` still answers 400 by design (`demo-public.md` §Host check) | **t_d95b8c13** fixed and recovered 2026-11-15 |
-| the 30-day purge is an operator step | the box is off-site and has no agent; the date on the row makes it checkable | **t_9d6fb595** |
+| the purge on the real box | the command is `odilectl purge` (**t_9d6fb595**, §4), drilled on a scratch repository and a copy of the state store; the off-site box, and how its chroot meets HQ's state store, are the purchase's | **t_8eb17a54** |
 
 ---
 
@@ -541,4 +683,5 @@ meter tests, OK**, self-test PASS, claims 21/14, brand 17/21.
 | the command | `odilectl destroy <slug>` | — |
 | the exported script | `odilectl export <slug> --script` | — |
 | the inspection | `odilectl export <slug> --verify PATH` | — |
+| the 30-day purge | `odilectl purge <slug>` | — |
 | the row's record | `tenant_state.detail` + one `destroyed` event | — |

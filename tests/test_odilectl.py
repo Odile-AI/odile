@@ -1698,18 +1698,20 @@ class BoundaryTest(unittest.TestCase):
             "os.popen",
             "pty.spawn",
         )
-        # ODL-215 is the one deliberate exception, and only for `subprocess`:
-        # `restore --apply` runs the local `restic` binary on the machine that
-        # holds the user's recovery file — the user's laptop, or a rebuilt
-        # guest — never an operator session on a tenant. It learns no tenant
-        # address and opens no shell there; the SFTP transport is a string
-        # restic itself parses. Every other escape hatch stays banned in this
-        # file too, so a later `os.system` cannot hide behind the exception.
-        local_binary_exception = PACKAGE / "restore.py"
+        # Two deliberate exceptions, both for the local `restic` binary and
+        # neither an operator shell on a tenant: ODL-215's `restore --apply`
+        # runs it on the machine that holds the user's recovery file (the
+        # user's laptop, or a rebuilt guest), and the ODL-218 follow-up's
+        # `purge` runs it on the backup box against the repository it is about
+        # to delete. Neither learns a tenant address or opens a session there;
+        # the SFTP transport is a string restic itself parses. Every other
+        # escape hatch stays banned in these files too, so a later `os.system`
+        # cannot hide behind the exception.
+        local_binary_exceptions = {PACKAGE / "restore.py", PACKAGE / "purge.py"}
         for path in self._package_files():
             for lineno, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
                 for token in forbidden:
-                    if path == local_binary_exception and token == "subprocess":
+                    if path in local_binary_exceptions and token == "subprocess":
                         continue
                     self.assertNotIn(
                         token, line, f"{path.relative_to(ROOT)}:{lineno} has {token!r}"
