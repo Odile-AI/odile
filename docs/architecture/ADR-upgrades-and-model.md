@@ -499,8 +499,8 @@ agent unit, the two backup units, the Caddyfile) beside the installer's own byte
 moved (`:12548`–`:12550`); post-check `systemctl is-active odile-agent` and
 `caddy validate`; on a non-zero exit restore the snapshot and restart, exit 6.
 The installer's own exit codes are the failure signal — 1 a failed step, 2 a
-missing prerequisite, 3 a bad signature — so a machine with a stale seed or a
-moved measurement refuses instead of half-writing.
+missing prerequisite, 3 a bad signature — so a machine the installer was not cut
+for refuses instead of half-writing.
 
 **HQ never connects.** There is no inbound route to a tenant, no queue, no
 daemon. The heartbeat already goes guest → HQ; the two fetches go guest → HQ.
@@ -538,7 +538,7 @@ cannot re-key itself without a passphrase nobody holds.
 | The machine dies between the config write and the restart | the old model, or the new one — never a moving target | the `pending` entry in `model-state.json` re-enters the transaction on the next tick; two re-entries roll back and hold the digest |
 | A locally rolled-back document is re-applied | the model the user just left | `rollback` holds the rolled-back-from digest; only a newer document or `--retry` moves it |
 | A changed unit, Caddy block or `/etc/odile` file never reaches a tenant | the old placement, indefinitely | row 15 and §5's re-run: `odile-update` re-runs the installer when the release's installer artifact changed. Until that lands, only a manual `--force` repair |
-| The installer re-run fails halfway | the old placements | the snapshot carries the three files a re-run moves (agent unit, backup units, Caddyfile); restore, `daemon-reload`, restart, `exit 6`; the installer's own exit codes refuse a stale seed (`2`) or a moved measurement (`5`) before a write |
+| The installer re-run fails halfway | the old placements | the snapshot carries the three files a re-run moves (agent unit, backup units, Caddyfile); restore, `daemon-reload`, restart, `exit 6`; the installer's own exit codes refuse a missing prerequisite (`2`) or a moved measurement (`5`) before a write |
 | The installer is re-run after a switch | the seed's model returns, silently | §4.6's precedence rule, plus the byte-compatibility test and `manifest.py` reading the live model |
 | `model.default` and `custom_providers[0].model` disagree | the About panel and the turns disagree | both written; the post-check reads both; refuse if either block is missing |
 | A model id with a YAML metacharacter | a broken config, a dead gateway | the id pattern excludes `:`, quotes, backslash and newline; each key keeps the template's own quoting (`:8505` quoted, `:8516` unquoted), and the byte test holds it |
