@@ -372,14 +372,21 @@ t_ee5aac66).
 Every run with a password also measures the relay's core sentence: it opens a
 session, gives it one turn, samples the sessions already on the machine (the
 seed and up to four others with messages), runs the demo's own apply with
-`--no-restart`, and compares. **A deploy changes no session** — the row, its
+`--no-restart`, and compares. **A deploy changes no session** — for the
+sessions the check owns (the one it creates and the seed), the row, its
 messages and its title/pinned/hidden/archived flags are byte-identical across
-the apply, and no sampled session disappears (the old prune is gone). Every
-session the check opens is deleted at the end — the four concurrent ones, the
-one it deletes, and the console's own `shell.exec` session, which Hermes keeps
-as a row too. Existence is the machine's own `--report --session-id`, never the
-list endpoint (that window is 20 rows); the check fails unless every id it
-opened is gone and the tenant's session count is where it found it.
+the apply. Every other sampled session is a judge's: it must still **exist**,
+and the judge's own turn landing on it while the apply runs is not a change the
+check fails on. Every session the check opens is deleted at the end — the four
+concurrent ones, the one it deletes, and the console's own `shell.exec`
+session, which Hermes keeps as a row too. Existence is the machine's own
+`--report --session-id`, never the list endpoint (that window is 20 rows). The
+cleanup compares the **set of session ids**: every id it found before is still
+there once the ids it opened are subtracted, the report's count is a floor
+(`after >= before`), and the leak gate stays by id (`every session the check
+opened is gone (…): []`). A judge's session appearing mid-run is expected and
+does not turn the check red — the verifier's 2026-11-14 run: 82 before, 83
+after, all 8 opened ids gone.
 
 It also asserts there is **no `odile-demo-*` unit file and no `odile-demo-*`
 timer** on the machine: `systemctl list-unit-files` and `systemctl list-timers`
