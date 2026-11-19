@@ -247,6 +247,23 @@ class SupportAnswers(unittest.TestCase):
             "docs/FAQ.md qualifies the backup cadence; the deck carries no time of day",
         )
 
+    def test_the_bill_answer_states_no_price_and_still_answers(self):
+        # alpha.0 has no price (`docs/MVP-V0.1.md` §0); the v5 $49 line and the
+        # held allowance sentence are not repeated while the alpha is free. The
+        # answer still says who holds the billing record and how a person reads
+        # the question, so a "why was I charged?" mail is answered, not bounced.
+        faq = FAQ.read_text(encoding="utf-8")
+        reply = quoted(section(faq, 4))
+        email = EMAIL.read_text(encoding="utf-8")
+        self.assertIn("has no price", reply)
+        self.assertIn("has no price", email)
+        for text, label in ((reply, "docs/FAQ.md moment 4"),
+                            (email, "templates/emails/support.md")):
+            for gone in ("$49", "$12", "founding price", "month-to-month"):
+                self.assertNotIn(gone, text, f"{label} still quotes {gone!r}")
+            self.assertIn("Stripe holds the card", text, label)
+            self.assertIn("within 24 hours", text, label)
+
     def test_the_five_moments_are_all_answered(self):
         text = FAQ.read_text(encoding="utf-8")
         for number in range(1, 6):
