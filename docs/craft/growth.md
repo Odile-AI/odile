@@ -74,6 +74,14 @@ in signups.
     view with a readable address bar, while a 99-second cut with a title card had
     been ready for a week.
 
+15. **A proof proves its predicate.** Re-read the claim's own subject against
+    the current decision record before publishing, not the drill next to it.
+    ODL-215 proved a backup restores; it did not prove where the bytes sit, so
+    "Backups are off-site" stayed held when ADR-004 measured the repository on
+    HQ's disk in the same provider and city (ODL-474 follow-up, `t_5f10dd14`,
+    19 November 2026). A drill for a neighbouring property is not evidence for
+    this sentence, and "the proof ran" is not a reason to publish.
+
 ## Exemplars to study
 
 - **April Dunford, *Obviously Awesome*** — the positioning canvas; market,
