@@ -575,6 +575,22 @@ provision time:
    rebuild + restore for a seal break. Root inside the guest can derive the
    key (the ioctl is guest-available); the seal protects against the host and
    an offline disk, which is the alpha.0 threat model.
+7. **The console log, off once the transcript is saved.** Reading the boot is
+   what turning the log on is for, and the panel is explicit about what the
+   switch costs: *the hypervisor keeps a transcript of everything this machine
+   prints to its serial console … It is a plaintext file on the host: switch it
+   off when you are done debugging and the file is emptied.*
+   `tools/servury_cycle.py` (and `make uki-cycle` through it) arms the log,
+   captures one boot, and turns the log off again on every exit path once the
+   transcript is written — including a `--wait-for` timeout; `--keep-console`
+   is the only way to leave it on. Measured 2026-11-19: the cycle had armed the
+   log and never disarmed it, and the tenant box carried **209 KB** of its own
+   boot (kernel and systemd lines, hostname, instance id, file sha256s and an
+   8-hex prefix of the first-visit token) until a human switched it off. After a
+   cycle, `./tools/servury_panel.py --console --server <id> --action read`
+   prints nothing and the console page reads **Console log · Off**. The
+   measurement and the transcript are in
+   `docs/ops/evidence/console-log-2026-11-19.md`.
 
 ## 10. What the bench proves, and what only a Blackbox can prove
 

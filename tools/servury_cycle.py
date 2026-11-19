@@ -7,8 +7,15 @@ an API verb (probed 12 November: `POST ?action=boot-image&id=<server>
 {"url": …, "sha256": …}`), the console and power are `?action=serial` and
 `?action=power`, and this tool does all of them: set the image, wait for the
 node's download to report `ready`, turn the console log on, apply the power
-action, wait for the line that means the boot reached the stage under test, and
-save the transcript as evidence.
+action, wait for the line that means the boot reached the stage under test,
+save the transcript as evidence, and turn the console log **off** again.
+
+The off is not housekeeping. The panel keeps the machine's serial output as a
+plaintext file on the host — *"209 KB so far … switch it off when you are done
+debugging and the file is emptied"* — so a cycle that armed the log and walked
+away left the whole boot transcript there (measured 2026-11-19: the tenant box
+held 209 KB, the bench 1,174 KB). `--keep-console` is the operator asking to
+keep it.
 
     ./tools/servury_cycle.py --server-id 31a63bbb --action restart \\
         --wait-for "bb-sealed-unlock" --serial-out docs/evidence/uki-boot.txt
@@ -157,6 +164,41 @@ def panel_console(server_id: str, action: str) -> subprocess.CompletedProcess[st
     return panel("--console", "--server", server_id, "--action", action)
 
 
+def disarm_console(via: str, key: str, server_id: str) -> bool:
+    """Turn the console log off; True when the host's plaintext copy is emptied.
+
+    The panel says why this matters in its own words: *the hypervisor keeps a
+    transcript of everything this machine prints to its serial console … It is a
+    plaintext file on the host: switch it off when you are done debugging and the
+    file is emptied.* A cycle arms the log to capture one boot, so it must disarm
+    it once the transcript is saved — otherwise the machine's whole serial output
+    sits on the host until a human notices (measured 2026-11-19: the tenant box
+    held 209 KB and the bench 1,174 KB, both armed by this tool).
+
+    A refusal is one line and never a changed exit code: the boot transcript is
+    what the cycle is judged on, and a panel hiccup must not turn a good
+    transcript into a failed cycle. The audit log still names the attempt.
+    """
+    if via == "api":
+        try:
+            call("serial", {"log": False}, key=key, server_id=server_id)
+        except Exception as error:  # noqa: BLE001 — a refusal is a note, not a failure
+            print(f"console   disarm refused ({error}); the log stays on and the host keeps its transcript")
+            return False
+        print("console   off; the host's transcript file is emptied")
+        return True
+    done = panel_console(server_id, "off")
+    if done.returncode != 0:
+        detail = (done.stderr or done.stdout or "").strip().splitlines()
+        print(f"console   disarm refused ({detail[-1] if detail else 'the panel refused'}); "
+              "the log stays on and the host keeps its transcript")
+        return False
+    if done.stdout.strip():
+        print(done.stdout.rstrip())
+    print("console   off; the host's transcript file is emptied")
+    return True
+
+
 def panel_log(server_id: str) -> str:
     """The serial log the panel holds, read with a plain GET."""
     done = panel_console(server_id, "read")
@@ -204,6 +246,10 @@ def main(argv: list[str] | None = None) -> int:
         "--fresh", action="store_true",
         help="empty the host transcript before arming the log, so --wait-for "
              "cannot match a line from a previous boot")
+    parser.add_argument(
+        "--keep-console", action="store_true",
+        help="leave the console log on after the cycle (default: turn it off once "
+             "the transcript is saved, so the host keeps no plaintext copy)")
     args = parser.parse_args(argv)
 
     if args.boot_image and not args.boot_image_sha256:
@@ -220,85 +266,101 @@ def main(argv: list[str] | None = None) -> int:
     seen: set[str] = set()
 
     image_path = "unchanged (--panel-done)"
-    if args.boot_image and not args.panel_done:
-        if via == "api":
-            image_path = set_boot_image_api(
-                key, args.server_id, args.boot_image, args.boot_image_sha256,
-                timeout=args.timeout, interval=args.interval)
-        else:
-            image_path = panel_boot_image(args.server_id, args.boot_image, args.boot_image_sha256)
-    elif args.boot_image:
-        image_path = "already set (--panel-done)"
-        print(f"boot-image  not set again (--panel-done); the machine holds {args.boot_image_sha256[:16]}…")
-
-    if via == "api":
-        if args.fresh:
-            # `log: false` empties the host's copy; without it the buffer can hold
-            # earlier boots and a restart would match --wait-for before it happened.
-            call("serial", {"log": False}, key=key, server_id=args.server_id)
-            print("serial    transcript emptied before this boot")
-        state = call("serial", {"log": True}, key=key, server_id=args.server_id)
-        print(f"serial    logging={state.get('logging')} (starts at the next start)")
-        print(f"power     {args.action} {power(key, args.server_id, args.action)}")
-    else:
-        # Arming is idempotent. The host's buffer is not emptied by off/on
-        # (measured: off→on left the previous boot in place) and it rotates
-        # rather than growing, so --fresh records which boots it already held
-        # and only a boot with a release-setup stamp that was not there before
-        # counts as this one.
-        armed = panel_console(args.server_id, "on")
-        if armed.returncode != 0:
-            print(armed.stderr.strip() or "the panel refused to arm the console log", file=sys.stderr)
-            return 1
-        print(armed.stdout.rstrip())
-        if args.fresh:
-            seen = release_times(panel_log(args.server_id))
-            print(f"serial    {len(seen)} earlier boot stamp(s) in the buffer; only a new one counts")
-        pressed = panel("--power", "--server", args.server_id, "--action", args.action)
-        if pressed.returncode != 0:
-            print(pressed.stderr.strip() or f"the panel refused power {args.action}", file=sys.stderr)
-            return 1
-        print(pressed.stdout.rstrip())
-
+    # Once the log is armed the host is holding a plaintext transcript, so every
+    # path out of this function has to disarm it — including a --wait-for timeout
+    # and a panel error. `--keep-console` is the operator saying "I want it".
+    console_armed = False
     started = time.time()
     text = ""
     matched = not wanted
-    while time.time() - started < args.timeout:
-        time.sleep(args.interval)
-        try:
+    try:
+        if args.boot_image and not args.panel_done:
             if via == "api":
-                # A bare GET returns the transcript. A body must carry `log`; the
-                # API rejects `{"bytes": …}` alone ("log is required"), and the
-                # old poll posted exactly that, so --wait-for never matched.
-                text = transcript(call("serial", None, key=key, server_id=args.server_id))
+                image_path = set_boot_image_api(
+                    key, args.server_id, args.boot_image, args.boot_image_sha256,
+                    timeout=args.timeout, interval=args.interval)
             else:
-                full = panel_log(args.server_id)
-                text = latest_boot(full) if args.fresh else full
-                if args.fresh and not (release_times(text) - seen):
-                    continue
-        except Exception as error:  # noqa: BLE001 — a poll failure is not a boot failure
-            print(f"serial    poll error: {error}")
-            continue
-        if wanted and reached(text, wanted):
-            matched = True
-            break
-        if not wanted and text:
-            break
+                image_path = panel_boot_image(args.server_id, args.boot_image, args.boot_image_sha256)
+        elif args.boot_image:
+            image_path = "already set (--panel-done)"
+            print(f"boot-image  not set again (--panel-done); the machine holds {args.boot_image_sha256[:16]}…")
 
-    header = [
-        f"# servury_cycle {args.server_id} action={args.action} via={via}",
-        f"# image_sha256 {args.image_sha256 or '(not given)'}",
-        f"# boot_image {image_path}",
-        f"# fresh {args.fresh} earlier_boot_stamps {len(seen)}",
-        f"# waited_for {' + '.join(wanted) or '(none)'} matched={matched}",
-        f"# seconds {round(time.time() - started)}",
-        "",
-    ]
-    out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text("\n".join(header) + text, encoding="utf-8")
-    tail = "\n".join(text.splitlines()[-12:])
-    print(f"transcript {out} ({len(text)} bytes)")
-    print(tail)
+        if via == "api":
+            if args.fresh:
+                # `log: false` empties the host's copy; without it the buffer can hold
+                # earlier boots and a restart would match --wait-for before it happened.
+                call("serial", {"log": False}, key=key, server_id=args.server_id)
+                print("serial    transcript emptied before this boot")
+            state = call("serial", {"log": True}, key=key, server_id=args.server_id)
+            console_armed = True
+            print(f"serial    logging={state.get('logging')} (starts at the next start)")
+            print(f"power     {args.action} {power(key, args.server_id, args.action)}")
+        else:
+            # Arming is idempotent. The host's buffer is not emptied by off/on
+            # (measured: off→on left the previous boot in place) and it rotates
+            # rather than growing, so --fresh records which boots it already held
+            # and only a boot with a release-setup stamp that was not there before
+            # counts as this one.
+            armed = panel_console(args.server_id, "on")
+            # Even a failed arm may have posted the switch, so the way out
+            # disarms unconditionally once the attempt is made.
+            console_armed = True
+            if armed.returncode != 0:
+                print(armed.stderr.strip() or "the panel refused to arm the console log", file=sys.stderr)
+                return 1
+            print(armed.stdout.rstrip())
+            if args.fresh:
+                seen = release_times(panel_log(args.server_id))
+                print(f"serial    {len(seen)} earlier boot stamp(s) in the buffer; only a new one counts")
+            pressed = panel("--power", "--server", args.server_id, "--action", args.action)
+            if pressed.returncode != 0:
+                print(pressed.stderr.strip() or f"the panel refused power {args.action}", file=sys.stderr)
+                return 1
+            print(pressed.stdout.rstrip())
+
+        started = time.time()
+        while time.time() - started < args.timeout:
+            time.sleep(args.interval)
+            try:
+                if via == "api":
+                    # A bare GET returns the transcript. A body must carry `log`; the
+                    # API rejects `{"bytes": …}` alone ("log is required"), and the
+                    # old poll posted exactly that, so --wait-for never matched.
+                    text = transcript(call("serial", None, key=key, server_id=args.server_id))
+                else:
+                    full = panel_log(args.server_id)
+                    text = latest_boot(full) if args.fresh else full
+                    if args.fresh and not (release_times(text) - seen):
+                        continue
+            except Exception as error:  # noqa: BLE001 — a poll failure is not a boot failure
+                print(f"serial    poll error: {error}")
+                continue
+            if wanted and reached(text, wanted):
+                matched = True
+                break
+            if not wanted and text:
+                break
+
+        header = [
+            f"# servury_cycle {args.server_id} action={args.action} via={via}",
+            f"# image_sha256 {args.image_sha256 or '(not given)'}",
+            f"# boot_image {image_path}",
+            f"# fresh {args.fresh} earlier_boot_stamps {len(seen)}",
+            f"# waited_for {' + '.join(wanted) or '(none)'} matched={matched}",
+            f"# seconds {round(time.time() - started)}",
+            "",
+        ]
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text("\n".join(header) + text, encoding="utf-8")
+        tail = "\n".join(text.splitlines()[-12:])
+        print(f"transcript {out} ({len(text)} bytes)")
+        print(tail)
+    finally:
+        if console_armed:
+            if args.keep_console:
+                print("console   left on (--keep-console); the host keeps its plaintext transcript")
+            else:
+                disarm_console(via, key, args.server_id)
     if not matched:
         print(f"cycle: the transcript never matched {' + '.join(wanted)!r}", file=sys.stderr)
         return 1

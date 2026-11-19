@@ -221,6 +221,7 @@ class CycleSequenceTests(unittest.TestCase):
         self.assertIn(digest, args)
         self.assertIn("--via", args)
         self.assertNotIn("--panel-done", args)
+        self.assertNotIn("--keep-console", args, "the cycle disarms the log by default")
         cycles = list(self.evidence.glob(f"cycle-{digest[:16]}-*.md"))
         self.assertEqual(len(cycles), 1, output)
         evidence = cycles[0].read_text()
@@ -288,6 +289,15 @@ class CycleSequenceTests(unittest.TestCase):
         evidence = next(self.evidence.glob(f"cycle-{digest[:16]}-*.md")).read_text()
         self.assertIn("attest: **FAIL**", evidence)
         self.assertIn("never matched", evidence)
+
+    def test_keep_console_is_handed_to_the_cycle(self) -> None:
+        self.cycle = self.write_tool("cycle_stub_ok.py", CYCLE_STUB.replace("%MEASUREMENT%", MEASUREMENT))
+
+        code, output = self.run_main("--keep-console")
+
+        self.assertEqual(code, 0, output)
+        args = (self.evidence / "cycle-args.txt").read_text().splitlines()
+        self.assertIn("--keep-console", args)
 
     def test_a_missing_uki_is_bad_input(self) -> None:
         self.uki.unlink()
@@ -562,6 +572,142 @@ class PanelFreshnessTests(unittest.TestCase):
         self.assertEqual(code, 0, written)
         self.assertIn("Linux version 6.12.115 (new)", written)
         self.assertNotIn("(old)", written)
+
+
+class ConsoleDisarmTests(unittest.TestCase):
+    """A cycle arms the console log for one boot; it must disarm it afterwards.
+
+    The panel says the reason in its own words: the hypervisor keeps everything
+    the machine prints to its serial console as a *plaintext file on the host*,
+    and the switch empties it. Measured 2026-11-19, the tool armed both machines
+    and never disarmed either — the tenant box carried 209 KB, the bench 1,174 KB.
+    So the switch going off is part of the sequence, after the transcript is
+    written, whether the boot matched or timed out.
+    """
+
+    LOG = ("Linux version 6.12.115 (fixture)\n"
+           "[    3.0] bb-sealed-unlock: root_crypt opened with the SNP-derived key\n"
+           "[   30.0] odile-release-setup 2026-11-19T00:00:00Z\n"
+           "[   30.5] measurement " + MEASUREMENT + "\n")
+    # What the host held before this boot: no release-setup stamp, so nothing
+    # in it can count as this boot's.
+    EARLIER = "Linux version 6.12.115 (earlier)\n[    3.0] nothing yet\n"
+
+    def run_cycle(self, *extra: str, log: str | None = None,
+                  off: mock.Mock | None = None) -> tuple[int, list[tuple[str, str]], str]:
+        """(exit code, [(console action, transcript at that moment)], output)."""
+        events: list[tuple[str, str]] = []
+        fixture = self.LOG if log is None else log
+        with tempfile.TemporaryDirectory() as tmp:
+            key = Path(tmp) / "key"
+            key.write_text("k", encoding="utf-8")
+            out = Path(tmp) / "boot.txt"
+
+            def fake_console(server: str, action: str) -> mock.Mock:
+                events.append((action, "transcript" if out.is_file() else "absent"))
+                if action == "off" and off is not None:
+                    return off
+                return mock.Mock(returncode=0, stdout="", stderr="")
+
+            def fake_log(server: str) -> str:
+                events.append(("read", "transcript" if out.is_file() else "absent"))
+                # The first read is the --fresh baseline (the buffer before this
+                # boot); every later read is the new boot.
+                return self.EARLIER if len([a for a, _ in events if a == "read"]) == 1 else fixture
+
+            argv = [
+                "--server-id", SERVER, "--serial-out", str(out),
+                "--wait-for", "bb-sealed-unlock", "--timeout", "1", "--interval", "0",
+                "--key-file", str(key), "--via", "panel", "--fresh", *extra,
+            ]
+            buffer = io.StringIO()
+            with mock.patch.object(servury_cycle, "panel_log", fake_log), \
+                    mock.patch.object(servury_cycle, "panel_console", fake_console), \
+                    mock.patch.object(servury_cycle, "panel",
+                                      return_value=mock.Mock(returncode=0, stdout="", stderr="")), \
+                    mock.patch.object(servury_cycle.time, "sleep", lambda seconds: None), \
+                    contextlib.redirect_stdout(buffer), contextlib.redirect_stderr(buffer):
+                code = servury_cycle.main(argv)
+        return code, events, buffer.getvalue()
+
+    def test_a_finished_cycle_turns_the_log_off_after_saving_the_transcript(self) -> None:
+        code, events, output = self.run_cycle()
+
+        self.assertEqual(code, 0, output)
+        actions = [action for action, _ in events]
+        self.assertEqual(actions[0], "on", events)
+        self.assertEqual(actions[-1], "off", events)
+        self.assertIn("read", actions[1:-1], "the log is polled between arming and disarming")
+        self.assertEqual(events[-1], ("off", "transcript"),
+                         "the transcript is written before the switch goes off")
+        self.assertIn("off; the host's transcript file is emptied", output)
+
+    def test_keep_console_leaves_the_log_on(self) -> None:
+        code, events, output = self.run_cycle("--keep-console")
+
+        self.assertEqual(code, 0, output)
+        self.assertNotIn("off", [action for action, _ in events], events)
+        self.assertIn("--keep-console", output)
+
+    def test_a_refused_disarm_is_one_line_and_keeps_the_exit_code(self) -> None:
+        refused = mock.Mock(returncode=1, stdout="", stderr="panel: console log off refused: nope")
+
+        code, events, output = self.run_cycle(off=refused)
+
+        self.assertEqual(code, 0, output)
+        self.assertEqual(events[-1][0], "off", events)
+        self.assertEqual(output.count("disarm refused"), 1, output)
+        self.assertIn("nope", output)
+
+    def test_a_wait_for_timeout_still_turns_the_log_off(self) -> None:
+        # The boot never reaches the stage under test, so the cycle exits 1 —
+        # and still disarms: a timed-out cycle is exactly when nobody looks again.
+        code, events, output = self.run_cycle(log="Linux version 6.12.115 (fixture)\n[ 3.0] nothing yet\n")
+
+        self.assertEqual(code, 1, output)
+        self.assertEqual(events[-1], ("off", "transcript"), events)
+        self.assertIn("never matched", output)
+
+
+class ApiConsoleDisarmTests(unittest.TestCase):
+    """The API path arms with `log: true`; it must disarm with `log: false`."""
+
+    def run_api(self, *extra: str) -> tuple[int, list[tuple[str, dict | None]]]:
+        calls: list[tuple[str, dict | None]] = []
+
+        def fake_call(action, params=None, *, key, server_id=None, timeout=40.0):
+            calls.append((action, params))
+            if action == "power":
+                return {}
+            if params and params.get("log") is True:
+                return {"logging": True}
+            return {"output": "bb-sealed-unlock: opened"}
+
+        with tempfile.TemporaryDirectory() as tmp:
+            key = Path(tmp) / "key"
+            key.write_text("k", encoding="utf-8")
+            argv = [
+                "--server-id", SERVER, "--serial-out", str(Path(tmp) / "boot.txt"),
+                "--wait-for", "bb-sealed-unlock", "--timeout", "1", "--interval", "0",
+                "--key-file", str(key), "--via", "api", *extra,
+            ]
+            with mock.patch.object(servury_cycle, "call", fake_call), \
+                    mock.patch.object(servury_cycle.time, "sleep", lambda seconds: None):
+                code = servury_cycle.main(argv)
+        return code, calls
+
+    def test_the_api_path_turns_logging_off_after_the_poll(self) -> None:
+        code, calls = self.run_api()
+
+        self.assertEqual(code, 0, calls)
+        self.assertEqual(calls[-1], ("serial", {"log": False}),
+                         "the last write is the one that empties the host's copy")
+
+    def test_keep_console_posts_no_log_false(self) -> None:
+        code, calls = self.run_api("--keep-console")
+
+        self.assertEqual(code, 0, calls)
+        self.assertNotIn(("serial", {"log": False}), calls)
 
 
 class LatestBootTests(unittest.TestCase):
