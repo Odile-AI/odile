@@ -372,7 +372,7 @@ other bucket and cannot touch DNS.
 
 **ADR-004 was re-cut on 19 November 2026** (`ODL-915`): Savio's Backblaze B2
 account was suspended at signup, so the tenant's interim destination is
-**Cloudflare R2, in this same account**, for at most three tenants, under two
+**Cloudflare R2, in this same account**, for at most three tenant buckets, under two
 constraints he set — HQ's `hermes-hq-backup` is never modified or deleted, and
 total R2 usage stays at or below **9 GB**.
 
@@ -396,7 +396,7 @@ its own bucket token and each tenant's bucket token.
 **What the shared fate now covers.** §4.3's sentence — one compromised login or
 one billing suspension can repoint the records and delete the only off-site copy
 — now applies to the tenant copies too. Savio accepted that for a bounded interim;
-ADR-004 §4.1 caps the blast radius (2.0 GB per tenant, three tenants, alert at
+ADR-004 §4.1 caps the blast radius (2.0 GB per repository, three buckets, alert at
 8.0 GB, critical at 9.0 GB) and the B2 cutover ends it. HQ's 1.15 GB counts
 against that 9 GB, so this ADR's bucket growth is now inside the same cap.
 

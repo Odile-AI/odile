@@ -35,6 +35,7 @@ the plan's existing $0.60 line covers 86 GB per tenant and does not move.
 |---|---|---|---|
 | 17 November 2026 | v1 | restic → **Backblaze B2, Canada East (Toronto)**; R2 rejected because it shares the Cloudflare account with `odile.fyi` DNS and HQ's only backup | Savio's shape; the lowest-risk third provider |
 | 19 November 2026 | v2 — this re-cut | Destination re-cut to **Cloudflare R2 interim**: `odile-t-<slug>` buckets, default jurisdiction, bucket-scoped keys, 2 GB per tenant, at most 3 tenants, a 9 GB account cap and alert; **B2 retained as the target**; R2's shared fate accepted and time-boxed | Savio answered `t_02b8df9d`: the B2 account was suspended at signup; unblock R&D without touching HQ's backup or the free tier |
+| 19 November 2026 | v2.1 | Review corrections, no decision change: the `git grep` proof names all three Markdown files that carry the bucket name; the bucket-name rule scopes the hex pattern to paying tenants and lists `odile-t-odl-bench`; the three buckets are named by slug, so the demo `odl-7971a8` is counted once; installer line anchors refreshed | Round-1 review: an evidence row must reproduce at the head it ships with |
 
 **Related:** `docs/MVP-V0.1.md` §6.1, §6.7, §8, §12 (D19); `docs/CLAIMS.md` §1
 (Access 65–66, Money and place 122–123, Reliability 201); `docs/architecture/ADR-003`
@@ -116,8 +117,9 @@ does not already own.
 
 ## 2. What exists today, measured
 
-The live tenant `odl-7971a8`, as the runbooks record it. Nothing in this table is
-a projection; each line is a measurement with a date and a source.
+The demo tenant `odl-7971a8` — the runbooks' "live tenant", and the only
+machine with a measured repository. Nothing in this table is a projection; each
+line is a measurement with a date and a source.
 
 | Fact | Value | Where |
 |---|---|---|
@@ -149,14 +151,15 @@ failure the builder did not test.**
    the repository password is *supposed* to be the user's alone.
 3. **The include set is a flag, and the wrong flag succeeds.** The installer's
    backup unit is rendered from `layout.home` (`backup_unit_files`,
-   `installer/odile_install.py:12194–12214`), which for a tenant is
-   `/home/tenant` (`Layout.tenant`, `:10103–10113`; `DEFAULT_HOME`, `:578`;
+   `installer/odile_install.py:12210–12230`), which for a tenant is
+   `/home/tenant` (`Layout.tenant`, `:10119`; `DEFAULT_HOME`, `:580`;
    the image runs the installer with `--user tenant`,
-   `deploy/image/odile-release-setup.sh:154`) — the same string the live unit
+   `deploy/image/odile-release-setup.sh:169`) — the same string the live unit
    the drill measured names (`backup.md` §2.1). The `/home/odile` string in
    the tree is `installer/first_visit.py`'s standalone `DEFAULT_ENV` (`:114`),
-   which the unit overrides with `--env-file` (`:9299`) filled from the tenant
-   layout (`installer/odile_install.py:12474`, `:12279`). So today the two
+   which the unit overrides with `--env-file` (`:9315`) filled from the tenant
+   layout (`installer/odile_install.py:12295`, and the simulation's launch at
+   `:12490`). So today the two
    homes agree, and **no migration or home-mapping is needed**: the failure is a
    rebuild whose unit or restore call drops `--home` or overrides it. A restore
    under a wrong `--home` succeeds, restores an empty tree, and reports `ok`.
@@ -225,7 +228,7 @@ usage stays at or below 9 GB.** The design makes both structural (§4.1, §4.2).
 
 **Why R2 for the interim.** On 19 November 2026 Savio answered `t_02b8df9d`:
 the Backblaze account was suspended at signup, so B2 cannot be bought today. The
-live tenant's only surviving copy is still on HQ's disk (§1 item 2), which is the
+demo tenant's only surviving copy is still on HQ's disk (§1 item 2), which is the
 invariant this card exists for; waiting for B2 leaves it false. R2 is already
 enabled on the account that carries the DNS zone, already has a payment method on
 file, and speaks the **same restic `s3` backend** as B2 — so the program, the
@@ -262,20 +265,25 @@ already live.
   **9,000,000,000 bytes (9 GB decimal, 8.38 GiB)** — one gigabyte below R2's
   shared 10 GB-month free tier, which already carries HQ's 1.15 GB. The
   per-repository envelope is **2.0 GB** and **at most three buckets in total —
-  the live tenant, the demo and the bench**, so
-  the total is bounded by construction:
+  the demo `odl-7971a8`, the bench `odl-bench` and the first paying tenant**,
+  so the total is bounded by construction:
   `1.15 GB (HQ) + 3 × (2.0 GB + 0.2 GB un-pruned delta) ≈ 7.75 GB`, leaving
-  ~1.25 GB of headroom. The **fourth tenant is the signal that B2 must land**;
-  the cap is arithmetic, not a hope. §4.1 names the enforcement and the alert.
+  ~1.25 GB of headroom. A **fourth bucket — the second paying tenant — is the
+  signal that B2 must land**; the cap is arithmetic, not a hope. §4.1 names the
+  enforcement and the alert.
 
 ### 4.1 The R2 layout
 
 **Bucket naming.** `odile-t-<slug>` (the `t` is tenant) — for example
-`odile-t-odl-7f3a2c` — where the slug is the existing `odl-[0-9a-f]{6}` tenant
-identifier. The name matches
-`^odile-t-odl-[0-9a-f]{6}$`, fits R2's 3–63 lowercase letters/digits/hyphens
-rule, is unique within the account, and **cannot equal `hermes-hq-backup`**. It
-is recorded in `tenant_state.detail` (`backup_bucket`, `backup_token_id`,
+`odile-t-odl-7f3a2c` — where the slug is the machine's existing `odl-…`
+identifier: a paying tenant's is `odl-` plus six hex characters, the demo's is
+`odl-7971a8`, and the bench's is `odl-bench`. A paying tenant's bucket
+therefore matches `^odile-t-odl-[0-9a-f]{6}$`; the bench is the one name
+outside that pattern — `odile-t-odl-bench`, listed here rather than derived
+(`deploy/image/firstboot-fixture.py:50`). Every name fits R2's 3–63 lowercase
+letters/digits/hyphens rule, is unique within the account, and **cannot equal
+`hermes-hq-backup`**. It is
+recorded in `tenant_state.detail` (`backup_bucket`, `backup_token_id`,
 `backup_readonly_token_id`) — the existing JSON column, so no schema migration —
 and is never derived from a user-supplied string. `detail` is the cache, not the
 store of record: `reopen` (ADR-007) rewrites it on a destroy→rebuild, so the
@@ -369,10 +377,10 @@ token, `ListObjectsV2` over `hermes-hq-backup` (EU endpoint) and
 |---|---|
 | Snapshot | **`8d5215719afbaa1c756fb63d9234050ad1003d6883346d2742349e742dead652`** at **2026-11-19T03:35:00Z**, host `oqwaclzm`, tag `hq` — one snapshot, as latest-only retention intends |
 | Objects and bytes | **75 objects / 1,149,539,702 bytes**, across the restic prefixes `config`, `data/`, `index/`, `keys/`, `snapshots/` |
-| Listing digest | `sha256` of the sorted `key<TAB>size<TAB>etag` listing = **`0298996b894a416afca8e163637808022140d48acd7fe513708f9a49b0767a49`**. It moves on the next HQ run **by design** — the HQ job is the only writer — so it is a baseline, not a frozen value |
+| Listing digest | `sha256` of the sorted `key<TAB>size<TAB>etag` listing (newline-joined, no trailing newline, ETag unquoted) = **`0298996b894a416afca8e163637808022140d48acd7fe513708f9a49b0767a49`**. It moves on the next HQ run **by design** — the HQ job is the only writer — so it is a baseline, not a frozen value |
 | The HQ token's reach | `ListBuckets` → **`AccessDenied`**: the token is confined to its one bucket and cannot even enumerate the account |
 | The DNS token's reach | `GET /accounts/<id>/r2/buckets` with the zone-scoped token → **401 Authentication error** (ADR-003 recorded a 403; the shape is the same — it cannot touch R2) |
-| The code's reach | `git grep hermes-hq-backup` matches **only ADR-003 and this ADR** — no code in the repo names the bucket; HQ's own backup tool reads `RESTIC_REPOSITORY` from `/etc/odile/backup.env`, and the tenant path uses `odile-t-*` |
+| The code's reach | `git grep hermes-hq-backup` matches **only ADR-003, this ADR and `docs/runbooks/backup.md`** — every match is Markdown, and no code in the repo names the bucket; HQ's own backup tool reads `RESTIC_REPOSITORY` from `/etc/odile/backup.env`, and the tenant path uses `odile-t-*` |
 
 **What could still delete it, stated plainly.** Savio's own dashboard login can;
 so can a Cloudflare account suspension. Neither is new, and neither is
@@ -393,8 +401,9 @@ account.
   bucket token and the read-only token in the recovery file. This is the same
   ask as 17 November; only the provider changed.
 - **Approve the 9 GB cap** — 2.0 GB per repository, three buckets in total
-  (live tenant, demo, bench), alert at 8.0 GB —
-  and the rule that the **fourth tenant waits for B2**.
+  (the demo `odl-7971a8`, the bench `odl-bench`, the first paying tenant),
+  alert at 8.0 GB — and the rule that the **fourth bucket — the second paying
+  tenant — waits for B2**.
 - **Keep the B2 account opening as the standing target.** When it is restored:
   open Canada East, save the master key at `/root/.odile/b2-backup.env` (0600,
   root), approve the same two standing credentials, and the migration paragraph
@@ -589,7 +598,7 @@ message containing a secret.
 | **The user lost the recovery file** | the page offers "start fresh without a restore": the guest mints a new password into a new recovery file, uses a new repository prefix (`repo-<4 hex>`) in the **same** bucket, and the old prefix is kept 30 days and then emptied (`t_9d6fb595`); the bucket, and therefore the manual dashboard step, does not change. The page says, in one sentence, that the old data is unrecoverable without the old file — which is the promise, not a bug |
 | **The restore is interrupted** | `odile-restore.service` is a oneshot and the page re-offers the step; restic restore overwrites into the same target, so a second run converges. The backup timer stays stopped until a run completes, and if the user never comes back the 36-hour freshness watchdog is the signal. Nothing else in the machine depends on it, so the user is never blocked |
 | **The process is killed mid-write** | `state.db` is overwritten under a live gateway — the torn-database failure `docs/RESTORE.md` §2 already refuses. The unit stops the agent first and starts it after; the drill asserts the session list is readable afterwards |
-| **The nightly timer fires before the user pastes** | The backup **service** carries `ConditionPathExists=/etc/odile/recovery.txt`, and on a rebuild the installer **does not create that file**: `ensure_recovery` (`installer/odile_install.py:10972`) skips when the seed carries the previous instance id **and the file is absent**, because a freshly minted password would not open the old repository. So a rebuilt-but-not-yet-restored machine's timer fires, the condition fails, the service is skipped silently, and no false "backup failed" reaches the watchdog. The paste writes `/etc/odile/recovery.txt`, and `odile-restore.service` runs one snapshot before the next 03:00. Once the file exists, a later installer run keeps its password and refreshes only the instance and certificate lines, exactly as today. On a **fresh** tenant there is no previous instance id, the installer mints the recovery file at install as today, and the first backup is not suppressed |
+| **The nightly timer fires before the user pastes** | The backup **service** carries `ConditionPathExists=/etc/odile/recovery.txt`, and on a rebuild the installer **does not create that file**: `ensure_recovery` (`installer/odile_install.py:10988`) skips when the seed carries the previous instance id **and the file is absent**, because a freshly minted password would not open the old repository. So a rebuilt-but-not-yet-restored machine's timer fires, the condition fails, the service is skipped silently, and no false "backup failed" reaches the watchdog. The paste writes `/etc/odile/recovery.txt`, and `odile-restore.service` runs one snapshot before the next 03:00. Once the file exists, a later installer run keeps its password and refreshes only the instance and certificate lines, exactly as today. On a **fresh** tenant there is no previous instance id, the installer mints the recovery file at install as today, and the first backup is not suppressed |
 | **A password typed into the chat instead of the page** | it travels to NEAR AI's TEE in the prompt **and** lands in `state.db`, which is inside the backup it opens. The restore step is a page POST for exactly this reason, and the help text says so |
 | **The destination is down, or the bucket is over the 9 GB cap** | the restore waits and retries; the machine is usable without it. A failed upload is a `status: failed` heartbeat, and a repository over `R2_TENANT_CAP_BYTES` is `status: over_cap`; the freshness watchdog reports either. The cap never silently deletes: the last good snapshot stays until an operator prunes or moves the tenant to B2 |
 | **HQ is gone** | the bucket, the user's recovery file and the signed image are enough to rebuild the machine by hand on any provider; what is lost is the convenience of `odilectl`, not the data. This is the first time that sentence has been true |
@@ -601,14 +610,14 @@ and the drill are the two that make the destination worth paying for.
 
 | Card | What it must do | Depends on |
 |---|---|---|
-| **Provisioning — interim (R2)** | For each of at most three buckets (live tenant, demo, bench): record the bucket Savio created (`odile-t-<slug>`, default jurisdiction, `enam`), verify with `HeadBucket` that it answers **and** that the tenant token gets no 200 from `hermes-hq-backup`, use no credential above the bucket, write `/root/.odile/r2/odile-t-<slug>.env` (0600) and the row's `detail` (`backup_bucket`, `backup_token_id`, `backup_readonly_token_id`; the env file is the store of record and the reopen path re-records `detail` from it), and put the endpoint, bucket, read-write token, the read-only pair and `R2_TENANT_CAP_BYTES` in the seed **with the previous instance id** (empty on a fresh tenant; the rebuild marker §7.4 reads). Refuses a fourth `odile-t-*` bucket. **Retires `--backup-password-file`** and with it the sealed password in `seed-rebuilds.json` | Savio's bucket/token steps (§4; `t_02b8df9d`) |
+| **Provisioning — interim (R2)** | For each of at most three buckets (the demo `odl-7971a8`, the bench `odl-bench`, the first paying tenant): record the bucket Savio created (`odile-t-<slug>`, default jurisdiction, `enam`), verify with `HeadBucket` that it answers **and** that the tenant token gets no 200 from `hermes-hq-backup`, use no credential above the bucket, write `/root/.odile/r2/odile-t-<slug>.env` (0600) and the row's `detail` (`backup_bucket`, `backup_token_id`, `backup_readonly_token_id`; the env file is the store of record and the reopen path re-records `detail` from it), and put the endpoint, bucket, read-write token, the read-only pair and `R2_TENANT_CAP_BYTES` in the seed **with the previous instance id** (empty on a fresh tenant; the rebuild marker §7.4 reads). Refuses a fourth `odile-t-*` bucket. **Retires `--backup-password-file`** and with it the sealed password in `seed-rebuilds.json` | Savio's bucket/token steps (§4; `t_02b8df9d`) |
 | **`backup.py` + installer** | an `s3:` repository: load `/etc/odile/backup-s3.env` into restic's environment (never argv), keep the SFTP branch for one release, enforce `R2_TENANT_CAP_BYTES` with `restic stats` after prune (`status: over_cap`), add `ConditionPathExists=/etc/odile/recovery.txt` to the backup **service**, and **do not mint a recovery file on a rebuild** — `ensure_recovery` skips only while the file is absent and the seed carries the previous instance id; once the paste wrote it, a later run keeps the password and refreshes the certificate line. That is the suppression which makes the condition true before the paste (§7.4). Update `BACKUP_SHA256` and re-sign the installer | the seed fields |
 | **The 9 GB readback and alert** | `odilectl backup-usage`: list `hermes-hq-backup` (with `/root/.odile/r2-backup.env`) and every bucket with an env file under `/root/.odile/r2/`, using that bucket's own token, sum payload sizes, write `/var/lib/odile/backup/usage.json`, and feed the watchdog at **8.0 GB warn / 9.0 GB critical**. No account-wide credential: the per-bucket tokens are enough, and the HQ bucket's readback is the daily proof C1 still holds | the provisioning card |
 | **First visit** | the rebuild step: detect the previous instance id in the seed, ask for the recovery file before the sign-in step, write `/etc/odile/recovery.txt`, run `odile-restore.service`, show the snapshot and its time (no JavaScript) | `backup.py`'s `restore` (already supports `--target /` and `--include`) |
 | **Recovery file** | two new lines (the repository URL and the read-only key) and the parse that tolerates them; the `first_visit.py` copy of the grammar stays the one source | the provisioning card |
 | **The drill** | destroy → rebuild → paste → restore against the **real R2 bucket**, with `state.db` and `cron/jobs.json` asserted, and both clocks stated (the lesson of ODL-215's two T0s). This replaces 38m03s and decides whether "under an hour" stays | all of the above |
 | **The exit** | `t_9d6fb595` grows teeth: at `keep_until`, **empty** the bucket through the tenant's own token, record `bucket_emptied_at`, and have Savio delete the empty bucket in the dashboard (an Object Read & Write token cannot delete a bucket); before it, the user already holds the key and the URL | provisioning |
-| **The live and demo repositories** | one command in the Webapp terminal (`backup.py init` against the new R2 URL, then `run`) for the live tenant and the demo; the HQ `sshd` on 2222 stays 30 days and is then deleted. **This card replaces `t_8eb17a54`'s purchase**: that card becomes "delete the stand-in", not "buy a storage box" | the drill |
+| **The demo and bench repositories** | one command in the Webapp terminal (`backup.py init` against the new R2 URL, then `run`) for the demo and the bench; the HQ `sshd` on 2222 stays 30 days and is then deleted. **This card replaces `t_8eb17a54`'s purchase**: that card becomes "delete the stand-in", not "buy a storage box" | the drill |
 | **The B2 cutover** | the paragraph in §10, run once when the B2 account is restored: `restic copy` each R2 repository into its B2 bucket, prove a restore, re-issue the recovery file, keep the R2 bucket 30 days, delete it. Automation of bucket/key minting returns with the B2 master key | Savio's B2 account (§4) |
 | **The same-slug rebuild** | `t_ce52bb8d`. Without it the rebuilt machine has a new URL, and the user's recovery file names a tenant that no longer exists | — |
 
@@ -693,15 +702,17 @@ Measured, at this head, unless marked *modelled*:
 - **The R2 bucket at this head, 19 November 2026** (read-only): `ListObjectsV2`
   over `hermes-hq-backup` at the EU endpoint → **75 objects / 1,149,539,702
   bytes** across `config`, `data/`, `index/`, `keys/`, `snapshots/`; the sorted
-  `key<TAB>size<TAB>etag` listing hashes to
+  `key<TAB>size<TAB>etag` listing (newline-joined, no trailing newline, ETag
+  unquoted) hashes to
   `0298996b894a416afca8e163637808022140d48acd7fe513708f9a49b0767a49`;
   `restic snapshots --no-lock --json` → **one snapshot**
   `8d5215719afbaa1c756fb63d9234050ad1003d6883346d2742349e742dead652` at
   `2026-11-19T03:35:00.780240736Z`, host `oqwaclzm`, tag `hq`. The same token's
   `ListBuckets` → **AccessDenied**; the DNS token's
   `GET /accounts/<id>/r2/buckets` → **401 Authentication error**. `git grep
-  hermes-hq-backup` matches only ADR-003 and this ADR — **no code path** names
-  the bucket.
+  hermes-hq-backup` matches only ADR-003, this ADR and
+  `docs/runbooks/backup.md` — every match is Markdown, and **no code path**
+  names the bucket.
 - **The R2 transfer bound, 19 November 2026:** `boto3 get_object` of data pack
   `data/c8/c82f11ab…` (17,544,671 bytes) from this box → **1.293059 s**, i.e.
   13.57 MB/s single stream. The repo is 1.017 GB, so ≈75 s at that rate before

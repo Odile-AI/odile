@@ -468,13 +468,14 @@ dashboard step in that branch.
   `/etc/odile/backup-s3.env` (0600 root); the same pair is kept on HQ at
   `/root/.odile/r2/odile-t-<slug>.env` (0600) only so a rebuild can
   re-deliver it. Neither token can create or delete a bucket.
-- **Cap:** **2.0 GB per repository, at most three buckets in total (the live
-  tenant, the demo and the bench), 9 GB across the
+- **Cap:** **2.0 GB per repository, at most three buckets in total (the demo
+  `odl-7971a8`, the bench `odl-bench`, the first paying tenant), 9 GB across the
   account** (which already holds HQ's 1.15 GB). `backup.py run` reads
   `R2_TENANT_CAP_BYTES=2000000000` and reports `status: over_cap` with the size
   when the repository after prune exceeds it; a run that starts over cap does not
   upload. `odilectl backup-usage` lists all four buckets daily and alerts at
-  **8.0 GB (warn) / 9.0 GB (critical)**. The **fourth tenant waits for B2.**
+  **8.0 GB (warn) / 9.0 GB (critical)**. The **fourth bucket — the second
+  paying tenant — waits for B2.**
 - **Verification after minting:** `HeadBucket` on `odile-t-<slug>` must answer,
   and `HeadBucket` on `hermes-hq-backup` with the tenant token must **not** be
   200. Record both codes in the handoff — that is the proof the token is scoped.
@@ -859,9 +860,10 @@ sentence is quoted (ODL-474 lands it).
 
 - **The interim destination (19 November 2026).** The items below describe the
   SFTP stand-in; the live interim is Cloudflare R2 (§3.1). What remains open:
-  Savio creates at most three `odile-t-<slug>` buckets (live tenant, demo,
-  bench) and mints two bucket-scoped tokens each; `odilectl provision` records
-  them and verifies the scope; the live and demo repositories are re-initialised
+  Savio creates at most three `odile-t-<slug>` buckets (the demo `odl-7971a8`,
+  the bench `odl-bench`, the first paying tenant) and mints two bucket-scoped
+  tokens each; `odilectl provision` records
+  them and verifies the scope; the demo and bench repositories are re-initialised
   against the R2 URL; and the 9 GB readback/alert lands with the usage card.
   The return to B2 is ADR-004 §10, not a new design.
 - **The repository and its key registration.** The installer now places the
