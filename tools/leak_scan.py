@@ -236,6 +236,10 @@ PARTUUID = re.compile(
     r"[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12})\b")
 MACHINE_ID = re.compile(r"(?i)\bmachine[-_ ]?id\b\D{0,24}([0-9A-Fa-f]{32})\b")
 MAC = re.compile(r"(?<![0-9A-Fa-f:])(?:[0-9A-Fa-f]{2}[:-]){5}[0-9A-Fa-f]{2}(?![0-9A-Fa-f:])")
+# `ip link` prints the broadcast address beside every hardware address, and an
+# unset one is all zeroes; neither identifies a machine. Both are excluded by
+# value, not by the `brd` position, so a real MAC written after `brd` still fires.
+MAC_NOT_A_MACHINE = {"ff:ff:ff:ff:ff:ff", "00:00:00:00:00:00"}
 SERIAL_VALUE = re.compile(
     r"(?i)\b(?:(?:hardware|chassis|system|board|product|device)[ _-]?serial"
     r"(?:[ _-]?(?:number|no))?|serial[ _-]?number)\s*[=:]\s*"
@@ -263,9 +267,17 @@ MD5_FINGERPRINT = re.compile(r"\bMD5:(?:[0-9A-Fa-f]{2}:){15}[0-9A-Fa-f]{2}\b")
 
 # A dotted quad dashed into a hostname, e.g. 203-0-113-10.sslip.io.
 DASHED_HOST = re.compile(r"(?<![\w.-])((?:[0-9]{1,3}-){3}[0-9]{1,3})(?=\.(?:[A-Za-z0-9-]+\.)+[A-Za-z]{2,})")
-# A version quadruple is not an address.
-VERSION_BEFORE = re.compile(r"(?i)\b(?:version|release|build|firmware|kernel|api|protocol|v)\s*[:=]?\s*$")
-VERSION_LINE = re.compile(r"(?i)\b(?:version|release|build|firmware|kernel)\b")
+# A version quadruple is not an address, but only the quadruple at the version
+# keyword's shoulder is a version: "version 1.2.3.4", "release: 1.2.3.4",
+# "the build is 1.2.3.4", "v1.2.3.4". A keyword anywhere on the line used to
+# blind the whole line, so a release-notes line naming a real testing host
+# passed. Nothing may sit between the keyword and the quadruple but separators
+# and the copula: a word in between means the quadruple is an address after all.
+# The one-letter form needs a word boundary of its own, or `curl -v <address>`
+# reads as a version line and the address disappears.
+VERSION_BEFORE = re.compile(
+    r"(?i)(?:\b(?:version|release|build|firmware|kernel|api|protocol)|(?<![\w-])v)"
+    r"(?:\s*(?:is|was|of|no\.?))?\s*[:=]?\s*$")
 
 # A credential in a Markdown table cell, e.g. README's published demo password.
 TABLE_CREDENTIAL = re.compile(
@@ -425,6 +437,15 @@ def token_value(token: str) -> str:
 
 
 def secret_assignment(name: str, value: str) -> bool:
+    """A credential name assigned a value that could be a secret.
+
+    A multi-word value is read as a passphrase or mnemonic only when every word
+    is a bare alphabetic word, in any case: "Correct Horse Battery Staple" is a
+    Diceware passphrase, "the password is stored in the vault" is prose that the
+    entropy floor also lets through. The limit is deliberate and stated: a phrase
+    carrying punctuation or digits ("correct horse 4 battery!") is not reported,
+    because that shape is also a sentence and the rule cannot tell them apart.
+    """
     if not CRED_NAME.match(name) or len(value) < MIN_ASSIGNMENT_LENGTH:
         return False
     if not re.search(r"[A-Za-z]", value):
@@ -433,8 +454,8 @@ def secret_assignment(name: str, value: str) -> bool:
         return False
     if " " in value:
         words = value.split()
-        if len(words) < 2 or not all(re.fullmatch(r"[a-z]+", word) for word in words):
-            return False    # a phrase, but not a mnemonic or passphrase
+        if len(words) < 2 or not all(re.fullmatch(r"[A-Za-z]+", word) for word in words):
+            return False    # a phrase with punctuation or digits, not a passphrase
     if re.match(r"^[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)+$", value):
         return False        # a dotted expression, not a value
     if re.match(r"^_?[a-z][a-z0-9]*(?:_[a-z0-9]+)+$", value):
@@ -465,7 +486,10 @@ def text_candidates(line: str, number: int) -> list[tuple[str, str, str]]:
     for match in MACHINE_ID.finditer(line):
         add("machine-identity", match.group(1), "machine-id")
     for match in MAC.finditer(line):
-        add("machine-identity", match.group(0), "MAC")
+        value = match.group(0)
+        if value.lower().replace("-", ":") in MAC_NOT_A_MACHINE:
+            continue
+        add("machine-identity", value, "MAC")
     for match in SERIAL_VALUE.finditer(line):
         add("machine-identity", match.group(1), "hardware serial")
 
@@ -518,7 +542,7 @@ def text_candidates(line: str, number: int) -> list[tuple[str, str, str]]:
         value = match.group(1)
         if value in seen or is_doc_ip(value):
             continue
-        if VERSION_BEFORE.search(line[:match.start()]) or VERSION_LINE.search(line):
+        if VERSION_BEFORE.search(line[:match.start()]):
             continue
         add("public-ip", value, "")
     for match in DASHED_HOST.finditer(line):

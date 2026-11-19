@@ -12,6 +12,7 @@ Run directly (`/usr/bin/python3 tests/test_leak_classes.py`) or through the suit
 from __future__ import annotations
 
 import base64
+import gzip
 import io
 import os
 import subprocess
@@ -19,6 +20,7 @@ import sys
 import tarfile
 import tempfile
 import unittest
+import zipfile
 from pathlib import Path
 from unittest import mock
 
@@ -33,12 +35,16 @@ PARTUUID = "01234567-89ab-" + "cdef-0123-456789abcdef"
 ZONE = "0123456789abcdef" * 2
 FINGERPRINT = "SHA256:" + "A" * 43
 MAC = "aa:bb:" + "cc:dd:ee:ff"
+BROADCAST = "ff:ff:" + "ff:ff:ff:ff"
+UNSET_MAC = "00:00:" + "00:00:00:00"
 MACHINE_ID = "0123456789abcdef" * 2
 SERIAL = "SN01" + "23456789"
 INSTANCE = "dead" + "beef"
 HOST = "qwerty" + "ui"
 SLUG = "odl-" + "1234ab"
 PASSPHRASE = "correct-horse-" + "battery-staple"
+PASSPHRASE_WORDS = "Correct Horse " + "Battery Staple"
+PROSE = "correct horse, " + "battery staple."
 MNEMONIC = ("abandon ability able about above absent " +
             "absorb abstract absurd abuse access accident")
 SECRET_KEY = "this-is-a-long-" + "key-with-no-digits"
@@ -70,6 +76,17 @@ class MachineIdentity(unittest.TestCase):
 
     def test_a_mac_is_reported(self):
         self.assertIn("machine-identity", rules(f"link {MAC} up"))
+
+    def test_the_broadcast_beside_a_hardware_address_is_not_a_machine(self):
+        # `ip addr` prints the broadcast address on the hardware-address line;
+        # only the hardware address itself names this machine.
+        found = [value for rule, value, _note
+                 in leak_scan.text_candidates(f"link/ether {MAC} brd {BROADCAST}", 1)]
+        self.assertEqual(found, [MAC])
+
+    def test_a_broadcast_or_unset_mac_is_not_a_machine(self):
+        self.assertNotIn("machine-identity", rules(f"brd {BROADCAST}"))
+        self.assertNotIn("machine-identity", rules(f"link/ether {UNSET_MAC}"))
 
     def test_a_hardware_serial_is_reported(self):
         self.assertIn("machine-identity", rules(f"Chassis Serial: {SERIAL}"))
@@ -126,6 +143,14 @@ class Fingerprints(unittest.TestCase):
 class Credentials(unittest.TestCase):
     def test_a_passphrase_without_a_digit_is_reported(self):
         self.assertIn("credential-assignment", rules(f"LUKS_PASSPHRASE={PASSPHRASE}"))
+
+    def test_a_capitalised_passphrase_is_reported(self):
+        self.assertIn("credential-assignment",
+                      rules(f'LUKS_PASSPHRASE="{PASSPHRASE_WORDS}"'))
+
+    def test_a_prose_phrase_with_punctuation_is_not_a_passphrase(self):
+        self.assertNotIn("credential-assignment",
+                         rules(f'LUKS_PASSPHRASE="{PROSE}"'))
 
     def test_a_mnemonic_is_reported(self):
         self.assertIn("credential-assignment", rules(f'MNEMONIC="{MNEMONIC}"'))
@@ -188,6 +213,25 @@ class Addresses(unittest.TestCase):
     def test_a_version_quadruple_is_not_an_address(self):
         self.assertNotIn("public-ip", rules("version 1.2.3.4"))
 
+    def test_a_quadruple_at_the_version_keyword_is_not_an_address(self):
+        # The keyword may be followed by a copula, not by more of the sentence.
+        self.assertNotIn("public-ip", rules("the release is 1.2.3.4"))
+
+    def test_a_v_prefixed_version_is_not_an_address(self):
+        self.assertNotIn("public-ip", rules("odile image v1.2.3.4"))
+
+    def test_an_address_after_a_verbose_flag_is_reported(self):
+        # `-v` is a flag, not the version keyword: the address must still fire.
+        self.assertIn("public-ip", rules(f"curl -v {PUBLIC_IP}"))
+
+    def test_an_address_on_a_line_naming_a_release_is_reported(self):
+        # The version word used to blind the whole line: an address anywhere on
+        # a release-notes line passed (ODL-906-F3 round 2).
+        self.assertIn("public-ip", rules(f"release 2026.11.1 the testing host is {PUBLIC_IP}"))
+
+    def test_an_address_after_a_version_on_the_same_line_is_reported(self):
+        self.assertIn("public-ip", rules(f"release 1.2.3.4 and {PUBLIC_IP}"))
+
     def test_a_data_uri_no_longer_hides_the_line(self):
         found = rules(f"font url(data:image/png;base64,iVBORw0KGgo=) {PUBLIC_IP} {EMAIL}")
         self.assertIn("public-ip", found)
@@ -239,6 +283,56 @@ class OpaquePayloads(unittest.TestCase):
             archive.addfile(info, io.BytesIO(data))
         found = leak_scan.scan_archive("bundle.tar.gz", buffer.getvalue())
         self.assertEqual(found, [("bundle.tar.gz!member.txt", [])])
+
+
+class ArchiveFormats(unittest.TestCase):
+    """Every archive format the class names is read, and a clean member is clean.
+
+    `scan_archive` also returns the member's own text view (so the forbid list
+    can run inside an archive), so these tests read the path and the candidates
+    by position and leave the rest of the tuple to the scanner.
+    """
+
+    @staticmethod
+    def paths(found) -> list[str]:
+        return [member[0] for member in found]
+
+    @staticmethod
+    def candidates(found, index: int = 0) -> list[tuple[str, int, str, str]]:
+        return found[index][1]
+
+    def test_a_zip_member_is_scanned(self):
+        buffer = io.BytesIO()
+        with zipfile.ZipFile(buffer, "w") as archive:
+            archive.writestr("member.txt", f"host {PUBLIC_IP}\nmail {EMAIL}\n")
+        found = leak_scan.scan_archive("bundle.zip", buffer.getvalue())
+        self.assertEqual(self.paths(found), ["bundle.zip!member.txt"])
+        rules_found = {rule for rule, _line, _value, _note in self.candidates(found)}
+        self.assertIn("public-ip", rules_found)
+        self.assertIn("email", rules_found)
+
+    def test_a_benign_zip_member_is_clean(self):
+        buffer = io.BytesIO()
+        with zipfile.ZipFile(buffer, "w") as archive:
+            archive.writestr("member.txt", "nothing to see here\n")
+        found = leak_scan.scan_archive("bundle.zip", buffer.getvalue())
+        self.assertEqual(self.paths(found), ["bundle.zip!member.txt"])
+        self.assertEqual(self.candidates(found), [])
+
+    def test_a_plain_gzip_member_is_scanned(self):
+        # A gzip that is not a tar: `scan_archive` falls back to decompressing
+        # it, and the member is scanned at the path it would have had.
+        found = leak_scan.scan_archive(
+            "notes.txt.gz", gzip.compress(f"host {PUBLIC_IP}\nmail {EMAIL}\n".encode("utf-8")))
+        self.assertEqual(self.paths(found), ["notes.txt.gz!notes.txt"])
+        rules_found = {rule for rule, _line, _value, _note in self.candidates(found)}
+        self.assertIn("public-ip", rules_found)
+        self.assertIn("email", rules_found)
+
+    def test_a_benign_plain_gzip_member_is_clean(self):
+        found = leak_scan.scan_archive("notes.txt.gz", gzip.compress(b"nothing to see here\n"))
+        self.assertEqual(self.paths(found), ["notes.txt.gz!notes.txt"])
+        self.assertEqual(self.candidates(found), [])
 
 
 def git_env() -> dict[str, str]:
