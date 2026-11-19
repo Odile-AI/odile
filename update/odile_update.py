@@ -196,6 +196,11 @@ class Layout:
     def records(self) -> Path:
         return self.etc
 
+    @property
+    def backup_program(self) -> Path:
+        """The tenant backup program the nightly unit runs (ODL-215 follow-up)."""
+        return self.root / "usr/local/lib/odile/backup.py"
+
 
 def resolve_installer(root: Path, mode: str) -> Path:
     if mode == "tenant":
@@ -495,6 +500,12 @@ def validate_manifest(manifest: dict) -> None:
     bundle = manifest.get("skills_bundle_sha256")
     require(bundle is None or (isinstance(bundle, str) and bool(HEX_RE.match(bundle))),
             "manifest skills_bundle_sha256 is neither null nor a sha256")
+    # Optional: a release cut before the row existed still verifies (the live
+    # `2026.11.19-1` manifest is one), and `load_release` warns about it. A
+    # value that is present has to be a real digest, not a placeholder.
+    backup = manifest.get("backup_sha256")
+    require(backup is None or (isinstance(backup, str) and bool(HEX_RE.match(backup))),
+            "manifest backup_sha256 is neither absent nor a sha256")
 
 
 @dataclass
@@ -555,6 +566,10 @@ def load_release(url: str, pubkey_path: Path, *, fetch=fetch_url,
                           EXIT_BAD_SIGNATURE)
     manifest = parse_json(manifest_bytes, manifest_url)
     validate_manifest(manifest)
+    if not manifest.get("backup_sha256"):
+        print(f"warning: the manifest at {manifest_url} names no backup_sha256; it predates "
+              "the tenant backup program's row, so this release does not pin the program "
+              "the nightly unit runs (a later cut carries it)", file=sys.stderr)
 
     machine_kernel = kernel if kernel is not None else os.uname().release
     if document["boot"]["kernel"] != machine_kernel:
@@ -880,9 +895,11 @@ def print_plan(release: Release, plan: Plan, layout: Layout, *, key_id: str) -> 
         print(f"notes        {release.notes}")
     print(f"signature    OK (release.json and manifest.json; key {key_id})")
     print(f"boot         kernel {release.boot_kernel} matches this machine")
+    backup = manifest.get("backup_sha256")
     print(f"manifest     schema {manifest['schema']} · {len(manifest['skills'])} skills · "
           f"hermes {manifest['hermes']['commit'][:12]} · "
-          f"installer {manifest['installer_sha256'][:12]}")
+          f"installer {manifest['installer_sha256'][:12]}"
+          + (f" · backup {backup[:12]}" if backup else ""))
     if plan.empty():
         print("plan         same: this machine already matches the release")
         return
@@ -1358,6 +1375,10 @@ def build_release(layout: Layout, manifest_path: Path, *, release_id: str, boot_
             "the manifest's Hermes commit is not this checkout's HEAD", EXIT_BAD_INPUT)
     require(manifest["installer_sha256"] == sha256_file(layout.installer),
             "the manifest's installer_sha256 is not this root's installer", EXIT_BAD_INPUT)
+    if manifest.get("backup_sha256") and layout.backup_program.is_file():
+        require(manifest["backup_sha256"] == sha256_file(layout.backup_program),
+                "the manifest's backup_sha256 is not this root's tenant backup program",
+                EXIT_BAD_INPUT)
     target_webapp = {key_name: manifest["hermes"]["webapp"][key_name]
                      for key_name in ("node", "source_sha256", "output_sha256")}
     require(target_webapp == read_webapp_build(layout),
@@ -1661,6 +1682,8 @@ def _self_test_root(base: Path) -> Path:
     os.chmod(skills / "alpha/run.sh", 0o755)
     (skills / ".bundled_manifest").write_text("alpha:aaaaaaaaaaaa\n", encoding="utf-8")
     (root / "usr/local/lib/odile").mkdir(parents=True)
+    (root / "usr/local/lib/odile/backup.py").write_text(
+        "#!/usr/bin/python3\n# the fixture tenant backup program\n", encoding="utf-8")
     (root / "bootstrap").mkdir(parents=True)
     (root / "bootstrap/odile_install.py").write_text("#!/usr/bin/python3\n# installer\n", encoding="utf-8")
     (root / "etc/systemd/system").mkdir(parents=True)
@@ -1688,6 +1711,7 @@ def _self_test_manifest(layout: Layout, *, generated_at: str) -> dict:
         "skills": collect_skills(layout.skills, layout),
         "skills_bundle_sha256": sha256_file(layout.skills / ".bundled_manifest"),
         "installer_sha256": sha256_file(layout.installer),
+        "backup_sha256": sha256_file(layout.backup_program),
         "hermes": {"commit": git_head(layout), "webapp": read_webapp_build(layout)},
     }
 
@@ -1718,6 +1742,28 @@ def self_test() -> int:
         fixture_pair[0].write_bytes(signature_file_bytes(
             sign_bytes((machine / "bootstrap/odile_install.py").read_bytes(), key)))
         check.expect("layout: scratch root, one home", layout.mode == "scratch" and layout.user == "tester")
+
+        # The tenant backup program's row (ODL-215 follow-up): the release
+        # manifest is its carrier, so the guest must accept an older manifest
+        # without it and refuse a value that is not a digest.
+        manifest_row = _self_test_manifest(layout, generated_at="2026-11-08T15:00:00Z")
+        check.expect("backup row: the root's program is the hash the manifest records",
+                     manifest_row["backup_sha256"] == sha256_file(layout.backup_program))
+        older = dict(manifest_row)
+        older.pop("backup_sha256")
+        try:
+            validate_manifest(older)
+            older_accepted = True
+        except UpdateError:
+            older_accepted = False
+        check.expect("backup row: a manifest without it still validates (older release)",
+                     older_accepted)
+        try:
+            validate_manifest(dict(manifest_row, backup_sha256="not-a-sha256"))
+            malformed_refused = False
+        except UpdateError:
+            malformed_refused = True
+        check.expect("backup row: a malformed row is refused", malformed_refused)
 
         # canonical form is an exact round trip, and matches manifest.py's
         skill_file = layout.skills / "odile-home/SKILL.md"

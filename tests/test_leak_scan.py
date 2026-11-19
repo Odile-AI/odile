@@ -29,11 +29,14 @@ Every test runs the real scanner against a throwaway git repository, so the
 from __future__ import annotations
 
 import hashlib
+import io
 import os
 import subprocess
 import sys
+import tarfile
 import tempfile
 import unittest
+import zipfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -110,6 +113,20 @@ class ForbidClass(unittest.TestCase):
         self.assertIn("FINDING allow-file", result.stdout)
         self.assertIn("missing-forbid.txt", result.stdout)
 
+    def write_tar(self, member: str, payload: bytes, name: str = "bundle.tar.gz") -> None:
+        buffer = io.BytesIO()
+        with tarfile.open(fileobj=buffer, mode="w:gz") as archive:
+            info = tarfile.TarInfo(member)
+            info.size = len(payload)
+            archive.addfile(info, io.BytesIO(payload))
+        (self.repo / name).write_bytes(buffer.getvalue())
+
+    def write_zip(self, member: str, payload: bytes, name: str = "bundle.zip") -> None:
+        buffer = io.BytesIO()
+        with zipfile.ZipFile(buffer, "w") as archive:
+            archive.writestr(member, payload)
+        (self.repo / name).write_bytes(buffer.getvalue())
+
     def test_a_planted_forbidden_literal_fails_then_passes(self) -> None:
         self.write_list()
         probe = self.repo / "probe.txt"
@@ -122,6 +139,45 @@ class ForbidClass(unittest.TestCase):
         passed = self.scan()
         self.assertEqual(passed.returncode, 0, passed.stdout)
         self.assertIn("PASS: nothing to leak", passed.stdout)
+
+    def test_a_forbidden_literal_inside_a_tar_member_fails(self) -> None:
+        # The forbid class read a whole file's text but not an archive member's;
+        # a literal planted in a member passed the class the list exists for.
+        self.write_list()
+        self.write_tar("member.txt", f"vendor box {LITERAL}\n".encode("utf-8"))
+        result = self.scan()
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn("FINDING forbidden-value", result.stdout)
+        self.assertIn("bundle.tar.gz!member.txt:1", result.stdout)
+        self.assertIn(f"({LABEL})", result.stdout)
+
+    def test_a_forbidden_literal_inside_a_zip_member_fails(self) -> None:
+        self.write_list()
+        self.write_zip("member.txt", f"vendor box {LITERAL}\n".encode("utf-8"))
+        result = self.scan()
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn("FINDING forbidden-value", result.stdout)
+        self.assertIn("bundle.zip!member.txt:1", result.stdout)
+
+    def test_a_forbidden_literal_outside_an_archive_fails(self) -> None:
+        # The same member bytes outside the archive: the wrapper is not what
+        # makes the literal a finding, so the archive test above isolates it.
+        self.write_list()
+        (self.repo / "member.txt").write_text(f"vendor box {LITERAL}\n", encoding="utf-8")
+        result = self.scan()
+        self.assertEqual(result.returncode, 1, result.stdout)
+        findings = [line for line in result.stdout.splitlines()
+                    if line.startswith("FINDING forbidden-value")]
+        self.assertEqual(len(findings), 1, result.stdout)
+        self.assertIn("member.txt:1", findings[0])
+        self.assertNotIn("!", findings[0])
+
+    def test_a_benign_archive_member_is_not_a_finding(self) -> None:
+        self.write_list()
+        self.write_tar("member.txt", b"nothing private here\n")
+        result = self.scan()
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertIn("PASS: nothing to leak", result.stdout)
 
     def test_the_list_itself_is_not_a_finding(self) -> None:
         # The list carries the literals by definition; if the walk scanned it,
@@ -292,6 +348,56 @@ class AllowlistRecord(unittest.TestCase):
         # login-page row and the README copy of the same value) and the two
         # demo secrets (the spent image seed token, the retired session seed).
         self.assertEqual(sum(1 for row in rows if row.credential == "yes"), 4)
+
+    def test_a_planted_chip_id_in_a_fixture_fails_the_gate(self) -> None:
+        import base64
+        import json
+        raw = bytearray(1184)
+        raw[0:4] = (5).to_bytes(4, "little")
+        raw[0x90:0xC0] = b"\x11" * 48
+        raw[0x1A0:0x1E0] = bytes.fromhex("0123456789abcdef" * 8)
+        fixture = self.repo / "synthetic-report.json"
+        fixture.write_text(json.dumps({
+            "report_b64": base64.b64encode(bytes(raw)).decode("ascii"),
+        }), encoding="utf-8")
+        first = self.scan()
+        self.assertEqual(first.returncode, 1, first.stdout)
+        self.assertIn("machine-identity", first.stdout)
+        # The generator's marker is not silicon; the same fixture passes.
+        raw[0x1A0:0x1E0] = b"ODILE-SYNTHETIC-CHIP-ID".ljust(64, b"\x00")
+        fixture.write_text(json.dumps({
+            "report_b64": base64.b64encode(bytes(raw)).decode("ascii"),
+        }), encoding="utf-8")
+        second = self.scan()
+        self.assertEqual(second.returncode, 0, second.stdout)
+        self.assertIn("PASS:", second.stdout)
+
+    def test_a_pem_certificate_with_a_live_chip_id_fails_the_gate(self) -> None:
+        import base64
+        import json
+        hwid = bytes.fromhex("0123456789abcdef" * 8)
+        oid = bytes.fromhex("2b060104019c780104")
+        inner = (b"\x02\x01\x01" + b"\x06\x09" + oid
+                 + b"\x04\x40" + hwid)
+        der = (b"\x30" + bytes([len(inner) + 2])
+               + b"\x30" + bytes([len(inner)]) + inner)
+        pem = ("-----BEGIN CERTIFICATE-----\n"
+               + base64.b64encode(der).decode("ascii") + "\n"
+               "-----END CERTIFICATE-----\n")
+        (self.repo / "fixture.pem").write_text(pem, encoding="utf-8")
+        first = self.scan()
+        self.assertEqual(first.returncode, 1, first.stdout)
+        self.assertIn("VCEK HWID (chip id) (PEM)", first.stdout)
+        # A certificate without the HWID extension is not a VCEK.
+        inner = b"\x02\x01\x01"
+        der = (b"\x30" + bytes([len(inner) + 2])
+               + b"\x30" + bytes([len(inner)]) + inner)
+        pem = ("-----BEGIN CERTIFICATE-----\n"
+               + base64.b64encode(der).decode("ascii") + "\n"
+               "-----END CERTIFICATE-----\n")
+        (self.repo / "fixture.pem").write_text(pem, encoding="utf-8")
+        second = self.scan()
+        self.assertEqual(second.returncode, 0, second.stdout)
 
 
 if __name__ == "__main__":

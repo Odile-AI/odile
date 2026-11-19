@@ -4,7 +4,7 @@
 The reseller API has a boot-image verb now (`?action=boot-image`, probed 12
 November), and `tools/servury_cycle.py` uses it when the account holding a
 machine has a reseller key. The panel is the route for an account with a session
-but no key — `<servury-account:dev>`, which owns `<server:ukitest>`. Its login is
+but no key — `lkbxu6i9`, which owns the bench `168020b4` and the tenant box. Its login is
 not an email form: it is one **32-character credential** field
 (`input#credential`) plus a CSRF token, with a 30-day "remember me". That makes
 the panel drivable with a cookie jar — no headless browser, no brittle clicking.
@@ -17,6 +17,14 @@ the panel drivable with a cookie jar — no headless browser, no brittle clickin
         --url … --sha256 … [--apply --confirm]
     ./tools/servury_panel.py --power --server <server:ukitest> --action restart
     ./tools/servury_panel.py --console --server <server:ukitest> --action on|off|read
+    ./tools/servury_panel.py --order --plan 108 --ssh-key-file key.pub --apply
+
+Buying is the one thing that does **not** use the panel any more: `--order` POSTs
+`?action=create` with the account's API key, because the panel order form charges
+list price and the key charges the partner price (5% off orders, renewals and
+upgrades). The panel is still the only route for the disk image, the boot image,
+the console and power. The affiliate route and coupon codes were retired in
+November 2026; `--coupon` is gone.
 
 `<server:ukitest>` is the one id in `/root/.odile/servury_uki_server_id` (one id
 per line; the file is untracked, so a clone has no live target).
@@ -45,6 +53,7 @@ from __future__ import annotations
 import argparse
 import datetime
 import http.cookiejar
+import json
 import os
 import re
 import sys
@@ -74,19 +83,24 @@ POST_FIELDS = frozenset({
     "image_kernel_url", "image_kernel_sha256", "image_initrd_url", "image_initrd_sha256",
     "image_cmdline", "hostname", "enabled",
 })
-# Ordering is the one other write this tool may make: a plan, a location, 31 days,
-# a coupon, and funds. No payment method other than the account balance.
-ORDER_FIELDS = frozenset({
-    "csrf_token", "plan", "location", "os", "days", "coupon", "payment_method", "hostname",
-    "snp_requested", "fde_requested", "measured_requested", "auto_renew", "ssh_key",
-    "calculate", "submit_order", "preset_days",
+# The only panel writes this tool may make: the disk-image and boot-image forms
+# on /manage/<id>/, the console switch, the hostname and power. The order form is
+# not one of them any more — it charges list price, so buying moved to the API
+# (`order()`), and banning /order/ here makes a retail order impossible by tool.
+POST_FIELDS = frozenset({
+    "csrf_token", "action", "disk_url", "disk_sha256", "disk_format", "disk_start", "disk_confirm",
+    "image_kernel_url", "image_kernel_sha256", "image_initrd_url", "image_initrd_sha256",
+    "image_cmdline", "hostname", "enabled",
 })
 AUDIT = Path("/root/.odile/servury-panel.log")
-# Every Servury purchase goes through the referral route: the discount stacks with
-# the account's referral tier (10% and better), and an order placed without it
-# silently forfeits that. Only a demonstrably cheaper route may beat it.
-PURCHASE_URL = "https://servury.com/ref/web"
-DEFAULT_COUPON = "WEB"
+# Every Servury purchase goes through the API with the account's key: 5% off
+# list on orders, renewals and upgrades, applied automatically. The affiliate
+# route was retired in November 2026 — /ref/web 301s to / with no cookie and
+# `WEB` answers "Invalid coupon code" — and the panel order form is list price
+# even on an account that holds a key, so the panel is no longer an order path
+# (docs/ops/evidence/2026-11-19-servury-purchase-route/EVIDENCE.md).
+ORDER_ROUTE = "https://servury.com/api/reseller.php?action=create"
+ORDER_KEY_FILE = Path("/root/.odile/servury_reseller_key_lkbxu6i9")
 FORM_ACTION = re.compile(r"<form[^>]*action=\"([^\"]*)\"[^>]*>", re.I)
 FIELD = re.compile(r"<(input|select|textarea)\b[^>]*>", re.I)
 NAME = re.compile(r"name=[\"']([^\"']+)[\"']", re.I)
@@ -168,6 +182,59 @@ def refuse_path(path: str) -> str | None:
     return None
 
 
+DASHBOARD = f"{BASE}/dashboard/"
+# One `/manage/<id>/` link per machine **the session's account owns**. The
+# dashboard is the only page that answers "whose machine is this": the manage
+# page itself renders identically for an id on another account, so ownership is
+# read from here and a foreign id is a refusal.
+MANAGE_LINK = re.compile(r"/manage/([0-9a-f]{8})/")
+_ACCOUNT: str | None = None
+
+
+def owned_servers(opener) -> frozenset[str]:
+    """The ids this session's account owns, from the dashboard's manage links."""
+    return frozenset(MANAGE_LINK.findall(get(opener, DASHBOARD)))
+
+
+def account_of(opener) -> str:
+    """The account this session belongs to, read once per run.
+
+    Readings are cached because every write needs it and each one is a page
+    fetch; `?` (the settings page did not name an id) is **not** cached, so a
+    blank read leaves the account unknown and the write refuses.
+    """
+    global _ACCOUNT
+    if _ACCOUNT is None:
+        user, _ = whoami(opener)
+        if user != "?":
+            _ACCOUNT = user
+    return _ACCOUNT or "?"
+
+
+def require_owned(opener, server: str) -> int | None:
+    """`None` when `server` is this account's, else 2 after saying why.
+
+    Two logins exist on the vendor: the reseller account that owns HQ and the
+    old demo tenant, and the account the tenant now lives on. A POST naming a
+    machine the session does not own is the one mistake that reaches another
+    account, so it is refused before any form is posted.
+    """
+    account = account_of(opener)
+    if account == "?":
+        print("panel: the session's account could not be read — refusing to write",
+              file=sys.stderr)
+        return 2
+    owned = owned_servers(opener)
+    if server not in owned:
+        print(
+            f"panel: {server} is not a machine on account {account} "
+            f"(the dashboard lists {sorted(owned) or 'none'}) — refusing",
+            file=sys.stderr,
+        )
+        return 2
+    return None
+
+
 def allowed_servers() -> frozenset[str]:
     """The server ids this tool may touch, from the untracked file.
 
@@ -191,6 +258,16 @@ def audit(line: str) -> None:
             handle.write(line.rstrip() + "\n")
     except OSError:
         pass
+
+
+def audit_line(opener, message: str) -> str:
+    """The line every write leaves: UTC stamp, **the account**, then the write.
+
+    A `server=<id>` alone stopped being enough once the tenant moved onto the
+    account the team owns: two logins hold machines, and the log has to answer
+    "which account did this land in" without a second command.
+    """
+    return f"{datetime_stamp()} account={account_of(opener)} {message}"
 
 
 COOKIE_HEADER = Path("/root/.odile/servury_panel.cookie")   # "name=value; name=value", 0600
@@ -252,11 +329,16 @@ def post(opener, url: str, fields: dict[str, str]) -> str:
     why = refuse_path(urllib.parse.urlparse(url).path)
     if why:
         raise SystemExit(f"panel: refusing to POST to {url}: {why}")
-    allowed = ORDER_FIELDS if "/order/" in urllib.parse.urlparse(url).path else POST_FIELDS
+    allowed = POST_FIELDS
     unknown = set(fields) - allowed
     if unknown:
         raise SystemExit(f"panel: refusing unknown form field(s) {sorted(unknown)}")
-    audit(f"{datetime_stamp()} POST {url} fields={sorted(fields)}")
+    # Every write path audits before it posts, so `account_of` is normally a
+    # cache hit here. Reading it through the function (not `_ACCOUNT`) means a
+    # future path that posts first still writes a line naming the account it
+    # landed in, or `?` when the session could not be read — never a bare POST.
+    account = account_of(opener)
+    audit(f"{datetime_stamp()} POST {url} fields={sorted(fields)} account={account}")
     body = urllib.parse.urlencode(fields).encode()
     with opener.open(request_for(url, data=body), timeout=40) as response:
         text = response.read().decode("utf-8", "replace")
@@ -338,6 +420,9 @@ def dump(opener, server: str) -> int:
 
 def write_disk(opener, server: str, url: str, fmt: str, apply: bool, sha256: str = "") -> int:
     """Point the machine's disk at a published image. Two flags are needed, on purpose."""
+    refused = require_owned(opener, server)
+    if refused is not None:
+        return refused
     page = admin_url(server)
     html = get(opener, page)
     token = parse_csrf(html)
@@ -354,7 +439,7 @@ def write_disk(opener, server: str, url: str, fmt: str, apply: bool, sha256: str
     }
     if sha256:
         fields["disk_sha256"] = sha256
-    audit(f"{datetime_stamp()} DISK_WRITE server={server} url={url} format={fmt} apply={apply}")
+    audit(audit_line(opener, f"DISK_WRITE server={server} url={url} format={fmt} apply={apply}"))
     print(f"panel: {'wrote' if apply else 'would write'} {server} ← {url} ({fmt})")
     if not apply:
         print("panel: dry run — pass --apply and --confirm to submit")
@@ -389,6 +474,9 @@ def write_boot_image(
     so replacing an image is detach, attach, then wait for the node to report the
     download ready. Rushing the power action before that boots the old image.
     """
+    refused = require_owned(opener, server)
+    if refused is not None:
+        return refused
     page = admin_url(server)
     html = get(opener, page)
     token = parse_csrf(html)
@@ -407,10 +495,11 @@ def write_boot_image(
         "image_initrd_sha256": "",
         "image_cmdline": cmdline,
     }
-    audit(
-        f"{datetime_stamp()} BOOT_IMAGE server={server} url={url} "
-        f"sha256={sha256[:16]} cmdline={'yes' if cmdline else 'empty'} apply={apply}"
-    )
+    audit(audit_line(
+        opener,
+        f"BOOT_IMAGE server={server} url={url} "
+        f"sha256={sha256[:16]} cmdline={'yes' if cmdline else 'empty'} apply={apply}",
+    ))
     print(f"panel: {'set' if apply else 'would set'} {server} boot image ← {url}")
     print(f"panel:   sha256 {sha256 or '(not given)'}")
     print(f"panel:   cmdline {'passed verbatim' if cmdline else 'empty (the UKI carries its own)'}")
@@ -462,13 +551,16 @@ def write_boot_image(
 
 def power(opener, server: str, action: str, *, dry_run: bool = False) -> int:
     """Press one of the manage page's power buttons (start/stop/restart/forcestop)."""
+    refused = require_owned(opener, server)
+    if refused is not None:
+        return refused
     page = admin_url(server)
     html = get(opener, page)
     token = parse_csrf(html)
     if not token:
         print("panel: no csrf_token on the admin page — the session may have expired", file=sys.stderr)
         return 1
-    audit(f"{datetime_stamp()} POWER server={server} action={action} apply={not dry_run}")
+    audit(audit_line(opener, f"POWER server={server} action={action} apply={not dry_run}"))
     print(f"panel: {'would press' if dry_run else 'pressing'} {action} on {server}")
     if dry_run:
         return 0
@@ -515,13 +607,16 @@ def console(opener, server: str, action: str, *, dry_run: bool = False) -> int:
     if action == "read":
         print(console_text(get(opener, url)), end="")
         return 0
+    refused = require_owned(opener, server)
+    if refused is not None:
+        return refused
     html = get(opener, url)
     token = parse_csrf(html)
     if not token:
         print("panel: no csrf_token on the console page — the session may have expired", file=sys.stderr)
         return 1
     enabled = "1" if action == "on" else "0"
-    audit(f"{datetime_stamp()} CONSOLE server={server} enabled={enabled} apply={not dry_run}")
+    audit(audit_line(opener, f"CONSOLE server={server} enabled={enabled} apply={not dry_run}"))
     print(f"panel: {'would turn' if dry_run else 'turning'} the console log {action} for {server}")
     if dry_run:
         return 0
@@ -540,34 +635,73 @@ def console(opener, server: str, action: str, *, dry_run: bool = False) -> int:
     return 0
 
 
-def order(opener, plan: str, location: str, os_name: str, days: str, hostname: str,
-          coupon: str, apply: bool, ssh_key_file: str) -> int:
-    """Buy one machine through the referral route. Dry run unless --apply."""
-    page = f"{BASE}/order/?location={location}&plan={plan}&os={os_name}"
-    html = get(opener, page)
-    token = parse_csrf(html)
-    if not token:
-        print("panel: no csrf_token on the order page — the session may have expired", file=sys.stderr)
-        return 1
-    fields = {
-        "csrf_token": token, "plan": plan, "location": location, "os": os_name,
-        "days": days, "coupon": coupon, "payment_method": "account_funds",
-        "hostname": hostname, "snp_requested": "1", "fde_requested": "1",
-        "measured_requested": "1", "auto_renew": "1", "submit_order": "1",
+def api_order(key: str, plan: str, os_name: str, days: str, hostname: str,
+              ssh_key: str, preorder: bool = False) -> dict:
+    """POST ?action=create; the key's account is charged its partner price."""
+    params: dict[str, object] = {
+        "plan_id": int(plan), "hostname": hostname, "os": os_name, "days": int(days),
+        "ssh_key": ssh_key, "snp": True, "fde": True, "measured": True,
     }
-    if ssh_key_file:
-        fields["ssh_key"] = Path(ssh_key_file).read_text(encoding="utf-8").strip()
-    audit(f"{datetime_stamp()} ORDER plan={plan} loc={location} days={days} coupon={coupon} host={hostname} apply={apply}")
-    print(f"panel: {'ordering' if apply else 'would order'} plan {plan} in {location} for {days} days,"
-          f" coupon {coupon} — {PURCHASE_URL}")
+    if preorder:
+        params["preorder"] = True
+    request = urllib.request.Request(
+        ORDER_ROUTE,
+        data=json.dumps(params).encode(),
+        headers={"X-Reseller-Key": key, "Content-Type": "application/json", "Accept": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=90) as response:
+            payload = json.load(response)
+    except urllib.error.HTTPError as error:
+        detail = error.read().decode("utf-8", "replace")
+        raise RuntimeError(f"HTTP {error.code} {detail[:300]}") from None
+    if not payload.get("success", True):
+        raise RuntimeError(str(payload.get("error") or "order refused"))
+    return payload.get("data") or {}
+
+
+def order(opener, plan: str, location: str, os_name: str, days: str, hostname: str,
+          apply: bool, ssh_key_file: str, key_file: str = str(ORDER_KEY_FILE),
+          preorder: bool = False) -> int:
+    """Buy one machine through the API at the account's partner price.
+
+    The panel order form charges list price even on an account that holds a key,
+    so it is no longer an order path. `location` does not travel: a plan id names
+    its location (108 is Canada Core, 127 the US one), and it stays in the
+    signature only so the audit line reads the same way it always did. A measured
+    box takes exactly one SSH key and it must be given here — there is no later
+    add.
+    """
+    if not ssh_key_file:
+        print("panel: --order needs --ssh-key-file (measured boot takes exactly one key)", file=sys.stderr)
+        return 2
+    if not str(plan).isdigit():
+        print(f"panel: --plan must be an API plan id (a number), not {plan!r}", file=sys.stderr)
+        return 2
+    key_path = Path(key_file)
+    if not key_path.is_file():
+        print(f"panel: no API key at {key_path}", file=sys.stderr)
+        return 2
+    ssh_key = Path(ssh_key_file).read_text(encoding="utf-8").strip()
+    audit(audit_line(
+        opener,
+        f"ORDER route=api plan={plan} loc={location} days={days} host={hostname} "
+        f"key={key_path.name} apply={apply}",
+    ))
+    print(f"panel: {'ordering' if apply else 'would order'} plan {plan} for {days} days at the "
+          f"partner price — {ORDER_ROUTE}")
     if not apply:
         print("panel: dry run — pass --apply to buy")
         return 0
-    landed = post(opener, page, fields)
-    if "You must set either" in landed:
-        print("panel: the order form needs a root password or a public key — pass --ssh-key-file", file=sys.stderr)
+    try:
+        result = api_order(key_path.read_text(encoding="utf-8").strip(), plan, os_name, days,
+                           hostname, ssh_key, preorder)
+    except (RuntimeError, OSError) as error:
+        print(f"panel: order refused — {error}", file=sys.stderr)
         return 1
-    print(f"panel: order submitted; check /servers/ for the new machine (coupon {coupon})")
+    print(f"panel: ordered {result.get('server_id')} — {result.get('hostname')} "
+          f"{result.get('status')}, charged ${result.get('amount_charged')}")
     return 0
 
 
@@ -585,14 +719,15 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--server", default="", help="8-character server id")
     parser.add_argument("--url", default="")
     parser.add_argument("--sha256", default="")
-    parser.add_argument("--order", action="store_true", help="buy one machine through the referral route")
-    parser.add_argument("--plan", default="108")
-    parser.add_argument("--location", default="2")
+    parser.add_argument("--order", action="store_true", help="buy one machine through the API at the partner price")
+    parser.add_argument("--plan", default="108", help="API plan id (a plan id names its location: 108 Canada, 127 US)")
+    parser.add_argument("--location", default="2", help="label only — the plan id names the location")
     parser.add_argument("--os", dest="os_name", default="debian12")
     parser.add_argument("--days", default="31")
     parser.add_argument("--hostname", default="odl-dev")
-    parser.add_argument("--coupon", default=DEFAULT_COUPON, help=f"default {DEFAULT_COUPON}: the referral stacks with the tier")
-    parser.add_argument("--ssh-key-file", default="", help="public key pasted into the order form (required for measured/FDE)")
+    parser.add_argument("--key-file", default=str(ORDER_KEY_FILE), help="API key of the account that pays")
+    parser.add_argument("--preorder", action="store_true", help="accept a sold-out plan (paid now, final)")
+    parser.add_argument("--ssh-key-file", default="", help="public key pasted into the order (required: measured boot)")
     parser.add_argument("--whoami", action="store_true", help="print the account this session belongs to")
     parser.add_argument("--expect-user", default=None, help="refuse to write unless the session's User ID matches")
     parser.add_argument("--apply", action="store_true", help="with --set/--set-boot-image: actually submit")
@@ -631,7 +766,7 @@ def main(argv: list[str] | None = None) -> int:
         return dump(opener, args.server)
     if args.order:
         return order(opener, args.plan, args.location, args.os_name, args.days, args.hostname,
-                     args.coupon, args.apply, args.ssh_key_file)
+                     args.apply, args.ssh_key_file, args.key_file, args.preorder)
     if args.set:
         if not (args.server and args.url):
             print("panel: --set needs --server and --url", file=sys.stderr)

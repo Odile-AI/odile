@@ -1,7 +1,7 @@
 # PR/FAQ — the alpha.0 tester's first hour
 
-**Status:** draft 2 · 18 November 2026 · Product lead · card `ODL-575` · re-read against `main` `ea3907a` after the 18 November repo cut
-**Read with:** ADR-006, `docs/architecture/ADR-account-credential.md` — the two-credential model this page assumes (§3.1 A). The ADR was in review on `odl/ODL-569`, not on `main`, when this draft was written; the page is judged against it. `docs/MVP-V0.1.md` §0, §2, §3 (re-cut 18 November 2026, `ODL-576`); `docs/product/ROADMAP-ALPHA0.md` A1–A2 and G1–G17; `docs/product/FIRST-RUN-SIX-ACTS.md` (the v5 six acts the bench serves today); `docs/CLAIMS.md` v3.10.
+**Status:** draft 2 · 18 November 2026 · amended 19 November 2026 (ODL-916: S1 is alpha.1's; alpha.0 keeps the guest command; ODL-581, merged at `5eba636`: the three account emails are built, and §2, §3a and §5 quote them) · Product lead · card `ODL-575`; re-cut on card `t_80bd9627` · re-read against `main` `ea3907a` after the 18 November repo cut, re-cut against `5eba636` (ODL-581's merge)
+**Read with:** ADR-006, `docs/architecture/ADR-account-credential.md` — the two-credential model this page assumes (§3.1 A). The ADR was in review on `odl/ODL-569`, not on `main`, when this draft was written; the page is judged against it. `docs/MVP-V0.1.md` §0, §2, §3 (re-cut 18 November 2026, `ODL-576`); `docs/product/ROADMAP-ALPHA0.md` A1–A2, S1 and G1–G17; `docs/product/FIRST-RUN-SIX-ACTS.md` (the v5 six acts the bench serves today); `docs/CLAIMS.md` v3.10.
 **What this is:** the Working Backwards artifact A2 is judged against. The backlog's A2 exit says “a person registers…”; this page names that person, the invitation, the wait, the first task and the return visit, from their side. It is not a public page; every public sentence in it is a `docs/CLAIMS.md` row, or is marked **pending** a named re-cut.
 **The one metric:** activation — registered, machine provisioned, first sign-in, one agent turn that writes a file the user asked for (`docs/backlog.yaml` meta). Alpha.0's own question is narrower than week-4 retention: **does an invited tester finish the first hour without a call?**
 
@@ -38,17 +38,17 @@ The tester is **a person Savio invites by name**, from people he already knows h
 | **Now (A2, the bench)** | A personal email from Savio. The bench registers openly by design (G12), so there is no code and no claim token. | One link to `https://test.odile.fyi/register`, the one task to bring, and what it costs (nothing). | The cohort is recruited by hand (`ODL-245`); its size is D2 in `ROADMAP-ALPHA0` §5 — five recommended, not yet a signed number. A personal note from a person, not a campaign. |
 | **From A7** | The invitation email from `Odile <invite@mail.odile.fyi>`, carrying a single-use invitation code. | The same link, plus an eight-character code the register form asks for. | Production's registration is gated by codes the team issues and revokes; proven on the bench first, then production after Savio's sign-off. |
 
-The invitation is the first surface of the product. Its draft copy is below. The invitation template is **not built**: `BRAND.md` §Email specifies an invite whose footer still says `Founding alpha · 10 machines · $49/month` and whose body still says “Claiming takes 3 minutes”. Both are v5 and false in alpha.0. The card that builds the template re-cuts `BRAND.md` §Email and `templates/emails/ready.txt` in the same commit.
+The invitation is the first surface of the product. Its copy is below, as built: `templates/emails/invite.txt`, landed by ODL-581 (merged at `5eba636`) with the `BRAND.md` §Email re-cut in the same commit. The footer is `Private alpha · Odile pays for the machine and the inference · no price`; “Claiming takes 3 minutes” is gone, dropped as unmeasured; and the fallback is a reply to Savio's message, because alpha.0 has no support desk with a person on it (`ROADMAP-ALPHA0` §1).
 
 ### What the bench shows today, and what A2 adds
 
 | Surface | On the A1 bench today | After A2 |
 |---|---|---|
-| `test.odile.fyi/` | The account site; a tester reaches `/claim?t=…`, the v5 claim page: the email is filled in from the link, one consent box, one button. No password, no account. | `/register` collects email, password, repeat and consent; `/account` shows the machine’s state. |
-| The ready email | `templates/emails/ready.txt`: URL, measurement, first-visit link, guide — plus the v5 footer `Founding alpha · 10 machines · $49/month`. | The re-cut above: the report link, the measurement, the first-visit link; an alpha footer with no price. |
+| `test.odile.fyi/` | The account site; a tester reaches `/claim?t=…`, the alpha.0 claim page: the email is filled in from the link, one consent box, one button, “Nothing to pay.” No password, no account. | `/register` collects email, password, repeat and consent; `/account` shows the machine’s state. |
+| The ready email | `templates/emails/ready.txt`, built (ODL-581): the machine URL, the report URL, the measurement, the first-visit link, the reset page, the guide, and the alpha footer `Private alpha · Odile pays for the machine and the inference · no price`. | Queued when the machine is ready, with no operator (the account path is ODL-341’s); the copy is the built template below. |
 | The machine’s first page | `/first-visit?t=…` is a password form; `/verify` is a separate page. | The report above the form, so “set your sign-in only after PASS” is a gate, not a guide. |
 
-The bench is the first place these words are read by a person; A1’s copy is judged here, not on `odile.fyi`. The “today” column is the template the bench serves; the draft above it is what the re-cut sends. Until that card lands, a tester reading the email still sees the $49 footer and “Claiming takes 3 minutes”.
+The bench is the first place these words are read by a person; A1’s copy is judged here, not on `odile.fyi`. The “today” column is what the bench serves: the three account templates are built (ODL-581), and the account path that queues the confirmation and provisions the machine is ODL-341’s. Until ODL-341 lands, the invitation is a personal email Savio sends, and no tester receives a confirmation or a ready email from the bench.
 
 ### What they pay today
 
@@ -80,16 +80,16 @@ The clock below is the tester’s, not ours. “Minutes” are not promised anyw
 
 | # | Moment | Surface | What the tester sees | What must exist |
 |---|---|---|---|---|
-| 1 | The invitation | email | The one link, the one task to bring, “nothing to pay”. | `templates/emails/invite.txt` (not built); `BRAND.md` §Email re-cut |
+| 1 | The invitation | email | The one link, the one task to bring, “nothing to pay”. | `templates/emails/invite.txt` (built, ODL-581); `BRAND.md` §Email (re-cut, ODL-581) |
 | 2 | Register | `test.odile.fyi/register` | Four fields: email, password, repeat, consent. One button. | `/register` (not built); `accounts` table (not built) |
-| 3 | Confirm the address | email → `test.odile.fyi/confirm` | “Check your email. The machine is ordered after you confirm.” | `/confirm` and the verification email (not built) |
-| 4 | The wait | `test.odile.fyi/account` | “Building. You can close this page. We email you when it is ready.” | `/account` and its states (not built); the provision trigger (A2) |
-| 5 | The ready email | email | The machine’s address, the report’s address, the expected measurement, one action: check the report, then set the machine’s sign-in. | `templates/emails/ready.txt` (built; footer and “your sign-in” copy need the re-cut) |
+| 3 | Confirm the address | email → `test.odile.fyi/confirm` | “Check your email. The machine is ordered after you confirm.” | `/confirm` (not built — ODL-341); the confirmation email `templates/emails/confirm.txt` (built, ODL-581) |
+| 4 | The wait | `test.odile.fyi/account` | “Building. You can close this page. We email you when it is ready.” | `/account` and its states (not built — ODL-583); the provision trigger (ODL-341) |
+| 5 | The ready email | email | The machine’s address, the report’s address, the expected measurement, one action: check the report, then set the machine’s sign-in. | `templates/emails/ready.txt` (built, ODL-581: URL, report, measurement, first-visit link, reset page, guide, alpha footer) |
 | 6 | First sign-in | `<slug>.test.odile.fyi/verify`, then `/first-visit?t=…` | The live report (PASS/FAIL, the measurement), then the form: the machine’s sign-in, ≥16 characters. Then the recovery code once, the recovery file, “Open your workspace.” | The first-visit page (built); the report above the form (**not built** — R6’s “only after PASS” is currently an instruction, not a gate) |
 | 7 | The first task | the workspace | The agent’s first session: the ritual asks name, time zone and three things, writes `~/briefs/<date>.md`, finishes the schedule, then takes the task they brought and leaves the file in Files. | The `odile-first-run` skill (built); the first task copy (not built) |
 | 8 | The return visit | `<slug>.test.odile.fyi` | Their sign-in, the session, the brief in Files, the file still there. | Nothing new; this is the activation proof |
 
-**The one card conflict this page exposes.** ADR-006 §7 says the address is verified before the machine exists; `ODL-341`, cut on 18 November, queues the provision on the registration POST. The register → confirm → build order above is the tested one: a mistyped address must not order a machine. `ODL-341`'s DoD must gain the `email_verified_at` gate before it is dispatched, or the confirmation email is copy for a step the product does not take. The same card must add the rate limit ADR-006 §7 names: registration is a public, unauthenticated POST that costs money.
+**The one card conflict this page exposed — resolved in the card.** ADR-006 §7 says the address is verified before the machine exists; `ODL-341`, cut on 18 November, queued the provision on the registration POST. The register → confirm → build order above is the tested one: a mistyped address must not order a machine. `ODL-341`’s DoD now carries the gate — “The confirm POST spends the token once, sets `email_verified_at`, and only then queues exactly one provision” — and the rate limit on the public registration POST. The account page is `ODL-583`’s. What remains is dispatch: the gate is written, and neither card has started.
 
 ### The words on the tester's screen
 
@@ -108,35 +108,38 @@ The copy above uses ten words a non-technical tester has not met. Each is define
 | **Recovery file** | The small file the first visit downloads. It holds the backup password and the certificate fingerprint; keep it off the machine. It opens the nightly backup; it does not reset the sign-in. | First visit |
 | **Key** | Five different things, named once each: the **boot key** (a public key with no private half), the **disk key** (generated and sealed on the machine), the **inference key** (on the machine, read by the agent), the **setup token** (the one-time link in the ready email), and the **recovery code** (resets the machine's sign-in). | Where each is named |
 
-### 2. Invitation email (draft)
+### 2. Invitation email (as built)
 
 ```text
-From: Odile <invite@mail.odile.fyi>        (until the template is built: from Savio)
+From: Savio, personally, in alpha.0; Odile <invite@mail.odile.fyi> from A7
 Subject: Your Odile machine
 
 Hello,
 
-You asked for a computer that keeps working when you close the tab. One is
-yours in the private alpha.
+You asked for a computer that keeps working when you close the tab. A machine is
+reserved for you in the private alpha.
 
 Register here: https://test.odile.fyi/register
 
-Use the address this email reached. Choose a password for your account. The
-machine has its own sign-in; you will set it after you check the machine's
-report.
+Use the address this email reached. The machine has its own sign-in; you will set
+it after you check the machine's report.
 
 Bring one real thing you would do by hand this week — a page of notes to turn
-into a brief, a page to watch, a meeting to write up. After five short
-questions, that is the first thing you will ask it for.
+into a brief, a page to watch, a meeting to write up. After five short questions,
+that is the first thing you will ask it for.
 
 Nothing to install. No key to make, no terminal required. Nothing to pay: Odile
 pays for the machine and the inference during the alpha.
 
 When your machine is ready, we email you its address. If anything goes wrong,
-write to help@odile.fyi.
+reply to this email — there is no support desk in the alpha.
 
 — Odile
+
+Private alpha · Odile pays for the machine and the inference · no price
 ```
+
+The block’s body is `templates/emails/invite.txt` verbatim (ODL-581, merged at `5eba636`); the From and Subject lines are `BRAND.md` §Email’s table, and the register link is the bench’s account host, written out because the invitation must be sendable as it stands.
 
 ### 3. Register (draft copy)
 
@@ -152,22 +155,27 @@ write to help@odile.fyi.
 
 The account password may be the same as the machine’s sign-in, and the copy says so; most people will reuse one, and the page does not pretend otherwise (ADR-006 §4.2). The two are separate on purpose: the account resets from an email, the machine resets on the machine.
 
-### 3a. Confirmation email (draft)
+### 3a. Confirmation email (as built)
 
 ```text
+From: Odile <invite@mail.odile.fyi>
 Subject: Confirm your email address
 
 Hello,
 
-Open this link to confirm your address and start your machine:
+Open this link to confirm your address:
 
 https://test.odile.fyi/confirm?t=<64 hex>
 
-The link works once and expires in 24 hours. If you did not register, ignore
-this message.
+After you confirm, the machine is built and starts itself. If you did not
+register, ignore this message.
 
 — Odile
+
+Private alpha · Odile pays for the machine and the inference · no price
 ```
+
+The body is `templates/emails/confirm.txt` with `{{CONFIRM}}` filled as the bench fills it — `https://test.odile.fyi/confirm?t=<64 hex>`, the configured account host, not the request’s `Host` header (`DECISION-password-reset.md` §3.1). The link is single-use: the GET renders a button and the POST spends the token. The email states no expiry, because no clock is measured (`BRAND.md` §Email); the earlier draft’s “expires in 24 hours” was never a built or approved sentence, and any TTL ODL-341 builds is silent in the copy.
 
 ### 4. The wait (draft copy)
 
@@ -182,33 +190,37 @@ this message.
 
 If the build fails: “The build failed. We are retrying. You do not need to do anything.” If it fails twice: “The build failed. We are looking at it; write to help@odile.fyi if you have not heard from us.” A failed provision leaves no billed machine and returns the account to retryable (A2, exit criterion 4).
 
-### 5. Ready email (draft re-cut)
+### 5. Ready email (as built)
 
 ```text
-Subject: Your machine is ready
+Subject: Your machine is waiting.
 
-Hello,
-
-Your machine is at https://<slug>.test.odile.fyi
-
-Its report is at https://<slug>.test.odile.fyi/verify — open it and check that
-it says PASS. The 96-character measurement below is the fingerprint; the page
-shows it too, if you want to compare.
-
+URL https://<slug>.test.odile.fyi
+Report https://<slug>.test.odile.fyi/verify
 Measurement <96 hex>
 
-Then set the machine's sign-in:
-https://<slug>.test.odile.fyi/first-visit?t=<64 hex>
+Check the report first: it says PASS or FAIL. PASS means the machine booted the
+image whose fingerprint is above. The page shows the measurement too, if you want
+to compare.
 
-Set the sign-in only after the report says PASS. That password opens your
-workspace; PASS means the machine booted the image whose fingerprint is above.
+Set your sign-in: https://<slug>.test.odile.fyi/first-visit?t=<64 hex>
 
-Open the first-visit guide: https://test.odile.fyi/ceremony
+Set it only after the report says PASS. That password opens your workspace.
+
+Later, if you forget your sign-in:
+
+https://<slug>.test.odile.fyi/first-visit/reset — your recovery code resets it.
+
+The first-visit guide is at https://odile.fyi/ceremony
 
 — Odile
+
+Private alpha · Odile pays for the machine and the inference · no price
 ```
 
-**Why the report comes before the form.** The email carries four addresses — the machine, the report, the first-visit form and the guide — and the order is the point: today `/verify` is a separate page and `/first-visit?t=…` is a password form, so the report must be named before the form or the email teaches the tester to skip the check. When item 9 lands — the report above the form — the report and first-visit addresses become one and the email says "open your first page; it shows the report, then asks for your sign-in". Until then the report link is the one the tester opens first.
+The body is `templates/emails/ready.txt` verbatim (ODL-581, with the guide line re-cut by ODL-912) with its four placeholders filled: `{{URL}}` is the machine’s address, `{{MEASUREMENT}}` the expected fingerprint, `{{FIRST_VISIT}}` the single-use sign-in link, and `{{GUIDE}}` the shipped `READY_GUIDE_URL`, `https://odile.fyi/ceremony`. The subject is the `READY_SUBJECT` constant, “Your machine is waiting.”, and the From is `BRAND.md` §Email’s table.
+
+**Why the report comes before the form.** The email carries five addresses — the machine, the report, the first-visit form, the reset page and the guide — and the order is the point: today `/verify` is a separate page and `/first-visit?t=…` is a password form, so the report must be named before the form or the email teaches the tester to skip the check. When item 9 lands — the report above the form — the report and first-visit addresses become one and the email says "open your first page; it shows the report, then asks for your sign-in". Until then the report link is the one the tester opens first.
 
 ### 6. First sign-in (draft copy)
 
@@ -255,10 +267,10 @@ The next day the tester signs in at the machine’s address — not the account 
 | Who holds the disk key? | No person at Odile, on a machine built from the current image: the first boot generates a fresh volume key on the guest and seals it to the measured boot; the published image’s key no longer opens the disk. | C-12 (approved; held in the deck until a tenant on the round-9 image proves it) |
 | Who can read the machine? | Odile: no login; the three powers are stop or delete the machine, change DNS, and choose the boot image [C-6, C-18]. The agent is on the machine, not a login: it runs as `odile` with sudo and can read every file [C-34], but Odile’s people cannot reach it without a grant. Servury: the console and ciphertext, no guest login (the no-login half is MVP §2’s table, not a deck row) [C-17; the ciphertext clause is held with C-12]. NEAR AI: the prompts inside the TEE, not the machine [C-20, C-21]. A support grant: everything, because a grant is a handover [C-22–C-26]. | C-6, C-17, C-18, C-20–C-26 (C-12 held) |
 | After a reboot? | On the verified image it starts itself; the Webapp comes back; a repeating job that was due runs once. A changed image stays locked (C-13). | C-7; §1 Access, the repeating-job row (verdict A11) |
-| When it breaks? | Write to help@odile.fyi; the agent runs `odile-diag` and, if it is not enough, `odile-support grant --hours 24` with the tester’s consent. If the machine dies, it is rebuilt and the backup is restored with the recovery file. | C-11, C-19, C-22, C-27 |
+| When it breaks? | Write to help@odile.fyi; the agent runs `odile-diag` and, if it is not enough, `odile-support grant --hours 24` with the tester’s consent — the one-control form is alpha.1’s (S1), not alpha.0’s. If the machine dies, it is rebuilt and the backup is restored with the recovery file. | C-11, C-19, C-22, C-27 |
 | What does Odile keep? | The email, the account and a hash of its password, the machine record, the boot key with no private half, and hashes of the setup and claim tokens. Not the disk key, not the machine’s sign-in. | C-28, C-29, C-9 (pending) |
 | What does the tester keep? | The account, the machine’s sign-in, the recovery code, the recovery file, the files. | C-8, C-9 (pending), C-11, C-35 |
-| What is not promised? | A price, a paid cohort, a support desk, an end date, or a permanent home for the machine. Alpha.0 is private and time-boxed; A8 decides the price, A9 the public alpha. | — |
+| What is not promised? | A price, a paid cohort, a support desk, a one-control support grant (S1, alpha.1), an end date, or a permanent home for the machine. Alpha.0 is private and time-boxed; A8 decides the price, A9 the public alpha. | — |
 
 ---
 
@@ -298,17 +310,17 @@ The next day the tester signs in at the machine’s address — not the account 
 
 ## Internal FAQ — the dragons
 
-**1. Two credentials, and the support load that comes with them.** The tester types the machine’s sign-in daily and the account password rarely. The failure is predictable: “which password?” The mitigation is copy on every surface — the invitation, the register page, the ready email, the first-visit page, the account page — each naming the other credential. The account page says it in one line: “This password opens this page, never your machine.” The cost is real and is priced in ADR-006 §3.1: one more password, one more reset, one more form. ODL-572 decides the reset flow; its input is now fixed.
+**1. Two credentials, and the support load that comes with them.** The tester types the machine’s sign-in daily and the account password rarely. The failure is predictable: “which password?” The mitigation is copy where each password is chosen — the invitation (“The machine has its own sign-in”), the register page (“Your account page holds your machine’s address and its state. Your machine has its own sign-in, which you set after you check its report.”), the first-visit page (“your account password only opens your account page”), and the account page (“This password opens this page, never your machine.”). The ready email names only the machine’s sign-in — “Set your sign-in” — the pair’s reduction at the moment the second password is typed, because C-9 is pending until ODL-577 and the email quotes published rows only. The cost is real and is priced in ADR-006 §3.1: one more password, one more reset, one more form. ODL-572 decides the reset flow; its input is now fixed.
 
 **2. The pre-first-visit window.** Before the owner sets the machine’s sign-in, the setup token in the ready email is a path to the machine’s gate. HQ mints it, holds the mail queue and the relay, and the boot log carried a copy at 0644. The promise is true **from the first visit onwards**; the token window is stated, not hidden (ADR-006 §2, §6). The 0644 copy is one of A5’s four defects to fix; the bench password that used to open the image is gone (ODL-521/522/523). The deck still lists A1’s “only sign-in is yours” and A7’s “only gate” as held on `t_adcdec31` — a card that is superseded, with its work landed. And C-29’s “the token you were sent is not stored” is true of HQ’s database but not of the mail queue or the 0644 boot log; the same re-cut names the queue, or the 0600 fix lands first. **A deck pass must re-verdict and unhold those rows before A2 ships**, or the tester’s first page cites a held sentence.
 
 **3. The account at HQ falsifies four approved sentences.** “There is no password and no account at HQ” (C-31); “The sign-in is yours; HQ holds no password” (C-32); “At HQ we hold your email, the record of your machine, and a boot key with no private half. Not the disk key, not your sign-in” (C-28 — gains the account and its hash); and “No cookies, no trackers, no third-party requests” (C-33 — the account page sets one first-party session cookie). The privacy inventory gains the `accounts` rows, and `tests/test_legal.py` fails until `web/privacy.html` carries every column. The schema comment at `app.py` (“No passwords… are stored”) becomes “no **machine** password is stored; the account’s scrypt verifier is.” This is one deck pass, owned by the Product Lead with verifier review; it is not done here.
 
-**4. The invitation and ready emails are v5.** `BRAND.md` §Email carries “Claiming takes 3 minutes” (dropped as unmeasured), “The only sign-in is yours” (held), and `Founding alpha · 10 machines · $49/month` (false in alpha.0). `templates/emails/ready.txt` carries the same footer, and `templates/emails/` has no invite or confirmation template. One card re-cuts `BRAND.md` §Email, builds `invite.txt` and `confirm.txt`, re-cuts `ready.txt`, and runs `brand_lint`. This page’s copy blocks are its input.
+**4. The account emails are built; the deck row and the send path are not.** ODL-581 (merged at `5eba636`) built `templates/emails/invite.txt` and `confirm.txt` and re-cut `ready.txt`; `BRAND.md` §Email now carries the three templates, the alpha footer `Private alpha · Odile pays for the machine and the inference · no price`, and drops “Claiming takes 3 minutes” (unmeasured). Two gaps remain, and neither is copy. The deck: C-9's account row is ODL-577's, and `docs/CLAIMS.md` §1a's money hold row still says the ready email carries the v5 footer — a sentence this merge falsified, carded as `t_d0ae3149`. The path: ODL-341 queues the confirmation and provisions the machine, and it is `todo`; until it lands no account exists to receive either email. The emails can be sent; the deck pass and the account path must land before A2 is judged.
 
-**5. A typo’d email would be a billed machine — if the machine were ordered before the address was confirmed.** The account must be verified before the provision worker runs (ADR-006 §7). That makes the confirmation email the cheapest safety in the flow, and it adds a step: register → confirm → build. The copy says so. The reminder path for an unconfirmed address is not built; the account page’s “send it again” covers the confirmed-address case, not the typo. The confirmation link must survive a mail scanner’s prefetch: the GET renders a **Confirm** button and the POST spends the token, or a scanner that fetches every link spends the tester’s confirmation before they see it. `ODL-341`, as cut, does not carry this gate; the re-cut above is named so the copy is not ahead of the card.
+**5. A typo’d email would be a billed machine — if the machine were ordered before the address was confirmed.** The account must be verified before the provision worker runs (ADR-006 §7). That makes the confirmation email the cheapest safety in the flow, and it adds a step: register → confirm → build. The copy says so. The reminder path for an unconfirmed address is not built; the account page’s “send it again” covers the confirmed-address case, not the typo. The confirmation link must survive a mail scanner’s prefetch: the GET renders a **Confirm** button and the POST spends the token, or a scanner that fetches every link spends the tester’s confirmation before they see it. `ODL-341`’s DoD carries the gate — the confirm POST sets `email_verified_at` before it queues the provision — so the copy is not ahead of the card; what is missing is the build, because the card is `todo`, not dispatched.
 
-**6. The bench registers openly before A7.** Anyone with the URL can create an account, and each account orders or recycles a machine. G12 permits this on the bench, and D2’s five-tester envelope bounds the bill, but there is no allowlist between A2 and A7. The team watches the account list daily; A7 closes it. A rate limit on the registration POST is part of the A2 card, not a later hardening — and `ODL-341`, as cut, does not carry it yet (the same re-cut as the verification gate).
+**6. The bench registers openly before A7.** Anyone with the URL can create an account, and each account orders or recycles a machine. G12 permits this on the bench, and D2’s five-tester envelope bounds the bill, but there is no allowlist between A2 and A7. The team watches the account list daily; A7 closes it. A rate limit on the registration POST is part of the A2 card, not a later hardening — `ODL-341`’s DoD carries it on both the registration and the confirm POST.
 
 **7. The wait has no measured end-to-end time.** The provider answered `deploying` in 0.232 s and `active` 120.7 s later (`docs/product/ROADMAP-ALPHA0.md` §3); the first boot then re-encrypts the root — “minutes, not seconds, on a 2-vCPU guest” (`docs/runbooks/image.md` §5.1) — and the install follows. No card has measured register → ready. The copy avoids a number; the first A2 tenant measures it, and the account page shows a state, not a percentage.
 
@@ -318,7 +330,7 @@ The next day the tester signs in at the machine’s address — not the account 
 
 **10. The first-run skill still says “locked” and “unlock”.** Its close line promises the brief “runs when you unlock”, and there is no unlock under the sealed boot. The sentence is inside the embedded help/first-run bundle, so it needs the same re-embed/re-sign as item 9. The PR/FAQ’s copy uses “when the machine comes back up”.
 
-**11. The account page is a new surface with no design.** It has four states (`confirm`, `building`, `ready`, `failed`), two actions (“open your machine”, “send the ready email again”) and one line about which password is which. It must be no-JS, one column, 390 and 1440, and it must not become a dashboard. The A2 build card must own the page; as cut, `ODL-341` does not carry it (item 16), so the states and copy are fixed here and the card is re-cut before dispatch.
+**11. The account page is a new surface with no design.** It has four states (`confirm`, `building`, `ready`, `failed`), two actions (“open your machine”, “send the ready email again”) and one line about which password is which. It must be no-JS, one column, 390 and 1440, and it must not become a dashboard. The page is `ODL-583` (cut 18 November, depends on `ODL-341`); its DoD quotes the four states and this copy, so the states are fixed here and built there.
 
 **12. What the tester keeps is thin until A3.** The recovery file opens the nightly backup, and the restore drill exists (38m03s), but the user-held copy, its third-provider destination and the whole-machine restore are A3’s (ADR-004, `ODL-570`). Until A3, “backed up nightly” is true of the machine and the repo, not of a copy the tester holds. The first-hour page must not promise the copy; the external FAQ says which half exists.
 
@@ -328,7 +340,9 @@ The next day the tester signs in at the machine’s address — not the account 
 
 **15. The tester may ask for SSH or root.** There is no user SSH key and no user key to generate (R1–R2); the Webapp’s terminal runs as the agent’s user with sudo. The copy answers with C-34 verbatim — “The agent runs as `odile` with sudo; it can read every file on the machine” — and “there is no key to lose” (C-30: the boot key has no private half). “You are root inside the workspace” is not a deck sentence and stays out of the public copy until a row exists.
 
-**16. A2 has one build card, and it is not enough yet.** The 17 November gate packet named the gap: A2 opened with this PR/FAQ and three exploration cards, and no registration → machine → key build card. On 18 November the Product Lead cut `ODL-341` (registration on the bench becomes a tenant with a machine, no operator). It is the right first card and it touches the right files, but as cut it is missing three things this page requires: the email-verification gate before provision (ADR-006 §7), the rate limit on the public registration POST, and the account page itself (`/account`, its four states and its copy), which is not in its `touches`. The re-cut is the Product Lead’s next act; until it lands, A2’s demo sentence has a mechanism but not a finished flow.
+**16. A2 has three cards, and none is dispatched.** The 17 November gate packet named the gap: A2 opened with this PR/FAQ and three exploration cards, and no registration → machine → key build card. On 18 November the Product Lead cut `ODL-341` (registration on the bench becomes a tenant with a machine, no operator). Its DoD now carries the two gates this page’s items 5 and 6 name — the email-verification gate before provision (ADR-006 §7) and the rate limit on the public registration POST — and the register page’s pair sentence. The account page is `ODL-583`; the deck row is `ODL-577`. All three are `todo` at this writing (19 November), and `ODL-341` waits on `ODL-242`. A2’s demo sentence has a mechanism and a written flow; it has no built path yet.
+
+**17. The support grant is a command today; the one-control grant is alpha.1’s (S1).** The guest half is built and proven: `odile-support grant --hours 24` installs Odile’s support key behind a forced command, logs `event=start` and `event=end`, refuses a new login after the expiry and removes the line on revoke (ODL-217’s drill; the installer places the program, ODL-474). What alpha.0 does not have is a control a non-technical tester can reach when the workspace — the surface that would carry the request — is the thing that is broken: today the tester asks the agent, or types the command in the workspace’s terminal. The route out is the account page, which is why S1 sits in alpha.1’s window (11–24 January) in `docs/product/ROADMAP-ALPHA0.md` §2, depends on A2, and keeps the four constraints `AGENTS.md` sets — user-initiated, time-boxed, a forced command, a log — with the default off. Alpha.0 promises none of it: the invitation and the first hour do not name a support control, and the custody row above says which form the tester gets. The account-page control caps a grant at 72 hours; the guest command's own 720-hour ceiling is unchanged. Revoke and expiry stop new logins; the same control ends an open session in one action, and a session nobody ends runs until it exits (C-23). The HQ `grants` row the privacy inventory discloses is S1’s to write; the guest command records only the machine’s log.
 
 ---
 
@@ -349,7 +363,7 @@ ADR-006 chose **A — two credentials, one link**. The tester’s experience und
 
 ## The claim table
 
-Every privacy, security or reliability sentence in this page maps to a `docs/CLAIMS.md` row (v3.10). The deck does not number its rows: **C-nn is this page's index**, and the `Deck row` column is what to check — the deck section and, for an access row, the verdict row in `docs/security/CLAIMS-VERDICT-strict.md` (A1–A11). **Published** means the row is approved and its proof has run; **held** means the row is approved but §1a keeps it off the public pages until the named card's evidence exists; **pending** means A2 changes the deck and the re-cut has not landed.
+Every privacy, security or reliability sentence in this page maps to a `docs/CLAIMS.md` row (v3.10). The account emails’ sentences are mapped template by template in `BRAND.md` §Email and are not repeated here. The deck does not number its rows: **C-nn is this page's index**, and the `Deck row` column is what to check — the deck section and, for an access row, the verdict row in `docs/security/CLAIMS-VERDICT-strict.md` (A1–A11). **Published** means the row is approved and its proof has run; **held** means the row is approved but §1a keeps it off the public pages until the named card's evidence exists; **pending** means A2 changes the deck and the re-cut has not landed.
 
 | # | Sentence as this page uses it | Deck row | Status |
 |---|---|---|---|
@@ -399,15 +413,15 @@ Every privacy, security or reliability sentence in this page maps to a `docs/CLA
 
 | Change | Where | Owner | State |
 |---|---|---|---|
-| A2’s exit criterion 2: “The registered email and password reach that instance…” → “The registered email opens the account page, which reaches that instance; the sign-in is set on arrival; a chat turn and a file write succeed.” | `docs/backlog.yaml` A2 | Product Lead | **Not done here** — the gate is judged on the re-cut, not on a post-hoc reading |
-| The deck re-cut: C-9, C-31, C-32, C-33, C-28, the `accounts` inventory rows, `tests/test_legal.py`, the `app.py` schema comment | `docs/CLAIMS.md`, `web/privacy.html`, `app.py` | Product Lead + verifier | **Not yet carded** |
+| A2’s exit criterion 2: “The registered email and password reach that instance…” → “The registered email opens the account page, which reaches that instance; the sign-in is set on arrival; a chat turn and a file write succeed.” | `docs/backlog.yaml` A2 | Product Lead | **Done** — the record carries this sentence (read 19 November) |
+| The deck re-cut: C-9, C-31, C-32, C-33, C-28, the `accounts` inventory rows, `tests/test_legal.py`, the `app.py` schema comment | `docs/CLAIMS.md`, `web/privacy.html`, `app.py` | Product Lead + verifier | **Carded** — `ODL-577` (deck, inventory, cookie clause); the schema comment is `ODL-578`’s |
 | `docs/MVP-V0.1.md` §2 “the only user credential is the Odile sign-in”, §4 R3 and §12 D26: the account is a second credential, named as ADR-006 §8 requires | `docs/MVP-V0.1.md` | Product Lead (`ODL-576`) | **In progress** — the re-cut must add the account row, not only the naming pass |
-| `AGENTS.md` §What this is (“ten paying tenants”) and §Rules (“never store a Webapp password at HQ”): alpha.0 has no payments, and HQ keeps the account’s scrypt verifier — no **machine** password | `AGENTS.md` (HQ-only, untracked) | Product Lead | **Not done here** — the contract every worker reads still says the opposite |
+| `AGENTS.md` §What this is and §Rules (“never store a Webapp password at HQ”): alpha.0 has no payments, and HQ keeps the account’s scrypt verifier — no **machine** password | `AGENTS.md` (HQ-only, untracked) | Product Lead | **Half done** — the payments sentence was re-cut on 19 November (ODL-919); §Rules still reads “no Webapp password at HQ” |
 | The unhold: A1/A7’s held rows and A3/A4’s disk rows, on fresh-boot evidence | `docs/CLAIMS.md` §1a, `docs/security/CLAIMS-VERDICT-strict.md` | Product Lead + security | **Not yet carded** |
-| `BRAND.md` §Email re-cut; `invite.txt` and `confirm.txt` built; `ready.txt` footer and “your machine’s sign-in” copy | `BRAND.md`, `templates/emails/`, `tools/brand_lint.py` | Product Lead + designer | **Not yet carded** |
-| `ODL-341`'s DoD: the email-verification gate before provision, the registration rate limit, and the account page (`/account`, four states, copy) added to its `touches` | `docs/backlog.yaml` A2, `ODL-341` | Product Lead re-cuts; builder builds | **Part-carded** — `ODL-341` was cut 18 November and covers registration → tenant → machine only |
+| `BRAND.md` §Email re-cut; `invite.txt` and `confirm.txt` built; `ready.txt` re-cut (footer, sign-in copy, reset page, guide) | `BRAND.md`, `templates/emails/`, `tools/brand_lint.py` | Product Lead + designer | **Done** — ODL-581, merged at `5eba636`; the brand gate passed and `brand_lint` scans the three templates |
+| `ODL-341`'s DoD: the email-verification gate before provision and the registration rate limit; the account page is `ODL-583`'s | `docs/backlog.yaml` A2, `ODL-341`, `ODL-583` | Product Lead re-cuts; builder builds | **Done in the cards** — both DoDs carry it; neither is dispatched |
 | The first-visit page shows the live report above the form; the first-run skill’s “unlock” line is re-cut | `web/first-visit.html`, `installer/odile_install.py`, the embedded bundle, the release cut | Builder | **Not yet carded** |
-| ODL-572’s reset memo now has its input: two credentials, two authorities, two flows | `docs/product/DECISION-password-reset.md` | Product Lead | Its card waits on ODL-569 |
+| ODL-572’s reset memo now has its input: two credentials, two authorities, two flows | `docs/product/DECISION-password-reset.md` | Product Lead | **Done** — the memo landed 18 November; its §3.5 is the emails’ and the account page’s copy rule |
 | The one metric and the kill criterion are pinned | this page | Product Lead | Done |
 
 **The kill criterion.** If a cold reader — one who did not write this page and has not read the ADR — cannot answer “what does the tester see after registering?” and “who holds the key?” in one pass, A2 is a mechanism without a product: stop the build and rewrite the flow, not the card.
@@ -428,13 +442,13 @@ Every privacy, security or reliability sentence in this page maps to a `docs/CLA
 
 > **Who holds the key?** “I hold the account (email and account password), the account page (a bookmark with the machine’s address and state, not a key), the machine’s sign-in, the recovery code, the recovery file, the setup token (in the ready email until first visit) and every file in the workspace. Odile holds my email, the account and a scrypt hash of its password, the machine record, the boot key (public, no private half), hashes of the setup and claim tokens, and only the label and first characters of the inference key — not the disk key, not the machine’s sign-in. The disk key is generated fresh on the machine at first boot and sealed to the measured boot — on a machine built from the current image; no person at Odile holds it. The inference key is on the machine (0600, root), read by the agent. If I reuse the same string for both passwords, Odile’s hash of the account password verifies the same secret. Who can read the machine: Odile has no login — only stop/delete, change DNS, choose the boot image; the agent runs as `odile` with sudo and can read every file; Servury has the console and ciphertext, no guest login; NEAR AI sees prompts inside the TEE, not the machine; a support grant — only when I give it — is everything (‘a grant is a handover’). Before my first visit, the setup token is a bearer HQ mints; a copy sat in the mail queue and the boot log at 0644.”
 
-It answered **yes** to finishing the first hour without a call; the one hesitation is the second password, which is ADR-006’s priced cost. Its twelve residual questions are answered at the place named; every wording contradiction among them was fixed after its read, and the rest are the dragons the internal FAQ carries:
+It answered **yes** to finishing the first hour without a call; the one hesitation is the second password, which is ADR-006’s priced cost. The quote is the 18 November file — its confirmation “works once (24 hours)” is draft 2’s line, which the built template does not carry (the re-cut record above). Its twelve residual questions are answered at the place named; every wording contradiction among them was fixed after its read, and the rest are the dragons the internal FAQ carries:
 
 | The reader asked | Where the page answers it |
 |---|---|
 | “A typo’d email is a billed machine” vs “no machine is ordered” | item 5 (the header now states the counterfactual: if the machine were ordered before confirmation) |
 | Account password “never opens the machine” vs reuse | “What they keep”, the custody table, C-9 |
-| The ready email still carries the $49 footer | “What the bench shows today” and item 4 (the template is pre-re-cut) |
+| The ready email still carries the v5 price footer (as draft 2 was read) | **Fixed by ODL-581** (`5eba636`): the footer is the alpha footer; “What the bench shows today” and item 4 record the built state |
 | “Set the sign-in only after PASS” while the report is not on the form | moments 5–6, item 9 (the email orders the check; the page enforces it when the report-above-form lands) |
 | What the recovery file is | the glossary row **Recovery file** |
 | What an “image” is | the glossary row **Image** |
@@ -447,6 +461,8 @@ It answered **yes** to finishing the first hour without a call; the one hesitati
 
 **The cold reader’s verdict is the kill criterion’s answer:** both questions in one pass, yes to the first hour, with one priced hesitation. The flow is ready to be tested by the first cohort; it is not evidence that a tester has finished it.
 
-**What was read for this page.** `docs/MVP-V0.1.md` §0–§3 (the 18 November re-cut); `docs/product/ROADMAP-ALPHA0.md` A1–A2 and G1–G17; `docs/architecture/ADR-account-credential.md` (ADR-006, on `odl/ODL-569`) §1–§10; `docs/CLAIMS.md` v3.10 §1–§5 and §1a; `docs/security/CLAIMS-VERDICT-strict.md` §0.1, §1 A1–A11, §5; `docs/product/REVIEW-2026-11-17.md`; `docs/ops/GATE-PACKET.md` (17 November); `docs/backlog.yaml` A1/A2, ODL-569, ODL-572, ODL-575; `templates/emails/ready.txt`; `templates/emails/support.md`; `web/claim.html`; `web/first-visit.html`; `web/index.html`; `BRAND.md` §Voice, §Email; `installer/odile_install.py` `odile-first-run`; `docs/runbooks/image.md` §5.1; `odilectl/claim.py` `invite`/`ready`; `claude.com/pricing` (read 18 November 2026).
+**Re-cut record, 19 November 2026 (ODL-581’s merge, `5eba636`).** The three account templates are built, so the copy blocks in §2, §3a and §5 are now the built text, quoted verbatim from `templates/emails/invite.txt`, `confirm.txt` and `ready.txt`. Where draft 2 differed, the template is the copy of record: the ready subject is the `READY_SUBJECT` constant “Your machine is waiting.”; the confirmation says “confirm your address” and states no expiry, because no clock is measured; the invitation’s fallback is a reply to Savio’s message, not `help@`; the guide is named in a sentence at the shipped `https://odile.fyi/ceremony`, not a second imperative action at `test.odile.fyi`; and the ready email carries the reset page. Each template’s privacy, security and reliability sentences map to `docs/CLAIMS.md` rows in `BRAND.md` §Email; the footer and the no-desk sentence are `ROADMAP-ALPHA0` §1’s facts, not deck rows. No public claim is added.
 
-**What was not measured.** Register → ready has no end-to-end time on a fresh A2 machine; the first-visit report-above-form change, the invitation template and the account page do not exist; `ODL-341` is cut but not started; no tester has been recruited or watched. This page is written to be tested by the first cohort, not to report them.
+**What was read for this page.** `docs/MVP-V0.1.md` §0–§3 (the 18 November re-cut); `docs/product/ROADMAP-ALPHA0.md` A1–A2 and G1–G17; `docs/architecture/ADR-account-credential.md` (ADR-006, merged at `3b4df95`) §1–§10; `docs/CLAIMS.md` v3.10 §1–§5 and §1a; `docs/security/CLAIMS-VERDICT-strict.md` §0.1, §1 A1–A11, §5; `docs/product/REVIEW-2026-11-17.md`; `docs/ops/GATE-PACKET.md` (17 November); `docs/backlog.yaml` A1/A2, ODL-341, ODL-569, ODL-572, ODL-575, ODL-577, ODL-583; `templates/emails/invite.txt`, `confirm.txt` and `ready.txt` (at `5eba636`); `templates/emails/support.md`; `web/claim.html`; `web/first-visit.html`; `web/index.html`; `BRAND.md` §Voice, §Email; `installer/odile_install.py` `odile-first-run`; `docs/runbooks/image.md` §5.1; `odilectl/claim.py` `invite`/`ready` (`READY_SUBJECT`, `READY_GUIDE_URL`); `claude.com/pricing` (read 18 November 2026).
+
+**What was not measured.** Register → ready has no end-to-end time on a fresh A2 machine; the first-visit report-above-form change and the account page do not exist; `ODL-341` and `ODL-583` are cut but not started, so the confirmation and ready emails are built but unsent; no tester has been recruited or watched. This page is written to be tested by the first cohort, not to report them.

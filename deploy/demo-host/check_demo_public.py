@@ -11,8 +11,10 @@ changes no session.
 Hermes keeps a row for a console's own `shell.exec` session too, so every
 session this check opens — the console's included — is recorded and deleted at
 the end; existence is the machine's own `--report --session-id` (the
-`/api/sessions` endpoint is a 20-row window), and the tenant's session count
-must be where the check found it. The seed's turn is a judge's own turn.
+`/api/sessions` endpoint is a 20-row window). The demo is shared, so the
+cleanup compares *ids*, not a global count: every session the check found must
+still be in the store, and every session it opened must be gone. The seed's
+turn is a judge's own turn.
 
     ./deploy/demo-host/check_demo_public.py --password-file /path/to/demo-password
     ./deploy/demo-host/check_demo_public.py            # the public half only
@@ -71,6 +73,11 @@ DEFAULT_DNS = create_dns.TENANT_IP
 TENANT_BASE = tenant_console.DEFAULT_BASE
 DEMO_UNIT_GLOB = "odile-demo-*"
 APPLY = "/usr/local/lib/odile-demo-public/apply_demo_public.py"
+#: The tenant's own store, the file `apply_demo_public.py --report` reads
+#: (`HERMES_HOME / "state.db"` there). The check reads it for the *set* of
+#: session ids, which the report's count cannot answer and `/api/sessions`
+#: only answers for its 20-row window.
+TENANT_STATE_DB = "/home/tenant/.hermes/state.db"
 PASSWORD_REMOTE = "/run/odile-demo-secret"
 NEAR_BASE_URL = "https://cloud-api.near.ai/v1"
 NEAR_KEY_ENV = "HERMES_CUSTOM_CLOUD_API_NEAR_AI_API_KEY"
@@ -848,6 +855,82 @@ def session_report(console, password: str, session_id: str) -> tuple[dict, tenan
         return {}, console
 
 
+#: The id-set reader the check stages on the machine. `shell.exec` refuses
+#: `python3 -c` ("script execution via -e/-c flag" is one of its dangerous
+#: patterns), so the query travels as a file: written under /tmp by the
+#: console's own upload, run by the machine's python, removed again. The
+#: upload installs it `-o root -g root`, so the removal is root's too — a
+#: tenant `rm` in sticky /tmp answers `Operation not permitted` (measured
+#: 2026-11-19: shell code 1, the file survived three runs). The Webapp's
+#: `dangerous_command` guard refuses an absolute `sudo rm`, so the working
+#: shape is `cd /tmp` plus the bare name, as the judge password's own removal
+#: already is. Only the store's path is interpolated; the query is one SELECT.
+SESSION_IDS_SOURCE_NAME = "odile-session-ids.src.py"
+SESSION_IDS_NAME = "odile-session-ids.py"
+SESSION_IDS_REMOTE = "/tmp/" + SESSION_IDS_NAME
+SESSION_IDS_SOURCE = (
+    "import json, sqlite3\n"
+    "con = sqlite3.connect('file:{db}?mode=ro', uri=True)\n"
+    "print(json.dumps([row[0] for row in con.execute('SELECT id FROM sessions')]))\n")
+
+
+def tenant_session_ids(console, password: str = "") -> tuple[set[str] | None, tenant_console.Console]:
+    """Every session id in the tenant's store, read by the machine's own python.
+
+    The demo is a shared instance, so a judge can open a session at any moment:
+    two snapshots' *counts* differ for a reason that is not the deploy. The
+    report's `session_count` and `/api/sessions` (a 20-row window) cannot
+    answer "is the session I found still there"; one read-only query over the
+    tenant's own `state.db` can. Returns the ids — or None when the machine
+    answered something that is not a list of ids — and the console that ran it,
+    which may be a reconnect.
+    """
+    def read_them(client):
+        with tempfile.TemporaryDirectory(prefix="odile-session-ids-") as tmp:
+            local = Path(tmp) / SESSION_IDS_SOURCE_NAME
+            local.write_text(SESSION_IDS_SOURCE.format(db=TENANT_STATE_DB),
+                             encoding="utf-8")
+            client.put(str(local), SESSION_IDS_REMOTE)
+        result = client.run(f"sudo /usr/bin/python3 {SESSION_IDS_REMOTE}", check=False)
+        # The upload installed it root-owned; in sticky /tmp only root removes
+        # it, and `sudo rm` needs a relative name behind the guard.
+        client.run(f"cd /tmp && sudo rm -f {SESSION_IDS_NAME}", check=False)
+        return result
+
+    try:
+        result = read_them(console)
+    except tenant_console.ConsoleError:
+        if not password:
+            raise
+        console = connect("judge", password)
+        result = read_them(console)
+    ids: set[str] | None = None
+    try:
+        parsed = json.loads((result.get("stdout") or "").strip() or "null")
+    except ValueError:
+        parsed = None
+    if isinstance(parsed, list):
+        ids = {str(item) for item in parsed if item}
+    return ids, console
+
+
+def session_ids_problem(before: set[str] | None, after: set[str] | None,
+                        opened: list[str]) -> str:
+    """Why a session the check found is gone; '' when none is.
+
+    Ids, not a count: a judge's own session appearing between the two
+    snapshots moves the store's count and must not fail the check (the
+    verifier's 2026-11-14 run: 82 before, 83 after, all eight of the check's
+    own ids gone). The session a console opened is exempt because a reconnect
+    replaces it and the sweep deletes the old row — the new id is in `opened`
+    too. A leaked check session still fails on the by-id sweep that follows.
+    """
+    if before is None or after is None:
+        return "the tenant's own session ids could not be read"
+    gone = sorted(set(before) - set(after) - set(opened))
+    return f"gone: {gone[:3]}" if gone else ""
+
+
 def sweep_sessions(console, password: str,
                    cookie: str) -> tuple[tenant_console.Console, list[str]]:
     """Delete every session the check opened except the live console's own.
@@ -882,6 +965,35 @@ def sweep_sessions(console, password: str,
     survivors.extend(session_id for session_id in dict.fromkeys(OPENED)
                      if session_id not in done and session_id != console.session_id)
     return console, survivors
+
+
+def deploy_session_drift(sample: list[str], before: dict[str, dict],
+                         after: dict[str, dict], owned: set[str]) -> list[str]:
+    """The sampled sessions the apply changed; [] when it changed none of them.
+
+    The check owns two of the samples — the session it created and the seed —
+    and their row and ordered messages must be byte-identical across the
+    apply. Every other sampled session belongs to a judge, whose own turn can
+    land while the apply runs and move its digest with no apply defect
+    (t_693bc8eb); for those only existence is required. Hermes titles a
+    session after its first turn, so a title that moves is the app's own
+    write; the seed's title, though, is the seed's.
+    """
+    changed: list[str] = []
+    for session_id in sample:
+        old = before.get(session_id) or {}
+        new = after.get(session_id) or {}
+        if not new.get("exists"):
+            changed.append(f"{session_id}: gone")
+            continue
+        if session_id not in owned:
+            continue
+        keys = ["started_at", "pinned", "hidden", "archived", "messages_sha256"]
+        if session_id == SESSION_ID:
+            keys.append("title")
+        if any(new.get(key) != old.get(key) for key in keys):
+            changed.append(f"{session_id}: the row or its messages changed")
+    return changed
 
 
 def deploy_changes_no_session(console, password: str,
@@ -959,22 +1071,12 @@ def deploy_changes_no_session(console, password: str,
     for session_id in sample:
         row, console = session_report(console, password, session_id)
         after[session_id] = row
-    changed = []
-    for session_id in sample:
-        old, new = before[session_id], after[session_id]
-        if not new.get("exists"):
-            changed.append(f"{session_id}: gone")
-            continue
-        # Hermes titles a session after its first turn, so a title that moves
-        # is the app's own write; the row's identity, flags and messages are
-        # what a deploy must not change. The seed's title is the seed's.
-        keys = ["started_at", "pinned", "hidden", "archived", "messages_sha256"]
-        if session_id == SESSION_ID:
-            keys.append("title")
-        if any(new.get(key) != old.get(key) for key in keys):
-            changed.append(f"{session_id}: the row or its messages changed")
-    check(not changed, f"every sampled session is unchanged by the apply ({len(sample)}): "
-                       f"{changed[:3]}")
+    owned = {created, SESSION_ID}
+    changed = deploy_session_drift(sample, before, after, owned)
+    check(not changed,
+          f"every session the check owns is unchanged by the apply and no "
+          f"sampled session is gone ({len(sample)} sampled, "
+          f"{len(owned & set(sample))} the check's own): {changed[:3]}")
     deleted, code, body = delete_session(cookie, created)
     check(deleted, f"DELETE the session the check opened -> {code} {body[:80]}")
     check(http(DEMO + "/api/sessions/" + created, cookie=cookie)[0] == 404,
@@ -1005,12 +1107,14 @@ def main(argv: list[str] | None = None) -> int:
         except tenant_console.ConsoleError as exc:
             check(False, f"the tenant console as judge: {exc}")
         else:
-            # The baseline is the tenant's own count, read through the console
-            # whose row is the one this count includes and the cleanup keeps
-            # until last. Everything else the check opens must be gone again.
+            # The baseline is the tenant's own store, read through the console
+            # whose row is the one the count includes and the cleanup keeps
+            # until last. The demo is shared, so the *ids* are the baseline: a
+            # judge's session can appear while the check runs (t_693bc8eb).
             state, console = tenant_state(console, password)
             before = state.get("session_count")
             before = before - 1 if isinstance(before, int) else None
+            before_ids, console = tenant_session_ids(console, password)
             try:
                 console = tenant_checks(console, password)
                 judge_delete_a_session(password, cookie)
@@ -1025,8 +1129,14 @@ def main(argv: list[str] | None = None) -> int:
                 state, console = tenant_state(console, password)
                 after = state.get("session_count")
                 after = after - 1 if isinstance(after, int) else None
-                check(before is not None and after == before,
-                      f"the check leaves the session count where it found it "
+                after_ids, console = tenant_session_ids(console, password)
+                problem = session_ids_problem(before_ids, after_ids, OPENED)
+                check(problem == "",
+                      f"every session the check found is still there "
+                      f"({len(before_ids or [])} before, {len(after_ids or [])} after): "
+                      f"{problem or 'none gone'}")
+                check(before is not None and after is not None and after >= before,
+                      f"the check leaves at least the sessions it found "
                       f"({before} before, {after} after, {len(OPENED)} session(s) opened)")
                 check(not survivors,
                       f"every session the check opened is gone "

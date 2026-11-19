@@ -415,6 +415,127 @@ class CheckCleanupTests(unittest.TestCase):
         self.assertEqual(calls, ["delete", "delete"])
 
 
+class SharedDemoConcurrencyTests(unittest.TestCase):
+    """A judge's own traffic must not turn the check red (t_693bc8eb).
+
+    The demo is a shared, public instance, so a session can appear at any
+    moment. The check's cleanup used an exact global session count, and its
+    deploy leg compared ``messages_sha256`` for sessions it does not own; one
+    of the verifier's two live runs went red on exactly that (82 before, 83
+    after, all eight of the check's own ids gone). The leak gate stays by id;
+    the count and digest assertions are by id and by ownership.
+    """
+
+    def setUp(self) -> None:
+        self.module = check_module()
+
+    @staticmethod
+    def _row(**fields) -> dict:
+        row = {"exists": True, "started_at": 1.0, "pinned": 0, "hidden": 0,
+               "archived": 0, "messages_sha256": "a" * 64, "messages": 2}
+        row.update(fields)
+        return row
+
+    def test_an_external_session_between_the_snapshots_passes(self) -> None:
+        before = {"local-seed", "local-console"}
+        after = {"local-seed", "local-console", "local-judge-opened-midrun"}
+        self.assertEqual(self.module.session_ids_problem(before, after, []), "")
+        # The assertion this replaced was an exact global count equality, so
+        # the judge's own session alone turned it red with the machine correct.
+        self.assertNotEqual(len(after), len(before))
+
+    def test_the_checks_own_console_session_may_go(self) -> None:
+        """A reconnect replaces the console's row; the sweep deletes the old one."""
+        before = {"local-seed", "local-console-1"}
+        after = {"local-seed", "local-console-2"}
+        self.assertEqual(
+            self.module.session_ids_problem(before, after, ["local-console-1"]), "")
+
+    def test_a_session_that_vanishes_still_fails(self) -> None:
+        problem = self.module.session_ids_problem({"local-seed", "local-x"},
+                                                  {"local-seed"}, [])
+        self.assertIn("gone", problem)
+        self.assertIn("local-x", problem)
+
+    def test_an_unreadable_snapshot_fails(self) -> None:
+        self.assertIn("could not be read",
+                      self.module.session_ids_problem(None, {"local-seed"}, []))
+
+    def test_an_external_turn_on_a_sampled_session_passes(self) -> None:
+        before = {"check-owned": self._row(), "local-seed": self._row(),
+                  "local-judge": self._row(messages_sha256="b" * 64)}
+        after = {"check-owned": self._row(), "local-seed": self._row(),
+                 "local-judge": self._row(messages_sha256="c" * 64, messages=3,
+                                          last_activity_at=9.0)}
+        sample = ["check-owned", "local-seed", "local-judge"]
+        self.assertEqual(
+            self.module.deploy_session_drift(sample, before, after,
+                                             {"check-owned", "local-seed"}), [])
+        # The old assertion compared this digest for every sampled session,
+        # including the judge's, whose own turn moved it.
+        self.assertNotEqual(before["local-judge"]["messages_sha256"],
+                            after["local-judge"]["messages_sha256"])
+
+    def test_an_owned_session_changing_still_fails(self) -> None:
+        before = {"check-owned": self._row()}
+        after = {"check-owned": self._row(messages_sha256="d" * 64)}
+        self.assertTrue(self.module.deploy_session_drift(
+            ["check-owned"], before, after, {"check-owned"}))
+
+    def test_a_sampled_session_disappearing_still_fails(self) -> None:
+        before = {"local-judge": self._row()}
+        after = {"local-judge": {"id": "local-judge", "exists": False}}
+        self.assertEqual(
+            self.module.deploy_session_drift(["local-judge"], before, after, set()),
+            ["local-judge: gone"])
+
+    def test_the_ids_come_from_the_machines_own_store(self) -> None:
+        commands: list[str] = []
+        uploads: list[tuple[str, str]] = []
+
+        class Console:
+            def put(self, local: str, remote: str, *, mode: str = "0644") -> None:
+                uploads.append((Path(local).read_text(encoding="utf-8"), remote))
+
+            def run(self, command: str, check: bool = True) -> dict:
+                commands.append(command)
+                return {"code": 0, "stderr": "",
+                        "stdout": json.dumps(["local-a", "local-b"])}
+
+        ids, _ = self.module.tenant_session_ids(Console())
+        self.assertEqual(ids, {"local-a", "local-b"})
+        source, remote = uploads[0]
+        self.assertIn("SELECT id FROM sessions", source)
+        self.assertIn("mode=ro", source)
+        self.assertEqual(remote, self.module.SESSION_IDS_REMOTE)
+        # `shell.exec` refuses `python3 -c` (measured live 2026-11-18: 4001
+        # dangerous_command), so the query must travel as a file it runs.
+        self.assertEqual(commands[0], f"sudo /usr/bin/python3 {remote}")
+        self.assertNotIn(" -c ", commands[0])
+        # The staged copy is removed again, from /tmp, by a relative name —
+        # and as root: the console's upload installs it `-o root -g root`, so
+        # the tenant's own `rm` in sticky /tmp answers `Operation not
+        # permitted` (measured 2026-11-19: code 1, the file survived three
+        # runs). The Webapp's guard refuses an absolute `sudo rm`, so the
+        # working shape is `cd /tmp` plus the bare name, as the secret's own
+        # removal already does.
+        self.assertEqual(commands[-1],
+                         f"cd /tmp && sudo rm -f {self.module.SESSION_IDS_NAME}")
+        self.assertTrue(commands[-1].startswith("cd /tmp && sudo rm -f "),
+                        "the staged reader is root-installed; only root removes it")
+
+    def test_an_answer_that_is_not_a_list_is_unreadable(self) -> None:
+        class Console:
+            def put(self, local: str, remote: str, *, mode: str = "0644") -> None:
+                pass
+
+            def run(self, command: str, check: bool = True) -> dict:
+                return {"code": 1, "stderr": "no such file", "stdout": ""}
+
+        ids, _ = self.module.tenant_session_ids(Console())
+        self.assertIsNone(ids)
+
+
 class CheckSurfaceTests(unittest.TestCase):
     """The live check asks for a fourth session, not for a cap."""
 
@@ -441,10 +562,21 @@ class CheckSurfaceTests(unittest.TestCase):
         self.assertIn("the seeded session is the constant id with its messages", text)
         self.assertIn("the seeded session is listed with its messages", text)
 
+    def test_the_staged_session_id_reader_is_removed_as_root(self) -> None:
+        """The console's upload installs it root-owned; a tenant `rm` fails."""
+        text = CHECK.read_text(encoding="utf-8")
+        self.assertIn("cd /tmp && sudo rm -f {SESSION_IDS_NAME}", text)
+        self.assertNotIn("cd /tmp && rm -f {SESSION_IDS_NAME}", text)
+        # An absolute `sudo rm` is refused by the Webapp's dangerous_command
+        # guard, so the working shape is `cd` + the bare name.
+        self.assertNotIn("sudo rm -f /tmp/", text)
+
     def test_the_check_cleans_up_every_session_it_opens(self) -> None:
         text = CHECK.read_text(encoding="utf-8")
         self.assertIn("sweep_sessions", text)
-        self.assertIn("the check leaves the session count where it found it", text)
+        # t_693bc8eb: the demo is shared, so the cleanup compares ids, never
+        # an exact global count that a judge's own session moves.
+        self.assertIn("every session the check found is still there", text)
         self.assertIn("every session the check opened is gone", text)
         self.assertIn("--report --session-id", text)
         # The list endpoint is a 20-row window; it must not decide existence.

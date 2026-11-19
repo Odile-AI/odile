@@ -190,6 +190,11 @@ if [ "$DRY_RUN" = 1 ]; then
     say would "truncate $SIZE $RAW and write GPT: bios-boot, 512 MiB ext4 boot, LUKS2 root"
     say would "cryptsetup luksFormat the root with a random 64-byte V, then debootstrap $SUITE into it"
     say would "run install-stack.sh twice under chroot ($([ "$GUEST_SMOKE" = 1 ] && echo 'with guest smoke' || echo 'no guest smoke'))"
+    if [ "$PRODUCTION" = 1 ]; then
+        say would "serial console: ttyS0 login: prompt (production: no autologin)"
+    else
+        say would "serial console: ttyS0 autologin tenant (bench drill shell)"
+    fi
     say would "install odile-firstboot.service (boot: odile.token -> /seed -> install-stack.sh --seed -> first-visit page)"
     say would "copy the release installer, its signed manifest pair, the listener and odile-manifest.service from release/ (ODL-472)"
     say would "seal V to boot/cmdline and write /odile/luks-vol.key.sealed on the boot partition"
@@ -639,12 +644,24 @@ DNS=10.0.2.3
 EOF
 fi
 
-install -d "$MNT/etc/systemd/system/serial-getty@ttyS0.service.d"
-cat > "$MNT/etc/systemd/system/serial-getty@ttyS0.service.d/autologin.conf" <<'EOF'
+# The serial console. The bench image autologins `tenant` on ttyS0: that
+# shell is the drill bench's whole point (docs/runbooks/image.md §5.1). A
+# production image must not: the Servury panel's "interactive console" is a
+# shell on this same port, so an autologin would hand a panel holder a
+# root-capable session with no user credential, against docs/MVP-V0.1.md §6.8
+# ("console only, can watch"; ODL-914). The getty unit is enabled either way,
+# so a production console still ends at a `login:` prompt.
+if [ "$PRODUCTION" != 1 ]; then
+    install -d "$MNT/etc/systemd/system/serial-getty@ttyS0.service.d"
+    cat > "$MNT/etc/systemd/system/serial-getty@ttyS0.service.d/autologin.conf" <<'EOF'
 [Service]
 ExecStart=
 ExecStart=-/sbin/agetty --autologin tenant --keep-baud 115200,38400,9600 %I $TERM
 EOF
+    say console "ttyS0 autologin tenant (bench drill shell)"
+else
+    say console "ttyS0 login: prompt (production: no autologin)"
+fi
 
 mount --bind /proc "$MNT/proc"
 mount --rbind /dev "$MNT/dev"

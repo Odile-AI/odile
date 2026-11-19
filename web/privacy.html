@@ -146,7 +146,7 @@ h1,h2,h3,.brand,.mark,.wordmark,.focus{font-family:var(--serif)}
     <div class="scroll"><table class="inventory leaves">
       <thead><tr><th scope="col">What</th><th scope="col">Where</th><th scope="col">In clear</th></tr></thead>
       <tbody>
-        <tr><td>The nightly backup</td><td>an off-site SFTP storage box</td><td>no; the repository password is generated on the machine and only you hold it</td></tr>
+        <tr><td>The nightly backup</td><td>an SFTP storage box at HQ</td><td>no; the repository password is generated on the machine and only you hold it</td></tr>
         <tr><td>Your prompts</td><td>NEAR AI's confidential cloud, inside a hardware enclave</td><td>no outside the enclave</td></tr>
         <tr><td>The heartbeat</td><td>odile.fyi, signed by the machine</td><td>state, disk, spend, versions, the last backup</td></tr>
         <tr><td>Mail</td><td>our own mail server at mail.odile.fyi</td><td>the message, never the disk</td></tr>
@@ -170,6 +170,7 @@ h1,h2,h3,.brand,.mark,.wordmark,.focus{font-family:var(--serif)}
     <ul class="facts">
       <li>The waitlist keeps the address, the day it arrived and the link in the confirmation; deleting the address leaves the count.</li>
       <li>The machine record stays after the machine is destroyed; the event log is append-only and holds no credential.</li>
+      <li>The encrypted backup is kept 30 days after cancellation, then deleted. Odile can delete it, not read it.</li>
     </ul>
   </section>
 

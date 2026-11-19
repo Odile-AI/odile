@@ -1,8 +1,8 @@
 {
   "artifacts": {
     "installer": {
-      "sha256": "5d9bbfd7c34c3c6ea952da8a6f8d21c7ca6d79578794839f0a8093947e490f60",
-      "size": 1483407,
+      "sha256": "6959f3fe3c4c7c621641be975667905dbf0d498f0a56db348c7686fd3525b8ae",
+      "size": 1491364,
       "url": "odile_install.py"
     },
     "skills": {
@@ -14,14 +14,14 @@
   "boot": {
     "kernel": "6.12.115+deb13.1-amd64"
   },
-  "generated_at": "2026-11-19T19:12:28Z",
+  "generated_at": "2026-11-19T20:16:59Z",
   "manifest": {
-    "sha256": "7dabb8f426b7c0000d096d2e21611b514f904c3acb105c881143c16f48716c48",
+    "sha256": "e579e02ed0184bd3d3c1e6c2b07be8a8105657a42125260287847b374a2a3fab",
     "signature_url": "manifest.json.sig",
     "url": "manifest.json"
   },
-  "notes": "t_4fcd465f (ODL-236 follow-up) round 3, re-cut at the head that carries main's 2026.11.16-1 and the designer's 2026-11-18 review fixes. It carries both signed changes. (1) This card: the guest's /verify is the reviewed page program, not the first-visit service's access-report render. The installer embeds verify/verify.py and templates/verify.html (pinned; --self-test fails on a one-byte edit), places them at /usr/local/lib/odile/verify.{py,html}, writes odile-verify.service as root on 127.0.0.1:8098, and splices one no-store /verify route to it; the first-visit service keeps only /first-visit* and the five icon paths. The page adds CLAIMS \u00a74.4's seal-policy and sign-in-hash rows. Round 3's changes: the demo command section is injected after the #machine section (its 'shown above' note now names a row the reader has already passed) and is renamed 'Run the verifier'; both command panels use the page's report-pre wrap rule so they stop scrolling sideways at 390; and the LUKS row prints cryptsetup status root_crypt to resolve the container, because luksDump on the plaintext mapper is refused (docs/runbooks/support.md). (2) main's 2026.11.16-1: t_2efbd6e3's EXPORT_PROGRAM embed (/usr/local/bin/odile-export, pinned by installer/embed_export.py) and t_d95b8c13's tenant-template public-host comment plus ensure_systemd_services restarting odile-agent when any file the gateway reads changed. release/manifest.json is the fresh-root document with only installer_sha256 re-derived by tools/recut_release.py, so this is a surgical re-cut, not a root rebuild. The id is 2026.11.19-1: later than every cut by generated_at (2026.11.18-1 at 2026-11-18T18:30:00Z). It is committed, not deployed: until a ./scripts/deploy.sh runs from a main that carries this merge, the release URL serves the deployed 2026.11.15-9 (installer 2cdf0801\u2026, 1,424,179 bytes; release.json 5bee6fd3\u2026, measured 2026-11-18T18:15Z).",
+  "notes": "t_4fcd465f (ODL-236 follow-up) round 3 at the head that merges main's 2026.11.19-3. (1) This card: the guest's /verify is the reviewed page program, not the first-visit service's access-report render. The installer embeds verify/verify.py and templates/verify.html (pinned; --self-test fails on a one-byte edit), places them at /usr/local/lib/odile/verify.{py,html}, writes odile-verify.service as root on 127.0.0.1:8098, and splices one no-store /verify route to it; the first-visit service keeps only /first-visit* and the five icon paths. The page adds CLAIMS \u00a74.4's seal-policy and sign-in-hash rows. Round 3's changes: the demo command section is injected after the #machine section (its note names the measurement row above it) and is renamed 'Run the verifier'; both command panels use the page's report-pre wrap rule so they stop scrolling sideways at 390; and the LUKS row prints cryptsetup status root_crypt to resolve the container, because luksDump on the plaintext mapper is refused (docs/runbooks/support.md). (2) Main since 2026.11.18-1: t_e0475dba's manifest row for the tenant backup program and its runbooks, the ODL-340 follow-up's one site name and seed-derived environment (its -1/-2/-3 cuts), ODL-922's decision-card watchdog, ODL-474's 30-day backup row, ODL-581's alpha.0 account emails and ODL-918/ODL-921's alpha.0 scope sentences. release/manifest.json is the fresh-root document with only installer_sha256 re-derived by tools/recut_release.py, so this is a surgical re-cut, not a root rebuild. The id is 2026.11.19-4: later than every cut by generated_at (2026.11.19-3 at 2026-11-19T13:10:00Z). It is committed, not deployed: measured 2026-11-19T13:01Z the URL served 2026.11.19-1 (installer e4a3554b\u2026, 1,428,062 bytes; manifest 65c56be3\u2026).",
   "product": "odile",
-  "release": "2026.11.19-1",
+  "release": "2026.11.19-4",
   "schema": 1
 }

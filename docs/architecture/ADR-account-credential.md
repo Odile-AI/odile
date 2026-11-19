@@ -2,7 +2,8 @@
 
 **Status:** Accepted · 17 November 2026 · Architect · revised 18 November 2026
 after three review rounds (host naming per environment, counts, annex output,
-identifier, the evidence pin)
+identifier, the evidence pin; §5's dead-email action superseded by
+`docs/product/DECISION-password-reset.md` §5, ODL-584)
 **Number:** ADR-006. `main` holds ADR-001–004 (`ADR-backup.md` is ADR-004,
 ODL-570). The two contested numbers are settled: `ADR-upgrades-and-model.md`
 (ODL-571) merged as **ADR-005**, and the destroyed-slug ADR (t_ce52bb8d) took
@@ -318,10 +319,15 @@ which has no such account, and nothing is reset.
 - If the user has lost the code: there is no operator reset (D20). The path is
   the recovery file's restore into a rebuilt machine (A3/A6). The account page
   must name that path before the user asks support.
-- If the account email is dead: the account is the identity, so this is an A6
-  admin action (delete and recreate), and the machine is the anchor that survives
-  it — its sign-in and its recovery code are on the machine. A5 promises email
-  change only with two working inboxes, and must not imply otherwise.
+- If the account email is dead: the account is the identity. “This is an A6
+  admin action (delete and recreate)” is **superseded** by
+  `docs/product/DECISION-password-reset.md` §5, and the action is now an A6
+  admin **re-point of the account's email** (card ODL-582);
+  the machine is the anchor that survives it — its sign-in and its recovery code
+  are on the machine. A delete-and-recreate would instead lose the
+  `tenants.account_id` link (ADR-006 §6), and A6's delete removes the account
+  end to end, machine included (MVP §9 A6). A5 promises email change only with
+  two working inboxes, and must not imply otherwise.
 
 **Four defects in today's sign-in paths that A5 inherits and must fix.** They are
 small, and they matter because A makes the machine's reset the only

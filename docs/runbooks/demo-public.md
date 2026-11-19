@@ -40,6 +40,7 @@ page a judge should be sent to. It does not demonstrate a user-held key.
 | `deploy/demo-host/apply_demo_public.py` | runs as root **on the tenant**: sign-in page, Caddy block, Hermes settings, judge account, seeded session (written once), and the removal of the old boot unit; `--dry-run`, `--self-test`, `--report`, `--report --session-id` |
 | `deploy/demo-host/tenant_console.py` | the transport: login, WS ticket, one `shell.exec` per command (a tenant has no SSH key) |
 | `deploy/demo-host/check_demo_public.py` | the card's DoD over HTTPS plus the tenant's own report; `--target` for the two DNS rows (default: the tree's redacted `203.0.113.87`), `--persistence`, `--sessions` |
+| `deploy/demo-host/check_demo_host.sh` | the host-state DoD on the machine that serves the demo: account/home modes, `odile-agent` + the gateway pid, 9130 loopback, the deployed pieces under `/usr/local/lib/odile-demo-public` and `/srv/odile-demo`, the Caddy block, one gateway, and a restart; `--tenant` from HQ through the tenant console, `--local` as root on the machine; exit 0/1/2 |
 | `deploy/demo-host/create_dns.py` | the one Cloudflare record; idempotent; `--target 203.0.113.139` moves it to HQ's address (no demo there since 2026-11-13) |
 | `deploy/demo-host/login.html` | Odile's sign-in page |
 | `web/favicon.ico`, `web/icon-32.png`, `web/apple-touch-icon.png` | the three tab files the sign-in page links; the deploy ships them under pinned hashes and the apply puts them beside the page (t_6b25f6e5) |
@@ -358,17 +359,39 @@ own shell, restarts `odile-agent`, reconnects and reads the file back (measured
 2026-11-13: it survives). `--sessions` measures that a fourth concurrent
 session runs.
 
+The public half is not the whole definition of done: the machine's own state is
+`deploy/demo-host/check_demo_host.sh` (§1). Run it from the repo root on HQ
+through the tenant console, not over SSH — its restart leg restarts
+`odile-agent`, the gateway that console talks over:
+
+```sh
+DEMO_PASSWORD_FILE=/root/.odile/judge-pass.txt ./deploy/demo-host/check_demo_host.sh --tenant
+```
+
+Measured 2026-11-14 on the tenant (review run): `demo-host check: PASS
+(97 passed, 0 failed)`, rc 0. A `--tenant` run leaves nothing behind: every
+session it opens is deleted — the one its socket chat leg mints included — and
+a judge's session is left as it stands (the demo keeps its owner's state,
+t_ee5aac66).
+
 Every run with a password also measures the relay's core sentence: it opens a
 session, gives it one turn, samples the sessions already on the machine (the
 seed and up to four others with messages), runs the demo's own apply with
-`--no-restart`, and compares. **A deploy changes no session** — the row, its
+`--no-restart`, and compares. **A deploy changes no session** — for the
+sessions the check owns (the one it creates and the seed), the row, its
 messages and its title/pinned/hidden/archived flags are byte-identical across
-the apply, and no sampled session disappears (the old prune is gone). Every
-session the check opens is deleted at the end — the four concurrent ones, the
-one it deletes, and the console's own `shell.exec` session, which Hermes keeps
-as a row too. Existence is the machine's own `--report --session-id`, never the
-list endpoint (that window is 20 rows); the check fails unless every id it
-opened is gone and the tenant's session count is where it found it.
+the apply. Every other sampled session is a judge's: it must still **exist**,
+and the judge's own turn landing on it while the apply runs is not a change the
+check fails on. Every session the check opens is deleted at the end — the four
+concurrent ones, the one it deletes, and the console's own `shell.exec`
+session, which Hermes keeps as a row too. Existence is the machine's own
+`--report --session-id`, never the list endpoint (that window is 20 rows). The
+cleanup compares the **set of session ids**: every id it found before is still
+there once the ids it opened are subtracted, the report's count is a floor
+(`after >= before`), and the leak gate stays by id (`every session the check
+opened is gone (…): []`). A judge's session appearing mid-run is expected and
+does not turn the check red — the verifier's 2026-11-14 run: 82 before, 83
+after, all 8 opened ids gone.
 
 It also asserts there is **no `odile-demo-*` unit file and no `odile-demo-*`
 timer** on the machine: `systemctl list-unit-files` and `systemctl list-timers`

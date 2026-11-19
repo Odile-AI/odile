@@ -33,7 +33,7 @@ The audit and the support program are the machine's own reviewed programs, so
 the page never re-implements a verdict: it wraps theirs. A row whose program is
 not on this machine says so instead of guessing.
 
-    /usr/bin/python3 verify/verify.py --stdout             # the page on stdout
+    /usr/bin/python3 verify/verify.py                      # the page on stdout
     /usr/bin/python3 verify/verify.py --json               # the same rows
     /usr/bin/python3 verify/verify.py --out /var/lib/odile/verify.html
     /usr/bin/python3 verify/verify.py --serve --port 8098  # Caddy's upstream
