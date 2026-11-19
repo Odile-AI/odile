@@ -4,10 +4,10 @@
 ODL-214. One signed JSON document that makes the app layer pinnable: the Hermes
 commit, the hash the installer required of the fetched `install.sh` before it
 ran, the versions of every package the installer puts on the machine, the hash
-of every installed skill, the installer's own sha256 and the handoff
-audit script. The guest serves the document at `/manifest`; Caddy terminates TLS
-and proxies the loopback listener the way it does for the heartbeat (the
-runbook shows the four lines).
+of every installed skill, the installer's own sha256, the tenant backup program
+the nightly unit executes, and the handoff audit script. The guest serves the
+document at `/manifest`; Caddy terminates TLS and proxies the loopback listener
+the way it does for the heartbeat (the runbook shows the four lines).
 
 The signature is Ed25519, detached, made on HQ over the **exact bytes** of the
 manifest. The private key never enters git and never leaves HQ; the public key
@@ -84,6 +84,14 @@ SIGNATURE_LEN = 64
 # applies; the pin lives in the signed installer, so the manifest reads it from
 # there rather than keeping a second copy that could drift.
 INSTALL_SCRIPT_FIELD = "hermes_install_sha256"
+
+# The tenant backup program the nightly unit runs (ODL-215 follow-up). The
+# manifest records the bytes the machine carries. A scratch root that predates
+# the installer placing the file falls back to the installer's own embedded pin
+# — the same record `--manifest` prints — because those are the bytes the
+# installer would write, and a fresh root agrees with the pin by construction.
+BACKUP_FIELD = "backup_sha256"
+BACKUP_PROGRAM = "usr/local/lib/odile/backup.py"
 
 
 class ManifestError(Exception):
@@ -481,6 +489,33 @@ def read_installer_manifest(installer: Path) -> dict:
     return document
 
 
+def collect_backup_hash(layout: dict, installer_record: dict) -> str:
+    """The sha256 of the tenant backup program, from the root or the installer's pin.
+
+    `build` records what the installer put on the machine, so the installed
+    program is the fact: a one-byte edit on a root moves this row, which is how
+    a release is shown to name the bytes it ships. A scratch root that carries
+    no such file (one made before the installer placed it) falls back to the
+    installer's own `--manifest` pin — the bytes that installer would write, so
+    two fresh roots still agree row for row. A tenant root without the program
+    is a refusal: the installer writes it, so its absence is a broken app layer,
+    not a fact to paper over.
+    """
+    path = Path(layout["root"]) / BACKUP_PROGRAM
+    if path.is_file():
+        return hash_file(path)
+    if layout["mode"] == "tenant":
+        raise ManifestError(
+            f"no tenant backup program at {path}; the installer writes it, so a tenant "
+            "root without it is not the app layer this manifest claims")
+    pin = installer_record.get(BACKUP_FIELD)
+    if not isinstance(pin, str) or not SHA256_RE.match(pin):
+        raise ManifestError(
+            f"no tenant backup program at {path} and the installer records no "
+            f"{BACKUP_FIELD}: the manifest cannot name the program the nightly unit runs")
+    return pin
+
+
 def build_manifest(root: str | Path, *, installer: str | Path | None = None,
                    audit: str | Path | None = None, model: str | None = None,
                    user: str | None = None, os_versions: dict | None = None,
@@ -533,6 +568,7 @@ def build_manifest(root: str | Path, *, installer: str | Path | None = None,
         "mode": layout["mode"],
         "model": model_name,
         "installer_sha256": hash_file(installer_path),
+        "backup_sha256": collect_backup_hash(layout, installer_record),
         "audit_sha256": hash_file(audit_path) if audit_path else None,
         "hermes": {
             "commit": commit,
