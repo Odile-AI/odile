@@ -234,9 +234,11 @@ class ClaimsDeckTests(unittest.TestCase):
         # pre-first-visit gate (t_adcdec31) and the M2 drills; CLAIMS.md §1a
         # holds them from the public pages until their card lands. The deck
         # keeps the row, the page does not quote the clause. ODL-474 landed the
-        # backup and grant rows as v3.10; what is left is the disk-custody and
-        # pre-first-visit clusters, the two backup rows outside ODL-474's DoD,
-        # and the dropped timing.
+        # backup and grant rows as v3.10 and t_5f10dd14 landed the 30-day
+        # retention row on 19 November 2026; what is left is the disk-custody
+        # and pre-first-visit clusters, "Backups are off-site" (ADR-004 measures
+        # the destination on HQ's disk until the R2 migration lands), and the
+        # dropped timing.
         held = (
             "The only sign-in is yours.",
             "The disk unlocks only on the boot you verify.",
@@ -245,15 +247,15 @@ class ClaimsDeckTests(unittest.TestCase):
             "We can stop it. We cannot read it.",
             "On a tenant machine, Odile cannot read the disk",
             "The hosting provider sees ciphertext",
-            "The encrypted backup is kept 30 days",
-            "backups are off-site",
+            "off-site",
             "Claiming takes 3 minutes",
         )
         surfaces = sorted((ROOT / "web").glob("*.html")) + [ROOT / "README.md"]
         for path in surfaces:
-            text = path.read_text(encoding="utf-8")
+            text = path.read_text(encoding="utf-8").lower()
             for clause in held:
-                self.assertNotIn(clause, text, "%s quotes a held clause: %r" % (path.name, clause))
+                self.assertNotIn(clause.lower(), text,
+                                 "%s quotes a held clause: %r" % (path.name, clause))
 
     def test_the_v310_landing_is_verbatim_on_its_surfaces(self):
         # The deck leads the pages: the header, the change-log row and every
@@ -427,6 +429,23 @@ class PrivacyTests(unittest.TestCase):
             for path in claims_lint.iter_files(ROOT.resolve(), claims_lint.DEFAULT_PATHS)
         }
         self.assertIn(self.PAGE.resolve(), scanned, "the claims lint does not scan the privacy page")
+
+    def test_the_backup_retention_row_is_verbatim_on_both_pages(self):
+        # t_5f10dd14: the 30-day retention row is a §1 row and lands verbatim.
+        # The privacy page's retention list is its home; the FAQ's place answer
+        # carries it beside the Montreal sentence, so a reader asking "where is
+        # the machine?" is told what happens to the copy after cancellation.
+        row = (
+            "The encrypted backup is kept 30 days after cancellation, "
+            "then deleted. Odile can delete it, not read it."
+        )
+        privacy = self.PAGE.read_text(encoding="utf-8")
+        faq = FAQ.read_text(encoding="utf-8")
+        self.assertIn(row, privacy, "web/privacy.html does not carry the 30-day retention row")
+        self.assertIn(row, faq, "web/faq.html does not carry the 30-day retention row")
+        # The destination cell is measured, not the old "off-site SFTP box"
+        # (ADR-004 §1: the bytes are on HQ's disk until the R2 migration lands).
+        self.assertIn("an SFTP storage box at HQ", privacy)
 
     def test_every_privacy_sentence_maps_to_the_deck(self):
         deck = deck_copy(ROOT)
