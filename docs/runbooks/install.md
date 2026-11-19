@@ -415,7 +415,7 @@ files to the signed installer.
 Cormorant face used on the landing page cannot travel inside the skin. The
 heading stack is the system serif — `"Iowan Old Style", "Palatino Linotype",
 Palatino, Georgia, "DejaVu Serif", serif` — the closest available face, and no
-font host is contacted. Dark mode is not in V0.1: the desktop converter
+font host is contacted. Dark mode is not in alpha.0: the desktop converter
 synthesises `darkColors` from the skin's `colors`, so the resolved theme is
 paper in both modes and the app stays light.
 

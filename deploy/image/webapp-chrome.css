@@ -74,7 +74,7 @@ button[aria-label^="Effort:"] {
  * rule win whichever order the engine uses.
  *
  * Colour is BRAND's --ink (#1C1813) only. The demo ships light and dark mode
- * is not in V0.1, so there is no `light-dark()` second palette behaviour. */
+ * is not in alpha.0, so there is no `light-dark()` second palette behaviour. */
 /* Display headings: the skin's own serif is not the brand voice. Cormorant
    reaches h1/h2/h3 and heading roles only; body and UI stay on the sans. */
 html h1, html h2, html h3, html [role="heading"] { font-family: "Cormorant Garamond", "Iowan Old Style", Georgia, serif !important; }

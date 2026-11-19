@@ -33,8 +33,8 @@ single-use, bound to the instance, and expires in 24 hours; the exposure is the
 machine's seed (the NEAR key and mail relay), not the disk. The alternative —
 typing the token on the machine — is the user command the strict bar removes.
 A host also cannot read the guest's memory or disk, so the seed is only exposed
-if the host wins that boot-window race. This is a V0.1 residual, recorded here
-for the security seat.
+if the host wins that boot-window race. This is an alpha.0 residual,
+recorded here for the security seat.
 
 ## 2. The service
 
