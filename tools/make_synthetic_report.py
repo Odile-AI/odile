@@ -79,6 +79,7 @@ COMMITTED_TCB = bytes([4, 0, 0, 0, 0, 0, 28, 115])
 _KEY_BODY = bytes(range(32))
 _KEY_BLOB = (struct.pack(">I", len(b"ssh-ed25519")) + b"ssh-ed25519"
              + struct.pack(">I", len(_KEY_BODY)) + _KEY_BODY)
+SEAL_ID = "5e4d0c0ffeec0de1"
 BOOT_KEY = base64.b64encode(
     b"ssh-ed25519 " + base64.b64encode(_KEY_BLOB) + b" odile@synthetic"
 ).decode("ascii")
@@ -331,7 +332,7 @@ def padded_cmdline(release: str, total: int, boot_key: str = BOOT_KEY) -> str:
         "bb.ip4=192.0.2.10/24 bb.gw4=192.0.2.1 "
         "bb.ip6=2001:db8:0:1::10/64 bb.gw6=2001:db8::1 "
         "bb.dns=1.1.1.1,9.9.9.9,2606:4700:4700::1111,2620:fe::fe "
-        "bb.key=%s " % (release, boot_key)
+        "bb.key=%s seal_id=%s " % (release, boot_key, SEAL_ID)
     )
     tail = " end_cc"
     prefix = "network-config="

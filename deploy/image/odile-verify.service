@@ -1,0 +1,27 @@
+# Odile verify — the machine's own /verify page (t_4fcd465f), installed into
+# the measured image by install-stack.sh.
+#
+# The page reads the boot report, the boot record, /proc/cmdline, the host key,
+# /run/bb/sealed-unlock.state, the signed manifest and the tenant .env, and it
+# wraps `odile-audit --json` and `odile-support status --json`. The audit reads
+# /etc/shadow and sshd's journal, so the unit runs as root; it binds loopback
+# only and Caddy (or the bench's socket-proxyd stand-in) is the listener. It
+# writes nothing.
+[Unit]
+Description=Odile verify — the machine's own /verify page
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+ExecStart=/usr/bin/python3 /usr/local/lib/odile/verify.py --serve --bind 127.0.0.1 --port __VERIFY_PORT__ --template /usr/local/lib/odile/verify.html
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+
+[Install]
+WantedBy=multi-user.target
