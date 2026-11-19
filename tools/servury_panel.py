@@ -17,6 +17,14 @@ the panel drivable with a cookie jar — no headless browser, no brittle clickin
         --url … --sha256 … [--apply --confirm]
     ./tools/servury_panel.py --power --server <server:ukitest> --action restart
     ./tools/servury_panel.py --console --server <server:ukitest> --action on|off|read
+    ./tools/servury_panel.py --order --plan 108 --ssh-key-file key.pub --apply
+
+Buying is the one thing that does **not** use the panel any more: `--order` POSTs
+`?action=create` with the account's API key, because the panel order form charges
+list price and the key charges the partner price (5% off orders, renewals and
+upgrades). The panel is still the only route for the disk image, the boot image,
+the console and power. The affiliate route and coupon codes were retired in
+November 2026; `--coupon` is gone.
 
 `<server:ukitest>` is the one id in `/root/.odile/servury_uki_server_id` (one id
 per line; the file is untracked, so a clone has no live target).
@@ -45,6 +53,7 @@ from __future__ import annotations
 import argparse
 import datetime
 import http.cookiejar
+import json
 import os
 import re
 import sys
@@ -74,19 +83,24 @@ POST_FIELDS = frozenset({
     "image_kernel_url", "image_kernel_sha256", "image_initrd_url", "image_initrd_sha256",
     "image_cmdline", "hostname", "enabled",
 })
-# Ordering is the one other write this tool may make: a plan, a location, 31 days,
-# a coupon, and funds. No payment method other than the account balance.
-ORDER_FIELDS = frozenset({
-    "csrf_token", "plan", "location", "os", "days", "coupon", "payment_method", "hostname",
-    "snp_requested", "fde_requested", "measured_requested", "auto_renew", "ssh_key",
-    "calculate", "submit_order", "preset_days",
+# The only panel writes this tool may make: the disk-image and boot-image forms
+# on /manage/<id>/, the console switch, the hostname and power. The order form is
+# not one of them any more — it charges list price, so buying moved to the API
+# (`order()`), and banning /order/ here makes a retail order impossible by tool.
+POST_FIELDS = frozenset({
+    "csrf_token", "action", "disk_url", "disk_sha256", "disk_format", "disk_start", "disk_confirm",
+    "image_kernel_url", "image_kernel_sha256", "image_initrd_url", "image_initrd_sha256",
+    "image_cmdline", "hostname", "enabled",
 })
 AUDIT = Path("/root/.odile/servury-panel.log")
-# Every Servury purchase goes through the referral route: the discount stacks with
-# the account's referral tier (10% and better), and an order placed without it
-# silently forfeits that. Only a demonstrably cheaper route may beat it.
-PURCHASE_URL = "https://servury.com/ref/web"
-DEFAULT_COUPON = "WEB"
+# Every Servury purchase goes through the API with the account's key: 5% off
+# list on orders, renewals and upgrades, applied automatically. The affiliate
+# route was retired in November 2026 — /ref/web 301s to / with no cookie and
+# `WEB` answers "Invalid coupon code" — and the panel order form is list price
+# even on an account that holds a key, so the panel is no longer an order path
+# (docs/ops/evidence/2026-11-19-servury-purchase-route/EVIDENCE.md).
+ORDER_ROUTE = "https://servury.com/api/reseller.php?action=create"
+ORDER_KEY_FILE = Path("/root/.odile/servury_reseller_key_lkbxu6i9")
 FORM_ACTION = re.compile(r"<form[^>]*action=\"([^\"]*)\"[^>]*>", re.I)
 FIELD = re.compile(r"<(input|select|textarea)\b[^>]*>", re.I)
 NAME = re.compile(r"name=[\"']([^\"']+)[\"']", re.I)
@@ -315,7 +329,7 @@ def post(opener, url: str, fields: dict[str, str]) -> str:
     why = refuse_path(urllib.parse.urlparse(url).path)
     if why:
         raise SystemExit(f"panel: refusing to POST to {url}: {why}")
-    allowed = ORDER_FIELDS if "/order/" in urllib.parse.urlparse(url).path else POST_FIELDS
+    allowed = POST_FIELDS
     unknown = set(fields) - allowed
     if unknown:
         raise SystemExit(f"panel: refusing unknown form field(s) {sorted(unknown)}")
@@ -621,52 +635,73 @@ def console(opener, server: str, action: str, *, dry_run: bool = False) -> int:
     return 0
 
 
-def purchase_route(opener) -> str:
-    """Visit the referral route, which is what actually attaches the discount.
-
-    Measured 2026-11-18: an order posted with `coupon=WEB` and no route visit
-    was charged list price ($9.99), while the 12 November order on the same
-    account — placed after this page — was $8.99. The coupon field alone is not
-    the route, so the order path takes it before it reads the form.
-    """
-    get(opener, PURCHASE_URL)
-    return PURCHASE_URL
+def api_order(key: str, plan: str, os_name: str, days: str, hostname: str,
+              ssh_key: str, preorder: bool = False) -> dict:
+    """POST ?action=create; the key's account is charged its partner price."""
+    params: dict[str, object] = {
+        "plan_id": int(plan), "hostname": hostname, "os": os_name, "days": int(days),
+        "ssh_key": ssh_key, "snp": True, "fde": True, "measured": True,
+    }
+    if preorder:
+        params["preorder"] = True
+    request = urllib.request.Request(
+        ORDER_ROUTE,
+        data=json.dumps(params).encode(),
+        headers={"X-Reseller-Key": key, "Content-Type": "application/json", "Accept": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=90) as response:
+            payload = json.load(response)
+    except urllib.error.HTTPError as error:
+        detail = error.read().decode("utf-8", "replace")
+        raise RuntimeError(f"HTTP {error.code} {detail[:300]}") from None
+    if not payload.get("success", True):
+        raise RuntimeError(str(payload.get("error") or "order refused"))
+    return payload.get("data") or {}
 
 
 def order(opener, plan: str, location: str, os_name: str, days: str, hostname: str,
-          coupon: str, apply: bool, ssh_key_file: str) -> int:
-    """Buy one machine through the referral route. Dry run unless --apply."""
-    route = purchase_route(opener)
-    print(f"panel: referral route {route}")
-    page = f"{BASE}/order/?location={location}&plan={plan}&os={os_name}"
-    html = get(opener, page)
-    token = parse_csrf(html)
-    if not token:
-        print("panel: no csrf_token on the order page — the session may have expired", file=sys.stderr)
-        return 1
-    fields = {
-        "csrf_token": token, "plan": plan, "location": location, "os": os_name,
-        "days": days, "coupon": coupon, "payment_method": "account_funds",
-        "hostname": hostname, "snp_requested": "1", "fde_requested": "1",
-        "measured_requested": "1", "auto_renew": "1", "submit_order": "1",
-    }
-    if ssh_key_file:
-        fields["ssh_key"] = Path(ssh_key_file).read_text(encoding="utf-8").strip()
+          apply: bool, ssh_key_file: str, key_file: str = str(ORDER_KEY_FILE),
+          preorder: bool = False) -> int:
+    """Buy one machine through the API at the account's partner price.
+
+    The panel order form charges list price even on an account that holds a key,
+    so it is no longer an order path. `location` does not travel: a plan id names
+    its location (108 is Canada Core, 127 the US one), and it stays in the
+    signature only so the audit line reads the same way it always did. A measured
+    box takes exactly one SSH key and it must be given here — there is no later
+    add.
+    """
+    if not ssh_key_file:
+        print("panel: --order needs --ssh-key-file (measured boot takes exactly one key)", file=sys.stderr)
+        return 2
+    if not str(plan).isdigit():
+        print(f"panel: --plan must be an API plan id (a number), not {plan!r}", file=sys.stderr)
+        return 2
+    key_path = Path(key_file)
+    if not key_path.is_file():
+        print(f"panel: no API key at {key_path}", file=sys.stderr)
+        return 2
+    ssh_key = Path(ssh_key_file).read_text(encoding="utf-8").strip()
     audit(audit_line(
         opener,
-        f"ORDER plan={plan} loc={location} days={days} coupon={coupon} "
-        f"host={hostname} apply={apply}",
+        f"ORDER route=api plan={plan} loc={location} days={days} host={hostname} "
+        f"key={key_path.name} apply={apply}",
     ))
-    print(f"panel: {'ordering' if apply else 'would order'} plan {plan} in {location} for {days} days,"
-          f" coupon {coupon} — {PURCHASE_URL}")
+    print(f"panel: {'ordering' if apply else 'would order'} plan {plan} for {days} days at the "
+          f"partner price — {ORDER_ROUTE}")
     if not apply:
         print("panel: dry run — pass --apply to buy")
         return 0
-    landed = post(opener, page, fields)
-    if "You must set either" in landed:
-        print("panel: the order form needs a root password or a public key — pass --ssh-key-file", file=sys.stderr)
+    try:
+        result = api_order(key_path.read_text(encoding="utf-8").strip(), plan, os_name, days,
+                           hostname, ssh_key, preorder)
+    except (RuntimeError, OSError) as error:
+        print(f"panel: order refused — {error}", file=sys.stderr)
         return 1
-    print(f"panel: order submitted; check /servers/ for the new machine (coupon {coupon})")
+    print(f"panel: ordered {result.get('server_id')} — {result.get('hostname')} "
+          f"{result.get('status')}, charged ${result.get('amount_charged')}")
     return 0
 
 
@@ -684,14 +719,15 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--server", default="", help="8-character server id")
     parser.add_argument("--url", default="")
     parser.add_argument("--sha256", default="")
-    parser.add_argument("--order", action="store_true", help="buy one machine through the referral route")
-    parser.add_argument("--plan", default="108")
-    parser.add_argument("--location", default="2")
+    parser.add_argument("--order", action="store_true", help="buy one machine through the API at the partner price")
+    parser.add_argument("--plan", default="108", help="API plan id (a plan id names its location: 108 Canada, 127 US)")
+    parser.add_argument("--location", default="2", help="label only — the plan id names the location")
     parser.add_argument("--os", dest="os_name", default="debian12")
     parser.add_argument("--days", default="31")
     parser.add_argument("--hostname", default="odl-dev")
-    parser.add_argument("--coupon", default=DEFAULT_COUPON, help=f"default {DEFAULT_COUPON}: the referral stacks with the tier")
-    parser.add_argument("--ssh-key-file", default="", help="public key pasted into the order form (required for measured/FDE)")
+    parser.add_argument("--key-file", default=str(ORDER_KEY_FILE), help="API key of the account that pays")
+    parser.add_argument("--preorder", action="store_true", help="accept a sold-out plan (paid now, final)")
+    parser.add_argument("--ssh-key-file", default="", help="public key pasted into the order (required: measured boot)")
     parser.add_argument("--whoami", action="store_true", help="print the account this session belongs to")
     parser.add_argument("--expect-user", default=None, help="refuse to write unless the session's User ID matches")
     parser.add_argument("--apply", action="store_true", help="with --set/--set-boot-image: actually submit")
@@ -730,7 +766,7 @@ def main(argv: list[str] | None = None) -> int:
         return dump(opener, args.server)
     if args.order:
         return order(opener, args.plan, args.location, args.os_name, args.days, args.hostname,
-                     args.coupon, args.apply, args.ssh_key_file)
+                     args.apply, args.ssh_key_file, args.key_file, args.preorder)
     if args.set:
         if not (args.server and args.url):
             print("panel: --set needs --server and --url", file=sys.stderr)
