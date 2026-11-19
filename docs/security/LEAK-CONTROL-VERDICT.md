@@ -621,3 +621,16 @@ report skips the fetch).
 inside a recorded measured command line (the existing row). The tip is clean;
 the history and already-published commits still carry the old recorded reports,
 because this card replaces the fixture set, not the history.
+
+**At the merge commit `c00023b`, after `main` added `verify/README.md`.** The
+worktree gate → `PASS: nothing to leak in 377 files` (55 rows, 4 credentials,
+0 debt, 392 allowlisted); the built public tree (374 files) → `PASS: nothing to
+leak in 374 files`, 220 allowlisted, `forbid list: leak-forbid.txt (14 labels)`.
+`main`'s new `verify/README.md` was false in four places after this card —
+"one URL" (the default run also fetches the report's own VCEK from AMD's KDS),
+"the demo binds the vendored VCEK" (deleted), "`--no-kds` … vendored chain
+only" (it needs a local chain that binds the report and fails closed otherwise),
+and "the vendored AMD chain" in the tests (the synthetic test-only chain). The
+four sentences are re-cut, and `VerifyReadmeNoteTests` reads the file with
+whitespace normalised: it requires the two-URL and fail-closed sentences and
+forbids the stale phrases, so a later edit cannot widen them back.
