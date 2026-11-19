@@ -105,12 +105,17 @@ class CopyTests(unittest.TestCase):
         self.assertNotIn("odile.fyi/judge", text)
 
     def test_the_readme_names_near_with_deck_verbatim_sentences(self):
-        readme = README.read_text(encoding="utf-8")
-        deck = (ROOT / "docs" / "CLAIMS.md").read_text(encoding="utf-8")
+        def words(text: str) -> str:
+            # A markdown link is a citation, not copy: compare the words.
+            return re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", text)
+
+        readme = words(README.read_text(encoding="utf-8"))
+        deck = words((ROOT / "docs" / "CLAIMS.md").read_text(encoding="utf-8"))
         for sentence in (
-            "Inference runs on NEAR AI's confidential cloud, inside a hardware enclave.",
-            "In this demo your prompts go from the browser to Odile's tenant machine "
-            "and then to the NEAR AI enclave.",
+            "Every Odile agent runs on its own AMD SEV-SNP confidential virtual "
+            "machine with encrypted memory and NEAR AI confidential model inference "
+            "within hardware enclaves, enabling full confidentiality throughout "
+            "agentic workflows.",
         ):
             with self.subTest(sentence=sentence[:40]):
                 self.assertIn(sentence, readme)
