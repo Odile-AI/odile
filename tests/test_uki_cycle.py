@@ -18,6 +18,7 @@ from __future__ import annotations
 import contextlib
 import hashlib
 import io
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -594,10 +595,15 @@ class ConsoleDisarmTests(unittest.TestCase):
     EARLIER = "Linux version 6.12.115 (earlier)\n[    3.0] nothing yet\n"
 
     def run_cycle(self, *extra: str, log: str | None = None,
-                  off: mock.Mock | None = None) -> tuple[int, list[tuple[str, str]], str]:
-        """(exit code, [(console action, transcript at that moment)], output)."""
+                  off: mock.Mock | None = None,
+                  on_error: BaseException | None = None,
+                  off_error: BaseException | None = None,
+                  tail: str = "",
+                  ) -> tuple[int | BaseException, list[tuple[str, str]], str]:
+        """(exit code or the exception that escaped, [(console action, transcript at that moment)], output)."""
         events: list[tuple[str, str]] = []
         fixture = self.LOG if log is None else log
+        tails = [tail] if tail else []
         with tempfile.TemporaryDirectory() as tmp:
             key = Path(tmp) / "key"
             key.write_text("k", encoding="utf-8")
@@ -605,12 +611,20 @@ class ConsoleDisarmTests(unittest.TestCase):
 
             def fake_console(server: str, action: str) -> mock.Mock:
                 events.append((action, "transcript" if out.is_file() else "absent"))
+                if action == "on" and on_error is not None:
+                    raise on_error
+                if action == "off" and off_error is not None:
+                    raise off_error
                 if action == "off" and off is not None:
                     return off
                 return mock.Mock(returncode=0, stdout="", stderr="")
 
             def fake_log(server: str) -> str:
                 events.append(("read", "transcript" if out.is_file() else "absent"))
+                # Once the switch is off the host's copy is empty — except for a
+                # tail the still-printing boot landed as the switch applied.
+                if any(action == "off" for action, _ in events):
+                    return tails.pop() if tails else ""
                 # The first read is the --fresh baseline (the buffer before this
                 # boot); every later read is the new boot.
                 return self.EARLIER if len([a for a, _ in events if a == "read"]) == 1 else fixture
@@ -627,8 +641,11 @@ class ConsoleDisarmTests(unittest.TestCase):
                                       return_value=mock.Mock(returncode=0, stdout="", stderr="")), \
                     mock.patch.object(servury_cycle.time, "sleep", lambda seconds: None), \
                     contextlib.redirect_stdout(buffer), contextlib.redirect_stderr(buffer):
-                code = servury_cycle.main(argv)
-        return code, events, buffer.getvalue()
+                try:
+                    outcome: int | BaseException = servury_cycle.main(argv)
+                except BaseException as error:  # the arm or the disarm itself can raise
+                    outcome = error
+        return outcome, events, buffer.getvalue()
 
     def test_a_finished_cycle_turns_the_log_off_after_saving_the_transcript(self) -> None:
         code, events, output = self.run_cycle()
@@ -636,10 +653,12 @@ class ConsoleDisarmTests(unittest.TestCase):
         self.assertEqual(code, 0, output)
         actions = [action for action, _ in events]
         self.assertEqual(actions[0], "on", events)
-        self.assertEqual(actions[-1], "off", events)
+        self.assertEqual(actions[-2], "off", events)
+        self.assertEqual(actions[-1], "read", "the disarm reads the host's copy back")
         self.assertIn("read", actions[1:-1], "the log is polled between arming and disarming")
-        self.assertEqual(events[-1], ("off", "transcript"),
-                         "the transcript is written before the switch goes off")
+        self.assertIn(("off", "transcript"), events,
+                      "the transcript is written before the switch goes off")
+        self.assertEqual(events[-1][0], "read", "the disarm reads the host's copy back")
         self.assertIn("off; the host's transcript file is emptied", output)
 
     def test_keep_console_leaves_the_log_on(self) -> None:
@@ -659,28 +678,77 @@ class ConsoleDisarmTests(unittest.TestCase):
         self.assertEqual(output.count("disarm refused"), 1, output)
         self.assertIn("nope", output)
 
+    def test_a_hung_arm_still_turns_the_log_off(self) -> None:
+        # The panel wrapper runs subprocess.run(timeout=300): a hang raises before
+        # any return code exists, and the switch may already have been posted.
+        hung = subprocess.TimeoutExpired(["servury_panel.py", "--console"], 300)
+
+        outcome, events, output = self.run_cycle(on_error=hung)
+
+        self.assertIsInstance(outcome, subprocess.TimeoutExpired, output)
+        self.assertEqual([action for action, _ in events], ["on", "off", "read"], events)
+
+    def test_a_tail_that_lands_as_the_switch_applies_is_emptied(self) -> None:
+        # Measured 2026-11-19: a cycle matched mid-boot left 55 bytes of getty
+        # banner on the host, because the switch lands a moment after the POST.
+        # The disarm reads the copy back and a second off empties the tail, so
+        # the line it prints ("emptied") is true rather than hopeful.
+        outcome, events, output = self.run_cycle(tail="odl-340a1e login:")
+
+        self.assertEqual(outcome, 0, output)
+        self.assertEqual([action for action, _ in events].count("off"), 2, events)
+        self.assertIn("off; the host's transcript file is emptied", output)
+        self.assertNotIn("still shows", output)
+
+    def test_a_hung_disarm_is_one_line_and_keeps_the_exit_code(self) -> None:
+        # The transcript matched, so the cycle's verdict is 0; a slow way out is
+        # one line, not a traceback that throws the verdict away.
+        hung = subprocess.TimeoutExpired(["servury_panel.py", "--console"], 300)
+
+        outcome, events, output = self.run_cycle(off_error=hung)
+
+        self.assertEqual(outcome, 0, output)
+        self.assertEqual(events[-1][0], "off", events)
+        self.assertEqual(output.count("disarm refused"), 1, output)
+        self.assertIn("timed out after 300 seconds", output)
+
     def test_a_wait_for_timeout_still_turns_the_log_off(self) -> None:
         # The boot never reaches the stage under test, so the cycle exits 1 —
         # and still disarms: a timed-out cycle is exactly when nobody looks again.
         code, events, output = self.run_cycle(log="Linux version 6.12.115 (fixture)\n[ 3.0] nothing yet\n")
 
         self.assertEqual(code, 1, output)
-        self.assertEqual(events[-1], ("off", "transcript"), events)
+        self.assertIn(("off", "transcript"), events,
+                      "a timed-out cycle still disarms after writing its transcript")
+        self.assertEqual(events[-1][0], "read", events)
         self.assertIn("never matched", output)
 
 
 class ApiConsoleDisarmTests(unittest.TestCase):
     """The API path arms with `log: true`; it must disarm with `log: false`."""
 
-    def run_api(self, *extra: str) -> tuple[int, list[tuple[str, dict | None]]]:
+    def run_api(self, *extra: str, arm_error: BaseException | None = None,
+                tail: str = "",
+                ) -> tuple[int | BaseException, list[tuple[str, dict | None]]]:
         calls: list[tuple[str, dict | None]] = []
+        armed = {"on": False}
+        tails = [tail] if tail else []
 
         def fake_call(action, params=None, *, key, server_id=None, timeout=40.0):
             calls.append((action, params))
             if action == "power":
                 return {}
             if params and params.get("log") is True:
+                if arm_error is not None:
+                    raise arm_error
+                armed["on"] = True
                 return {"logging": True}
+            if params and params.get("log") is False:
+                armed["on"] = False
+                return {}
+            # A bare GET: the transcript, or the tail that landed as the switch applied.
+            if not armed["on"]:
+                return {"output": tails.pop() if tails else ""}
             return {"output": "bb-sealed-unlock: opened"}
 
         with tempfile.TemporaryDirectory() as tmp:
@@ -693,21 +761,45 @@ class ApiConsoleDisarmTests(unittest.TestCase):
             ]
             with mock.patch.object(servury_cycle, "call", fake_call), \
                     mock.patch.object(servury_cycle.time, "sleep", lambda seconds: None):
-                code = servury_cycle.main(argv)
-        return code, calls
+                try:
+                    outcome: int | BaseException = servury_cycle.main(argv)
+                except BaseException as error:  # the arm itself can raise
+                    outcome = error
+        return outcome, calls
 
     def test_the_api_path_turns_logging_off_after_the_poll(self) -> None:
         code, calls = self.run_api()
 
         self.assertEqual(code, 0, calls)
-        self.assertEqual(calls[-1], ("serial", {"log": False}),
-                         "the last write is the one that empties the host's copy")
+        self.assertIn(("serial", {"log": False}), calls,
+                      "the write that empties the host's copy")
+        self.assertEqual(calls[-1], ("serial", None),
+                         "the read-back that proves the copy is empty")
 
     def test_keep_console_posts_no_log_false(self) -> None:
         code, calls = self.run_api("--keep-console")
 
         self.assertEqual(code, 0, calls)
         self.assertNotIn(("serial", {"log": False}), calls)
+
+    def test_a_tail_that_lands_as_the_switch_applies_is_emptied(self) -> None:
+        # Same race as the panel path: the off lands after the POST, so the
+        # second write is what empties the getty banner that arrived with it.
+        outcome, calls = self.run_api(tail="odl-340a1e login:")
+
+        self.assertEqual(outcome, 0, calls)
+        self.assertEqual([call for call in calls if call == ("serial", {"log": False})], [
+            ("serial", {"log": False}), ("serial", {"log": False})], calls)
+
+    def test_an_arm_that_raises_after_the_switch_still_disarms(self) -> None:
+        # The gateway documents 504s at 30 s; the switch may have been applied
+        # before the answer was lost, so a raising arm still owes an off.
+        outcome, calls = self.run_api(arm_error=RuntimeError("HTTP 504 the node took it"))
+
+        self.assertIsInstance(outcome, RuntimeError, calls)
+        self.assertEqual(calls[0], ("serial", {"log": True}), calls)
+        self.assertIn(("serial", {"log": False}), calls,
+                      "the way out still empties the host's copy")
 
 
 class LatestBootTests(unittest.TestCase):

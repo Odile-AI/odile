@@ -182,21 +182,50 @@ def disarm_console(via: str, key: str, server_id: str) -> bool:
     if via == "api":
         try:
             call("serial", {"log": False}, key=key, server_id=server_id)
+            left = transcript(call("serial", None, key=key, server_id=server_id))
+            if left:
+                # The switch lands a moment after the POST, so a boot that is
+                # still printing can leave a tail in the file (measured
+                # 2026-11-19: 55 bytes of getty banner after a mid-boot match).
+                # Recording stops with the switch, so one more off empties what
+                # arrived, and the read-back is what makes "emptied" true.
+                call("serial", {"log": False}, key=key, server_id=server_id)
+                left = transcript(call("serial", None, key=key, server_id=server_id))
         except Exception as error:  # noqa: BLE001 — a refusal is a note, not a failure
             print(f"console   disarm refused ({error}); the log stays on and the host keeps its transcript")
             return False
+        if left:
+            print(f"console   off, but the host still shows {len(left)} bytes "
+                  "(the tail landed as the switch applied)")
+            return False
         print("console   off; the host's transcript file is emptied")
         return True
-    done = panel_console(server_id, "off")
-    if done.returncode != 0:
-        detail = (done.stderr or done.stdout or "").strip().splitlines()
-        print(f"console   disarm refused ({detail[-1] if detail else 'the panel refused'}); "
-              "the log stays on and the host keeps its transcript")
+    try:
+        left = ""
+        for attempt in range(2):
+            done = panel_console(server_id, "off")
+            if done.returncode != 0:
+                detail = (done.stderr or done.stdout or "").strip().splitlines()
+                print(f"console   disarm refused ({detail[-1] if detail else 'the panel refused'}); "
+                      "the log stays on and the host keeps its transcript")
+                return False
+            if attempt == 0 and done.stdout.strip():
+                print(done.stdout.rstrip())
+            left = panel_log(server_id)
+            if not left:
+                print("console   off; the host's transcript file is emptied")
+                return True
+            # As in the api branch: the off lands a moment after the POST, so a
+            # still-printing boot can leave a tail. The second pass empties it.
+        print(f"console   off, but the host still shows {len(left)} bytes "
+              "(the tail landed as the switch applied)")
         return False
-    if done.stdout.strip():
-        print(done.stdout.rstrip())
-    print("console   off; the host's transcript file is emptied")
-    return True
+    except Exception as error:  # noqa: BLE001 — a refusal is a note, not a failure
+        # The panel wrapper runs subprocess.run(timeout=300), so a hang raises
+        # instead of returning a code. A matched cycle must not become a
+        # traceback because its way out was slow.
+        print(f"console   disarm refused ({error}); the log stays on and the host keeps its transcript")
+        return False
 
 
 def panel_log(server_id: str) -> str:
@@ -291,8 +320,11 @@ def main(argv: list[str] | None = None) -> int:
                 # earlier boots and a restart would match --wait-for before it happened.
                 call("serial", {"log": False}, key=key, server_id=args.server_id)
                 print("serial    transcript emptied before this boot")
-            state = call("serial", {"log": True}, key=key, server_id=args.server_id)
+            # The flag goes up before the call, not after: the API documents 504s
+            # at 30 s, and a 504 can arrive after the gateway applied the switch.
+            # A raising arm therefore still owes a disarm.
             console_armed = True
+            state = call("serial", {"log": True}, key=key, server_id=args.server_id)
             print(f"serial    logging={state.get('logging')} (starts at the next start)")
             print(f"power     {args.action} {power(key, args.server_id, args.action)}")
         else:
@@ -301,10 +333,12 @@ def main(argv: list[str] | None = None) -> int:
             # rather than growing, so --fresh records which boots it already held
             # and only a boot with a release-setup stamp that was not there before
             # counts as this one.
-            armed = panel_console(args.server_id, "on")
-            # Even a failed arm may have posted the switch, so the way out
-            # disarms unconditionally once the attempt is made.
+            # Even a failed or hung arm may have posted the switch, so the way
+            # out disarms unconditionally once the attempt is made. The flag is
+            # set before the call: the panel wrapper's subprocess.run(timeout=300)
+            # raises on a hang, and that path has no return code to test.
             console_armed = True
+            armed = panel_console(args.server_id, "on")
             if armed.returncode != 0:
                 print(armed.stderr.strip() or "the panel refused to arm the console log", file=sys.stderr)
                 return 1

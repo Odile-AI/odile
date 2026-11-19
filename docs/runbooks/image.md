@@ -583,7 +583,11 @@ provision time:
    `tools/servury_cycle.py` (and `make uki-cycle` through it) arms the log,
    captures one boot, and turns the log off again on every exit path once the
    transcript is written — including a `--wait-for` timeout; `--keep-console`
-   is the only way to leave it on. Measured 2026-11-19: the cycle had armed the
+   is the only way to leave it on. The switch lands a moment after the POST, so
+   a boot that is still printing can land a line or two in the file between the
+   poll and the off: the disarm reads the host's copy back and, if anything
+   arrived, switches the log off once more, so the "emptied" it prints is
+   checked, not assumed. Measured 2026-11-19: the cycle had armed the
    log and never disarmed it, and the tenant box carried **209 KB** of its own
    boot (kernel and systemd lines, hostname, instance id, file sha256s and an
    8-hex prefix of the first-visit token) until a human switched it off. After a
