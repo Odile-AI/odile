@@ -82,6 +82,16 @@ in signups.
     19 November 2026). A drill for a neighbouring property is not evidence for
     this sentence, and "the proof ran" is not a reason to publish.
 
+16. **Tell a scope note from a falsity.** When a decision record qualifies a
+    sentence, ask which path the sentence describes. If the sentence is true on
+    that path at this head, it publishes and the qualifier lives in the deck row,
+    not in the held table: ADR-004 §9 calls the retention row "true on the
+    storage path; conditional during a rebuild" and it shipped, while the same
+    table calls "Backups are off-site" "not true in fact" and it stayed held
+    (ODL-474 follow-up, `t_5f10dd14`, 19 November 2026). Holding a scope note
+    costs a page a true sentence; publishing a falsity costs the trust the deck
+    exists to keep. The test is the reader's path, not the operator's worst case.
+
 ## Exemplars to study
 
 - **April Dunford, *Obviously Awesome*** — the positioning canvas; market,
