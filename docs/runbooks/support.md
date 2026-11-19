@@ -412,10 +412,37 @@ also the unit's exit status — so `systemctl restart odile-access-report` shows
 the no-grant bench and in the reboot window): the unit's status is the report's
 verdict, not a broken unit.
 
+A grant explains the two key rows and nothing else. The verdict is built from
+the rows that failed, so a compound state names the grant **and** the other
+failing labels instead of blaming only the door. Same bench, the drill's grant
+id, with the attestation policy moved to `0x30001` (the seal row fails):
+
+```
+seal           FAIL  policy 0x30001; seal_id strict-bench-v1; measurement 519c7c9a… (policy is 0x30001, not 0x30000)
+support grant  OPEN  grant 39602e79e81a; expires 2026-11-20T15:50:44Z; key SHA256:zaZC3CG0…; line present in /root/.ssh/authorized_keys
+
+OPEN — a support grant is live until 2026-11-20T15:50:44Z (grant 39602e79e81a); 1 other check FAIL (seal): the report did not pass.
+```
+
+and with a planted key and its private half beside the grant (`usable keys`
+fails for more than the grant):
+
+```
+usable keys    FAIL  2 authorized key(s) other than the measured throwaway in /root/.ssh/authorized_keys: SHA256:zaZC3CG0…, SHA256:+miR6jIgSAfkl/YB…; the support grant 39602e79e81a explains one of them (expires 2026-11-20T15:50:44Z); 1 private half on the machine: /home/odile/.ssh/id_ed25519
+
+OPEN — a support grant is live until 2026-11-20T15:50:44Z (grant 39602e79e81a); 1 other check FAIL (usable keys): the report did not pass.
+```
+
+The exit status follows the rows: 1 wherever a row fails (the pure grant above
+and both compound states), 0 in the reboot window and with no grant. A grant
+accounts for `usable keys` only when the single foreign key is the state's own
+fingerprint and for `operator key` only when the one grant-shaped line is the
+exact line the state owns, so a second planted key keeps its own FAIL label.
+
 HQ audits a grant through the log the tenant carries
 (`/var/log/odile-support.log`), `odile-support status --json`, and the
 `audit`/`logs` sections of the bundle the user emails. The `/verify` row landed
-with `t_e23f3288` in release `2026.11.19-5` (`docs/runbooks/install.md`
+with `t_e23f3288` in release `2026.11.19-6` (`docs/runbooks/install.md`
 §12.6): the reporter is `scripts/verify_and_unlock.sh`, embedded in the signed
 installer, and the parsers in `app.py` and `installer/first_visit.py` accept
 the sixth row only together with the OPEN verdict.

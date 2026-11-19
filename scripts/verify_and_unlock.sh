@@ -547,6 +547,10 @@ from datetime import datetime, timezone
 root, user, expect = sys.argv[1:4]
 root = os.path.abspath(root)
 fails = 0
+# The labels that failed, in row order. The verdict names them when a live
+# grant explains some of the FAILs but not all of them: a count alone cannot
+# say which checks a visitor is looking at.
+failed = []
 att_rel = "var/lib/odile/attestation.json"
 
 
@@ -555,6 +559,7 @@ def row(label, ok, detail):
     print("  %-14s %s  %s" % (label, "PASS" if ok else "FAIL", detail))
     if not ok:
         fails += 1
+        failed.append(label)
 
 
 def read(path):
@@ -836,7 +841,10 @@ boot_private = [path for path, public, named in private
                 or (boot_fp is not None and named == boot_fp)]
 
 # 1. Zero usable user keys: every authorized line is the measured throwaway,
-# and no private half on the machine matches an authorized key.
+# and no private half on the machine matches an authorized key. `grant_only`
+# records the pure live-grant case (one foreign key, and it is the grant's)
+# so the verdict can keep its causal sentence only when it measured it.
+usable_grant_only = False
 if ak_text is None:
     row("usable keys", False, "no %s" % guest(ak_path))
 elif not ak_keys:
@@ -849,6 +857,10 @@ else:
                if (public is not None and public in ak_keys)
                or (named is not None and named in ak_fps)]
     if extras or malformed or matched or unidentified:
+        usable_grant_only = bool(
+            grant is not None and not (malformed or matched or unidentified)
+            and len(extras) == 1
+            and fingerprint(extras[0][1]) == grant["key_fingerprint"])
         detail = []
         if extras:
             detail.append("%d authorized key(s) other than the measured throwaway in %s: %s"
@@ -950,7 +962,9 @@ else:
 # 5. No operator key: no grant-shaped line (options plus a forced command),
 # and no authorized key that names an operator. A different user key fails
 # "usable keys" above; a private key that is not authorized (a backup key for
-# the storage box, say) does not open this machine.
+# the storage box, say) does not open this machine. `grant_only` says the
+# only grant-shaped line is the one this live grant's state owns.
+operator_grant_only = False
 if ak_text is None:
     row("operator key", False, "no %s" % guest(ak_path))
 else:
@@ -964,6 +978,9 @@ else:
         if key != boot_line and any(word in comment for word in ("odile", "operator", "support", "hq")):
             grants.append((path, line))
     if grants:
+        operator_grant_only = bool(
+            grant_owned is not None and len(grants) == 1
+            and grants[0][0] == grant_owned[0] and grants[0][1] == grant_owned[1])
         where = sorted({guest(path) for path, _ in grants})
         suffix = "" if where == [guest(ak_path)] else " (in %s)" % ", ".join(where)
         named = ""
@@ -990,9 +1007,32 @@ if grant is not None:
                               % (grant["grant_id"], grant["expires_at"],
                                  grant["key_fingerprint"], line_state)))
 
+# The verdict is built from the rows that failed, not from the grant alone. A
+# live grant explains at most the two key rows, so any other FAIL is still
+# named: choosing the grant's sentence first hid a failed seal behind "the two
+# key rows fail" (ODL-217 round 2, verifier). The pure case keeps the causal
+# sentence; a compound one says the report did not pass, and every verdict
+# still starts `OPEN` so app.py / first_visit.py read the 11-line shape.
 verdict = None
-if grant is not None:
-    if grant_owned is not None:
+if grant is None:
+    if fails:
+        verdict = "FAIL — the access report did not pass"
+    else:
+        verdict = ("PASS — five checks: zero usable user keys, the throwaway boot key, "
+                   "the seal, the sign-in hash, no operator key.")
+else:
+    explained = set()
+    if usable_grant_only:
+        explained.add("usable keys")
+    if operator_grant_only:
+        explained.add("operator key")
+    other = [label for label in failed if label not in explained]
+    if other:
+        verdict = ("OPEN — a support grant is live until %s (grant %s); %d other "
+                   "check%s FAIL (%s): the report did not pass."
+                   % (grant["expires_at"], grant["grant_id"], len(other),
+                      "" if len(other) == 1 else "s", ", ".join(other)))
+    elif grant_owned is not None and explained == {"usable keys", "operator key"}:
         verdict = ("OPEN — a support grant is live until %s (grant %s): the two "
                    "key rows fail because that granted key is in %s."
                    % (grant["expires_at"], grant["grant_id"], guest(ak_path)))
@@ -1000,11 +1040,6 @@ if grant is not None:
         verdict = ("OPEN — a support grant is live until %s (grant %s); its line "
                    "is missing from %s (the timer restores it within 30 s)."
                    % (grant["expires_at"], grant["grant_id"], guest(ak_path)))
-elif fails:
-    verdict = "FAIL — the access report did not pass"
-else:
-    verdict = ("PASS — five checks: zero usable user keys, the throwaway boot key, "
-               "the seal, the sign-in hash, no operator key.")
 print("")
 print("  %s" % verdict)
 

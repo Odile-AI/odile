@@ -951,7 +951,68 @@ class AccessReportTests(unittest.TestCase):
         self.assertIn("line present", result.stdout)
         # The verdict is the grant, not the bare FAIL that read as a break.
         self.assertRegex(result.stdout.splitlines()[-1], r"^  OPEN \u2014 ")
+        self.assertIn("the two key rows fail because that granted key is in", result.stdout)
         self.assertNotIn("FAIL \u2014 the access report did not pass", result.stdout)
+
+    def test_a_live_grant_and_a_failed_seal_names_both(self) -> None:
+        """A grant explains the key rows, not the seal; the verdict says both.
+
+        The verdict used to be chosen from `grant` before `fails`, so a
+        machine that also failed attestation read as "only the grant is open",
+        and the causal sentence blamed two rows while three had failed.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self.bench(
+                Path(tmp),
+                keys=(self.THROWAWAY, self.grant_line()),
+                policy=0x30001,
+                extra_files={"var/lib/odile/support-grant.json":
+                             json.dumps(self.grant_state())},
+            )
+            result = self.report(root)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertRegex(result.stdout, r"seal\s+FAIL")
+        self.assertRegex(result.stdout, r"support grant\s+OPEN")
+        verdict = result.stdout.splitlines()[-1]
+        self.assertRegex(verdict, r"^  OPEN \u2014 a support grant is live until ")
+        self.assertIn(self.GRANT_ID, verdict)
+        self.assertIn("1 other check FAIL (seal)", verdict)
+        self.assertIn("the report did not pass", verdict)
+        self.assertNotIn("the two key rows fail", verdict)
+
+    def test_a_live_grant_and_a_planted_key_name_the_other_failure(self) -> None:
+        """`usable keys` failing for more than the grant is still reported.
+
+        The row said two foreign keys and a private half; the verdict said the
+        two key rows fail because of the grant, which the row contradicts.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            subprocess.run(
+                ["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-C", "bench-user",
+                 "-f", str(tmp_path / "user")],
+                check=True,
+            )
+            public = (tmp_path / "user.pub").read_text(encoding="utf-8").strip()
+            private = (tmp_path / "user").read_text(encoding="utf-8")
+            root = self.bench(
+                tmp_path,
+                keys=(self.THROWAWAY, self.grant_line(), public),
+                private_key=("home/odile/.ssh/id_ed25519", private),
+                extra_files={"var/lib/odile/support-grant.json":
+                             json.dumps(self.grant_state())},
+            )
+            result = self.report(root)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("2 authorized key(s) other than the measured throwaway", result.stdout)
+        self.assertIn("1 private half on the machine", result.stdout)
+        self.assertRegex(result.stdout, r"support grant\s+OPEN")
+        verdict = result.stdout.splitlines()[-1]
+        self.assertRegex(verdict, r"^  OPEN \u2014 a support grant is live until ")
+        self.assertIn(self.GRANT_ID, verdict)
+        self.assertIn("1 other check FAIL (usable keys)", verdict)
+        self.assertIn("the report did not pass", verdict)
+        self.assertNotIn("the two key rows fail", verdict)
 
     def test_a_live_grant_after_the_boot_rewrite_is_open_and_passes_five(self) -> None:
         """The boot rewrite deletes the line; the state keeps the grant live.
