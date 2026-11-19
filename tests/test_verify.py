@@ -1630,6 +1630,32 @@ class TenantVcekTests(unittest.TestCase):
                          hashlib.sha256(cmdline.encode("utf-8")).hexdigest())
 
 
+class SyntheticFixtureTests(unittest.TestCase):
+    """The generator is the source of the committed fixtures; it must verify."""
+
+    def test_the_generator_builds_a_verifiable_fixture(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="odl-synthetic-") as tmp:
+            result = subprocess.run(
+                [sys.executable, str(ROOT / "tools" / "make_synthetic_report.py"),
+                 "--out-dir", tmp],
+                capture_output=True, text=True, timeout=120, cwd=ROOT,
+            )
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            document = json.loads(
+                (Path(tmp) / "synthetic-report.json").read_text(encoding="utf-8"))
+            module = load_snp_report()
+            report = module.Report(base64.b64decode(document["report_b64"]))
+            trust = document["trust"]
+            checks = module.run_checks(
+                report, str(Path(tmp) / trust["amd_dir"]), trust["ark_sha256"])
+            self.assertTrue(all(check.ok for check in checks),
+                            [check.detail for check in checks if not check.ok])
+            self.assertTrue(report.chip_id.startswith(b"ODILE-SYNTHETIC-"))
+            self.assertEqual(report.measurement_hex, document["measurement"])
+            self.assertEqual(report.version, 5)
+            self.assertEqual(len(report.raw), 1184)
+
+
 class BundleTests(unittest.TestCase):
     """The published tarball is reproducible and its hash is the one we print."""
 
