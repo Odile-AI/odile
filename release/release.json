@@ -1,8 +1,8 @@
 {
   "artifacts": {
     "installer": {
-      "sha256": "fa51daa1cd41fdab3f948d969d2e79470d5948845acb51b809d3abb8338da0cf",
-      "size": 1433617,
+      "sha256": "36babff5a980decd1a378ca9fe3a7efc8c388953ba421a3c0111d1c79ac5ecb9",
+      "size": 1433661,
       "url": "odile_install.py"
     },
     "skills": {
@@ -14,14 +14,14 @@
   "boot": {
     "kernel": "6.12.115+deb13.1-amd64"
   },
-  "generated_at": "2026-11-19T09:30:00Z",
+  "generated_at": "2026-11-19T11:40:00Z",
   "manifest": {
-    "sha256": "f73b5d4e6eec4cab972b88c13c846b3927f88043f9258b8d843fdffdd251f975",
+    "sha256": "be75fb6674080843019e96ba4a48d141e39cd7e78d60fc882d9605747baa80de",
     "signature_url": "manifest.json.sig",
     "url": "manifest.json"
   },
-  "notes": "The 2026.11.19-1 cut (ODL-340 follow-up: the tenant image learns its environment). It carries one signed installer change and the boot half that feeds it. (1) installer/odile_install.py serves ONE site name: render_caddy_site, ensure_caddy_site, wait_for_dns, wait_for_acme and certificate_fingerprint all read layout.fqdn, so --public-url names the Caddy site, the DNS and ACME waits and the certificate the recovery file pins; before this cut only webapp.public_url honoured it and a tenant in a second environment needed a test-site Caddy block and a config patch. The tenant default is <slug>.<the seed endpoint's host> (production keeps <slug>.odile.fyi), and the nightly backup's heartbeat default is <seed origin>/heartbeat instead of a production constant, so a bench tenant posts to the bench. (2) deploy/image/odile-release-setup.sh passes the measured odile.public_url= as --public-url (ODILE_RELEASE_PUBLIC_URL still overrides it on an operator re-run) and passes odile.seed_url= through, so a second environment needs no systemd drop-in. The boot record is unchanged: odile-firstboot posts it to odile.seed_url. release/manifest.json is the fresh-root document with only installer_sha256 re-derived by tools/recut_release.py, so this is a surgical re-cut, not a root rebuild; the skills artifact, the vendor pin and the meter-free rows are unchanged. The id is 2026.11.19-1: the served release was 2026.11.15-9, measured 2026-11-19T09:25Z, and 2026.11.16-1 is the committed-not-deployed cut this one supersedes; generated_at is later than every earlier cut. It is committed, not deployed.",
+  "notes": "ODL-340 follow-up (t_73334f58), cut over 2026.11.19-1 (t_3cd62ef9's /verify two-URL re-embed); the installer carries both. (1) t_3cd62ef9: the /verify page's note now says the verifier fetches two URLs \u2014 /attestation and that report's own VCEK from AMD's KDS \u2014 replacing the one-URL sentence. The verifier bundle is unchanged (20,560 bytes, sha256 815dbc26\u2026). (2) ODL-340 follow-up: the installer serves ONE site name \u2014 render_caddy_site, ensure_caddy_site, wait_for_dns, wait_for_acme and certificate_fingerprint all read layout.fqdn, so --public-url names the Caddy site, the DNS and ACME waits and the certificate the recovery file pins. A tenant's default name is <slug>.<the seed endpoint's host> (production keeps <slug>.odile.fyi) and the nightly unit's heartbeat default is <seed origin>/heartbeat (production keeps https://odile.fyi/heartbeat). deploy/image/odile-release-setup.sh passes the measured odile.public_url= as --public-url (ODILE_RELEASE_PUBLIC_URL still wins on an operator re-run) and passes odile.seed_url= through, so a second environment needs no systemd drop-in, no second Caddy block and no public_url patch; the boot record is unchanged (odile-firstboot posts it to odile.seed_url). release/manifest.json is 2026.11.16-1's fresh-root document whose only move is installer_sha256, so this is a surgical re-cut, not a root rebuild; the skills artifact (9d82653f\u2026, 851,945 bytes) and the 539e205f\u2026 audit row are unchanged. The id is 2026.11.19-2: 2026.11.19-1 is t_3cd62ef9's /verify cut (2026-11-19T05:00:00Z), and this cut is later than it by generated_at at 2026-11-19T11:40:00Z. It is committed, not deployed: measured 2026-11-19T11:38Z the URL serves 2026.11.15-9 (2cdf0801\u2026, 1,424,179 bytes).",
   "product": "odile",
-  "release": "2026.11.19-1",
+  "release": "2026.11.19-2",
   "schema": 1
 }

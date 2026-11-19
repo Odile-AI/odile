@@ -997,6 +997,20 @@ t_ab95ec2a's open cut, `-8` is t_d95b8c13's pre-merge cut (22:45Z, superseded
 by this merged head), `-9` is t_2efbd6e3's (23:59Z); `2026.11.16-1` is later
 than every cut by `generated_at`.
 
+**The `2026.11.19-1` cut (ODL-906-F3 follow-up, `t_3cd62ef9`).** One signed
+change over `-1`: the embedded `/verify` page's "Check it yourself" note now
+says the verifier fetches two URLs — `/attestation` and that report's own VCEK
+from AMD's KDS — because the demo chip's vendored VCEK is deleted and the
+default run fetches the report's own certificate. `installer/embed_verify.py`
+re-embedded the page and `tools/recut_release.py` re-signed the pair:
+installer `e4a3554b…` (1,428,062 bytes), manifest `65c56be3…` (49,957 bytes;
+its only move against `-1` is `installer_sha256`), release.json `e22b8ef6…` at
+`2026-11-19T05:00:00Z`. The verifier bundle is unchanged (`815dbc26…`, 20,560
+bytes), the skills artifact (`9d82653f…`) and the audit row (`539e205f…`) are
+unchanged, `--self-test` PASS and `--verify-signature` OK. `install.md` §12.6
+has the full record; it is committed, not deployed (the URL still serves
+`2026.11.15-9`, `2cdf0801…`, measured 2026-11-19T04:37Z).
+
 
 ## 6. The guest: check, apply, rollback
 

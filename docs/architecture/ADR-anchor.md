@@ -58,9 +58,11 @@ it:
    overwrite: the detection existed, the enforcement did not. That is the failure
    the builder did not test.
 2. **It was adjacent to the verifier, never part of it.** `odile-verify` has
-   never read the anchor: it loads the pin from disk and fetches exactly one
-   URL, the machine under test (`fetch()` at `odile-verify:96`, no redirects).
-   So removing the anchor changes no verifier behaviour at all — which is why
+   never read the anchor: it loads the pin from disk and fetches the machine
+   under test (`fetch()` at `odile-verify:96`, no redirects) — and, since the
+   19 November 2026 addendum in §6a, the VCEK AMD publishes for that report's
+   chip. It has never fetched the anchor, an explorer or a log. So removing the
+   anchor changes no verifier behaviour at all — which is why
    the removal is cheap and why keeping it bought nothing on the verify path
    except a second service a sceptic could trip over.
 
@@ -137,10 +139,11 @@ If the trigger in §8 fires, the answer is a transparency log, not a bare
 signature — a Merkle log with a signed tree head gives author *and* time in one
 object, and can be checked offline against a tree head the user already holds.
 
-## 6. The rule this decision protects: the verifier fetches one URL
+## 6. The rule this decision protects: the verifier fetches one URL (see §6a)
 
 **`odile-verify` must never depend on a network fetch beyond the machine it
-checks.** Concretely, at the head this ADR was written against:
+checks and the one AMD KDS object §6a names.** Concretely, at the head this ADR
+was written against:
 
 - one `urllib` fetch per run, to the target's `/attestation`, with redirects
   refused (`_OneURL`) and a 1 MiB cap;
@@ -150,13 +153,75 @@ checks.** Concretely, at the head this ADR was written against:
 - standard library plus `openssl`, nothing else.
 
 A PASS is a function of *the signed bytes the machine served* and *the bytes on
-the reader's disk*. It is never a function of a third service being up, of our
-account having funds, or of a log answering. The anchor put a second service in
+the reader's disk*. As written it is never a function of a third service being
+up, of our account having funds, or of a log answering. Since §6a it is also a
+function of AMD's KDS answering with the VCEK for the report's chip — the one
+third service now in the path, and an outage fails the run rather than passing
+it. The anchor put a second service in
 the reader's path — an explorer link and an RPC node — so a testnet outage or a
 drained account could fail a check of a perfectly good machine for reasons that
 had nothing to do with its bytes. That is a reliability defect wearing a
 provenance costume, and it is the reason this rule is written down here rather
 than left implicit in PIN-POLICY §3.
+
+### 6a. Addendum, 19 November 2026 — the second URL, and what it does not change
+
+**What changed.** The repository used to vendor the demo chip's VCEK under
+`tests/fixtures/amd/`. A VCEK is issued to one chip, and its serial and HWID
+extension *are* that chip's identity: the file published the demo machine's
+silicon id in every copy of the tree and in the verifier bundle. It was deleted
+(`t_3cd62ef9`, the ODL-906-F3 follow-up), and `odile-verify` now fetches the
+report's own VCEK from AMD's KDS — the object named by the report's raw 64-byte
+chip id and reported TCB — on the default run, demo included. `--no-kds` refuses
+that fetch and then fails closed unless `--amd-dir` holds a chain that binds the
+report; an `--amd-dir` that does bind it skips the fetch, so the second URL is
+the rule for every run that does not carry a local chain.
+
+**The rule as it now binds.** The verifier's default network path is:
+
+- one fetch to the machine under test: `<base>/attestation`, redirects refused,
+  1 MiB cap;
+- one fetch to AMD's KDS for the VCEK the report names, skipped when a local
+  `--amd-dir` binds the report or when `--no-kds` is set;
+- nothing else: the pin is a local file, the ASK and ARK are local files (the
+  shipped bundle and the default fixture directory both carry them), the ARK's
+  SHA-256 is a constant in the verifier (a local fixture may name its own; a
+  served document never does), and `openssl` is a local binary. A caller who
+  points `--amd-dir` at a directory without `ark.pem` and `ask.pem` gets one
+  more KDS request — `cert_chain` — because `install_tenant_chain` fetches the
+  roots it was not handed; the shipped path never does.
+
+**What the second URL does not do.** It does not add a trust anchor. The VCEK
+AMD's KDS returns is accepted only if it chains to the pinned ARK and binds the
+report's chip id and TCB; the KDS is trusted for *availability*, not for
+authenticity, and a compromised or spoofed KDS can serve only an AMD-signed
+VCEK for the chip the report already names — or one that fails the binding.
+A KDS outage is a FAIL with the reason on the `vcek` row — never a fallback to
+another chip's certificate.
+
+**What it does do.** It puts AMD's KDS in the reader's path, so a KDS outage
+can fail a check of a perfectly good machine — the exact reliability shape §6
+weighed against the anchor. It is accepted because the alternative is publishing
+a silicon id. Note that the vendored chain never worked for the machine that
+matters: a tenant's report names another chip, so the demo's vendored VCEK
+failed the CPU binding on every tenant run, and ODL-319's follow-up
+(`t_8a0ef011`) already fetched the tenant's VCEK from the KDS. Vendoring one
+machine's certificate bought the demo path only, at the price of that machine's
+identity. `--no-kds` plus a local `--amd-dir` remains the offline path.
+
+**Residual risk, owner and review.** Owner: the security seat. Revisit when
+AMD changes or retires the KDS endpoint, or when a tenant run must pass with no
+third service at all (that would need a per-machine `--amd-dir` the user holds,
+not a vendored certificate). Nothing here says AMD's KDS is *necessary*: the
+`vcek` row is the one place a KDS outage shows, and a verifier run that must not
+depend on it passes `--no-kds` with a chain directory it trusts.
+
+**What this retires.** ODL-319's definition of done carried "the verifier runs
+on a clean Debian with Python 3 and openssl, and fetches exactly one URL", and
+its context said "the cert chain vendored under `tests/fixtures/amd/` so a judge
+needs no AMD KDS access". Both sentences are retired by `t_3cd62ef9`; the DoD
+that survives is the one this ADR states — standard library plus `openssl`, the
+pin local, the ARK pinned, no log, no anchor — with the KDS fetch named.
 
 ## 7. What we give up, and why it is acceptable now
 

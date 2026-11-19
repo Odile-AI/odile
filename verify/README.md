@@ -4,7 +4,7 @@ Two programs carry the name:
 
 | file | what it is |
 |---|---|
-| [`../odile-verify`](../odile-verify) (repo root, executable) | the standalone verifier a stranger runs on a laptop: it fetches one URL, reads the report out of the signed bytes, walks the AMD certificate chain, checks the ECDSA signature and compares the launch measurement to [`../odile-verify.pin`](../odile-verify.pin). Python 3 and the `openssl` binary; no pip, and no state written unless you ask for `--record`. |
+| [`../odile-verify`](../odile-verify) (repo root, executable) | the standalone verifier a stranger runs on a laptop: it fetches two URLs on the default run — the machine's `/attestation` and AMD's KDS for the report's own VCEK — reads the report out of the signed bytes, walks the AMD certificate chain, checks the ECDSA signature and compares the launch measurement to [`../odile-verify.pin`](../odile-verify.pin). Python 3 and the `openssl` binary; no pip, and no state written unless you ask for `--record`. |
 | [`verify.py`](verify.py) | the machine's own claim table (ODL-236): every verification claim with where it was checked (`checked from your laptop` or `read from the machine`), rendered from the machine's records. It renders and is tested; **it is not yet what a guest serves at `/verify`** — that page is `installer/first_visit.py` rendering [`web/verify.html`](../web/verify.html) around the access report (`installer/README.md`). |
 
 The long version — every row, every FAIL meaning, and the seven things the
@@ -29,7 +29,7 @@ Exit codes: `0` PASS, `1` FAIL, `2` usage or I/O error.
 
 | row | the check | a FAIL means |
 |---|---|---|
-| `vcek` | the report's own VCEK was fetched from AMD's KDS for its raw chip id and reported TCB (a tenant; the demo binds the vendored VCEK) | the key server was unreachable or answered for another chip/TCB; the run fails closed |
+| `vcek` | the report's own VCEK was fetched from AMD's KDS for its raw chip id and reported TCB (a tenant, and the demo too — its vendored VCEK was deleted for its silicon id, ADR-002 §6a) | the key server was unreachable or answered for another chip/TCB; the run fails closed |
 | `chain` | `openssl verify` walks VCEK → ASK → ARK, and the ARK SHA-256 equals the one pinned in `tools/snp_report.py` | the signature is not rooted in AMD's Milan root |
 | `cpu binding` | the VCEK's HWID and TCB extensions equal the report's `chip_id` and `reported_tcb` | the certificate is for another chip or TCB |
 | `signature` | ECDSA P-384 over report bytes `[0, 0x2A0)` verifies with the VCEK | the report changed after the CPU signed it |
@@ -79,7 +79,8 @@ diff is a security review item (runbook §Refreshing the pin).
 
 Other flags: `--release <id>` picks an entry explicitly, `--pin <file>`,
 `--report <file>` (a saved attestation), `--amd-dir <dir>`, `--kds-base <url>`,
-`--no-kds` (never fetch from AMD; vendored chain only).
+`--no-kds` (never fetch from AMD; needs `--amd-dir` holding a chain that binds
+the report, and fails closed otherwise).
 
 ## 4. The machine's own claim table (`verify.py`)
 
@@ -111,11 +112,11 @@ The two read the same records; neither is hardware-measured.
 ## The tests
 
 `tests/test_verify.py` runs the real command against saved reports and the
-vendored AMD chain with no network: a good report passes, a wrong pin fails, a
-byte changed after signing fails the signature, a release absent from the pin
-fails, `--expect` is required on a tenant, and `--print-pin` merges rather than
-replaces. The `odile.boot-record.v1` record and its `--previous` comparison are
-covered there too (`test_record_writes_the_section_43_record`,
+synthetic test-only chain with no network: a good report passes, a wrong pin
+fails, a byte changed after signing fails the signature, a release absent from
+the pin fails, `--expect` is required on a tenant, and `--print-pin` merges
+rather than replaces. The `odile.boot-record.v1` record and its `--previous`
+comparison are covered there too (`test_record_writes_the_section_43_record`,
 `test_previous_says_same_or_names_the_field_that_moved`).
 `tests/test_bootrecord.py` is a different thing: HQ's measured-boot record row
 (ODL-398).

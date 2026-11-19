@@ -646,9 +646,14 @@ class Flow(unittest.TestCase):
                 self.assertIn("odile-verify/odile-verify", names)
                 self.assertIn("odile-verify/tools/snp_report.py", names)
                 self.assertIn("odile-verify/odile-verify.pin", names)
-                self.assertIn("odile-verify/tests/fixtures/amd/vcek.pem", names)
+                self.assertIn("odile-verify/tests/fixtures/amd/ark.pem", names)
+                self.assertIn("odile-verify/tests/fixtures/amd/ask.pem", names)
+                # The chip-specific VCEK is fetched from AMD's KDS for the
+                # report's chip and TCB; it is not published in the bundle.
+                self.assertNotIn("odile-verify/tests/fixtures/amd/vcek.pem", names)
                 tar.extractall(tmp)
-            report = os.path.join(ROOT, "tests", "fixtures", "verify", "report-2026-11-06.json")
+            report = os.path.join(ROOT, "tests", "fixtures", "verify",
+                                  "synthetic-report.json")
             with open(report, encoding="utf-8") as handle:
                 expected = json.load(handle)["measurement"]
             result = subprocess.run(

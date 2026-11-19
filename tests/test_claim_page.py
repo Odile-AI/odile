@@ -232,6 +232,24 @@ class ClaimPageTests(unittest.TestCase):
         self.assertIn(ROW_FIRST_RUN, page)
         self.assertNotIn(ROW_FIRST_RUN_TAIL, page)
 
+    def test_the_form_page_states_no_price(self) -> None:
+        """alpha.0 has no price (`docs/MVP-V0.1.md` §0).
+
+        The invite page is the last page a tester reads before the consent tick,
+        so the v5 price line ("$49/month. Month-to-month. Cancel anytime.") must
+        not survive there. The replacement is the certified invitation and email
+        footer wording — "Nothing to pay" and "Odile pays for the machine and
+        the inference" — never a figure and never a v5 billing term.
+        """
+        status, page = request(self.port, "GET", "/claim?t=" + self.issued.token)
+        self.assertEqual(status, 200, page)
+        clean = visible(page)
+        self.assertNotIn("$", clean)
+        self.assertNotIn("month-to-month", clean.lower())
+        self.assertNotIn("cancel anytime", clean.lower())
+        self.assertIn("Nothing to pay.", clean)
+        self.assertIn("Odile pays for the machine and the inference.", clean)
+
     def test_the_branded_error_is_the_shipped_state(self) -> None:
         """The form is novalidate, so the server's in-place message ships.
 
