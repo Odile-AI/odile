@@ -50,6 +50,13 @@ a tenant's disk and its measured boot image without the user:
    storage and the reinstall clears them.
 7. **Two flags.** `--apply` alone is a dry run; `--confirm` says the disk's
    contents are gone.
+8. **The fence holds before the composite's first write.** `--recycle` runs
+   rule 1 at the top, before it arms the console log — arming the console is a
+   POST too, and a `--recycle` naming a widened allow-list must post nothing
+   at all. (Measured 2026-11-19 with the file naming both the bench and the
+   tenant: `--recycle --server 168020b4 --apply --confirm` → exit 2, no POST,
+   no audit line — and the same for the tenant's own id, which a mistyped
+   `--server` would have aimed at.)
 
 ## 2. The sequence
 
@@ -122,10 +129,18 @@ disk write started.
 ```
 
 It arms the console log first (the first boot's transcript cannot be recovered
-after the fact), then reinstall → boot image → disk image, in the vendor's
-order. The disk write **starts the machine itself**; the command ends at that
-submission. Without `--apply --confirm` the same command is a dry run and
-prints every field it would post, including the pair it would lose.
+after the fact), **after** the one-id fence (§1 rule 8), then reinstall → boot
+image → disk image, in the vendor's order. The disk write **starts the machine
+itself**; the command ends at that submission. Without `--apply --confirm` the
+same command is a dry run and prints every field it would post, including the
+pair it would lose.
+
+If the wait for `Running` ends the command (the machine is still `reinstalling`
+at `--wait`), the erase has already happened and the boot/disk fields are
+cleared: re-run the same command. The second run's rule-(e) line legitimately
+reads `boot=none disk=none` — the first run's line is the one that carries the
+pair. Measured 2026-11-19: the first attempt ended in the wait 4 m 08 s after
+its erase, the re-run (with `--wait 420`) reached `running` in 63 s.
 
 Measured 2026-11-19 on `<server:ukitest>`: reinstall POST → `Running` 63 s;
 boot-image attach (115 MB download + hash) 10 s; disk write submitted, the

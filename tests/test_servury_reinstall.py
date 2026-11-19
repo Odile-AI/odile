@@ -616,6 +616,36 @@ class RecycleTests(FencedCase):
         self.assertEqual(code, 0)
         self.assertEqual(calls, ["console", "reinstall", "boot", "disk"])
 
+    def test_a_widened_allow_list_refuses_before_the_console_write(self) -> None:
+        # Round-1 review: the console arm was the composite's first write and
+        # reached the panel before write_reinstall() ran its own fence. The
+        # host's resting allow-list names two ids, so this is the live shape.
+        self.id_file.write_text(SERVER + "\n" + OTHER + "\n", encoding="utf-8")
+        posts: list = []
+        code, _, err = self.run_tool(self.recycle_argv("--apply", "--confirm"), posts=posts)
+
+        self.assertEqual(code, 2)
+        self.assertIn("exactly one", err)
+        self.assertEqual(posts, [], "the fence holds before the console is armed")
+        self.assertEqual(self.lines(), [], "a refused id is not an attempt")
+
+    def test_a_tenant_on_a_widened_list_is_never_armed(self) -> None:
+        # The live tenant's box (OTHER) *is* on the shared allow-list, so the
+        # CLI's membership gate lets it through; the composite's own fence must
+        # be what stops it, before any POST leaves.
+        self.id_file.write_text(SERVER + "\n" + OTHER + "\n", encoding="utf-8")
+        argv = self.recycle_argv("--apply", "--confirm")
+        argv[argv.index("--server") + 1] = OTHER
+        posts: list = []
+        with mock.patch.object(panel, "owned_servers",
+                               lambda opener: frozenset({SERVER, OTHER})):
+            code, _, err = self.run_tool(argv, posts=posts)
+
+        self.assertEqual(code, 2)
+        self.assertIn("exactly one", err)
+        self.assertEqual(posts, [])
+        self.assertEqual(self.lines(), [])
+
     def test_the_sequence_stops_at_the_first_failure(self) -> None:
         code, calls, _ = self.run_recycle(self.recycle_argv("--apply", "--confirm"),
                                           codes=[0, 1])

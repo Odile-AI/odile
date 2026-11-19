@@ -836,7 +836,17 @@ def recycle(
     (`docs/product/SPIKE-servury-reinstall.md` §6). The console is armed first:
     the first boot's transcript is the machine's own evidence, and it cannot be
     recovered after the fact.
+
+    The one-id fence runs **before the first write**, not on the way to the
+    erase: arming the console is a POST too, so a `--recycle` aimed at a
+    widened allow-list must be refused before it touches anything. (Round-1
+    review of this card found the console going out to the live tenant before
+    `write_reinstall` reached its own fence.)
     """
+    why = recycle_target(server)
+    if why:
+        print(f"panel: refusing the recycle: {why}", file=sys.stderr)
+        return 2
     print(f"panel: recycle {server} — console log, reinstall, boot image, disk image")
     code = console(opener, server, "on", dry_run=not apply)
     if code:
