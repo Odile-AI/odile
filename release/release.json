@@ -1,8 +1,8 @@
 {
   "artifacts": {
     "installer": {
-      "sha256": "6959f3fe3c4c7c621641be975667905dbf0d498f0a56db348c7686fd3525b8ae",
-      "size": 1491364,
+      "sha256": "1d946c4463a83cac6c1ea5e74b2c50b7694c22aa70ecb442b9c57fd5554b39de",
+      "size": 1503889,
       "url": "odile_install.py"
     },
     "skills": {
@@ -14,14 +14,14 @@
   "boot": {
     "kernel": "6.12.115+deb13.1-amd64"
   },
-  "generated_at": "2026-11-19T20:16:59Z",
+  "generated_at": "2026-11-19T21:20:00Z",
   "manifest": {
-    "sha256": "e579e02ed0184bd3d3c1e6c2b07be8a8105657a42125260287847b374a2a3fab",
+    "sha256": "7031d4a046239e39e8397d5e70b97e1b02dc35e3b1ca429120c5edd319f9083e",
     "signature_url": "manifest.json.sig",
     "url": "manifest.json"
   },
-  "notes": "t_4fcd465f (ODL-236 follow-up) round 3 at the head that merges main's 2026.11.19-3. (1) This card: the guest's /verify is the reviewed page program, not the first-visit service's access-report render. The installer embeds verify/verify.py and templates/verify.html (pinned; --self-test fails on a one-byte edit), places them at /usr/local/lib/odile/verify.{py,html}, writes odile-verify.service as root on 127.0.0.1:8098, and splices one no-store /verify route to it; the first-visit service keeps only /first-visit* and the five icon paths. The page adds CLAIMS \u00a74.4's seal-policy and sign-in-hash rows. Round 3's changes: the demo command section is injected after the #machine section (its note names the measurement row above it) and is renamed 'Run the verifier'; both command panels use the page's report-pre wrap rule so they stop scrolling sideways at 390; and the LUKS row prints cryptsetup status root_crypt to resolve the container, because luksDump on the plaintext mapper is refused (docs/runbooks/support.md). (2) Main since 2026.11.18-1: t_e0475dba's manifest row for the tenant backup program and its runbooks, the ODL-340 follow-up's one site name and seed-derived environment (its -1/-2/-3 cuts), ODL-922's decision-card watchdog, ODL-474's 30-day backup row, ODL-581's alpha.0 account emails and ODL-918/ODL-921's alpha.0 scope sentences. release/manifest.json is the fresh-root document with only installer_sha256 re-derived by tools/recut_release.py, so this is a surgical re-cut, not a root rebuild. The id is 2026.11.19-4: later than every cut by generated_at (2026.11.19-3 at 2026-11-19T13:10:00Z). It is committed, not deployed: measured 2026-11-19T13:01Z the URL served 2026.11.19-1 (installer e4a3554b\u2026, 1,428,062 bytes; manifest 65c56be3\u2026).",
+  "notes": "ODL-236 follow-up (t_4fcd465f), round 4, over 2026.11.19-4 (t_73334f58). The tenant /verify page \u2014 verify/verify.py + templates/verify.html, pinned in this installer and served by odile-verify.service on 127.0.0.1:8098 behind Caddy's one no-store /verify handle \u2014 now sets its reading prose in the text face: --text and --serif are declared in :root, body prose is 18 px/1.6 on the text face, notes and the foot are 16 px/1.6, and Cormorant Garamond is kept for .brand, h1 and h2 (BRAND.md \u00a7Typography; the page t_ae833f3f shipped). The program, its 21 rows and the demo injection are unchanged from 2026.11.19-4; the embedded template's SHA-256 moves and tests/test_verify.py pins the type roles.",
   "product": "odile",
-  "release": "2026.11.19-4",
+  "release": "2026.11.19-5",
   "schema": 1
 }

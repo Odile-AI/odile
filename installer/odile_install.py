@@ -3076,7 +3076,7 @@ printf 'members %s\n' "${members# }"
 # The first-visit service and its page are the reviewed files, byte for
 # byte, so the signed installer carries exactly the program and page it
 # writes to /usr/local/lib/odile/. --self-test fails on a one-byte edit.
-FIRST_VISIT_SHA256 = "a336efe21714e1a946a251e4227faba8561f3d0e4f30496cd4740f86d2d2f0fe"
+FIRST_VISIT_SHA256 = "00af16519ada1104191b99fc39349cde908f70d67f37eff176da5c6d89852915"
 FIRST_VISIT_SOURCE = r'''#!/usr/bin/python3
 """odile first-visit service — set the Odile sign-in on the guest.
 
@@ -3092,9 +3092,11 @@ service's state file (the hashes).
 
     GET  /first-visit?t=<token>   the form, while the token is unspent
     POST /first-visit             write the basic-auth hash; spend the token
-    GET  /first-visit/recovery    the recovery file, with the code as the key
-    GET  /first-visit/reset       the reset form (recovery code + new password)
-    POST /first-visit/reset       write a new hash; rotate the recovery code
+    GET  /first-visit/recovery    the recovery page: enter the code, get the file
+    POST /first-visit/recovery    spend the code, rotate it, mint a download token
+    GET  /first-visit/recovery?d=<download token>   the recovery file, once
+    GET  /first-visit/reset       the reset form (recovery code + new sign-in)
+    POST /first-visit/reset       write a new hash; rotate the code and the session secret
     GET  /health                  ok
     GET  /favicon.ico             the website icon, 16/32/48
     GET  /icon-32.png             the website icon, 32
@@ -3114,13 +3116,29 @@ Design notes a reviewer should check:
   before they typed anything. The same choice is recorded for the claim page in
   ``docs/architecture/DESIGN-claim-ceremony.md``. After the sign-in is set the
   token is dead for good: every later GET or POST answers 410.
-* **The recovery file is behind the recovery code.** The done page shows the
-  code once and links to ``/first-visit/recovery?c=<code>``; the GET verifies
-  the code against its scrypt hash before it reads anything. The link is
-  same-origin, the page is ``Referrer-Policy: no-referrer`` and Caddy discards
-  the access log, so the code is not copied into a log or a third-party
-  request. The file holds the backup password, so an unauthenticated URL would
-  be a leak; the code is ~100 bits and rotates on a reset.
+* **The code is never a bearer in a URL (ODL-579).** The done page shows the
+  code once and links the recovery file with a **one-time download token**
+  (``?d=``, 32 bytes, stored as its SHA-256, ten minutes, one use). The code is
+  only ever POSTed: at ``/first-visit/recovery`` (download the file) and at
+  ``/first-visit/reset`` (change the sign-in). Both spend it and both rotate it,
+  and the response shows the new code once; the first visit's download does not
+  spend the code, so the code it shows stays live.
+* **A use is recorded, not just replaced.** ``recovery_used_at`` marks the
+  stored code as spent before the new code is written, and a presented code is
+  refused while that marker is set. The write order is spend, then rotate, so a
+  crash between them can never replay a code (the machine then needs the
+  recovery file's restore, exactly as a lost response would).
+* **The recovery file is behind the code or a live download token.** The file
+  holds the backup password, so neither an unauthenticated URL nor a permanent
+  one may serve it. The link is same-origin, the page is
+  ``Referrer-Policy: no-referrer`` and Caddy discards the access log; the
+  download token is the file's own bearer, bounded by ten minutes and one use.
+* **A whole-machine restore must not restore ``/etc/odile`` (A3's rule).** The
+  state file holds this machine's sign-in hash and recovery-code hash; a restore
+  that brought back the backup's copy would revoke the code the user was shown
+  after the rebuild. A3's restore excludes it (or rotates the code afterwards);
+  this service only records the rule, because the state is the anchor the code
+  is verified against.
 * **The fingerprint is the certificate the browser is using.** When the request
   arrived over TLS (Caddy's ``X-Forwarded-Proto: https``), the service reads
   the certificate for the request's host from Caddy's store and writes its
@@ -3246,6 +3264,10 @@ MIN_PASSWORD = 16
 MAX_PASSWORD = 1024
 RATE_LIMIT = 10
 RATE_WINDOW = 600
+# The recovery file's own bearer (ODL-579): 32 bytes, stored as SHA-256, ten
+# minutes and one use. Short enough that a copied link is worth little, long
+# enough that the download from the done page does not race the user.
+DOWNLOAD_TTL = 600
 
 # Recovery code alphabet: no I, O, 0 or 1, so a code read off a screen and
 # typed on a phone is unambiguous. Five groups of four is ~100 bits.
@@ -3270,7 +3292,8 @@ CODE_SENTINEL = "\x00recovery-code\x00"
 ERROR_FIELDS = ("code", "password", "password2")
 
 BLOCK_RE = re.compile(
-    r"<!--(form|done|reset-done|reset|refused-unknown|refused)-->(.*?)<!--/\1-->", re.S)
+    r"<!--(form|done|recover|recovery-done|reset-done|reset|refused-unknown|refused)-->"
+    r"(.*?)<!--/\1-->", re.S)
 
 _hits: dict[str, list[float]] = {}
 _lock = threading.Lock()
@@ -3353,6 +3376,11 @@ def empty_state() -> dict:
         "recovery_hash": None,
         "recovery_issued_at": None,
         "recovery_used_at": None,
+        # The recovery file's one-time bearer (ODL-579): its SHA-256, when it
+        # expires, and when it was spent. All null until a page mints one.
+        "download_sha256": None,
+        "download_expires_at": None,
+        "download_used_at": None,
     }
 
 
@@ -3365,10 +3393,15 @@ def validate_state(state: object) -> dict:
     token_hash = state.get("token_sha256")
     if not isinstance(token_hash, str) or not TOKEN_RE.match(token_hash):
         raise ValueError("token_sha256 is not 64 lowercase hex")
-    for key in ("used_at", "signin_set_at", "recovery_issued_at", "recovery_used_at"):
+    for key in ("used_at", "signin_set_at", "recovery_issued_at", "recovery_used_at",
+                "download_expires_at", "download_used_at"):
         value = state.get(key)
         if value is not None and not isinstance(value, str):
             raise ValueError("%s is not a string or null" % key)
+    download = state.get("download_sha256")
+    if download is not None and not (isinstance(download, str)
+                                     and TOKEN_RE.match(download)):
+        raise ValueError("download_sha256 is not 64 lowercase hex or null")
     recovery = state.get("recovery_hash")
     if recovery is not None and not (isinstance(recovery, str) and recovery.startswith("scrypt$")):
         raise ValueError("recovery_hash is not an scrypt hash")
@@ -3589,23 +3622,78 @@ def recovery_filename(recovery: RecoveryFile) -> str:
     return "odile-recovery-%s.txt" % recovery.slug if recovery.slug else "odile-recovery.txt"
 
 
-def recovery_code_ok(state: dict, raw: str) -> bool:
-    """The download's key is the recovery code the page showed once."""
+def recovery_status(state: dict, raw: str) -> str:
+    """'ok', 'used' or 'bad' for a code presented at either use site.
+
+    A code that verifies against the stored hash is still refused while
+    ``recovery_used_at`` is set: that marker is written before the rotation, so
+    a crash between the two writes cannot leave a spent code replayable. The
+    marker is cleared in the same write that stores the new code.
+    """
     stored = state.get("recovery_hash")
     if not isinstance(stored, str) or not stored.startswith("scrypt$"):
-        return False
+        return "bad"
     normalised = normalise_code(raw)
     if not CODE_RE.match(normalised):
-        return False
-    return verify_password(normalised, stored)
+        return "bad"
+    if not verify_password(normalised, stored):
+        return "bad"
+    return "used" if state.get("recovery_used_at") else "ok"
 
 
-def recovery_file_block(recovery: RecoveryFile | None, code: str) -> str:
+def spend_code(state: dict) -> None:
+    """Mark the live code spent; the caller saves before minting the next one."""
+    state["recovery_used_at"] = utc_now()
+
+
+def rotate_code(state: dict) -> str:
+    """Issue the next code and make it live; returns the code to show once."""
+    code = new_recovery_code()
+    state["recovery_hash"] = hash_password(normalise_code(code))
+    state["recovery_issued_at"] = utc_now()
+    state["recovery_used_at"] = None
+    return code
+
+
+def issue_download(state: dict) -> str:
+    """Mint the recovery file's bearer: 32 bytes, hashed, ten minutes, one use."""
+    token = secrets.token_hex(32)
+    state["download_sha256"] = hash_token(token)
+    state["download_expires_at"] = iso_after(DOWNLOAD_TTL)
+    state["download_used_at"] = None
+    return token
+
+
+def download_status(state: dict, raw: str) -> str:
+    """'ok', 'unknown', 'used' or 'expired' for a ``?d=`` token."""
+    stored = state.get("download_sha256")
+    if not isinstance(stored, str) or not TOKEN_RE.match(stored):
+        return "unknown"
+    if not raw or not TOKEN_RE.match(raw):
+        return "unknown"
+    if not secrets.compare_digest(hash_token(raw), stored):
+        return "unknown"
+    if state.get("download_used_at"):
+        return "used"
+    # Both timestamps are UTC in one fixed-width format, so the string
+    # comparison is the chronological one.
+    expires = state.get("download_expires_at")
+    if not isinstance(expires, str) or utc_now() >= expires:
+        return "expired"
+    return "ok"
+
+
+def iso_after(seconds: int) -> str:
+    return datetime.fromtimestamp(time.time() + seconds, timezone.utc).strftime(
+        "%Y-%m-%dT%H:%M:%SZ")
+
+
+def recovery_file_block(recovery: RecoveryFile | None, token: str) -> str:
     """The done page's download, or the sentence that names the absence."""
     if recovery is None:
         return ('<p class="note" id="recovery-file">'
                 'The recovery file is not available on this machine.</p>')
-    href = "/first-visit/recovery?c=" + quote(code, safe="")
+    href = "/first-visit/recovery?d=" + quote(token, safe="")
     filename = recovery_filename(recovery)
     if recovery.filled:
         holds = "the backup password and this machine's certificate fingerprint"
@@ -3614,7 +3702,7 @@ def recovery_file_block(recovery: RecoveryFile | None, code: str) -> str:
                  "on this machine")
     return ('<div class="recovery-file" id="recovery-file">\n'
             '    <a class="download" href="%s" download="%s">Download your recovery file</a>\n'
-            '    <p class="note">It holds %s.</p>\n'
+            '    <p class="note">It holds %s. This link works once, for ten minutes.</p>\n'
             '  </div>'
             % (html.escape(href, quote=True), html.escape(filename, quote=True),
                html.escape(holds)))
@@ -3631,36 +3719,48 @@ def env_values(text: str) -> dict[str, str]:
     return values
 
 
-def render_env(text: str, password_hash: str) -> str:
-    """Replace the one hash line, keeping every other line and its order.
+def render_env(text: str, password_hash: str, secret: str | None = None) -> str:
+    """Replace the hash line, and the session secret when one is given.
 
     A line is replaced in place; a file without the key gets it appended, so a
     hand-edited .env still converges. Comments are preserved because they are
-    the installer's explanation of the allowlist.
+    the installer's explanation of the allowlist. ``secret=None`` keeps the
+    existing secret byte for byte.
     """
     lines = text.splitlines()
     replaced = False
+    secret_replaced = secret is None
     rendered: list[str] = []
     for line in lines:
         if line.startswith(PASSWORD_KEY + "="):
             rendered.append("%s=%s" % (PASSWORD_KEY, password_hash))
             replaced = True
+        elif secret is not None and line.startswith(SECRET_KEY + "="):
+            rendered.append("%s=%s" % (SECRET_KEY, secret))
+            secret_replaced = True
         else:
             rendered.append(line)
     if not replaced:
         rendered.append("%s=%s" % (PASSWORD_KEY, password_hash))
+    if not secret_replaced:
+        rendered.append("%s=%s" % (SECRET_KEY, secret))
     body = "\n".join(rendered)
     return body + "\n" if body and not body.endswith("\n") else body
 
 
-def write_env_hash(env_path: Path, password_hash: str) -> str:
+def write_env_hash(env_path: Path, password_hash: str, *,
+                   rotate_secret: bool = False) -> str:
     """Write the hash into the tenant .env; return the username it names.
 
-    Only the hash line moves: the session-signing secret the first boot
-    generated for this machine (``HERMES_DASHBOARD_BASIC_AUTH_SECRET``) is kept
-    byte for byte, or every session cookie the owner had would be invalidated
-    by setting a password. A file without a secret is refused rather than
-    written: the tenant would come back with no way to sign a cookie.
+    Setting the sign-in the first time keeps the session-signing secret the
+    first boot generated for this machine
+    (``HERMES_DASHBOARD_BASIC_AUTH_SECRET``) byte for byte, so the owner's
+    browsers stay signed in through the password they just chose. A **reset**
+    passes ``rotate_secret=True``: the same write replaces the secret with 32
+    fresh bytes, so every cookie signed with the old value is refused on its
+    next request — the other signed-in browsers end with the old sign-in
+    (ODL-579, ADR-006 §5 defect 3). A file without a secret is refused rather
+    than written: the tenant would come back with no way to sign a cookie.
     """
     try:
         original = env_path.read_text(encoding="utf-8")
@@ -3673,8 +3773,11 @@ def write_env_hash(env_path: Path, password_hash: str) -> str:
         raise SystemExit(
             "error: %s has no %s; the first-visit write would leave the tenant "
             "with no session secret" % (env_path, SECRET_KEY))
+    secret = None
+    if rotate_secret:
+        secret = base64.b64encode(secrets.token_bytes(32)).decode("ascii")
     owner = (stat.st_uid, stat.st_gid)
-    updated = render_env(original, password_hash)
+    updated = render_env(original, password_hash, secret)
     if updated != original:
         write_atomic(env_path, updated.encode("utf-8"), stat.st_mode & 0o777, owner)
     return env_values(updated).get(USERNAME_KEY) or DEFAULT_USERNAME
@@ -3973,12 +4076,19 @@ class FirstVisit:
     # -- responses -------------------------------------------------------
 
     def done(self, keep: str, title: str, code: str, username: str,
-             host: str, secure: bool) -> tuple[int, str]:
-        """The one page that shows the code, and the file it unlocks."""
+             host: str, secure: bool, download: str) -> tuple[int, str]:
+        """The one page that shows the code, and the file it unlocks once."""
         recovery = self.complete_recovery(host, secure)
         body = render(self.template(), keep, title=title, recovery=code,
                       username=username,
-                      recovery_file=recovery_file_block(recovery, code))
+                      recovery_file=recovery_file_block(recovery, download))
+        return 200, body
+
+    def recover_form(self, error: FieldError | None = None) -> tuple[int, str]:
+        """The recovery page: the code is POSTed here, never carried in a URL."""
+        body = render(self.template(), "recover",
+                      title="Your recovery file — Odile", error=error,
+                      username=self.username())
         return 200, body
 
     def refused(self, code: int, can_reset: bool = True) -> tuple[int, str]:
@@ -4180,22 +4290,51 @@ def build_handler(service: FirstVisit):
             proto = self.headers.get("X-Forwarded-Proto", "")
             return proto.split(",")[0].strip().lower() == "https"
 
-        def _recovery_download(self, head: bool) -> None:
+        def _recovery_page(self, head: bool, query: dict[str, list[str]]) -> None:
+            """The recovery page, or the file its one-time token names.
+
+            ``?d=`` is the file's own bearer (32 bytes, hashed, ten minutes,
+            one use); no code ever travels in a URL. Without it the page is a
+            form whose POST spends the code and shows the next one once.
+            """
+            if "d" in query:
+                return self._download_file((query.get("d") or [""])[0], head)
             state = self._load_state()
             if state is None:
                 return
+            if not state.get("recovery_hash"):
+                code, body = service.refused(409, False)
+                return self._send(code, body, head)
+            code, body = service.recover_form()
+            return self._send(code, body, head)
+
+        def _download_file(self, token: str, head: bool) -> None:
             if not allow(self.client_address[0], bucket="recovery"):
                 return self._send(429, "Too many attempts. Try again in ten minutes.\n",
                                   head, "text/plain; charset=utf-8")
-            raw = (parse_qs(urlparse(self.path).query, keep_blank_values=True)
-                   .get("c") or [""])[0]
-            if not recovery_code_ok(state, raw):
-                return self._send(404, "The recovery file is not available on this machine.\n",
-                                  head, "text/plain; charset=utf-8")
-            recovery = service.complete_recovery(self._host(), self._secure())
-            if recovery is None:
-                return self._send(404, "The recovery file is not available on this machine.\n",
-                                  head, "text/plain; charset=utf-8")
+            with locked(service.state):
+                state = self._load_state()
+                if state is None:
+                    return
+                verdict = download_status(state, token)
+                if verdict == "unknown":
+                    return self._send(
+                        404, "The recovery file is not available on this machine.\n",
+                        head, "text/plain; charset=utf-8")
+                if verdict != "ok":
+                    return self._send(
+                        410, "This download link has been used or has expired.\n",
+                        head, "text/plain; charset=utf-8")
+                recovery = service.complete_recovery(self._host(), self._secure())
+                if recovery is None:
+                    return self._send(
+                        404, "The recovery file is not available on this machine.\n",
+                        head, "text/plain; charset=utf-8")
+                # A HEAD answers "is it there" without spending the one use: a
+                # link previewer or a scanner must not burn the owner's click.
+                if not head:
+                    state["download_used_at"] = utc_now()
+                    save_state(service.state, state)
             return self._send(200, recovery.text, head, "text/plain; charset=utf-8",
                               filename=service.filename(recovery))
 
@@ -4215,7 +4354,7 @@ def build_handler(service: FirstVisit):
                 return self._send_bytes(code, data, head, ctype,
                                         cache=ICON_CACHE if code == 200 else "no-store")
             if path in ("/first-visit/recovery", "/first-visit/recovery/"):
-                return self._recovery_download(head)
+                return self._recovery_page(head, query)
             if path in ("/first-visit", "/first-visit/"):
                 token = (query.get("t") or [""])[0]
                 state = self._load_state()
@@ -4249,7 +4388,8 @@ def build_handler(service: FirstVisit):
                 length = int(self.headers.get("Content-Length", "0"))
             except ValueError:
                 length = 0
-            if path not in ("/first-visit", "/first-visit/reset"):
+            if path not in ("/first-visit", "/first-visit/reset",
+                            "/first-visit/recovery"):
                 # Drain a small body so the next request on this connection
                 # starts where it should; a large one is not worth reading.
                 if 0 < length <= MAX_BODY:
@@ -4266,6 +4406,8 @@ def build_handler(service: FirstVisit):
                                   ctype="text/plain; charset=utf-8")
             if path == "/first-visit":
                 return self._set_signin(fields)
+            if path == "/first-visit/recovery":
+                return self._recover_file(fields)
             return self._reset_signin(fields)
 
         def _set_signin(self, fields: dict[str, list[str]]) -> None:
@@ -4302,6 +4444,10 @@ def build_handler(service: FirstVisit):
                 state["signin_set_at"] = state["used_at"]
                 state["recovery_hash"] = hash_password(normalise_code(code_value))
                 state["recovery_issued_at"] = state["used_at"]
+                # The code stays live: the button beside it carries a one-time
+                # download token, so fetching the file does not spend the code
+                # the visitor is being asked to save (ODL-579).
+                download = issue_download(state)
                 save_state(service.state, state)
             print("first-visit: sign-in set for %r (token %s… spent)"
                   % (username, state["token_sha256"][:8]), flush=True)
@@ -4311,14 +4457,48 @@ def build_handler(service: FirstVisit):
             # The recovery code exists only in this response: no-store, and the
             # state keeps its scrypt hash, never the code.
             code, body = service.done("done", "Your sign-in is set — Odile",
-                                      code_value, username, self._host(), self._secure())
+                                      code_value, username, self._host(), self._secure(),
+                                      download)
+            return self._send(code, body)
+
+        def _recover_file(self, fields: dict[str, list[str]]) -> None:
+            """Spend the code at the recovery page: rotate it, serve the file once.
+
+            The file holds the backup password, so the page asks for the code
+            and the response carries only a one-time download token. Both uses
+            of the code (here and the reset) spend it and show the next one.
+            """
+            code_value = (fields.get("code") or [""])[0]
+            with locked(service.state):
+                state = self._load_state()
+                if state is None:
+                    return
+                if not state.get("recovery_hash"):
+                    code, body = service.refused(409, False)
+                    return self._send(code, body)
+                if recovery_status(state, code_value) != "ok":
+                    code, body = service.recover_form(
+                        FieldError("That recovery code does not match.", "code", ("code",)))
+                    return self._send(code, body)
+                # Spend first, then rotate: a crash between the two writes can
+                # never leave the used code replayable (recovery_status reads
+                # the marker). The new code exists only in this response.
+                spend_code(state)
+                save_state(service.state, state)
+                new_code = rotate_code(state)
+                download = issue_download(state)
+                save_state(service.state, state)
+            print("first-visit: recovery file unlocked with the recovery code; "
+                  "the code rotated", flush=True)
+            code, body = service.done("recovery-done", "Your recovery file — Odile",
+                                      new_code, service.username(), self._host(),
+                                      self._secure(), download)
             return self._send(code, body)
 
         def _reset_signin(self, fields: dict[str, list[str]]) -> None:
             code_value = (fields.get("code") or [""])[0]
             password = (fields.get("password") or [""])[0]
             repeat = (fields.get("password2") or [""])[0]
-            normalised = normalise_code(code_value)
             with locked(service.state):
                 state = self._load_state()
                 if state is None:
@@ -4327,7 +4507,7 @@ def build_handler(service: FirstVisit):
                 if not isinstance(stored, str) or not stored.startswith("scrypt$"):
                     code, body = service.refused(409, False)
                     return self._send(code, body)
-                if not CODE_RE.match(normalised) or not verify_password(normalised, stored):
+                if recovery_status(state, code_value) != "ok":
                     code, body = service.reset_form(
                         FieldError("That recovery code does not match.", "code", ("code",)),
                         code_value)
@@ -4339,21 +4519,28 @@ def build_handler(service: FirstVisit):
 
                 password_hash = hash_password(password)
                 try:
-                    username = write_env_hash(service.env, password_hash)
+                    # The reset rotates the session secret in the same write as
+                    # the hash (ADR-006 §5 defect 3): every other signed-in
+                    # browser on this machine is refused on its next request.
+                    username = write_env_hash(service.env, password_hash,
+                                              rotate_secret=True)
                     service.reload()
                 except (SystemExit, RuntimeError) as exc:
                     print("first-visit: refused: %s" % exc, file=sys.stderr, flush=True)
                     return self._send(500, "The sign-in was not reset. Try again.\n",
                                       ctype="text/plain; charset=utf-8")
 
-                new_code = new_recovery_code()
-                state["recovery_hash"] = hash_password(normalise_code(new_code))
-                state["recovery_issued_at"] = utc_now()
-                state["recovery_used_at"] = state["recovery_issued_at"]
+                spend_code(state)
                 save_state(service.state, state)
-            print("first-visit: sign-in reset with the recovery code; the code rotated", flush=True)
+                new_code = rotate_code(state)
+                download = issue_download(state)
+                save_state(service.state, state)
+            print("first-visit: sign-in reset with the recovery code; the code rotated, "
+                  "the session secret rotated", flush=True)
+            service.refresh_report()
             code, body = service.done("reset-done", "Your sign-in is reset — Odile",
-                                      new_code, username, self._host(), self._secure())
+                                      new_code, username, self._host(), self._secure(),
+                                      download)
             return self._send(code, body)
 
     return Handler
@@ -4418,6 +4605,10 @@ def summary(state: dict) -> dict:
         "recovery_hash": ("scrypt…" if state.get("recovery_hash") else None),
         "recovery_issued_at": state["recovery_issued_at"],
         "recovery_used_at": state["recovery_used_at"],
+        "download_sha256": (state.get("download_sha256") or "")[:16] + "…"
+        if state.get("download_sha256") else None,
+        "download_expires_at": state.get("download_expires_at"),
+        "download_used_at": state.get("download_used_at"),
     }
 
 
@@ -4458,7 +4649,7 @@ def main(argv: list[str] | None = None) -> int:
 if __name__ == "__main__":
     sys.exit(main())
 '''
-FIRST_VISIT_PAGE_SHA256 = "810a596d561fb7ae28fcd67b864a836fe2c5b808dce223b89d573fd9d622ef29"
+FIRST_VISIT_PAGE_SHA256 = "eed3a6e9d12877abd10f604a52aa9fda5f759a8e85fbced88f95649a06c9213f"
 FIRST_VISIT_PAGE = r'''<!doctype html>
 <html lang="en">
 <head>
@@ -4534,6 +4725,16 @@ input[aria-invalid=true]{border-bottom-color:var(--error)}
   text-transform:uppercase;letter-spacing:.28em;transition:background .18s,color .18s}
 .download:hover{background:var(--ink-hover);border-color:var(--ink-hover);color:var(--paper)}
 .download:focus-visible{outline:2px solid var(--ink);outline-offset:3px}
+.consent{display:flex;align-items:flex-start;gap:12px;margin:16px 0 0;min-height:44px;padding:8px 0;
+  font-size:16px;line-height:1.5;color:var(--soft);cursor:pointer;max-width:54ch}
+input[type=checkbox]{appearance:none;-webkit-appearance:none;width:18px;height:18px;margin:4px 0 0;flex:none;
+  border:1px solid var(--edge);background:var(--paper);border-radius:0;position:relative;cursor:pointer}
+input[type=checkbox]:checked{border-color:var(--ink)}
+input[type=checkbox]:checked::after{content:"";position:absolute;left:3px;top:3px;width:10px;height:10px;background:var(--ink)}
+input[type=checkbox]:focus-visible{outline:2px solid var(--ink);outline-offset:3px}
+@media (forced-colors:active){input[type=checkbox]{border-color:ButtonText}
+  input[type=checkbox]:checked::after{background:ButtonText}}
+.consent:not(:has(input:checked)) + .act .quiet{visibility:hidden}
 section{margin:0 0 8px}
 .rule{margin:24px 0 0;padding-top:16px;border-top:1px solid var(--line)}
 .foot{margin:32px 0 0;padding-top:16px;border-top:1px solid var(--line-soft);
@@ -4592,13 +4793,14 @@ h1,h2,h3,.brand,.mark,.wordmark,.focus{font-family:var(--serif)}
     {{RECOVERY_FILE}}
     <p class="note">A recovery code and a recovery file are the way back: the code resets your sign-in, the file opens your backup. Your first visit gives you both; keep them off the machine. While the machine is still running, the agent can show it again.</p>
   </section>
+  <label class="consent"><input type="checkbox" id="saved"> I have saved the code and the file</label>
   <div class="act">
     <a class="quiet" href="/">Open your workspace</a>
   </div>
 <!--/done-->
 <!--reset-->
-  <h1>Reset your sign-in</h1>
-  <p class="lede">Enter the recovery code you saved, then choose a new password.</p>
+  <h1>Reset your machine's sign-in</h1>
+  <p class="lede">Enter the recovery code you saved at your first visit, then choose a new sign-in. This changes the sign-in on this machine only. Your account password is reset at your account site.</p>
   <form method="post" action="/first-visit/reset">
     <div class="field">
       <label for="code">Recovery code</label>
@@ -4607,7 +4809,7 @@ h1,h2,h3,.brand,.mark,.wordmark,.focus{font-family:var(--serif)}
       <!--code-error-->
     </div>
     <div class="field">
-      <label for="password">New password</label>
+      <label for="password">New sign-in</label>
       <p class="hint" id="password-hint">At least 16 characters.</p>
       <input type="password" id="password" name="password" autocomplete="new-password"
              minlength="16" required{{PASSWORD_ATTRS}}>
@@ -4619,24 +4821,53 @@ h1,h2,h3,.brand,.mark,.wordmark,.focus{font-family:var(--serif)}
              minlength="16" required{{PASSWORD2_ATTRS}}>
       <!--password2-error-->
     </div>
-    <button class="primary" type="submit">Set a new password</button>
+    <button class="primary" type="submit">Set the sign-in</button>
   </form>
   <p class="foot">The code you used stops working; a new one is shown next.</p>
 <!--/reset-->
 <!--reset-done-->
-  <h1>Your sign-in is reset.</h1>
-  <p class="lede">The old password no longer opens the workspace.</p>
+  <h1>Your sign-in is changed.</h1>
+  <p class="lede">Every other signed-in browser on this machine has been signed out.</p>
   <section aria-labelledby="recovery">
     <p class="label" id="recovery">Your new recovery code</p>
     <p class="code" id="code">{{RECOVERY}}</p>
-    <p>This is the only time the new code is shown. The code you saved before no longer works.</p>
+    <p>This is the only time the new code is shown. The page will not show it again. The code you saved before no longer works.</p>
     {{RECOVERY_FILE}}
     <p class="note">A recovery code and a recovery file are the way back: the code resets your sign-in, the file opens your backup. Your first visit gives you both; keep them off the machine. While the machine is still running, the agent can show it again.</p>
   </section>
+  <label class="consent"><input type="checkbox" id="saved"> I have saved the code and the file</label>
   <div class="act">
     <a class="quiet" href="/">Open your workspace</a>
   </div>
 <!--/reset-done-->
+<!--recover-->
+  <h1>Download your recovery file</h1>
+  <p class="lede">Enter the recovery code you saved at your first visit. This file holds your backup password.</p>
+  <form method="post" action="/first-visit/recovery">
+    <div class="field">
+      <label for="code">Recovery code</label>
+      <input type="text" id="code" name="code" autocomplete="off" autocapitalize="characters"
+             spellcheck="false" required{{CODE_ATTRS}}>
+      <!--code-error-->
+    </div>
+    <button class="primary" type="submit">Show the download</button>
+  </form>
+  <p class="foot">Your sign-in does not change. The code you use stops working; a new one is shown next.</p>
+<!--/recover-->
+<!--recovery-done-->
+  <h1>Your recovery file is ready.</h1>
+  <p class="lede">Download it now, before you close this page.</p>
+  <section aria-labelledby="recovery">
+    <p class="label" id="recovery">Your new recovery code</p>
+    <p class="code" id="code">{{RECOVERY}}</p>
+    <p>This is the only time the new code is shown. The page will not show it again. The code you saved before no longer works.</p>
+    {{RECOVERY_FILE}}
+  </section>
+  <label class="consent"><input type="checkbox" id="saved"> I have saved the code and the file</label>
+  <div class="act">
+    <a class="quiet" href="/">Open your workspace</a>
+  </div>
+<!--/recovery-done-->
 <!--refused-->
   <h1>This link is closed.</h1>
   <p class="lede">The sign-in was already set, or the link is not valid.</p>
