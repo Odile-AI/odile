@@ -37,7 +37,7 @@ which the gate passes clean:
 | Missing class | Value in the tree | Why it is a leak | Proof |
 |---|---|---|---|
 | **Hardware identity** | full SEV-SNP reports in `tests/fixtures/verify/*.json`; the chip id is report offset `0x1A0` | a silicon id is the strongest machine fingerprint there is; three fixtures carry the **HQ** chip id `967acf92…`, and one carries the tenant's `3fa18b1e…` | `raw[0x1A0:0x1E0].hex()` on the decoded `report_b64` → `967acf92…`; `/var/lib/odile/attestation.json` on this host carries the same prefix |
-| | `tests/fixtures/verify/tenant-vcek.der` | VCEK serial + HWID extension are the same chip in DER; the scanner reads only printable runs | `leak_scan.scan_bytes(open(...,'rb').read())` → `[]` |
+| | `tests/fixtures/verify/tenant-vcek.der` (deleted by `t_3cd62ef9`) | VCEK serial + HWID extension are the same chip in DER; the scanner at this head read only printable runs | `leak_scan.scan_bytes(open(...,'rb').read())` → `[]` at that head; the scanner now decodes DER and PEM certificates and reports a serial only when the AMD HWID extension is present |
 | | `docs/runbooks/image-bench.md:387` PARTUUID | a real volume's id | gate `[]`; `partuuid` is on the self-blinding suppression list |
 | **Vendor resource ids** | `31a63bbb` (server) in 17 files, `oqwaclzm` (host) 5, `odl-7971a8` (tenant slug) 25, `24b35c62` 2 | the research record itself says GitHub-only scanning fails on "our vendor ids"; the forbid list names only the retired box | `grep -rEl` over the tree; gate PASS |
 | **DNS resource ids** | `tests/test_dns.py:32` `ZONE_ID = "39068d33…"` | a Cloudflare zone id names the account's zone; the `cloudflare` token rule wants 37 hex, zone ids are 32 | gate `[]`; P19 |
@@ -575,3 +575,62 @@ independent read-back 34 ok / 10 gaps over 44 rows. The throwaway was deleted
    the base is `github.event.before`, not `HEAD^` (which is the previous new
    commit on a multi-commit push); `tests/test_ci_gate_scanner.py` executes the
    step's own shell against a fixture tree rather than asserting YAML text.
+
+## 12. Follow-up, 19 November 2026 — the signed fixtures are synthetic
+
+**Card:** ODL-906-F3 follow-up (`t_3cd62ef9`) · **Seat:** Security
+
+The four recorded SEV-SNP reports and the AMD-issued `tenant-vcek.der` are
+gone. `tools/make_synthetic_report.py` builds a 1184-byte report and a local
+P-384 VCEK/ASK/ARK chain; the fixtures carry an `ODILE-SYNTHETIC-…` chip id and
+name their own test-only ARK in a `trust` block. The shipped `odile-verify.pin`
+keeps AMD's ARK, and the trust block is honoured only for a local `--report`
+file — a document served over the network cannot choose its root.
+
+The three `machine-identity` allowlist rows are deleted. The PARTUUID row stays
+until the benchmark record is re-cut with a placeholder command line.
+
+**The fifth identity the F3 verdict missed.** `tests/fixtures/amd/vcek.pem` was
+the demo chip's real AMD certificate: its HWID extension carried the same HQ chip
+id, and the scanner did not see it because it read DER, not a PEM certificate's
+base64 body. The scanner now decodes a PEM `CERTIFICATE` block and reads a
+certificate's serial only when the AMD HWID extension is present (a bare serial
+is not a VCEK). The real VCEK was removed; the verifier fetches the report's own
+VCEK from AMD's KDS on the default live run (a local `--amd-dir` that binds the
+report skips the fetch).
+
+**Evidence.**
+
+- `tools/leak_scan.py --tree` → `PASS: nothing to leak in 370 files`, 55 allowlist rows (4 credentials,
+  0 debt), with the three rows gone. The worktree has no private `leak-forbid.txt`, so the
+  forbidden-value class only runs in the built tree below.
+- The built public tree at `9f5c857` (373 files) → `PASS: nothing to leak in
+  367 files`, 221 allowlisted, `forbid list: leak-forbid.txt (14 labels)`.
+- `tests/test_leak_scan.py::AllowlistRecord::test_a_planted_chip_id_in_a_fixture_fails_the_gate`
+  plants a real 64-byte chip id in a fixture: the gate fails with
+  `machine-identity`, and the same fixture with the `ODILE-SYNTHETIC-` marker
+  passes.
+- `tests/test_leak_scan.py::AllowlistRecord::test_a_pem_certificate_with_a_live_chip_id_fails_the_gate`
+  plants the same id in a PEM certificate: the gate fails; a PEM certificate
+  without the HWID extension passes.
+- `tests/test_verify.py` runs the verifier signature and chain checks on the
+  synthetic chain, the loopback-KDS tenant path, and a served `trust` block
+  that is ignored.
+
+**Residual.** `docs/runbooks/image-bench.md` still carries one real PARTUUID
+inside a recorded measured command line (the existing row). The tip is clean;
+the history and already-published commits still carry the old recorded reports,
+because this card replaces the fixture set, not the history.
+
+**At the merge commit `c00023b`, after `main` added `verify/README.md`.** The
+worktree gate → `PASS: nothing to leak in 377 files` (55 rows, 4 credentials,
+0 debt, 392 allowlisted); the built public tree (374 files) → `PASS: nothing to
+leak in 374 files`, 220 allowlisted, `forbid list: leak-forbid.txt (14 labels)`.
+`main`'s new `verify/README.md` was false in four places after this card —
+"one URL" (the default run also fetches the report's own VCEK from AMD's KDS),
+"the demo binds the vendored VCEK" (deleted), "`--no-kds` … vendored chain
+only" (it needs a local chain that binds the report and fails closed otherwise),
+and "the vendored AMD chain" in the tests (the synthetic test-only chain). The
+four sentences are re-cut, and `VerifyReadmeNoteTests` reads the file with
+whitespace normalised: it requires the two-URL and fail-closed sentences and
+forbids the stale phrases, so a later edit cannot widen them back.

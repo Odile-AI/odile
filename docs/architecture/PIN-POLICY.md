@@ -76,7 +76,7 @@ check is the equality of the two.
 | Servury release directory, e.g. `https://servury.com/downloads/blackbox/2026.11.1/` | the three artifacts, `SHA256SUMS`, `RELEASE.json` (release id, artifact hashes, kernel package, snapshot, edk2 tag, measurement parameters) | Servury's | `sha256sum -c SHA256SUMS`; the hashes are recorded in the pin |
 | The machine's boot report | firmware, kernel, initramfs and command line as the CPU saw them; `report_b64`, `cmdline`, `release`, `hostkey`, `status` | the CPU's, via Servury's initramfs | written to `/run/blackbox/attest.json` at boot (mode 0644); the `attest` forced command serves it at the initramfs |
 | The recompute | the expected digest | ours | `sev-snp-measure`, the exact command in §5; Servury's `blackbox-verify` does the same arithmetic and also binds the host key |
-| `odile-verify` | the AMD chain, the report signature, the policy, the TCB floor, and the equality of the reported number to the pin (demo) or to `--expect` | ours | `./odile-verify`, standard library plus `openssl`, exactly one URL — the machine under test — and no fetch of the pin, a chain or a log (ADR-002 §6) |
+| `odile-verify` | the AMD chain, the report signature, the policy, the TCB floor, and the equality of the reported number to the pin (demo) or to `--expect` | ours | `./odile-verify`, standard library plus `openssl`, two URLs — the machine under test, and AMD's KDS for that report's own VCEK — and no fetch of the pin, a log or the chain above the VCEK (ADR-002 §6 and its 19 November 2026 addendum, §6a) |
 
 The rule: **the expected number is computed from the release artifacts and
 the machine's own command line; it is never copied from a release page and
@@ -120,8 +120,12 @@ published artifacts and the machine's own command line — and that is the check
 this policy is built on. ADR-002 §5 records why V0.1 does not add a signature
 over the pin (a signature without a timestamp does not give the property a chain
 would, and a signature nothing verifies goes stale silently), and §6 of that ADR
-records the rule this section protects: `odile-verify` fetches exactly one URL —
-the machine under test — never the pin, a chain or a log.
+records the rule this section protects: `odile-verify` fetches no URL but the
+machine under test and the VCEK AMD publishes for its chip — never the pin,
+never the chain above the VCEK, never a log. §6a of that ADR records the 19
+November 2026 change behind the second URL: the demo chip's vendored VCEK was
+deleted because the certificate names the chip, so the verifier now asks AMD's
+KDS for the report's own VCEK and checks it against the pinned ARK.
 
 ---
 
@@ -367,7 +371,7 @@ the release it was moved to; existing tenants do not move by themselves.
 | Firmware (`OVMF.amdsev.fd`) | `OVMF.amdsev.fd` | every machine's number changes even with the same kernel | "same image, new firmware" in the record | add the entry; refresh the vendor-verifier run |
 | Measurement parameters (`vcpu_type`, `guest_features`, `policy`, `vmm`) | none of the three hashes necessarily | every number changes; a changed policy can void the confidentiality claim | a review item, not a routine rotation | architect review; if `DEBUG` or migration bits appear, stop and escalate |
 | Debian snapshot or kernel package (`inputs`) | none, if the rebuild is bit-identical | unchanged when the three hashes are unchanged | the provenance changed, the number did not | record the new `inputs` in the new release entry |
-| TCB / microcode | none | unchanged | `odile-verify`'s `cpu binding` fails until the VCEK fixture is refreshed | refresh `tests/fixtures/amd/vcek.pem`; the pin does not move |
+| TCB / microcode | none | unchanged | `odile-verify`'s `cpu binding` uses the KDS VCEK fetched for the report's reported TCB | nothing; the fetch moves with the report, and the pin does not move |
 | Host key | none (not a measurement input) | unchanged | a changed host key on the first connect after a move | the ceremony's stop sign; the key is re-sealed once |
 
 The procedure, in order:
