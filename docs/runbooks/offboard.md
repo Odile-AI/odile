@@ -609,7 +609,8 @@ before saving:
 **A reinstall clears both image fields, so the pair goes back boot first.**
 Measured on the disposable box, 2026-11-17 — the spike's §4 and §6
 (`docs/product/SPIKE-servury-reinstall.md`): the panel's record went boot image
-`f7bc0ceb…` → **none** and disk image `24d8a1ff…` → **none**, the OS from
+`f7bc0ceb…` (the UKI **t_c1e0f336** built) → **none** and disk image
+`24d8a1ff…` → **none**, the OS from
 Debian 12 to Debian 13, while the address and the term did not move and the
 balance showed no new row — a reinstall is free. (The rDNS is the vendor's
 "kept", not a second reading.) The boot image lived on the disk the reinstall
