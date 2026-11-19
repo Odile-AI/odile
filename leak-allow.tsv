@@ -80,3 +80,6 @@ ssh-fingerprint	*	sha256:e16a77fdc93e	constant	no	the bench disk B's ecdsa SSH h
 ssh-fingerprint	*	sha256:dc2ac0dce274	constant	no	the measured boot key's fingerprint in image.md section 13.11.5's boot-record line; a public key in the measured command line	never
 public-ip	docs/ops/GATE-PACKET.md	sha256:9876939e2536	constant	no	the gate packet's runnable card needs HQ's real IPv4 — the zone's A record; the address is public in DNS, not a secret	never
 high-entropy	docs/runbooks/image.md	sha256:6a3d71aa28cc	constant	no	history only: the scrypt hash of the published bench fixture password (odile-bench-not-a-secret), retired with the 2026.11.14-5 image; value-scoped, so a different value at this path is still a finding	never
+vendor-resource-id	*	sha256:63737dacb46c	constant	no	a destroyed test tenant's instance id in the offboard drill record (ODL-218); the machine is gone and the record is its evidence	never
+vendor-resource-id	*	sha256:3e5275784e44	constant	no	the bench box id this operator's panel script and its test name; the public build replaces it with deadbeef and the forbid list names it	never
+vendor-resource-id	*	sha256:4014bb9b4e56	constant	no	the Servury dev account id in the panel script's comment; the public build replaces it with 0acc0001 and the forbid list names it	never
