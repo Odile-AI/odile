@@ -323,7 +323,7 @@ other bucket and cannot touch DNS.
 | `git push` the repo to GitHub and call the rest done | Covers 173 MB of the 1.1 GiB — not the board, not the seats, not the secrets. Putting `/root/.odile` in a git history means the signing key sits in a third party's object store and can never be rotated out of history. |
 | Borg to the same destination | Equivalent tool, one more binary and a different repository format; restic is in Ubuntu's archive and ODL-215 already uses it for tenant guests — one tool, two uses, one runbook idiom. |
 | **Hetzner Storage Box BX11, or rsync.net** — SFTP on port 23, restic's native backend | Rejected by Savio's decision C on 2026-11-10. It is €3.20/month (≈$3.58 net) for 1 TB of capacity roughly 900× the set, against $0.00 on R2, and SFTP brings an SSH key, an SSH alias, a pinned host-key fingerprint and port 23 through whatever network the restore machine sits on — four moving parts where HTTPS has one. Its one real advantage, a key confined to one directory, is matched by an R2 token confined to one bucket. Kept in this table because it is the option to revisit if the S3 credential ever becomes the thing that breaks at 03:30. |
-| **Backblaze B2** — the documented fallback, not the choice | The same restic tool and the same S3 backend, so switching is one line and a fresh `restic init` (§7). 10 GB free, $6.95/TB-month, egress free up to 3× stored, free API calls. Not chosen because Cloudflare already has an account, a card and the DNS zone, and B2 is a second console for a saving of nothing at this size. It is the fallback precisely because it shares **no** account with our DNS. |
+| **Backblaze B2** — the documented fallback, not the choice here | The same restic tool and the same S3 backend, so switching is one line and a fresh `restic init` (§7). 10 GB free, $6.95/TB-month, egress free up to 3× stored, free API calls. Not chosen here because Cloudflare already has an account, a card and the DNS zone, and B2 is a second console for a saving of nothing at this size. It is the fallback precisely because it shares **no** account with our DNS. **19 November 2026:** B2 is now the **tenant** target (ADR-004 §4) once Savio's suspended account is restored; R2 is the tenant interim, not this bucket. |
 | A second Servury box | The same provider, the same reseller API, the same account: a Servury wipe or suspension takes both. The backup must survive the provider, not duplicate it. |
 
 ### 4.3 The trust boundary this creates
@@ -367,6 +367,46 @@ other bucket and cannot touch DNS.
   option (`/root/.ssh/odile-backup_ed25519`, 411 B plus a 97 B public half) was
   never installed anywhere. It opens nothing; it may be deleted or kept, and §2
   lists it so that row stays a measurement rather than a guess.
+
+### 4.4 19 November 2026 — the tenant interim shares this account, and what that changes
+
+**ADR-004 was re-cut on 19 November 2026** (`ODL-915`): Savio's Backblaze B2
+account was suspended at signup, so the tenant's interim destination is
+**Cloudflare R2, in this same account**, for at most three tenants, under two
+constraints he set — HQ's `hermes-hq-backup` is never modified or deleted, and
+total R2 usage stays at or below **9 GB**.
+
+**What this ADR's decision still is.** `hermes-hq-backup` remains one bucket in
+the **EU jurisdiction**, with one **Object Read & Write** token in
+`/root/.odile/r2-backup.env` scoped to it, one nightly job, one drill, one
+passphrase in Savio's kit (§4.1, §4.3, §7). Nothing in this section changes that
+token, that bucket or that schedule; the interim does not mint a second copy of
+HQ's backup and does not touch the existing one.
+
+**What the interim adds, and how it is kept apart.** Up to three tenant buckets
+named `odile-t-<slug>` in the account's **default jurisdiction**, with two
+bucket-scoped tokens each, minted by Savio in the dashboard. Three separations
+hold at once: the **name** (`odile-t-*` vs `hermes-hq-backup`), the
+**jurisdiction endpoint** (`<account_id>.r2.cloudflarestorage.com` vs
+`<account_id>.eu.r2.cloudflarestorage.com`) and the **token resource string**
+(`…_default_odile-t-<slug>` vs `…_eu_hermes-hq-backup`). No tenant token can
+name HQ's bucket, and HQ's software holds **no account-wide credential** — only
+its own bucket token and each tenant's bucket token.
+
+**What the shared fate now covers.** §4.3's sentence — one compromised login or
+one billing suspension can repoint the records and delete the only off-site copy
+— now applies to the tenant copies too. Savio accepted that for a bounded interim;
+ADR-004 §4.1 caps the blast radius (2.0 GB per tenant, three tenants, alert at
+8.0 GB, critical at 9.0 GB) and the B2 cutover ends it. HQ's 1.15 GB counts
+against that 9 GB, so this ADR's bucket growth is now inside the same cap.
+
+**The readback that proves the bucket is untouched** is in ADR-004 §4.2: on
+19 November 2026, 75 objects / 1,149,539,702 bytes, one snapshot `8d521571…` at
+03:35:00Z, with the HQ token answering `AccessDenied` to `ListBuckets`.
+
+**When B2 is restored** the tenant buckets migrate to B2 (ADR-004 §10) and this
+account holds only HQ's backup again; §4.3's original two-provider argument then
+describes the live state once more.
 
 ## 5. The restore drill
 
