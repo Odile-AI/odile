@@ -139,8 +139,11 @@ If the wait for `Running` ends the command (the machine is still `reinstalling`
 at `--wait`), the erase has already happened and the boot/disk fields are
 cleared: re-run the same command. The second run's rule-(e) line legitimately
 reads `boot=none disk=none` — the first run's line is the one that carries the
-pair. Measured 2026-11-19: the first attempt ended in the wait 4 m 08 s after
-its erase, the re-run (with `--wait 420`) reached `running` in 63 s.
+pair. Measured 2026-11-19: the next command came 4 m 08 s (248 s) after the
+first attempt's erase, shorter than the 300 s default, so that run **did not
+end by its own timeout** — it was interrupted after the erase had been
+submitted. Its stdout was not kept, so its `--wait` is not on record; the
+re-run carried `--wait 420` and reached `running` in 63 s.
 
 Measured 2026-11-19 on `<server:ukitest>`: reinstall POST → `Running` 63 s;
 boot-image attach (115 MB download + hash) 10 s; disk write submitted, the
@@ -219,14 +222,29 @@ What the numbers mean — and what they do **not** mean:
   still reports the same measurement. Re-cutting the disk with the new
   `boot-key.pub` is the fix; the skip is not a failed boot.
 
-## 4. Restore the fence
+## 4. Trim the fence, then restore it
 
 The destructive verb needs the allow-list to name one id; the non-destructive
 writes on this account legitimately reach two (the bench and the live tenant's
-box). After the run, put the file back and prove it:
+box — the second id is the tenant's, which is why this file is **copied** back
+and never retyped: retyping it is how a live id reaches a published tree).
+
+Before the run, save the resting file and trim it to the machine that may be
+erased:
 
 ```sh
-printf '%s\n' 168020b4 4b0f450a > /root/.odile/servury_uki_server_id
+cp -p /root/.odile/servury_uki_server_id allow-list.before
+printf '%s\n' 168020b4 > /root/.odile/servury_uki_server_id
+cat /root/.odile/servury_uki_server_id
+```
+
+After the run, restore it byte-for-byte from that copy and prove it — the
+digest must equal the one you took before the trim:
+
+```sh
+sha256sum /root/.odile/servury_uki_server_id   # take this before the trim
+cp -p allow-list.before /root/.odile/servury_uki_server_id
+sha256sum /root/.odile/servury_uki_server_id   # same value, two lines back
 stat -c '%a %U:%G' /root/.odile/servury_uki_server_id   # 600 root:root
 ```
 

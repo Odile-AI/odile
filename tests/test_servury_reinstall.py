@@ -34,7 +34,10 @@ sys.path.insert(0, str(ROOT / "tools"))
 import servury_panel as panel  # noqa: E402
 
 SERVER = "168020b4"
-OTHER = "4b0f450a"
+# The tree's public stand-in for a second machine: `0badc0de` is on the leak
+# scanner's instance-id allow-list and `odl-fake01` is the fake name the leak
+# tests use, so this fixture never publishes a live tenant's identity.
+OTHER = "0badc0de"
 KEY_TEXT = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAILYSlv4CODJQwZPGJc6RHk/OpldJkUHacfUHwj9rmmev odile-uki-test"
 BOOT_URL = "https://odile.fyi/releases/uki/f7bc0ceba60442b0.efi"
 BOOT_SHA = "f7bc0ceba60442b0" + "0" * 48
@@ -126,8 +129,21 @@ SETTINGS_HTML = """
 DASHBOARD_HTML = """
 <main><h2>Your servers</h2>
 <a href="/manage/168020b4/">odlukitest</a>
-<a href="/manage/4b0f450a/">odl7971a8</a>
+<a href="/manage/0badc0de/">odl-fake01</a>
 </main>
+"""
+
+# The panel page `console()` reads before it arms and after it POSTs. The token
+# is the point: with it in the fixture, a `--recycle` that skips the one-id
+# fence actually POSTs the console write on the pre-fix tree, so the tests'
+# `posts == []` is what fails — not an unrelated "no csrf_token" exit 1.
+CONSOLE_HTML = """
+<header><span>Running</span> <span>Console log off</span></header>
+<form method="post">
+  <input type="hidden" name="csrf_token" value="tok-console">
+  <label><input type="checkbox" name="enabled"> Console log</label>
+  <button>Save</button>
+</form>
 """
 
 
@@ -199,7 +215,7 @@ class FencedCase(unittest.TestCase):
         ]
 
     def run_tool(self, argv: list[str], *, danger: str = DANGER_HTML,
-                 admin: str = ADMIN_HTML, manage: str = "<header><span>Running</span></header>",
+                 admin: str = ADMIN_HTML, manage: str = CONSOLE_HTML,
                  posts: list | None = None, bodies: list[str] | None = None
                  ) -> tuple[int, str, str]:
         """Drive main() with the panel faked; return (exit, stdout, stderr)."""
@@ -630,7 +646,7 @@ class RecycleTests(FencedCase):
         self.assertEqual(self.lines(), [], "a refused id is not an attempt")
 
     def test_a_tenant_on_a_widened_list_is_never_armed(self) -> None:
-        # The live tenant's box (OTHER) *is* on the shared allow-list, so the
+        # The second machine (`OTHER`) *is* on the shared allow-list, so the
         # CLI's membership gate lets it through; the composite's own fence must
         # be what stops it, before any POST leaves.
         self.id_file.write_text(SERVER + "\n" + OTHER + "\n", encoding="utf-8")
