@@ -580,7 +580,8 @@ it. The re-provision is now:
    registered `dns` in `cli.MODULES`; `evidence/dns-create.txt`, §7).
 3. The **signed image** pair in the panel (below). The order is
    **boot image, then disk image**; the disk write is panel-only and the pair
-   measured 6 s and 77 s (`docs/product/SPIKE-servury-reinstall.md` §6). Arm
+   measured 6 s and 77 s (`18:50:35Z` → `18:51:52Z`, §6 of the spike,
+   `docs/product/SPIKE-servury-reinstall.md`). Arm
    the seed row before the disk write — the first boot exchanges the token the
    image bakes, and an unarmed row fails closed (below; the spike's §5 #3).
 4. First boot → first visit → the sign-in and the recovery file
@@ -652,12 +653,12 @@ an expiry after the boot. A token the ledger had no row for answered
 spike's §5 #3, `docs/runbooks/seed.md`'s `404 unknown_token` row) — **not**
 §6a's `410 used`, so §6a's un-end recipe is a no-op here: its `UPDATE … WHERE
 token_hash = …` matches nothing on an absent row. A row a previous boot spent
-is §6a's case. No seed CLI verb adopts a plaintext (`token issue`/`rotate` mint
-a random one and print it once), so arming is either that hash inserted by hand
-in the same shape or, the path the spike calls the one that scales, a line built
-around a fresh per-machine token (`token issue --tenant <slug> --instance <id>`,
-on a UKI whose `.cmdline` is empty — recommended in the spike's §6 and recorded
-as unmeasured in its §10).
+is §6a's case. No seed CLI verb adopts a plaintext
+(`token issue`/`rotate`/`bind` mint a random one and print it once), so arming
+is either that hash inserted by hand in the same shape or, the path the spike
+calls the one that scales, a line built around a fresh per-machine token
+(`token issue --tenant <slug> --instance <id>`, on a UKI whose `.cmdline` is
+empty — recommended in the spike's §6 and recorded as unmeasured in its §10).
 
 The fence and the one-command sequence for the three writes are
 **t_6d956aee**; until it lands, the disk write is a human step.
