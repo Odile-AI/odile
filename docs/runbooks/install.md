@@ -988,11 +988,11 @@ issued — fails against the same detached signature:
 $ cp installer/odile_install.py /tmp/edited.py
 $ printf 'x' >> /tmp/edited.py
 $ sha256sum /tmp/edited.py
-f9990a8e505adb5123051363ed1e3d7764fe43dfc90db51f8aacdcb0fd93680d  /tmp/edited.py
+fb8f99ed87bc799e9ab635044e6a4faa50efedd15792ee9091cbc4f47e08e56c  /tmp/edited.py
 $ /usr/bin/python3 /tmp/edited.py --verify-signature \
       --pubkey installer/odile-signing-key.pub --signature installer/odile_install.py.sig
 signing key  sha256 13e8c2aee8263f550033448c8193a82b89498f533f52943e09c14d22e5b036e2 · SHA256:ZyFEbkw2oetDml63XaHTix0kUrR2kAVGZaaeDAHvXu8
-signature: BAD (sha256 f9990a8e505adb5123051363ed1e3d7764fe43dfc90db51f8aacdcb0fd93680d)
+signature: BAD (sha256 fb8f99ed87bc799e9ab635044e6a4faa50efedd15792ee9091cbc4f47e08e56c)
 $ echo $?
 3
 ```
