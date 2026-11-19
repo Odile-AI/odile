@@ -103,7 +103,9 @@ class GuardTests(unittest.TestCase):
         self.assertNotIn("delete_server", panel.POST_FIELDS)
         self.assertIn("disk_url", panel.POST_FIELDS)
         self.assertIn("disk_sha256", panel.POST_FIELDS)   # the published hash is sent with the image
-        self.assertIn("submit_order", panel.ORDER_FIELDS)
+        # The order form is not a write path any more: buying is the API's.
+        self.assertNotIn("submit_order", panel.POST_FIELDS)
+        self.assertNotIn("coupon", panel.POST_FIELDS)
 
 
 SETTINGS_HTML = """
@@ -230,45 +232,65 @@ class AuditIsolatedTests(unittest.TestCase):
 
 
 class OrderRouteTests(AuditIsolatedTests):
-    """The referral discount is attached by a page visit, not by the coupon field."""
+    """Buying is an API call at the partner price, not a panel form post.
+
+    The panel order form charges list price even on an account holding a key, and
+    the affiliate route that used to sit in front of it is retired (2026-11-19).
+    `?action=create` with the account's key is 5% off orders, renewals and
+    upgrades, so ordering moved there and the panel can no longer post an order.
+    """
 
     def setUp(self) -> None:
         super().setUp()
         patcher = mock.patch.object(panel, "_ACCOUNT", "lkbxu6i9")
         patcher.start()
         self.addCleanup(patcher.stop)
+        self.key = Path(self.audit_dir.name) / "servury_reseller_key_lkbxu6i9"
+        self.key.write_text("k" * 64 + "\n", encoding="utf-8")
+        self.pub = Path(self.audit_dir.name) / "id_ed25519.pub"
+        self.pub.write_text("ssh-ed25519 AAAA test@host\n", encoding="utf-8")
 
-    def test_the_order_visits_the_referral_route_before_the_form(self) -> None:
-        # Measured 2026-11-18: posting coupon=WEB without the route charged
-        # $9.99 (list); the 12 November order, placed after the referral page,
-        # was $8.99. The visit is what carries the discount.
-        seen: list[str] = []
+    def test_the_order_posts_to_the_api_with_the_key_and_the_ssh_key(self) -> None:
+        seen: dict = {}
 
-        def fake_get(opener, url: str) -> str:
-            seen.append(url)
-            return '<input name="csrf_token" value="t">'
+        def fake_api(key, plan, os_name, days, hostname, ssh_key, preorder=False):
+            seen.update(key=key, plan=plan, os=os_name, days=days, hostname=hostname, ssh_key=ssh_key)
+            return {"server_id": "abc12345", "hostname": hostname, "status": "deploying",
+                    "amount_charged": 9.49}
 
-        posted: list[str] = []
-        with mock.patch.object(panel, "get", fake_get), \
-                mock.patch.object(panel, "post", side_effect=lambda opener, url, f: posted.append(url) or "<p>ok</p>"):
-            code = panel.order(None, "108", "2", "debian13", "31", "odl600",
-                               panel.DEFAULT_COUPON, apply=True, ssh_key_file="")
+        with mock.patch.object(panel, "api_order", fake_api):
+            code = panel.order(None, "108", "2", "debian13", "31", "odl600", True,
+                               str(self.pub), str(self.key))
 
         self.assertEqual(code, 0)
-        self.assertEqual(seen[0], panel.PURCHASE_URL, seen)
-        self.assertIn("/order/", seen[1])
-        self.assertTrue(posted and posted[0].startswith(panel.BASE + "/order/"))
+        self.assertEqual(seen["key"], "k" * 64)
+        self.assertEqual(seen["plan"], "108")
+        self.assertEqual(seen["ssh_key"], "ssh-ed25519 AAAA test@host")
+        self.assertEqual(seen["days"], "31")
 
-    def test_the_order_line_names_the_account_and_the_coupon(self) -> None:
-        with mock.patch.object(panel, "get", return_value='<input name="csrf_token" value="t">'), \
-                mock.patch.object(panel, "post", return_value="<p>ok</p>"):
-            panel.order(None, "108", "2", "debian13", "31", "odl600", "WEB",
-                        apply=True, ssh_key_file="")
+    def test_the_order_line_names_the_api_route_and_the_key(self) -> None:
+        with mock.patch.object(panel, "api_order",
+                               return_value={"server_id": "abc12345", "hostname": "odl600",
+                                             "status": "deploying", "amount_charged": "9.49"}):
+            panel.order(None, "108", "2", "debian13", "31", "odl600", True,
+                        str(self.pub), str(self.key))
 
         line = self.audit_lines()[0]
-        self.assertIn("ORDER plan=108", line)
-        self.assertIn("coupon=WEB", line)
+        self.assertIn("ORDER route=api plan=108", line)
+        self.assertIn("key=", line)
         self.assertIn("account=lkbxu6i9", line)
+        self.assertNotIn("coupon", line)
+
+    def test_an_order_without_an_ssh_key_is_refused(self) -> None:
+        with mock.patch.object(panel, "api_order") as api:
+            code = panel.order(None, "108", "2", "debian13", "31", "odl600", True, "", str(self.key))
+        self.assertEqual(code, 2)
+        api.assert_not_called()
+
+    def test_the_panel_order_form_is_not_a_post_path(self) -> None:
+        # The one fence that makes a list-price order impossible through the tool.
+        with self.assertRaises(SystemExit):
+            panel.post(None, panel.BASE + "/order/?plan=108", {"plan": "108"})
 
 
 class AccountTests(AuditIsolatedTests):
