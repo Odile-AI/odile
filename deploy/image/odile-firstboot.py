@@ -7,7 +7,12 @@ input the sealed design has (docs/product/DECISION-agent-access.md §3a):
 
     bb.iid=<instance id>            Servury's instance id (the binding)
     odile.token=<64 lowercase hex>  the one-time setup token (ODL-455)
-    odile.seed_url=<url>            the seed endpoint (default https://odile.fyi/seed)
+    odile.seed_url=<url>            the seed endpoint (default https://odile.fyi/seed);
+                                    its host names the environment this machine
+                                    reports back to (the boot record posts here)
+    odile.public_url=<url>          the name this tenant serves, read by the
+                                    release setup (ODL-340 follow-up); absent on
+                                    production, where `<bb.host>.<seed host>`
 
 The token is the badge, not a standing key: it is minted at provision bound to
 `bb.iid`, valid once and for 24 hours. The command line is public, so the

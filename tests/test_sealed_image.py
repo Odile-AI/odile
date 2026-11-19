@@ -2547,10 +2547,16 @@ class ProductionImageTests(unittest.TestCase):
         # sets; without it the installer exits 1 after the boot check passes.
         self.assertIn('--token "$TOKEN"', script)
         self.assertIn("the recovery kit has no 64-hex setup token", script)
-        # t_d95b8c13: the public name is an override defaulting to the slug, so
-        # a machine whose owner moved its Webapp keeps it, and the boot passes
-        # the recovery confirmation a machine with no TTY cannot give.
-        self.assertIn('PUBLIC_URL=${ODILE_RELEASE_PUBLIC_URL:-https://$HOST.odile.fyi}', script)
+        # t_d95b8c13 + ODL-340 follow-up: the public name is an override whose
+        # next source is the measured odile.public_url= token and whose last
+        # is the slug's production name, so a moved machine keeps its name and
+        # a second environment needs no drop-in; the seed endpoint rides
+        # through so the installer's site and heartbeat come from the one
+        # environment that issued the seed.
+        self.assertIn('PUBLIC_URL=${ODILE_RELEASE_PUBLIC_URL:-${PUBLIC_TOKEN:-https://$HOST.odile.fyi}}', script)
+        self.assertIn('odile.public_url=*) PUBLIC_TOKEN=', script)
+        self.assertIn('odile.seed_url=*) SEED_URL=', script)
+        self.assertIn('--seed-url "$SEED_URL"', script)
         self.assertIn('--public-url "$PUBLIC_URL"', script)
         self.assertIn("--i-have-copied-it", script)
         self.assertIn("--user tenant --port 9130", script)

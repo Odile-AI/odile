@@ -508,6 +508,31 @@ provision time:
    requires exactly one `bb.ip4=` (it writes the address into
    `/etc/odile/boot-record.json`), and a line without it installs the seed
    and then exits 5 with no Caddy — measured on ODL-332 round 4.
+   The first-boot tokens ride the same line: `odile.token=` (the setup
+   token), `odile.seed_url=` (the seed endpoint, whose **host names the
+   environment** — the boot record posts there and the installer's heartbeat
+   receiver and default site name derive from it), and `odile.public_url=`
+   (the name this tenant serves, when it is not `<bb.host>.<seed host>`; a
+   moved name, or an environment whose tenant names are not shaped that way).
+   `odile.public_url=` is what a bench tenant needs instead of a systemd
+   drop-in, a second Caddy block and a `public_url` patch: the release setup
+   passes it to the installer as `--public-url`, and the installer serves that
+   one name for Caddy, the DNS and ACME waits and the certificate the recovery
+   file pins (ODL-340 follow-up, §12.4 of `install.md`).
+   Measured on the bench, 2026-11-19: a `--production` disk built from this
+   tree's `release/` (installer `fa51daa1…`, manifest `f73b5d4e…`) with the
+   line above was written over the disposable tenant by the panel and booted.
+   The installer logged `site odl-340a1e.test.odile.fyi (heartbeat
+   https://test.odile.fyi/heartbeat)`; the Caddy site, the DNS wait, the ACME
+   wait (its own Let's Encrypt certificate) and `certificate_fingerprint` all
+   used that one name, and the setup ended `=== rc=0`. `odile-firstboot` posted
+   the boot record to the bench and the bench's spine answered
+   `first_boot -> first_visit` (`record_source=first_boot`). The disk carried
+   no `test-site.caddy`, no `odile-test-site.service`, no
+   `odile-release-setup.service.d/` and no Caddyfile, and its tenant
+   `config.yaml` still named the build's `http://tenant.odile.test:9130`;
+   `check_bench.sh` passed all 16 checks against the new measurement
+   `e49965e2…`. Evidence: `docs/evidence/a1-bench-followup.md`.
    `sealed-image.sh --cmdline-file` now refuses such a line before the build.
    The disk is sealed to those exact bytes; on the
    bench the same file is replayed with

@@ -1,8 +1,8 @@
 {
   "artifacts": {
     "installer": {
-      "sha256": "37860cc9f65faefd2e5ac5b5fce8556b6feab7f1d24d96d19c13a68dc5c37529",
-      "size": 1428018,
+      "sha256": "fa51daa1cd41fdab3f948d969d2e79470d5948845acb51b809d3abb8338da0cf",
+      "size": 1433617,
       "url": "odile_install.py"
     },
     "skills": {
@@ -14,14 +14,14 @@
   "boot": {
     "kernel": "6.12.115+deb13.1-amd64"
   },
-  "generated_at": "2026-11-16T01:40:00Z",
+  "generated_at": "2026-11-19T09:30:00Z",
   "manifest": {
-    "sha256": "6bc8f558520ffa4b5bd96ea022bf2367dd187259674c832b09053acf3101c0bc",
+    "sha256": "f73b5d4e6eec4cab972b88c13c846b3927f88043f9258b8d843fdffdd251f975",
     "signature_url": "manifest.json.sig",
     "url": "manifest.json"
   },
-  "notes": "The 2026.11.16-1 cut (the merged head of t_d95b8c13 and t_2efbd6e3/ODL-218 follow-up). It carries both signed changes. (1) t_2efbd6e3: the installer embeds odilectl/offboard.py's EXPORT_PROGRAM — the bytes `odilectl export <slug> --script` prints — and ensure_export_program places them at /usr/local/bin/odile-export (0755 root) on every install, so a fresh tenant has the command without the hand placement the ODL-218 drill used; installer/embed_export.py is the only supported way to refresh that copy, and --self-test pins it against the checkout and fails on a one-byte edit. (2) t_d95b8c13: the tenant template's public-host comment now states the truth the pinned Hermes measures — the Webapp listener reads webapp.public_url and sets its own listener_public_url from it, while dashboard.public_url is declared beside it and is NOT a fallback for the Webapp (measured 2026-11-15: webapp.public_url removed with the dashboard block kept answers 400 Invalid Host header) — and ensure_systemd_services restarts odile-agent when any file the gateway reads at start changed (config, .env, unit, skin), not only when a unit file did, and starts the agent even when the optional odile-access-report oneshot fails. The boot half (deploy/image/odile-release-setup.sh) passes --i-have-copied-it and ODILE_RELEASE_PUBLIC_URL, so a forced re-run converges (=== rc=0) and keeps the host the owner declared, and login_table asserts the four session cookies the sign-in sets (__Host- over HTTPS, bare over the simulation's HTTP). release/manifest.json is -9's fresh-root document with only installer_sha256 re-derived by tools/recut_release.py, so this is a surgical re-cut, not a root rebuild; the skills artifact, the vendor pin and the meter-free rows are unchanged. The id is 2026.11.16-1: -9 is t_2efbd6e3's (2026-11-15T23:59:00Z), -8 is t_d95b8c13's pre-merge cut (22:45Z, superseded by this merged head), and -7 is t_ab95ec2a's open cut; this cut is later than every cut by generated_at at 2026-11-16T01:40:00Z. It is committed, not deployed: measured 2026-11-16T01:44Z the release URL serves 2026.11.15-9 (2cdf0801…, 1,424,179 bytes, release.json 5bee6fd3…), the cut this one supersedes at the merged head.",
+  "notes": "The 2026.11.19-1 cut (ODL-340 follow-up: the tenant image learns its environment). It carries one signed installer change and the boot half that feeds it. (1) installer/odile_install.py serves ONE site name: render_caddy_site, ensure_caddy_site, wait_for_dns, wait_for_acme and certificate_fingerprint all read layout.fqdn, so --public-url names the Caddy site, the DNS and ACME waits and the certificate the recovery file pins; before this cut only webapp.public_url honoured it and a tenant in a second environment needed a test-site Caddy block and a config patch. The tenant default is <slug>.<the seed endpoint's host> (production keeps <slug>.odile.fyi), and the nightly backup's heartbeat default is <seed origin>/heartbeat instead of a production constant, so a bench tenant posts to the bench. (2) deploy/image/odile-release-setup.sh passes the measured odile.public_url= as --public-url (ODILE_RELEASE_PUBLIC_URL still overrides it on an operator re-run) and passes odile.seed_url= through, so a second environment needs no systemd drop-in. The boot record is unchanged: odile-firstboot posts it to odile.seed_url. release/manifest.json is the fresh-root document with only installer_sha256 re-derived by tools/recut_release.py, so this is a surgical re-cut, not a root rebuild; the skills artifact, the vendor pin and the meter-free rows are unchanged. The id is 2026.11.19-1: the served release was 2026.11.15-9, measured 2026-11-19T09:25Z, and 2026.11.16-1 is the committed-not-deployed cut this one supersedes; generated_at is later than every earlier cut. It is committed, not deployed.",
   "product": "odile",
-  "release": "2026.11.16-1",
+  "release": "2026.11.19-1",
   "schema": 1
 }
