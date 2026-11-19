@@ -538,13 +538,15 @@ and `templates/verify.html`, places them at
 127.0.0.1:8098) and splices one no-store `/verify` route to it; the first-visit
 service keeps `/first-visit*` and the icon paths. Re-cut at the head that
 merges main's `2026.11.16-1` (t_2efbd6e3's export program, t_d95b8c13's
-tenant-template and restart changes), it is `2026.11.18-1` (installer
-`8ee68841…`, 1,482,018 bytes; manifest `cee5dda5…`, `generated_at`
-2026-11-15T06:15:00Z — `-9`'s fresh-root document with only
-`installer_sha256` re-derived, a surgical re-cut rather than a root rebuild).
-`release/release.json` is `2026-11-18T18:30:00Z` and names that pair; all four
-signatures verify against `installer/odile-signing-key.pub`
-(`--verify-signature` printed `signature: OK (sha256 8ee68841…)`). It is
+tenant-template and restart changes) and carries the 2026-11-18 brand review's
+fixes (the demo command injected after `#machine`, the two command panels on
+`.report-pre`, the LUKS row resolving the container through `cryptsetup status
+root_crypt`), it is `2026.11.19-1` (installer `5d9bbfd7…`, 1,483,407 bytes;
+manifest `7dabb8f4…`, `generated_at` 2026-11-15T06:15:00Z — the fresh-root
+document with only `installer_sha256` re-derived, a surgical re-cut rather than
+a root rebuild). `release/release.json` is `2026-11-19T19:12:28Z` and names
+that pair; all four signatures verify against `installer/odile-signing-key.pub`
+(`--verify-signature` printed `signature: OK (sha256 5d9bbfd7…)`). It is
 committed, not deployed. Measured 2026-11-18T18:15Z, the URL still served the
 deployed `2026.11.15-9` (installer `2cdf0801…`, 1,424,179 bytes; manifest
 `4664da84…`); this cut publishes when a `./scripts/deploy.sh` runs from a
@@ -1208,7 +1210,7 @@ builder command with a transcript; everything after it is the image.
 | 5 | the signed measured UKI and the pre-sealed disk | **yes, round 8 at 10:28Z, saved 14:42:53Z and booted 14:43:54Z** — UKI `5cb31808…`, disk `c1278242…`, measurement `9f01725a…`, 4-vCPU pin, published 10:29Z; the earlier builds and the defect each exposed are in `docs/evidence/m1-tenant.md` §9–§9.8 and `docs/evidence/m1-image.md` |
 | 6 | a fresh setup token bound to `31a63bbb` | **yes** — ledger `67de1ba9…`, live until 2026-11-13T10:23Z; its plaintext is the `odile.token=` of the sealed line |
 | 7 | the owner's boot key, a passphrase, any operator key | **none** — the image's `bb.key` is a throwaway public key whose private half is shredded |
-| 8 | a signed installer a stranger can obtain (independent of the image) | **yes** — on 2026-11-11 the served release `2026.11.11-5` shipped the strict-bar installer `fde7a48f…`, its `.sig`, the published key and a skills tarball carrying `odile-recipes` (§12.6); the repository's cut is `2026.11.18-1` (`8ee68841…` installer, 1,482,018 bytes, `cee5dda5…` manifest, §12.6) — `-4` was re-cut at the head that merges `main`'s `-3` (ODL-522's per-machine session secret, `e0cec88a…` installer, 1,357,306 bytes, `4f0e3ef9…` manifest) and carries this card's `-2` landing (the five v3.10 access sentences on ODL-505's `-8` and t_ae833f3f's `2026.11.15-1`), then re-embedded every surface; `-6` re-embeds only the support program with t_afb081be's session signal-window fix, `-9` adds t_2efbd6e3's guest export placement, `2026.11.16-1` is t_d95b8c13's merged-head re-cut, and `2026.11.18-1` carries t_4fcd465f's `/verify` on that head — and the served URL serves `2026.11.15-9` (`2cdf0801…` installer, 1,424,179 bytes, manifest `4664da84…` — measured 2026-11-16T01:44Z) until a `./deploy.sh` from a `main` that carries this merge; that live cut carries the `c73dad4d…` vendor pin, and an image a build of this tree makes carries the `2026.11.18-1` pair in its `release/` directory, so the machine's `/manifest` and `/usr/local/bin/odile-install.sh` agree with each other. The live tenant's image is still `2026.11.11-8` (`4aee80c5…`, `1ed9dcad…`) until it is re-provisioned |
+| 8 | a signed installer a stranger can obtain (independent of the image) | **yes** — on 2026-11-11 the served release `2026.11.11-5` shipped the strict-bar installer `fde7a48f…`, its `.sig`, the published key and a skills tarball carrying `odile-recipes` (§12.6); the repository's cut is `2026.11.19-1` (`5d9bbfd7…` installer, 1,483,407 bytes, `7dabb8f4…` manifest, §12.6) — `-4` was re-cut at the head that merges `main`'s `-3` (ODL-522's per-machine session secret, `e0cec88a…` installer, 1,357,306 bytes, `4f0e3ef9…` manifest) and carries this card's `-2` landing (the five v3.10 access sentences on ODL-505's `-8` and t_ae833f3f's `2026.11.15-1`), then re-embedded every surface; `-6` re-embeds only the support program with t_afb081be's session signal-window fix, `-9` adds t_2efbd6e3's guest export placement, `2026.11.16-1` is t_d95b8c13's merged-head re-cut, `2026.11.18-1` carries t_4fcd465f's `/verify` on that head, and `2026.11.19-1` adds the 2026-11-18 brand review's three page fixes at the same head — and the served URL serves `2026.11.15-9` (`2cdf0801…` installer, 1,424,179 bytes, manifest `4664da84…` — measured 2026-11-16T01:44Z) until a `./deploy.sh` from a `main` that carries this merge; that live cut carries the `c73dad4d…` vendor pin, and an image a build of this tree makes carries the `2026.11.19-1` pair in its `release/` directory, so the machine's `/manifest` and `/usr/local/bin/odile-install.sh` agree with each other. The live tenant's image is still `2026.11.11-8` (`4aee80c5…`, `1ed9dcad…`) until it is re-provisioned |
 
 ### 12.2 The builder's half (everything before the panel)
 

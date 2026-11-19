@@ -4639,7 +4639,7 @@ ICON_SET = (
 # audit, are the reviewed files, byte for byte, so the signed installer
 # carries exactly the surface it writes under /usr/local/. --self-test
 # fails on a one-byte edit.
-VERIFY_PROGRAM_SHA256 = "8fa0426cf14949902d683e572de75b8cd93eb950357782f078f180e8cf1a3c87"
+VERIFY_PROGRAM_SHA256 = "0965c0b00c69dbd6a3ba6ef370cc08221d1c2f98e62234701733cbc7ae0c1e03"
 VERIFY_PROGRAM = r'''#!/usr/bin/python3
 """The machine's own /verify page: every claim, with where it was checked.
 
@@ -4734,10 +4734,14 @@ AUDIT_PROGRAM = "/usr/local/bin/odile-audit"
 SUPPORT_PROGRAM = "/usr/local/sbin/odile-support"
 GRANT_STATE = "/var/lib/odile/support-grant.json"
 STATUS_URL = "https://odile.fyi/status"
-# The deck's own command for the header, printed on every LUKS row; the bench
-# reads a dump file, but the page never shows a bench path.
-LUKS_COMMAND = ("cryptsetup luksDump /dev/<luks-device> | "
-                "sed -n '/Keyslots:/,/Tokens:/p'")
+# The deck's own command for the header, printed on every LUKS row. The LUKS
+# container is not the mapper: `cryptsetup luksDump /dev/mapper/root_crypt` is
+# refused because the mapper is plaintext (docs/runbooks/support.md, measured on
+# the tenant). `cryptsetup status` names the device the mapper was opened from,
+# which is what luksDump reads.
+LUKS_DEVICE = "cryptsetup status root_crypt | sed -n 's/^ *device: *//p'"
+LUKS_COMMAND = ('cryptsetup luksDump "$(%s)" | '
+                "sed -n '/Keyslots:/,/Tokens:/p'" % LUKS_DEVICE)
 
 HEX96_RE = re.compile(r"^[0-9a-f]{96}$")
 ISO_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$")
@@ -5102,15 +5106,33 @@ class Machine:
                 "scrypt hash present in %s; no plaintext password" % absolute,
                 command)
 
+    def luks_device(self) -> str:
+        """The block device the root mapper was opened from, or ''.
+
+        `cryptsetup luksDump /dev/mapper/root_crypt` is refused: the mapper is
+        the plaintext device, not the LUKS container (docs/runbooks/support.md,
+        measured on the tenant). `cryptsetup status` names the container; a
+        machine without it falls back to the mounted root's source, and a
+        source that is itself a mapper is reported as-is rather than guessed.
+        """
+        status = run(["cryptsetup", "status", "root_crypt"])
+        for line in (status.stdout + status.stderr).splitlines():
+            match = re.match(r"^\s*device:\s+(\S+)", line)
+            if match and Path(match.group(1)).exists():
+                return match.group(1)
+        mounted = run(["findmnt", "-no", "SOURCE", "/"])
+        source = (mounted.stdout or "").strip().splitlines()
+        if source and Path(source[0]).exists() and not source[0].startswith("/dev/mapper/"):
+            return source[0]
+        return ""
+
     def luks(self) -> tuple[list[str], list[str], str]:
         """(keyslots, tokens, command) from the header, never the volume."""
         if self.luks_dump is not None:
             dump = read_text(self.luks_dump)
             command = "cryptsetup luksDump (from %s)" % self.luks_dump
         elif str(self.root) == "/":
-            device = "/dev/mapper/root_crypt"
-            if not Path(device).exists():
-                device = ""
+            device = self.luks_device()
             done = run(["cryptsetup", "luksDump", device]) if device else None
             dump = (done.stdout + done.stderr) if done is not None else ""
             command = "cryptsetup luksDump %s" % device if device else "lsblk -f"
@@ -5735,7 +5757,7 @@ def main(argv: list[str] | None = None) -> int:
 if __name__ == "__main__":
     sys.exit(main())
 '''
-VERIFY_TEMPLATE_SHA256 = "9dbb1b8c99b1514b7312f026a7434c5a6f904914022b162e92fa7d43657ca13a"
+VERIFY_TEMPLATE_SHA256 = "b2c4224435aae86764c913406d5856509a9234f2458b91c9d88b26efdc069e85"
 VERIFY_TEMPLATE = r'''<!doctype html>
 <html lang="en">
 <head>
@@ -5861,20 +5883,22 @@ pre code::selection{background:var(--term-ink);color:var(--term)}
   <section id="check" aria-labelledby="check-h">
     <h2 id="check-h">Check it yourself</h2>
     <p class="note">The commands from the claims deck, as root on this machine. They print the same values as the rows above; a stranger can run them without asking us for anything.</p>
-    <pre><code><span class="prompt" aria-hidden="true">$</span> cat /root/.ssh/authorized_keys
+    <pre class="report-pre"><code><span class="prompt" aria-hidden="true">$</span> cat /root/.ssh/authorized_keys
 <span class="prompt" aria-hidden="true">$</span> ssh-keygen -lf /root/.ssh/authorized_keys
 <span class="prompt" aria-hidden="true">$</span> passwd -S root
 <span class="prompt" aria-hidden="true">$</span> sshd -T | grep -i '^passwordauthentication'
 <span class="prompt" aria-hidden="true">$</span> getent passwd | grep -i odile
 <span class="prompt" aria-hidden="true">$</span> lsblk -f
-<span class="prompt" aria-hidden="true">$</span> cryptsetup luksDump /dev/&lt;luks-device&gt; \
+<span class="prompt" aria-hidden="true">$</span> DEV=$(cryptsetup status root_crypt \
+| sed -n 's/^ *device: *//p')
+<span class="prompt" aria-hidden="true">$</span> cryptsetup luksDump "$DEV" \
 | sed -n '/Keyslots:/,/Tokens:/p'
 <span class="prompt" aria-hidden="true">$</span> odile-support status
 <span class="prompt" aria-hidden="true">$</span> grep -c odile-support \
 /root/.ssh/authorized_keys
 <span class="prompt" aria-hidden="true">$</span> sha256sum /usr/local/bin/odile-install.sh</code></pre>
     <p class="note">And from your laptop, the report and the signed manifest. The report's JSON carries <code>measurement</code>, <code>report_version</code> and <code>fetched_at</code>; the manifest is the bytes the signature covers.</p>
-    <pre><code><span class="prompt" aria-hidden="true">$</span> curl -s https://&lt;slug&gt;.odile.fyi/attestation
+    <pre class="report-pre"><code><span class="prompt" aria-hidden="true">$</span> curl -s https://&lt;slug&gt;.odile.fyi/attestation
 <span class="prompt" aria-hidden="true">$</span> curl -s https://&lt;slug&gt;.odile.fyi/manifest
 <span class="prompt" aria-hidden="true">$</span> curl -fsSLO \
 https://odile.fyi/releases/m1/odile-tenant.efi

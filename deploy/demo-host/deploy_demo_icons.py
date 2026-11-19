@@ -212,8 +212,9 @@ def template_bytes(repo: Path = REPO) -> bytes:
 def converge_verify_template(console, say) -> bool:
     """Put the release /verify page only when its converged result differs.
 
-    The machine's file is the release page with the demo's lede and command
-    section inside its tenant block, so comparing the raw release page would
+    The machine's file is the release page with the demo's lede in its tenant
+    block and the command section after the `#machine` section, so comparing
+    the raw release page would
     rewrite on every run. `template_bytes` is the target; the upload is still
     the release page, because the apply writes the rollback copy from it (the
     page a customer machine would have).

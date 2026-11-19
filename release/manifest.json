@@ -1339,7 +1339,7 @@
       "source_sha256": "1faeb5281c0b84c0d235e64dcebf8709a497e48dcb573181b46b2e959f27b0ca"
     }
   },
-  "installer_sha256": "8ee68841e0abab67136efcf573e41713389030f1418a55af34058a7991a19c4b",
+  "installer_sha256": "5d9bbfd7c34c3c6ea952da8a6f8d21c7ca6d79578794839f0a8093947e490f60",
   "mode": "scratch",
   "model": "deepseek-ai/DeepSeek-V4.1-Flash-1017-abliterated",
   "packages": {

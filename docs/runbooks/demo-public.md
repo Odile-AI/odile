@@ -92,8 +92,9 @@ demo paragraphs — the lede and the
 demo-public deploy left (ODL-563 follow-up; the pre-fix run was measured
 dropping the section at 01:09:17Z). Run the demo-public deploy after a forced
 re-cut: its verify step records a FAIL for a `/verify` that does not carry
-exactly one `<!--demo-check-->` section (ODL-563), so a stale page cannot print
-PASS.
+exactly one `<!--demo-check-->` section, or whose section does not follow the
+`#machine` section the note's `measurement` row names (ODL-563), so a stale page
+cannot print PASS.
 
 The same re-cut also exposed an old image's listener: the machine's
 `odile-manifest.service` predates ODL-521 and its dynamic user cannot traverse
@@ -173,8 +174,9 @@ Instead:
   tarball, so the page and the verifier cannot drift;
 - `apply_demo_public.py` replaces the tenant block's one lede in
   `/usr/local/lib/odile/verify.html` — the template `odile-verify.service`
-  reads per request — adds the command section inside the same block, and keeps
-  the release page at
+  reads per request — adds the command section after the `#machine` section
+  (its note names the `measurement` row, so it follows the row it
+  names), and keeps the release page at
   `/usr/local/lib/odile-demo-public/verify.html.release` for the rollback;
 - the demo-public deploy's `apply --write` and the t_6b25f6e5 icons deploy are
   the two writers of this page. `odile-release-setup.service` converges
@@ -189,9 +191,9 @@ Instead:
   the general row. `tests/test_demo_public.py` renders both pages through the
   release renderer and pins the sentence each one shows. The same test runs
   the anchor against `installer/odile_install.py` and `release/odile_install.py`
-  in `make check`: a re-cut that moves the tenant block or adds a second lede
-  turns the gate red, and the apply then exits non-zero rather than serving a
-  half page.
+  in `make check`: a re-cut that moves the tenant block or `#machine`, or adds
+  a second lede, turns the gate red, and the apply then exits non-zero rather
+  than serving a half page.
 
 Rollback, as root on the machine:
 

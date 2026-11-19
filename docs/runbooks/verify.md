@@ -121,7 +121,9 @@ The page reads, per request: `/var/lib/odile/attestation.json`, the installer's
 `/etc/odile/boot-record.json`, `/proc/cmdline`, the SSH host key, `/etc/passwd`
 and `/etc/shadow`, `/run/bb/sealed-unlock.state`, the tenant's `.hermes/.env`
 (the scrypt hash's presence, never its value), the signed manifest pair, the
-support-grant state and `cryptsetup luksDump` of the root container. Every row
+support-grant state and `cryptsetup luksDump` of the root container (the
+container is the device `cryptsetup status root_crypt` names; the plaintext
+mapper is refused, `docs/runbooks/support.md` §"The handover"). Every row
 is tagged `checked from your laptop` or `read from the machine`; the audit and
 the support program are the machine's own reviewed programs, so the page wraps
 their verdicts instead of re-implementing them. CLAIMS §4.4's five things are

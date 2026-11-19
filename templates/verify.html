@@ -123,20 +123,22 @@ pre code::selection{background:var(--term-ink);color:var(--term)}
   <section id="check" aria-labelledby="check-h">
     <h2 id="check-h">Check it yourself</h2>
     <p class="note">The commands from the claims deck, as root on this machine. They print the same values as the rows above; a stranger can run them without asking us for anything.</p>
-    <pre><code><span class="prompt" aria-hidden="true">$</span> cat /root/.ssh/authorized_keys
+    <pre class="report-pre"><code><span class="prompt" aria-hidden="true">$</span> cat /root/.ssh/authorized_keys
 <span class="prompt" aria-hidden="true">$</span> ssh-keygen -lf /root/.ssh/authorized_keys
 <span class="prompt" aria-hidden="true">$</span> passwd -S root
 <span class="prompt" aria-hidden="true">$</span> sshd -T | grep -i '^passwordauthentication'
 <span class="prompt" aria-hidden="true">$</span> getent passwd | grep -i odile
 <span class="prompt" aria-hidden="true">$</span> lsblk -f
-<span class="prompt" aria-hidden="true">$</span> cryptsetup luksDump /dev/&lt;luks-device&gt; \
+<span class="prompt" aria-hidden="true">$</span> DEV=$(cryptsetup status root_crypt \
+| sed -n 's/^ *device: *//p')
+<span class="prompt" aria-hidden="true">$</span> cryptsetup luksDump "$DEV" \
 | sed -n '/Keyslots:/,/Tokens:/p'
 <span class="prompt" aria-hidden="true">$</span> odile-support status
 <span class="prompt" aria-hidden="true">$</span> grep -c odile-support \
 /root/.ssh/authorized_keys
 <span class="prompt" aria-hidden="true">$</span> sha256sum /usr/local/bin/odile-install.sh</code></pre>
     <p class="note">And from your laptop, the report and the signed manifest. The report's JSON carries <code>measurement</code>, <code>report_version</code> and <code>fetched_at</code>; the manifest is the bytes the signature covers.</p>
-    <pre><code><span class="prompt" aria-hidden="true">$</span> curl -s https://&lt;slug&gt;.odile.fyi/attestation
+    <pre class="report-pre"><code><span class="prompt" aria-hidden="true">$</span> curl -s https://&lt;slug&gt;.odile.fyi/attestation
 <span class="prompt" aria-hidden="true">$</span> curl -s https://&lt;slug&gt;.odile.fyi/manifest
 <span class="prompt" aria-hidden="true">$</span> curl -fsSLO \
 https://odile.fyi/releases/m1/odile-tenant.efi

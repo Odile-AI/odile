@@ -1912,11 +1912,58 @@ Digests:
         for command in ("passwd -S root",
                         "sshd -T | grep -i '^passwordauthentication'",
                         "ssh-keygen -lf /root/.ssh/authorized_keys",
-                        "cryptsetup luksDump /dev/&lt;luks-device&gt;",
+                        "DEV=$(cryptsetup status root_crypt",
+                        'cryptsetup luksDump "$DEV"',
                         "odile-support status",
                         "curl -s https://&lt;slug&gt;.odile.fyi/attestation",
                         "sha256sum /usr/local/bin/odile-install.sh"):
             self.assertIn(command, body, "the deck's command is missing: %s" % command)
+
+    def test_the_luks_row_prints_the_container_resolution_not_the_mapper(self) -> None:
+        """The mapper is plaintext: luksDump on it is refused (support.md)."""
+        cell = html.unescape(self.row(self.page(), "LUKS"))
+        self.assertIn('cryptsetup luksDump "$(cryptsetup status root_crypt', cell)
+        self.assertNotIn("/dev/mapper/root_crypt", cell)
+
+    def test_the_two_command_panels_carry_the_page_wrap_rule(self) -> None:
+        """At 390 the three long lines were clipped by a 320 px code box."""
+        body = self.page()
+        self.assertEqual(body.count('<pre class="report-pre">'), 2,
+                         "both command panels must wrap, not scroll sideways")
+        self.assertRegex(body, r"\.report-pre code\{[^}]*white-space:pre-wrap[^}]*\}")
+
+    def test_the_live_luks_row_resolves_the_device_from_the_mapper_name(self) -> None:
+        """On `/` the program asks cryptsetup status which device to dump."""
+        spec = importlib.util.spec_from_file_location(
+            "odile_verify_luks_device", PAGE)
+        assert spec is not None and spec.loader is not None
+        module = importlib.util.module_from_spec(spec)
+        sys.modules["odile_verify_luks_device"] = module
+        spec.loader.exec_module(module)
+        stamp = module.parse_iso(self.NOW)
+        self.assertIsNotNone(stamp)
+        with tempfile.TemporaryDirectory() as tmp:
+            device = Path(tmp) / "sda3"
+            device.write_text("", encoding="utf-8")
+            calls = []
+
+            def fake_run(argv, **_kwargs):
+                calls.append(argv)
+                if argv[:2] == ["cryptsetup", "status"]:
+                    return subprocess.CompletedProcess(
+                        argv, 0, "  type:    LUKS2\n  device:  %s\n" % device, "")
+                if argv[:2] == ["cryptsetup", "luksDump"]:
+                    return subprocess.CompletedProcess(
+                        argv, 0, self.LUKS_ONE, "")
+                return subprocess.CompletedProcess(argv, 127, "", "missing")
+
+            with mock.patch.object(module, "run", fake_run):
+                machine = module.Machine(root=Path("/"), now=stamp)
+                keyslots, tokens, command = machine.luks()
+        self.assertEqual(keyslots, ["0"])
+        self.assertEqual(tokens, [])
+        self.assertIn(["cryptsetup", "luksDump", str(device)], calls)
+        self.assertEqual(command, "cryptsetup luksDump %s" % device)
 
     def test_the_three_gaps_are_stated_in_order_with_the_manifest_note(self) -> None:
         body = self.page()

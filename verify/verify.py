@@ -92,10 +92,14 @@ AUDIT_PROGRAM = "/usr/local/bin/odile-audit"
 SUPPORT_PROGRAM = "/usr/local/sbin/odile-support"
 GRANT_STATE = "/var/lib/odile/support-grant.json"
 STATUS_URL = "https://odile.fyi/status"
-# The deck's own command for the header, printed on every LUKS row; the bench
-# reads a dump file, but the page never shows a bench path.
-LUKS_COMMAND = ("cryptsetup luksDump /dev/<luks-device> | "
-                "sed -n '/Keyslots:/,/Tokens:/p'")
+# The deck's own command for the header, printed on every LUKS row. The LUKS
+# container is not the mapper: `cryptsetup luksDump /dev/mapper/root_crypt` is
+# refused because the mapper is plaintext (docs/runbooks/support.md, measured on
+# the tenant). `cryptsetup status` names the device the mapper was opened from,
+# which is what luksDump reads.
+LUKS_DEVICE = "cryptsetup status root_crypt | sed -n 's/^ *device: *//p'"
+LUKS_COMMAND = ('cryptsetup luksDump "$(%s)" | '
+                "sed -n '/Keyslots:/,/Tokens:/p'" % LUKS_DEVICE)
 
 HEX96_RE = re.compile(r"^[0-9a-f]{96}$")
 ISO_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$")
@@ -460,15 +464,33 @@ class Machine:
                 "scrypt hash present in %s; no plaintext password" % absolute,
                 command)
 
+    def luks_device(self) -> str:
+        """The block device the root mapper was opened from, or ''.
+
+        `cryptsetup luksDump /dev/mapper/root_crypt` is refused: the mapper is
+        the plaintext device, not the LUKS container (docs/runbooks/support.md,
+        measured on the tenant). `cryptsetup status` names the container; a
+        machine without it falls back to the mounted root's source, and a
+        source that is itself a mapper is reported as-is rather than guessed.
+        """
+        status = run(["cryptsetup", "status", "root_crypt"])
+        for line in (status.stdout + status.stderr).splitlines():
+            match = re.match(r"^\s*device:\s+(\S+)", line)
+            if match and Path(match.group(1)).exists():
+                return match.group(1)
+        mounted = run(["findmnt", "-no", "SOURCE", "/"])
+        source = (mounted.stdout or "").strip().splitlines()
+        if source and Path(source[0]).exists() and not source[0].startswith("/dev/mapper/"):
+            return source[0]
+        return ""
+
     def luks(self) -> tuple[list[str], list[str], str]:
         """(keyslots, tokens, command) from the header, never the volume."""
         if self.luks_dump is not None:
             dump = read_text(self.luks_dump)
             command = "cryptsetup luksDump (from %s)" % self.luks_dump
         elif str(self.root) == "/":
-            device = "/dev/mapper/root_crypt"
-            if not Path(device).exists():
-                device = ""
+            device = self.luks_device()
             done = run(["cryptsetup", "luksDump", device]) if device else None
             dump = (done.stdout + done.stderr) if done is not None else ""
             command = "cryptsetup luksDump %s" % device if device else "lsblk -f"

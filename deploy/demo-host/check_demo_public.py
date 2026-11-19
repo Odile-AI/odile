@@ -647,6 +647,9 @@ def tenant_checks(console, password: str = "") -> tenant_console.Console:
     check(bool(verify.get("demo_command")),
           "the tenant's /verify template carries the one-line --expect command "
           "with its measurement")
+    check(bool(verify.get("demo_command_after_machine")),
+          "the command section follows the #machine section its note's "
+          "`measurement` row names")
     check(not verify.get("customer_lede"),
           "the tenant's /verify template no longer carries the customer-tenant row")
     check(bool(verify.get("rollback")), "the release page is kept for a rollback")

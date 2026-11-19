@@ -201,16 +201,16 @@ class WrapTests(unittest.TestCase):
                     + r" code\{[^}]*white-space:pre-wrap[^}]*\}",
                     f"the page defines no wrap rule for .{token} code")
 
-    def test_the_note_points_above_to_the_measurement_it_names(self):
+    def test_the_note_names_the_measurement_row_above_it(self):
         note = re.search(r'<p class="note">(.*?)</p>', self.text, re.S)
         self.assertIsNotNone(note)
         copy = html.unescape(re.sub(r"<[^>]+>", "", note.group(1)))
-        self.assertIn("shown above", copy)
+        self.assertIn("measurement row above", copy)
         self.assertNotIn("shown in the report below", copy)
 
 
 class InjectionTests(unittest.TestCase):
-    """The command lands in the tenant block, and nowhere near a customer."""
+    """The command lands after the machine section, and nowhere near a customer."""
 
     @classmethod
     def setUpClass(cls):
@@ -229,18 +229,36 @@ class InjectionTests(unittest.TestCase):
                 self.assertNotIn("<!--demo-check-->", page)
                 self.assertNotIn(COMMAND_SLOT, page)
 
-    def test_the_command_is_inside_the_tenant_block_after_the_lede(self):
-        page = embedded_page(INSTALLERS[0])
+    def test_the_tenant_block_keeps_only_the_lede(self):
         injected = self.demo_page()
-        before, after = self.apply.tenant_block(page), self.apply.tenant_block(injected)
-        self.assertIn(self.lede, after)
-        self.assertIn(self.command, after)
-        self.assertLess(after.index(self.lede), after.index(self.command))
-        # Everything outside the tenant block is byte-identical.
-        head = page.index(before)
-        new_head = injected.index(after)
-        self.assertEqual(page[:head] + page[head + len(before):],
-                         injected[:new_head] + injected[new_head + len(after):])
+        block = self.apply.tenant_block(injected)
+        self.assertEqual(block.strip(), self.lede)
+        self.assertNotIn(self.command, block)
+
+    def test_the_command_follows_the_machine_section_it_names(self):
+        """The note names the `measurement` row: it must be above the section."""
+        injected = self.demo_page()
+        machine = self.apply.MACHINE_SECTION_RE.search(injected)
+        self.assertIsNotNone(machine)
+        start = injected.index(self.command)
+        self.assertGreater(start, machine.end())
+        self.assertLess(start, injected.index('id="check"'))
+        self.assertLess(injected.index('id="machine"'), start)
+        # The section is the only change after the lede: removing it restores
+        # the lede-injected page exactly.
+        lede_page = self.apply.inject_lede(embedded_page(INSTALLERS[0]), self.lede)
+        end = self.apply.MACHINE_SECTION_RE.search(lede_page).end()
+        head, _sep, rest = injected.partition(self.command)
+        self.assertEqual(head, lede_page[:end] + "\n\n")
+        self.assertEqual(rest, lede_page[end:])
+
+    def test_a_page_that_carried_the_command_in_the_tenant_block_converges(self):
+        """The demo machine's live page was written before the move."""
+        page = embedded_page(INSTALLERS[0])
+        old = self.apply.inject_lede(page, self.lede).replace(
+            "<!--/tenant-->", self.command + "\n<!--/tenant-->")
+        self.assertIn(self.command, self.apply.tenant_block(old))
+        self.assertEqual(self.apply.inject_command(old, self.command), self.demo_page())
 
     def test_the_injection_is_idempotent_and_replaces_a_stale_section(self):
         once = self.demo_page()
@@ -259,6 +277,12 @@ class InjectionTests(unittest.TestCase):
     def test_a_page_without_the_tenant_block_fails_loudly(self):
         with self.assertRaises(ValueError):
             self.apply.inject_command("<html><body>Verify</body></html>", self.command)
+
+    def test_a_page_without_the_machine_section_fails_loudly(self):
+        page = ("<!--tenant-->\n<p class=\"lede\">one</p>\n<!--/tenant-->\n"
+                '<section id="check"><h2>Check it yourself</h2></section>\n')
+        with self.assertRaises(ValueError):
+            self.apply.inject_command(page, self.command)
 
 
 class RenderTests(unittest.TestCase):
@@ -286,6 +310,14 @@ class RenderTests(unittest.TestCase):
         lines = [line for line in copied_lines(self.rendered())
                  if "./odile-verify" in line]
         self.assertEqual(lines, [EXPECTED])
+
+    def test_the_command_sits_below_the_machine_section_it_cites(self):
+        """The note names the `measurement` row: the section must follow #machine."""
+        rendered = self.rendered()
+        self.assertLess(rendered.index('<h2 id="machine-h">'),
+                        rendered.index("./odile-verify"))
+        self.assertLess(rendered.index("./odile-verify"),
+                        rendered.index('<h2 id="check-h">'))
 
     def test_without_a_report_the_page_still_renders_and_names_it(self):
         rendered = render_page(
