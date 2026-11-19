@@ -4602,7 +4602,7 @@ def main(argv: list[str] | None = None) -> int:
 if __name__ == "__main__":
     sys.exit(main())
 '''
-FIRST_VISIT_PAGE_SHA256 = "e1af5de12b272e510a5a0e91f1a7541529255fd8e14396919d65188810b02acb"
+FIRST_VISIT_PAGE_SHA256 = "eed3a6e9d12877abd10f604a52aa9fda5f759a8e85fbced88f95649a06c9213f"
 FIRST_VISIT_PAGE = r'''<!doctype html>
 <html lang="en">
 <head>
@@ -4678,10 +4678,16 @@ input[aria-invalid=true]{border-bottom-color:var(--error)}
   text-transform:uppercase;letter-spacing:.28em;transition:background .18s,color .18s}
 .download:hover{background:var(--ink-hover);border-color:var(--ink-hover);color:var(--paper)}
 .download:focus-visible{outline:2px solid var(--ink);outline-offset:3px}
-.consent{display:flex;align-items:flex-start;gap:10px;margin:16px 0 0;
+.consent{display:flex;align-items:flex-start;gap:12px;margin:16px 0 0;min-height:44px;padding:8px 0;
   font-size:16px;line-height:1.5;color:var(--soft);cursor:pointer;max-width:54ch}
-.consent input{width:20px;height:20px;margin:2px 0 0;accent-color:var(--ink)}
-#saved:not(:checked)~.act .quiet{pointer-events:none;opacity:.45}
+input[type=checkbox]{appearance:none;-webkit-appearance:none;width:18px;height:18px;margin:4px 0 0;flex:none;
+  border:1px solid var(--edge);background:var(--paper);border-radius:0;position:relative;cursor:pointer}
+input[type=checkbox]:checked{border-color:var(--ink)}
+input[type=checkbox]:checked::after{content:"";position:absolute;left:3px;top:3px;width:10px;height:10px;background:var(--ink)}
+input[type=checkbox]:focus-visible{outline:2px solid var(--ink);outline-offset:3px}
+@media (forced-colors:active){input[type=checkbox]{border-color:ButtonText}
+  input[type=checkbox]:checked::after{background:ButtonText}}
+.consent:not(:has(input:checked)) + .act .quiet{visibility:hidden}
 section{margin:0 0 8px}
 .rule{margin:24px 0 0;padding-top:16px;border-top:1px solid var(--line)}
 .foot{margin:32px 0 0;padding-top:16px;border-top:1px solid var(--line-soft);
@@ -4747,7 +4753,7 @@ h1,h2,h3,.brand,.mark,.wordmark,.focus{font-family:var(--serif)}
 <!--/done-->
 <!--reset-->
   <h1>Reset your machine's sign-in</h1>
-  <p class="lede">Enter the recovery code you saved at your first visit, then choose a new sign-in. This changes the sign-in on this machine only. Your account password is reset at your account site, under /forgot.</p>
+  <p class="lede">Enter the recovery code you saved at your first visit, then choose a new sign-in. This changes the sign-in on this machine only. Your account password is reset at your account site.</p>
   <form method="post" action="/first-visit/reset">
     <div class="field">
       <label for="code">Recovery code</label>
@@ -4803,7 +4809,7 @@ h1,h2,h3,.brand,.mark,.wordmark,.focus{font-family:var(--serif)}
 <!--/recover-->
 <!--recovery-done-->
   <h1>Your recovery file is ready.</h1>
-  <p class="lede">Download it now: the button below works once, for ten minutes.</p>
+  <p class="lede">Download it now, before you close this page.</p>
   <section aria-labelledby="recovery">
     <p class="label" id="recovery">Your new recovery code</p>
     <p class="code" id="code">{{RECOVERY}}</p>

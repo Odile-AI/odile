@@ -1478,9 +1478,11 @@ class PageTests(unittest.TestCase):
         self.assertIn("Enter the recovery code you saved at your first visit, then "
                       "choose a new sign-in.", page)
         self.assertIn("This changes the sign-in on this machine only.", page)
-        self.assertIn("Your account password is reset at your account site, under "
-                      "/forgot.", page)
-        self.assertIn("#saved:not(:checked)", page, "the checkbox does not gate the link")
+        # §3.4's sentence names the account host the kit and the ready email
+        # carry; the machine does not know it, so the page states the split and
+        # drops the fragment a stranger cannot type (designer review, round 2).
+        self.assertIn("Your account password is reset at your account site.", page)
+        self.assertNotIn("under /forgot", page)
         self.assertEqual(CODE_RE.search(page), None, "the form shows no code")
         status, _, done = self.harness.call(
             "POST", "/first-visit/reset",
@@ -1494,6 +1496,83 @@ class PageTests(unittest.TestCase):
         self.assertIn('input type="checkbox" id="saved"', done)
         self.assertIn("I have saved the code and the file", done)
         self.assertIn(A9_DECIDED, done)
+
+    def test_the_consent_checkbox_gates_the_workspace_link(self):
+        """The gate is on the label that holds the input, and it hides the link.
+
+        Round 1 shipped ``#saved:not(:checked)~.act`` — a rule that cannot
+        match, because the input is a child of the label and ``.act`` is the
+        label's sibling. The designer measured the shipped page: the link stayed
+        visible, clickable and in the tab order. The selector is asserted
+        exactly, the old inert one is banned, and the computed state is proven
+        in the render probe (a stylesheet has no behaviour a suite can read).
+        """
+        status, _, done = self.harness.set_signin()
+        self.assertEqual(status, 200)
+        code = CODE_RE.search(done).group(1)
+        recovery = self.harness.call(
+            "POST", "/first-visit/recovery", {"code": code})[2]
+        text = PAGE.read_text(encoding="utf-8")
+        gate = (".consent:not(:has(input:checked)) + .act .quiet"
+                "{visibility:hidden}")
+        self.assertIn(gate, text, "the checkbox does not gate the link")
+        self.assertNotIn("#saved:not(:checked)", text,
+                         "the inert round-1 selector is back")
+        self.assertNotIn("opacity:.45", text,
+                         "a dimmed link is still in the tab order")
+        for name, body in (("done", done), ("recovery-done", recovery)):
+            with self.subTest(state=name):
+                self.assertIn('class="consent"', body)
+                self.assertIn('<div class="act">', body)
+                # the label with the input sits immediately before .act, which
+                # the sibling selector needs
+                consent_at = body.index('<label class="consent">')
+                act_at = body.index('<div class="act">')
+                between = body[consent_at:act_at]
+                self.assertIn('<input type="checkbox" id="saved">', between,
+                              "the input is outside the label")
+                self.assertTrue(between.rstrip().endswith("</label>"),
+                                "something sits between the consent label and .act")
+
+    def test_the_consent_control_is_the_sheets_checkbox(self):
+        """BRAND.md's checkbox row: 18 px, edge border, paper fill, 10 px mark.
+
+        Round 1 shipped the platform widget (``appearance:auto``, 20 px,
+        accent-color) in a 24 px label, under the 44 px target floor. The
+        sheet's control is the one ``web/claim.html`` already ships; this page
+        reuses it rather than inventing a second style.
+        """
+        text = PAGE.read_text(encoding="utf-8")
+        self.assertIn(".consent{display:flex;align-items:flex-start;gap:12px;", text)
+        self.assertIn("min-height:44px;padding:8px 0", text,
+                      "the consent row is under the target size")
+        self.assertIn("input[type=checkbox]{appearance:none;-webkit-appearance:none;"
+                      "width:18px;height:18px;", text)
+        self.assertIn("border:1px solid var(--edge);background:var(--paper);"
+                      "border-radius:0;position:relative;", text)
+        self.assertIn('input[type=checkbox]:checked::after{content:"";'
+                      "position:absolute;left:3px;top:3px;width:10px;height:10px;"
+                      "background:var(--ink)}", text)
+        self.assertIn("input[type=checkbox]:focus-visible{outline:2px solid var(--ink);"
+                      "outline-offset:3px}", text)
+        self.assertIn("@media (forced-colors:active){input[type=checkbox]", text)
+        self.assertNotIn("accent-color", text, "the platform widget is back")
+        self.assertNotIn(".consent input{width:20px;height:20px;", text)
+
+    def test_the_recovery_done_page_says_each_thing_once(self):
+        """One lede sentence; the ten-minute constraint lives under the button."""
+        harness = FirstVisitHarness(recovery=recovery_text())
+        self.addCleanup(harness.close)
+        status, _, done = harness.set_signin()
+        self.assertEqual(status, 200)
+        code = CODE_RE.search(done).group(1)
+        status, _, page = harness.call(
+            "POST", "/first-visit/recovery", {"code": code})
+        self.assertEqual(status, 200)
+        self.assertIn("Download it now, before you close this page.", page)
+        self.assertNotIn("the button below works once", page)
+        self.assertIn("This link works once, for ten minutes.", page,
+                      "the constraint left the note under the button")
 
     def test_the_wordmark_is_plain_until_the_sign_in_exists(self):
         form = self.harness.call("GET", "/first-visit?t=" + self.harness.token)[2]

@@ -63,10 +63,9 @@ is shown. The same code fetches your recovery file at
 {{url}}/first-visit/recovery; using it there rotates it too.
 
 Your account password is not reset on the machine. It resets at your account
-site: open the account link in your ready email and add /forgot —
-https://test.odile.fyi/forgot on the alpha bench, https://odile.fyi/forgot in
-production. That reset works while the machine is down; the recovery code
-needs the machine up.
+site — the address your claim link came from. Open that address and add
+/forgot. That reset works while the machine is down; the recovery code needs
+the machine up.
 
 The recovery file opens your backup. Download your copy on the first visit
 and keep it off the machine: it is your only copy of the backup password. It
