@@ -2188,6 +2188,29 @@ measured 2026-11-16T01:44Z the URL serves `2026.11.15-9` (`2cdf0801…`,
 (22:45Z, superseded by this merged head), `-9` is t_2efbd6e3's (23:59Z), and
 `2026.11.16-1` is later than every cut by `generated_at`.
 
+**The `2026.11.19-1` cut (ODL-906-F3 follow-up, `t_3cd62ef9`: the `/verify`
+page's fetch count).** `web/verify.html` (and its byte-identical public copy,
+`web/verify-public.html`) replaced "It fetches one URL: `/attestation`" with
+"It fetches two URLs: `/attestation`, and that report's own VCEK from AMD's
+KDS" — the sentence the shipped verifier has outgrown since the demo chip's
+vendored VCEK (`tests/fixtures/amd/vcek.pem`) was deleted for its silicon id.
+`installer/embed_verify.py` re-embedded the page, `tools/recut_release.py`
+re-derived and re-signed the pair (`--check` prints `ok` for the installer, its
+release copy and both documents), `--self-test` prints `self-test: PASS`, and
+`--verify-signature` prints `signature: OK`: installer `e4a3554b…` (1,428,062
+bytes), manifest `65c56be3…` (49,957 bytes; its only move against `-1` is
+`installer_sha256`), release.json `e22b8ef6…` naming `2026.11.19-1` at
+`2026-11-19T05:00:00Z`. No root rebuild is claimed: the manifest is
+`2026.11.16-1`'s fresh-root document and the skills artifact (`9d82653f…`,
+851,945 bytes) and the `539e205f…` audit row are unchanged. The verifier
+bundle itself did not move (20,560 bytes, sha256 `815dbc26…08d4c`): the page
+is not one of its members. It is committed, not deployed: measured
+2026-11-19T04:37Z the URL still serves `2026.11.15-9` (`2cdf0801…`,
+1,424,179 bytes; release.json `5bee6fd3…`). The id ledger: the newest cut by
+`generated_at` before this one is `2026.11.18-1` (t_4fcd465f,
+`2026-11-18T18:30:00Z`, an unmerged branch), and this tree's base is
+`2026.11.16-1` (`2026-11-16T01:40:00Z`).
+
 **The `2026.11.19-2` cut (the ODL-340 follow-up merged with `-1`).** The
 merge of `2026.11.19-1` (`e4a3554b…`, the `/verify` page's two-URL note) with
 the ODL-340 follow-up produced one installer, `36babff5…` (1,433,661 bytes):
