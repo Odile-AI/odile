@@ -431,13 +431,27 @@ class ClaimPageTests(unittest.TestCase):
         self.assertIn(f"URL https://{self.slug}.odile.fyi", body)
         self.assertIn(f"Measurement {MEASUREMENT}", body)
         self.assertIn(f"Set your sign-in: {first_visit}", body)
-        self.assertIn(f"Open the first-visit guide: {claim.READY_GUIDE_URL}", body)
-        # The subject is the message's first sentence; the body does not
-        # repeat it, and the URL is the first thing the reader sees.
+        self.assertIn(
+            f"The first-visit guide is at {claim.READY_GUIDE_URL}", body
+        )
+        # The subject is the message's own line, not its first sentence; the
+        # body does not repeat it, and the URL is the first thing the reader sees.
         self.assertTrue(body.startswith(f"URL https://{self.slug}.odile.fyi"), body)
         self.assertNotIn(claim.READY_SUBJECT, body)
+        # One imperative URL — the first-visit link. The guide is a named
+        # address in a sentence, so no line opens with an imperative for it.
         self.assertEqual(
-            len([line for line in body.splitlines() if line.startswith("Open ")]), 1
+            len(
+                [
+                    line
+                    for line in body.splitlines()
+                    if line.startswith("Set your sign-in:")
+                ]
+            ),
+            1,
+        )
+        self.assertEqual(
+            [line for line in body.splitlines() if line.startswith("Open ")], []
         )
         self.assertEqual(body.count(claim.READY_GUIDE_URL), 1)
         # The single-use setup token travels only inside the action URL, and

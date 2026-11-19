@@ -582,9 +582,19 @@ class ProvisionTests(ClaimBase):
         body = queued.get_body(preferencelist=("plain",)).get_content()
         self.assertIn(f"URL https://{SLUG}.{ZONE}", body)
         self.assertIn(f"Measurement {MEASUREMENT}", body)
-        self.assertIn(f"Open the first-visit guide: {claim.READY_GUIDE_URL}", body)
+        self.assertIn(f"The first-visit guide is at {claim.READY_GUIDE_URL}", body)
         self.assertEqual(
-            len([line for line in body.splitlines() if line.startswith("Open ")]), 1
+            len(
+                [
+                    line
+                    for line in body.splitlines()
+                    if line.startswith("Set your sign-in:")
+                ]
+            ),
+            1,
+        )
+        self.assertEqual(
+            [line for line in body.splitlines() if line.startswith("Open ")], []
         )
         for old in ("IPv4", "Host ", "Release ", "Setup token", "ssh",
                     "passphrase", "encrypt", "unlock", "installer", "scp", "shred"):

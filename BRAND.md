@@ -874,9 +874,10 @@ on it.
   The reset page and the first-visit guide are named addresses in sentences,
   not second actions. An email address never appears in the body; a token
   travels only inside its action URL, never as a bare value.
-- **Subject line:** sentence case, no colon-and-preamble, no emoji, no
-  exclamation, no "Newsletter #3". The subject is the first sentence of the
-  message.
+- **Subject line:** sentence case; the subject is a plain name for the
+  message — a phrase or one sentence — never a headline, a colon-and-preamble,
+  an emoji, an exclamation or "Newsletter #3"; it need not be the body's first
+  sentence.
 - **Preheader:** the first sentence of the body; no "View in browser", no
   "Having trouble reading this?"; personalisation is the address and the machine
   slug only.
@@ -987,7 +988,7 @@ Later, if you forget your sign-in:
 
 {{URL}}/first-visit/reset — your recovery code resets it.
 
-Open the first-visit guide: {{GUIDE}}
+The first-visit guide is at {{GUIDE}}
 
 — Odile
 
@@ -1028,12 +1029,14 @@ held clause from `docs/CLAIMS.md` §1a.
 | ready | "That password opens your workspace." | §1 First run: "Your Odile sign-in is the username and password that open the workspace; only its hash is stored, on the machine." The row's next sentence, "There is no password and no account at HQ", is the one the account falsifies and ODL-577 replaces; this template quotes the first only. |
 | ready | "Later, if you forget your sign-in: … — your recovery code resets it." | §1 First run: "A lost Odile sign-in is reset on the machine with your recovery code. There is no HQ reset." |
 
-The money and support sentences are not privacy, security or reliability
-claims: "Nothing to pay: Odile pays for the machine and the inference during the
-alpha" and "there is no support desk in the alpha" are `ROADMAP-ALPHA0` §1's
-own two facts. No template says "the only sign-in is yours" (held, §1a), "the
-disk key is sealed to the measured boot" (held, §1a), or "Claiming takes 3
-minutes" (dropped, never clocked).
+The money, support and readiness sentences are not privacy, security or
+reliability claims: "Nothing to pay: Odile pays for the machine and the
+inference during the alpha" and "there is no support desk in the alpha" are
+`ROADMAP-ALPHA0` §1's own two facts, and "When your machine is ready, we email
+you its address" is the invitation's flow step — the notice the ready email
+fulfils — so it needs no row. No template says "the only sign-in is yours"
+(held, §1a), "the disk key is sealed to the measured boot" (held, §1a), or
+"Claiming takes 3 minutes" (dropped, never clocked).
 
 ### Brief email
 
@@ -1228,6 +1231,7 @@ names the `docs/CLAIMS.md` row that moved with it.
 | 2026-11-15 | **Voice, the pairs re-quoted at HEAD.** The six pairs become five, each After quoted from the file that renders it at HEAD: pair 1 the landing lede (`web/index.html`, `d2938b3`, deck v3.9d); pair 2 the claim page's browser rule (`web/claim.html`, §3), replacing the retired host-key modal; pair 3 the FAQ's reboot answer (`web/faq.html`, A11), replacing the retired brief headline; pair 4 the ceremony page's passphrase rule (`web/ceremony.html`, A4), replacing the retired claim screen's key-leak sentence; pair 5 the claim lede (`web/claim.html`, v3.9), replacing the retired "minute thirty" kicker. The old pair 4 (the demo's "99.0% target · 30-day") is dropped: the line left the tree with the prototype, `/status` publishes a computed uptime from heartbeats instead, and the target is the §1 reliability row. The vintage note is replaced by the landed provenance — ODL-462 pre-flip `3355f2c` and t_13cacab8's re-cut (`84a4fa9`, merged pre-flip `94ee0477`), which retired the four v3.4 items — and by the one-root cut `24ee323` (2026-11-14), which carries each of the four After strings in pairs 2–5; pair 1's sentence arrived later, at `d2938b3`. **Also re-cut:** the overflow state names the 249-character email that scrolls inside its field and the 248-character confirmation address that wraps in its line, not "a long key"; the invite's provenance says the prototype's mock left the tree; `docs/brand/ST-ODILE.md` §12's landing and prototype rows name the landed sentences and the one-root cut (HQ-only, outside this commit). No palette, face, artwork or surface rule changed; no public sentence in `docs/CLAIMS.md` changed. | Designer | verifier, t_96bdaf09 |
 | 2026-11-16 | **Product surfaces**: the demo workspace's `Verify this machine` link is the demo's own page on the demo's own host — `https://demo.odile.fyi/verify` — so a judge reaches the report in one hop and HQ's host never appears in the address bar. The 2026-11-13 product-surfaces row is re-cut to that target; the link's 44 px box, its ≤560 visible label `Verify` with the full aria-label, ink on the vendor shell and the tenant's relative `/verify` are unchanged. Both chrome copies (`deploy/demo-host/webapp-chrome.js`, `deploy/image/webapp-chrome.js`, byte-identical, sha256 `f73b90d2…`, 26,836 B) carry the constant once, and the comment above it names the demo's own page. On the demo host the installed script and the bundle's `odile-demo-chrome.js` are the same bytes, and `GET /odile-demo-chrome.js` with a judge session serves that constant. Measured in a browser at 1440×900 and 390×844: `href` `https://demo.odile.fyi/verify`, box 188 × 44 px at x 1184 and 55 × 44 px at x 267, ink `rgb(28,24,19)` on paper `rgb(234,223,196)` 13.33:1, the 2 px ink focus ring at 3 px offset, `scrollWidth == clientWidth` at both widths, and one hop to the page (200, 43,159 B, sha256 `3cdd7427…`, one `<!--demo-check-->` pair). `deploy/demo-host/deploy_demo_icons.py` uploads the chrome — the re-assert helper's source — and reads the served script, so the link the browser runs is measured, not assumed. No palette, face, artwork or surface rule changed; no public sentence in `docs/CLAIMS.md` changed (v3.10e already records the 302). | Designer | verifier, ODL-564 |
 | 2026-11-18 | **Email, the alpha.0 account set.** §Email is re-cut to the three templates A2 sends: `invite.txt` (Savio's personal invitation on the bench; the transactional sender from A7), `confirm.txt` (the address confirmation, naming the configured account host), and `ready.txt` (now the machine URL, the report URL, the measurement, the first-visit link, the reset page and the guide). The v5 footer `Founding alpha · 10 machines · $49/month` and "Claiming takes 3 minutes" leave; the footer is `Private alpha · Odile pays for the machine and the inference · no price`, and the no-desk sentence says alpha.0 has no support desk with a person on it. The templates name the machine's sign-in only; the which-password pair is carried by the register page's PR/FAQ §3 sentence and the account page's one line, and the ready email's `Set your sign-in` is their reduction (`docs/product/DECISION-password-reset.md` §3.5). Each template's privacy, security and reliability sentences are mapped to their `docs/CLAIMS.md` rows in the section. `tools/brand_lint.py` scans `templates/emails/*.txt`, so the rule the section states is the gate it runs. No palette, face or artwork change; no public sentence in `docs/CLAIMS.md` changed. | Designer | verifier, ODL-581 |
+| 2026-11-19 | **Email, the §Email nits from ODL-581's brand pass.** The subject rule is reworded to the rule the three-row table actually keeps — a plain name for the message, a phrase or one sentence, never a headline, a colon-and-preamble, an emoji, an exclamation or "Newsletter #3", and it need not be the body's first sentence. The ready email's guide line moves from `Open the first-visit guide: {{GUIDE}}` to `The first-visit guide is at {{GUIDE}}`: a named address in a sentence, not a second imperative, leaving `Set your sign-in` as the ready email's only imperative URL. The invitation's "When your machine is ready, we email you its address" is named in the non-claim paragraph as a flow step — the notice the ready email fulfils — so every sentence in the three templates has a row or a named place. No palette, face or artwork change; no public sentence in `docs/CLAIMS.md` changed. | Designer | verifier, ODL-912 |
 
 ## Do / Don't
 
