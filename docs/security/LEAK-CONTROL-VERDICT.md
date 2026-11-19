@@ -566,15 +566,17 @@ independent read-back 34 ok / 10 gaps over 44 rows. The throwaway was deleted
 5. **The gate no longer runs the scanner it is gating.** `publish-lint` used to
    execute `tools/leak_scan.py` and `leak-allow.tsv` from the PR's checkout; a
    PR that added an early `return 0` and an allowlist row for its own leaked
-   address passed its own gate (measured: `rc 0`). The job now fetches the base
+   value passed its own gate (measured: `rc 0`). The job now fetches the base
    branch and runs **its** scanner with **its** allowlist over the PR tree,
    then the tree's own scanner. The same drilled PR now fails on the base pass
-   (`FINDING public-ip README.md:43`, `rc 1` at base `d5c63fb`). On a push the
-   base is `github.event.before`, not `HEAD^` (which is the previous new commit
-   on a multi-commit push); `tests/test_ci_gate_scanner.py` executes the step's
-   own shell against a fixture tree rather than asserting YAML text.
+   (`FINDING provider-token/github README.md:33`, `rc 1` at base `0ce41e2`).
+   The drill leaks a GitHub-shaped token since the first cut's `198.18.7.7`
+   became an allowed RFC 2544 address under ODL-906-F3 (`ea7ee6a`). On a push
+   the base is `github.event.before`, not `HEAD^` (which is the previous new
+   commit on a multi-commit push); `tests/test_ci_gate_scanner.py` executes the
+   step's own shell against a fixture tree rather than asserting YAML text.
 
-## 7. Follow-up, 19 November 2026 — the signed fixtures are synthetic
+## 12. Follow-up, 19 November 2026 — the signed fixtures are synthetic
 
 **Card:** ODL-906-F3 follow-up (`t_3cd62ef9`) · **Seat:** Security
 
