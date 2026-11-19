@@ -100,7 +100,7 @@ class VerifyError(Exception):
 
 
 class _OneURL(urllib.request.HTTPRedirectHandler):
-    """Refuse redirects so the command fetches exactly one URL."""
+    """Refuse redirects so the attestation fetch is one URL."""
 
     def redirect_request(self, req, fp, code, msg, headers, newurl):
         return None

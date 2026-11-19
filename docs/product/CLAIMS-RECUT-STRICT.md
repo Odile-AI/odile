@@ -145,7 +145,7 @@ email. The certificate fingerprint is in your recovery file (A9), not on
 
 ```sh
 curl -fsSLO https://odile.fyi/odile-verify.tar.gz
-echo 'bc304f8a22053f8f9a4c38922d53d17879fa81e719109c3de667af8c5912e13d  odile-verify.tar.gz' | sha256sum -c -
+echo '815dbc26c8a584d0271620445009d8242466223d0ad8d6ff71ed21fd95208d4c  odile-verify.tar.gz' | sha256sum -c -
 tar xzf odile-verify.tar.gz
 cd odile-verify && ./odile-verify --expect <measurement from your ready email> https://<slug>.odile.fyi
 ```
