@@ -5801,7 +5801,7 @@ def main(argv: list[str] | None = None) -> int:
 if __name__ == "__main__":
     sys.exit(main())
 '''
-VERIFY_TEMPLATE_SHA256 = "b2c4224435aae86764c913406d5856509a9234f2458b91c9d88b26efdc069e85"
+VERIFY_TEMPLATE_SHA256 = "e48500c76877f4d37cfc64519f8f81b1746d13511763ed0fe982155874ff67ab"
 VERIFY_TEMPLATE = r'''<!doctype html>
 <html lang="en">
 <head>
@@ -5819,10 +5819,12 @@ VERIFY_TEMPLATE = r'''<!doctype html>
 :root{--paper:#EADFC4;--card:#F2E9D4;--panel:#DDD0AE;--ink:#1C1813;--soft:#4A4136;
   --oxblood:#6E2A2A;--line:rgba(28,24,19,.18);--line-soft:rgba(28,24,19,.10);
   --term:#17130F;--term-edge:#2A241D;--term-ink:#EFE7D8;--term-command:#FFF8EA;
-  --term-prompt:#8F8677}
+  --term-prompt:#8F8677;
+  --serif:"Cormorant Garamond","Iowan Old Style","Palatino Linotype",Palatino,Georgia,serif;
+  --text:"Iowan Old Style","Palatino Linotype",Palatino,Georgia,"DejaVu Serif",serif}
 html{-webkit-text-size-adjust:100%}
 body{margin:0;background:var(--paper);color:var(--ink);
-  font:400 18px/1.55 "Cormorant Garamond","Iowan Old Style","Palatino Linotype",Palatino,Georgia,serif;
+  font:400 18px/1.6 var(--text);
   -webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility}
 ::selection{background:var(--ink);color:var(--paper)}
 main{max-width:820px;margin:0 auto;padding:32px 24px 64px}
@@ -5830,16 +5832,17 @@ main{max-width:820px;margin:0 auto;padding:32px 24px 64px}
 .brand{display:inline-block;padding:12px 0;margin:-12px 0;color:var(--ink);text-decoration:none;
   font-size:2rem;font-weight:500;letter-spacing:-.03em;line-height:.88}
 .brand:focus-visible{outline:2px solid var(--ink);outline-offset:3px}
+h1,h2,.brand{font-family:var(--serif)}
 h1{margin:0 0 16px;font-size:clamp(2.5rem,5vw,4.1rem);line-height:1.02;letter-spacing:-.025em;font-weight:500}
 h2{margin:0 0 16px;font-size:clamp(1.9rem,3vw,2.6rem);line-height:1.04;letter-spacing:-.02em;font-weight:500}
 p{margin:0 0 16px;max-width:68ch}
 a{color:var(--ink);text-decoration-color:var(--soft);text-underline-offset:2px}
 a:focus-visible{outline:2px solid var(--ink);outline-offset:3px}
-.lede{font-size:1.1rem;line-height:1.5;color:var(--soft)}
+.lede{font-size:18px;line-height:1.6;color:var(--soft)}
 .provenance{margin:0 0 8px;font:400 12px/1.6 ui-monospace,"SF Mono","Cascadia Mono","Liberation Mono",Menlo,Consolas,monospace;
   color:var(--soft);letter-spacing:normal;overflow-wrap:anywhere}
 section{margin:48px 0 0;padding-top:24px;border-top:1px solid var(--line)}
-.note{margin:0 0 16px;font-size:.95rem;line-height:1.5;color:var(--soft);max-width:68ch}
+.note{margin:0 0 16px;font-size:16px;line-height:1.6;color:var(--soft);max-width:68ch}
 .state{display:inline-block;margin:0 0 12px;padding:4px 9px 3px;border:1px solid var(--ink);color:var(--ink);
   font:600 9px/1.2 ui-monospace,"SF Mono","Cascadia Mono","Liberation Mono",Menlo,Consolas,monospace;
   letter-spacing:.20em;text-transform:uppercase}
@@ -5877,7 +5880,7 @@ pre code::selection{background:var(--term-ink);color:var(--term)}
 .gaps li{display:grid;grid-template-columns:2.2rem minmax(0,1fr);gap:0 12px;margin:0 0 24px;max-width:68ch}
 .gaps .num{font-size:1.3rem;line-height:1.15;color:var(--oxblood);font-weight:500;padding-top:2px}
 .gaps strong{display:block;margin-bottom:3px;font-size:1.06rem;line-height:1.3;font-weight:600}
-.foot{margin:32px 0 0;padding-top:16px;border-top:1px solid var(--line);font-size:.95rem;color:var(--soft)}
+.foot{margin:32px 0 0;padding-top:16px;border-top:1px solid var(--line);font-size:16px;line-height:1.6;color:var(--soft)}
 .foot a{display:inline-flex;align-items:center;min-height:44px;margin-right:12px;vertical-align:middle}
 @media (max-width:560px){
   body{font-size:17px}

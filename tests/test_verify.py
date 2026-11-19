@@ -2241,6 +2241,34 @@ Digests:
         self.assertIn("data:font/woff2", body)
         self.assertIn("@media (max-width:560px)", body)
 
+    def test_prose_reads_in_the_text_face_and_headings_keep_the_display_face(self) -> None:
+        """BRAND.md §Typography: the display face never sets a reading sentence.
+
+        The surface table's row for /verify reads "Text serif for prose;
+        display for headings; mono for credentials and machine values", and the
+        page this card replaces (`web/verify.html`, t_ae833f3f) already reads
+        in the text face. Measured on the painted face: Cormorant at 18/1.55
+        for the body, 15.2 px notes and a 15.2 px foot regress the type roles
+        on the same URL.
+        """
+        text = TEMPLATE.read_text(encoding="utf-8")
+        self.assertIn('--text:"Iowan Old Style","Palatino Linotype",Palatino,Georgia,'
+                      '"DejaVu Serif",serif}', text)
+        self.assertIn("font:400 18px/1.6 var(--text);", text)
+        self.assertIn(".lede{font-size:18px;line-height:1.6;", text)
+        self.assertIn(".note{margin:0 0 16px;font-size:16px;line-height:1.6;", text)
+        self.assertIn(".foot{margin:32px 0 0;padding-top:16px;border-top:1px solid "
+                      "var(--line);font-size:16px;line-height:1.6;", text)
+        self.assertIn("h1,h2,.brand{font-family:var(--serif)}", text)
+        self.assertNotIn("font:400 18px/1.55", text,
+                         "the prose is back on the display face at display leading")
+        self.assertNotIn(".note{margin:0 0 16px;font-size:.95rem", text,
+                         "the note is back below the 16 px text role")
+        # Cormorant is named by the @font-face and the --serif token only;
+        # a third occurrence is a prose selector setting the display face.
+        self.assertEqual(text.count('"Cormorant Garamond"'), 2,
+                         "the display face is set on a prose selector")
+
     # -- brand round 1: the machine value role ------------------------------
 
     def test_the_machine_values_are_set_in_the_mono_role(self) -> None:
