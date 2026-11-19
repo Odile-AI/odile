@@ -1750,6 +1750,39 @@ class VerifyPageNoteTests(unittest.TestCase):
                 self.assertNotIn("exactly one URL", page)
 
 
+class VerifyReadmeNoteTests(unittest.TestCase):
+    """`verify/README.md` is a published surface; its network sentences are fenced.
+
+    main added the file in `t_5ce34861` after this branch's base, so no gate had
+    read it. It said the verifier fetches one URL and that the demo binds the
+    vendored VCEK; `t_3cd62ef9` deletes the vendored VCEK, so every default run
+    — the demo's included — fetches the report's own VCEK from AMD's KDS. Pin
+    the true sentences and forbid the wide ones, so a later edit cannot widen
+    them back.
+    """
+
+    README = ROOT / "verify" / "README.md"
+
+    def text(self) -> str:
+        # Whitespace-normalised: a re-wrap must not be able to break the fence.
+        return " ".join(self.README.read_text(encoding="utf-8").split())
+
+    def test_the_readme_states_the_default_runs_two_fetches(self) -> None:
+        text = self.text()
+        self.assertIn("it fetches two URLs on the default run", text)
+        for stale in ("fetches one URL", "exactly one URL",
+                      "demo binds the vendored VCEK", "vendored chain only",
+                      "vendored AMD chain"):
+            self.assertNotIn(stale, text)
+
+    def test_the_readme_states_no_kds_fails_closed_and_the_tests_use_the_synthetic_chain(self) -> None:
+        text = self.text()
+        self.assertIn(
+            "needs `--amd-dir` holding a chain that binds the report, and fails "
+            "closed otherwise", text)
+        self.assertIn("synthetic test-only chain with no network", text)
+
+
 class VerifyPageTests(unittest.TestCase):
     """The /verify page: every row, its provenance, and a page that fails honest.
 
