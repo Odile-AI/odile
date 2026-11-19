@@ -29,11 +29,14 @@ Every test runs the real scanner against a throwaway git repository, so the
 from __future__ import annotations
 
 import hashlib
+import io
 import os
 import subprocess
 import sys
+import tarfile
 import tempfile
 import unittest
+import zipfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -110,6 +113,20 @@ class ForbidClass(unittest.TestCase):
         self.assertIn("FINDING allow-file", result.stdout)
         self.assertIn("missing-forbid.txt", result.stdout)
 
+    def write_tar(self, member: str, payload: bytes, name: str = "bundle.tar.gz") -> None:
+        buffer = io.BytesIO()
+        with tarfile.open(fileobj=buffer, mode="w:gz") as archive:
+            info = tarfile.TarInfo(member)
+            info.size = len(payload)
+            archive.addfile(info, io.BytesIO(payload))
+        (self.repo / name).write_bytes(buffer.getvalue())
+
+    def write_zip(self, member: str, payload: bytes, name: str = "bundle.zip") -> None:
+        buffer = io.BytesIO()
+        with zipfile.ZipFile(buffer, "w") as archive:
+            archive.writestr(member, payload)
+        (self.repo / name).write_bytes(buffer.getvalue())
+
     def test_a_planted_forbidden_literal_fails_then_passes(self) -> None:
         self.write_list()
         probe = self.repo / "probe.txt"
@@ -122,6 +139,45 @@ class ForbidClass(unittest.TestCase):
         passed = self.scan()
         self.assertEqual(passed.returncode, 0, passed.stdout)
         self.assertIn("PASS: nothing to leak", passed.stdout)
+
+    def test_a_forbidden_literal_inside_a_tar_member_fails(self) -> None:
+        # The forbid class read a whole file's text but not an archive member's;
+        # a literal planted in a member passed the class the list exists for.
+        self.write_list()
+        self.write_tar("member.txt", f"vendor box {LITERAL}\n".encode("utf-8"))
+        result = self.scan()
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn("FINDING forbidden-value", result.stdout)
+        self.assertIn("bundle.tar.gz!member.txt:1", result.stdout)
+        self.assertIn(f"({LABEL})", result.stdout)
+
+    def test_a_forbidden_literal_inside_a_zip_member_fails(self) -> None:
+        self.write_list()
+        self.write_zip("member.txt", f"vendor box {LITERAL}\n".encode("utf-8"))
+        result = self.scan()
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn("FINDING forbidden-value", result.stdout)
+        self.assertIn("bundle.zip!member.txt:1", result.stdout)
+
+    def test_a_forbidden_literal_outside_an_archive_fails(self) -> None:
+        # The same member bytes outside the archive: the wrapper is not what
+        # makes the literal a finding, so the archive test above isolates it.
+        self.write_list()
+        (self.repo / "member.txt").write_text(f"vendor box {LITERAL}\n", encoding="utf-8")
+        result = self.scan()
+        self.assertEqual(result.returncode, 1, result.stdout)
+        findings = [line for line in result.stdout.splitlines()
+                    if line.startswith("FINDING forbidden-value")]
+        self.assertEqual(len(findings), 1, result.stdout)
+        self.assertIn("member.txt:1", findings[0])
+        self.assertNotIn("!", findings[0])
+
+    def test_a_benign_archive_member_is_not_a_finding(self) -> None:
+        self.write_list()
+        self.write_tar("member.txt", b"nothing private here\n")
+        result = self.scan()
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertIn("PASS: nothing to leak", result.stdout)
 
     def test_the_list_itself_is_not_a_finding(self) -> None:
         # The list carries the literals by definition; if the walk scanned it,
