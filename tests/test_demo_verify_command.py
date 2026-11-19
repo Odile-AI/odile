@@ -207,11 +207,45 @@ class WrapTests(unittest.TestCase):
                     f"the page defines no wrap rule for .{token} code")
 
     def test_the_note_names_the_measurement_row_above_it(self):
-        note = re.search(r'<p class="note">(.*?)</p>', self.text, re.S)
-        self.assertIsNotNone(note)
-        copy = html.unescape(re.sub(r"<[^>]+>", "", note.group(1)))
-        self.assertIn("measurement row above", copy)
-        self.assertNotIn("shown in the report below", copy)
+        notes = re.findall(r'<p class="note">(.*?)</p>', self.text, re.S)
+        self.assertTrue(notes, "the section carries no note")
+        copies = [html.unescape(re.sub(r"<[^>]+>", "", note)) for note in notes]
+        self.assertTrue(any("measurement row above" in copy for copy in copies),
+                        copies)
+        self.assertFalse(any("shown in the report below" in copy for copy in copies),
+                         copies)
+
+    def test_every_class_the_section_uses_is_painted_by_the_page(self):
+        """A class the page does not define paints as prose, not as its role.
+
+        The section lands in the release template, so only that sheet paints
+        it. A bare ``class="caption"`` label (what this section carried until
+        round 4) had no rule in ``templates/verify.html`` and painted at 17 px
+        body copy instead of the 9 px micro-label the page it replaces used,
+        so the check is the page, not the author's intent.
+        """
+        page = (ROOT / "templates" / "verify.html").read_text(encoding="utf-8")
+        classes: set[str] = set()
+        for match in re.finditer(r'class="([^"]+)"', self.text):
+            classes.update(match.group(1).split())
+        self.assertTrue(classes, "the section carries no class at all")
+        for name in sorted(classes):
+            with self.subTest(className=name):
+                self.assertRegex(
+                    page, r"\." + re.escape(name) + r"(?![\w-])",
+                    f"the section uses .{name}, which the page never paints")
+
+    def test_the_location_sits_in_the_sentence_not_a_caption(self):
+        """The page's convention for a command panel is a `.note` sentence."""
+        first = re.search(r"<h2[^>]*>.*?</h2>\s*<p([^>]*)>(.*?)</p>", self.text, re.S)
+        self.assertIsNotNone(first, "the section opens with no prose")
+        assert first is not None
+        self.assertIn('class="note"', first.group(1),
+                      "the panel's opening sentence is not a .note")
+        copy = html.unescape(re.sub(r"<[^>]+>", "", first.group(2)))
+        self.assertIn("from your laptop", copy)
+        self.assertIn("PASS or FAIL", copy)
+        self.assertNotIn("caption", self.text)
 
 
 class InjectionTests(unittest.TestCase):
