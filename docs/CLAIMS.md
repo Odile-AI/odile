@@ -22,29 +22,30 @@ Use these verbatim, or a subset that does not change the meaning. Anything stron
 - "Full agent with full privacy. Always-on agents running on confidential computers and powered by confidential models."
 - "The waitlist hears first."
 
-### The README opening (Savio's words, 14 November 2026)
+### The README opening (Savio's words, 19 November 2026)
 
-Savio rewrote `README.md` on the public tree (`2d8999d`, `a5c3428`) while
-`t_781fc5cb` ran. A visitor reads these three first, so they are rows here.
+Savio rewrote `README.md` on the public tree on 19 November 2026 (`2876eda`,
+"Clean up"). A visitor reads these three first, so they are rows here.
 
-- "A full agent, privately."
-- "Odile is an AI agent that gets things done with privacy."
-- "Every Odile agent runs on its own AMD SEV-SNP confidential virtual machine, with memory encrypted by the CPU and NEAR AI inference inside a hardware enclave."
+- "Odile is a privacy-friendly AI agent that gets things done for you."
+- "Every Odile agent runs on its own AMD SEV-SNP confidential virtual machine with encrypted memory and NEAR AI confidential model inference within hardware enclaves, enabling full confidentiality throughout agentic workflows."
 
-The first two are his headline and his lede sentence, recorded verbatim: they
-name no mechanism, and they are the short form of the v3.9d landing row. The
-third is his sentence with its last clause re-cut. As he wrote it, it ended
-"protecting your agent from outsider access at the hardware level" — the
-absolute §2 forbids in the row whose reason reads "The host console exists" —
-and it is false against the machine on three measured counts: the console
-passes through the host (§3 gap 2), Odile keeps stop, DNS and the boot-image
-choice (gap 3), and the served image's disk key is still the published build
-key until `t_51ebf972`. The re-cut states the two mechanisms the deck proves:
-"Memory is encrypted by the CPU." (§1 *Confidential computing*) and "Inference
-runs on NEAR AI's confidential cloud, inside a hardware enclave." (§1
-*Inference*). It claims no access property. "Its own machine" is one VM per
-agent; the demo's agent is Odile's, on Odile's tenant machine, and the demo
-rows below scope that machine.
+The headline is his "Full agent with full privacy." — the v3.9d landing row
+above, so it is not repeated here. The lede restates the 14 November lede with
+a weaker adjective ("privacy-friendly" for "with privacy") and "for you" added:
+the same row, naming no mechanism. The mechanism sentence is his, verbatim: "encrypted memory"
+is §1 *Confidential computing*'s "Memory is encrypted by the CPU."; "NEAR AI
+confidential model inference within hardware enclaves" is §1 *Inference*'s
+"Inference runs on NEAR AI's confidential cloud, inside a hardware enclave."; and
+"full confidentiality" is the v3.9d landing row's "full privacy". It claims no
+access property, so the 14 November re-cut's reason (the host console, the
+boot-image choice) does not bite. "Its own machine" is one VM per agent; the
+demo's agent is Odile's, on Odile's tenant machine, and the demo rows below
+scope that machine.
+
+The 14 November rows this section carried (his headline, his lede, and the
+mechanism sentence with its "outsider access" clause re-cut) are retired by the
+19 November rewrite; the v3.10a change-log row keeps that record.
 
 ### Access — the core claim
 
@@ -558,3 +559,4 @@ the machine.
 | 2026-11-15 | v3.10d: **§4.4's verifier block gains the macOS hash line.** Stock macOS has no `sha256sum`, so the sentence after each block now says `shasum -a 256 -c -` reads the same hash line. The four command lines are unchanged byte-for-byte in all three homes — `docs/CLAIMS.md` §4.4, `docs/product/CLAIMS-RECUT-STRICT.md` §4.4 (the decided text) and `docs/runbooks/verify.md` §"A tenant run, from a laptop" — and the deck and the decided text still agree word for word through the §4.5 pointer. **No approved sentence changed**: the added line is a platform note, not a claim, and asserts no privacy, security or reliability property; no public page changes (`web/verify.html`'s block is the demo-only `<!--demo-->` form and stays). The v3.8 row recorded the same substitution once before, and the v3.10b landing took the decided text verbatim, which carries the GNU form only. Numbered v3.10d because v3.10c landed first (`t_bf99b807`). Card `t_496b4812`; by the Product lead under `docs/AGENT-ORG.md` §3; verifier review. | Product lead |
 | 2026-11-16 | v3.10e: **odile.fyi/verify is the demo tenant's page, by redirect.** The HQ app (`ODILE_ROLE=demo`) answers **302** to `https://demo.odile.fyi/verify` for any Host other than `demo.odile.fyi`; the demo host still renders the page (the DNS-fallback shape), and `ODILE_ROLE=tenant` still renders the machine's own page on every Host. No approved sentence changed: the note under §The demo machine moves the demo rows' public home to `demo.odile.fyi/verify`, names `web/verify.html`'s demo block as the HQ app's render only, and points HQ's own report at `https://odile.fyi/attestation`. `web/verify.html`, the embedded installer page and `odile-verify.pin` are unchanged, so no re-embed or re-sign; `/attestation` keeps serving HQ's own JSON and the pin's source. **Measured after the deploy:** `curl -s -o /dev/null -w '%{http_code} %{redirect_url}' https://odile.fyi/verify` → `302 https://demo.odile.fyi/verify` (before: `200` with HQ's `e99728ef…fbc` under the v3.8b tenant row); `curl -sL https://odile.fyi/verify` → 200, 43,159 B, sha256 `3cdd7427…`, measurement `9f01725a…f137`, access report headed `read from your machine`, and the `./odile-verify https://demo.odile.fyi --expect 9f01725a…f137` command; `https://odile.fyi/attestation` still 200 with `available: true`, `e99728ef…fbc`, `fetched_at` `2026-11-16T00:55:21Z` and advancing. Numbered v3.10e because v3.10d landed first (`t_496b4812`). Card `t_627e01cd`; by the Product Lead under `docs/AGENT-ORG.md` §3; verifier review. | Product lead |
 | 2026-11-17 | v3.10f: **the money row is held, not retired.** `web/terms.html` lost "The machine and the price" on 14 November (`4b09cac`) and `web/faq.html` lost the inference-cost answer on 17 November (`c8fe39b`, Savio: "Delete that as well"), so no web page carries §1 Money and place's allowance row. The row stays approved and moves to §1a, and §5's "What does inference cost?" answer, which carries it verbatim, gets the same dated note: the price and the allowance are Savio's and he is re-cutting the machine-and-price details, and the row's proof never ran — ODL-242 (`t_8ec06788`) is still open, parked for A2's window. Held, not retired, because the sentence is his number and returns verbatim or re-cut; no replacement copy is invented. It is not fully off the public surface: it is still live on the installed help (`skills/odile-help/SKILL.md`, embedded in `installer/odile_install.py` and the signed release copy `release/odile_install.py`) and on the support template (`templates/emails/support.md`), which `t_02310cbf` re-cuts; the embedded copies make the re-cut a re-embed and a re-sign — recorded as a trigger, not re-signed now (the v3.10c pattern). The $49 price is not a deck row: it is still stated on the invite page (`web/claim.html`) and in the ready email (`templates/emails/ready.txt`), both `t_02310cbf`'s to re-cut; `docs/MVP-V0.1.md` §0 records alpha.0's no-price decision and keeps the v5 $49/month in §8 as not current. `docs/FAQ.md` moment 4 quotes Stripe custody and the pre-alpha.0 price line and names the allowance row as held. **No web page changed and no new claim:** the one copy change is the support reply in `docs/FAQ.md` moment 4, which stops quoting the held row and is re-cut when it returns. Card `t_ddcb00fc`; by the Product Lead under `docs/AGENT-ORG.md` §3 (D-002); verifier review. | Product lead |
+| 2026-11-19 | v3.10g: **the README opening follows Savio's 19 November rewrite.** He rewrote `README.md` on the public tree (`2876eda`, "Clean up") and replaced the 14 November headline, lede and mechanism sentence. The new headline is the v3.9d landing row verbatim; the new lede restates the 14 November lede with "privacy-friendly" for "with privacy" and "for you" added (a weaker adjective, naming no mechanism); the new mechanism sentence is his, verbatim, and restates §1 *Confidential computing*, §1 *Inference* and the landing row's "full privacy" without claiming an access property. Two rows replace the three in §The README opening. The same rewrite removes the demo `judge` credentials table and the "How NEAR fits in" section: the credentials are carried by the sign-in form (`deploy/demo-host/login.html`, as the runbook says), so no password is added anywhere new, and both demo NEAR rows stay approved (the tenant's seeded session still states the inference row verbatim and the prompt path); only their README home is gone. `tests/test_demo_verify_command.py::CopyTests` re-pins the README's NEAR sentence to the new row; `tests/test_claims.py::ReadmeTests` maps the opening as before. No access-model change, no new mechanism. Card `t_2b482267`; by the Product Lead under `docs/AGENT-ORG.md` §3; verifier review. | Product lead |
