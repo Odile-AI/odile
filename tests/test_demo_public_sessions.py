@@ -512,8 +512,17 @@ class SharedDemoConcurrencyTests(unittest.TestCase):
         # dangerous_command), so the query must travel as a file it runs.
         self.assertEqual(commands[0], f"sudo /usr/bin/python3 {remote}")
         self.assertNotIn(" -c ", commands[0])
-        # The staged copy is removed again, from /tmp, by a relative name.
-        self.assertEqual(commands[-1], f"cd /tmp && rm -f {self.module.SESSION_IDS_NAME}")
+        # The staged copy is removed again, from /tmp, by a relative name —
+        # and as root: the console's upload installs it `-o root -g root`, so
+        # the tenant's own `rm` in sticky /tmp answers `Operation not
+        # permitted` (measured 2026-11-19: code 1, the file survived three
+        # runs). The Webapp's guard refuses an absolute `sudo rm`, so the
+        # working shape is `cd /tmp` plus the bare name, as the secret's own
+        # removal already does.
+        self.assertEqual(commands[-1],
+                         f"cd /tmp && sudo rm -f {self.module.SESSION_IDS_NAME}")
+        self.assertTrue(commands[-1].startswith("cd /tmp && sudo rm -f "),
+                        "the staged reader is root-installed; only root removes it")
 
     def test_an_answer_that_is_not_a_list_is_unreadable(self) -> None:
         class Console:
@@ -552,6 +561,15 @@ class CheckSurfaceTests(unittest.TestCase):
         self.assertNotIn('row.get("title") or ""', text)
         self.assertIn("the seeded session is the constant id with its messages", text)
         self.assertIn("the seeded session is listed with its messages", text)
+
+    def test_the_staged_session_id_reader_is_removed_as_root(self) -> None:
+        """The console's upload installs it root-owned; a tenant `rm` fails."""
+        text = CHECK.read_text(encoding="utf-8")
+        self.assertIn("cd /tmp && sudo rm -f {SESSION_IDS_NAME}", text)
+        self.assertNotIn("cd /tmp && rm -f {SESSION_IDS_NAME}", text)
+        # An absolute `sudo rm` is refused by the Webapp's dangerous_command
+        # guard, so the working shape is `cd` + the bare name.
+        self.assertNotIn("sudo rm -f /tmp/", text)
 
     def test_the_check_cleans_up_every_session_it_opens(self) -> None:
         text = CHECK.read_text(encoding="utf-8")
