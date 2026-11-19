@@ -63,7 +63,7 @@ DECK_SENTENCES = (
     "them off the machine. While the machine is still running, the agent can show "
     "it again.",
     "Your Odile sign-in is set on your machine at first visit and hashed there. "
-    "We never see it. It is the only app-layer gate: no 2FA in V0.1.",
+    "We never see it. It is the only app-layer gate: no 2FA in alpha.0.",
     "The disk unlocks only on the boot you verify. Change the image, and it "
     "stays locked.",
     "After a reboot, it starts itself. The seal is the key.",
