@@ -144,6 +144,50 @@ SCRATCH_SEED_URL = "http://127.0.0.1:8081/seed"
 # writes it into the nightly unit's ExecStartPost; `--heartbeat-url` overrides
 # it for a receiver at another address.
 HEARTBEAT_URL = "https://odile.fyi/heartbeat"
+
+
+def endpoint_origin(url: str) -> str:
+    """`scheme://host[:port]` of an endpoint URL, or "" when it is not one.
+
+    The seed endpoint is the one per-environment value the measured command
+    line carries (ODL-340 follow-up): its origin names the HQ that issued the
+    seed, so every call this machine makes back to HQ is derived from it
+    instead of from a constant that only production answers.
+    """
+    parts = urllib.parse.urlsplit((url or "").strip())
+    if parts.scheme not in ("http", "https") or not parts.hostname:
+        return ""
+    return f"{parts.scheme}://{parts.netloc}"
+
+
+def heartbeat_url_for(seed_url: str) -> str:
+    """The heartbeat receiver in the environment that issued the seed.
+
+    `https://test.odile.fyi/seed` -> `https://test.odile.fyi/heartbeat`;
+    production is unchanged. A seed URL that is not an http(s) endpoint falls
+    back to the production route, which is what the installer shipped before
+    this derivation existed.
+    """
+    origin = endpoint_origin(seed_url)
+    return f"{origin}/heartbeat" if origin else HEARTBEAT_URL
+
+
+def public_url_for(slug: str, seed_url: str) -> str:
+    """The tenant's public name in the environment that issued the seed.
+
+    A tenant is `<slug>.<the seed endpoint's host>`: `odile.fyi` keeps
+    `<slug>.odile.fyi`, and a second environment at `test.odile.fyi` becomes
+    `<slug>.test.odile.fyi` without a disk write. `--public-url` overrides it
+    (a name the owner moved, or an environment whose names are not shaped this
+    way).
+    """
+    parts = urllib.parse.urlsplit((seed_url or "").strip())
+    host = (parts.hostname or "").lower()
+    if not host or host == "odile.fyi":
+        return f"https://{slug}.odile.fyi"
+    return f"https://{slug}.{host}"
+
+
 DEFAULT_TENANT_PORT = 9120
 # The first-visit service's loopback port (ODL-457); Caddy is the listener.
 FIRST_VISIT_PORT = 8091
@@ -11106,11 +11150,22 @@ def exact_handles(layout: Layout) -> str:
     return handles
 
 
+def site_name(layout: Layout, slug: str) -> str:
+    """The one name this machine serves (ODL-340 follow-up).
+
+    `layout.fqdn` is the public URL's host, so `--public-url` names the Caddy
+    site, the DNS wait, the ACME wait and the certificate fingerprint alike.
+    A layout whose public URL carries no host (a malformed override) keeps the
+    production name rather than an empty site block.
+    """
+    return layout.fqdn or f"{slug}.odile.fyi"
+
+
 def render_caddy_site(layout: Layout, slug: str) -> tuple[str, str]:
     begin = f"# BEGIN odile-{slug}"
     end = f"# END odile-{slug}"
     return CADDY_SITE_TEMPLATE.format(
-        begin=f"odile-{slug}", end=f"odile-{slug}", fqdn=f"{slug}.odile.fyi",
+        begin=f"odile-{slug}", end=f"odile-{slug}", fqdn=site_name(layout, slug),
         user=layout.user, webapp_port=layout.webapp_port, var=layout.var,
         first_visit_handle=exact_handles(layout),
     ), begin
@@ -11120,7 +11175,7 @@ def ensure_caddy_site(layout: Layout, slug: str, dry: bool) -> bool:
     # A classic install has no first-visit page and no signed manifest pair, so
     # it gets no dead routes; a machine that has one gets its exact proxy.
     block = CADDY_SITE_TEMPLATE.format(
-        begin=f"odile-{slug}", fqdn=f"{slug}.odile.fyi",
+        begin=f"odile-{slug}", fqdn=site_name(layout, slug),
         user=layout.user, webapp_port=layout.webapp_port, var=layout.var,
         first_visit_handle=exact_handles(layout),
     )
@@ -13826,6 +13881,65 @@ def self_test() -> int:
                  and "WantedBy=timers.target" in backup_timer)
         check.ok("the installer's heartbeat default is the program's default",
                  HEARTBEAT_URL == "https://odile.fyi/heartbeat")
+        # ODL-340 follow-up: the one name and the one heartbeat, both from the
+        # environment the seed came from. A production seed keeps today's
+        # values; a second environment's seed moves both.
+        check.ok("the heartbeat follows the seed endpoint's environment",
+                 heartbeat_url_for("https://test.odile.fyi/seed")
+                 == "https://test.odile.fyi/heartbeat"
+                 and heartbeat_url_for("https://odile.fyi/seed") == HEARTBEAT_URL
+                 and heartbeat_url_for("http://127.0.0.1:8081/seed")
+                 == "http://127.0.0.1:8081/heartbeat"
+                 and heartbeat_url_for("not-a-url") == HEARTBEAT_URL)
+        bench_units = backup_unit_files(backup_layout, "odl-test",
+                                        heartbeat_url_for("https://test.odile.fyi/seed"))
+        check.ok("a bench tenant's nightly unit posts its heartbeat to the bench",
+                 "--url https://test.odile.fyi/heartbeat"
+                 in bench_units[backup_layout.backup_service]
+                 and "--url https://odile.fyi/heartbeat"
+                 not in bench_units[backup_layout.backup_service])
+        check.ok("the tenant's public name is the seed's environment",
+                 public_url_for("odl-test", "https://test.odile.fyi/seed")
+                 == "https://odl-test.test.odile.fyi"
+                 and public_url_for("odl-test", "https://odile.fyi/seed")
+                 == "https://odl-test.odile.fyi"
+                 and public_url_for("odl-test", "") == "https://odl-test.odile.fyi")
+        bench_layout = Layout.tenant(user="odile", webapp_port=9120,
+                                     public_url="https://odl-test.test.odile.fyi")
+        bench_block, _ = render_caddy_site(bench_layout, "odl-test")
+        check.ok("the Caddy site is the machine's own name, not the slug's production name",
+                 "\nodl-test.test.odile.fyi {" in "\n" + bench_block
+                 and "\nodl-test.odile.fyi {" not in "\n" + bench_block)
+        prod_block, _ = render_caddy_site(backup_layout, "odl-test")
+        check.ok("a production layout still renders the slug's production name",
+                 "\nodl-test.odile.fyi {" in "\n" + prod_block
+                 and "\nodl-test.test.odile.fyi {" not in "\n" + prod_block)
+        # The machine-free plan is the one proof that runs before a seed is
+        # fetched, so it must name the machine from the kit (`--dry-run
+        # --recovery-kit <kit>` is `install.md` §6), never the `<slug>`
+        # placeholder: the site, the Webapp's public_url and the DNS/ACME wait
+        # are the same one name the install then serves.
+        dry_kit = root / "dry-run-kit.json"
+        dry_kit.write_text(json.dumps({"slug": "odl-dry", "instance_id": "168020b4",
+                                       "setup_token": "0" * 64}), encoding="utf-8")
+        dry_plan = {}
+        for label, extra in (("production", []),
+                             ("bench", ["--seed-url", "https://test.odile.fyi/seed"])):
+            buffer = io.StringIO()
+            with contextlib.redirect_stdout(buffer):
+                dry_run(build_parser().parse_args(
+                    ["--dry-run", "--recovery-kit", str(dry_kit)] + extra))
+            dry_plan[label] = buffer.getvalue()
+        check.ok("the machine-free dry run names the kit's machine, not <slug>",
+                 "<slug>.odile.fyi" not in dry_plan["production"]
+                 and "site odl-dry.odile.fyi" in dry_plan["production"]
+                 and "public_url https://odl-dry.odile.fyi" in dry_plan["production"]
+                 and "retry ACME for odl-dry.odile.fyi" in dry_plan["production"])
+        check.ok("a bench seed moves the dry run's name and its heartbeat",
+                 "site odl-dry.test.odile.fyi" in dry_plan["bench"]
+                 and "heartbeat https://test.odile.fyi/heartbeat" in dry_plan["bench"]
+                 and "public_url https://odl-dry.test.odile.fyi" in dry_plan["bench"]
+                 and "<slug>." not in dry_plan["bench"])
 
         # the support programs (ODL-474): pin, checkout parity, and the two
         # installed names — the A10 answer's `odile-diag` and `odile-support`
@@ -14082,7 +14196,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--user", help="OS user (tenant default: odile; simulation default: you)")
     parser.add_argument("--port", type=int, help=f"Webapp port (tenant {DEFAULT_TENANT_PORT}, simulation {DEFAULT_SCRATCH_PORT})")
     parser.add_argument("--slug", help="tenant slug, if it is not in the recovery kit")
-    parser.add_argument("--seed-url", help=f"seed endpoint (default {DEFAULT_SEED_URL})")
+    parser.add_argument("--seed-url", help=f"seed endpoint (default {DEFAULT_SEED_URL}); "
+                                           "its host names the environment the machine "
+                                           "reports back to")
     parser.add_argument("--recovery-kit",
                         help="JSON kit: setup token, instance id, signing public key, "
                              "signing_key_sha256")
@@ -14106,9 +14222,10 @@ def build_parser() -> argparse.ArgumentParser:
                         help=f"first-visit service loopback port (tenant default {FIRST_VISIT_PORT})")
     parser.add_argument("--signin-username", default="odile", help="the Odile sign-in name (default odile)")
     parser.add_argument("--backup-password", help="backup password for the recovery file (16+); blank generates 32")
-    parser.add_argument("--heartbeat-url", default=HEARTBEAT_URL,
+    parser.add_argument("--heartbeat-url", default=None,
                         help=f"where the nightly unit posts its signed heartbeat "
-                             f"(default {HEARTBEAT_URL})")
+                             f"(default: the seed endpoint's host, "
+                             f"<seed origin>/heartbeat; production is {HEARTBEAT_URL})")
     parser.add_argument("--public-url", help="override the Webapp public URL")
     parser.add_argument("--hermes-commit", default=HERMES_COMMIT, help="pinned Hermes commit")
     parser.add_argument("--no-tmux", action="store_true", help="run the long install inline")
@@ -14120,7 +14237,7 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def resolve_layout(args: argparse.Namespace) -> Layout:
+def resolve_layout(args: argparse.Namespace, slug: str | None = None) -> Layout:
     if args.root:
         root = Path(args.root).resolve()
         user = args.user or pwd.getpwuid(os.geteuid()).pw_name
@@ -14132,17 +14249,25 @@ def resolve_layout(args: argparse.Namespace) -> Layout:
                               first_visit_port=args.first_visit_port or FIRST_VISIT_PORT)
     user = args.user or "odile"
     port = args.port or DEFAULT_TENANT_PORT
-    slug = args.slug or "<slug>"
-    public_url = args.public_url or f"https://{slug}.odile.fyi"
+    # The slug can come from the recovery kit rather than a flag (ODL-340
+    # follow-up, round 2): it names the tenant's default public URL, so a
+    # caller that has read the kit passes it here instead of letting the
+    # `<slug>` placeholder name the machine.
+    name = slug or args.slug or "<slug>"
+    public_url = args.public_url or public_url_for(name, args.seed_url or DEFAULT_SEED_URL)
     return Layout.tenant(user=user, webapp_port=port,
                         public_url=public_url, commit=args.hermes_commit,
                         first_visit_port=args.first_visit_port or FIRST_VISIT_PORT)
 
 
 def dry_run(args: argparse.Namespace) -> int:
-    layout = resolve_layout(args)
+    # The kit is read before the layout is resolved: `--dry-run
+    # --recovery-kit <kit>` is the machine-free proof, and the kit's slug — not
+    # the placeholder — names the site, the Webapp's public_url and the DNS and
+    # ACME waits, exactly as the install does once it has a seed.
     kit = load_recovery_kit(Path(args.recovery_kit) if args.recovery_kit else None, args)
     slug = kit.get("slug") or args.slug or "<slug>"
+    layout = resolve_layout(args, slug=slug)
     instance = kit.get("instance_id") or args.instance_id or "<instance>"
     pubkey = kit_pubkey(kit) or (Path(args.pubkey) if args.pubkey else None)
     print(f"odile installer {VERSION} — tenant plan (dry run, {layout.mode})")
@@ -14157,7 +14282,10 @@ def dry_run(args: argparse.Namespace) -> int:
     boot_report = Path(args.boot_report) if args.boot_report else layout.path(BOOT_REPORT_DEFAULT)
     print(f"would check  the boot report {boot_report} against --expect "
           f"(record {layout.boot_record})")
-    print(f"would fetch  seed from {args.seed_url or (SCRATCH_SEED_URL if layout.mode == 'scratch' else DEFAULT_SEED_URL)}")
+    seed_url = args.seed_url or (SCRATCH_SEED_URL if layout.mode == "scratch" else DEFAULT_SEED_URL)
+    heartbeat_url = args.heartbeat_url or heartbeat_url_for(seed_url)
+    print(f"would fetch  seed from {seed_url}")
+    print(f"would use    site {site_name(layout, slug)} (heartbeat {heartbeat_url})")
     if layout.mode == "tenant":
         print(f"would install OS packages from the pinned snapshot {OS_SNAPSHOT} "
               f"(Debian 13 {OS_SUITE}):")
@@ -14183,7 +14311,7 @@ def dry_run(args: argparse.Namespace) -> int:
           f"EnvironmentFile= on {layout.unit_target}")
     if args.first_visit:
         print(f"would write a placeholder sign-in hash; the first-visit page at "
-              f"https://{slug}.odile.fyi/first-visit sets the real one")
+              f"https://{site_name(layout, slug)}/first-visit sets the real one")
         print(f"would write {layout.first_visit_source}, {layout.first_visit_page}, "
               f"{layout.first_visit_state} (token sha256 only) and {layout.first_visit_unit}")
         print(f"would listen on 127.0.0.1:{layout.first_visit_port} and proxy /first-visit* to it")
@@ -14193,7 +14321,7 @@ def dry_run(args: argparse.Namespace) -> int:
               f"and proxy /verify to the same loopback service")
     print(f"would write the agent unit {layout.unit_target} (EnvironmentFile={layout.key_env})")
     print(f"would write the backup program {layout.backup_source}, {layout.backup_service} "
-          f"and {layout.backup_timer} (daily 03:00; heartbeat {args.heartbeat_url})")
+          f"and {layout.backup_timer} (daily 03:00; heartbeat {heartbeat_url})")
     print(f"would write the support programs {layout.support_program} and "
           f"{layout.support_diag_link} (the A10 answer's two commands)")
     print(f"would write the guest export program {layout.export_program} (the bytes "
@@ -14203,7 +14331,8 @@ def dry_run(args: argparse.Namespace) -> int:
     print(f"would splice {layout.caddyfile} (# BEGIN odile-{slug})")
     if layout.mode == "tenant":
         print("would lock root, set PasswordAuthentication no, and write /etc/sudoers.d/odile")
-        print(f"would wait for DNS and retry ACME for {slug}.odile.fyi, then print the fingerprint")
+        print(f"would wait for DNS and retry ACME for {site_name(layout, slug)}, "
+              f"then print the fingerprint")
     else:
         print("skip  DNS/ACME/sshd/root lock (the simulation has no public listener)")
     print(f"would write {layout.recovery} (backup password, certificate fingerprint placeholder)")
@@ -14319,10 +14448,18 @@ def tenant_main(args: argparse.Namespace) -> int:
 
     seed = load_or_fetch_seed(layout, kit, args, pubkey)
     slug = seed["slug"]
-    if layout.webapp_public_url.endswith("<slug>.odile.fyi") or layout.mode == "tenant":
+    # One site name (ODL-340 follow-up): the name the Webapp answers to is also
+    # the Caddy site, the DNS wait, the ACME wait and the certificate the
+    # recovery file pins. `--public-url` names it; without it the seed endpoint
+    # names the environment and the tenant is `<slug>.<that host>`.
+    if layout.mode == "tenant" or layout.webapp_public_url.endswith("<slug>.odile.fyi"):
         layout = dataclasses.replace(layout, webapp_public_url=(
-            args.public_url or f"https://{slug}.odile.fyi"))
+            args.public_url or public_url_for(slug, seed_url)))
+    # The nightly backup's heartbeat goes to the HQ that issued this seed, never
+    # to a constant: a bench tenant's record is accepted by the bench.
+    heartbeat_url = args.heartbeat_url or heartbeat_url_for(seed_url)
     print(f"seed         {slug} · instance {seed['instance_id']} · model {seed['model']}")
+    print(f"site         {site_name(layout, slug)} (heartbeat {heartbeat_url})")
 
     changed |= ensure_packages(layout, args.dry_run)
     changed |= ensure_user(layout, args.dry_run)
@@ -14352,7 +14489,7 @@ def tenant_main(args: argparse.Namespace) -> int:
         changed |= ensure_verify_surface(layout, args.dry_run,
                                          verdict.boot_key_b64 if verdict else "")
     units_changed = ensure_units(layout, slug, args.dry_run, first_visit=first_visit_enabled,
-                                 heartbeat_url=args.heartbeat_url)
+                                 heartbeat_url=heartbeat_url)
     changed |= units_changed
     changed |= ensure_sudoers(layout, args.dry_run)
     changed |= ensure_sshd(layout, args.dry_run)
@@ -14378,11 +14515,12 @@ def tenant_main(args: argparse.Namespace) -> int:
 
     fingerprint = None
     if layout.mode == "tenant" and not args.dry_run:
-        if not wait_for_dns(f"{slug}.odile.fyi"):
-            raise SystemExit(f"error: {slug}.odile.fyi did not resolve within 15 minutes")
-        if not wait_for_acme(f"{slug}.odile.fyi"):
-            raise SystemExit(f"error: no valid certificate for {slug}.odile.fyi within 15 minutes")
-        fingerprint = certificate_fingerprint(layout, f"{slug}.odile.fyi")
+        site = site_name(layout, slug)
+        if not wait_for_dns(site):
+            raise SystemExit(f"error: {site} did not resolve within 15 minutes")
+        if not wait_for_acme(site):
+            raise SystemExit(f"error: no valid certificate for {site} within 15 minutes")
+        fingerprint = certificate_fingerprint(layout, site)
         print(f"certificate  {fingerprint or '(not found in Caddy store)'}")
 
     smoke_ok = run_smoke(layout, username, password, args.dry_run, args.force_smoke,

@@ -49,6 +49,12 @@
 # /etc/odile/recovery.txt. And `ODILE_RELEASE_PUBLIC_URL` overrides the public
 # name the config carries: `bb.host` is the machine's slug, which is not the
 # name an owner who moved the Webapp (ODL-503) answers on.
+#
+# ODL-340 follow-up: the environment a machine was built for is in its measured
+# command line — `odile.seed_url=` (where the seed came from) and
+# `odile.public_url=` (the name this tenant serves). This script passes both
+# through, so a bench tenant serves its own name and posts its heartbeat to the
+# bench with no drop-in, no second Caddy block and no config patch.
 set -u
 
 CMDLINE=${ODILE_RELEASE_CMDLINE:-/proc/cmdline}
@@ -76,6 +82,8 @@ DONE=${ODILE_RELEASE_DONE:-/var/lib/odile/release-setup.done}
 TOKEN=""
 IID=""
 HOST=""
+SEED_URL=""
+PUBLIC_TOKEN=""
 #: An explicit retry ignores both the done marker and the log backfill below:
 #: the whole point of `--force` is to run the signed installer again — removing
 #: the marker alone is not enough on a machine whose own log already carries a
@@ -112,6 +120,8 @@ read -r CMDLINE_TEXT < "$CMDLINE" || true
 for token in $CMDLINE_TEXT; do
     case "$token" in
         odile.token=*) TOKEN=${token#odile.token=} ;;
+        odile.seed_url=*) SEED_URL=${token#odile.seed_url=} ;;
+        odile.public_url=*) PUBLIC_TOKEN=${token#odile.public_url=} ;;
         bb.iid=*) IID=${token#bb.iid=} ;;
         bb.host=*) HOST=${token#bb.host=} ;;
     esac
@@ -127,7 +137,27 @@ done
 # keeps it when this script is re-run by hand, or the install would rewrite
 # the config back to the slug and the owner's Host would answer 400
 # `Invalid Host header` (t_d95b8c13).
-PUBLIC_URL=${ODILE_RELEASE_PUBLIC_URL:-https://$HOST.odile.fyi}
+#
+# ODL-340 follow-up: a second environment names the machine in its measured
+# command line (`odile.public_url=`), so a bench tenant needs no systemd
+# drop-in. Precedence: ODILE_RELEASE_PUBLIC_URL (an operator re-run), then the
+# measured token, then production's `<slug>.odile.fyi` (today's behaviour).
+PUBLIC_TOKEN=${PUBLIC_TOKEN:-}
+case "$PUBLIC_TOKEN" in
+    *" "*) PUBLIC_TOKEN="" ;;
+    http://*|https://*) ;;
+    *) PUBLIC_TOKEN="" ;;
+esac
+PUBLIC_URL=${ODILE_RELEASE_PUBLIC_URL:-${PUBLIC_TOKEN:-https://$HOST.odile.fyi}}
+# The environment that issued the seed (ODL-340 follow-up). The installer
+# derives this machine's public name and its heartbeat receiver from it, and
+# the boot record's reporter (odile-firstboot) already posts to it.
+case "$SEED_URL" in
+    *" "*) SEED_URL="" ;;
+    http://*|https://*) ;;
+    *) SEED_URL="" ;;
+esac
+SEED_URL=${SEED_URL:-https://odile.fyi/seed}
 
 # The measurement this image was pinned to; the installer writes it into the
 # boot record and /verify compares the machine with it.
@@ -167,6 +197,7 @@ done
         --instance-id "$IID" --expect "$EXPECT" \
         --signature "$SIGNATURE" --pubkey "$PUBKEY" \
         --slug "$HOST" --user tenant --port 9130 \
+        --seed-url "$SEED_URL" \
         --public-url "$PUBLIC_URL" --i-have-copied-it --json 2>&1
     rc=$?
     echo "=== rc=$rc"

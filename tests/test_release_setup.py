@@ -197,6 +197,47 @@ class ReleaseSetupOnceTests(unittest.TestCase):
         self.assertIn("/usr/local/bin/odile-install.sh", text)
         self.assertIn("/usr/local/lib/odile-image/odile_install.py.sig", text)
 
+    # ODL-340 follow-up: a second environment names its tenant in the measured
+    # command line, so the machine needs no systemd drop-in and the installer
+    # serves one name — the one it was built for.
+
+    def _bench_cmdline(self, public_url: str) -> None:
+        self.cmdline.write_text(
+            "BOOT_IMAGE=test odile.token=" + "a" * 64
+            + " bb.iid=i-test bb.host=odile-test"
+            + " odile.seed_url=https://test.odile.fyi/seed"
+            + " odile.public_url=" + public_url + "\n",
+            encoding="utf-8")
+
+    def test_the_measured_name_and_seed_reach_the_installer(self) -> None:
+        self._bench_cmdline("https://odile-test.test.odile.fyi")
+        result = self.run_script()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        text = self.log.read_text(encoding="utf-8")
+        self.assertIn("--public-url https://odile-test.test.odile.fyi", text)
+        self.assertIn("--seed-url https://test.odile.fyi/seed", text)
+
+    def test_a_production_boot_keeps_the_production_name_and_seed(self) -> None:
+        result = self.run_script()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        text = self.log.read_text(encoding="utf-8")
+        self.assertIn("--public-url https://odile-test.odile.fyi", text)
+        self.assertIn("--seed-url https://odile.fyi/seed", text)
+
+    def test_a_malformed_public_url_token_is_not_a_site_name(self) -> None:
+        self._bench_cmdline("not-a-url")
+        result = self.run_script()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("--public-url https://odile-test.odile.fyi",
+                      self.log.read_text(encoding="utf-8"))
+
+    def test_an_operators_public_url_still_wins_over_the_token(self) -> None:
+        self._bench_cmdline("https://odile-test.test.odile.fyi")
+        result = self.run_script(ODILE_RELEASE_PUBLIC_URL="https://moved.odile.fyi")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("--public-url https://moved.odile.fyi",
+                      self.log.read_text(encoding="utf-8"))
+
 
 if __name__ == "__main__":
     unittest.main()
