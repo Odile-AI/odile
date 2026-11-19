@@ -1,10 +1,11 @@
 """Tests for odile-verify.
 
 The verifier's job is to fail closed. These tests run the real command against
-a saved report and the vendored AMD chain, with no network: a good report
-passes, a wrong pin fails, and a report that was changed after the CPU signed
-it fails the signature check. One loopback server proves the URL mode fetches
-exactly one path.
+a saved report and the synthetic chain the fixture names (a test-only trust
+root; the shipped pin keeps AMD's ARK), with no network: a good report passes, a
+wrong pin fails, and a report that was changed after the CPU signed it fails the
+signature check. One loopback server proves the URL mode fetches exactly one
+path and ignores a served `trust` block.
 
 The release tests use a document derived from the fixture — a JSON summary may
 grow a `release` and a `cmdline` without touching the signed bytes. They prove
@@ -39,14 +40,14 @@ ROOT = Path(__file__).resolve().parent.parent
 VERIFY = ROOT / "odile-verify"
 ACCESS = ROOT / "scripts" / "verify_and_unlock.sh"
 ATTEST = ROOT / "attest.py"
-FIXTURE = ROOT / "tests" / "fixtures" / "verify" / "report-2026-11-06.json"
+FIXTURE = ROOT / "tests" / "fixtures" / "verify" / "synthetic-report.json"
 # The same saved report with the two unsigned summary fields a v2 boot report
 # carries: the release it booted and the command line the CPU measured. The
 # signed bytes are identical (test_the_v2_fixture_only_adds_unsigned_fields).
-FIXTURE_V2 = ROOT / "tests" / "fixtures" / "verify" / "report-2026-11-06-v2.json"
-TENANT_FIXTURE = ROOT / "tests" / "fixtures" / "verify" / "tenant-2026-11-12.json"
-DEMO_FIXTURE = ROOT / "tests" / "fixtures" / "verify" / "demo-2026-11-13.json"
-TENANT_VCEK = ROOT / "tests" / "fixtures" / "verify" / "tenant-vcek.der"
+FIXTURE_V2 = ROOT / "tests" / "fixtures" / "verify" / "synthetic-report-v2.json"
+TENANT_FIXTURE = ROOT / "tests" / "fixtures" / "verify" / "synthetic-tenant.json"
+DEMO_FIXTURE = ROOT / "tests" / "fixtures" / "verify" / "synthetic-demo.json"
+TENANT_VCEK = ROOT / "tests" / "fixtures" / "verify" / "synthetic-vcek.der"
 RELEASE_2026_11_2 = ROOT / "tests" / "fixtures" / "verify" / "servury-RELEASE-2026.11.2.json"
 PIN = ROOT / "odile-verify.pin"
 FIXTURE_BYTES = FIXTURE.read_bytes()
@@ -60,6 +61,11 @@ TENANT_MEASUREMENT = TENANT_DOC["measurement"]
 TENANT_REPORT = base64.b64decode(TENANT_DOC["report_b64"])
 TENANT_CHIP = TENANT_REPORT[0x1A0:0x1E0].hex()
 TENANT_TCB = TENANT_REPORT[0x180:0x188]
+# The synthetic fixtures name their own test-only chain. A URL run must pass
+# it explicitly, because a served document may not choose its trust root.
+SYNTHETIC_TRUST = TENANT_DOC["trust"]
+SYNTHETIC_AMD_DIR = TENANT_FIXTURE.parent / SYNTHETIC_TRUST["amd_dir"]
+SYNTHETIC_ARK = SYNTHETIC_TRUST["ark_sha256"]
 
 # The /verify page (ODL-236): the program, its template and the machine's
 # reported sources. The release pair is the real signed manifest this tree
@@ -108,7 +114,8 @@ def tampered_document(offset: int | None = None, json_measurement: str | None = 
         data["report_b64"] = base64.b64encode(bytes(raw)).decode("ascii")
     if json_measurement is not None:
         data["measurement"] = json_measurement
-    handle = tempfile.NamedTemporaryFile("w", suffix=".json", delete=False, encoding="utf-8")
+    handle = tempfile.NamedTemporaryFile("w", suffix=".json", delete=False,
+                                         encoding="utf-8", dir=FIXTURE.parent)
     with handle:
         json.dump(data, handle)
     return handle.name
@@ -118,7 +125,8 @@ def document_with(**fields: object) -> str:
     """The fixture summary plus extra, unsigned fields (release, cmdline)."""
     data = json.loads(FIXTURE_BYTES)
     data.update(fields)
-    handle = tempfile.NamedTemporaryFile("w", suffix=".json", delete=False, encoding="utf-8")
+    handle = tempfile.NamedTemporaryFile("w", suffix=".json", delete=False,
+                                         encoding="utf-8", dir=FIXTURE.parent)
     with handle:
         json.dump(data, handle)
     return handle.name
@@ -188,13 +196,78 @@ class VerifyTests(unittest.TestCase):
         thread.start()
         try:
             url = "http://127.0.0.1:%d" % server.server_address[1]
-            result = run(url, "--expect", DEMO_DOC["measurement"])
+            # The served document carries a `trust` block; it must be ignored
+            # (explicit --amd-dir/--ark-sha256 below), so the only fetch is
+            # /attestation.
+            result = run(url, "--expect", DEMO_DOC["measurement"],
+                         "--amd-dir", str(SYNTHETIC_AMD_DIR),
+                         "--ark-sha256", SYNTHETIC_ARK)
         finally:
             server.shutdown()
             server.server_close()
             thread.join(timeout=5)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertEqual(seen, ["/attestation"])
+
+    def test_a_served_trust_block_is_not_honoured(self) -> None:
+        """A remote document must not choose the key it is verified against.
+
+        DEMO_BYTES carries a `trust` block naming the synthetic chain. In URL
+        mode the verifier ignores it; with --no-kds the missing vendored VCEK
+        fails closed instead of accepting the served root.
+        """
+        class Handler(BaseHTTPRequestHandler):
+            def do_GET(self) -> None:  # noqa: N802 - stdlib name
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(DEMO_BYTES)))
+                self.end_headers()
+                self.wfile.write(DEMO_BYTES)
+
+            def log_message(self, format: str, *args: object) -> None:
+                pass
+
+        server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            url = "http://127.0.0.1:%d" % server.server_address[1]
+            result = run(url, "--expect", DEMO_DOC["measurement"], "--no-kds")
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=5)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertRegex(result.stdout, r"vcek\s+FAIL")
+        self.assertNotRegex(result.stdout, r"trust\s+PASS")
+
+    def test_a_fixture_trust_block_cannot_escape_its_directory(self) -> None:
+        data = json.loads(FIXTURE_BYTES)
+        data["trust"] = dict(data["trust"], amd_dir="../../..")
+        handle = tempfile.NamedTemporaryFile("w", suffix=".json", delete=False,
+                                             encoding="utf-8", dir=FIXTURE.parent)
+        with handle:
+            json.dump(data, handle)
+        try:
+            result = run("--report", handle.name)
+        finally:
+            Path(handle.name).unlink()
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("unsafe amd_dir", result.stdout)
+
+    def test_a_fixture_naming_a_missing_chain_fails_closed(self) -> None:
+        data = json.loads(FIXTURE_BYTES)
+        data["trust"] = dict(data["trust"], amd_dir="no-such-chain")
+        handle = tempfile.NamedTemporaryFile("w", suffix=".json", delete=False,
+                                             encoding="utf-8", dir=FIXTURE.parent)
+        with handle:
+            json.dump(data, handle)
+        try:
+            result = run("--report", handle.name)
+        finally:
+            Path(handle.name).unlink()
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("trust chain is missing", result.stdout)
 
     def test_a_redirect_is_not_followed(self) -> None:
         seen: list[str] = []
@@ -238,7 +311,8 @@ class VerifyTests(unittest.TestCase):
         data = json.loads(FIXTURE_BYTES)
         data["report_b64"] = base64.b64encode(b"\x05" + b"\x00" * 31).decode("ascii")
         data["report_size"] = 32
-        handle = tempfile.NamedTemporaryFile("w", suffix=".json", delete=False, encoding="utf-8")
+        handle = tempfile.NamedTemporaryFile("w", suffix=".json", delete=False,
+                                             encoding="utf-8", dir=FIXTURE.parent)
         with handle:
             json.dump(data, handle)
         try:
@@ -481,7 +555,9 @@ class VerifyTests(unittest.TestCase):
         with handle:
             json.dump(pin, handle, ensure_ascii=False)
         try:
-            result = run(url, "--pin", handle.name)
+            result = run(url, "--pin", handle.name,
+                         "--amd-dir", str(SYNTHETIC_AMD_DIR),
+                         "--ark-sha256", SYNTHETIC_ARK)
         finally:
             server.shutdown()
             server.server_close()
@@ -1316,11 +1392,11 @@ class OwnReportTests(unittest.TestCase):
 class RefreshRunbookTests(unittest.TestCase):
     """The refresh recipe hands AMD's KDS the chip id, not a digest of it.
 
-    ``docs/runbooks/verify.md`` is the only documented way to renew the
-    vendored VCEK, and its step 1 once printed ``sha256(chip_id)`` as the
+    ``docs/runbooks/verify.md`` is the documented way to read the KDS path
+    segment for a report, and its step 1 once printed ``sha256(chip_id)`` as the
     ``hwid`` a KDS URL takes, which answers ``400 Bad Request``. Nothing else
     exercises that snippet — the verifier reads the fixture, not the prose — so
-    this test runs the snippet itself against the vendored report.
+    this test runs the snippet itself against the fixture report.
     """
 
     def step_one(self) -> str:
@@ -1404,10 +1480,11 @@ class KDSFixture:
 class TenantVcekTests(unittest.TestCase):
     """ODL-319 follow-up: a tenant's report is checked with the tenant's VCEK.
 
-    The vendored chain is the demo machine's. These tests serve the tenant's own
-    VCEK from a loopback KDS and prove the verifier fetches it by the report's
-    raw chip id and reported TCB, checks it against the pinned ARK, and fails
-    closed when the KDS or the report is wrong. No test reaches AMD.
+    The chain in ``--amd-dir`` is the synthetic fixture root. These tests serve
+    the tenant's own VCEK from a loopback KDS and prove the verifier fetches it
+    by the report's raw chip id and reported TCB, checks it against the pinned
+    ARK, and fails closed when the KDS or the report is wrong. No test reaches
+    AMD.
     """
 
     def run_against_kds(self, *args: str, document: Path = TENANT_FIXTURE,
@@ -1454,7 +1531,7 @@ class TenantVcekTests(unittest.TestCase):
         data = dict(TENANT_DOC)
         data["report_b64"] = base64.b64encode(bytes(raw)).decode("ascii")
         handle = tempfile.NamedTemporaryFile("w", suffix=".json", delete=False,
-                                             encoding="utf-8")
+                                             encoding="utf-8", dir=TENANT_FIXTURE.parent)
         with handle:
             json.dump(data, handle)
         try:

@@ -2,10 +2,11 @@
 """Parse and verify an AMD SEV-SNP attestation report.
 
 Standard library plus the `openssl` binary. No pip, no state. The default
-checks read the vendored chain in `tests/fixtures/amd/`. `install_tenant_chain`
-fetches a report's own VCEK from AMD's KDS for the report's raw chip id and
-reported TCB (and the chain if the vendored one is absent); `verify_chain`
-still compares the ARK to the pinned `ARK_SHA256`.
+checks read AMD's Milan ASK and ARK from `tests/fixtures/amd/`; the VCEK names
+one chip and one TCB, so it is fetched for the report (`install_tenant_chain`)
+or supplied in `--amd-dir`. `verify_chain` compares the ARK to the pinned
+`ARK_SHA256`, unless the caller passes a test-only `ark_sha256` (the synthetic
+fixtures name their own root).
 
 The report is 1184 bytes. The first 672 (0x2A0) are the signed payload; the
 signature area follows and holds two 72-byte little-endian integers, r and s,
@@ -85,12 +86,12 @@ DEFAULT_AMD_DIR = os.path.join(
     "tests", "fixtures", "amd",
 )
 
-# AMD's Key Distribution Service. A tenant's chip is not the demo's chip, so
-# the vendored VCEK binds only the demo; a tenant run fetches the VCEK for the
-# report's raw chip id and reported TCB (the KDS hwid segment is the 64-byte
-# chip id in hex, never a digest of it). The ASK and ARK still come from the
-# repository or, if absent, from the KDS chain — and `verify_chain` always
-# compares the ARK to ARK_SHA256, so a substituted root fails.
+# AMD's Key Distribution Service. A VCEK names one chip and one TCB, so the
+# repository does not vendor one; a run fetches the VCEK for the report's raw
+# chip id and reported TCB (the KDS hwid segment is the 64-byte chip id in hex,
+# never a digest of it). The ASK and ARK come from the repository or, if absent,
+# from the KDS chain — and `verify_chain` always compares the ARK to the pinned
+# fingerprint, so a substituted root fails.
 KDS_BASE = "https://kdsintf.amd.com"
 KDS_PRODUCT = "Milan"
 KDS_TIMEOUT = 30
@@ -286,9 +287,9 @@ def install_tenant_chain(report: Report, dest_dir: str, *,
 
     The VCEK is fetched from AMD's KDS for the report's raw chip id and
     reported TCB. The ASK and ARK come from ``fallback_dir`` when both are
-    present (the repository's pinned chain); otherwise they are fetched from
-    the KDS chain. ``verify_chain`` compares the ARK to ``ARK_SHA256`` either
-    way, so a substituted root still fails.
+    present (the repository's pinned roots); otherwise they are fetched from
+    the KDS chain. ``verify_chain`` compares the ARK to the pinned fingerprint
+    either way, so a substituted root still fails.
 
     Returns ``(vcek_url, sha256_of_the_der)``.
     """
@@ -335,8 +336,13 @@ def vcek_binds(report: Report, amd_dir: str) -> tuple[bool, str]:
 
 # ------------------------------------------------------------------- checks
 
-def verify_chain(amd_dir: str) -> str:
-    """Verify VCEK -> ASK -> ARK and pin the ARK fingerprint."""
+def verify_chain(amd_dir: str, ark_sha256: str = ARK_SHA256) -> str:
+    """Verify VCEK -> ASK -> ARK and pin the ARK fingerprint.
+
+    ``ark_sha256`` is AMD's Milan root by default. The synthetic test fixtures
+    name their own test-only root; the caller passes that value explicitly, so
+    no remote document can choose the trust root.
+    """
     ark = _require_file(os.path.join(amd_dir, "ark.pem"), "ARK")
     ask = _require_file(os.path.join(amd_dir, "ask.pem"), "ASK")
     vcek = _require_file(os.path.join(amd_dir, "vcek.pem"), "VCEK")
@@ -350,10 +356,11 @@ def verify_chain(amd_dir: str) -> str:
         raise ReportError("cannot read the ARK fingerprint: " + _output(cp))
     text = cp.stdout.decode("ascii", "replace")
     actual = text.split("=", 1)[-1].replace(":", "").strip().lower()
-    if actual != ARK_SHA256:
+    expected = ark_sha256.lower()
+    if actual != expected:
         raise ReportError(
-            "ARK fingerprint is %s, expected %s; the vendored root is not AMD's"
-            % (actual or "unreadable", ARK_SHA256)
+            "ARK fingerprint is %s, expected %s; the root is not the pinned one"
+            % (actual or "unreadable", expected)
         )
     return "VCEK -> ASK -> ARK verifies; ARK SHA-256 %s" % _colon(actual)
 
@@ -408,7 +415,7 @@ def verify_vcek_binding(report: Report, amd_dir: str) -> str:
     ext = _asn1_extensions(vcek)
     hwid = ext.get(OID_HWID)
     if hwid is None:
-        raise ReportError("the vendored VCEK has no AMD HWID extension")
+        raise ReportError("the VCEK has no AMD HWID extension")
     if hwid != report.chip_id:
         raise ReportError(
             "the VCEK is for chip %s, the report names %s"
@@ -417,7 +424,7 @@ def verify_vcek_binding(report: Report, amd_dir: str) -> str:
     for oid, index in OID_TCB.items():
         value = ext.get(oid)
         if value is None:
-            raise ReportError("the vendored VCEK has no TCB extension %s" % oid)
+            raise ReportError("the VCEK has no TCB extension %s" % oid)
         got = _der_int(value)
         want = report.reported_tcb[index]
         if got != want:
@@ -522,10 +529,11 @@ def check_tcb(report: Report) -> str:
         report.tcb(committed), snp, MIN_SNP_SPL)
 
 
-def run_checks(report: Report, amd_dir: str = DEFAULT_AMD_DIR) -> list[Check]:
+def run_checks(report: Report, amd_dir: str = DEFAULT_AMD_DIR,
+               ark_sha256: str = ARK_SHA256) -> list[Check]:
     """Run every check; a failure is a result, not an early return."""
     checks: list[tuple[str, Callable[[], str]]] = [
-        ("chain", lambda: verify_chain(amd_dir)),
+        ("chain", lambda: verify_chain(amd_dir, ark_sha256)),
         ("cpu binding", lambda: verify_vcek_binding(report, amd_dir)),
         ("signature", lambda: verify_signature(report, amd_dir)),
         ("policy", lambda: check_policy(report)),
@@ -550,11 +558,16 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("report", help="path to the raw report binary")
     parser.add_argument("--amd-dir", default=DEFAULT_AMD_DIR,
                         help="directory holding ark.pem, ask.pem and vcek.pem")
+    parser.add_argument("--ark-sha256", default=ARK_SHA256,
+                        help="hex SHA-256 the ARK must have (default: AMD's Milan root)")
     parser.add_argument("--kds-base", default=KDS_BASE,
                         help="AMD KDS base URL (default: %(default)s)")
     parser.add_argument("--no-kds", action="store_true",
                         help="never fetch a VCEK from AMD's KDS; use --amd-dir only")
     args = parser.parse_args(argv)
+    ark_sha256 = args.ark_sha256.replace(":", "").lower()
+    if len(ark_sha256) != 64 or any(c not in "0123456789abcdef" for c in ark_sha256):
+        parser.error("--ark-sha256 wants 64 hex characters")
 
     try:
         with open(args.report, "rb") as f:
@@ -578,21 +591,21 @@ def main(argv: list[str] | None = None) -> int:
                 url, digest = install_tenant_chain(
                     report, kds_dir, fallback_dir=args.amd_dir,
                     base=args.kds_base)
-                checks = run_checks(report, kds_dir)
+                checks = run_checks(report, kds_dir, ark_sha256)
             print("kds %s" % url)
             print("vcek PASS  fetched the report's own VCEK from AMD KDS (sha256 %s)"
                   % digest)
         except ReportError as exc:
             print("vcek FAIL  %s" % exc)
             failed = True
-            checks = run_checks(report, amd_dir)
+            checks = run_checks(report, amd_dir, ark_sha256)
     elif not binds:
-        print("vcek FAIL  the vendored VCEK does not bind the report and "
+        print("vcek FAIL  the chain in --amd-dir does not bind the report and "
               "--no-kds is set: %s" % bind_detail)
         failed = True
-        checks = run_checks(report, amd_dir)
+        checks = run_checks(report, amd_dir, ark_sha256)
     else:
-        checks = run_checks(report, amd_dir)
+        checks = run_checks(report, amd_dir, ark_sha256)
 
     for check in checks:
         print("%-11s %s  %s" % (check.name, "PASS" if check.ok else "FAIL", check.detail))

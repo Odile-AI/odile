@@ -573,3 +573,46 @@ independent read-back 34 ok / 10 gaps over 44 rows. The throwaway was deleted
    base is `github.event.before`, not `HEAD^` (which is the previous new commit
    on a multi-commit push); `tests/test_ci_gate_scanner.py` executes the step's
    own shell against a fixture tree rather than asserting YAML text.
+
+## 7. Follow-up, 19 November 2026 — the signed fixtures are synthetic
+
+**Card:** ODL-906-F3 follow-up (`t_3cd62ef9`) · **Seat:** Security
+
+The four recorded SEV-SNP reports and the AMD-issued `tenant-vcek.der` are
+gone. `tools/make_synthetic_report.py` builds a 1184-byte report and a local
+P-384 VCEK/ASK/ARK chain; the fixtures carry an `ODILE-SYNTHETIC-…` chip id and
+name their own test-only ARK in a `trust` block. The shipped `odile-verify.pin`
+keeps AMD's ARK, and the trust block is honoured only for a local `--report`
+file — a document served over the network cannot choose its root.
+
+The three `machine-identity` allowlist rows are deleted. The PARTUUID row stays
+until the benchmark record is re-cut with a placeholder command line.
+
+**The fifth identity the F3 verdict missed.** `tests/fixtures/amd/vcek.pem` was
+the demo chip's real AMD certificate: its HWID extension carried the same HQ chip
+id, and the scanner did not see it because it read DER, not a PEM certificate's
+base64 body. The scanner now decodes a PEM `CERTIFICATE` block and reads a
+certificate's serial only when the AMD HWID extension is present (a bare serial
+is not a VCEK). The real VCEK was removed; the verifier fetches the report's own
+VCEK from AMD's KDS on every live run.
+
+**Evidence.**
+
+- `tools/leak_scan.py --tree` → `PASS: nothing to leak in 370 files,
+  12,200,826 bytes scanned`, 55 allowlist rows (4 credentials, 0 debt), with the
+  three rows gone.
+- `tests/test_leak_scan.py::AllowlistRecord::test_a_planted_chip_id_in_a_fixture_fails_the_gate`
+  plants a real 64-byte chip id in a fixture: the gate fails with
+  `machine-identity`, and the same fixture with the `ODILE-SYNTHETIC-` marker
+  passes.
+- `tests/test_leak_scan.py::AllowlistRecord::test_a_pem_certificate_with_a_live_chip_id_fails_the_gate`
+  plants the same id in a PEM certificate: the gate fails; a PEM certificate
+  without the HWID extension passes.
+- `tests/test_verify.py` runs the verifier signature and chain checks on the
+  synthetic chain, the loopback-KDS tenant path, and a served `trust` block
+  that is ignored.
+
+**Residual.** `docs/runbooks/image-bench.md` still carries one real PARTUUID
+inside a recorded measured command line (the existing row). The tip is clean;
+the history and already-published commits still carry the old recorded reports,
+because this card replaces the fixture set, not the history.

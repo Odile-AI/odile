@@ -3,21 +3,27 @@
 
     ./odile-verify https://odile.fyi
     ./odile-verify --expect <96-hex-measurement> https://odile.fyi
-    ./odile-verify --report tests/fixtures/verify/report-2026-11-06.json
+    ./odile-verify --report tests/fixtures/verify/synthetic-report.json
     ./odile-verify --release 2026.11.1 --expect <measurement> https://<slug>.odile.fyi
     ./odile-verify --expect <measurement> --record boot-record.json https://<slug>.odile.fyi
     ./odile-verify --expect <measurement> --previous boot-record.json https://<slug>.odile.fyi
     ./odile-verify --print-pin https://odile.fyi > odile-verify.pin
 
-It fetches exactly one URL (`<base>/attestation`), reads the report out of the
-signed bytes rather than trusting the JSON summary, verifies the AMD certificate
-chain and the ECDSA signature, and compares the launch measurement to the pin.
+It fetches the machine's `/attestation`, reads the report out of the signed
+bytes rather than trusting the JSON summary, verifies the AMD certificate chain
+and the ECDSA signature, and compares the launch measurement to the pin.
 
-The certificate chain is the repository's vendored one for the demo machine. A
-tenant's report names another chip, so the vendored VCEK does not bind it: the
-verifier then fetches the report's own VCEK from AMD's Key Distribution Service
-for the report's raw chip id and reported TCB, and checks it against the pinned
-ARK. That is the only second URL it ever fetches; `--no-kds` refuses it.
+The repository vendors AMD's Milan ASK and ARK, not a chip's VCEK: a VCEK names
+one chip and one TCB, so shipping one published the demo chip's identity. The
+verifier fetches the report's own VCEK from AMD's Key Distribution Service for
+the report's raw chip id and reported TCB, and checks it against the pinned ARK.
+That is the second URL it fetches; `--no-kds` refuses it.
+
+A local `--report` fixture may carry a `trust` block naming a test-only chain
+and its ARK SHA-256 (the synthetic fixtures do). That block is honoured only for
+a local file; a document fetched over the network never chooses its trust root,
+and `--amd-dir` / `--ark-sha256` override it. The shipped `odile-verify.pin`
+keeps AMD's ARK.
 
 Release selection: `--release <id>` picks `releases[<id>]` in the pin; without
 it, the served document's `release` field picks the entry. A release that is not
@@ -38,8 +44,7 @@ compares it to an earlier record.
 
 Dependencies: Python 3 and the `openssl` binary. No pip, no state written
 unless the user asks for it with --record. The only network calls are the
-machine's `/attestation` and, when the vendored VCEK does not bind the report,
-AMD's KDS for that report's VCEK.
+machine's `/attestation` and AMD's KDS for that report's VCEK.
 
 Exit codes: 0 PASS, 1 FAIL, 2 usage or I/O error.
 """
@@ -184,6 +189,38 @@ def served_checks(data: dict, report: snp_report.Report) -> list[str]:
     if not isinstance(served, str) or served.lower() != report.measurement_hex:
         problems.append("the JSON measurement is not the signed measurement")
     return problems
+
+
+def fixture_trust(report_path: str, data: dict) -> tuple[str | None, str | None, str]:
+    """(amd_dir, ark_sha256, detail) from a local fixture's `trust` block.
+
+    Only a `--report` file may name its trust root: a document fetched over
+    the network must not choose the key it is verified against. The chain
+    directory is resolved next to the fixture and may not escape it.
+    """
+    trust = data.get("trust")
+    if trust is None:
+        return None, None, ""
+    if not isinstance(trust, dict):
+        raise VerifyError("the fixture's trust block is not an object")
+    amd = trust.get("amd_dir")
+    ark = trust.get("ark_sha256")
+    if not isinstance(amd, str) or not amd:
+        raise VerifyError("the fixture's trust block has no amd_dir")
+    if not isinstance(ark, str) or not HEX64_RE.match(ark.replace(":", "")):
+        raise VerifyError("the fixture's trust block has no 64-hex ark_sha256")
+    if os.path.isabs(amd) or any(part == ".." for part in amd.split(os.sep)):
+        raise VerifyError("the fixture's trust block names an unsafe amd_dir")
+    base = os.path.realpath(os.path.dirname(os.path.abspath(report_path)))
+    chain = os.path.realpath(os.path.join(base, amd))
+    if os.path.commonpath([base, chain]) != base:
+        raise VerifyError("the fixture's trust chain escapes the fixture directory")
+    for name in ("ark.pem", "ask.pem", "vcek.pem"):
+        if not os.path.isfile(os.path.join(chain, name)):
+            raise VerifyError("the fixture's trust chain is missing %s in %s"
+                              % (name, amd))
+    return (chain, ark.replace(":", "").lower(),
+            "fixture names a test-only trust root; the shipped pin keeps AMD's ARK")
 
 
 def load_pin(path: str) -> dict:
@@ -388,8 +425,13 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--previous", metavar="FILE",
                         help="compare this run's record with an earlier odile.boot-record.v1 record")
     parser.add_argument("--pin", default=DEFAULT_PIN, help="pin file (default: odile-verify.pin)")
-    parser.add_argument("--amd-dir", default=DEFAULT_AMD_DIR,
-                        help="directory holding ark.pem, ask.pem and vcek.pem")
+    parser.add_argument("--amd-dir", default=None,
+                        help="directory holding ark.pem, ask.pem and vcek.pem "
+                             "(default: tests/fixtures/amd, or the trust block "
+                             "of a local --report fixture)")
+    parser.add_argument("--ark-sha256", default=None, metavar="HEX",
+                        help="64-hex SHA-256 the ARK must have (default: AMD's "
+                             "Milan root, or a local fixture's trust block)")
     parser.add_argument("--kds-base", default=snp_report.KDS_BASE,
                         help="AMD KDS base URL (default: %(default)s)")
     parser.add_argument("--no-kds", action="store_true",
@@ -408,6 +450,11 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("--print-pin and --record/--previous are mutually exclusive")
     if args.release is not None and not args.release.strip():
         parser.error("--release needs a release id")
+    if args.ark_sha256 is not None:
+        normalised = args.ark_sha256.replace(":", "").lower()
+        if not HEX64_RE.match(normalised):
+            parser.error("--ark-sha256 wants 64 hex characters")
+        args.ark_sha256 = normalised
     kds = urllib.parse.urlparse(args.kds_base)
     if kds.scheme not in ("http", "https") or not kds.netloc \
             or kds.username or kds.password:
@@ -444,6 +491,11 @@ def main(argv: list[str] | None = None) -> int:
             body = fetch(source)
         data = parse_document(body)
         report, fetched_at = report_from_document(data)
+        trust_dir: str | None = None
+        trust_ark: str | None = None
+        trust_detail = ""
+        if args.report and not args.amd_dir and not args.ark_sha256:
+            trust_dir, trust_ark, trust_detail = fixture_trust(args.report, data)
     except (OSError, VerifyError, snp_report.ReportError) as exc:
         say("FAIL — %s" % exc)
         say()
@@ -481,22 +533,28 @@ def main(argv: list[str] | None = None) -> int:
     value(out, "fetched_at", fetched_at)
     value(out, "measurement", report.measurement_hex)
 
-    amd_dir = args.amd_dir
+    amd_dir = args.amd_dir or trust_dir or DEFAULT_AMD_DIR
+    ark_sha256 = args.ark_sha256 or trust_ark or snp_report.ARK_SHA256
+    if trust_detail:
+        row(out, "trust", True, "%s; ARK SHA-256 %s"
+            % (trust_detail, ":".join(ark_sha256[i:i + 2]
+                                      for i in range(0, len(ark_sha256), 2))))
+
     checks: list[snp_report.Check]
     vcek_row: tuple[bool, str] | None = None
     kds_url: str | None = None
     binds, bind_detail = snp_report.vcek_binds(report, amd_dir)
     if binds:
-        # The demo's vendored VCEK, and any report from the same chip and TCB:
-        # no second URL, exactly the command the /verify page describes.
-        checks = snp_report.run_checks(report, amd_dir)
+        # A chain in --amd-dir that binds the report (the synthetic fixtures, or
+        # a directory the caller supplied): no second URL.
+        checks = snp_report.run_checks(report, amd_dir, ark_sha256)
     elif args.no_kds:
         vcek_row = (
             False,
-            "the vendored VCEK does not bind the report and --no-kds is set: "
+            "the chain in --amd-dir does not bind the report and --no-kds is set: "
             + bind_detail,
         )
-        checks = snp_report.run_checks(report, amd_dir)
+        checks = snp_report.run_checks(report, amd_dir, ark_sha256)
     else:
         # A tenant's report names another chip: fetch that report's own VCEK
         # from AMD's KDS for the raw chip id and reported TCB, and run the
@@ -504,10 +562,10 @@ def main(argv: list[str] | None = None) -> int:
         try:
             with tempfile.TemporaryDirectory(prefix="odile-verify-kds-") as kds_dir:
                 kds_url, digest = snp_report.install_tenant_chain(
-                    report, kds_dir, fallback_dir=args.amd_dir,
+                    report, kds_dir, fallback_dir=amd_dir,
                     base=args.kds_base,
                 )
-                checks = snp_report.run_checks(report, kds_dir)
+                checks = snp_report.run_checks(report, kds_dir, ark_sha256)
             vcek_row = (
                 True,
                 "fetched the report's own VCEK from AMD KDS for chip %s TCB %s "
@@ -516,7 +574,7 @@ def main(argv: list[str] | None = None) -> int:
             )
         except snp_report.ReportError as exc:
             vcek_row = (False, str(exc))
-            checks = snp_report.run_checks(report, amd_dir)
+            checks = snp_report.run_checks(report, amd_dir, ark_sha256)
 
     if kds_url is not None:
         value(out, "kds", kds_url)

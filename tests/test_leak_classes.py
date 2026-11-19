@@ -58,6 +58,32 @@ def rules(line: str) -> list[str]:
     return [rule for rule, _value, _note in leak_scan.text_candidates(line, 1)]
 
 
+HWID_OID = bytes.fromhex("2b060104019c780104")
+
+
+def _tlv(tag: int, value: bytes) -> bytes:
+    length = len(value)
+    if length < 0x80:
+        header = bytes([length])
+    else:
+        body = length.to_bytes((length.bit_length() + 7) // 8, "big")
+        header = bytes([0x80 | len(body)]) + body
+    return bytes([tag]) + header + value
+
+
+def fake_vcek(hwid: bytes, serial: bytes = b"\x01" * 16) -> bytes:
+    """A DER certificate skeleton carrying just the fields the class reads."""
+    fields = (_tlv(0x02, serial) + _tlv(0x06, HWID_OID) + _tlv(0x04, hwid))
+    return _tlv(0x30, _tlv(0x30, fields))
+
+
+def pem(der: bytes, label: str = "CERTIFICATE") -> str:
+    body = base64.b64encode(der).decode("ascii")
+    lines = [body[i:i + 64] for i in range(0, len(body), 64)]
+    return "-----BEGIN %s-----\n%s\n-----END %s-----\n" % (
+        label, "\n".join(lines), label)
+
+
 class MachineIdentity(unittest.TestCase):
     def test_a_chip_id_is_reported(self):
         self.assertIn("machine-identity", rules(f"chip {CHIP}"))
@@ -82,6 +108,50 @@ class MachineIdentity(unittest.TestCase):
 
     def test_a_sha512_digest_is_not_a_chip_id(self):
         self.assertNotIn("machine-identity", rules("sha512 " + "ab" * 64))
+
+    def test_a_report_chip_id_is_reported(self):
+        raw = bytearray(1184)
+        raw[0:4] = (5).to_bytes(4, "little")
+        raw[0x90:0xC0] = b"\x11" * 48
+        raw[0x1A0:0x1E0] = bytes.fromhex(CHIP)
+        self.assertIn("machine-identity", [rule for rule, _v, _n
+                                           in leak_scan.report_identifiers(bytes(raw))])
+
+    def test_a_synthetic_report_chip_id_is_not_a_machine(self):
+        raw = bytearray(1184)
+        raw[0:4] = (5).to_bytes(4, "little")
+        raw[0x90:0xC0] = b"\x11" * 48
+        raw[0x1A0:0x1E0] = (leak_scan.SYNTHETIC_CHIP_PREFIX
+                            + b"SEV-SNP-CHIP-ID-0001").ljust(64, b"\x00")
+        self.assertEqual(leak_scan.report_identifiers(bytes(raw)), [])
+
+    def test_a_vcek_hwid_is_reported(self):
+        cert = fake_vcek(bytes.fromhex(CHIP))
+        found = [rule for rule, _v, _n in leak_scan.der_identifiers(cert)]
+        self.assertIn("machine-identity", found)
+
+    def test_a_synthetic_vcek_hwid_is_not_a_machine(self):
+        hwid = (leak_scan.SYNTHETIC_CHIP_PREFIX + b"SEV-SNP-CHIP-ID-0001") \
+            .ljust(64, b"\x00")
+        self.assertEqual(leak_scan.der_identifiers(fake_vcek(hwid)), [])
+
+    def test_a_certificate_without_a_hwid_is_not_a_vcek(self):
+        # Every certificate has a serial; only a VCEK's serial identifies a
+        # chip, so a bare serial must not become a machine identity.
+        cert = _tlv(0x30, _tlv(0x30, _tlv(0x02, b"\x01" * 16)))
+        self.assertEqual(leak_scan.der_identifiers(cert), [])
+
+    def test_a_pem_certificate_is_read(self):
+        text = pem(fake_vcek(bytes.fromhex(CHIP)))
+        found = [rule for rule, _l, _v, _n in leak_scan.scan_text(text)]
+        self.assertIn("machine-identity", found)
+
+    def test_a_synthetic_pem_certificate_is_not_a_machine(self):
+        hwid = (leak_scan.SYNTHETIC_CHIP_PREFIX + b"SEV-SNP-CHIP-ID-0001") \
+            .ljust(64, b"\x00")
+        text = pem(fake_vcek(hwid))
+        found = [rule for rule, _l, _v, _n in leak_scan.scan_text(text)]
+        self.assertNotIn("machine-identity", found)
 
 
 class VendorResourceIds(unittest.TestCase):

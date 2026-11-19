@@ -367,7 +367,7 @@ the release it was moved to; existing tenants do not move by themselves.
 | Firmware (`OVMF.amdsev.fd`) | `OVMF.amdsev.fd` | every machine's number changes even with the same kernel | "same image, new firmware" in the record | add the entry; refresh the vendor-verifier run |
 | Measurement parameters (`vcpu_type`, `guest_features`, `policy`, `vmm`) | none of the three hashes necessarily | every number changes; a changed policy can void the confidentiality claim | a review item, not a routine rotation | architect review; if `DEBUG` or migration bits appear, stop and escalate |
 | Debian snapshot or kernel package (`inputs`) | none, if the rebuild is bit-identical | unchanged when the three hashes are unchanged | the provenance changed, the number did not | record the new `inputs` in the new release entry |
-| TCB / microcode | none | unchanged | `odile-verify`'s `cpu binding` fails until the VCEK fixture is refreshed | refresh `tests/fixtures/amd/vcek.pem`; the pin does not move |
+| TCB / microcode | none | unchanged | `odile-verify`'s `cpu binding` uses the KDS VCEK fetched for the report's reported TCB | nothing; the fetch moves with the report, and the pin does not move |
 | Host key | none (not a measurement input) | unchanged | a changed host key on the first connect after a move | the ceremony's stop sign; the key is re-sealed once |
 
 The procedure, in order:

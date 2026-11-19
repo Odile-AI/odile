@@ -49,8 +49,8 @@ Classes:
                          own literals.
 
 Opaque payloads. A base64 run longer than 128 characters is decoded and
-scanned; a UTF-16 payload is decoded before the text rules run; a DER
-certificate is read for its serial and HWID; an archive is opened and every
+scanned; a UTF-16 payload is decoded before the text rules run; a DER or PEM
+certificate is read for its VCEK serial and HWID; an archive is opened and every
 member is scanned at its own ``archive!member`` path.
 
 Allowlist discipline. Every exception is one line of ``leak-allow.tsv``:
@@ -179,6 +179,10 @@ WIN_HOME_ALLOW = {"Public", "Default", "Default User", "All Users"}
 
 PEM_BEGIN = re.compile(r"-----BEGIN ([A-Z0-9][A-Z0-9 ]*)-----")
 PEM_END = re.compile(r"-----END ([A-Z0-9][A-Z0-9 ]*)-----")
+# A synthetic fixture's chip id: printable, 64 bytes, and obviously not
+# silicon. Tools/make_synthetic_report.py writes it; a planted real id (or a
+# random one) still fails the class.
+SYNTHETIC_CHIP_PREFIX = b"ODILE-SYNTHETIC-"
 INLINE_KEY = re.compile(
     r"-----BEGIN (?:[A-Z0-9]+ )*PRIVATE KEY-----(?:\\n|\s)+[A-Za-z0-9+/=\\n\s]{40,}"
     r"-----END (?:[A-Z0-9]+ )*PRIVATE KEY-----")
@@ -594,7 +598,13 @@ def _der_tlv(data: bytes, offset: int) -> tuple[int, int, int] | None:
 
 
 def der_identifiers(data: bytes) -> list[tuple[str, str, str]]:
-    """A certificate's serial number and its AMD VCEK HWID, when DER."""
+    """A VCEK's certificate serial number and its AMD HWID, when DER.
+
+    Only a certificate carrying the AMD HWID extension is a VCEK; every X.509
+    certificate has a serial, so reporting a bare serial would turn the class
+    into "any certificate". A synthetic fixture's chip id (the generator's
+    ``ODILE-SYNTHETIC-`` marker) is not silicon and is not reported.
+    """
     if len(data) < 64 or data[0] != 0x30:
         return []
     outer = _der_tlv(data, 0)
@@ -608,18 +618,23 @@ def der_identifiers(data: bytes) -> list[tuple[str, str, str]]:
     if first is not None and first[0] == 0xA0:
         offset = first[1] + first[2]
     serial = _der_tlv(data, offset)
+    oid = bytes.fromhex("2b060104019c780104")  # 1.3.6.1.4.1.3704.1.4 (HWID)
+    position = data.find(oid)
+    if position < 0:
+        return []
+    octets = data.find(b"\x04\x40", position + len(oid), position + len(oid) + 64)
+    if octets < 0:
+        return []
+    hwid = data[octets + 2:octets + 66]
+    if len(hwid) != 64 or not any(hwid):
+        return []
+    if hwid.startswith(SYNTHETIC_CHIP_PREFIX):
+        return []
     found: list[tuple[str, str, str]] = []
     if serial is not None and serial[0] == 0x02 and 8 <= serial[2] <= 32:
         value = data[serial[1]:serial[1] + serial[2]]
         found.append(("machine-identity", value.hex(), "VCEK certificate serial"))
-    oid = bytes.fromhex("2b060104019c780104")  # 1.3.6.1.4.1.3704.1.4 (HWID)
-    position = data.find(oid)
-    if position >= 0:
-        octets = data.find(b"\x04\x40", position + len(oid), position + len(oid) + 64)
-        if octets >= 0:
-            hwid = data[octets + 2:octets + 66]
-            if len(hwid) == 64 and any(hwid):
-                found.append(("machine-identity", hwid.hex(), "VCEK HWID (chip id)"))
+    found.append(("machine-identity", hwid.hex(), "VCEK HWID (chip id)"))
     return found
 
 
@@ -634,6 +649,8 @@ def report_identifiers(data: bytes) -> list[tuple[str, str, str]]:
         return []
     chip = data[0x1A0:0x1E0]
     if not any(chip):
+        return []
+    if chip.startswith(SYNTHETIC_CHIP_PREFIX):
         return []
     return [("machine-identity", chip.hex(), "chip id in SEV-SNP report")]
 
@@ -709,6 +726,14 @@ def scan_text(text: str, depth: int = 0) -> list[tuple[str, int, str, str]]:
                 block = "\n".join(lines[index:end + 1])
                 if "PRIVATE KEY" in begin.group(1):
                     out.append(("private-key", index + 1, block, ""))
+                elif "CERTIFICATE" in begin.group(1):
+                    body = "".join(lines[index + 1:end]).strip()
+                    try:
+                        der = base64.b64decode(body, validate=False)
+                    except ValueError:
+                        der = b""
+                    for rule, value, note in der_identifiers(der):
+                        out.append((rule, index + 1, value, note + " (PEM)"))
                 index = end + 1
                 continue
         for rule, value, note in text_candidates(line, index + 1):
