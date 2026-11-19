@@ -403,8 +403,8 @@ never re-raised.
 1. **The heartbeat proves liveness, not honesty.** It is signed by the key the
    guest generated at install; the first heartbeat is trust-on-first-use. TLS
    to HQ protects that first post; a hostile first post could register a
-   different key. V0.1 accepts this, and the tenant's own host key / `/verify`
-   is the independent check.
+   different key. alpha.0 accepts this, and the tenant's own host key /
+   `/verify` is the independent check.
 2. **The host-key probe reads identity, not a signature.** It returns the key
    the machine presents; the recorded initramfs fingerprint is printed beside it
    by `odilectl status` for comparison. It proves "this is the key the machine
