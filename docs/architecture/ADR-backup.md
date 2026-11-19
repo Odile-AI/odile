@@ -92,15 +92,16 @@ fifth is a deck sentence still **held from the public pages** (`docs/CLAIMS.md`
    the bytes. They hold a password and a repository URL, and an SFTP account only
    the guest can authenticate to.
 5. **"Backups are off-site."** *In the deck, held from the page.*
-   `docs/CLAIMS.md`:122 carries it and §1a line 245 holds it; it lands with
-   `t_5f10dd14`. No page quotes the clause — `web/faq.html:131` has only "The
-   machine is in Montreal, Canada." — but one page carries the *substance* in a
-   different sentence: `web/privacy.html:149` lists the nightly backup's
-   destination as "an off-site SFTP storage box". That is wrong twice today (the
-   bytes are on HQ's disk, and the box was never bought) and stale after this ADR
-   (the destination becomes an R2 bucket now and a B2 bucket at cutover, not
-   SFTP). Both surfaces are Product's to land; **this ADR publishes nothing**. And
-   the deck sentence is not true in fact at this head: the bytes are on HQ's
+   `docs/CLAIMS.md`:122 carries it and §1a holds it; it lands with
+   `t_66fcaa02` after the R2 provisioning card (§8) and its drill.
+   `t_5f10dd14` landed the 30-day retention row on 19 November 2026 and
+   corrected `web/privacy.html`'s destination cell — it listed the nightly
+   backup as "an off-site SFTP storage box", wrong twice (the bytes are on HQ's
+   disk, and the box was never bought); the cell now says "an SFTP storage box
+   at HQ". No page quotes the clause: `web/faq.html`'s "Where is the machine?"
+   carries only "The machine is in Montreal, Canada." and the retention row.
+   Both surfaces are Product's; **this ADR publishes nothing**. And the deck
+   sentence is not true in fact at this head: the bytes are on HQ's
    disk, in the same provider and the same city as the machine they are supposed
    to survive.
 
@@ -625,7 +626,7 @@ and the drill are the two that make the destination worth paying for.
 
 | Sentence | Today | After this ADR |
 |---|---|---|
-| "Backups are off-site." (`CLAIMS.md`:122) | **in the deck, held from the page** (`CLAIMS.md` §1a line 245, `t_5f10dd14`); not true in fact — the bytes are on HQ's disk | **true in fact when the migration card (§8) runs**: a bucket at Cloudflare R2, a different provider from the machine and from HQ (the same account as the DNS zone, which is the interim's accepted cost); the B2 cutover puts it in Toronto at a provider that shares nothing. The page sentence stays held until Product lands it — **this ADR does not publish it** |
+| "Backups are off-site." (`CLAIMS.md`:122) | **in the deck, held from the page** (`CLAIMS.md` §1a, `t_66fcaa02`); not true in fact — the bytes are on HQ's disk | **true in fact when the migration card (§8) and its drill run**: a bucket at Cloudflare R2, a different provider from the machine and from HQ (the same account as the DNS zone, which is the interim's accepted cost); the B2 cutover puts it in Toronto at a provider that shares nothing. The page sentence stays held until Product lands it — **this ADR does not publish it** |
 | "The encrypted backup is kept 30 days after cancellation, then deleted. Odile can delete it, not read it." (`:123`) | true on the storage path; conditional during a rebuild | true on both paths, because the password never transits HQ: the rebuild is a paste on the machine and `--backup-password-file` is retired. On the interim the repository is emptied at `keep_until` and the empty bucket deleted in the dashboard (§4.1); the 30 days and the deletion are unchanged |
 | "A recovery code and a recovery file are the way back: … the file opens your backup." (`:65`) | true through the agent | **literally true**: the file carries the URL and a read-only key, so it opens the backup on any machine. **This is stronger than the deck owns** — Product lands the wording, Savio approves it (§3, a published sentence not in `CLAIMS.md`) |
 | "The recovery file holds the backup password and the certificate fingerprint." (`:66`) | true | it now also holds the repository and a read-only key; the sentence needs the extra clause |
@@ -755,9 +756,10 @@ Measured, at this head, unless marked *modelled*:
   §8's $0.60 line, §6.1 invariant 5 ("tenant backup keys never reach HQ") or
   `AGENTS.md`'s "off-site SFTP storage box": all five are outside this card's
   `touches` and are named in §8's card list instead of smuggled in here. **No
-  `web/privacy.html` edit either**: its destination cell (line 149, "an off-site
-  SFTP storage box") is wrong today and staler after this ADR; it lands with
-  `t_5f10dd14` (§1 item 5).
+  `web/privacy.html` edit in this card either**: its destination cell (line 149,
+  "an off-site SFTP storage box") was wrong today and staler after this ADR;
+  `t_5f10dd14` corrected it to "an SFTP storage box at HQ" on 19 November 2026
+  (§1 item 5).
 - **No second copy.** One destination, one credential set, one drill — the same
   call ADR-003 §4.1 made for HQ, for the same reason: a second copy doubles what
   can be wrong at 03:00 and still needs a drill to prove it. The read-only key is
