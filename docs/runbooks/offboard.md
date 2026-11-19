@@ -578,7 +578,11 @@ it. The re-provision is now:
    record the destroy deleted, for the **same** slug (the replay used the
    module entry point `python3 -m odilectl.dns` before **t_1520be38**
    registered `dns` in `cli.MODULES`; `evidence/dns-create.txt`, §7).
-3. The **signed image** pair in the panel (below).
+3. The **signed image** pair in the panel (below). The order is
+   **boot image, then disk image**; the disk write is panel-only and the pair
+   measured 6 s and 77 s (`docs/product/SPIKE-servury-reinstall.md` §6). Arm
+   the seed row before the disk write — the first boot exchanges the token the
+   image bakes, and an unarmed row fails closed (below; the spike's §5 #3).
 4. First boot → first visit → the sign-in and the recovery file
    (`docs/runbooks/install.md`, `docs/runbooks/backup.md` §5.2). The first
    boot's measured line lands because step 1 left `tenants.server_id` naming
@@ -601,6 +605,62 @@ before saving:
 - boot `https://odile.fyi/releases/m1/odile-tenant.efi` — `5cb31808…6a5e`
 - disk `https://odile.fyi/releases/m1/odile-tenant-sealed.raw` — `c1278242…b0072`
 - command line: empty (the per-tenant line is inside the UKI)
+
+**A reinstall clears both image fields, so the pair goes back boot first.**
+Measured on the disposable box, 2026-11-17 — the spike's §4 and §6
+(`docs/product/SPIKE-servury-reinstall.md`): the panel's record went boot image
+`f7bc0ceb…` (the UKI **t_c1e0f336** built) → **none** and disk image
+`24d8a1ff…` → **none**, the OS from
+Debian 12 to Debian 13, while the address and the term did not move and the
+balance showed no new row — a reinstall is free. (The rDNS is the vendor's
+"kept", not a second reading.) The boot image lived on the disk the reinstall
+replaces, which is why the pair is re-applied afterwards, in this order:
+**boot image, then disk image**. At the end of its write the disk step starts
+the machine itself, and the boot that follows must already be the tenant's UKI;
+the other order is not exercised in the spike, but the boot image applies at
+the next start, so a machine started between the two writes comes up on the
+vendor's release and needs one more start before the pair is what runs. On §5's
+path the first write is the `provision` order, not a reinstall — a new machine
+with no image fields at all — and the pair keeps that order. A reinstall also
+writes the machine's whole `authorized_keys` from the key it is sent (§3's
+panel field is pre-filled with the keys the machine was *built* with), so a
+machine recycled to another tenant must have that pre-fill replaced with the
+new tenant's key; an operator key posted there is the standing credential the
+access model forbids.
+
+The three writes and the first boot, as §6 measures them:
+
+| # | Write | Route today | Measured |
+|---|---|---|---|
+| 1 | reinstall: `os=debian13`, `snp`/`fde`/`measured`, the tenant's public key | API `POST ?action=reinstall` when the key owns the machine, or the panel's Danger Zone | **1 m 32 s** from POST to `Running`; the disk is a template and both image fields are cleared; address and term kept; free |
+| 2 | boot image: URL + SHA-256, empty command line | API `POST ?action=boot-image` or the panel's Manage tab | **6 s**, including the node's 114.9 MiB download and hash check (`spike/servury-reinstall/evidence/admin-bootimage.txt:6`) |
+| 3 | disk image: URL + SHA-256 + format | **panel only** — `?action=disk-image` answers 404 | **77 s** for the 8 GiB image (`18:50:35Z` submitted → `Written 18:51:52Z`); the machine starts itself |
+| 4 | first boot: bootstrap key, re-seal to the chip, seed exchange | on the machine, no operator | kernel start **40 s** after `Written`, its release-setup line **30 s** into the boot (`spike/servury-reinstall/evidence/console-restored.txt:343,666`); boot record `ok`; the seal re-provisioned to the new chip; the seed exchange failed closed (below) |
+
+The first boot is not a write and has no panel step: it opens the disk with the
+image's first-boot bootstrap key, re-seals the blob to the machine's own chip
+and shreds the bootstrap key. The disk image is portable, the seal is not — the
+right behaviour, and the reason a reinstall alone never leaves a tenant.
+
+**Arm the seed row before the rebuild.** The image's command line is baked, so
+a rebuilt machine re-presents the *same* `odile.token` (`db669443…` on the
+box), and the ledger must carry a row for exactly that token before the first
+boot — bound to the tenant the machine will serve (that `tenant_id` decides
+whose seed the token returns) and to the `bb.iid` baked in the same line, with
+an expiry after the boot. A token the ledger had no row for answered
+`404 unknown_token` (`{"error":"no such token","reason":"unknown_token"}`; the
+spike's §5 #3, `docs/runbooks/seed.md`'s `404 unknown_token` row) — **not**
+§6a's `410 used`, so §6a's un-end recipe is a no-op here: its `UPDATE … WHERE
+token_hash = …` matches nothing on an absent row. A row a previous boot spent
+is §6a's case. No seed CLI verb adopts a plaintext (`token issue`/`rotate` mint
+a random one and print it once), so arming is either that hash inserted by hand
+in the same shape or, the path the spike calls the one that scales, a line built
+around a fresh per-machine token (`token issue --tenant <slug> --instance <id>`,
+on a UKI whose `.cmdline` is empty — recommended in the spike's §6 and recorded
+as unmeasured in its §10).
+
+The fence and the one-command sequence for the three writes are
+**t_6d956aee**; until it lands, the disk write is a human step.
 
 ### The live tenant
 
