@@ -834,9 +834,12 @@ carries this merge publishes the new cut.
 ### The cut that moves only the installer (2026-11-15)
 
 `tools/recut_release.py` is the cutter for a change that moves the installer and
-nothing else in the app layer: it re-derives the four hashes from the tree and
+nothing else in the app layer: it re-derives the hashes from the tree and
 re-signs them with the HQ key, so the manifest keeps the document a fresh root
-produced and only `installer_sha256` moves. t_ae833f3f re-embedded the two
+produced and only `installer_sha256` moves — except `backup_sha256`, which
+follows the installer's own `--manifest` pin when the embedded backup program
+moved (t_e0475dba), so a re-cut after a backup-program edit cannot leave the old
+program named. t_ae833f3f re-embedded the two
 tenant pages and the skin onto BRAND.md's type roles, which is exactly that
 shape, so no scratch root was rebuilt.
 
