@@ -14,7 +14,7 @@ Later, if you forget your sign-in:
 
 {{URL}}/first-visit/reset — your recovery code resets it.
 
-Open the first-visit guide: {{GUIDE}}
+The first-visit guide is at {{GUIDE}}
 
 — Odile
 
