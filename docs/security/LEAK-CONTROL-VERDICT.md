@@ -37,7 +37,7 @@ which the gate passes clean:
 | Missing class | Value in the tree | Why it is a leak | Proof |
 |---|---|---|---|
 | **Hardware identity** | full SEV-SNP reports in `tests/fixtures/verify/*.json`; the chip id is report offset `0x1A0` | a silicon id is the strongest machine fingerprint there is; three fixtures carry the **HQ** chip id `967acf92…`, and one carries the tenant's `3fa18b1e…` | `raw[0x1A0:0x1E0].hex()` on the decoded `report_b64` → `967acf92…`; `/var/lib/odile/attestation.json` on this host carries the same prefix |
-| | `tests/fixtures/verify/tenant-vcek.der` | VCEK serial + HWID extension are the same chip in DER; the scanner reads only printable runs | `leak_scan.scan_bytes(open(...,'rb').read())` → `[]` |
+| | `tests/fixtures/verify/tenant-vcek.der` (deleted by `t_3cd62ef9`) | VCEK serial + HWID extension are the same chip in DER; the scanner at this head read only printable runs | `leak_scan.scan_bytes(open(...,'rb').read())` → `[]` at that head; the scanner now decodes DER and PEM certificates and reports a serial only when the AMD HWID extension is present |
 | | `docs/runbooks/image-bench.md:387` PARTUUID | a real volume's id | gate `[]`; `partuuid` is on the self-blinding suppression list |
 | **Vendor resource ids** | `31a63bbb` (server) in 17 files, `oqwaclzm` (host) 5, `odl-7971a8` (tenant slug) 25, `24b35c62` 2 | the research record itself says GitHub-only scanning fails on "our vendor ids"; the forbid list names only the retired box | `grep -rEl` over the tree; gate PASS |
 | **DNS resource ids** | `tests/test_dns.py:32` `ZONE_ID = "39068d33…"` | a Cloudflare zone id names the account's zone; the `cloudflare` token rule wants 37 hex, zone ids are 32 | gate `[]`; P19 |
@@ -594,7 +594,8 @@ id, and the scanner did not see it because it read DER, not a PEM certificate's
 base64 body. The scanner now decodes a PEM `CERTIFICATE` block and reads a
 certificate's serial only when the AMD HWID extension is present (a bare serial
 is not a VCEK). The real VCEK was removed; the verifier fetches the report's own
-VCEK from AMD's KDS on every live run.
+VCEK from AMD's KDS on the default live run (a local `--amd-dir` that binds the
+report skips the fetch).
 
 **Evidence.**
 

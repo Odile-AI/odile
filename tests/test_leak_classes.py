@@ -125,6 +125,18 @@ class MachineIdentity(unittest.TestCase):
                             + b"SEV-SNP-CHIP-ID-0001").ljust(64, b"\x00")
         self.assertEqual(leak_scan.report_identifiers(bytes(raw)), [])
 
+    def test_a_real_chip_id_after_the_synthetic_marker_is_reported(self):
+        # The marker alone must not blind the field: a silicon id spliced
+        # after it is still a machine.
+        raw = bytearray(1184)
+        raw[0:4] = (5).to_bytes(4, "little")
+        raw[0x90:0xC0] = b"\x11" * 48
+        raw[0x1A0:0x1E0] = (leak_scan.SYNTHETIC_CHIP_PREFIX
+                            + bytes.fromhex(CHIP)[:48]).ljust(64, b"\x00")
+        self.assertIn("machine-identity",
+                      [rule for rule, _v, _n
+                       in leak_scan.report_identifiers(bytes(raw))])
+
     def test_a_vcek_hwid_is_reported(self):
         cert = fake_vcek(bytes.fromhex(CHIP))
         found = [rule for rule, _v, _n in leak_scan.der_identifiers(cert)]

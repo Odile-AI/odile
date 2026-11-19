@@ -183,6 +183,26 @@ PEM_END = re.compile(r"-----END ([A-Z0-9][A-Z0-9 ]*)-----")
 # silicon. Tools/make_synthetic_report.py writes it; a planted real id (or a
 # random one) still fails the class.
 SYNTHETIC_CHIP_PREFIX = b"ODILE-SYNTHETIC-"
+SYNTHETIC_CHIP_ALPHABET = frozenset(b"ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-")
+
+
+def _synthetic_id(value: bytes) -> bool:
+    """A generated fixture id: the marker, its alphabet, then zero padding.
+
+    Checking only `startswith` would let ``ODILE-SYNTHETIC-`` followed by a
+    real 48-byte silicon id pass the gate inside the 64-byte field. The
+    generator writes ``ODILE-SYNTHETIC-...`` in ASCII and pads with NULs, so
+    anything else after the marker is an identity.
+    """
+    if not value.startswith(SYNTHETIC_CHIP_PREFIX):
+        return False
+    rest = value[len(SYNTHETIC_CHIP_PREFIX):]
+    body = rest.rstrip(b"\x00")
+    if b"\x00" in body:
+        return False
+    return all(byte in SYNTHETIC_CHIP_ALPHABET for byte in body)
+
+
 INLINE_KEY = re.compile(
     r"-----BEGIN (?:[A-Z0-9]+ )*PRIVATE KEY-----(?:\\n|\s)+[A-Za-z0-9+/=\\n\s]{40,}"
     r"-----END (?:[A-Z0-9]+ )*PRIVATE KEY-----")
@@ -628,7 +648,7 @@ def der_identifiers(data: bytes) -> list[tuple[str, str, str]]:
     hwid = data[octets + 2:octets + 66]
     if len(hwid) != 64 or not any(hwid):
         return []
-    if hwid.startswith(SYNTHETIC_CHIP_PREFIX):
+    if hwid.startswith(SYNTHETIC_CHIP_PREFIX) and _synthetic_id(hwid):
         return []
     found: list[tuple[str, str, str]] = []
     if serial is not None and serial[0] == 0x02 and 8 <= serial[2] <= 32:
@@ -650,7 +670,7 @@ def report_identifiers(data: bytes) -> list[tuple[str, str, str]]:
     chip = data[0x1A0:0x1E0]
     if not any(chip):
         return []
-    if chip.startswith(SYNTHETIC_CHIP_PREFIX):
+    if chip.startswith(SYNTHETIC_CHIP_PREFIX) and _synthetic_id(chip):
         return []
     return [("machine-identity", chip.hex(), "chip id in SEV-SNP report")]
 

@@ -4,8 +4,10 @@ The verifier's job is to fail closed. These tests run the real command against
 a saved report and the synthetic chain the fixture names (a test-only trust
 root; the shipped pin keeps AMD's ARK), with no network: a good report passes, a
 wrong pin fails, and a report that was changed after the CPU signed it fails the
-signature check. One loopback server proves the URL mode fetches exactly one
-path and ignores a served `trust` block.
+signature check. One loopback server proves the URL mode fetches `/attestation`
+and nothing else when a local chain binds the report, and ignores a served
+`trust` block; a second, with a loopback KDS, proves the command the page prints
+fetches two URLs — the machine and the VCEK AMD publishes for its chip.
 
 The release tests use a document derived from the fixture — a JSON summary may
 grow a `release` and a `cmdline` without touching the signed bytes. They prove
@@ -1569,6 +1571,54 @@ class TenantVcekTests(unittest.TestCase):
         self.assertNotIn("kds", result.stdout)
         self.assertEqual(kds.seen, [])
 
+    def test_the_url_mode_page_command_fetches_two_urls(self) -> None:
+        """The command `web/verify.html` prints fetches two URLs, not one.
+
+        URL mode with the shipped defaults: no `--report`, no `--no-kds`. The
+        only overrides are the loopback KDS and the synthetic trust root the
+        fixtures are signed with (a served document never names its own). The
+        chain directory carries the synthetic ASK and ARK and no VCEK, so the
+        report's own VCEK can only come from the KDS. The count is the sentence
+        the page now states.
+        """
+        seen: list[str] = []
+
+        class Handler(BaseHTTPRequestHandler):
+            def do_GET(self) -> None:  # noqa: N802 - stdlib name
+                seen.append(self.path)
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(TENANT_BYTES)))
+                self.end_headers()
+                self.wfile.write(TENANT_BYTES)
+
+            def log_message(self, format: str, *args: object) -> None:
+                pass
+
+        server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            url = "http://127.0.0.1:%d" % server.server_address[1]
+            with tempfile.TemporaryDirectory(prefix="odile-amd-") as amd_dir:
+                for name in ("ark.pem", "ask.pem"):
+                    (Path(amd_dir) / name).write_bytes(
+                        (SYNTHETIC_AMD_DIR / name).read_bytes())
+                with KDSFixture() as kds:
+                    result = run(url, "--expect", TENANT_MEASUREMENT,
+                                 "--amd-dir", amd_dir,
+                                 "--ark-sha256", SYNTHETIC_ARK,
+                                 "--kds-base", kds.base)
+                    kds_seen = list(kds.seen)
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=5)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertRegex(result.stdout, r"vcek\s+PASS")
+        self.assertEqual(seen, ["/attestation"])
+        self.assertEqual(kds_seen, [TENANT_KDS_PATH])
+
     def test_no_kds_refuses_the_fetch(self) -> None:
         result, seen = self.run_against_kds("--no-kds")
         self.assertEqual(result.returncode, 1)
@@ -1678,6 +1728,26 @@ class BundleTests(unittest.TestCase):
         for path in (VERIFY_MD, RECUT_MD, VERDICT_MD):
             self.assertIn(digest, path.read_text(encoding="utf-8"),
                           "%s does not name the bundle this tree builds" % path)
+
+
+class VerifyPageNoteTests(unittest.TestCase):
+    """The public /verify note's fetch count, fenced.
+
+    The note is the page's one sentence about the verifier's network path. It
+    said "one URL" while the shipped verifier also fetched the report's VCEK
+    from AMD's KDS; after `t_3cd62ef9` it says two. Pin the narrow phrase and
+    forbid the wide one, so a later edit cannot quietly widen it back.
+    """
+
+    def test_both_pages_state_two_urls_and_not_one(self) -> None:
+        for name in ("verify.html", "verify-public.html"):
+            with self.subTest(page=name):
+                page = (ROOT / "web" / name).read_text(encoding="utf-8")
+                self.assertIn(
+                    'It fetches two URLs: <a href="/attestation">/attestation</a>, '
+                    "and that report's own VCEK from AMD's KDS.", page)
+                self.assertNotIn("fetches one URL", page)
+                self.assertNotIn("exactly one URL", page)
 
 
 class VerifyPageTests(unittest.TestCase):
