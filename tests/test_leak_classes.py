@@ -39,9 +39,18 @@ BROADCAST = "ff:ff:" + "ff:ff:ff:ff"
 UNSET_MAC = "00:00:" + "00:00:00:00"
 MACHINE_ID = "0123456789abcdef" * 2
 SERIAL = "SN01" + "23456789"
-INSTANCE = "dead" + "beef"
+INSTANCE = "baad" + "f00d"
 HOST = "qwerty" + "ui"
 SLUG = "odl-" + "1234ab"
+# A bare id, and the shapes that share its look: a short commit id, a uuid
+# fragment, a colour and a digest prefix.
+BARE_ID = "31a6" + "3bbb"
+BARE_HOST = "oqwa" + "clzm"
+ACCOUNT = "lkbx" + "u6i9"
+COMMIT = "feed" + "c0de"
+COLOUR = "94ee" + "0477"
+UUID = "01234567-89ab-" + "cdef-0123-456789abcdef"
+DIGEST = "sha256:" + BARE_ID + "0" * 56
 PASSPHRASE = "correct-horse-" + "battery-staple"
 PASSPHRASE_WORDS = "Correct Horse " + "Battery Staple"
 PROSE = "correct horse, " + "battery staple."
@@ -62,6 +71,32 @@ TOKEN_VALUE = "Ab3dEf6hIj9k" + "Lm2nOp5qRs8tUv1wXy4zA7bCd0"
 
 def rules(line: str) -> list[str]:
     return [rule for rule, _value, _note in leak_scan.text_candidates(line, 1)]
+
+
+HWID_OID = bytes.fromhex("2b060104019c780104")
+
+
+def _tlv(tag: int, value: bytes) -> bytes:
+    length = len(value)
+    if length < 0x80:
+        header = bytes([length])
+    else:
+        body = length.to_bytes((length.bit_length() + 7) // 8, "big")
+        header = bytes([0x80 | len(body)]) + body
+    return bytes([tag]) + header + value
+
+
+def fake_vcek(hwid: bytes, serial: bytes = b"\x01" * 16) -> bytes:
+    """A DER certificate skeleton carrying just the fields the class reads."""
+    fields = (_tlv(0x02, serial) + _tlv(0x06, HWID_OID) + _tlv(0x04, hwid))
+    return _tlv(0x30, _tlv(0x30, fields))
+
+
+def pem(der: bytes, label: str = "CERTIFICATE") -> str:
+    body = base64.b64encode(der).decode("ascii")
+    lines = [body[i:i + 64] for i in range(0, len(body), 64)]
+    return "-----BEGIN %s-----\n%s\n-----END %s-----\n" % (
+        label, "\n".join(lines), label)
 
 
 class MachineIdentity(unittest.TestCase):
@@ -100,6 +135,62 @@ class MachineIdentity(unittest.TestCase):
     def test_a_sha512_digest_is_not_a_chip_id(self):
         self.assertNotIn("machine-identity", rules("sha512 " + "ab" * 64))
 
+    def test_a_report_chip_id_is_reported(self):
+        raw = bytearray(1184)
+        raw[0:4] = (5).to_bytes(4, "little")
+        raw[0x90:0xC0] = b"\x11" * 48
+        raw[0x1A0:0x1E0] = bytes.fromhex(CHIP)
+        self.assertIn("machine-identity", [rule for rule, _v, _n
+                                           in leak_scan.report_identifiers(bytes(raw))])
+
+    def test_a_synthetic_report_chip_id_is_not_a_machine(self):
+        raw = bytearray(1184)
+        raw[0:4] = (5).to_bytes(4, "little")
+        raw[0x90:0xC0] = b"\x11" * 48
+        raw[0x1A0:0x1E0] = (leak_scan.SYNTHETIC_CHIP_PREFIX
+                            + b"SEV-SNP-CHIP-ID-0001").ljust(64, b"\x00")
+        self.assertEqual(leak_scan.report_identifiers(bytes(raw)), [])
+
+    def test_a_real_chip_id_after_the_synthetic_marker_is_reported(self):
+        # The marker alone must not blind the field: a silicon id spliced
+        # after it is still a machine.
+        raw = bytearray(1184)
+        raw[0:4] = (5).to_bytes(4, "little")
+        raw[0x90:0xC0] = b"\x11" * 48
+        raw[0x1A0:0x1E0] = (leak_scan.SYNTHETIC_CHIP_PREFIX
+                            + bytes.fromhex(CHIP)[:48]).ljust(64, b"\x00")
+        self.assertIn("machine-identity",
+                      [rule for rule, _v, _n
+                       in leak_scan.report_identifiers(bytes(raw))])
+
+    def test_a_vcek_hwid_is_reported(self):
+        cert = fake_vcek(bytes.fromhex(CHIP))
+        found = [rule for rule, _v, _n in leak_scan.der_identifiers(cert)]
+        self.assertIn("machine-identity", found)
+
+    def test_a_synthetic_vcek_hwid_is_not_a_machine(self):
+        hwid = (leak_scan.SYNTHETIC_CHIP_PREFIX + b"SEV-SNP-CHIP-ID-0001") \
+            .ljust(64, b"\x00")
+        self.assertEqual(leak_scan.der_identifiers(fake_vcek(hwid)), [])
+
+    def test_a_certificate_without_a_hwid_is_not_a_vcek(self):
+        # Every certificate has a serial; only a VCEK's serial identifies a
+        # chip, so a bare serial must not become a machine identity.
+        cert = _tlv(0x30, _tlv(0x30, _tlv(0x02, b"\x01" * 16)))
+        self.assertEqual(leak_scan.der_identifiers(cert), [])
+
+    def test_a_pem_certificate_is_read(self):
+        text = pem(fake_vcek(bytes.fromhex(CHIP)))
+        found = [rule for rule, _l, _v, _n in leak_scan.scan_text(text)]
+        self.assertIn("machine-identity", found)
+
+    def test_a_synthetic_pem_certificate_is_not_a_machine(self):
+        hwid = (leak_scan.SYNTHETIC_CHIP_PREFIX + b"SEV-SNP-CHIP-ID-0001") \
+            .ljust(64, b"\x00")
+        text = pem(fake_vcek(hwid))
+        found = [rule for rule, _l, _v, _n in leak_scan.scan_text(text)]
+        self.assertNotIn("machine-identity", found)
+
 
 class VendorResourceIds(unittest.TestCase):
     def test_an_instance_id_is_reported(self):
@@ -119,6 +210,47 @@ class VendorResourceIds(unittest.TestCase):
 
     def test_a_public_stand_in_slug_is_not_a_tenant(self):
         self.assertNotIn("vendor-resource-id", rules("tenant odl-fake01"))
+
+    def test_a_bare_instance_id_in_a_code_span_is_reported(self):
+        # No `bb.iid=` / `server_id=` label: the code span is the position.
+        self.assertIn("vendor-resource-id", rules(f"the machine is `{BARE_ID}`"))
+
+    def test_a_bare_instance_id_in_a_query_parameter_is_reported(self):
+        self.assertIn("vendor-resource-id", rules(f"?action=server&id={BARE_ID}"))
+
+    def test_a_bare_instance_id_after_an_instance_cue_is_reported(self):
+        self.assertIn("vendor-resource-id", rules(f"reinstalled instance {BARE_ID}"))
+
+    def test_a_bare_host_name_in_a_hostname_is_reported(self):
+        self.assertIn("vendor-resource-id", rules(f"the PTR was `{BARE_HOST}.local`"))
+
+    def test_a_bare_host_name_in_a_mailbox_realm_is_reported(self):
+        self.assertIn("vendor-resource-id", rules(f"stored as user@{BARE_HOST}"))
+
+    def test_an_account_id_of_another_shape_is_reported(self):
+        # A Servury account id is 8 lowercase alphanumerics, not hex: the
+        # labeled rule's value shape must reach an `account_id=` value that
+        # carries a digit but is not hex.
+        self.assertIn("vendor-resource-id", rules(f"account_id={ACCOUNT}"))
+        self.assertIn("vendor-resource-id", rules(f"account={ACCOUNT}"))
+
+    def test_an_eight_letter_word_is_not_an_account_id(self):
+        self.assertNotIn("vendor-resource-id", rules("account=username"))
+
+    def test_a_commit_sha_is_not_a_bare_id(self):
+        # A code span is also how a short commit id is written; the clause
+        # (`merged`, `commit`, `HEAD`) says which one it is.
+        self.assertNotIn("vendor-resource-id", rules(f"merged pre-flip at `{COMMIT}`"))
+        self.assertNotIn("vendor-resource-id", rules(f"HEAD is `{COMMIT}` now"))
+
+    def test_a_uuid_fragment_is_not_a_bare_id(self):
+        self.assertNotIn("vendor-resource-id", rules(f"uuid {UUID}"))
+
+    def test_a_digest_prefix_is_not_a_bare_id(self):
+        self.assertNotIn("vendor-resource-id", rules(f"checksum {DIGEST}"))
+
+    def test_a_colour_is_not_a_bare_id(self):
+        self.assertNotIn("vendor-resource-id", rules(f"the tint is #{COLOUR}"))
 
 
 class DnsResourceIds(unittest.TestCase):
@@ -268,9 +400,10 @@ class OpaquePayloads(unittest.TestCase):
             info.size = len(data)
             archive.addfile(info, io.BytesIO(data))
         found = leak_scan.scan_archive("bundle.tar.gz", buffer.getvalue())
-        paths = {path for path, _candidates in found}
+        paths = {path for path, _candidates, _text in found}
         self.assertIn("bundle.tar.gz!member.txt", paths)
-        rules_found = {rule for _path, candidates in found for rule, _line, _value, _note in candidates}
+        rules_found = {rule for _path, candidates, _text in found
+                       for rule, _line, _value, _note in candidates}
         self.assertIn("public-ip", rules_found)
         self.assertIn("email", rules_found)
 
@@ -282,7 +415,8 @@ class OpaquePayloads(unittest.TestCase):
             info.size = len(data)
             archive.addfile(info, io.BytesIO(data))
         found = leak_scan.scan_archive("bundle.tar.gz", buffer.getvalue())
-        self.assertEqual(found, [("bundle.tar.gz!member.txt", [])])
+        self.assertEqual([(path, candidates) for path, candidates, _text in found],
+                         [("bundle.tar.gz!member.txt", [])])
 
 
 class ArchiveFormats(unittest.TestCase):
@@ -402,6 +536,26 @@ class Drill(unittest.TestCase):
             self.assertEqual(first.returncode, 1, first.stdout + first.stderr)
             self.assertIn("public-ip", first.stdout)
             self.assertEqual(second.returncode, 0, second.stdout + second.stderr)
+
+    def test_a_bare_vendor_id_fails_the_gate_then_passes(self):
+        # The card's acceptance: a bare id with no `server_id=` around it is a
+        # finding, and the same tree passes once the probe is gone.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            subprocess.run(["git", "-C", str(root), "init", "-q"], check=True, env=git_env())
+            probe = root / "probe.txt"
+            probe.write_text(f"the machine is `{BARE_ID}`\n", encoding="utf-8")
+            scanner = str(ROOT / "tools" / "leak_scan.py")
+            first = subprocess.run([sys.executable, scanner, "--tree", "--root", str(root)],
+                                   capture_output=True, text=True, timeout=60, env=git_env())
+            probe.unlink()
+            second = subprocess.run([sys.executable, scanner, "--tree", "--root", str(root)],
+                                    capture_output=True, text=True, timeout=60, env=git_env())
+            self.assertEqual(first.returncode, 1, first.stdout + first.stderr)
+            self.assertIn("FINDING vendor-resource-id", first.stdout)
+            self.assertIn("bare instance id", first.stdout)
+            self.assertEqual(second.returncode, 0, second.stdout + second.stderr)
+            self.assertIn("PASS:", second.stdout)
 
 
 if __name__ == "__main__":

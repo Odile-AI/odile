@@ -4636,7 +4636,7 @@ ICON_SET = (
 # exactly the surface it writes to /usr/local/lib/odile/. --self-test
 # fails on a one-byte edit. The handoff audit (ODL-208) is embedded the
 # same way and installed at /usr/local/bin/odile-audit.
-VERIFY_PAGE_SHA256 = "00552a5cdeca35a34a9aad8766422b48fa2425c9dad3e0d9dcb1ed73fb577e78"
+VERIFY_PAGE_SHA256 = "97e6e93af634f96d45285451674dcd7309a0d14dbb63a8bf8680b97537d1725d"
 VERIFY_PAGE = r'''<!doctype html>
 <html lang="en">
 <head>
@@ -4773,7 +4773,7 @@ h1,h2,h3,.brand,.mark,.wordmark,.focus{font-family:var(--serif)}
     <pre><code><span class="prompt" aria-hidden="true">$</span> curl -sSLO https://odile.fyi/odile-verify.tar.gz
 <span class="prompt" aria-hidden="true">$</span> tar xzf odile-verify.tar.gz
 <span class="prompt" aria-hidden="true">$</span> cd odile-verify &amp;&amp; ./odile-verify https://odile.fyi</code></pre>
-    <p class="note">The verifier needs Python 3 and the <code>openssl</code> binary. It fetches one URL: <a href="/attestation">/attestation</a>.</p>
+    <p class="note">The verifier needs Python 3 and the <code>openssl</code> binary. It fetches two URLs: <a href="/attestation">/attestation</a>, and that report's own VCEK from AMD's KDS.</p>
     <table class="checks" aria-labelledby="check">
       <thead><tr><th scope="col">Check</th><th scope="col">Where it is checked</th></tr></thead>
       <tbody>

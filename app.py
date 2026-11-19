@@ -101,14 +101,14 @@ DEMO_HOST = "demo.odile.fyi"
 DEMO_VERIFY_URL = "https://demo.odile.fyi/verify"
 
 # The verifier bundle /verify offers: the script, its one module, the pin and
-# the AMD chain. Built once, in memory; no route reads arbitrary paths.
+# AMD's ASK and ARK. The chip-specific VCEK is fetched from AMD's KDS for the
+# report's chip and TCB, so no machine's certificate is published here.
 VERIFIER_BUNDLE_FILES = (
     ("odile-verify", "odile-verify/odile-verify", 0o755),
     ("tools/snp_report.py", "odile-verify/tools/snp_report.py", 0o644),
     ("odile-verify.pin", "odile-verify/odile-verify.pin", 0o644),
     ("tests/fixtures/amd/ark.pem", "odile-verify/tests/fixtures/amd/ark.pem", 0o644),
     ("tests/fixtures/amd/ask.pem", "odile-verify/tests/fixtures/amd/ask.pem", 0o644),
-    ("tests/fixtures/amd/vcek.pem", "odile-verify/tests/fixtures/amd/vcek.pem", 0o644),
 )
 _bundle: bytes | None = None
 
