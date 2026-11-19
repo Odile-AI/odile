@@ -232,6 +232,24 @@ class ClaimPageTests(unittest.TestCase):
         self.assertIn(ROW_FIRST_RUN, page)
         self.assertNotIn(ROW_FIRST_RUN_TAIL, page)
 
+    def test_the_form_page_states_no_price(self) -> None:
+        """alpha.0 has no price (`docs/MVP-V0.1.md` §0).
+
+        The invite page is the last page a tester reads before the consent tick,
+        so the v5 price line ("$49/month. Month-to-month. Cancel anytime.") must
+        not survive there. The replacement is the certified invitation and email
+        footer wording — "Nothing to pay" and "Odile pays for the machine and
+        the inference" — never a figure and never a v5 billing term.
+        """
+        status, page = request(self.port, "GET", "/claim?t=" + self.issued.token)
+        self.assertEqual(status, 200, page)
+        clean = visible(page)
+        self.assertNotIn("$", clean)
+        self.assertNotIn("month-to-month", clean.lower())
+        self.assertNotIn("cancel anytime", clean.lower())
+        self.assertIn("Nothing to pay.", clean)
+        self.assertIn("Odile pays for the machine and the inference.", clean)
+
     def test_the_branded_error_is_the_shipped_state(self) -> None:
         """The form is novalidate, so the server's in-place message ships.
 
@@ -431,13 +449,27 @@ class ClaimPageTests(unittest.TestCase):
         self.assertIn(f"URL https://{self.slug}.odile.fyi", body)
         self.assertIn(f"Measurement {MEASUREMENT}", body)
         self.assertIn(f"Set your sign-in: {first_visit}", body)
-        self.assertIn(f"Open the first-visit guide: {claim.READY_GUIDE_URL}", body)
-        # The subject is the message's first sentence; the body does not
-        # repeat it, and the URL is the first thing the reader sees.
+        self.assertIn(
+            f"The first-visit guide is at {claim.READY_GUIDE_URL}", body
+        )
+        # The subject is the message's own line, not its first sentence; the
+        # body does not repeat it, and the URL is the first thing the reader sees.
         self.assertTrue(body.startswith(f"URL https://{self.slug}.odile.fyi"), body)
         self.assertNotIn(claim.READY_SUBJECT, body)
+        # One imperative URL — the first-visit link. The guide is a named
+        # address in a sentence, so no line opens with an imperative for it.
         self.assertEqual(
-            len([line for line in body.splitlines() if line.startswith("Open ")]), 1
+            len(
+                [
+                    line
+                    for line in body.splitlines()
+                    if line.startswith("Set your sign-in:")
+                ]
+            ),
+            1,
+        )
+        self.assertEqual(
+            [line for line in body.splitlines() if line.startswith("Open ")], []
         )
         self.assertEqual(body.count(claim.READY_GUIDE_URL), 1)
         # The single-use setup token travels only inside the action URL, and

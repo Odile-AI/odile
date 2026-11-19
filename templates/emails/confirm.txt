@@ -1,0 +1,12 @@
+Hello,
+
+Open this link to confirm your address:
+
+{{CONFIRM}}
+
+After you confirm, the machine is built and starts itself. If you did not
+register, ignore this message.
+
+— Odile
+
+Private alpha · Odile pays for the machine and the inference · no price

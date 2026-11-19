@@ -42,7 +42,7 @@ ROOT = Path(__file__).resolve().parent.parent
 ATTEST = ROOT / "attest.py"
 INSTALLER = ROOT / "installer" / "odile_install.py"
 VERIFY = ROOT / "odile-verify"
-FIXTURE = ROOT / "tests" / "fixtures" / "verify" / "report-2026-11-06.json"
+FIXTURE = ROOT / "tests" / "fixtures" / "verify" / "synthetic-report.json"
 
 BOOT_AT = "2026-11-09T00:00:00Z"
 RELEASE = "2026.11.1"
@@ -67,6 +67,8 @@ def load_module(path: Path, name: str):
 ATTEST_MODULE = load_module(ATTEST, "odile_attest")
 INSTALLER_MODULE = load_module(INSTALLER, "odile_installer")
 FIXTURE_DOCUMENT = json.loads(FIXTURE.read_text(encoding="utf-8"))
+SYNTHETIC_AMD_DIR = FIXTURE.parent / FIXTURE_DOCUMENT["trust"]["amd_dir"]
+SYNTHETIC_ARK = FIXTURE_DOCUMENT["trust"]["ark_sha256"]
 
 
 def boot_document(**overrides) -> dict:
@@ -231,6 +233,8 @@ class VerifyTests(unittest.TestCase):
             )
             result = subprocess.run(
                 [str(VERIFY), "--report", str(served_path),
+                 "--amd-dir", str(SYNTHETIC_AMD_DIR),
+                 "--ark-sha256", SYNTHETIC_ARK,
                  "--expect", FIXTURE_DOCUMENT["measurement"], "--record", str(record_path)],
                 capture_output=True, text=True, timeout=120, cwd=ROOT,
             )

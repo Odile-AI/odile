@@ -1,10 +1,21 @@
 URL {{URL}}
+Report {{URL}}/verify
 Measurement {{MEASUREMENT}}
+
+Check the report first: it says PASS or FAIL. PASS means the machine booted the
+image whose fingerprint is above. The page shows the measurement too, if you want
+to compare.
 
 Set your sign-in: {{FIRST_VISIT}}
 
-Open the first-visit guide: {{GUIDE}}
+Set it only after the report says PASS. That password opens your workspace.
+
+Later, if you forget your sign-in:
+
+{{URL}}/first-visit/reset — your recovery code resets it.
+
+The first-visit guide is at {{GUIDE}}
 
 — Odile
 
-Founding alpha · 10 machines · $49/month
+Private alpha · Odile pays for the machine and the inference · no price

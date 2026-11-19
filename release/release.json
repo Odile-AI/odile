@@ -1,8 +1,8 @@
 {
   "artifacts": {
     "installer": {
-      "sha256": "810ecab8ec86d016fb1ba61ee383efc29d3f331b82e9ea0b376cb903a039bf27",
-      "size": 1440634,
+      "sha256": "31a34b6231867d2767a6e4f64d24a07ca3ceeed4c640c706e429e782983fab5b",
+      "size": 1440430,
       "url": "odile_install.py"
     },
     "skills": {
@@ -14,14 +14,14 @@
   "boot": {
     "kernel": "6.12.115+deb13.1-amd64"
   },
-  "generated_at": "2026-11-16T01:40:00Z",
+  "generated_at": "2026-11-19T15:10:00Z",
   "manifest": {
-    "sha256": "7dbe93e7d5f0c64a2a98312bfdfbfca79d8734360f79a84dec130a0c5a1d16f1",
+    "sha256": "94a8c749a16583fbd240c60b6250819da464df64f69060cd6cff1e77248d8783",
     "signature_url": "manifest.json.sig",
     "url": "manifest.json"
   },
-  "notes": "The 2026.11.16-1 cut (the merged head of t_d95b8c13 and t_2efbd6e3/ODL-218 follow-up). It carries both signed changes. (1) t_2efbd6e3: the installer embeds odilectl/offboard.py's EXPORT_PROGRAM \u2014 the bytes `odilectl export <slug> --script` prints \u2014 and ensure_export_program places them at /usr/local/bin/odile-export (0755 root) on every install, so a fresh tenant has the command without the hand placement the ODL-218 drill used; installer/embed_export.py is the only supported way to refresh that copy, and --self-test pins it against the checkout and fails on a one-byte edit. (2) t_d95b8c13: the tenant template's public-host comment now states the truth the pinned Hermes measures \u2014 the Webapp listener reads webapp.public_url and sets its own listener_public_url from it, while dashboard.public_url is declared beside it and is NOT a fallback for the Webapp (measured 2026-11-15: webapp.public_url removed with the dashboard block kept answers 400 Invalid Host header) \u2014 and ensure_systemd_services restarts odile-agent when any file the gateway reads at start changed (config, .env, unit, skin), not only when a unit file did, and starts the agent even when the optional odile-access-report oneshot fails. The boot half (deploy/image/odile-release-setup.sh) passes --i-have-copied-it and ODILE_RELEASE_PUBLIC_URL, so a forced re-run converges (=== rc=0) and keeps the host the owner declared, and login_table asserts the four session cookies the sign-in sets (__Host- over HTTPS, bare over the simulation's HTTP). release/manifest.json is -9's fresh-root document with only installer_sha256 re-derived by tools/recut_release.py, so this is a surgical re-cut, not a root rebuild; the skills artifact, the vendor pin and the meter-free rows are unchanged. The id is 2026.11.16-1: -9 is t_2efbd6e3's (2026-11-15T23:59:00Z), -8 is t_d95b8c13's pre-merge cut (22:45Z, superseded by this merged head), and -7 is t_ab95ec2a's open cut; this cut is later than every cut by generated_at at 2026-11-16T01:40:00Z. It is committed, not deployed: measured 2026-11-16T01:44Z the release URL serves 2026.11.15-9 (2cdf0801\u2026, 1,424,179 bytes, release.json 5bee6fd3\u2026), the cut this one supersedes at the merged head.",
+  "notes": "ODL-579 (round 2): the machine's reset, and the two brand musts on the first-visit page. The signed installer carries the re-cut first-visit page and service: the recovery code is single-use at both use sites and rotates on every use, the recovery file is fetched with a one-time download token (?d=, 32 bytes, hashed, ten minutes, single use) so the code it showed stays live, a sign-in reset rotates HERMES_DASHBOARD_BASIC_AUTH_SECRET in the same write as the hash, and the first boot sets UMask=0077 with a 0600 log whose line prints --first-visit-token <redacted>. The consent row's gate now matches (.consent:not(:has(input:checked)) + .act .quiet{visibility:hidden}) so an unticked box keeps the workspace link out of the mouse and the tab order, and the control is web/claim.html's checkbox (18x18, 1 px --edge, --paper fill, 10x10 ink mark, 2 px ink ring at 3 px, forced-colors) in a label of at least 44 px. release/manifest.json is 2026.11.19-1's document with only installer_sha256 re-derived by tools/recut_release.py, so this is a surgical re-cut, not a root rebuild; the skills artifact, the Webapp rows and the vendor pin are unchanged. The id is 2026.11.19-2: -1 is live at 05:00Z with its own installer (e4a3554b..., 1,428,062 bytes), and a same-id cut with different bytes would be a swap behind one id. This cut is committed, not deployed: measured 2026-11-19T14:57Z the release URL served 2026.11.19-1.",
   "product": "odile",
-  "release": "2026.11.16-1",
+  "release": "2026.11.19-2",
   "schema": 1
 }

@@ -391,7 +391,9 @@ corrected split:
   `sev-snp-measure` at pin time — the exact command in §4, run twice.
 - **The comparison** is `odile-verify`: it reads the measurement out of the
   signed report bytes and compares it to the pin or `--expect`. It stays
-  standard library plus `openssl`, and it fetches exactly one URL.
+  standard library plus `openssl`, and it fetches the machine under test plus
+  the VCEK AMD publishes for the report's chip (ADR-002 §6a; the demo chip's
+  vendored VCEK was deleted for its silicon id).
 - **The pre-passphrase check** therefore uses the vendor verifier or the
   ODL-202 wrapper; the initramfs serves `attest` over SSH, not HTTPS, so
   `odile-verify <ip>` alone does not work there.

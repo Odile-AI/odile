@@ -1,8 +1,8 @@
 #!/usr/bin/python3
 """Brand lint — keep the visual surfaces inside BRAND.md.
 
-Checks the public pages, the prototype, the local demo and the brand documents
-for:
+Checks the public pages, the prototype, the local demo, the brand documents and
+the plain-text email templates for:
   * colours outside the palette their surface may paint — the four v0 tokens in
     §Legacy surfaces belong to the prototype and the demo template only, and
     the finding names the token and the surface
@@ -34,6 +34,7 @@ SURFACE_GLOBS = (
     "webapp/*.html",
     "emails/*.html",
     "templates/*.html",
+    "templates/emails/*.txt",
     "docs/brand/*.html",
     "demo/local/*.html",
     "deploy/demo-host/*.html",

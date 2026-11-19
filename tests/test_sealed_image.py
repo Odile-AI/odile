@@ -2560,6 +2560,68 @@ class ProductionImageTests(unittest.TestCase):
         self.assertIn("systemctl enable odile-release-setup.service", image)
 
 
+class SerialConsoleTests(unittest.TestCase):
+    """ODL-914: the tenant console ends at a login: prompt; the bench keeps its shell.
+
+    The Servury panel's "interactive console" is a shell on the machine's
+    serial port, so an autologin in a production image hands the panel holder
+    a root-capable session with no user credential — against
+    docs/MVP-V0.1.md §6.8 ("console only, can watch"). The bench image is the
+    drill bench and keeps the automatic login; the production image must not
+    install the drop-in, while still enabling the getty that asks for one.
+    """
+
+    def dry_run(self, script: str, *extra: str) -> subprocess.CompletedProcess:
+        return subprocess.run(
+            ["bash", str(IMAGE / script), "--dry-run", *extra],
+            capture_output=True, text=True, timeout=120)
+
+    def test_a_production_build_plans_a_login_prompt_and_no_autologin(self) -> None:
+        result = self.dry_run("sealed-image.sh", "--production")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("serial console: ttyS0 login: prompt (production: no autologin)",
+                      result.stdout)
+        self.assertNotIn("autologin tenant", result.stdout,
+                         "a production image must not plan the drill shell")
+
+    def test_the_sealed_bench_image_keeps_the_drill_shell(self) -> None:
+        result = self.dry_run("sealed-image.sh")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("serial console: ttyS0 autologin tenant (bench drill shell)",
+                      result.stdout)
+        # The bench rehearsal of a first boot is still a bench image.
+        rehearsal = self.dry_run("sealed-image.sh", "--first-boot-seal")
+        self.assertEqual(rehearsal.returncode, 0, rehearsal.stderr)
+        self.assertIn("serial console: ttyS0 autologin tenant (bench drill shell)",
+                      rehearsal.stdout)
+
+    def test_a_production_disk_writes_the_drop_in_only_behind_the_production_guard(self) -> None:
+        """The autologin file is written in the non-production branch only."""
+        text = (IMAGE / "sealed-image.sh").read_text(encoding="utf-8")
+        guard = text.index('if [ "$PRODUCTION" != 1 ]; then')
+        drop_in = text.index("serial-getty@ttyS0.service.d/autologin.conf")
+        agetty = text.index("--autologin tenant")
+        self.assertLess(guard, drop_in, "the drop-in write must sit inside the guard")
+        self.assertLess(drop_in, agetty, "the agetty line follows its own file")
+        bench_branch_end = text.index("mount --bind /proc", drop_in)
+        self.assertLess(agetty, bench_branch_end)
+        # ... and the getty itself is enabled for both images, so a production
+        # console still ends at `login:` rather than nowhere.
+        enable = text.index("for unit in systemd-networkd.service")
+        self.assertIn("serial-getty@ttyS0.service", text[enable:enable + 400])
+
+    def test_the_bench_disk_builder_keeps_its_autologin(self) -> None:
+        result = self.dry_run("mkdisk.sh")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("serial console: ttyS0 autologin tenant (bench drill shell)",
+                      result.stdout)
+
+    def test_the_bench_disk_builder_has_no_tenant_mode_to_leak_the_autologin_into(self) -> None:
+        result = self.dry_run("mkdisk.sh", "--production")
+        self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+        self.assertIn("unknown argument: --production", result.stderr)
+
+
 class FirstBootReKeyTests(unittest.TestCase):
     """ODL-454 follow-up: the first boot must replace the *volume* key.
 

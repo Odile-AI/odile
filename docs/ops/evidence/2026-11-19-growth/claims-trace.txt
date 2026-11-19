@@ -1,0 +1,8 @@
+Claims trace — docs/product/GROWTH-QUEUE.md, 2026-11-19
+
+Your own computer, with an agent inside it.             -> FOUND in docs/CLAIMS.md
+It keeps working when you close the tab.                -> FOUND in docs/CLAIMS.md
+One machine per person.                                 -> FOUND in docs/CLAIMS.md
+
+Nothing to install. No key to make, no terminal. -> FOUND in templates/emails/invite.txt (BRAND.md §Email)
+Nothing to pay; Odile pays for the machine and the inference during the alpha. -> FOUND in BRAND.md §Email and templates/emails/invite.txt

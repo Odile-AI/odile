@@ -24,7 +24,7 @@ ignored — except:
 
 The enumeration is ``git ls-files --cached --others --exclude-standard``, not
 an ``os.walk``, because the main worktree carries files the repository does
-not: the machine's private ``AGENTS.md`` (still naming the retired meter), its
+not: the machine's private ``AGENTS.md`` (the operating record), its
 private tools and the demo evidence are all in ``.git/info/exclude``. ``make
 check`` is run from that worktree by the merge gate, so a walk would fail the
 merge on a file no clone has. ``--others`` keeps a planted untracked file in
@@ -237,7 +237,7 @@ def repository_files(root: Path = ROOT) -> list[str]:
 
     ``git ls-files`` is the point, not a convenience. The merge gate runs
     ``make check`` in the main worktree, which carries the machine's private
-    ``AGENTS.md`` (line 81 still says "reached through odile-meter") and its
+    ``AGENTS.md`` (the machine's private operating record) and its
     private tools; ``.git/info/exclude`` hides them from the repository, so
     they are not code and the fence must not scan them. ``--others`` keeps a
     planted untracked file in scope, which is how the fence catches a

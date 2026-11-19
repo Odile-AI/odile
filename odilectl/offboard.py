@@ -22,9 +22,9 @@ step is a line in the plan before the first one happens:
    carries the bundle's facts, the grant report, the DNS record and the
    retention date.
 7. `backup.retain` — the encrypted repository is kept for 30 days, then
-   deleted. HQ cannot read it (the password is the user's) and, in V0.1, cannot
-   delete it either: the plan names the date, the repository and the box the
-   operator deletes it on.
+   deleted. HQ cannot read it (the password is the user's) and, in alpha.0,
+   cannot delete it either: the plan names the date, the repository and the
+   box the operator deletes it on.
 
 A second run converges: an absent record, an absent machine and a `destroyed`
 row are each reported as already done. `--skip-export` is for a tenant that

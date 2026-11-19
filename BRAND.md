@@ -221,20 +221,26 @@ saturated colour is oxblood, and it is either an error or a rule.
 
 ### Legacy surfaces
 
-Two surfaces are not on odile.fyi and have not migrated: the prototype
-(`prototype/userflow.html`) and the demo template (`demo/local/template.html`).
-They keep the old paper until their own cards land, and the lint needs those
-values stated. Never use them on `web/` or `docs/brand/` surfaces. The status
-template (`templates/status.html`) left this list on 2026-11-13, when ODL-467
-published it at `/status`: it paints `--paper` and `--card`, and the two rows it
-carries are the deck's.
+One surface is not on odile.fyi and has not migrated: the demo template
+(`demo/local/template.html`). It keeps the old paper until its own card lands,
+paints the v0 values in its own `:root`, and the lint needs those values
+stated. Never use them on `web/` or `docs/brand/` surfaces.
+
+The prototype (`prototype/userflow.html`) was the second surface. The one-root
+cut of 2026-11-14 (`24ee323`) left `prototype/` out of the public tree, so the
+surface is gone, not un-migrated: no commit reachable from `main` carries
+`prototype/userflow.html`, and `git ls-tree HEAD prototype` is empty. It is a
+record in this sheet, not a build target — there is no path on this tree to
+open. The status template (`templates/status.html`) left this list on
+2026-11-13, when ODL-467 published it at `/status`: it paints `--paper` and
+`--card`, and the two rows it carries are the deck's.
 
 | Token | Value | Use |
 |---|---|---|
-| `--paper-v0` | `#F6F0E4` | The old paper; prototype and demo template only. |
-| `--card-v0` | `#FBF6EA` | The old raised panel; prototype and demo template only. |
+| `--paper-v0` | `#F6F0E4` | The old paper; demo template only. |
+| `--card-v0` | `#FBF6EA` | The old raised panel; demo template only. |
 | `--error-v0` | `#8F3418` | The old error red; demo template only. |
-| `--placeholder-v0` | `#776B5A` | The old opaque-field placeholder; prototype and demo template only. |
+| `--placeholder-v0` | `#776B5A` | The old opaque-field placeholder; demo template only. |
 
 ### Contrast pairs
 
@@ -332,7 +338,7 @@ page pair paints `--ink` on `--term` (1.05:1) there and a copied fingerprint
 would show no highlight; `::marker` inherits the body colour and gets no custom
 glyph. Under
 `forced-colors: active`, keep the 2 px outline and let the system colours
-replace the tokens. Dark mode is not in V0.1: `prefers-color-scheme` does not
+replace the tokens. Dark mode is not in alpha.0: `prefers-color-scheme` does not
 switch the palette; the terminal is the only dark surface.
 
 ## Typography
@@ -493,7 +499,7 @@ edit without re-measuring.
   confirmation address wraps in its line; the page never widens. Fields and
   panels get `min-width: 0` and `overflow-wrap: anywhere` before they get a
   scrollbar.
-- **Direction and language:** V0.1 ships English only. There is no RTL layout
+- **Direction and language:** alpha.0 ships English only. There is no RTL layout
   and no second language. The embedded Cormorant subset carries the display
   characters; the text face is the platform's own, so a new script is a new
   subset for the display face, not a new face. The 4 px scale
@@ -840,11 +846,21 @@ lexicon sits on top of it and never overrides it.
 
 ## Email
 
-Status: the ready email is built — `templates/emails/ready.txt`, filled by
-`odilectl/claim.py` and queued as one message per tenant. The invite and brief
-emails are specified here but not built at this revision; the copy below is the
-text the first send must use.
-`tools/brand_lint.py` scans every template under `templates/emails/`.
+Status: the three account email templates are built — `templates/emails/invite.txt`
+(Savio sends it personally in alpha.0), `templates/emails/confirm.txt` (queued by
+the A2 account path, ODL-341) and `templates/emails/ready.txt` (filled by
+`odilectl/claim.py` and queued as one message per tenant). The brief email is
+specified below and is not built. `tools/brand_lint.py` scans every `*.txt`
+template under `templates/emails/` (`support.md` is the reply template, outside
+the account set and outside the lint).
+
+**alpha.0, the current release.** There is no price: Odile pays for the machine
+and the inference, and the price and the paid cohort are alpha.1's (A8). There
+is no support desk with a person on it: the invitation's fallback is a reply to
+Savio's message, the ready email's is the reset page and the guide, and no
+template promises a desk, a reader or a response time. (`ROADMAP-ALPHA0` §1.)
+The deck's "read by a person" row is a public-page row; no alpha email relies
+on it.
 
 ### Rules for every email
 
@@ -854,74 +870,179 @@ text the first send must use.
 - **One column, 560 px max; body 17 px / 1.55; measure 66ch; left-aligned.**
   Paper `#EADFC4`, ink `#1C1813`, soft `#4A4136`. In HTML use the system serif
   fallback (`Georgia, serif`) — a web font in email is a request and a flash;
-  The display face is for the page, not the inbox.
+  the display face is for the page, not the inbox.
 - **One action.** A link is a link: ink, underlined, 1 px; never a filled
-  button drawn as an image. A second link is navigation, not a second primary.
-  The invite action links to the claim page with the single-use token; the ready
-  action links to the machine's first-visit page, where the sign-in is set, with
-  the single-use setup token. The ready email's guide link is the one navigation
-  link. The ready email prints the machine URL once, on its own line, as a
-  value — a fact, not a second action. An email address never appears in the
-  body; the invite's claim token and the ready email's setup token travel only
-  in the action URL.
-- **Subject line:** sentence case, no colon-and-preamble, no emoji, no
-  exclamation, no "Newsletter #3". The subject is the first sentence of the
-  message.
+  button drawn as an image. Each template has one action: the invitation's
+  register link, the confirmation's confirm link, and the ready email's
+  first-visit link, which carries the single-use setup token. A printed value
+  is a fact, not a second action: the ready email prints the machine URL, the
+  report URL and the measurement once each, on its own line, as `Label value`.
+  The reset page and the first-visit guide are named addresses in sentences,
+  not second actions. An email address never appears in the body; a token
+  travels only inside its action URL, never as a bare value.
+- **Subject line:** sentence case; the subject is a plain name for the
+  message — a phrase or one sentence — never a headline, a colon-and-preamble,
+  an emoji, an exclamation or "Newsletter #3"; it need not be the body's first
+  sentence.
 - **Preheader:** the first sentence of the body; no "View in browser", no
   "Having trouble reading this?"; personalisation is the address and the machine
   slug only.
-- **Footer:** `Founding alpha · 10 machines · $49/month` on the invite; the
-  brief carries its date and the machine's slug. When an unsubscribe flow
-  exists, its link lives in the footer, never on the confirmation page.
+- **Footer:** `Private alpha · Odile pays for the machine and the inference ·
+  no price` on all three account emails. No footer carries a price, a cohort
+  size or a clock. The brief carries its date, the timezone of the run and the
+  machine's slug. When an unsubscribe flow exists, its link lives in the footer,
+  never on the confirmation page.
 - **No saint, no feast, no painting, no ring.** Email is a page, not a room.
 
-### Invite email
+### The three templates
 
-| Field | Value |
-|---|---|
-| From | `Odile <invite@mail.odile.fyi>` — the runbook's transactional sender. |
-| Subject | `Your machine is ready to claim` |
-| Opening | "You asked for a computer that keeps working when you close the tab." |
-| Body | "A machine is reserved for you. When you claim it, it is built and starts itself." |
-| Body | "You need a browser. Not a terminal. There is no operator key. The only sign-in is yours." |
-| Body | "Claiming takes 3 minutes. Then the machine builds itself: you check the report, set your sign-in, and start." |
-| Action | `Claim your machine →` (underlined link, no button image) |
-| Sign-off | `— Odile` |
-| Footer | `Founding alpha · 10 machines · $49/month` |
+| Template | From | Subject | The one action | Footer |
+|---|---|---|---|---|
+| `invite.txt` | Savio, personally, in alpha.0; `Odile <invite@mail.odile.fyi>` from A7, with an eight-character invitation code | `Your Odile machine` | Register at the link, and bring one real task | the alpha footer |
+| `confirm.txt` | `Odile <invite@mail.odile.fyi>`, Reply-To `help@odile.fyi` | `Confirm your email address` | Open the link to confirm | the alpha footer |
+| `ready.txt` | `Odile <invite@mail.odile.fyi>`, Reply-To `help@odile.fyi` | `Your machine is waiting.` (the `READY_SUBJECT` constant) | Check the report, then set the machine's sign-in | the alpha footer |
 
-The "what happens next" strip (Claim 3 minutes · Pay Stripe · Build ~5 minutes)
-may follow the sign-off as plain text; it is a summary, not a second call to
-action.
+The invitation is a person's message in alpha.0: the body below is its text, the
+sign-off stays `— Odile`, and the `From` becomes the transactional sender when
+the invitation is gated by codes (A7). The bench registers openly by design
+(`ROADMAP-ALPHA0` G12), so alpha.0's invitation carries no code and no claim
+token; the register link is the action. No template names the account password;
+the invitation and the ready email name the machine's sign-in only. The register
+page (ODL-341) carries the pair before the second password is met — "Your
+account page holds your machine's address and its state. Your machine has its own
+sign-in, which you set after you check its report." (PR/FAQ §3) — and the
+account page (ODL-583) carries it in one line under the form. The ready email's
+`Set your sign-in` is the pair's reduction at the point it is typed: the pair's
+claims-map row (C-9) is pending until ODL-577, and an email may quote published
+rows only (`docs/product/DECISION-password-reset.md` §3.5).
 
-Provenance: the invite body is a composition of the decided §1 and §3 rows in
-`docs/product/CLAIMS-RECUT-STRICT.md`, which ODL-462 landed in `docs/CLAIMS.md`
-(v3.9, pre-flip `3355f2c`); the prototype's mock, which rendered the older
-ceremony, left the public tree on 2026-11-14 (`24ee323`). The first real send
-uses it verbatim; a new sentence needs a deck row first. The claim token is
-single-use; the email promises no expiry. If the product sets one, the email
-and the claim page state it.
+### Invitation (`invite.txt`)
 
-### Ready email
+```text
+Hello,
 
-| Field | Value |
-|---|---|
-| From | `Odile <invite@mail.odile.fyi>` — the transactional sender `docs/runbooks/email.md` authorises; `hello@odile.fyi` was its pre-mail-server value. |
-| Subject | `Your machine is waiting.` |
-| Body | `URL <https://<slug>.odile.fyi>` and `Measurement <96 hex>` — one per line. The measurement is the release pin `odile-verify.pin` holds, the same 96 hex the verify page shows. |
-| Body | `Set your sign-in: https://<slug>.odile.fyi/first-visit?t=<64 hex>` — the one action. The single-use setup token travels only in this URL, never as a bare value. |
-| Body | `Open the first-visit guide: https://odile.fyi/ceremony` — the one navigation link. |
-| Sign-off | `— Odile` |
-| Footer | `Founding alpha · 10 machines · $49/month` |
+You asked for a computer that keeps working when you close the tab. A machine is
+reserved for you in the private alpha.
 
-The ready email's body never carries a passphrase, a key or the Odile sign-in.
-It carries the machine URL, the expected measurement, the first-visit URL that
-sets the sign-in (with the single-use setup token in it), and one navigation
-link to the first-visit guide; the guide carries the four steps — open, check
-the report, set the sign-in, start — and no command. The template is
-`templates/emails/ready.txt`; `odilectl/claim.py` fills the four values and
-queues one message per tenant. The recovery file attached to the message is the
-machine's own document and is re-cut by its own card (it still carries the
-Model A terminal).
+Register here: https://test.odile.fyi/register
+
+Use the address this email reached. The machine has its own sign-in; you will set
+it after you check the machine's report.
+
+Bring one real thing you would do by hand this week — a page of notes to turn
+into a brief, a page to watch, a meeting to write up. After five short questions,
+that is the first thing you will ask it for.
+
+Nothing to install. No key to make, no terminal required. Nothing to pay: Odile
+pays for the machine and the inference during the alpha.
+
+When your machine is ready, we email you its address. If anything goes wrong,
+reply to this email — there is no support desk in the alpha.
+
+— Odile
+
+Private alpha · Odile pays for the machine and the inference · no price
+```
+
+The register link is the bench's account host, `https://test.odile.fyi/register`,
+where every alpha.0 tester is. It is written out because the invitation is a
+person's message and must be sendable as it stands. The A7 re-cut makes it a
+transactional template with an eight-character code; the A9 re-cut names
+`https://odile.fyi/register` in production.
+
+### Confirmation (`confirm.txt`)
+
+```text
+Hello,
+
+Open this link to confirm your address:
+
+{{CONFIRM}}
+
+After you confirm, the machine is built and starts itself. If you did not
+register, ignore this message.
+
+— Odile
+
+Private alpha · Odile pays for the machine and the inference · no price
+```
+
+`{{CONFIRM}}` names the configured account host, not the request's `Host`
+header: `https://test.odile.fyi/confirm?t=<64 hex>` on the bench and
+`https://odile.fyi/confirm?t=<64 hex>` in production
+(`docs/product/DECISION-password-reset.md` §3.1). The link is single-use; the
+GET renders a button and the POST spends the token, so a mail scanner's prefetch
+does not confirm the address. The email states no expiry, because no clock is
+measured.
+
+### Ready (`ready.txt`)
+
+```text
+URL {{URL}}
+Report {{URL}}/verify
+Measurement {{MEASUREMENT}}
+
+Check the report first: it says PASS or FAIL. PASS means the machine booted the
+image whose fingerprint is above. The page shows the measurement too, if you want
+to compare.
+
+Set your sign-in: {{FIRST_VISIT}}
+
+Set it only after the report says PASS. That password opens your workspace.
+
+Later, if you forget your sign-in:
+
+{{URL}}/first-visit/reset — your recovery code resets it.
+
+The first-visit guide is at {{GUIDE}}
+
+— Odile
+
+Private alpha · Odile pays for the machine and the inference · no price
+```
+
+The ready email's body never carries a passphrase, a key or the sign-in. It
+carries the machine URL, the report URL, the expected measurement, the
+first-visit URL that sets the sign-in (with the single-use setup token in it),
+the reset page and one navigation link to the guide. The template is
+`templates/emails/ready.txt`; `odilectl/claim.py` fills its four values
+(`{{URL}}`, `{{MEASUREMENT}}`, `{{FIRST_VISIT}}`, `{{GUIDE}}`) and queues one
+message per tenant. The report and reset URLs are composed from `{{URL}}`, so
+the filler needs no new value. The guide carries the four steps — open, check
+the report, set the sign-in, start — and no command. The recovery file attached
+to the message is the machine's own document and is re-cut by its own card (it
+still carries the Model A terminal).
+
+### Every privacy, security or reliability sentence, and its row
+
+The map is the card's evidence (ODL-581): a sentence added without a row is a
+defect. Every entry is a §1 row, a subset of one, or — for the measurement
+comparison — the §4.4 evidence sentence that row's proof uses. None quotes a
+held clause from `docs/CLAIMS.md` §1a.
+
+| Template | Sentence | Approved in `docs/CLAIMS.md` |
+|---|---|---|
+| invite | "You asked for a computer that keeps working when you close the tab." | §1 The machine: "It keeps working when you close the tab." |
+| invite | "A machine is reserved for you in the private alpha." | §1 First run: "A machine is reserved for you. When you claim it, it is built and starts itself." (the reservation clause; the alpha's trigger is the confirmation) |
+| invite | "The machine has its own sign-in; you will set it after you check the machine's report." | §1 Access, A7: "Your Odile sign-in is set on your machine at first visit and hashed there. We never see it."; §1 Confidential computing: "Check the machine before you trust it: the verify page shows PASS or FAIL, and you set your sign-in only after PASS." |
+| invite | "Nothing to install." | §1 First run: "Claiming is a form and a confirmation. Then the machine builds itself: you check the report, set your sign-in, and start." (a subset: there is no install step) |
+| invite | "No key to make, no terminal required." | §1 Access, A2: "The boot key in the command line is a public key with no private half. It is plumbing, not a credential." (a subset: nothing for the user to generate) |
+| confirm | "After you confirm, the machine is built and starts itself." | §1 First run: "A machine is reserved for you. When you claim it, it is built and starts itself." (the clause, with the alpha's trigger) |
+| ready | "Check the report first: it says PASS or FAIL." | §1 Confidential computing: "Check the machine before you trust it: the verify page shows PASS or FAIL…" |
+| ready | "PASS means the machine booted the image whose fingerprint is above." | §1 Confidential computing: "The boot is measured: firmware, kernel, initramfs and command line are hashed into a value the CPU signs."; the PASS/FAIL row above |
+| ready | "The page shows the measurement too, if you want to compare." | §4.4: "Compare the measurement to the one in your ready email."; the PASS/FAIL row above |
+| ready | "Set it only after the report says PASS." | §1 Confidential computing: "…you set your sign-in only after PASS." (the clause) |
+| ready | "That password opens your workspace." | §1 First run: "Your Odile sign-in is the username and password that open the workspace; only its hash is stored, on the machine." The row's next sentence, "There is no password and no account at HQ", is the one the account falsifies and ODL-577 replaces; this template quotes the first only. |
+| ready | "Later, if you forget your sign-in: … — your recovery code resets it." | §1 First run: "A lost Odile sign-in is reset on the machine with your recovery code. There is no HQ reset." |
+
+The money, support and readiness sentences are not privacy, security or
+reliability claims: "Nothing to pay: Odile pays for the machine and the
+inference during the alpha" and "there is no support desk in the alpha" are
+`ROADMAP-ALPHA0` §1's own two facts, and "When your machine is ready, we email
+you its address" is the invitation's flow step — the notice the ready email
+fulfils — so it needs no row. No template says "the only sign-in is yours"
+(held, §1a), "the disk key is sealed to the measured boot" (held, §1a), or
+"Claiming takes 3 minutes" (dropped, never clocked).
 
 ### Brief email
 
@@ -1115,6 +1236,10 @@ names the `docs/CLAIMS.md` row that moved with it.
 | 2026-11-15 | **The demo sign-in page's tab is first-party from its own root.** `demo.odile.fyi/login` carries the three `rel=icon` links and the credit comment beside them (the credit line is byte-identical to the one on the eleven `web/` pages), and the three committed `web/` renditions — `favicon.ico`, `icon-32.png`, `apple-touch-icon.png` — sit beside the page in `/srv/odile-demo`; the demo block's one `@tabicons` static handle answers those three paths from that root with `image/x-icon` / `image/png` and the one-year immutable cache, so the demo's tab does not depend on the first-visit service. `/icon-192.png` and `/icon-512.png` stay the page server's for the Webapp shell. §Name and mark's Files bullet is scoped to match. The sign-in page's body, palette, type and copy are unchanged; no public sentence in `docs/CLAIMS.md` changed. | Designer | verifier, t_6b25f6e5 |
 | 2026-11-15 | **Voice, the pairs re-quoted at HEAD.** The six pairs become five, each After quoted from the file that renders it at HEAD: pair 1 the landing lede (`web/index.html`, `d2938b3`, deck v3.9d); pair 2 the claim page's browser rule (`web/claim.html`, §3), replacing the retired host-key modal; pair 3 the FAQ's reboot answer (`web/faq.html`, A11), replacing the retired brief headline; pair 4 the ceremony page's passphrase rule (`web/ceremony.html`, A4), replacing the retired claim screen's key-leak sentence; pair 5 the claim lede (`web/claim.html`, v3.9), replacing the retired "minute thirty" kicker. The old pair 4 (the demo's "99.0% target · 30-day") is dropped: the line left the tree with the prototype, `/status` publishes a computed uptime from heartbeats instead, and the target is the §1 reliability row. The vintage note is replaced by the landed provenance — ODL-462 pre-flip `3355f2c` and t_13cacab8's re-cut (`84a4fa9`, merged pre-flip `94ee0477`), which retired the four v3.4 items — and by the one-root cut `24ee323` (2026-11-14), which carries each of the four After strings in pairs 2–5; pair 1's sentence arrived later, at `d2938b3`. **Also re-cut:** the overflow state names the 249-character email that scrolls inside its field and the 248-character confirmation address that wraps in its line, not "a long key"; the invite's provenance says the prototype's mock left the tree; `docs/brand/ST-ODILE.md` §12's landing and prototype rows name the landed sentences and the one-root cut (HQ-only, outside this commit). No palette, face, artwork or surface rule changed; no public sentence in `docs/CLAIMS.md` changed. | Designer | verifier, t_96bdaf09 |
 | 2026-11-16 | **Product surfaces**: the demo workspace's `Verify this machine` link is the demo's own page on the demo's own host — `https://demo.odile.fyi/verify` — so a judge reaches the report in one hop and HQ's host never appears in the address bar. The 2026-11-13 product-surfaces row is re-cut to that target; the link's 44 px box, its ≤560 visible label `Verify` with the full aria-label, ink on the vendor shell and the tenant's relative `/verify` are unchanged. Both chrome copies (`deploy/demo-host/webapp-chrome.js`, `deploy/image/webapp-chrome.js`, byte-identical, sha256 `f73b90d2…`, 26,836 B) carry the constant once, and the comment above it names the demo's own page. On the demo host the installed script and the bundle's `odile-demo-chrome.js` are the same bytes, and `GET /odile-demo-chrome.js` with a judge session serves that constant. Measured in a browser at 1440×900 and 390×844: `href` `https://demo.odile.fyi/verify`, box 188 × 44 px at x 1184 and 55 × 44 px at x 267, ink `rgb(28,24,19)` on paper `rgb(234,223,196)` 13.33:1, the 2 px ink focus ring at 3 px offset, `scrollWidth == clientWidth` at both widths, and one hop to the page (200, 43,159 B, sha256 `3cdd7427…`, one `<!--demo-check-->` pair). `deploy/demo-host/deploy_demo_icons.py` uploads the chrome — the re-assert helper's source — and reads the served script, so the link the browser runs is measured, not assumed. No palette, face, artwork or surface rule changed; no public sentence in `docs/CLAIMS.md` changed (v3.10e already records the 302). | Designer | verifier, ODL-564 |
+| 2026-11-18 | **Email, the alpha.0 account set.** §Email is re-cut to the three templates A2 sends: `invite.txt` (Savio's personal invitation on the bench; the transactional sender from A7), `confirm.txt` (the address confirmation, naming the configured account host), and `ready.txt` (now the machine URL, the report URL, the measurement, the first-visit link, the reset page and the guide). The v5 footer `Founding alpha · 10 machines · $49/month` and "Claiming takes 3 minutes" leave; the footer is `Private alpha · Odile pays for the machine and the inference · no price`, and the no-desk sentence says alpha.0 has no support desk with a person on it. The templates name the machine's sign-in only; the which-password pair is carried by the register page's PR/FAQ §3 sentence and the account page's one line, and the ready email's `Set your sign-in` is their reduction (`docs/product/DECISION-password-reset.md` §3.5). Each template's privacy, security and reliability sentences are mapped to their `docs/CLAIMS.md` rows in the section. `tools/brand_lint.py` scans `templates/emails/*.txt`, so the rule the section states is the gate it runs. No palette, face or artwork change; no public sentence in `docs/CLAIMS.md` changed. | Designer | verifier, ODL-581 |
+| 2026-11-19 | **Two live scope sentences name alpha.0.** The dark-mode sentence in §Accessibility tokens and the direction-and-language sentence in §Spacing and layout now name alpha.0, the current release; the decisions are unchanged, and the dated 2026-11-07 row keeps the number it recorded. No palette, face or artwork change; no public sentence in `docs/CLAIMS.md` changed. | Designer | verifier, ODL-918 |
+| 2026-11-19 | **Legacy surfaces: the prototype retires from the list.** The one-root cut of 2026-11-14 (`24ee323`) left `prototype/` out of the tree, so `git ls-tree HEAD prototype` is empty and no commit reachable from `main` carries `prototype/userflow.html`: the prototype is a record in this sheet, not a file a builder can open. §Legacy surfaces now names one surface — the demo template (`demo/local/template.html`) — and the prototype is named as gone rather than un-migrated; the three Use cells that said "prototype and demo template only" now say "demo template only", as `--error-v0` already did. The table keeps its four rows, so `tools/brand_lint.py` still reports 4 legacy-only and stays green; the lint's `prototype/*.html` glob and the comments that name it a carrier are unchanged, and the glob matches nothing at HEAD. A first cut of this row said "read it at that commit"; `24ee323` is a root commit and does not carry the file, so the pointer is dropped. This corrects the 2026-11-13 status row's "now names two surfaces" and agrees with `docs/brand/ST-ODILE.md` §12's prototype row, which already calls the surface a record. No palette, typeface or artwork re-value; no public sentence in `docs/CLAIMS.md` changed. | Designer | verifier, t_41439551 |
+| 2026-11-19 | **Email, the §Email nits from ODL-581's brand pass.** The subject rule is reworded to the rule the three-row table actually keeps — a plain name for the message, a phrase or one sentence, never a headline, a colon-and-preamble, an emoji, an exclamation or "Newsletter #3", and it need not be the body's first sentence. The ready email's guide line moves from `Open the first-visit guide: {{GUIDE}}` to `The first-visit guide is at {{GUIDE}}`: a named address in a sentence, not a second imperative, leaving `Set your sign-in` as the ready email's only imperative URL. The invitation's "When your machine is ready, we email you its address" is named in the non-claim paragraph as a flow step — the notice the ready email fulfils — so every sentence in the three templates has a row or a named place. No palette, face or artwork change; no public sentence in `docs/CLAIMS.md` changed. | Designer | verifier, ODL-912 |
 
 ## Do / Don't
 
