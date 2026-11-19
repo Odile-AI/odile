@@ -110,15 +110,17 @@ The first three names are the three files of the tenant ritual
 (`docs/runbooks/install.md` §3). `app.py` serves the eight fixed names, so the
 signature is a URL next to the installer it signs, not a repo-only file.
 
-**The manifest names the tenant backup program.** `manifest.json` carries a
-top-level `backup_sha256` — the sha256 of `/usr/local/lib/odile/backup.py`, the
-program the nightly unit runs. It is the value the installer's own `--manifest`
-prints, and the installer's `--self-test` checks that pin against
-`scripts/backup.py`, so a stranger can compare the two records and see that the
-installer a release ships writes the program the release names (t_e0475dba).
-The row is optional in the schema: a document cut before it existed still
-verifies, and `check`/`apply` warn rather than refuse; a row that is present has
-to be a 64-hex digest.
+**A manifest built now names the tenant backup program.** `manifest.json`
+carries a top-level `backup_sha256` — the sha256 of
+`/usr/local/lib/odile/backup.py`, the program the nightly unit runs. It is the
+value the installer's own `--manifest` prints, and the installer's `--self-test`
+checks that pin against `scripts/backup.py`, so a stranger can compare the two
+records and see that the installer a release ships writes the program the
+release names (t_e0475dba). The cuts made before the row existed carry no such
+key: the served `2026.11.19-1` (measured 2026-11-19T17:32Z) and the
+repository's `2026.11.19-3` do not. The row is optional in the schema: a
+document cut before it existed still verifies, and `check`/`apply` warn rather
+than refuse; a row that is present has to be a 64-hex digest.
 
 ## 4. The commands
 
@@ -1090,19 +1092,29 @@ backup_sha256 is not this root's tenant backup program`), and
 `tools/recut_release.py` re-derives the row from the installer it ships, so a
 surgical re-cut after a backup-program edit cannot leave the old pin behind.
 
-No re-cut is needed for this change: the installer bytes are unchanged
-(`e4a3554b…`), so `release/manifest.json` keeps the document `-1` was cut
-from and the live release warns until the next cut. The next full cut (a
-manifest rebuilt from a root) and the next surgical `tools/recut_release.py`
-both carry the row — in a mirror of the release pair, the re-cut moved the
-manifest by exactly that line:
+No re-cut is needed for this change, and it moves no installer bytes: the branch
+carries no `installer/` or `release/` change at all. The head that merges it
+into `main` carries a later pair, cut before the row existed: `2026.11.19-3`
+(`00a84542…` installer, 1,436,019 bytes; `49850448…` manifest, its
+`release.json` at `2026-11-19T13:10:00Z`), a surgical re-cut whose only move
+over `-1` was `installer_sha256` — so it names no backup program either, and
+`install.md` §12.6 records that same pair. The URL still serves `2026.11.19-1`
+(measured 2026-11-19T17:32:57Z), so the live release warns until the next cut.
+The next full cut (a manifest rebuilt from a root) and the next surgical
+`tools/recut_release.py` both carry the row — measured on the merge tree, a
+re-cut of `-3`'s pair in a mirror moved the manifest by exactly that line, to
+the installer's own pin:
 
 ```sh
 $ diff <(/usr/bin/python3 -m json.tool release/manifest.json) \
-       <(/usr/bin/python3 -m json.tool /var/tmp/odile-215fu/recut-mirror/release/manifest.json)
+       <(/usr/bin/python3 -m json.tool /var/tmp/odile-215fu/recut-mirror-merge/release/manifest.json)
 2a3
 >     "backup_sha256": "d9c4278a0660650e7edc6b50847d96cdbb71ca7709c52402257e94a291a98955",
 ```
+
+and `--check` on the re-cut pair prints `ok backup d9c4278a0660650e…` (rc 0),
+where on `-3` itself it prints `the manifest predates the row; the installer
+pins d9c4278a0660650e…` and still exits 0.
 
 
 ## 6. The guest: check, apply, rollback
