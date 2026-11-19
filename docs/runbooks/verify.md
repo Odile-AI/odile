@@ -381,9 +381,9 @@ launch measurement matches the pin. Everything else is outside it.
 | Verifier code | `odile-verify`, `tools/snp_report.py` | Read both files: standard library and `openssl` only |
 
 The report and the certificates are public; there is no secret in the verifier,
-the fixtures or the output. The repository ships no VCEK and no chip id: the
-test fixtures carry an `ODILE-SYNTHETIC-` marker, and the synthetic chain is a
-test-only root. The HTTPS request only carries the bytes: the proof is the CPU
+the fixtures or the output. The repository ships no real VCEK and no live chip
+id: the test fixtures carry an `ODILE-SYNTHETIC-` marker, and the synthetic
+chain is a test-only root. The HTTPS request only carries the bytes: the proof is the CPU
 signature, not TLS. A proxy that rewrites the JSON is caught by `served` and
 `signature`. The KDS fetch is over TLS, but the certificate it returns is not
 trusted because of TLS: it must chain to the ARK pinned in the repository and
