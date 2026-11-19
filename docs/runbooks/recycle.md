@@ -229,23 +229,26 @@ writes on this account legitimately reach two (the bench and the live tenant's
 box — the second id is the tenant's, which is why this file is **copied** back
 and never retyped: retyping it is how a live id reaches a published tree).
 
-Before the run, save the resting file and trim it to the machine that may be
-erased:
+Before the run, record the resting file's digest, then save it and trim it to
+the machine that may be erased:
 
 ```sh
 cp -p /root/.odile/servury_uki_server_id allow-list.before
+sha256sum /root/.odile/servury_uki_server_id      # (A) the resting digest — what the restore must reproduce
+stat -c '%a %U:%G' /root/.odile/servury_uki_server_id      # 600 root:root
 printf '%s\n' 168020b4 > /root/.odile/servury_uki_server_id
+sha256sum /root/.odile/servury_uki_server_id      # (B) the trimmed digest — differs from (A)
 cat /root/.odile/servury_uki_server_id
 ```
 
-After the run, restore it byte-for-byte from that copy and prove it — the
-digest must equal the one you took before the trim:
+After the run, restore the file byte-for-byte from that copy and prove it: the
+digest printed now must equal **(A)**, the resting digest recorded above,
+and not the trimmed **(B)**:
 
 ```sh
-sha256sum /root/.odile/servury_uki_server_id   # take this before the trim
 cp -p allow-list.before /root/.odile/servury_uki_server_id
-sha256sum /root/.odile/servury_uki_server_id   # same value, two lines back
-stat -c '%a %U:%G' /root/.odile/servury_uki_server_id   # 600 root:root
+sha256sum /root/.odile/servury_uki_server_id      # must equal (A)
+stat -c '%a %U:%G' /root/.odile/servury_uki_server_id      # 600 root:root
 ```
 
 ## 5. What is not automated
