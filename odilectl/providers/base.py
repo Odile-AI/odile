@@ -1,7 +1,7 @@
 """The provider interface: the only vocabulary a command needs.
 
 A command asks for a machine; it never asks the vendor. The five operations
-are the whole lifecycle V0.1 needs:
+are the whole lifecycle alpha.0 needs:
 
     create(spec)      order a machine
     poll(server_id)   wait until it is active and addressable
@@ -53,8 +53,8 @@ _FIXED_KEY_BYTES = {
 class CreateSpec:
     """Everything a provider needs to order the tenant's machine.
 
-    The defaults are the V0.1 machine: Debian 13, 31 days, SEV-SNP, LUKS and
-    measured boot, with exactly the tenant's public key. `ssh_key` is one
+    The defaults are the alpha.0 machine: Debian 13, 31 days, SEV-SNP, LUKS
+    and measured boot, with exactly the tenant's public key. `ssh_key` is one
     public key, one line — measured boot takes exactly one.
     """
 

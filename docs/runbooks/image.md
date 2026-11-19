@@ -571,7 +571,7 @@ provision time:
    the user's way back is the recovery code and the backup password, with
    rebuild + restore for a seal break. Root inside the guest can derive the
    key (the ioctl is guest-available); the seal protects against the host and
-   an offline disk, which is the V0.1 threat model.
+   an offline disk, which is the alpha.0 threat model.
 
 ## 10. What the bench proves, and what only a Blackbox can prove
 

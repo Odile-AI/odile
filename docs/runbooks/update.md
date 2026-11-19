@@ -131,7 +131,7 @@ to. `check` exits `10` when the machine is already at the release.
 
 `apply` without `--yes` on a terminal asks `Apply release <id>? [y/N]`; without
 a terminal it refuses (`exit 2`) rather than guess. That is the manual default
-for V0.1.
+for alpha.0.
 
 ## 5. Cutting a release on HQ
 
@@ -1179,7 +1179,7 @@ by its own harness.
 
 ## 8. The daily timer (opt-in)
 
-The default in V0.1 is manual: the user runs `sudo odile-update`. A user who
+The default in alpha.0 is manual: the user runs `sudo odile-update`. A user who
 consents to a daily check gets a timer; the installer asks, and ODL-332 installs
 it. The unit is deliberately a thin wrapper around `apply --yes`, whose plan is
 printed to the journal:

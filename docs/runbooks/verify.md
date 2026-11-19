@@ -1,7 +1,7 @@
 # Verify — odile-verify and what the report proves
 
 **Status:** we can prove the boot report; we cannot prove liveness or the app layer.
-**Owner:** security seat · **Review:** before the 14 November submission and at V0.1.1.
+**Owner:** security seat · **Review:** before the 14 November submission and at A9 (V0.0.1).
 
 `odile-verify` is the command a stranger runs after cloning the repository. It
 fetches the machine's `/attestation`, reads the report out of the signed bytes,
@@ -917,7 +917,7 @@ value and needs no transaction.
 
 | Risk | Owner | Review |
 |---|---|---|
-| A genuine report can be replayed; `odile-verify` does not challenge the machine with a nonce | security | V0.1.1 sealed auto-unlock |
+| A genuine report can be replayed; `odile-verify` does not challenge the machine with a nonce | security | not scheduled; re-reviewed at A9 (V0.0.1) |
 | The pin lives in the same repository as the verifier; a compromised repo can pin a different image | Savio | after V1.0, if a customer asks (`docs/architecture/ADR-anchor.md`) |
 | The vendored roots are AMD's Milan ASK/ARK; a root rotation needs a reviewed refresh | security | on every release or AMD root change |
 | A live run needs AMD's KDS and TLS to `kdsintf.amd.com`; the KDS can be slow or down, and the VCEK is re-signed per request | security | every release; `--no-kds` is the offline fallback for a directory that carries a VCEK (the synthetic fixtures) |
