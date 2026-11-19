@@ -357,38 +357,68 @@ The access report is the machine's own audit. Its `usable keys` and
 turns both rows **FAIL** on purpose: there is an operator key, and its expiry is
 the mitigation. This is the honest reading of the deck's A10 — "a support grant
 is a time-boxed door" — and the rows return to PASS after `revoke` or expiry.
-Measured on the tenant (§8.5):
+Measured on a bench root on 2026-11-19 (the gate's own fixture: the synthetic
+SEV-SNP report, the measured throwaway boot key and the tenant `.env`, with the
+grant line and its state added — the same bench `tests/test_verify.py` drives;
+the tenant drill's version of these rows is §8.5):
 
 ```
-usable keys    FAIL  1 authorized key(s) other than the measured throwaway in /root/.ssh/authorized_keys: SHA256:clN4wFkP…
-operator key   FAIL  authorized_keys carries command="/usr/local/sbin/odile-support session",… odile-support-grant-7bc06cc48244
-FAIL — the access report did not pass
+usable keys    FAIL  1 authorized key(s) other than the measured throwaway in /root/.ssh/authorized_keys: SHA256:zaZC3CG0yGBGyTbJ8NR8JnL8pzL2Xao1vR2cgYQFkC0; the support grant 39602e79e81a explains one of them (expires 2026-11-20T15:50:44Z)
+boot key       PASS  ssh-ed25519 SHA256:LLwDfYyE3VMc9T9o+XvydfNzrXxyzaQ2lysSxCSSEWA; public key only, no private half of it on the machine
+seal           PASS  policy 0x30000; seal_id strict-bench-v1; measurement 519c7c9aae54bf139cacd783e1b69bd98b01e79b9e8b52feb41aadb7a483f481227a8a3b64ea2b885234ca56e09c9ee8
+sign-in hash   PASS  scrypt hash present in /home/odile/.hermes/.env; no plaintext password
+operator key   FAIL  authorized_keys carries command="/usr/local/sbin/odile-support session",no-agent-forwarding,no-port-forwarding,no-X11-forwarding,no-user-rc ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIMdWyPF1Bcwd6sFiL4KiUtmYTq2FLe95TmfBQS0fEnu2 odile-support-grant-39602e79e81a; one is the support grant 39602e79e81a (expires 2026-11-20T15:50:44Z)
+support grant  OPEN  grant 39602e79e81a; expires 2026-11-20T15:50:44Z; key SHA256:zaZC3CG0yGBGyTbJ8NR8JnL8pzL2Xao1vR2cgYQFkC0; line present in /root/.ssh/authorized_keys
+
+OPEN — a support grant is live until 2026-11-20T15:50:44Z (grant 39602e79e81a): the two key rows fail because that granted key is in /root/.ssh/authorized_keys.
 ```
 
-and after `revoke`, on a report regenerated the same way:
+and on the same bench with no grant state, the report is unchanged from
+ODL-473 — five rows and this verdict (after `revoke` on the tenant, §8.5, the
+same lines with the tenant's own fingerprint):
 
 ```
-usable keys    PASS  0 usable user keys; every authorized_keys line is the measured boot key (SHA256:I2VaMwa+…)
+usable keys    PASS  0 usable user keys; every authorized_keys line is the measured boot key (SHA256:LLwDfYyE3VMc9T9o+XvydfNzrXxyzaQ2lysSxCSSEWA)
 operator key   PASS  none (authorized_keys: 1 line(s), the measured throwaway)
 PASS — five checks: zero usable user keys, the throwaway boot key, the seal, the sign-in hash, no operator key.
 ```
 
-The fingerprint in the FAIL row is the key in `/etc/odile/support-key.pub` at
-grant time: `SHA256:clN4wFkP…` in the drill, because the drill had replaced the
-seed key with a throwaway (§8). On a tenant it is the seed key,
-`SHA256:HEPfoGHs…`.
+The row's witness is `/var/lib/odile/support-grant.json`, not the line's
+shape: the state must be inside its window and carry no `expired_at` or
+`revoked_at` tombstone, and it may account only for the exact forced-command
+line `odile-support grant` wrote — the marker `odile-support-grant-<id>`, the
+state's own key fingerprint, a `command="…/odile-support … session"` prefix,
+and root's own `authorized_keys`. A hand-written grant-shaped line, a
+tombstoned state, or a state edited to name another key still fails both rows,
+so the row cannot excuse a key a root shell planted. The fingerprint in the
+FAIL rows is the key in `/etc/odile/support-key.pub` at grant time:
+`SHA256:clN4wFkP…` in the drill, because the drill had replaced the seed key
+with a throwaway (§8); on a tenant it is the seed key, `SHA256:HEPfoGHs…`.
 
-The reporter unit exits non-zero when the report does not pass, so
-`systemctl restart odile-access-report` shows `Result: exit-code` during a live
-grant: the unit's exit status is the report's verdict, not a broken unit.
+After a reboot the installer's `authorized_keys` rewrite deletes the granted
+line and the timer restores it within 30 s (§3), so a report written inside
+that window has five PASS rows, the same `support grant  OPEN` row with
+`line missing from /root/.ssh/authorized_keys (the timer restores it within
+30 s)`, and this verdict — still OPEN, because the state is what makes the
+grant live:
+
+```
+OPEN — a support grant is live until 2026-11-20T15:50:44Z (grant 39602e79e81a); its line is missing from /root/.ssh/authorized_keys (the timer restores it within 30 s).
+```
+
+The reporter unit exits non-zero whenever a row fails — the report's verdict is
+also the unit's exit status — so `systemctl restart odile-access-report` shows
+`Result: exit-code` while the granted line is in place (exit 1 above, exit 0 on
+the no-grant bench and in the reboot window): the unit's status is the report's
+verdict, not a broken unit.
 
 HQ audits a grant through the log the tenant carries
 (`/var/log/odile-support.log`), `odile-support status --json`, and the
-`audit`/`logs` sections of the bundle the user emails. Teaching `/verify` to
-name the grant (its id, expiry and fingerprint) rather than show a bare FAIL
-needs the reporter in `installer/odile_install.py`; ODL-474 landed the A10
-sentence and the installer placement, and the reporter row is routed to card
-`t_e23f3288`.
+`audit`/`logs` sections of the bundle the user emails. The `/verify` row landed
+with `t_e23f3288` in release `2026.11.19-4` (`docs/runbooks/install.md`
+§12.6): the reporter is `scripts/verify_and_unlock.sh`, embedded in the signed
+installer, and the parsers in `app.py` and `installer/first_visit.py` accept
+the sixth row only together with the OPEN verdict.
 
 ---
 
@@ -705,7 +735,8 @@ bundle defect.
 
 During the live grant, a regenerated report gave `usable keys FAIL`,
 `operator key FAIL` and the page's `FAIL — the access report did not pass`
-(the rows are quoted in §7). After `revoke`, a regenerated report gave
+(the drill's rows; §7 quotes the shape after the sixth row landed with
+`t_e23f3288`). After `revoke`, a regenerated report gave
 `usable keys PASS`, `operator key PASS`, `PASS — five checks …`.
 
 After the drill the machine was put back: `revoke`, the seed key restored in
