@@ -1,8 +1,8 @@
 {
   "artifacts": {
     "installer": {
-      "sha256": "031d3a87132eae39de3e60fd5fa2af1cba75bc1004bff75b8c9f11358ca0cb85",
-      "size": 1443847,
+      "sha256": "f692dd6d7ccf1b7c709932c619ab26105583aa7a3a6f91c3211dccb29d72edc2",
+      "size": 1456215,
       "url": "odile_install.py"
     },
     "skills": {
@@ -14,14 +14,14 @@
   "boot": {
     "kernel": "6.12.115+deb13.1-amd64"
   },
-  "generated_at": "2026-11-19T20:00:00Z",
+  "generated_at": "2026-11-19T21:30:00Z",
   "manifest": {
-    "sha256": "2b6e2dff8dd55628624ddfa098afd379ff5b93fdb88793c5f27a24c14bbdf1e8",
+    "sha256": "d8c2f17bd927024b80eec2079e833643d071bcf845530bbc5d4bf8a9247db678",
     "signature_url": "manifest.json.sig",
     "url": "manifest.json"
   },
-  "notes": "t_e23f3288 (the ODL-474 follow-up's remaining half), round 3: the access reporter's verdict is now built from the rows that failed, not from the live grant alone. A grant explains at most the two key rows (`usable keys` and `operator key`, and only when the foreign key is exactly the state's fingerprint and the only grant-shaped line is the one the state owns); any other FAIL is named. The pure live-grant case keeps the previous sentence ('OPEN -- a support grant is live until ... (grant <id>): the two key rows fail because that granted key is in /root/.ssh/authorized_keys.'), and a compound state reads 'OPEN -- a support grant is live until ... (grant <id>); <N> other check(s) FAIL (<labels>): the report did not pass.' measured on the gate's own bench as '1 other check FAIL (seal)' with attestation policy 0x30001 and as '1 other check FAIL (usable keys)' with a planted key and its private half. Before this cut the verdict was chosen from the grant first, so a machine that failed attestation read as 'only the grant is open' and the sentence blamed two rows while three had failed. With no grant the report body is byte-identical to main's, and the pure live-grant body is byte-identical to -5's; app.py and installer/first_visit.py still accept the 11-line shape and require the row and the OPEN verdict together. This cut re-embeds scripts/verify_and_unlock.sh (sha256 c85b4c37... is access_report.sh, unchanged; verify_and_unlock.sh moves) with installer/embed_verify.py and re-signs; the page (web/verify.html = web/verify-public.html, 05c8c0e9...), access_report.sh, audit.py and first_visit.py pins are unchanged, so the /verify page's text did not move. release/manifest.json keeps its fresh-root document and its only move is installer_sha256 (49,957 bytes), so no root rebuild is claimed; the skills artifact (9d82653f..., 851,945 bytes) is unchanged. The id is 2026.11.19-6: -1 is t_3cd62ef9's /verify cut (05:00Z), -2 is t_73334f58's pre-review cut (11:40Z, never deployed), -3 is that card's review-round cut (13:10Z), -4 is this card's first cut (16:00Z, never deployed), -5 is the designer round-2 cut (17:00Z, never deployed), and this cut's generated_at (20:00Z) is later than all five. It is committed, not deployed: measured 2026-11-19T20:07Z the URL serves 2026.11.19-1 (e4a3554b... installer, 1,428,062 bytes).",
+  "notes": "t_e23f3288 (the ODL-474 follow-up's remaining half), round 4: the merge cut. main moved six minutes after this branch's round-3 acceptance stamp (ODL-579 merged at 2026-11-19T20:43:33Z, six minutes after the 20:37:22Z stamp) and re-cut the same signed chain, so this cut exists to land the branch's rounds 1-3 on top of main. The merge resolves one generated conflict: the FIRST_VISIT_SHA256 constant inside the BEGIN FIRST VISIT (ODL-457) block, re-derived here with installer/embed_first_visit.py and installer/embed_verify.py (first_visit.py is main's ODL-579 file, b0cac695...; the /verify page is this branch's 05c8c0e9... and its embedded copy is byte-identical). Nothing in scripts/verify_and_unlock.sh, tests/test_verify.py, app.py or web/verify.html conflicts, so every behaviour the round-3 review reproduced is unchanged: the live-grant row names the grant id, the expiry and the key fingerprint; the verdict is built from the rows that failed (the pure grant keeps its sentence, and a compound state reads 'OPEN -- ... (grant <id>); N other check(s) FAIL (<labels>): the report did not pass'); the no-grant report body is byte-identical to main's. The id is 2026.11.19-7 because -4 is now two cuts: main's ODL-579 -4 (generated_at 2026-11-19T15:45:00Z, installer 6d2c3161..., 1,448,387 bytes) and this card's first -4 (16:00Z, never deployed), followed by this card's -5 (17:00Z) and -6 (20:00Z), neither deployed. This cut's generated_at (2026-11-19T21:30:00Z) is later than all four. release/manifest.json keeps main's fresh-root document and its moves are installer_sha256 and the backup_sha256 row that document predated (d9c4278a..., the same scripts/backup.py the installer pins; 50,044 bytes), so no root rebuild is claimed; the skills artifact (9d82653f..., 851,945 bytes) and the 539e205f... audit row are unchanged. It is committed, not deployed: measured 2026-11-19T21:10Z the URL serves 2026.11.19-1 (e4a3554b... installer, 1,428,062 bytes).",
   "product": "odile",
-  "release": "2026.11.19-6",
+  "release": "2026.11.19-7",
   "schema": 1
 }

@@ -110,6 +110,22 @@ The first three names are the three files of the tenant ritual
 (`docs/runbooks/install.md` §3). `app.py` serves the eight fixed names, so the
 signature is a URL next to the installer it signs, not a repo-only file.
 
+**A manifest built now names the tenant backup program.** `manifest.json`
+carries a top-level `backup_sha256` — the sha256 of
+`/usr/local/lib/odile/backup.py`, the program the nightly unit runs. It is the
+value the installer's own `--manifest` prints, and the installer's `--self-test`
+checks that pin against `scripts/backup.py`, so a stranger can compare the two
+records and see that the installer a release ships writes the program the
+release names (t_e0475dba). The cuts made before the row existed carry no such
+key: the served `2026.11.19-1` (measured 2026-11-19T17:32Z) and `main`'s
+`2026.11.19-3`/`-4` — a re-cut of `-3`'s pair — do not. The merge cut
+`2026.11.19-7` is the first to carry it (`d9c4278a…`, the same
+`scripts/backup.py` the installer pins), because `tools/recut_release.py`
+re-derives the row from the installer it ships. The row is optional in the
+schema: a document cut before it existed still verifies,
+and `check`/`apply` warn rather than refuse; a row that is present has to be a
+64-hex digest.
+
 ## 4. The commands
 
 | Command | What it does | Writes? |
@@ -824,9 +840,12 @@ carries this merge publishes the new cut.
 ### The cut that moves only the installer (2026-11-15)
 
 `tools/recut_release.py` is the cutter for a change that moves the installer and
-nothing else in the app layer: it re-derives the four hashes from the tree and
+nothing else in the app layer: it re-derives the hashes from the tree and
 re-signs them with the HQ key, so the manifest keeps the document a fresh root
-produced and only `installer_sha256` moves. t_ae833f3f re-embedded the two
+produced and only `installer_sha256` moves — except `backup_sha256`, which
+follows the installer's own `--manifest` pin when the embedded backup program
+moved (t_e0475dba), so a re-cut after a backup-program edit cannot leave the old
+program named. t_ae833f3f re-embedded the two
 tenant pages and the skin onto BRAND.md's type roles, which is exactly that
 shape, so no scratch root was rebuilt.
 
@@ -1010,6 +1029,96 @@ bytes), the skills artifact (`9d82653f…`) and the audit row (`539e205f…`) ar
 unchanged, `--self-test` PASS and `--verify-signature` OK. `install.md` §12.6
 has the full record; it is committed, not deployed (the URL still serves
 `2026.11.15-9`, `2cdf0801…`, measured 2026-11-19T04:37Z).
+
+
+### The manifest names the tenant backup program (2026-11-19)
+
+The installer's own `--manifest` has named `backup_sha256` since ODL-215, and
+`--self-test` checks that pin against `scripts/backup.py`; the release manifest
+did not, so a release could ship an installer whose embedded backup program the
+release document never named. `scripts/manifest.py build` now records the row:
+the bytes of `<root>/usr/local/lib/odile/backup.py`, or — on a scratch root
+that predates the installer writing that file — the installer's own
+`--manifest` pin, which is the bytes that installer would write. A tenant root
+without the file is a refusal. `release.json`'s shape does not change: it names
+the manifest by sha256, and the manifest is the carrier.
+
+Measured on the ODL-215 follow-up's surviving scratch root. The card's
+`/var/tmp/odile-215b-rc` was removed at that card's handoff;
+`/var/tmp/odile-215-installer-backup-cand` carries the same program,
+`2f465af2…`:
+
+```sh
+$ /usr/bin/python3 scripts/manifest.py build --root /var/tmp/odile-215-installer-backup-cand \
+    --user odile472m --generated-at 2026-11-19T00:00:00Z --out /var/tmp/odile-215fu/manifest-a.json
+manifest     /var/tmp/odile-215fu/manifest-a.json (sha256 bd4add187417afd2fb749ccffdcd1da8256c10b9af7a44690a0f2e5fc6d979be, 48 skills, 9 packages, audit 539e205f7d26e1c0757a4cdabbcae444c98df10f6e68eff92b4c147604cf4e4e)
+$ /usr/bin/python3 -c 'import json;print(json.load(open("/var/tmp/odile-215fu/manifest-a.json"))["backup_sha256"])'
+2f465af25388dbaa3b19855fef33d32232d2aa646b59db8efdba35ad1e8cbda1
+$ sha256sum /var/tmp/odile-215-installer-backup-cand/usr/local/lib/odile/backup.py
+2f465af25388dbaa3b19855fef33d32232d2aa646b59db8efdba35ad1e8cbda1  /var/tmp/odile-215-installer-backup-cand/usr/local/lib/odile/backup.py
+$ /usr/bin/python3 /var/tmp/odile-215-installer-backup-cand/bootstrap/odile_install.py \
+    --manifest | /usr/bin/python3 -c 'import json,sys; print(json.load(sys.stdin)["backup_sha256"])'
+2f465af25388dbaa3b19855fef33d32232d2aa646b59db8efdba35ad1e8cbda1
+```
+
+A single byte appended to that root's program moves the row and nothing else:
+
+```sh
+$ printf 'x' >> /var/tmp/odile-215-installer-backup-cand/usr/local/lib/odile/backup.py
+$ sha256sum …/usr/local/lib/odile/backup.py
+e75153eb7206bf126b3a1b80938b3b26acebfde7960a95ecd0696c55aa20dac1  …
+$ /usr/bin/python3 scripts/manifest.py build --root … --user odile472m \
+    --generated-at 2026-11-19T00:00:00Z --out /var/tmp/odile-215fu/manifest-b.json
+manifest     /var/tmp/odile-215fu/manifest-b.json (sha256 262727ac7448db1a0c8949553456d2d48494966b35a3dce5dd8b169592095541, 48 skills, 9 packages, audit 539e205f…)
+$ /usr/bin/python3 scripts/manifest.py diff /var/tmp/odile-215fu/manifest-a.json /var/tmp/odile-215fu/manifest-b.json
+-  "backup_sha256": "2f465af25388dbaa3b19855fef33d32232d2aa646b59db8efdba35ad1e8cbda1",
++  "backup_sha256": "e75153eb7206bf126b3a1b80938b3b26acebfde7960a95ecd0696c55aa20dac1",
+$ install -m 0755 /var/tmp/odile-215fu/backup.py.orig …/usr/local/lib/odile/backup.py
+$ /usr/bin/python3 scripts/manifest.py build --root … --user odile472m \
+    --generated-at 2026-11-19T00:00:00Z --out /var/tmp/odile-215fu/manifest-c.json
+manifest     /var/tmp/odile-215fu/manifest-c.json (sha256 bd4add187417afd2…, …)
+$ cmp /var/tmp/odile-215fu/manifest-a.json /var/tmp/odile-215fu/manifest-c.json && echo identical
+identical
+```
+
+The guest's rule, and why the row is optional: the published `2026.11.19-1`
+manifest was cut before the row existed, so `check` and `apply` accept a
+manifest without it and print
+
+```
+warning: the manifest at <url> names no backup_sha256; it predates the tenant backup program's row, so this release does not pin the program the nightly unit runs (a later cut carries it)
+```
+
+while a row that is present and not a sha256 exits 4 (`manifest backup_sha256
+is neither absent nor a sha256`). `odile_update.py release` refuses a manifest
+whose row disagrees with the candidate root's program (exit 2, `the manifest's
+backup_sha256 is not this root's tenant backup program`), and
+`tools/recut_release.py` re-derives the row from the installer it ships, so a
+surgical re-cut after a backup-program edit cannot leave the old pin behind.
+
+No re-cut is needed for this change, and it moves no installer bytes: the branch
+carries no `installer/` or `release/` change at all. The head that merges it
+into `main` carries a later pair, cut before the row existed: `2026.11.19-3`
+(`00a84542…` installer, 1,436,019 bytes; `49850448…` manifest, its
+`release.json` at `2026-11-19T13:10:00Z`), a surgical re-cut whose only move
+over `-1` was `installer_sha256` — so it names no backup program either, and
+`install.md` §12.6 records that same pair. The URL still serves `2026.11.19-1`
+(measured 2026-11-19T17:32:57Z), so the live release warns until the next cut.
+The next full cut (a manifest rebuilt from a root) and the next surgical
+`tools/recut_release.py` both carry the row — measured on the merge tree, a
+re-cut of `-3`'s pair in a mirror moved the manifest by exactly that line, to
+the installer's own pin:
+
+```sh
+$ diff <(/usr/bin/python3 -m json.tool release/manifest.json) \
+       <(/usr/bin/python3 -m json.tool /var/tmp/odile-215fu/recut-mirror-merge/release/manifest.json)
+2a3
+>     "backup_sha256": "d9c4278a0660650e7edc6b50847d96cdbb71ca7709c52402257e94a291a98955",
+```
+
+and `--check` on the re-cut pair prints `ok backup d9c4278a0660650e…` (rc 0),
+where on `-3` itself it prints `the manifest predates the row; the installer
+pins d9c4278a0660650e…` and still exits 0.
 
 
 ## 6. The guest: check, apply, rollback
@@ -1266,17 +1375,19 @@ ODL-332 owns the machine half. It needs to:
 ## 11. The self-test
 
 `./update/odile_update.py self-test` builds a machine, a candidate root, a
-signed release and a rollback in one temporary directory. Thirty-seven checks:
+signed release and a rollback in one temporary directory. Forty checks:
 the canonical round trip and a cross-check against `scripts/manifest.py`'s
-canonicaliser and hasher; a release that plans, applies, verifies and rolls
-back; a second apply that writes nothing; a rollback that moved the Hermes
-commit or the Webapp bundle restarts `odile-agent`, a rollback that moved only
-the installer or the skills restarts nothing, and a no-op rollback restarts
-nothing; a dry run of an older release is refused with exit 5 and
-`--allow-downgrade` still prints the plan; two post-check tampering cases; a
+canonicaliser and hasher; the tenant backup program's row (the fixture root's
+program is the hash the manifest records, a manifest without the row still
+validates, and a malformed row is refused); a release that plans, applies,
+verifies and rolls back; a second apply that writes nothing; a rollback that
+moved the Hermes commit or the Webapp bundle restarts `odile-agent`, a rollback
+that moved only the installer or the skills restarts nothing, and a no-op
+rollback restarts nothing; a dry run of an older release is refused with exit 5
+and `--allow-downgrade` still prints the plan; two post-check tampering cases; a
 changed release, a changed manifest under a re-signed release, a changed
 artifact, another kernel, a commit the checkout lacks, and two schema refusals.
-It prints `self-test: 37/37 passed` and exits 0. `make check` compiles the file
+It prints `self-test: 40/40 passed` and exits 0. `make check` compiles the file
 but does not run this self-test; the installer's `--self-test` is a gate step
 ([`install.md`](install.md) §7), this one is not.
 

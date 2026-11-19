@@ -519,9 +519,10 @@ provision time:
    passes it to the installer as `--public-url`, and the installer serves that
    one name for Caddy, the DNS and ACME waits and the certificate the recovery
    file pins (ODL-340 follow-up, §12.4 of `install.md`).
-   Measured on the bench, 2026-11-19: a `--production` disk built from this
-   tree's `release/` (installer `00a84542…`, manifest `49850448…`, release
-   `2026.11.19-3`) with the line above was written over the disposable tenant
+   Measured on the bench, 2026-11-19: a `--production` disk built from the
+   `release/` of the `2026.11.19-3` cut (installer `00a84542…`, manifest
+   `49850448…`; the tree now cuts `2026.11.19-7`, §12.6 of `install.md`) with
+   the line above was written over the disposable tenant
    by the panel and booted. The installer logged `site
    odl-340a1e.test.odile.fyi (heartbeat https://test.odile.fyi/heartbeat)`, and
    the Caddy site, the DNS wait, the ACME wait (its own Let's Encrypt

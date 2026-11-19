@@ -525,10 +525,11 @@ quote them.
   fresh scratch root the merged installer made (24/24, run 2 `tenant: same`);
   `docs/runbooks/install.md` §12.6 carries the full record.
 
-Still held, and named in `docs/CLAIMS.md` §1a: the 30-day retention row (its
-page is `web/privacy.html`, outside this card's `touches`) and "Backups are
-off-site" (its page is `web/faq.html`, outside the five passages this card's
-DoD names) — card `t_5f10dd14`.
+Still held, and named in `docs/CLAIMS.md` §1a: "Backups are off-site" — its
+page is `web/faq.html`, and ADR-004 §1 measures the bytes on HQ's disk, the
+same provider and the same city as the machine, until the R2 migration card
+(§8) and its drill land — card `t_66fcaa02`. The 30-day retention row landed on
+`web/privacy.html` and in `web/faq.html` with `t_5f10dd14` on 19 November 2026.
 
 Two measured details bound the A10 answer; neither rewords it. The post-revoke
 check names `crontab -l`, and Debian 13 on the tenant image has no `cron`
