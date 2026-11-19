@@ -12,7 +12,8 @@ input the sealed design has (docs/product/DECISION-agent-access.md §3a):
                                     reports back to (the boot record posts here)
     odile.public_url=<url>          the name this tenant serves, read by the
                                     release setup (ODL-340 follow-up); absent on
-                                    production, where `<bb.host>.<seed host>`
+                                    production, where the installer derives
+                                    `<slug>.<the seed host>` instead
 
 The token is the badge, not a standing key: it is minted at provision bound to
 `bb.iid`, valid once and for 24 hours. The command line is public, so the

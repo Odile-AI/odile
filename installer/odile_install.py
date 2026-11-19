@@ -13914,6 +13914,32 @@ def self_test() -> int:
         check.ok("a production layout still renders the slug's production name",
                  "\nodl-test.odile.fyi {" in "\n" + prod_block
                  and "\nodl-test.test.odile.fyi {" not in "\n" + prod_block)
+        # The machine-free plan is the one proof that runs before a seed is
+        # fetched, so it must name the machine from the kit (`--dry-run
+        # --recovery-kit <kit>` is `install.md` §6), never the `<slug>`
+        # placeholder: the site, the Webapp's public_url and the DNS/ACME wait
+        # are the same one name the install then serves.
+        dry_kit = root / "dry-run-kit.json"
+        dry_kit.write_text(json.dumps({"slug": "odl-dry", "instance_id": "168020b4",
+                                       "setup_token": "0" * 64}), encoding="utf-8")
+        dry_plan = {}
+        for label, extra in (("production", []),
+                             ("bench", ["--seed-url", "https://test.odile.fyi/seed"])):
+            buffer = io.StringIO()
+            with contextlib.redirect_stdout(buffer):
+                dry_run(build_parser().parse_args(
+                    ["--dry-run", "--recovery-kit", str(dry_kit)] + extra))
+            dry_plan[label] = buffer.getvalue()
+        check.ok("the machine-free dry run names the kit's machine, not <slug>",
+                 "<slug>.odile.fyi" not in dry_plan["production"]
+                 and "site odl-dry.odile.fyi" in dry_plan["production"]
+                 and "public_url https://odl-dry.odile.fyi" in dry_plan["production"]
+                 and "retry ACME for odl-dry.odile.fyi" in dry_plan["production"])
+        check.ok("a bench seed moves the dry run's name and its heartbeat",
+                 "site odl-dry.test.odile.fyi" in dry_plan["bench"]
+                 and "heartbeat https://test.odile.fyi/heartbeat" in dry_plan["bench"]
+                 and "public_url https://odl-dry.test.odile.fyi" in dry_plan["bench"]
+                 and "<slug>." not in dry_plan["bench"])
 
         # the support programs (ODL-474): pin, checkout parity, and the two
         # installed names — the A10 answer's `odile-diag` and `odile-support`
@@ -14211,7 +14237,7 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def resolve_layout(args: argparse.Namespace) -> Layout:
+def resolve_layout(args: argparse.Namespace, slug: str | None = None) -> Layout:
     if args.root:
         root = Path(args.root).resolve()
         user = args.user or pwd.getpwuid(os.geteuid()).pw_name
@@ -14223,17 +14249,25 @@ def resolve_layout(args: argparse.Namespace) -> Layout:
                               first_visit_port=args.first_visit_port or FIRST_VISIT_PORT)
     user = args.user or "odile"
     port = args.port or DEFAULT_TENANT_PORT
-    slug = args.slug or "<slug>"
-    public_url = args.public_url or public_url_for(slug, args.seed_url or DEFAULT_SEED_URL)
+    # The slug can come from the recovery kit rather than a flag (ODL-340
+    # follow-up, round 2): it names the tenant's default public URL, so a
+    # caller that has read the kit passes it here instead of letting the
+    # `<slug>` placeholder name the machine.
+    name = slug or args.slug or "<slug>"
+    public_url = args.public_url or public_url_for(name, args.seed_url or DEFAULT_SEED_URL)
     return Layout.tenant(user=user, webapp_port=port,
                         public_url=public_url, commit=args.hermes_commit,
                         first_visit_port=args.first_visit_port or FIRST_VISIT_PORT)
 
 
 def dry_run(args: argparse.Namespace) -> int:
-    layout = resolve_layout(args)
+    # The kit is read before the layout is resolved: `--dry-run
+    # --recovery-kit <kit>` is the machine-free proof, and the kit's slug — not
+    # the placeholder — names the site, the Webapp's public_url and the DNS and
+    # ACME waits, exactly as the install does once it has a seed.
     kit = load_recovery_kit(Path(args.recovery_kit) if args.recovery_kit else None, args)
     slug = kit.get("slug") or args.slug or "<slug>"
+    layout = resolve_layout(args, slug=slug)
     instance = kit.get("instance_id") or args.instance_id or "<instance>"
     pubkey = kit_pubkey(kit) or (Path(args.pubkey) if args.pubkey else None)
     print(f"odile installer {VERSION} — tenant plan (dry run, {layout.mode})")

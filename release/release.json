@@ -1,8 +1,8 @@
 {
   "artifacts": {
     "installer": {
-      "sha256": "36babff5a980decd1a378ca9fe3a7efc8c388953ba421a3c0111d1c79ac5ecb9",
-      "size": 1433661,
+      "sha256": "00a845429b3265e13ea5f058679885fee3a57847384eece97e7fab0cd3c08de0",
+      "size": 1436019,
       "url": "odile_install.py"
     },
     "skills": {
@@ -14,14 +14,14 @@
   "boot": {
     "kernel": "6.12.115+deb13.1-amd64"
   },
-  "generated_at": "2026-11-19T11:40:00Z",
+  "generated_at": "2026-11-19T13:10:00Z",
   "manifest": {
-    "sha256": "be75fb6674080843019e96ba4a48d141e39cd7e78d60fc882d9605747baa80de",
+    "sha256": "4985044891af5b38f576bad9a3bd96c155e9446b941cdf16fb30db547cb9851f",
     "signature_url": "manifest.json.sig",
     "url": "manifest.json"
   },
-  "notes": "ODL-340 follow-up (t_73334f58), cut over 2026.11.19-1 (t_3cd62ef9's /verify two-URL re-embed); the installer carries both. (1) t_3cd62ef9: the /verify page's note now says the verifier fetches two URLs \u2014 /attestation and that report's own VCEK from AMD's KDS \u2014 replacing the one-URL sentence. The verifier bundle is unchanged (20,560 bytes, sha256 815dbc26\u2026). (2) ODL-340 follow-up: the installer serves ONE site name \u2014 render_caddy_site, ensure_caddy_site, wait_for_dns, wait_for_acme and certificate_fingerprint all read layout.fqdn, so --public-url names the Caddy site, the DNS and ACME waits and the certificate the recovery file pins. A tenant's default name is <slug>.<the seed endpoint's host> (production keeps <slug>.odile.fyi) and the nightly unit's heartbeat default is <seed origin>/heartbeat (production keeps https://odile.fyi/heartbeat). deploy/image/odile-release-setup.sh passes the measured odile.public_url= as --public-url (ODILE_RELEASE_PUBLIC_URL still wins on an operator re-run) and passes odile.seed_url= through, so a second environment needs no systemd drop-in, no second Caddy block and no public_url patch; the boot record is unchanged (odile-firstboot posts it to odile.seed_url). release/manifest.json is 2026.11.16-1's fresh-root document whose only move is installer_sha256, so this is a surgical re-cut, not a root rebuild; the skills artifact (9d82653f\u2026, 851,945 bytes) and the 539e205f\u2026 audit row are unchanged. The id is 2026.11.19-2: 2026.11.19-1 is t_3cd62ef9's /verify cut (2026-11-19T05:00:00Z), and this cut is later than it by generated_at at 2026-11-19T11:40:00Z. It is committed, not deployed: measured 2026-11-19T11:38Z the URL serves 2026.11.15-9 (2cdf0801\u2026, 1,424,179 bytes).",
+  "notes": "ODL-340 follow-up (t_73334f58), round 2, over 2026.11.19-1 (t_3cd62ef9's /verify two-URL re-embed) and over this branch's own 2026.11.19-2, which was cut on the pre-review tree at 11:40Z and superseded before any deploy. (1) t_3cd62ef9: the /verify page's note now says the verifier fetches two URLs \u2014 /attestation and that report's own VCEK from AMD's KDS \u2014 replacing the one-URL sentence. The verifier bundle is unchanged (20,560 bytes, sha256 815dbc26\u2026). (2) ODL-340 follow-up: the installer serves ONE site name \u2014 render_caddy_site, ensure_caddy_site, wait_for_dns, wait_for_acme and certificate_fingerprint all read layout.fqdn, so --public-url names the Caddy site, the DNS and ACME waits and the certificate the recovery file pins. A tenant's default name is <slug>.<the seed endpoint's host> (production keeps <slug>.odile.fyi) and the nightly unit's heartbeat default is <seed origin>/heartbeat (production keeps https://odile.fyi/heartbeat). deploy/image/odile-release-setup.sh passes the measured odile.public_url= as --public-url (ODILE_RELEASE_PUBLIC_URL still wins on an operator re-run) and passes odile.seed_url= through, so a second environment needs no systemd drop-in, no second Caddy block and no public_url patch; the boot record is unchanged (odile-firstboot posts it to odile.seed_url). (3) Round 2 of the same card (review round 1, artifact lens): the machine-free proof `--dry-run --recovery-kit <kit>` resolved the layout before it read the kit, so the new site line, the Webapp's public_url and the DNS/ACME wait printed the literal <slug>.odile.fyi; dry_run now loads the kit first and resolves the layout with its slug (resolve_layout(args, slug=...)), so the plan names odl-340a1e.odile.fyi on a production seed and odl-340a1e.test.odile.fyi on the bench's, exactly as install.md \u00a76 documents, and --public-url and --slug still win in that order. The installer's --self-test pins both environments. (4) deploy/image/odile-firstboot.py's docstring now states what the installer derives when odile.public_url= is absent. release/manifest.json is 2026.11.16-1's fresh-root document whose only move is installer_sha256, so this is a surgical re-cut, not a root rebuild; the skills artifact (9d82653f\u2026, 851,945 bytes) and the 539e205f\u2026 audit row are unchanged. The id is 2026.11.19-3: -1 is t_3cd62ef9's /verify cut (2026-11-19T05:00:00Z), -2 is this branch's pre-review cut (2026-11-19T11:40:00Z, never deployed), and this cut's generated_at is later than both. It is committed, not deployed: measured 2026-11-19T13:01Z the URL serves 2026.11.19-1 (e4a3554b\u2026 installer, 2026-11-19T05:00:00Z).",
   "product": "odile",
-  "release": "2026.11.19-2",
+  "release": "2026.11.19-3",
   "schema": 1
 }

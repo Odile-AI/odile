@@ -964,7 +964,7 @@ Verify (this is also step 2 of the ritual):
 ```sh
 $ ./installer/odile_install.py --verify-signature --pubkey installer/odile-signing-key.pub
 signing key  sha256 13e8c2aee8263f550033448c8193a82b89498f533f52943e09c14d22e5b036e2 · SHA256:ZyFEbkw2oetDml63XaHTix0kUrR2kAVGZaaeDAHvXu8
-signature: OK (sha256 36babff5a980decd1a378ca9fe3a7efc8c388953ba421a3c0111d1c79ac5ecb9)
+signature: OK (sha256 00a845429b3265e13ea5f058679885fee3a57847384eece97e7fab0cd3c08de0)
 ```
 
 The first value is `sha256sum` of the exact PEM file the run used — here the
@@ -998,7 +998,7 @@ $ echo $?
 ```
 
 Recorded on 2026-11-14 and re-measured on 2026-11-19 from the merged installer
-(`main`'s `f18e55a` plus this branch) that carries the handoff audit
+(`main`'s `5cce52b` merged with this card's branch) that carries the handoff audit
 (ODL-208's `/usr/local/bin/odile-audit`, re-cut by the follow-up that reads
 `authorized_keys2` and scans `/root` for the boot key's private half) beside
 the strict-bar help surface (ODL-470's five answers), ODL-457's first-visit
@@ -1045,9 +1045,13 @@ its seed-derived environment (`<slug>.<seed host>` for a tenant and
 `<seed origin>/heartbeat` for the nightly unit; a production seed keeps
 `<slug>.odile.fyi` and `https://odile.fyi/heartbeat`), t_3cd62ef9's two-URL
 `/verify` note (the verifier fetches `/attestation` and that report's own VCEK
-from AMD's KDS), and the self-test's whole-bundle hash (`8ea15e2`), sha256
-`36babff5…` (1,433,661 bytes, `--verify-signature` OK, re-cut as
-`2026.11.19-2`); the edited copy above is 1,433,662 bytes. The BAD line prints the edited copy's own sha256 — the `sha256sum` above — so the hex moves
+from AMD's KDS), this card's round 2 (the machine-free `--dry-run
+--recovery-kit <kit>` plan reads the kit before it resolves the layout, so its
+site line, the Webapp's `public_url` and the DNS/ACME wait name the kit's
+machine rather than the `<slug>` placeholder — `--public-url` then `--slug`
+still win), and the self-test's whole-bundle hash (`8ea15e2`), sha256
+`00a84542…` (1,436,019 bytes, `--verify-signature` OK, re-cut as
+`2026.11.19-3`); the edited copy above is 1,436,020 bytes. The BAD line prints the edited copy's own sha256 — the `sha256sum` above — so the hex moves
 whenever the installer's bytes do; `signature: BAD` and exit 3 are the
 invariant. The edited copy is a different `INSTALLER_PATH`, so this runs the
 *whole* installer and it still checks its own bytes. A tenant run does the same
@@ -1201,7 +1205,7 @@ builder command with a transcript; everything after it is the image.
 | 5 | the signed measured UKI and the pre-sealed disk | **yes, round 8 at 10:28Z, saved 14:42:53Z and booted 14:43:54Z** — UKI `5cb31808…`, disk `c1278242…`, measurement `9f01725a…`, 4-vCPU pin, published 10:29Z; the earlier builds and the defect each exposed are in `docs/evidence/m1-tenant.md` §9–§9.8 and `docs/evidence/m1-image.md` |
 | 6 | a fresh setup token bound to `31a63bbb` | **yes** — ledger `67de1ba9…`, live until 2026-11-13T10:23Z; its plaintext is the `odile.token=` of the sealed line |
 | 7 | the owner's boot key, a passphrase, any operator key | **none** — the image's `bb.key` is a throwaway public key whose private half is shredded |
-| 8 | a signed installer a stranger can obtain (independent of the image) | **yes** — on 2026-11-11 the served release `2026.11.11-5` shipped the strict-bar installer `fde7a48f…`, its `.sig`, the published key and a skills tarball carrying `odile-recipes` (§12.6); the repository's cut is `2026.11.19-2` (`36babff5…` installer, 1,433,661 bytes, `be75fb66…` manifest, §12.6), which merges `2026.11.19-1` (`e4a3554b…` installer, 1,428,062 bytes, `65c56be3…` manifest; the `/verify` page's two-URL note) with the ODL-340 follow-up's one site name and seed-derived environment — `-4` was re-cut at the head that merges `main`'s `-3` (ODL-522's per-machine session secret, `e0cec88a…` installer, 1,357,306 bytes, `4f0e3ef9…` manifest) and carries this card's `-2` landing (the five v3.10 access sentences on ODL-505's `-8` and t_ae833f3f's `2026.11.15-1`), then re-embedded every surface; `-6` re-embeds only the support program with t_afb081be's session signal-window fix, `-9` adds t_2efbd6e3's guest export placement, `2026.11.19-1` re-embeds the `/verify` page with the verifier's two-URL note, and `2026.11.19-2` is this merged head — and the served URL serves `2026.11.15-9` (`2cdf0801…` installer, 1,424,179 bytes, manifest `4664da84…` — measured 2026-11-16T01:44Z; still `2026.11.15-9` at 2026-11-19T11:38Z) until a `./deploy.sh` from a `main` that carries these merges; that live cut carries the `c73dad4d…` vendor pin, and an image a build of this tree makes carries the `2026.11.19-2` pair in its `release/` directory, so the machine's `/manifest` and `/usr/local/bin/odile-install.sh` agree with each other. The live tenant's image is still `2026.11.11-8` (`4aee80c5…`, `1ed9dcad…`) until it is re-provisioned |
+| 8 | a signed installer a stranger can obtain (independent of the image) | **yes** — on 2026-11-11 the served release `2026.11.11-5` shipped the strict-bar installer `fde7a48f…`, its `.sig`, the published key and a skills tarball carrying `odile-recipes` (§12.6); the repository's cut is `2026.11.19-3` (`00a84542…` installer, 1,436,019 bytes, `49850448…` manifest, §12.6), which merges `2026.11.19-1` (`e4a3554b…` installer, 1,428,062 bytes, `65c56be3…` manifest; the `/verify` page's two-URL note) with the ODL-340 follow-up's one site name and seed-derived environment — `-4` was re-cut at the head that merges `main`'s `-3` (ODL-522's per-machine session secret, `e0cec88a…` installer, 1,357,306 bytes, `4f0e3ef9…` manifest) and carries this card's `-2` landing (the five v3.10 access sentences on ODL-505's `-8` and t_ae833f3f's `2026.11.15-1`), then re-embedded every surface; `-6` re-embeds only the support program with t_afb081be's session signal-window fix, `-9` adds t_2efbd6e3's guest export placement, `2026.11.19-1` re-embeds the `/verify` page with the verifier's two-URL note, and `2026.11.19-3` is this merged head (`-2` was this branch's pre-review cut, superseded before any deploy) — and the served URL serves `2026.11.15-9` (`2cdf0801…` installer, 1,424,179 bytes, manifest `4664da84…` — measured 2026-11-16T01:44Z; still `2026.11.15-9` at 2026-11-19T11:38Z, and `2026.11.19-1` at 2026-11-19T13:01Z) until a `./deploy.sh` from a `main` that carries these merges; that live cut carries the `c73dad4d…` vendor pin, and an image a build of this tree makes carries the `2026.11.19-3` pair in its `release/` directory, so the machine's `/manifest` and `/usr/local/bin/odile-install.sh` agree with each other. The live tenant's image is still `2026.11.11-8` (`4aee80c5…`, `1ed9dcad…`) until it is re-provisioned |
 
 ### 12.2 The builder's half (everything before the panel)
 
@@ -2238,6 +2242,34 @@ measured 2026-11-19T11:38Z the URL serves `2026.11.15-9` (`2cdf0801…`,
 (23:59Z), `2026.11.16-1` is t_d95b8c13/t_2efbd6e3's merged-head cut (01:40Z),
 `2026.11.19-1` is t_3cd62ef9's `/verify` cut (05:00Z), and `2026.11.19-2` is
 later than every cut by `generated_at`.
+
+**The `2026.11.19-3` cut (the ODL-340 follow-up, review round 1's two fixes).**
+`-2` above was cut on the pre-review tree at `2026-11-19T11:40:00Z` and
+superseded before any deploy. Round 1 (artifact lens) found two defects in the
+shipped surface: `docs/runbooks/image.md` §2 quoted `-2`'s predecessor
+(`fa51daa1…`/`f73b5d4e…`, a build no reader can obtain) as "this tree's
+`release/`", and `dry_run` resolved the layout before it read the recovery
+kit, so the documented machine-free command `--dry-run --recovery-kit <kit>`
+printed the literal `<slug>.odile.fyi` for the new site line, the Webapp's
+`public_url` and the DNS/ACME wait. `dry_run` now loads the kit first and
+calls `resolve_layout(args, slug=…)`, and `--self-test` pins both
+environments: `site odl-dry.odile.fyi` on a production seed,
+`site odl-dry.test.odile.fyi` and `heartbeat https://test.odile.fyi/heartbeat`
+on the bench's, `--public-url` then `--slug` still winning. The installer
+therefore moved: sha256 `00a84542…` (1,436,019 bytes), manifest `49850448…`
+(49,957 bytes; its only move is `installer_sha256`), `release/release.json`
+(`8cc6ae53…`) naming `2026.11.19-3` at `2026-11-19T13:10:00Z`. No root rebuild
+is claimed: the skills artifact (`9d82653f…`, 851,945 bytes) and the
+`539e205f…` audit row are unchanged, `--self-test` prints `self-test: PASS`,
+`--verify-signature` prints `signature: OK`, and
+`tools/recut_release.py --check` prints `ok` for the installer, its release
+copy and both documents. `deploy/image/odile-firstboot.py`'s docstring now
+also states what the installer derives when `odile.public_url=` is absent. It
+is committed, not deployed: measured 2026-11-19T13:01Z the URL serves
+`2026.11.19-1` (`e4a3554b…`, 1,428,062 bytes; manifest `65c56be3…`). The id
+ledger: `-1` is t_3cd62ef9's `/verify` cut (05:00Z), `-2` is this card's
+pre-review cut (11:40Z, never deployed), `2026.11.19-3` is later than every
+cut by `generated_at`, and the bench image of §2 of `image.md` boots this cut.
 
 
 The clock starts at the build's `uki.sh --sign` and stops when
