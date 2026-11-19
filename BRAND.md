@@ -221,20 +221,26 @@ saturated colour is oxblood, and it is either an error or a rule.
 
 ### Legacy surfaces
 
-Two surfaces are not on odile.fyi and have not migrated: the prototype
-(`prototype/userflow.html`) and the demo template (`demo/local/template.html`).
-They keep the old paper until their own cards land, and the lint needs those
-values stated. Never use them on `web/` or `docs/brand/` surfaces. The status
-template (`templates/status.html`) left this list on 2026-11-13, when ODL-467
-published it at `/status`: it paints `--paper` and `--card`, and the two rows it
-carries are the deck's.
+One surface is not on odile.fyi and has not migrated: the demo template
+(`demo/local/template.html`). It keeps the old paper until its own card lands,
+paints the v0 values in its own `:root`, and the lint needs those values
+stated. Never use them on `web/` or `docs/brand/` surfaces.
+
+The prototype (`prototype/userflow.html`) was the second surface. The one-root
+cut of 2026-11-14 (`24ee323`) left `prototype/` out of the public tree, so the
+surface is gone, not un-migrated: no commit reachable from `main` carries
+`prototype/userflow.html`, and `git ls-tree HEAD prototype` is empty. It is a
+record in this sheet, not a build target — there is no path on this tree to
+open. The status template (`templates/status.html`) left this list on
+2026-11-13, when ODL-467 published it at `/status`: it paints `--paper` and
+`--card`, and the two rows it carries are the deck's.
 
 | Token | Value | Use |
 |---|---|---|
-| `--paper-v0` | `#F6F0E4` | The old paper; prototype and demo template only. |
-| `--card-v0` | `#FBF6EA` | The old raised panel; prototype and demo template only. |
+| `--paper-v0` | `#F6F0E4` | The old paper; demo template only. |
+| `--card-v0` | `#FBF6EA` | The old raised panel; demo template only. |
 | `--error-v0` | `#8F3418` | The old error red; demo template only. |
-| `--placeholder-v0` | `#776B5A` | The old opaque-field placeholder; prototype and demo template only. |
+| `--placeholder-v0` | `#776B5A` | The old opaque-field placeholder; demo template only. |
 
 ### Contrast pairs
 
@@ -1228,6 +1234,7 @@ names the `docs/CLAIMS.md` row that moved with it.
 | 2026-11-15 | **Voice, the pairs re-quoted at HEAD.** The six pairs become five, each After quoted from the file that renders it at HEAD: pair 1 the landing lede (`web/index.html`, `d2938b3`, deck v3.9d); pair 2 the claim page's browser rule (`web/claim.html`, §3), replacing the retired host-key modal; pair 3 the FAQ's reboot answer (`web/faq.html`, A11), replacing the retired brief headline; pair 4 the ceremony page's passphrase rule (`web/ceremony.html`, A4), replacing the retired claim screen's key-leak sentence; pair 5 the claim lede (`web/claim.html`, v3.9), replacing the retired "minute thirty" kicker. The old pair 4 (the demo's "99.0% target · 30-day") is dropped: the line left the tree with the prototype, `/status` publishes a computed uptime from heartbeats instead, and the target is the §1 reliability row. The vintage note is replaced by the landed provenance — ODL-462 pre-flip `3355f2c` and t_13cacab8's re-cut (`84a4fa9`, merged pre-flip `94ee0477`), which retired the four v3.4 items — and by the one-root cut `24ee323` (2026-11-14), which carries each of the four After strings in pairs 2–5; pair 1's sentence arrived later, at `d2938b3`. **Also re-cut:** the overflow state names the 249-character email that scrolls inside its field and the 248-character confirmation address that wraps in its line, not "a long key"; the invite's provenance says the prototype's mock left the tree; `docs/brand/ST-ODILE.md` §12's landing and prototype rows name the landed sentences and the one-root cut (HQ-only, outside this commit). No palette, face, artwork or surface rule changed; no public sentence in `docs/CLAIMS.md` changed. | Designer | verifier, t_96bdaf09 |
 | 2026-11-16 | **Product surfaces**: the demo workspace's `Verify this machine` link is the demo's own page on the demo's own host — `https://demo.odile.fyi/verify` — so a judge reaches the report in one hop and HQ's host never appears in the address bar. The 2026-11-13 product-surfaces row is re-cut to that target; the link's 44 px box, its ≤560 visible label `Verify` with the full aria-label, ink on the vendor shell and the tenant's relative `/verify` are unchanged. Both chrome copies (`deploy/demo-host/webapp-chrome.js`, `deploy/image/webapp-chrome.js`, byte-identical, sha256 `f73b90d2…`, 26,836 B) carry the constant once, and the comment above it names the demo's own page. On the demo host the installed script and the bundle's `odile-demo-chrome.js` are the same bytes, and `GET /odile-demo-chrome.js` with a judge session serves that constant. Measured in a browser at 1440×900 and 390×844: `href` `https://demo.odile.fyi/verify`, box 188 × 44 px at x 1184 and 55 × 44 px at x 267, ink `rgb(28,24,19)` on paper `rgb(234,223,196)` 13.33:1, the 2 px ink focus ring at 3 px offset, `scrollWidth == clientWidth` at both widths, and one hop to the page (200, 43,159 B, sha256 `3cdd7427…`, one `<!--demo-check-->` pair). `deploy/demo-host/deploy_demo_icons.py` uploads the chrome — the re-assert helper's source — and reads the served script, so the link the browser runs is measured, not assumed. No palette, face, artwork or surface rule changed; no public sentence in `docs/CLAIMS.md` changed (v3.10e already records the 302). | Designer | verifier, ODL-564 |
 | 2026-11-18 | **Email, the alpha.0 account set.** §Email is re-cut to the three templates A2 sends: `invite.txt` (Savio's personal invitation on the bench; the transactional sender from A7), `confirm.txt` (the address confirmation, naming the configured account host), and `ready.txt` (now the machine URL, the report URL, the measurement, the first-visit link, the reset page and the guide). The v5 footer `Founding alpha · 10 machines · $49/month` and "Claiming takes 3 minutes" leave; the footer is `Private alpha · Odile pays for the machine and the inference · no price`, and the no-desk sentence says alpha.0 has no support desk with a person on it. The templates name the machine's sign-in only; the which-password pair is carried by the register page's PR/FAQ §3 sentence and the account page's one line, and the ready email's `Set your sign-in` is their reduction (`docs/product/DECISION-password-reset.md` §3.5). Each template's privacy, security and reliability sentences are mapped to their `docs/CLAIMS.md` rows in the section. `tools/brand_lint.py` scans `templates/emails/*.txt`, so the rule the section states is the gate it runs. No palette, face or artwork change; no public sentence in `docs/CLAIMS.md` changed. | Designer | verifier, ODL-581 |
+| 2026-11-19 | **Legacy surfaces: the prototype retires from the list.** The one-root cut of 2026-11-14 (`24ee323`) left `prototype/` out of the tree, so `git ls-tree HEAD prototype` is empty and no commit reachable from `main` carries `prototype/userflow.html`: the prototype is a record in this sheet, not a file a builder can open. §Legacy surfaces now names one surface — the demo template (`demo/local/template.html`) — and the prototype is named as gone rather than un-migrated; the three Use cells that said "prototype and demo template only" now say "demo template only", as `--error-v0` already did. The table keeps its four rows, so `tools/brand_lint.py` still reports 4 legacy-only and stays green; the lint's `prototype/*.html` glob and the comments that name it a carrier are unchanged, and the glob matches nothing at HEAD. A first cut of this row said "read it at that commit"; `24ee323` is a root commit and does not carry the file, so the pointer is dropped. This corrects the 2026-11-13 status row's "now names two surfaces" and agrees with `docs/brand/ST-ODILE.md` §12's prototype row, which already calls the surface a record. No palette, typeface or artwork re-value; no public sentence in `docs/CLAIMS.md` changed. | Designer | verifier, t_41439551 |
 
 ## Do / Don't
 
