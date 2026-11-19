@@ -25,7 +25,9 @@ Classes:
                          VCEK certificate serial, a PARTUUID, a machine-id, a MAC
                          address, or a hardware serial.
 * ``vendor-resource-id`` a provider's server / box / account id, a tenant slug,
-                         or a host name.
+                         or a host name — labeled (``bb.iid=…``, ``server_id=…``)
+                         or bare (a code span, a query parameter or flag, an
+                         assignment, a hostname position).
 * ``dns-resource-id``    a DNS zone or record id (32 hex).
 * ``ssh-fingerprint``    a ``SHA256:`` / ``MD5:`` key fingerprint. Unlike the
                          high-entropy rule, this class is not blinded by the
@@ -51,7 +53,8 @@ Classes:
 Opaque payloads. A base64 run longer than 128 characters is decoded and
 scanned; a UTF-16 payload is decoded before the text rules run; a DER
 certificate is read for its serial and HWID; an archive is opened and every
-member is scanned at its own ``archive!member`` path.
+member is scanned at its own ``archive!member`` path, by the class rules and by
+the forbidden-value list alike.
 
 Allowlist discipline. Every exception is one line of ``leak-allow.tsv``:
 
@@ -249,9 +252,63 @@ HOST_NAME = re.compile(
     r"(?i)\b(?:bb\.host|host[_-]?name)\b\s*[=:]\s*[\"']?([a-z][a-z0-9]{5,11})\b")
 HOST_NAME_ALLOW = {"hostfake", "hostname", "localhost", "machine", "odlukitest", "scratch", "tokens"}
 # Synthetic instance ids the tests use; a fixture is not a provider's machine.
-INSTANCE_ID_ALLOW = {"01494715", "0badc0de", "45445445", "7448afca", "abc12345", "cafebabe", "fbf0f1f0"}
+# The last five are the public build's scrub stand-ins (the box id, the three
+# account ids, and the panel/UKI fixture id): a stand-in is a stand-in in any
+# position, labeled or bare.
+INSTANCE_ID_ALLOW = {
+    "01494715", "0badc0de", "45445445", "7448afca", "abc12345", "cafebabe",
+    "fbf0f1f0", "deadbeef", "0acc0001", "0acc0002", "0acc0003", "a1b2c3d4",
+}
 TENANT_SLUG = re.compile(r"\bodl-[0-9]{4}[a-z0-9]{2,4}\b")
 TENANT_SLUG_ALLOW = {"odl-000000"}
+
+# A Servury account id is 8 lowercase alphanumerics, not hex: `account=…` and
+# `account_id=…` name the same resource, and the shape is a word's shape too,
+# so the value must carry a digit (`lkbxu6i9` is an id, `username` is a word).
+ACCOUNT_ID = re.compile(
+    r"(?i)\baccount(?:[_-]?id)?\b\s*[=:]\s*[\"']?([a-z0-9]{8})\b")
+
+# A bare vendor id: the same provider tokens written without the label that
+# names them. An 8-hex token is also a short commit id, a uuid fragment or a
+# colour, so this rule pins the positions in which a bare token is an id — a
+# code span of the token alone, a query parameter or command-line flag, an
+# assignment, or a hostname position — and pins the negatives: a token inside a
+# longer hex run or a uuid, a digest behind ``sha256:``, a colour behind ``#``,
+# and a code span whose clause names a commit, a snapshot, an invoice or a pin.
+BARE_INSTANCE_ID = re.compile(
+    r"(?:"
+    r"(?<![\w.#-])`(?P<span>[0-9a-f]{8})`(?!-)"
+    r"|[?&](?:id|iid|sid)=(?P<param>[0-9a-f]{8})(?![\w-])"
+    r"|(?<![\w.-])--(?:instance|server|box|host|tenant|machine)(?:=|\s+)"
+    r"(?P<flag>[0-9a-f]{8})(?![\w-])"
+    r"|\b(?:instance|server|box|host|machine|tenant)(?:[ _-]?(?:id|iid))?"
+    r"\s*[:=]\s*[\"']?(?P<assign>[0-9a-f]{8})(?![\w-])"
+    r"|\b(?:instance|server|box|host|machine)\s+(?P<prose>[0-9a-f]{8})(?![\w-])"
+    r")")
+BARE_HOST_NAME = re.compile(
+    r"(?:"
+    r"(?<![\w.#-])(?P<local>[a-z][a-z0-9]{7})\.local\b(?![.\w\]])"
+    r"|[A-Za-z0-9._%+-]+@(?P<realm>[a-z][a-z0-9]{7})(?![\w.-])"
+    r"|(?<![\w.#-])`(?P<span>[a-z][a-z0-9]{7})`(?!-)"
+    r"|^[A-Z][a-z]{2}\s+\d{1,2}\s+\d\d:\d\d:\d\d\s+(?P<syslog>[a-z][a-z0-9]{7})"
+    r"\s+\S+\[\d+\]:"
+    r")")
+# A code span in a clause that names a different kind of id is not a machine
+# id. The window reaches back 48 characters, and into the previous line's tail
+# when that line continues this one (prose wraps; a table row or a bullet does
+# not).
+BARE_ID_CUE = re.compile(
+    r"(?:\b(?i:commit|merge[ds]?|snapshot|invoice|pin(?:ned)?|revision|rev|"
+    r"sha(?:1|224|256|384|512)?|digest|checksum|colour|color)\b|\bHEAD\b)")
+BARE_ID_WINDOW = 48
+BLOCK_START = re.compile(r"^\s*(?:[|*#>-]|\d+\.)")
+# A bare host name is a shape a word shares; outside a hostname position it is
+# only an id when the line names one.
+HOST_SPAN_CUE = re.compile(r"(?i)\b(?:host ?name|hostname|box)\b")
+# The bare positions share the labeled rule's stand-ins. The two bare rules
+# share one set: a stand-in is a stand-in in either position.
+BARE_ID_ALLOW = INSTANCE_ID_ALLOW
+BARE_ALLOW = BARE_ID_ALLOW | HOST_NAME_ALLOW
 
 # DNS resource ids: Cloudflare zone and record ids are 32 hex.
 ZONE_ID = re.compile(r"(?i)\bzone(?:[_-]?id)?\b\D{0,24}([0-9A-Fa-f]{32})\b")
@@ -444,8 +501,13 @@ def secret_assignment(name: str, value: str) -> bool:
     return shannon(value) >= MIN_ASSIGNMENT_ENTROPY
 
 
-def text_candidates(line: str, number: int) -> list[tuple[str, str, str]]:
-    """(rule, value, note) for one line of text."""
+def text_candidates(line: str, number: int, before: str = "") -> list[tuple[str, str, str]]:
+    """(rule, value, note) for one line of text.
+
+    ``before`` is the previous line's tail, so a bare id whose cue word wrapped
+    onto the line above is still read in its clause. ``scan_text`` passes it; a
+    caller reading one line in isolation does not need to.
+    """
     data_uri = "base64," in line or "data:image" in line or "data:font" in line
     found: list[tuple[str, str, str]] = []
     seen: set[str] = set()
@@ -481,6 +543,31 @@ def text_candidates(line: str, number: int) -> list[tuple[str, str, str]]:
     for match in TENANT_SLUG.finditer(line):
         if match.group(0) not in TENANT_SLUG_ALLOW:
             add("vendor-resource-id", match.group(0), "tenant slug")
+    for match in ACCOUNT_ID.finditer(line):
+        value = match.group(1)
+        if re.search(r"\d", value) and value.lower() not in BARE_ALLOW:
+            add("vendor-resource-id", value, "account id")
+    # The same ids written bare. A code span is the ambiguous shape, so its
+    # clause decides: the token is an id unless the clause names a commit, a
+    # snapshot, an invoice or a pin.
+    for match in BARE_INSTANCE_ID.finditer(line):
+        value = (match.group("span") or match.group("param") or match.group("flag")
+                 or match.group("assign") or match.group("prose"))
+        if value.lower() in BARE_ALLOW:
+            continue
+        if match.group("span"):
+            window = line[max(0, match.start() - BARE_ID_WINDOW):match.start()]
+            if BARE_ID_CUE.search(before + window):
+                continue
+        add("vendor-resource-id", value, "bare instance id")
+    for match in BARE_HOST_NAME.finditer(line):
+        value = (match.group("local") or match.group("realm")
+                 or match.group("span") or match.group("syslog"))
+        if value.lower() in BARE_ALLOW:
+            continue
+        if match.group("span") and not (TENANT_SLUG.search(line) or HOST_SPAN_CUE.search(line)):
+            continue
+        add("vendor-resource-id", value, "bare host name")
     for match in ZONE_ID.finditer(line):
         add("dns-resource-id", match.group(1), "zone id")
     for match in RECORD_ID.finditer(line):
@@ -711,7 +798,9 @@ def scan_text(text: str, depth: int = 0) -> list[tuple[str, int, str, str]]:
                     out.append(("private-key", index + 1, block, ""))
                 index = end + 1
                 continue
-        for rule, value, note in text_candidates(line, index + 1):
+        before = (lines[index - 1][-BARE_ID_WINDOW:]
+                  if index and not BLOCK_START.match(line) else "")
+        for rule, value, note in text_candidates(line, index + 1, before):
             out.append((rule, index + 1, value, note))
         if depth < 2 and not any(part in line for part in ("data:image", "data:font", "base64,")):
             for match in B64_RUN.finditer(line):
@@ -741,9 +830,13 @@ def scan_bytes(data: bytes, depth: int = 0) -> list[tuple[str, int, str, str]]:
     return out
 
 
-def scan_archive(name: str, data: bytes) -> list[tuple[str, list[tuple[str, int, str, str]]]]:
-    """Every member of a tar / zip / gzip archive, at archive!member paths."""
-    out: list[tuple[str, list[tuple[str, int, str, str]]]] = []
+def scan_archive(name: str, data: bytes) -> list[tuple[str, list[tuple[str, int, str, str]], str]]:
+    """Every member of a tar / zip / gzip archive, at archive!member paths.
+
+    The third element is the member's own text view, so the forbidden-value
+    class reads inside an archive exactly as it reads a file.
+    """
+    out: list[tuple[str, list[tuple[str, int, str, str]], str]] = []
     members = 0
 
     def take(member: str, blob: bytes) -> None:
@@ -753,9 +846,10 @@ def scan_archive(name: str, data: bytes) -> list[tuple[str, list[tuple[str, int,
             return
         path = f"{name}!{member}"
         if is_binary(blob):
-            out.append((path, scan_bytes(blob)))
+            out.append((path, scan_bytes(blob), blob.decode("latin-1")))
         else:
-            out.append((path, scan_text(blob.decode("utf-8", "replace"))))
+            text = blob.decode("utf-8", "replace")
+            out.append((path, scan_text(text), text))
 
     if zipfile.is_zipfile(io.BytesIO(data)):
         with zipfile.ZipFile(io.BytesIO(data)) as archive:
@@ -789,13 +883,18 @@ def scan_archive(name: str, data: bytes) -> list[tuple[str, list[tuple[str, int,
     return out
 
 
-def scan_data(relative: str, data: bytes) -> list[tuple[str, list[tuple[str, int, str, str]]]]:
-    """(path, candidates) for one file; archives fan out to their members."""
+def scan_data(relative: str, data: bytes) -> list[tuple[str, list[tuple[str, int, str, str]], str]]:
+    """(path, candidates, text) for one file; archives fan out to their members.
+
+    The text is the view the forbidden-value class reads: a member's own bytes
+    for an archive member, so a private literal cannot hide inside an archive.
+    """
     if relative.endswith(ARCHIVE_SUFFIXES):
         return scan_archive(relative, data)
     if is_binary(data):
-        return [(relative, scan_bytes(data))]
-    return [(relative, scan_text(data.decode("utf-8", "replace")))]
+        return [(relative, scan_bytes(data), data.decode("latin-1"))]
+    text = data.decode("utf-8", "replace")
+    return [(relative, scan_text(text), text)]
 
 
 def is_binary(data: bytes) -> bool:
@@ -859,11 +958,9 @@ def scan_tree(root: Path, allows: list[Allow], today: date,
             continue
         report.files += 1
         report.bytes_scanned += len(data)
-        for scanned_path, candidates in scan_data(relative, data):
+        for scanned_path, candidates, text in scan_data(relative, data):
             apply(report, root, allows, today, scanned_path, candidates)
-        if not relative.endswith(ARCHIVE_SUFFIXES):
-            text = data.decode("latin-1") if is_binary(data) else data.decode("utf-8", "replace")
-            report.findings.extend(scan_forbidden(text, relative, forbid))
+            report.findings.extend(scan_forbidden(text, scanned_path, forbid))
     return report
 
 
@@ -907,12 +1004,10 @@ def scan_history(root: Path, allows: list[Allow], today: date,
             report.bytes_scanned += size
             if path.endswith(SKIP_SUFFIXES):
                 continue
-            text = data.decode("latin-1") if is_binary(data) else data.decode("utf-8", "replace")
             before = len(report.findings)
-            for scanned_path, candidates in scan_data(path, data):
+            for scanned_path, candidates, text in scan_data(path, data):
                 apply(report, root, allows, today, scanned_path, candidates)
-            if not path.endswith(ARCHIVE_SUFFIXES):
-                report.findings.extend(scan_forbidden(text, path, forbid))
+                report.findings.extend(scan_forbidden(text, scanned_path, forbid))
             for finding in report.findings[before:]:
                 finding.commit = commit[:7]
     finally:

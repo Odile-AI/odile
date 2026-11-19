@@ -35,9 +35,18 @@ FINGERPRINT = "SHA256:" + "A" * 43
 MAC = "aa:bb:" + "cc:dd:ee:ff"
 MACHINE_ID = "0123456789abcdef" * 2
 SERIAL = "SN01" + "23456789"
-INSTANCE = "dead" + "beef"
+INSTANCE = "baad" + "f00d"
 HOST = "qwerty" + "ui"
 SLUG = "odl-" + "1234ab"
+# A bare id, and the shapes that share its look: a short commit id, a uuid
+# fragment, a colour and a digest prefix.
+BARE_ID = "31a6" + "3bbb"
+BARE_HOST = "oqwa" + "clzm"
+ACCOUNT = "lkbx" + "u6i9"
+COMMIT = "feed" + "c0de"
+COLOUR = "94ee" + "0477"
+UUID = "01234567-89ab-" + "cdef-0123-456789abcdef"
+DIGEST = "sha256:" + BARE_ID + "0" * 56
 PASSPHRASE = "correct-horse-" + "battery-staple"
 MNEMONIC = ("abandon ability able about above absent " +
             "absorb abstract absurd abuse access accident")
@@ -102,6 +111,47 @@ class VendorResourceIds(unittest.TestCase):
 
     def test_a_public_stand_in_slug_is_not_a_tenant(self):
         self.assertNotIn("vendor-resource-id", rules("tenant odl-fake01"))
+
+    def test_a_bare_instance_id_in_a_code_span_is_reported(self):
+        # No `bb.iid=` / `server_id=` label: the code span is the position.
+        self.assertIn("vendor-resource-id", rules(f"the machine is `{BARE_ID}`"))
+
+    def test_a_bare_instance_id_in_a_query_parameter_is_reported(self):
+        self.assertIn("vendor-resource-id", rules(f"?action=server&id={BARE_ID}"))
+
+    def test_a_bare_instance_id_after_an_instance_cue_is_reported(self):
+        self.assertIn("vendor-resource-id", rules(f"reinstalled instance {BARE_ID}"))
+
+    def test_a_bare_host_name_in_a_hostname_is_reported(self):
+        self.assertIn("vendor-resource-id", rules(f"the PTR was `{BARE_HOST}.local`"))
+
+    def test_a_bare_host_name_in_a_mailbox_realm_is_reported(self):
+        self.assertIn("vendor-resource-id", rules(f"stored as user@{BARE_HOST}"))
+
+    def test_an_account_id_of_another_shape_is_reported(self):
+        # A Servury account id is 8 lowercase alphanumerics, not hex: the
+        # labeled rule's value shape must reach an `account_id=` value that
+        # carries a digit but is not hex.
+        self.assertIn("vendor-resource-id", rules(f"account_id={ACCOUNT}"))
+        self.assertIn("vendor-resource-id", rules(f"account={ACCOUNT}"))
+
+    def test_an_eight_letter_word_is_not_an_account_id(self):
+        self.assertNotIn("vendor-resource-id", rules("account=username"))
+
+    def test_a_commit_sha_is_not_a_bare_id(self):
+        # A code span is also how a short commit id is written; the clause
+        # (`merged`, `commit`, `HEAD`) says which one it is.
+        self.assertNotIn("vendor-resource-id", rules(f"merged pre-flip at `{COMMIT}`"))
+        self.assertNotIn("vendor-resource-id", rules(f"HEAD is `{COMMIT}` now"))
+
+    def test_a_uuid_fragment_is_not_a_bare_id(self):
+        self.assertNotIn("vendor-resource-id", rules(f"uuid {UUID}"))
+
+    def test_a_digest_prefix_is_not_a_bare_id(self):
+        self.assertNotIn("vendor-resource-id", rules(f"checksum {DIGEST}"))
+
+    def test_a_colour_is_not_a_bare_id(self):
+        self.assertNotIn("vendor-resource-id", rules(f"the tint is #{COLOUR}"))
 
 
 class DnsResourceIds(unittest.TestCase):
@@ -224,9 +274,10 @@ class OpaquePayloads(unittest.TestCase):
             info.size = len(data)
             archive.addfile(info, io.BytesIO(data))
         found = leak_scan.scan_archive("bundle.tar.gz", buffer.getvalue())
-        paths = {path for path, _candidates in found}
+        paths = {path for path, _candidates, _text in found}
         self.assertIn("bundle.tar.gz!member.txt", paths)
-        rules_found = {rule for _path, candidates in found for rule, _line, _value, _note in candidates}
+        rules_found = {rule for _path, candidates, _text in found
+                       for rule, _line, _value, _note in candidates}
         self.assertIn("public-ip", rules_found)
         self.assertIn("email", rules_found)
 
@@ -238,7 +289,8 @@ class OpaquePayloads(unittest.TestCase):
             info.size = len(data)
             archive.addfile(info, io.BytesIO(data))
         found = leak_scan.scan_archive("bundle.tar.gz", buffer.getvalue())
-        self.assertEqual(found, [("bundle.tar.gz!member.txt", [])])
+        self.assertEqual([(path, candidates) for path, candidates, _text in found],
+                         [("bundle.tar.gz!member.txt", [])])
 
 
 def git_env() -> dict[str, str]:
@@ -308,6 +360,26 @@ class Drill(unittest.TestCase):
             self.assertEqual(first.returncode, 1, first.stdout + first.stderr)
             self.assertIn("public-ip", first.stdout)
             self.assertEqual(second.returncode, 0, second.stdout + second.stderr)
+
+    def test_a_bare_vendor_id_fails_the_gate_then_passes(self):
+        # The card's acceptance: a bare id with no `server_id=` around it is a
+        # finding, and the same tree passes once the probe is gone.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            subprocess.run(["git", "-C", str(root), "init", "-q"], check=True, env=git_env())
+            probe = root / "probe.txt"
+            probe.write_text(f"the machine is `{BARE_ID}`\n", encoding="utf-8")
+            scanner = str(ROOT / "tools" / "leak_scan.py")
+            first = subprocess.run([sys.executable, scanner, "--tree", "--root", str(root)],
+                                   capture_output=True, text=True, timeout=60, env=git_env())
+            probe.unlink()
+            second = subprocess.run([sys.executable, scanner, "--tree", "--root", str(root)],
+                                    capture_output=True, text=True, timeout=60, env=git_env())
+            self.assertEqual(first.returncode, 1, first.stdout + first.stderr)
+            self.assertIn("FINDING vendor-resource-id", first.stdout)
+            self.assertIn("bare instance id", first.stdout)
+            self.assertEqual(second.returncode, 0, second.stdout + second.stderr)
+            self.assertIn("PASS:", second.stdout)
 
 
 if __name__ == "__main__":
