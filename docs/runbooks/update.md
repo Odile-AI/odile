@@ -118,9 +118,10 @@ checks that pin against `scripts/backup.py`, so a stranger can compare the two
 records and see that the installer a release ships writes the program the
 release names (t_e0475dba). The cuts made before the row existed carry no such
 key: the served `2026.11.19-1` (measured 2026-11-19T17:32Z) and the
-repository's `2026.11.19-3` do not. The row is optional in the schema: a
-document cut before it existed still verifies, and `check`/`apply` warn rather
-than refuse; a row that is present has to be a 64-hex digest.
+repository's `2026.11.19-4` — the re-cut of `2026.11.19-3`'s pair — do not. The
+row is optional in the schema: a document cut before it existed still verifies,
+and `check`/`apply` warn rather than refuse; a row that is present has to be a
+64-hex digest.
 
 ## 4. The commands
 
