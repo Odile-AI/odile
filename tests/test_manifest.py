@@ -17,6 +17,13 @@ hash the installer required of the fetched `install.sh` before running it. The
 fixture installer answers `--manifest` the way the real one does, so the
 builder reads the pin from the same record a machine would carry.
 
+The follow-up (t_e0475dba) adds `backup_sha256`, the tenant backup program the
+nightly unit executes. It is read from the installed root's
+`/usr/local/lib/odile/backup.py` — the file the installer wrote — and falls
+back to the installer's own embedded pin when a scratch root predates that
+step, because that pin is the bytes the installer would write. A tenant root
+without the program is a refusal.
+
     /usr/bin/python3 -m unittest tests.test_manifest -v
 """
 
@@ -45,6 +52,9 @@ FIXED_NOW = "2026-11-08T00:00:00Z"
 LATER = "2026-11-08T00:01:00Z"
 FIXED_INSTALL_PIN = "abf338605dae6dd28d101673ac6aed7995c955745db46d47676bc591a7957209"
 OTHER_INSTALL_PIN = "abf338605dae6dd28d101673ac6aed7995c955745db46d47676bc591a7957208"
+BACKUP_PROGRAM = b"#!/usr/bin/python3\n# the fixture tenant backup program\nprint('backup')\n"
+FIXED_BACKUP_PIN = hashlib.sha256(BACKUP_PROGRAM).hexdigest()
+OTHER_BACKUP_PIN = hashlib.sha256(BACKUP_PROGRAM + b"# one byte more\n").hexdigest()
 
 INSTALLER_SOURCE = """\
 #!/usr/bin/python3
@@ -53,10 +63,11 @@ import json
 import sys
 
 PIN = "<PIN>"
+BACKUP = "<BACKUP_PIN>"
 
 if "--manifest" in sys.argv:
     print(json.dumps({"name": "odile_install", "version": "0.1.0",
-                      "hermes_install_sha256": PIN}))
+                      "hermes_install_sha256": PIN, "backup_sha256": BACKUP}))
     raise SystemExit(0)
 print("installer")
 """
@@ -106,17 +117,20 @@ def write(path: Path, data: bytes, mode: int = 0o644) -> Path:
     return path
 
 
-def installer_source(pin: str = FIXED_INSTALL_PIN) -> bytes:
-    return INSTALLER_SOURCE.replace("<PIN>", pin).encode("utf-8")
+def installer_source(pin: str = FIXED_INSTALL_PIN, backup_pin: str = FIXED_BACKUP_PIN) -> bytes:
+    return (INSTALLER_SOURCE.replace("<PIN>", pin)
+            .replace("<BACKUP_PIN>", backup_pin)).encode("utf-8")
 
 
 def make_root(base: Path, name: str = "root", user: str = "tester",
-              install_pin: str = FIXED_INSTALL_PIN) -> Path:
+              install_pin: str = FIXED_INSTALL_PIN, backup_pin: str = FIXED_BACKUP_PIN,
+              backup_program: bytes = BACKUP_PROGRAM) -> Path:
     """A scratch root shaped like the installer leaves one."""
     root = base / name
     home = root / "home" / user
     hermes = home / ".hermes"
-    write(root / "bootstrap/odile_install.py", installer_source(install_pin), 0o755)
+    write(root / "bootstrap/odile_install.py", installer_source(install_pin, backup_pin), 0o755)
+    write(root / "usr/local/lib/odile/backup.py", backup_program, 0o755)
     write(root / "etc/odile/seed.json", json.dumps({
         "slug": "odl-test", "model": MODEL, "near_api_key": "near-secret",
     }).encode() + b"\n", 0o600)
@@ -278,6 +292,46 @@ class ManifestBuildTests(unittest.TestCase):
             self.build(root=bad)
         self.assertIn("hermes_install_sha256", str(raised.exception))
 
+    def test_build_records_the_tenant_backup_program(self):
+        manifest = self.build()
+        installed = self.root / "usr/local/lib/odile/backup.py"
+        self.assertEqual(manifest["backup_sha256"], sha256(installed.read_bytes()))
+        self.assertEqual(manifest["backup_sha256"], FIXED_BACKUP_PIN)
+
+    def test_a_changed_backup_program_moves_the_manifest_field(self):
+        before = self.build()
+        installed = self.root / "usr/local/lib/odile/backup.py"
+        installed.write_bytes(installed.read_bytes() + b"# one byte more\n")
+        after = self.build()
+        self.assertEqual(before["backup_sha256"], FIXED_BACKUP_PIN)
+        self.assertNotEqual(after["backup_sha256"], before["backup_sha256"])
+        same, detail = self.module.diff_manifests(before, after)
+        self.assertFalse(same)
+        self.assertIn("backup_sha256", detail)
+
+    def test_a_scratch_root_without_the_program_uses_the_installers_pin(self):
+        (self.root / "usr/local/lib/odile/backup.py").unlink()
+        manifest = self.build()
+        self.assertEqual(manifest["backup_sha256"], FIXED_BACKUP_PIN)
+
+    def test_a_tenant_root_without_the_program_is_refused(self):
+        (self.root / "usr/local/lib/odile/backup.py").unlink()
+        with self.assertRaises(self.module.ManifestError) as raised:
+            self.module.collect_backup_hash(
+                {"root": self.root, "mode": "tenant"},
+                {"backup_sha256": FIXED_BACKUP_PIN})
+        self.assertIn("backup.py", str(raised.exception))
+
+    def test_a_scratch_root_without_program_or_pin_is_refused(self):
+        (self.root / "usr/local/lib/odile/backup.py").unlink()
+        bare = write(self.tmp / "bare2/odile_install.py",
+                     ('#!/usr/bin/python3\nimport json\n'
+                      f'print(json.dumps({{"hermes_install_sha256": "{FIXED_INSTALL_PIN}"}}))\n'
+                      ).encode(), 0o755)
+        with self.assertRaises(self.module.ManifestError) as raised:
+            self.build(installer=bare)
+        self.assertIn("backup_sha256", str(raised.exception))
+
     def test_two_roots_produce_the_same_manifest_except_the_timestamp(self):
         other = make_root(self.tmp, "root-b", user="otheruser")
         first = self.build(now=FIXED_NOW)
@@ -383,6 +437,19 @@ class ShippedInstallerTests(unittest.TestCase):
         module = load_manifest_script()
         record = module.read_installer_manifest(ROOT / "installer" / "odile_install.py")
         self.assertRegex(record["hermes_install_sha256"], r"^[0-9a-f]{64}$")
+
+    def test_the_shipped_installer_pins_the_backup_program_in_the_checkout(self):
+        """The embedded pin and `scripts/backup.py` are the same bytes.
+
+        `--self-test` compares them too; this is the row the release manifest
+        records, so a release built from a root names the program a stranger
+        can read here.
+        """
+        module = load_manifest_script()
+        record = module.read_installer_manifest(ROOT / "installer" / "odile_install.py")
+        self.assertRegex(record["backup_sha256"], r"^[0-9a-f]{64}$")
+        self.assertEqual(record["backup_sha256"],
+                         sha256((ROOT / "scripts" / "backup.py").read_bytes()))
 
 
 class SignatureTests(unittest.TestCase):
