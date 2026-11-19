@@ -84,7 +84,7 @@ NEAR_KEY_ENV = "HERMES_CUSTOM_CLOUD_API_NEAR_AI_API_KEY"
 COMMITTED_BLOCK = HERE.parent / "caddy" / "demo-tenant-site.caddy"
 #: The demo machine's /verify lede (ODL-503 finding 1), one committed file.
 VERIFY_LEDE = HERE / "verify-lede.html"
-CUSTOMER_SENTENCE = "No one at Odile can log in to a tenant machine."
+CUSTOMER_SENTENCE = "No one at Odile can log in unless you grant it."
 MEASUREMENT = re.compile(r"\b([0-9a-f]{96})\b")
 #: The sign-in page's three tab files (t_6b25f6e5), as committed: the same
 #: bytes the site's pages link. A served file must hash to these, carry this

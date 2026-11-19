@@ -44,7 +44,7 @@ LEDE = DEMO / "verify-lede.html"
 #: ODL-503 decision, so a reviewer can still check every sentence after the page
 #: is gone.
 LEDE_RECORD = ROOT / "docs" / "runbooks" / "demo-public.md"
-CUSTOMER_SENTENCE = "No one at Odile can log in to a tenant machine."
+CUSTOMER_SENTENCE = "No one at Odile can log in unless you grant it."
 INSTALLERS = (ROOT / "installer" / "odile_install.py",
               ROOT / "release" / "odile_install.py")
 

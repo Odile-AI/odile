@@ -496,7 +496,7 @@ def verify_state() -> dict:
                      and first_lede.group(0).strip() == lede and bool(lede),
         "demo_command": section is not None and section.group(0).strip() == command
                         and bool(command),
-        "customer_lede": "No one at Odile can log in to a tenant machine." in block,
+        "customer_lede": "No one at Odile can log in unless you grant it." in block,
         "rollback": VERIFY_BACKUP.is_file(),
     }
 
@@ -1892,7 +1892,7 @@ def self_test() -> int:
     check(command.count("{{MEASUREMENT}}") == 1 and PAGE_COMMAND in command
           and "--expect" in command,
           "the demo command carries the --expect line and one live measurement slot")
-    release = "<!--tenant-->\n<p class=\"lede\">No one at Odile can log in to a tenant machine.</p>\n<!--/tenant-->\n"
+    release = "<!--tenant-->\n<p class=\"lede\">No one at Odile can log in unless you grant it.</p>\n<!--/tenant-->\n"
     check(COMMAND_BEGIN not in release, "the release tenant block carries no demo command")
     demo = inject_lede(release, lede)
     check(tenant_block(demo).strip() == lede.strip()
