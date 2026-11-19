@@ -209,9 +209,10 @@ ODL-466 (`docs/security/CLAIMS-VERDICT-strict.md`) is the verdict on each row.
 A held row is published by the card named here, in a deck row that already
 says what it will say. One row is held for a different reason: the allowance's
 return to `web/terms.html` and `web/faq.html` waits on Savio's re-cut of the
-machine-and-price details rather than on a card, while the money copy on the
-price homes and the support template left with `t_02310cbf` (`ddcde16`) and the
-installed help is `t_080f8a83`'s; its cell says which half is which. ODL-217
+machine-and-price details rather than on a card, while the money copy on
+`web/claim.html` and the support template left with `t_02310cbf` (`ddcde16`),
+the ready email's with ODL-581 (`238c22b`), and the installed help is
+`t_080f8a83`'s; its cell says which half is which. ODL-217
 (support grant) merged at `ebaf266` and
 ODL-215 (backups and the restore drill) merged at `9f43829`, both on
 13 November 2026;
