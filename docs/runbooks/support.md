@@ -415,7 +415,7 @@ verdict, not a broken unit.
 HQ audits a grant through the log the tenant carries
 (`/var/log/odile-support.log`), `odile-support status --json`, and the
 `audit`/`logs` sections of the bundle the user emails. The `/verify` row landed
-with `t_e23f3288` in release `2026.11.19-4` (`docs/runbooks/install.md`
+with `t_e23f3288` in release `2026.11.19-5` (`docs/runbooks/install.md`
 §12.6): the reporter is `scripts/verify_and_unlock.sh`, embedded in the signed
 installer, and the parsers in `app.py` and `installer/first_visit.py` accept
 the sixth row only together with the OPEN verdict.

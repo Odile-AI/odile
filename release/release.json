@@ -1,7 +1,7 @@
 {
   "artifacts": {
     "installer": {
-      "sha256": "e0cc10e945b0f1dce2cc1008a7cc8bab3660abe348b0862bb5bdff856cd7a08d",
+      "sha256": "d393b558bd6f09e8045a5daf4e48cbde9ca9d930209f74a7e56c36b95d630e45",
       "size": 1441860,
       "url": "odile_install.py"
     },
@@ -14,14 +14,14 @@
   "boot": {
     "kernel": "6.12.115+deb13.1-amd64"
   },
-  "generated_at": "2026-11-19T16:00:00Z",
+  "generated_at": "2026-11-19T17:00:00Z",
   "manifest": {
-    "sha256": "268cf2379e869a32a92611992e34fdaca8a83fab01cd1cb466dd419adba445e5",
+    "sha256": "1dd0d05dd9562d87b562499f8aca7bc5d42e760ac839aaaf021f15b02843b348",
     "signature_url": "manifest.json.sig",
     "url": "manifest.json"
   },
-  "notes": "t_e23f3288 (the ODL-474 follow-up's remaining half): /verify names a live support grant instead of showing a bare FAIL. The reporter (scripts/verify_and_unlock.sh --mode access, embedded in this installer) reads /var/lib/odile/support-grant.json; while the grant is inside its window and has no tombstone it prints a sixth row \u2014 support grant OPEN, grant <id>; expires <expiry>; key <fingerprint>; line present|missing \u2014 and the verdict names the grant instead of 'FAIL \u2014 the access report did not pass'. The state may only account for the exact forced-command line odile-support grant wrote (our marker, our key, our command, from root's own key file); a hand-written grant-shaped line, a revoked or expired state, or a state naming another key still fails. With no grant the report is byte-identical to before (five rows, PASS \u2014 five checks). app.py and installer/first_visit.py accept the 11-line shape and require the row and the OPEN verdict together; the installer's embedded first_visit.py is the same file. installer/access_report.sh (c85b4c37\u2026) and web/verify.html (97e6e93a\u2026) are unchanged \u2014 the wrapper only resolves the pin, and the row is a row of the report the page already prints; the pins that moved are first_visit.py (693c0058\u2026) and verify_and_unlock.sh (fa234608\u2026). release/manifest.json is 2026.11.16-1's fresh-root document whose only move is installer_sha256 (49,957 bytes), so no root rebuild is claimed; the skills artifact (9d82653f\u2026, 851,945 bytes) and the 539e205f\u2026 audit row are unchanged. The id is 2026.11.19-4: -1 is t_3cd62ef9's /verify cut (2026-11-19T05:00:00Z), -2 is t_73334f58's pre-review cut (11:40Z, never deployed), -3 is that card's review-round cut (13:10Z), and this cut's generated_at is later than all three. It is committed, not deployed: measured 2026-11-19T15:48Z the URL serves 2026.11.19-1 (e4a3554b\u2026 installer, 1,428,062 bytes).",
+  "notes": "t_e23f3288 (the ODL-474 follow-up's remaining half), designer round 2: the tenant /verify page's one access sentence is now the published scoped row 'No one at Odile can log in unless you grant it.' (the first clause of docs/CLAIMS.md 1 Access, already rendered on web/faq.html and web/privacy.html; no new claim). The absolute it replaces ('No one at Odile can log in to a tenant machine.') contradicted the page itself during a live support grant, where the report this card adds prints 'operator key FAIL ... one is the support grant <id>' and 'OPEN -- a support grant is live until ...'. The change is one line in both byte-identical copies (web/verify.html and web/verify-public.html are now 05c8c0e9...), re-embedded into the installer with installer/embed_verify.py and re-signed (installer d393b558..., 1,441,860 bytes); the embedded pins for access_report.sh (c85b4c37...), verify_and_unlock.sh (fa234608...), audit.py (539e205f...) and first_visit.py (693c0058...) are unchanged. Everything the -4 notes describe still holds: the reporter (scripts/verify_and_unlock.sh --mode access) reads /var/lib/odile/support-grant.json; while the grant is inside its window and has no tombstone it prints a sixth row -- support grant OPEN, grant <id>; expires <expiry>; key <fingerprint>; line present|missing -- and the verdict names the grant instead of 'FAIL -- the access report did not pass'. The state may only account for the exact forced-command line odile-support grant wrote; a hand-written grant-shaped line, a revoked or expired state, or a state naming another key still fails. With no grant the report is byte-identical to before (five rows, PASS -- five checks). app.py and installer/first_visit.py accept the 11-line shape and require the row and the OPEN verdict together. release/manifest.json is 2026.11.16-1's fresh-root document whose only move is installer_sha256 (49,957 bytes), so no root rebuild is claimed; the skills artifact (9d82653f..., 851,945 bytes) and the 539e205f... audit row are unchanged. The id is 2026.11.19-5: -1 is t_3cd62ef9's /verify cut (2026-11-19T05:00:00Z), -2 is t_73334f58's pre-review cut (11:40Z, never deployed), -3 is that card's review-round cut (13:10Z), -4 is this card's first cut (16:00Z, never deployed), and this cut's generated_at (17:00Z) is later than all four. It is committed, not deployed: measured 2026-11-19T16:47Z the URL serves 2026.11.19-1 (e4a3554b... installer, 1,428,062 bytes).",
   "product": "odile",
-  "release": "2026.11.19-4",
+  "release": "2026.11.19-5",
   "schema": 1
 }

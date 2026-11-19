@@ -4697,7 +4697,7 @@ ICON_SET = (
 # exactly the surface it writes to /usr/local/lib/odile/. --self-test
 # fails on a one-byte edit. The handoff audit (ODL-208) is embedded the
 # same way and installed at /usr/local/bin/odile-audit.
-VERIFY_PAGE_SHA256 = "97e6e93af634f96d45285451674dcd7309a0d14dbb63a8bf8680b97537d1725d"
+VERIFY_PAGE_SHA256 = "05c8c0e92e5d925d52edbe6f35831700826d9603b38b561d02b8073c9cc36cdc"
 VERIFY_PAGE = r'''<!doctype html>
 <html lang="en">
 <head>
@@ -4819,7 +4819,7 @@ h1,h2,h3,.brand,.mark,.wordmark,.focus{font-family:var(--serif)}
   <p class="lede">This is Odile's tenant machine: one shared workspace on our measured AMD SEV-SNP machine. Odile holds this machine's boot key and can log in.</p>
   <!--/demo-->
   <!--tenant-->
-  <p class="lede">No one at Odile can log in to a tenant machine.</p>
+  <p class="lede">No one at Odile can log in unless you grant it.</p>
   <!--/tenant-->
   <!--demo-->
   <!-- Rachel Ruysch, Still-Life with Flowers, c. 1717. Public domain. Lower detail crop; decorative, no caption. -->
