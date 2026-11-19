@@ -2422,8 +2422,8 @@ ones rounds 1–3 measured; the pins that moved are `first_visit.py`
 bytes — the `installer_sha256` move plus the `backup_sha256` row main's
 document predated, naming the same `scripts/backup.py`), so no root rebuild is
 claimed; the skills artifact (`9d82653f…`, 851,945 bytes) and the
-`539e205f…` audit row are unchanged. `release/release.json` (`d4539843…`) names
-`2026.11.19-7` at `2026-11-19T21:30:00Z`; `--self-test` prints `self-test:
+`539e205f…` audit row are unchanged. `release/release.json` (`8fd4c9c9…`) names
+`2026.11.19-7` at `2026-11-19T23:05:00Z`; `--self-test` prints `self-test:
 PASS`, `--verify-signature` prints `signature: OK`, a one-byte edit fails with
 `signature: BAD` (`e121ef9e…`) and exit 3, and `tools/recut_release.py --check`
 prints `ok` for the installer, its release copy and both documents. It is
@@ -2433,6 +2433,21 @@ ledger: `-4` is two cuts — ODL-579's (`6d2c3161…`, 15:45Z) and this card's
 first (`e0cc10e9…`, 16:00Z) — followed by this card's `-5` (17:00Z) and `-6`
 (20:00Z), all three of this card's earlier cuts never deployed; `2026.11.19-7`
 is later than every cut by `generated_at`.
+
+**The `2026.11.19-7` re-cut (t_e23f3288, round 5 — the note fix).** Round 4's
+`release.json` note said `first_visit.py` was main's ODL-579 file,
+`b0cac695…`, which is main's pre-merge copy; the file the cut ships, and the
+one §12.6 above records, is `b36cebe8…` (main's service plus this card's
+11-line parser, 72,346 bytes). Round 5 corrects that sentence and nothing else:
+`installer/odile_install.py` stays `f692dd6d…` (1,456,215 bytes),
+`release/manifest.json` stays `d8c2f17b…` (50,044 bytes) and both `/verify`
+pages stay `05c8c0e9…`; `release/release.json` moves to `8fd4c9c9…` (the
+corrected note at `generated_at` `2026-11-19T23:05:00Z`), re-signed. The note
+now names both sides of the re-derive — main's `b0cac695…` explicitly as
+main's side, and the shipped `b36cebe8…` — so the signed document and this
+runbook name the same artifact. `tests/test_release_notes.py` holds the line: a
+note that mentions `first_visit.py` must name the prefix this cut ships; the
+round-4 note fails that test and round 5's passes.
 
 
 The clock starts at the build's `uki.sh --sign` and stops when
