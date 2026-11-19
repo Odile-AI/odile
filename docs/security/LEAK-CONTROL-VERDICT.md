@@ -601,7 +601,7 @@ VCEK from AMD's KDS on every live run.
 - `tools/leak_scan.py --tree` → `PASS: nothing to leak in 370 files`, 55 allowlist rows (4 credentials,
   0 debt), with the three rows gone. The worktree has no private `leak-forbid.txt`, so the
   forbidden-value class only runs in the built tree below.
-- The built public tree at `0b44a7d` (373 files) → `PASS: nothing to leak in
+- The built public tree at `9f5c857` (373 files) → `PASS: nothing to leak in
   367 files`, 221 allowlisted, `forbid list: leak-forbid.txt (14 labels)`.
 - `tests/test_leak_scan.py::AllowlistRecord::test_a_planted_chip_id_in_a_fixture_fails_the_gate`
   plants a real 64-byte chip id in a fixture: the gate fails with
