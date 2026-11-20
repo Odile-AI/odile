@@ -200,6 +200,9 @@ forbidden-value	tools/servury_panel.py	sha256:3e5275784e44	constant	no	the opera
 forbidden-value	tools/servury_panel.py	sha256:4014bb9b4e56	constant	no	the operator tool reads this live id by default; the path is pinned, so another value there is still a finding	never
 forbidden-value	tools/servury_renew.py	sha256:3e5275784e44	constant	no	the operator tool reads this live id by default; the path is pinned, so another value there is still a finding	never
 forbidden-value	tools/servury_renew.py	sha256:4014bb9b4e56	constant	no	the operator tool reads this live id by default; the path is pinned, so another value there is still a finding	never
+forbidden-value	tests/test_uki_cycle.py	sha256:3e5275784e44	constant	no	the converged-bench boot fixtures assert the bench box id verbatim; the path and the value are pinned, so another value there is still a finding	never
+forbidden-value	tools/servury_cycle.py	sha256:3e5275784e44	constant	no	the cycle driver's docstring and --server-id example name the bench box id; the path and the value are pinned, so another value there is still a finding	never
+forbidden-value	tools/uki_cycle.py	sha256:3e5275784e44	constant	no	the cycle's docstring examples name the bench box id; the path and the value are pinned, so another value there is still a finding	never
 
 # History-only rows for blobs the branch (and main) already published. Each is
 # one value at one path; the path is pinned, so another value there is still a
