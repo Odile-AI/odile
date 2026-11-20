@@ -13,6 +13,8 @@ import sys
 import tempfile
 import unittest
 import urllib.error
+import urllib.parse
+import urllib.request
 from pathlib import Path
 from unittest import mock
 
@@ -103,7 +105,25 @@ class GuardTests(unittest.TestCase):
         self.assertNotIn("delete_server", panel.POST_FIELDS)
         self.assertIn("disk_url", panel.POST_FIELDS)
         self.assertIn("disk_sha256", panel.POST_FIELDS)   # the published hash is sent with the image
-        self.assertIn("submit_order", panel.ORDER_FIELDS)
+        # The order form is not a write path any more: buying is the API's.
+        self.assertNotIn("submit_order", panel.POST_FIELDS)
+        self.assertNotIn("coupon", panel.POST_FIELDS)
+
+
+SETTINGS_HTML = """
+<main id="main"><h1>Settings</h1>
+<dl class="bb-kv"><dt>User ID</dt><dd>lkbxu6i9</dd>
+<dt>Balance</dt><dd>$20.00</dd></dl></main>
+"""
+
+# The dashboards the panel renders: one /manage/<id>/ link per machine the
+# session's account owns, and nothing else is a machine of ours.
+DASHBOARD_HTML = """
+<main><h2>Your servers</h2>
+<a href="/manage/168020b4/">odlukitest</a>
+<a href="/manage/168020b4/renewal/">Renewal</a>
+</main>
+"""
 
 
 class ConsoleTextTests(unittest.TestCase):
@@ -198,9 +218,444 @@ class AuditIsolatedTests(unittest.TestCase):
         except OSError:
             return 0
 
+    def stub_account(self, owned: tuple[str, ...] = ("a1b2c3d4",)) -> None:
+        """Put the fixture machine on a named account, without a second page fetch.
+
+        The account and its dashboard are the subject of `AccountTests`, which
+        drives the real `owned_servers`/`account_of`; the older write tests only
+        need the fence to pass, so they stub the two answers here.
+        """
+        for patcher in (
+            mock.patch.object(panel, "_ACCOUNT", "lkbxu6i9"),
+            mock.patch.object(panel, "owned_servers", lambda opener: frozenset(owned)),
+        ):
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+
+class _FakeJar:
+    """The one call `login` makes on the jar: save the session it just won."""
+
+    def __init__(self) -> None:
+        self.saved = 0
+
+    def save(self, **kwargs) -> None:  # noqa: ARG002 - the tool's flags
+        self.saved += 1
+
+
+# The dashboard the panel answers a successful login with. The logout control is
+# what says the session is in; the login form carries none. (`dashboard` alone is
+# not enough — the anonymous login page carries it in its meta keywords.)
+PANEL_DASHBOARD = """
+<main><h1>Your servers</h1>
+<a href="/logout">Log out</a>
+<a href="/manage/168020b4/">odlukitest</a>
+</main>
+"""
+
+
+class LoginTests(AuditIsolatedTests):
+    """`--login` is the one POST that carries the credential, and it is a form.
+
+    The two field names are the login form's own (`credential`, `remember_me`),
+    not a manage form's, so the fence accepts them only at the login path. The
+    live form renders exactly `csrf_token`, `credential` and `remember_me`
+    (`curl -sSL https://servury.com/login/`, measured 2026-11-20).
+    """
+
+    CREDENTIAL = "c" * 32
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.home = tempfile.TemporaryDirectory()
+        self.addCleanup(self.home.cleanup)
+        self.credential_file = Path(self.home.name) / "servury_panel_credential"
+        self.credential_file.write_text(self.CREDENTIAL + "\n", encoding="utf-8")
+        self.cookie_file = Path(self.home.name) / "servury_panel.cookies"
+        self.cookie_file.write_text("", encoding="utf-8")
+        for name, value in (("CREDENTIAL_FILE", self.credential_file),
+                            ("COOKIE_FILE", self.cookie_file)):
+            patcher = mock.patch.object(panel, name, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    @staticmethod
+    def wire_fields(opener) -> dict[str, list[str]]:
+        """The urlencoded body `post()` actually sent."""
+        return urllib.parse.parse_qs(opener.requests[0].data.decode("utf-8"))
+
+    def run_login(self, get, post) -> tuple[int, str, str, _FakeJar]:
+        out, err = io.StringIO(), io.StringIO()
+        jar = _FakeJar()
+        with mock.patch.object(panel, "get", get), \
+                mock.patch.object(panel, "post", post), \
+                contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            code = panel.login(None, jar)
+        return code, out.getvalue(), err.getvalue(), jar
+
+    def test_the_login_posts_the_two_fields_its_own_form_names(self) -> None:
+        # The defect: `post()` refused both names before this card, so --login
+        # answered "refusing unknown form field(s)" and never logged in.
+        seen: dict = {}
+
+        def fake_post(opener, url: str, fields: dict, **kwargs) -> str:  # noqa: ARG001
+            seen.update(url=url, fields=dict(fields))
+            return PANEL_DASHBOARD
+
+        code, out, err, jar = self.run_login(lambda opener, url: LOGIN_HTML, fake_post)
+
+        self.assertEqual(code, 0, err)
+        self.assertEqual(seen["url"], panel.LOGIN)
+        self.assertEqual(
+            seen["fields"],
+            {"csrf_token": panel.parse_csrf(LOGIN_HTML),
+             "credential": self.CREDENTIAL, "remember_me": "on"},
+        )
+        self.assertEqual(jar.saved, 1)
+        self.assertIn("dashboard", out, "the login has to say the dashboard answered")
+
+    def test_the_fence_lets_the_login_fields_through_at_the_login_path(self) -> None:
+        # The real `post()` (not a stub) is what the DoD's fence is: the two
+        # names must reach the wire, urlencoded, from the login path.
+        opener = _FakeOpener(PANEL_DASHBOARD)
+        with mock.patch.object(panel, "_ACCOUNT", "lkbxu6i9"):
+            text = panel.post(opener, panel.LOGIN, {
+                "csrf_token": "tok", "credential": self.CREDENTIAL, "remember_me": "on",
+            })
+
+        self.assertEqual(text, PANEL_DASHBOARD)
+        body = self.wire_fields(opener)
+        self.assertEqual(body["credential"], [self.CREDENTIAL])
+        self.assertEqual(body["remember_me"], ["on"])
+        self.assertIn("POST " + panel.LOGIN, self.audit_lines()[0])
+
+    def test_a_login_answers_the_dashboard_and_audits_no_account_yet(self) -> None:
+        # The whole way through: the real `post()` fence, a fake panel that
+        # answers the dashboard, and the audit line a login can honestly write.
+        opener = _FakeOpener(PANEL_DASHBOARD)
+        seen: list[str] = []
+
+        def fake_get(opener, url: str) -> str:  # noqa: ARG001
+            seen.append(url)
+            return LOGIN_HTML
+
+        with mock.patch.object(panel, "_ACCOUNT", None), \
+                mock.patch.object(panel, "get", fake_get), \
+                contextlib.redirect_stdout(io.StringIO()) as out:
+            code = panel.login(opener, _FakeJar())
+
+        self.assertEqual(code, 0)
+        self.assertEqual(seen, [panel.LOGIN], "no /settings/ fetch before there is a session")
+        self.assertEqual(len(opener.requests), 1)
+        body = self.wire_fields(opener)
+        self.assertEqual(body["credential"], [self.CREDENTIAL])
+        self.assertEqual(body["remember_me"], ["on"])
+        line = self.audit_lines()[0]
+        self.assertIn("POST " + panel.LOGIN, line)
+        self.assertIn("account=?", line, "a login POST has no account yet; say so")
+        self.assertIn("dashboard", out.getvalue())
+
+
+    def test_the_login_fields_are_refused_away_from_the_login_path(self) -> None:
+        # The narrow fix, not a widened allow-set: `credential` is a login name
+        # only, so a manage form carrying it is still refused.
+        with self.assertRaises(SystemExit) as caught:
+            panel.post(_FakeOpener(), panel.BASE + "/manage/a1b2c3d4/admin/",
+                       {"csrf_token": "t", "credential": self.CREDENTIAL})
+
+        self.assertIn("unknown form field", str(caught.exception))
+        self.assertIn("credential", str(caught.exception))
+
+    def test_an_unknown_field_is_still_refused_at_an_allowed_path(self) -> None:
+        # DoD: the fence keeps its meaning at the paths it already allowed.
+        with self.assertRaises(SystemExit) as caught:
+            panel.post(_FakeOpener(), panel.BASE + "/manage/a1b2c3d4/admin/",
+                       {"csrf_token": "t", "username": "me"})
+
+        self.assertIn("refusing unknown form field(s) ['username']", str(caught.exception))
+
+    def test_an_unknown_field_is_refused_at_the_login_path_too(self) -> None:
+        # The login set is a set, not a hole: a renamed login field still fails
+        # loudly instead of being posted blind.
+        with self.assertRaises(SystemExit) as caught:
+            panel.post(_FakeOpener(), panel.LOGIN, {"csrf_token": "t", "username": "me"})
+
+        self.assertIn("refusing unknown form field(s) ['username']", str(caught.exception))
+
+    def test_a_form_rendered_again_is_a_refused_login(self) -> None:
+        # The captcha gate answers the form again. That is a refusal, not a login.
+        code, out, err, jar = self.run_login(lambda opener, url: LOGIN_HTML,
+                                             lambda opener, url, fields, **kw: LOGIN_HTML)
+
+        self.assertEqual(code, 1)
+        self.assertIn("dashboard", err)
+        self.assertEqual(jar.saved, 0, "a refused login must not save the jar")
+        self.assertNotIn("logged in", out)
+
+    def test_an_existing_session_is_recognised_before_any_post(self) -> None:
+        def fake_get(opener, url: str) -> str:  # noqa: ARG001
+            return SETTINGS_HTML if url.rstrip("/").endswith("settings") else PANEL_DASHBOARD
+
+        posted: list[tuple] = []
+        code, out, err, _ = self.run_login(
+            fake_get, lambda *args, **kwargs: posted.append(args) or "<p>ok</p>")
+
+        self.assertEqual(code, 0, err)
+        self.assertEqual(posted, [], "a valid session redirects /login/; nothing to post")
+        self.assertIn("already logged in", out)
+        self.assertIn("user lkbxu6i9", out)
+
+
+class OrderRouteTests(AuditIsolatedTests):
+    """Buying is an API call at the partner price, not a panel form post.
+
+    The panel order form charges list price even on an account holding a key, and
+    the affiliate route that used to sit in front of it is retired (2026-11-19).
+    `?action=create` with the account's key is 5% off orders, renewals and
+    upgrades, so ordering moved there and the panel can no longer post an order.
+    """
+
+    def setUp(self) -> None:
+        super().setUp()
+        patcher = mock.patch.object(panel, "_ACCOUNT", "lkbxu6i9")
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.key = Path(self.audit_dir.name) / "servury_reseller_key_lkbxu6i9"
+        self.key.write_text("k" * 64 + "\n", encoding="utf-8")
+        self.pub = Path(self.audit_dir.name) / "id_ed25519.pub"
+        self.pub.write_text("ssh-ed25519 AAAA test@host\n", encoding="utf-8")
+
+    def test_the_order_posts_to_the_api_with_the_key_and_the_ssh_key(self) -> None:
+        seen: dict = {}
+
+        def fake_api(key, plan, os_name, days, hostname, ssh_key, preorder=False):
+            seen.update(key=key, plan=plan, os=os_name, days=days, hostname=hostname, ssh_key=ssh_key)
+            return {"server_id": "abc12345", "hostname": hostname, "status": "deploying",
+                    "amount_charged": 9.49}
+
+        with mock.patch.object(panel, "api_order", fake_api):
+            code = panel.order(None, "108", "2", "debian13", "31", "odl600", True,
+                               str(self.pub), str(self.key))
+
+        self.assertEqual(code, 0)
+        self.assertEqual(seen["key"], "k" * 64)
+        self.assertEqual(seen["plan"], "108")
+        self.assertEqual(seen["ssh_key"], "ssh-ed25519 AAAA test@host")
+        self.assertEqual(seen["days"], "31")
+
+    def test_the_order_line_names_the_api_route_and_the_key(self) -> None:
+        with mock.patch.object(panel, "api_order",
+                               return_value={"server_id": "abc12345", "hostname": "odl600",
+                                             "status": "deploying", "amount_charged": "9.49"}):
+            panel.order(None, "108", "2", "debian13", "31", "odl600", True,
+                        str(self.pub), str(self.key))
+
+        line = self.audit_lines()[0]
+        self.assertIn("ORDER route=api plan=108", line)
+        self.assertIn("key=", line)
+        self.assertIn("account=lkbxu6i9", line)
+        self.assertNotIn("coupon", line)
+
+    def test_an_order_without_an_ssh_key_is_refused(self) -> None:
+        with mock.patch.object(panel, "api_order") as api:
+            code = panel.order(None, "108", "2", "debian13", "31", "odl600", True, "", str(self.key))
+        self.assertEqual(code, 2)
+        api.assert_not_called()
+
+    def test_the_panel_order_form_is_not_a_post_path(self) -> None:
+        # The one fence that makes a list-price order impossible through the tool.
+        with self.assertRaises(SystemExit):
+            panel.post(None, panel.BASE + "/order/?plan=108", {"plan": "108"})
+
+
+class AccountTests(AuditIsolatedTests):
+    """Every write names the account it landed in, and only that account's boxes.
+
+    The panel credential is one login for a whole account. Once the tenant lives
+    on the account the team owns, a line that says `server=<id>` no longer says
+    enough: two accounts hold machines, and the log has to answer "which
+    account did this land in" without the reader running `--whoami` afterwards.
+    """
+
+    def setUp(self) -> None:
+        super().setUp()
+        patcher = mock.patch.object(panel, "_ACCOUNT", None)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def pages(self, dashboard: str = DASHBOARD_HTML, settings: str = SETTINGS_HTML):
+        """A fake `get` that answers the dashboard and settings pages, and counts."""
+        seen: list[str] = []
+
+        def fake_get(opener, url: str) -> str:
+            seen.append(url)
+            if url.rstrip("/").endswith("settings"):
+                return settings
+            if url.rstrip("/").endswith("dashboard"):
+                return dashboard
+            return ATTACH_FORM
+
+        return fake_get, seen
+
+    def test_the_owned_set_is_the_dashboard_links(self) -> None:
+        fake_get, _ = self.pages()
+        with mock.patch.object(panel, "get", fake_get):
+            self.assertEqual(panel.owned_servers(None), frozenset({"168020b4"}))
+
+    def test_the_account_is_read_once_per_run(self) -> None:
+        fake_get, seen = self.pages()
+        with mock.patch.object(panel, "get", fake_get):
+            self.assertEqual(panel.account_of(None), "lkbxu6i9")
+            self.assertEqual(panel.account_of(None), "lkbxu6i9")
+
+        self.assertEqual(sum(url.rstrip("/").endswith("settings") for url in seen), 1)
+
+    def test_a_boot_write_names_the_account_in_its_line(self) -> None:
+        fake_get, _ = self.pages()
+        with mock.patch.object(panel, "get", fake_get), \
+                mock.patch.object(panel, "post", return_value=ATTACHED):
+            code = panel.write_boot_image(None, "168020b4", URL, SHA, "", apply=True,
+                                          wait=0, interval=0)
+
+        self.assertEqual(code, 0)
+        lines = self.audit_lines()
+        self.assertEqual(len(lines), 1, lines)
+        self.assertIn("account=lkbxu6i9", lines[0])
+        self.assertIn("BOOT_IMAGE server=168020b4", lines[0])
+
+    def test_a_disk_write_names_the_account_in_its_line(self) -> None:
+        fake_get, _ = self.pages()
+        with mock.patch.object(panel, "get", fake_get), \
+                mock.patch.object(panel, "post", return_value="<p>queued</p>"):
+            code = panel.write_disk(None, "168020b4", "https://odile.fyi/x.raw", "raw",
+                                    apply=True, sha256=SHA)
+
+        self.assertEqual(code, 0)
+        lines = self.audit_lines()
+        self.assertTrue(lines)
+        self.assertIn("account=lkbxu6i9", lines[0])
+        self.assertIn("DISK_WRITE server=168020b4", lines[0])
+
+    def test_a_machine_from_another_account_is_refused(self) -> None:
+        # 31a63bbb is the demo tenant on the reseller account: another login owns
+        # it, so it is not in this session's dashboard and no form may name it.
+        fake_get, _ = self.pages()
+        posted: list[tuple] = []
+        with mock.patch.object(panel, "get", fake_get), \
+                mock.patch.object(panel, "post", side_effect=lambda *a: posted.append(a) or ""):
+            boot = panel.write_boot_image(None, "31a63bbb", URL, SHA, "", apply=True,
+                                          wait=0, interval=0)
+            disk = panel.write_disk(None, "31a63bbb", "https://odile.fyi/x.raw", "raw",
+                                    apply=True, sha256=SHA)
+
+        self.assertEqual((boot, disk), (2, 2))
+        self.assertEqual(posted, [], "a foreign machine must not be named in a POST")
+        self.assertFalse(any("31a63bbb" in line for line in self.audit_lines()))
+
+    def test_a_dry_run_on_a_foreign_machine_is_refused_too(self) -> None:
+        fake_get, _ = self.pages()
+        with mock.patch.object(panel, "get", fake_get):
+            code = panel.write_disk(None, "31a63bbb", "https://odile.fyi/x.raw", "raw",
+                                    apply=False)
+
+        self.assertEqual(code, 2)
+
+    def test_an_unreadable_account_refuses_the_write(self) -> None:
+        # A settings page that does not name the id (a panel change, or a session
+        # that is not really logged in) must not produce a write with no account.
+        fake_get, _ = self.pages(settings="<main><h1>Settings</h1></main>")
+        with mock.patch.object(panel, "get", fake_get), \
+                mock.patch.object(panel, "post", return_value="<p>queued</p>"):
+            code = panel.write_disk(None, "168020b4", "https://odile.fyi/x.raw", "raw",
+                                    apply=True, sha256=SHA)
+
+        self.assertEqual(code, 2)
+
+    def test_power_and_console_name_the_account(self) -> None:
+        fake_get, _ = self.pages()
+
+        def fake_get_console(opener, url: str) -> str:
+            if "/console/" in url:
+                return '<input name="csrf_token" value="t"><p>Console log: on</p>'
+            return fake_get(opener, url)
+
+        with mock.patch.object(panel, "get", fake_get_console), \
+                mock.patch.object(panel, "post", return_value="<p>Console log is on.</p>"):
+            power = panel.power(None, "168020b4", "restart")
+            console = panel.console(None, "168020b4", "on")
+
+        self.assertEqual((power, console), (0, 0))
+        lines = self.audit_lines()
+        self.assertEqual(len(lines), 2, lines)
+        for line in lines:
+            self.assertIn("account=lkbxu6i9", line)
+
+
+class _FakeResponse:
+    def __init__(self, body: str) -> None:
+        self._body = body.encode("utf-8")
+
+    def read(self) -> bytes:
+        return self._body
+
+
+class _FakeOpener:
+    """The one call `post` makes: `open(request, timeout=…)` as a context."""
+
+    def __init__(self, body: str = "<p>ok</p>") -> None:
+        self.requests: list[urllib.request.Request] = []
+        self.body = body
+
+    def open(self, request, timeout=None):  # noqa: ARG002 - the tool's timeout
+        self.requests.append(request)
+        return contextlib.nullcontext(_FakeResponse(self.body))
+
+
+class PostLineTests(AuditIsolatedTests):
+    """The POST line itself names the account, so no reader has to infer it.
+
+    The DoD is read from the log alone, and the write line is not the only line
+    a reader sees: each write is followed by a `POST` line. Reading the account
+    through `account_of` (not the module global) means a write path that ever
+    posts before its audit line still leaves a line naming the account.
+    """
+
+    def setUp(self) -> None:
+        super().setUp()
+        patcher = mock.patch.object(panel, "_ACCOUNT", None)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_the_post_line_names_the_account_without_a_prior_audit_line(self) -> None:
+        opener = _FakeOpener()
+        with mock.patch.object(panel, "get", return_value=SETTINGS_HTML):
+            text = panel.post(opener, panel.BASE + "/manage/168020b4/admin/",
+                              {"action": "restart", "csrf_token": "t"})
+
+        self.assertEqual(text, "<p>ok</p>")
+        lines = self.audit_lines()
+        self.assertEqual(len(lines), 1, lines)
+        self.assertIn("POST " + panel.BASE + "/manage/168020b4/admin/", lines[0])
+        self.assertIn("account=lkbxu6i9", lines[0])
+        self.assertEqual(len(opener.requests), 1, "the form was posted once")
+
+    def test_an_unreadable_account_is_named_unknown_never_omitted(self) -> None:
+        # The line must still carry the field, so a reader cannot mistake a
+        # missing account for a write made by an account they do not know of.
+        with mock.patch.object(panel, "get", return_value="<main><h1>Settings</h1></main>"):
+            panel.post(_FakeOpener(), panel.BASE + "/manage/168020b4/admin/",
+                       {"action": "restart"})
+
+        line = self.audit_lines()[0]
+        self.assertIn("account=?", line)
+
 
 class BootImageWriteTests(AuditIsolatedTests):
     """Replacing the boot image needs detach → attach → wait for ready."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.stub_account()
 
     def run_write(self, pages: list[str], results: list[str], **kwargs):
         calls: list[dict] = []
@@ -318,6 +773,10 @@ class SessionTests(unittest.TestCase):
 
 
 class PowerTests(AuditIsolatedTests):
+    def setUp(self) -> None:
+        super().setUp()
+        self.stub_account()
+
     def test_a_504_is_sent_not_failed(self) -> None:
         # Measured: the gateway gives up at 30 s, the node reboots anyway.
         error = urllib.error.HTTPError("https://servury.com", 504, "Gateway Timeout", None, None)

@@ -7,7 +7,13 @@ input the sealed design has (docs/product/DECISION-agent-access.md §3a):
 
     bb.iid=<instance id>            Servury's instance id (the binding)
     odile.token=<64 lowercase hex>  the one-time setup token (ODL-455)
-    odile.seed_url=<url>            the seed endpoint (default https://odile.fyi/seed)
+    odile.seed_url=<url>            the seed endpoint (default https://odile.fyi/seed);
+                                    its host names the environment this machine
+                                    reports back to (the boot record posts here)
+    odile.public_url=<url>          the name this tenant serves, read by the
+                                    release setup (ODL-340 follow-up); absent on
+                                    production, where the installer derives
+                                    `<slug>.<the seed host>` instead
 
 The token is the badge, not a standing key: it is minted at provision bound to
 `bb.iid`, valid once and for 24 hours. The command line is public, so the
@@ -171,6 +177,9 @@ RECOVERY_PASSWORD_RE = re.compile(r"^Backup password:[ \t]*(\S+)[ \t]*$", re.M)
 RECOVERY_SEED = "/usr/local/lib/odile-image/recovery-seed.py"
 RECOVERY_PATH = "/etc/odile/recovery.txt"
 TOKEN_RE = re.compile(r"^[0-9a-f]{64}$")
+# What the log line prints in place of the setup token (ODL-579): the argv is
+# echoed for the transcript, but the token is a bearer while it lives.
+TOKEN_REDACTED = "<redacted>"
 INSTANCE_RE = re.compile(r"^[A-Za-z0-9._:-]{1,128}$")
 SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]{1,62}$")
 SEED_URL_RE = re.compile(r"^https?://[A-Za-z0-9._~:/?#\[\]@!$&'()*+,;=%-]{1,512}$")
@@ -1129,13 +1138,24 @@ def fetch_seed(url: str, token: str, instance_id: str, pubkey_path: str) -> tupl
 
 def run_installer(installer: str, seed_path: str, token: str, first_visit_port: int,
                   log_path: str) -> int:
-    """Run the image's installer with the seed; its output goes to the log."""
+    """Run the image's installer with the seed; its output goes to the log.
+
+    The setup token is a bearer while it lives, so the line that echoes the
+    argv never carries it: the log says ``--first-visit-token <redacted>``
+    (ADR-006 §5 defect 4, ODL-579). The log is also forced to 0600 — the unit
+    sets ``UMask=0077``, but a file an older boot left 0644 must be narrowed,
+    not appended to.
+    """
     command = [installer, "--seed", seed_path, "--first-visit-token", token]
+    logged = [installer, "--seed", seed_path, "--first-visit-token", TOKEN_REDACTED]
     if first_visit_port:
         command += ["--first-visit-port", str(first_visit_port)]
+        logged += ["--first-visit-port", str(first_visit_port)]
     os.makedirs(os.path.dirname(log_path) or ".", exist_ok=True)
-    with open(log_path, "ab") as log:
-        log.write(("\n=== odile-firstboot %s: %s\n" % (utcnow(), " ".join(command))).encode())
+    descriptor = os.open(log_path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+    os.fchmod(descriptor, 0o600)
+    with os.fdopen(descriptor, "ab") as log:
+        log.write(("\n=== odile-firstboot %s: %s\n" % (utcnow(), " ".join(logged))).encode())
         log.flush()
         try:
             proc = subprocess.run(command, stdout=log, stderr=subprocess.STDOUT,

@@ -37,7 +37,7 @@ PY_FILES = $(shell find . $(PRUNE) -o -name '*.py' -print | sort)
 SH_FILES = $(shell find . $(PRUNE) -o \( -name '*.sh' -o -path './.githooks/pre-commit' -o -path './.githooks/pre-push' \) -print | sort)
 endif
 
-.PHONY: check check-inner acceptance prereqs test test-unit self-test compile lint claims brand roadmap secrets leak hooks fresh-check deploy-dry \
+.PHONY: check check-hq check-inner acceptance prereqs test test-unit self-test compile lint claims brand roadmap secrets leak hooks fresh-check deploy-dry \
 	demo demo-check demo-reset uki-cycle release-sign seed-cert
 
 # `make check` is the CPU ceiling on this host: the sealed-image fixture drives
@@ -64,11 +64,26 @@ check-inner: prereqs secrets leak test self-test compile lint claims brand roadm
 
 # The handoff gate. A card runs this before it asks for review, so the verifier
 # reviews an artifact instead of re-driving the build. CARD=ODL-472 adds the
-# per-card checks: clean tree, merges into main, evidence present.
-acceptance: check
+# per-card checks: clean tree, merges into main, evidence present. It runs
+# `check-hq` too: `check` in a card worktree sees only the tracked modules, and
+# the HQ-only ones ran first at the merge gate, in main, where they twice went
+# red for a card whose own gate was green.
+acceptance: check check-hq
 	@$(PYTHON) tools/board_sync.py check
 	@if [ -n "$(CARD)" ]; then $(PYTHON) tools/card_acceptance.py --card "$(CARD)"; fi
 	@echo "make acceptance: OK $(CARD)"
+
+# The HQ half of the suite (ODL-479). A card worktree is a fresh checkout, so
+# `unittest discover -s tests` there finds the 64 tracked modules; 15 more exist
+# only at HQ (`.git/info/exclude`) and carry rules about the tree — every
+# `docs/*.md` quoting the UKI `f7bc0ceb…` must name `t_c1e0f336`, every craft
+# playbook keeps its five sections — so a card breaking one was green in its
+# worktree and red for everyone in main. `tools/hq_gate.py` runs those modules
+# against this checkout's own commit: a throwaway worktree with the HQ-only
+# files overlaid, removed afterwards, so the card's tree is never written to.
+# Outside HQ (a public clone) the tool prints one skip line and passes.
+check-hq:
+	@$(CHECK_LOCK_PY) $(PYTHON) tools/hq_gate.py
 
 prereqs:
 	@command -v "$(PYTHON)" >/dev/null 2>&1 || { echo "make check: $(PYTHON) is not executable (set PYTHON=...)" >&2; exit 1; }

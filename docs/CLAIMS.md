@@ -2,7 +2,7 @@
 
 **Rule:** no public sentence about privacy, security or reliability ships unless it is in this file. If a sentence is not here, it is not approved. `docs/MVP-V0.1.md` §7 is the rationale; this is the copy.
 
-**Last reviewed:** 14 November 2026 · **Owner:** Savio · **Lint:** `tests/test_claims.py` (M0)
+**Last reviewed:** 19 November 2026 · **Owner:** Savio · **Lint:** `tests/test_claims.py` (M0)
 
 **Evidence verdict:** `docs/security/CLAIMS-VERDICT-strict.md` (ODL-466, evidence base `main` `8c2ad99`). Every access row carries its verdict there. A row marked **BLOCK** is approved here and **held from the public pages** until its card lands — the list is §1a, and the rule is the re-cut's §6: a row whose proof has not run is not published.
 
@@ -22,29 +22,30 @@ Use these verbatim, or a subset that does not change the meaning. Anything stron
 - "Full agent with full privacy. Always-on agents running on confidential computers and powered by confidential models."
 - "The waitlist hears first."
 
-### The README opening (Savio's words, 14 November 2026)
+### The README opening (Savio's words, 19 November 2026)
 
-Savio rewrote `README.md` on the public tree (`2d8999d`, `a5c3428`) while
-`t_781fc5cb` ran. A visitor reads these three first, so they are rows here.
+Savio rewrote `README.md` on the public tree on 19 November 2026 (`2876eda`,
+"Clean up"). A visitor reads these three first, so they are rows here.
 
-- "A full agent, privately."
-- "Odile is an AI agent that gets things done with privacy."
-- "Every Odile agent runs on its own AMD SEV-SNP confidential virtual machine, with memory encrypted by the CPU and NEAR AI inference inside a hardware enclave."
+- "Odile is a privacy-friendly AI agent that gets things done for you."
+- "Every Odile agent runs on its own AMD SEV-SNP confidential virtual machine with encrypted memory and NEAR AI confidential model inference within hardware enclaves, enabling full confidentiality throughout agentic workflows."
 
-The first two are his headline and his lede sentence, recorded verbatim: they
-name no mechanism, and they are the short form of the v3.9d landing row. The
-third is his sentence with its last clause re-cut. As he wrote it, it ended
-"protecting your agent from outsider access at the hardware level" — the
-absolute §2 forbids in the row whose reason reads "The host console exists" —
-and it is false against the machine on three measured counts: the console
-passes through the host (§3 gap 2), Odile keeps stop, DNS and the boot-image
-choice (gap 3), and the served image's disk key is still the published build
-key until `t_51ebf972`. The re-cut states the two mechanisms the deck proves:
-"Memory is encrypted by the CPU." (§1 *Confidential computing*) and "Inference
-runs on NEAR AI's confidential cloud, inside a hardware enclave." (§1
-*Inference*). It claims no access property. "Its own machine" is one VM per
-agent; the demo's agent is Odile's, on Odile's tenant machine, and the demo
-rows below scope that machine.
+The headline is his "Full agent with full privacy." — the v3.9d landing row
+above, so it is not repeated here. The lede restates the 14 November lede with
+a weaker adjective ("privacy-friendly" for "with privacy") and "for you" added:
+the same row, naming no mechanism. The mechanism sentence is his, verbatim: "encrypted memory"
+is §1 *Confidential computing*'s "Memory is encrypted by the CPU."; "NEAR AI
+confidential model inference within hardware enclaves" is §1 *Inference*'s
+"Inference runs on NEAR AI's confidential cloud, inside a hardware enclave."; and
+"full confidentiality" is the v3.9d landing row's "full privacy". It claims no
+access property, so the 14 November re-cut's reason (the host console, the
+boot-image choice) does not bite. "Its own machine" is one VM per agent; the
+demo's agent is Odile's, on Odile's tenant machine, and the demo rows below
+scope that machine.
+
+The 14 November rows this section carried (his headline, his lede, and the
+mechanism sentence with its "outsider access" clause re-cut) are retired by the
+19 November rewrite; the v3.10a change-log row keeps that record.
 
 ### Access — the core claim
 
@@ -54,7 +55,7 @@ rows below scope that machine.
 - "The disk unlocks only on the boot you verify. Change the image, and it stays locked."
 - "There is no passphrase to type. The disk key is sealed to the measured boot, and no one at Odile holds it."
 - "After a reboot, it starts itself. The seal is the key."
-- "Your Odile sign-in is set on your machine at first visit and hashed there. We never see it. It is the only app-layer gate: no 2FA in V0.1."
+- "Your Odile sign-in is set on your machine at first visit and hashed there. We never see it. It is the only app-layer gate: no 2FA in alpha.0."
 - "Support access exists only when you grant it, for as long as you grant it."
 - "A root shell, for 24 hours — only when you grant it."
 - "We can stop it. We cannot read it."
@@ -122,17 +123,43 @@ row stays approved here and has no public home until a card publishes it;
 - "The encrypted backup is kept 30 days after cancellation, then deleted. Odile can delete it, not read it."
 
 **Inference path and allowance (Savio, 13 November 2026; ODL-205 retired, card
-t_7f339817).** There is no meter and no proxy in the path: one NEAR AI key per
-user is deployed at provision, the machine calls `https://cloud-api.near.ai/v1`
+t_7f339817; mechanism measured by ODL-567, 19 November 2026).** There is no
+meter, no proxy and no per-request ledger in the path: one NEAR AI key per user
+is deployed at provision, the machine calls `https://cloud-api.near.ai/v1`
 directly with it from `/etc/odile/key.env` (0600 root), and `odile-agent` reads
-it at start. The key's prepaid credit is the allowance — $12 a month, topped up
-by Odile at the billing anchor — so there is no per-request ledger and no cap
-setting to tune; the "hard-capped" row above is the key's balance, which is why
-the allowance cannot be exceeded. At zero the provider refuses the request,
-inference stops, the machine keeps running, and the agent reports the provider's
-message; a top-up is a manual Stripe link in V0.1. ODL-242 makes issue →
-top-up → zero → revoke real and proves the zero-balance message; until it lands
-this note is the model, not a measured behaviour.
+it at start. The cap is the provider's per-key `spendLimit`, set at mint; the
+$12-a-month allowance is credit on that key, topped up by Odile at the billing
+anchor, and the "hard-capped" row above is that limit. At the limit the
+provider refuses the request with `402 api_key_limit_exceeded`; at zero credit
+it answers `402 no_limit_configured`. Either way inference stops, the machine
+keeps running, and the agent reports the provider's message; a top-up is a
+manual Stripe link in alpha.0. The check is post-charge, so the last admitted
+request can cross the limit by up to its own cost — measured at a $0.05 limit
+on 19 November 2026 (`2,180` nano-USD over;
+`docs/product/SPIKE-near-key-api.md` §7). ODL-242 makes issue → top-up → zero
+→ revoke real and proves the zero-balance message; until it lands the tenant
+lifecycle is the model, not a measured behaviour.
+
+**Held 17 November 2026 (card `t_ddcb00fc`): the allowance row is not
+publishable.** `web/terms.html` lost its "The machine and the price" section on
+14 November (`4b09cac`) and `web/faq.html` lost the inference-cost answer on
+17 November (`c8fe39b`), so no web page carries the row; Savio is re-cutting the
+machine-and-price details, and no replacement copy is invented here. Its proof
+never ran either: ODL-242 (`t_8ec06788`) is still open — parked for A2's window
+by the ODL-573 re-cut — so "at the cap the agent stops and tells you" is the
+model, not a measured behaviour. §1a holds the row. It is still live on the
+installed help (`skills/odile-help/SKILL.md`), whose copy rides in the signed
+installer (`installer/odile_install.py` and `release/odile_install.py`), so a
+re-cut there is a re-embed and a re-sign — `t_080f8a83`'s. The support
+template's money copy left with `t_02310cbf` (`ddcde16`). The price is not a
+deck row: it left the invite page (`web/claim.html`) and the support template
+with `t_02310cbf` (`ddcde16`), and the ready email (`templates/emails/ready.txt`)
+with ODL-581 (`238c22b`); `docs/MVP-V0.1.md` §0 now reads "Alpha.0 has no
+price" and keeps the v5 $49/month in §8 marked **not current**. The ready
+email's footer is
+`Private alpha · Odile pays for the machine and the inference · no price`.
+The alpha and ten-machine wording v3.9e retired on the site is gone from its
+last home.
 
 ### Confidential computing
 
@@ -185,19 +212,34 @@ column in any store is missing from `web/privacy.html`.
 ahead of its proof; the landing card holds the page sentence until the drill.
 ODL-466 (`docs/security/CLAIMS-VERDICT-strict.md`) is the verdict on each row.
 A held row is published by the card named here, in a deck row that already
-says what it will say. ODL-217 (support grant) merged at `ebaf266` and ODL-215
-(backups and the restore drill) merged at `9f43829`, both on 13 November 2026;
+says what it will say. One row is held for a different reason: the allowance's
+return to `web/terms.html` and `web/faq.html` waits on Savio's re-cut of the
+machine-and-price details rather than on a card, while the money copy on
+`web/claim.html` and the support template left with `t_02310cbf` (`ddcde16`),
+the ready email's with ODL-581 (`238c22b`), and the installed help is
+`t_080f8a83`'s; its cell says which half is which. ODL-217
+(support grant) merged at `ebaf266` and
+ODL-215 (backups and the restore drill) merged at `9f43829`, both on
+13 November 2026;
 **ODL-474 landed their sentences as v3.10 on 14 November 2026** — A9's backup
 clause, the machine-dies answer, the reset/unlock answer's restore half, the
 "Backed up nightly" row and A10's support-grant answer are published on
 `web/faq.html`, `web/terms.html`, `web/claim.html` and the installed help
-surface, and the installer now places `odile-support` and `odile-diag`. The
-table below is what is still held.
+surface, and the installer now places `odile-support` and `odile-diag`.
+**ODL-474's follow-up (`t_5f10dd14`) landed the 30-day retention row on 19
+November 2026** — "The encrypted backup is kept 30 days after cancellation,
+then deleted. Odile can delete it, not read it." is on `web/privacy.html`'s
+retention list and in `web/faq.html`'s "Where is the machine?" answer — and
+corrected the privacy page's backup destination cell to "an SFTP storage box
+at HQ", because ADR-004 §1 measures the bytes on HQ's disk. The place row's
+second sentence, "Backups are off-site", is still held: the same ADR measures
+the destination as HQ's own disk, the same provider and the same city as the
+machine. The table below is what is still held.
 
 | Held sentence or clause | Why it is held | Lands with |
 |---|---|---|
 | A1, "The only sign-in is yours." | before the first visit the image's public bench password opens the workspace, and the session secret is the image's (§0.2) | `t_adcdec31` |
-| A7, "It is the only app-layer gate: no 2FA in V0.1." | same pre-first-visit gate (§0.2) | `t_adcdec31` |
+| A7, "It is the only app-layer gate: no 2FA in alpha.0." | same pre-first-visit gate (§0.2) | `t_adcdec31` |
 | §4.2, "the only sign-in is yours" | same (§0.2) | `t_adcdec31` |
 | §2 replacement, "the only sign-in is yours" | same (§0.2) | `t_adcdec31` |
 | §5 "What is the Odile sign-in?", the only-gate sentence | same (§0.2) | `t_adcdec31` |
@@ -215,9 +257,8 @@ table below is what is still held.
 | "On a tenant machine, Odile cannot read the disk, the prompts or the files; a support grant can." | the disk half (§0.1) | `t_28dda3b7` |
 | "Memory is encrypted by the CPU. The hosting provider sees ciphertext.", the second sentence | the disk half (§0.1) | `t_28dda3b7` |
 | "Can you reset my sign-in or unlock my disk?", the "unlock my disk" half | the disk key is the build key (§0.1); the restore half landed with ODL-474 (v3.10) | `t_28dda3b7` |
-| "The encrypted backup is kept 30 days after cancellation, then deleted. Odile can delete it, not read it." | the backup landed with ODL-215; the page sentence is on `web/privacy.html`, outside ODL-474's touches | `t_5f10dd14` |
-| "The machine is in Montreal, Canada. Backups are off-site.", "Backups are off-site." | the backup landed with ODL-215; the page sentence is on `web/faq.html`, outside the five passages ODL-474's DoD names | `t_5f10dd14` |
-| §4.4, the optional laptop verifier command | `./odile-verify` prints FAIL on a tenant: the demo's vendored VCEK and release, no `--expect` | `t_8a0ef011` |
+| "The machine is in Montreal, Canada. Backups are off-site.", "Backups are off-site." | "The machine is in Montreal, Canada." is on `web/faq.html` and `web/privacy.html`. "Backups are off-site" is not true at this head: ADR-004 §1 (merged `9140dd6`) measures the bytes on HQ's own disk — the same Servury provider and the same city as the machine — and §9 makes the sentence true only when the R2 provisioning card (§8) and its drill land | `t_66fcaa02` |
+| §1 Money and place, the whole allowance row, "The $12 inference allowance is included and hard-capped; at the cap the agent stops and tells you."; and §5 "What does inference cost?", the whole answer, which carries it verbatim | the price and the allowance are Savio's and he is re-cutting the machine-and-price details; the web pages that carried it are gone (`4b09cac` on 14 November, `c8fe39b` on 17 November), and its proof never ran — ODL-242 (`t_8ec06788`) is still open, parked for A2's window. It is still live on the installed help (`skills/odile-help/SKILL.md`, embedded in `installer/odile_install.py` and the signed release copy `release/odile_install.py` — a re-cut there is a re-embed and a re-sign, card `t_080f8a83`); the support template's money copy left with `t_02310cbf` (`ddcde16`). | The allowance's return to `web/terms.html` and `web/faq.html` — **no card yet**; it waits on Savio's re-cut of the machine-and-price details, and the row returns verbatim or re-cut, with the installed help's re-embed and re-sign shipping with that cut. The price homes are re-cut — the ready email with ODL-581 (`238c22b`), `web/claim.html` and `templates/emails/support.md` with `t_02310cbf` (`ddcde16`) — and the installed help's re-cut is `t_080f8a83`. |
 One decision in v3.9 is **not** a hold, and it is recorded here so the table
 stays a list of sentences a card will publish:
 
@@ -245,7 +286,7 @@ math no longer carries an owner-wait bucket. `templates/status.html` and
 | "trustless" | You trust AMD, NEAR, Servury and Odile's provisioning | "Verifiable" |
 | "military-grade encryption" | Meaningless | "AES-256-XTS for disk, SEV-SNP for memory" |
 | "provably private" | Only parts are proven | "Measured boot; live attestation; published evidence" |
-| "we hold your keys" | False in V0.1 | "There is no user key; the only sign-in is yours." |
+| "we hold your keys" | False in alpha.0 | "There is no user key; the only sign-in is yours." |
 | "we can log in" | False by default | "No one at Odile can log in" |
 | "operator access" as a feature | It is the thing we removed | "User-only access" |
 | "no one can access your machine" | The host console exists | "No one at Odile can log in" |
@@ -343,7 +384,7 @@ email. The certificate fingerprint is in your recovery file (A9), not on
 
 ```sh
 curl -fsSLO https://odile.fyi/odile-verify.tar.gz
-echo 'd200329260d66ce4ec545b8d34e05b262c06111ee506449c6c44958937250b53  odile-verify.tar.gz' | sha256sum -c -
+echo '815dbc26c8a584d0271620445009d8242466223d0ad8d6ff71ed21fd95208d4c  odile-verify.tar.gz' | sha256sum -c -
 tar xzf odile-verify.tar.gz
 cd odile-verify && ./odile-verify --expect <measurement from your ready email> https://<slug>.odile.fyi
 ```
@@ -468,7 +509,7 @@ the machine.
 
 **"What is the boot key?"** A public key in the measured command line whose private half was thrown away. It is plumbing, not a credential.
 
-**"What is the Odile sign-in?"** The username and password that open your workspace. You set it on your machine at first visit, and it is hashed there; we never see it. It is the only app-layer gate: no 2FA in V0.1. A lost sign-in is reset with your recovery code.
+**"What is the Odile sign-in?"** The username and password that open your workspace. You set it on your machine at first visit, and it is hashed there; we never see it. It is the only app-layer gate: no 2FA in alpha.0. A lost sign-in is reset with your recovery code.
 
 **"Do I need the boot key?"** No. You never see it. The boot is sealed; your sign-in is the only thing you set.
 
@@ -486,9 +527,9 @@ the machine.
 
 **"Where does the model run?"** In NEAR AI's confidential cloud, in a hardware enclave. Your prompts go from your machine to the enclave. They do not pass through Odile's servers.
 
-**"What does inference cost?"** The $12 inference allowance is included and hard-capped; at the cap the agent stops and tells you.
+**"What does inference cost?"** The $12 inference allowance is included and hard-capped; at the cap the agent stops and tells you. *(Held 17 November 2026, card `t_ddcb00fc`: this answer is the §1 Money and place allowance row, held in §1a; the installed help's moment 4 is re-cut with Savio's machine-and-price details — card `t_080f8a83`, a re-embed and a re-sign — and the support template's copy left with `t_02310cbf` (`ddcde16`).)*
 
-**"Where is the machine?"** The machine is in Montreal, Canada. Backups are off-site. The encrypted backup is kept 30 days after cancellation, then deleted. Odile can delete it, not read it.
+**"Where is the machine?"** The machine is in Montreal, Canada. Backups are off-site. The encrypted backup is kept 30 days after cancellation, then deleted. Odile can delete it, not read it. *(Held 19 November 2026, card `t_66fcaa02`: "Backups are off-site" is not true at this head — ADR-004 measures the bytes on HQ's disk, the same provider and the same city as the machine. Give the two live sentences and leave the middle one out until the R2 migration and its drill land.)*
 
 **"What do you store?"** We store your email address, your payment record at Stripe, and the metadata needed to run your machine. At HQ we hold the boot key with no private half, a hash of your setup token, and the record of your machine. Not the disk key, not your sign-in.
 
@@ -531,3 +572,10 @@ the machine.
 | 2026-11-15 | v3.10c: **no approved sentence changed; the boot-image power has a second route.** The image is also set by `POST ?action=boot-image` (exercised 2026-11-12T20:08:03Z; `docs/architecture/ADR-image-vs-installer.md` §15.1), and that path appends nothing to any Odile log — on 12 November a production tenant carried a test UKI for about 45 minutes (19:19:08Z–20:04:49Z) and no record names the writer. The row keeps "from the panel": the power and the user's check are unchanged, and the sentence's copies ride inside the signed installer, so two words cost a re-embed, a re-sign and a release cut. §3 carries the dated note; the next such cut adds "or the API" to the row and every surface in one commit. Card `t_bf99b807`; by the Product Lead under `docs/AGENT-ORG.md` §3 (D-002); verifier review. | Product lead |
 | 2026-11-15 | v3.10d: **§4.4's verifier block gains the macOS hash line.** Stock macOS has no `sha256sum`, so the sentence after each block now says `shasum -a 256 -c -` reads the same hash line. The four command lines are unchanged byte-for-byte in all three homes — `docs/CLAIMS.md` §4.4, `docs/product/CLAIMS-RECUT-STRICT.md` §4.4 (the decided text) and `docs/runbooks/verify.md` §"A tenant run, from a laptop" — and the deck and the decided text still agree word for word through the §4.5 pointer. **No approved sentence changed**: the added line is a platform note, not a claim, and asserts no privacy, security or reliability property; no public page changes (`web/verify.html`'s block is the demo-only `<!--demo-->` form and stays). The v3.8 row recorded the same substitution once before, and the v3.10b landing took the decided text verbatim, which carries the GNU form only. Numbered v3.10d because v3.10c landed first (`t_bf99b807`). Card `t_496b4812`; by the Product lead under `docs/AGENT-ORG.md` §3; verifier review. | Product lead |
 | 2026-11-16 | v3.10e: **odile.fyi/verify is the demo tenant's page, by redirect.** The HQ app (`ODILE_ROLE=demo`) answers **302** to `https://demo.odile.fyi/verify` for any Host other than `demo.odile.fyi`; the demo host still renders the page (the DNS-fallback shape), and `ODILE_ROLE=tenant` still renders the machine's own page on every Host. No approved sentence changed: the note under §The demo machine moves the demo rows' public home to `demo.odile.fyi/verify`, names `web/verify.html`'s demo block as the HQ app's render only, and points HQ's own report at `https://odile.fyi/attestation`. `web/verify.html`, the embedded installer page and `odile-verify.pin` are unchanged, so no re-embed or re-sign; `/attestation` keeps serving HQ's own JSON and the pin's source. **Measured after the deploy:** `curl -s -o /dev/null -w '%{http_code} %{redirect_url}' https://odile.fyi/verify` → `302 https://demo.odile.fyi/verify` (before: `200` with HQ's `e99728ef…fbc` under the v3.8b tenant row); `curl -sL https://odile.fyi/verify` → 200, 43,159 B, sha256 `3cdd7427…`, measurement `9f01725a…f137`, access report headed `read from your machine`, and the `./odile-verify https://demo.odile.fyi --expect 9f01725a…f137` command; `https://odile.fyi/attestation` still 200 with `available: true`, `e99728ef…fbc`, `fetched_at` `2026-11-16T00:55:21Z` and advancing. Numbered v3.10e because v3.10d landed first (`t_496b4812`). Card `t_627e01cd`; by the Product Lead under `docs/AGENT-ORG.md` §3; verifier review. | Product lead |
+| 2026-11-17 | v3.10f: **the money row is held, not retired.** `web/terms.html` lost "The machine and the price" on 14 November (`4b09cac`) and `web/faq.html` lost the inference-cost answer on 17 November (`c8fe39b`, Savio: "Delete that as well"), so no web page carries §1 Money and place's allowance row. The row stays approved and moves to §1a, and §5's "What does inference cost?" answer, which carries it verbatim, gets the same dated note: the price and the allowance are Savio's and he is re-cutting the machine-and-price details, and the row's proof never ran — ODL-242 (`t_8ec06788`) is still open, parked for A2's window. Held, not retired, because the sentence is his number and returns verbatim or re-cut; no replacement copy is invented. It was not fully off the public surface on that date: it was live on the installed help (`skills/odile-help/SKILL.md`, embedded in `installer/odile_install.py` and the signed release copy `release/odile_install.py`) and on the support template (`templates/emails/support.md`), which `t_02310cbf` was to re-cut (done at `ddcde16`); the embedded copies make the re-cut a re-embed and a re-sign — recorded as a trigger, not re-signed now (the v3.10c pattern). The price was not a deck row: it was stated on the invite page (`web/claim.html`) and in the ready email (`templates/emails/ready.txt`), both `t_02310cbf`'s to re-cut then; the ready email's left with ODL-581 (`238c22b`) and the invite page's with `t_02310cbf` (`ddcde16`); `docs/MVP-V0.1.md` §0 records alpha.0's no-price decision and keeps the v5 $49/month in §8 as not current. `docs/FAQ.md` moment 4 quoted Stripe custody and the pre-alpha.0 price line and named the allowance row as held. **No web page changed and no new claim:** the one copy change is the support reply in `docs/FAQ.md` moment 4, which stops quoting the held row and is re-cut when it returns. Card `t_ddcb00fc`; by the Product Lead under `docs/AGENT-ORG.md` §3 (D-002); verifier review. | Product lead |
+| 2026-11-19 | v3.10g: **the README opening follows Savio's 19 November rewrite.** He rewrote `README.md` on the public tree (`2876eda`, "Clean up") and replaced the 14 November headline, lede and mechanism sentence. The new headline is the v3.9d landing row verbatim; the new lede restates the 14 November lede with "privacy-friendly" for "with privacy" and "for you" added (a weaker adjective, naming no mechanism); the new mechanism sentence is his, verbatim, and restates §1 *Confidential computing*, §1 *Inference* and the landing row's "full privacy" without claiming an access property. Two rows replace the three in §The README opening. The same rewrite removes the demo `judge` credentials table and the "How NEAR fits in" section: the credentials are carried by the sign-in form (`deploy/demo-host/login.html`, as the runbook says), so no password is added anywhere new, and both demo NEAR rows stay approved (the tenant's seeded session still states the inference row verbatim and the prompt path); only their README home is gone. `tests/test_demo_verify_command.py::CopyTests` re-pins the README's NEAR sentence to the new row; `tests/test_claims.py::ReadmeTests` maps the opening as before. No access-model change, no new mechanism. Card `t_2b482267`; by the Product Lead under `docs/AGENT-ORG.md` §3; verifier review. | Product lead |
+| 2026-11-19 | v3.10h: **the 30-day retention row lands; the place row's off-site half stays held.** `web/privacy.html`'s retention list gains "The encrypted backup is kept 30 days after cancellation, then deleted. Odile can delete it, not read it.", and `web/faq.html`'s "Where is the machine?" answer carries it beside "The machine is in Montreal, Canada.". The privacy page's backup destination cell stops saying "an off-site SFTP storage box" and says "an SFTP storage box at HQ": ADR-004 §1 (merged `9140dd6`, 19 November 2026) measures the nightly repository on HQ's own disk, the same Servury provider and the same city as the machine, and the old cell was wrong twice — the bytes are there and the off-site box was never bought. **The place row's second sentence did not land:** "Backups are off-site" is not true at this head and waits on ADR-004 §8's R2 provisioning card and its destroy→rebuild→paste→restore drill, card `t_66fcaa02`, held in §1a. No approved sentence changed: the retention and Montreal sentences are §1 rows, and the corrected destination cell is the inventory's facts, not a new claim. **The deck's call on ADR-004 §9's rebuild-path caveat** — the row is "true on the storage path; conditional during a rebuild" (a rebuild reads the user's recovery file on HQ through `--backup-password-file`, and the interim R2 cutover retires that path) — **is to publish it at this head**: the row's proof (ODL-215) ran, the caveat is a path-scope note and not a missing proof, and §1a holds only "Backups are off-site", which is false in fact. The caveat stays in this row and in ADR-004 §9 until the cutover makes the row true on both paths. `tests/test_claims.py` drops the retention clause from its held tuple, makes the off-site check case-insensitive, and pins the landed row on both pages. Card `t_5f10dd14`, landed by Growth executing v3.10's own delegation of these two rows (that row names this card as their landing); the deck decision is the Product lead's under `docs/AGENT-ORG.md` §3; verifier review. | Product lead |
+| 2026-11-19 | v3.10i: **the deck's own bookkeeping about where the money copy lives is brought up to date; no approved sentence changed.** ODL-581 (`238c22b`) removed the price footer from the ready email (`templates/emails/ready.txt`), and `t_02310cbf` (`ddcde16`) re-cut the invite page (`web/claim.html`), the support template (`templates/emails/support.md`) and `docs/FAQ.md` moment 4 to the no-price answer. The §1 held note, the §1a intro, the §1a allowance row's reason and lands-with cells and the §5 dated note now say so, and the v3.10f row's present-tense clauses are re-cut to that row's date. The allowance row and its hold are unchanged: it stays in §1a until ODL-242 (`t_8ec06788`) proves the zero-balance message and Savio re-cuts the machine-and-price details. The one repo-side surface still carrying the v5 price and the held allowance is the installed help (`skills/odile-help/SKILL.md`, embedded in `installer/odile_install.py` and `release/odile_install.py`); its re-cut is `t_080f8a83` — a re-embed and a re-sign. **No public sentence changed and no new claim.** Card `t_d0ae3149`; by the Product Lead under `docs/AGENT-ORG.md` §3 (D-002); verifier review. | Product lead |
+| 2026-11-19 | v3.10j: **§1a's §4.4 row is deleted; the sentence is not held.** v3.10b (15 November) replaced the paragraph that deferred §4.4's optional laptop verifier with the decided text's §4.4 body — the four-line block, the KDS sentence and the §4.5 pointer — so §1a's row, which still named `t_8a0ef011` as the card that would land it, described a hold that no longer exists. Its reason also named the demo's vendored certificate, which `t_3cd62ef9` deleted on 19 November because it published the demo chip's silicon id; the row was stale on both counts. **No public sentence changed:** the §4.4 body is unchanged and `web/verify.html`'s demo-only "Check it yourself" block is untouched. Card `t_47291445`; by the Product Lead under `docs/AGENT-ORG.md` §3 (D-002); verifier review. | Product lead |
+| 2026-11-19 | v3.10k: **G13 — the deck's five live version tags read alpha.0.** G13's rule (`docs/product/ROADMAP-ALPHA0.md` §4) and `docs/MVP-V0.1.md`'s "Names" paragraph make V0.0.1-alpha.0 the release the deck is current against, so five live statements are renamed and nothing else moves — no price, hold, landing card or verdict changes: §1 Access's A7 row, §5 "What is the Odile sign-in?", §1a's held A7 row, the §1 Money and place inference-path note's "manual Stripe link", and §2's forbidden-terms table, where the keys row's Why cell now reads "False in alpha.0" and its Say-instead stays "There is no user key; the only sign-in is yours.". The kit the tester receives (`templates/recovery-kit.md`) carries the A7 sentence verbatim with the same tag, and `tests/test_claims.py` and `tests/test_recovery_kit.py` pin the new text. **No re-embed and no re-sign:** `scripts/recovery_kit.py` renders the template on HQ, and neither `installer/odile_install.py` nor `release/odile_install.py` carries the sentence (measured 2026-11-19: `grep -c 'no 2FA in V0.1'` is 0 for both). **Held, not re-cut by this row:** this card's own change is the five tag replacements above and this row — `git diff 25202a6 2d68ffa -- docs/CLAIMS.md` is five tag-only replacements and this row (6 insertions, 5 deletions), no other hunk; every other move in this file since `25202a6`, including the `t_ddcb00fc` hold paragraph (moved by main's v3.10i, `t_d0ae3149`) and §1a's non-A7 moves (v3.10h, v3.10i and main's v3.10j, which deletes the §4.4 row), is a main row's, not this card's, and the only §1a line this card moves is the A7 held row above, tag only (this card's own tree at `2d68ffa`: 59 of 60 §1a lines identical to `25202a6`) — and `docs/FAQ.md`'s v3.9 A7 quote with `tests/test_help_answers.py`'s pin keeps V0.1 as marked history. **Numbering:** v3.10k — main's v3.10j (`t_47291445`) landed first, so this row takes the next free label. Card `t_317f6b87` (ODL-920); by the Product Lead under `docs/AGENT-ORG.md` §3; verifier review. | Product lead |
+| 2026-11-20 | v3.10l: **the allowance's mechanism note names the provider's per-key `spendLimit`; no approved sentence changed.** ODL-567's funded re-run (`docs/product/SPIKE-near-key-api.md` §7, 19 November 2026) measured the cap: a key minted with `{"spendLimit":{"amount":50000000,"currency":"USD"}}` answered 28 billed requests, then `402 api_key_limit_exceeded` with `Spent: $0.05000218, Limit: $0.05`; the request admitted while usage was under the limit was billed in full, so usage ended `2,180` nano-USD over — the check is post-charge, and the last admitted request can cross the limit by up to its own cost. §1's mechanism note now says the cap is that per-key `spendLimit`, set at mint, and names `402 no_limit_configured` at zero credit; the old balance-only model is dropped. The approved allowance row is unchanged and stays held (§1a, v3.10f). **Measured at `1736352`** for the three files' pre-cut sentences and at the commit that carries this row for the post-cut grep (`exit 1`), both checked against §7; this row takes the next free letter at its merges with `main`; it stands at v3.10l after main's v3.10j (`t_47291445`) and v3.10k (G13, `t_317f6b87`). No web page, no installer copy and no new public sentence. Card `t_a933243a`; by the Product lead under `docs/AGENT-ORG.md` §3 (D-002); verifier review. | Product lead |

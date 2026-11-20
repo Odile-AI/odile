@@ -1,7 +1,7 @@
 # Verify — odile-verify and what the report proves
 
 **Status:** we can prove the boot report; we cannot prove liveness or the app layer.
-**Owner:** security seat · **Review:** before the 14 November submission and at V0.1.1.
+**Owner:** security seat · **Review:** before the 14 November submission and at A9 (V0.0.1).
 
 `odile-verify` is the command a stranger runs after cloning the repository. It
 fetches the machine's `/attestation`, reads the report out of the signed bytes,
@@ -9,11 +9,11 @@ verifies the AMD certificate chain, and compares the launch measurement to the
 pin.
 
 It uses Python 3 and the `openssl` binary; there is no pip install and no state
-written. On the demo it reads the vendored AMD chain and fetches exactly one
-URL. On a tenant it fetches a second: the report names another chip, so the
-verifier asks AMD's Key Distribution Service for that report's own VCEK, using
-the raw 64-byte chip id and the reported TCB; the certificate must still chain
-to the ARK pinned in this repository. `--no-kds` refuses the second fetch.
+written. It fetches the machine's `/attestation` and AMD's Key Distribution
+Service for the report's own VCEK, using the raw 64-byte chip id and the
+reported TCB; the certificate must chain to the ARK pinned in this repository.
+The VCEK is per chip and per TCB, so the repository vendors AMD's ASK and ARK,
+not a machine's certificate. `--no-kds` refuses the second fetch.
 
 The pin is a release pin: `releases[<id>]` carries the artifact hashes and the
 measurement parameters, while the v1 top-level record is the demo machine's
@@ -30,8 +30,8 @@ git clone <repo> odile && cd odile
 
 | Row | The check | A FAIL means |
 |---|---|---|
-| `vcek` | A tenant's VCEK was fetched from AMD's KDS for the report's raw chip id and reported TCB (the demo's vendored VCEK bind, so this row does not appear) | The key server was unreachable, answered a non-certificate, or does not know the chip/TCB; the run fails closed rather than verifying with the demo's certificate |
-| `chain` | `openssl verify` walks VCEK → ASK → ARK from `tests/fixtures/amd/` (the demo) or from the fetched VCEK plus the pinned ASK/ARK (a tenant), then compares the ARK SHA-256 to the fingerprint pinned in `tools/snp_report.py` | The signature is not rooted in AMD's Milan root, or the vendored root was replaced |
+| `vcek` | The report's own VCEK was fetched from AMD's KDS for the report's raw chip id and reported TCB (a `--amd-dir` that binds the report, such as the synthetic fixtures, skips the fetch) | The key server was unreachable, answered a non-certificate, or does not know the chip/TCB; the run fails closed rather than verifying with another chip's certificate |
+| `chain` | `openssl verify` walks VCEK → ASK → ARK with the fetched VCEK and the pinned ASK/ARK (or a whole `--amd-dir` chain), then compares the ARK SHA-256 to the fingerprint pinned in `tools/snp_report.py` | The signature is not rooted in AMD's Milan root, or the pinned root was replaced |
 | `cpu binding` | The VCEK's AMD HWID extension equals the report's `chip_id`, and its TCB extensions equal `reported_tcb` | The certificate is for another chip or another TCB; refresh the fixtures, or the KDS returned the wrong key |
 | `signature` | `openssl dgst -sha384` verifies the ECDSA P-384 signature over bytes `[0, 0x2A0)` with the VCEK | The report changed after the CPU signed it |
 | `policy` | The guest policy is exactly `0x30000` | `DEBUG` (bit 19) lets the hypervisor read memory; `MIGRATE_MA` (bit 18) permits a transport-key migration. Either one voids the confidentiality claim |
@@ -58,7 +58,7 @@ the boot report's write time, so a reboot refreshes it and the measurement
 stays the same unless the image or the command line changed. There is no timer
 and no listener on a tenant: Caddy serves the file.
 
-On a first-visit machine the per-slug Caddy block names three paths, then
+On a first-visit machine the per-slug Caddy block names these paths, then
 falls through to the Webapp:
 
 ```
@@ -72,7 +72,7 @@ handle /attestation {
 
 handle /verify {
     header Cache-Control "no-store"
-    reverse_proxy 127.0.0.1:<first-visit port>
+    reverse_proxy 127.0.0.1:<verify port>
 }
 
 handle /first-visit* {
@@ -90,29 +90,73 @@ handle {
 
 `/attestation` is the only route that serves a file from `/var/lib/odile`: it
 rewrites every request to `/attestation.json`, so the request path never
-reaches `file_server`. `/verify` and `/first-visit*` are not file routes — both
-proxy to the same first-visit service on loopback: `/verify` renders the access
-report (`/var/lib/odile/access-report.txt`) as HTML, and `/first-visit*` covers
-the form, the recovery file and the reset form. Those two handlers are spliced
-in only when that service is part of the machine
-(`/etc/odile/first-visit.json`); a classic install has `/attestation` and the
-catch-all alone, never a proxy to a dead port. Every other path falls through
-to the Webapp, so no other file under `/var/lib/odile` is reachable over HTTP.
-A missing boot report, or a status other than `ok`, serves `available: false`
-with an `error`; the verifier fails closed on it.
+reaches `file_server`. `/verify` and `/first-visit*` are not file routes — they
+proxy to two loopback programs: `/verify` is the machine's own page
+(`odile-verify.service`, `verify/verify.py`, port 8098 and the reviewed
+`templates/verify.html`), and `/first-visit*` covers the form, the recovery
+file and the reset form (`odile-first-visit.service`, port 8091). The verify
+handler is spliced in only when the program and its template are installed; the
+first-visit handler only when `/etc/odile/first-visit.json` exists. A classic
+install has `/attestation` and the catch-all alone, never a proxy to a dead
+port. Every other path falls through to the Webapp, so no other file under
+`/var/lib/odile` is reachable over HTTP. A missing boot report, or a status
+other than `ok`, serves `available: false` with an `error`; the verifier fails
+closed on it.
 
 This is the boot report, not a liveness proof. It does not measure the app
 layer.
 
-## The machine's own access report
+## The machine's own /verify page
 
-`/verify` on a tenant shows five lines read from that machine — usable user
-keys, the boot key, the seal, the sign-in hash, the operator key — under the
-provenance line `read from your machine, <UTC time>`. The page's heading is
-`The access report, from your machine` and the caption is that provenance line.
-The 10 November bench block is the fallback for a machine with no report file
-(the demo on HQ, a bench); a tenant with no file says the report has not been
-written yet rather than showing the bench as its own state.
+`/verify` is served by `verify/verify.py` under `odile-verify.service`. The
+unit runs as root because the handoff audit reads `/etc/shadow` and sshd's
+journal; it binds 127.0.0.1:8098 and Caddy is the only public listener. It
+writes nothing, holds no state and runs no timer, and every response is
+`Cache-Control: no-store` with a `default-src 'none'` CSP: no JavaScript, no
+font or image fetch, no third-party request. The page is the reviewed
+`templates/verify.html`, embedded in the signed installer with the program, and
+installed at `/usr/local/lib/odile/verify.{py,html}`.
+
+The page reads, per request: `/var/lib/odile/attestation.json`, the installer's
+`/etc/odile/boot-record.json`, `/proc/cmdline`, the SSH host key, `/etc/passwd`
+and `/etc/shadow`, `/run/bb/sealed-unlock.state`, the tenant's `.hermes/.env`
+(the scrypt hash's presence, never its value), the signed manifest pair, the
+support-grant state and `cryptsetup luksDump` of the root container (the
+container is the device `cryptsetup status root_crypt` names; the plaintext
+mapper is refused, `docs/runbooks/support.md` §"The handover"). Every row
+is tagged `checked from your laptop` or `read from the machine`; the audit and
+the support program are the machine's own reviewed programs, so the page wraps
+their verdicts instead of re-implementing them. CLAIMS §4.4's five things are
+on it: the measurement, the seal policy (`policy 0x30000; seal_id …;
+measurement …` from the report bytes and the measured command line), zero usable
+user keys (the `boot key` and `authorized keys` rows), the sign-in hash (the
+`sign-in hash` row) and no operator key.
+
+On the machine:
+
+```sh
+systemctl status odile-verify.service      # active (running), User=root
+journalctl -u odile-verify.service -n 20
+curl -s -D - http://127.0.0.1:8098/verify -o /tmp/verify.html   # 200, no-store
+python3 /usr/local/lib/odile/verify.py --root / --json | head    # the same rows
+```
+
+`--now <ISO>` pins the provenance line for a bench; production runs without it.
+On a bench or a mounted machine root, pass `--root` and `--luks-dump` (the
+program cannot read a mounted root's `/dev/mapper` name):
+
+```sh
+/usr/bin/python3 verify/verify.py --root /var/tmp/<bench>/root \
+    --luks-dump /var/tmp/<bench>/dump.txt --now 2026-11-13T12:00:00Z
+```
+
+## The access report
+
+The strict bar's report is still written at boot — the support bundle quotes it
+— but it is no longer the tenant's `/verify` page. It shows five lines read
+from the machine — usable user keys, the boot key, the seal, the sign-in hash,
+the operator key — under the provenance line
+`read from your machine, <UTC time>`.
 
 The report is a file:
 
@@ -124,7 +168,7 @@ as root, before the agent unit, and again when a sign-in is set:
 ```sh
 systemctl status odile-access-report.service     # Result=success after a run
 journalctl -u odile-access-report.service -n 20  # the wrapper's two lines and the report
-cat /var/lib/odile/access-report.txt             # exactly what /verify renders
+cat /var/lib/odile/access-report.txt             # the support bundle's report
 ```
 
 The unit runs a wrapper, `/usr/local/lib/odile/access_report.sh`. It resolves
@@ -182,7 +226,7 @@ install -d -o odile -g odile -m 0700 /home/odile/.ssh
 echo 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAINotTheBootKeyOdileBench000000000000000000 odile' \
     >> /home/odile/.ssh/authorized_keys
 systemctl restart odile-access-report.service
-# the page: usable keys  FAIL  1 authorized key(s) other than the measured throwaway
+# the page: authorized keys  FAIL  1 line(s) that are not the measured boot key
 
 # 2. No sign-in hash: remove the scrypt line the first visit wrote.
 sed -i '/^HERMES_DASHBOARD_BASIC_AUTH_PASSWORD_HASH=/d' /home/odile/.hermes/.env
@@ -276,16 +320,16 @@ genuine CPU signed a report, not that it is the report the user expected.
 
 ## A tenant run, from a laptop
 
-The demo's vendored VCEK is the demo chip's. A tenant's report names another
-chip, so the verifier fetches that report's own VCEK from AMD's KDS and checks
-it against the ARK pinned in `tools/snp_report.py`; the run prints a `vcek`
-row for the fetch. The tenant release (`2026.11.2`, from the served document)
-selects its entry in `odile-verify.pin`, and `--expect` is the number in the
-ready email (`templates/emails/ready.txt`). The commands are:
+The demo's report names the HQ chip and a tenant's names another, so every live
+run fetches that report's own VCEK from AMD's KDS and checks it against the ARK
+pinned in `tools/snp_report.py`; the run prints a `vcek` row for the fetch. The
+tenant release (`2026.11.2`, from the served document) selects its entry in
+`odile-verify.pin`, and `--expect` is the number in the ready email
+(`templates/emails/ready.txt`). The commands are:
 
 ```sh
 curl -fsSLO https://odile.fyi/odile-verify.tar.gz
-echo 'd200329260d66ce4ec545b8d34e05b262c06111ee506449c6c44958937250b53  odile-verify.tar.gz' | sha256sum -c -
+echo '815dbc26c8a584d0271620445009d8242466223d0ad8d6ff71ed21fd95208d4c  odile-verify.tar.gz' | sha256sum -c -
 tar xzf odile-verify.tar.gz
 cd odile-verify && ./odile-verify --expect <measurement from your ready email> https://<slug>.odile.fyi
 ```
@@ -294,16 +338,16 @@ On macOS, `shasum -a 256 -c -` reads the same hash line.
 
 `sha256sum -c` prints `odile-verify.tar.gz: OK`; the tarball hash moves only
 with the reviewed files inside it (the verifier, `tools/snp_report.py`, the pin
-and the AMD chain), never with the second the service built it. The number is
+and AMD's ASK and ARK), never with the second the service built it. The number is
 the one the machine's page and the ready email print; it is per machine,
 because the measured command line carries the machine's own key, hostname and
 address.
 
-The verifier fetches exactly two URLs on a tenant: the machine's
-`/attestation`, and the KDS object for the report's raw 64-byte chip id
-(128 hex characters) and reported TCB. It does not fetch the pin, a log or the
-chain itself. If the KDS is down the run is a FAIL with the reason on the
-`vcek` row — never a fallback to the demo's certificate.
+The verifier fetches two URLs on the default live run: the machine's `/attestation`, and
+the KDS object for the report's raw 64-byte chip id (128 hex characters) and
+reported TCB. It does not fetch the pin, a log or the chain itself. If the KDS is
+down the run is a FAIL with the reason on the `vcek` row — never a fallback to
+another chip's certificate.
 
 The chip id is the KDS's `hwid` path segment, not a digest of it: a
 `sha256(chip_id)` URL is 64 hex characters and answers `400 Bad Request`.
@@ -374,18 +418,21 @@ launch measurement matches the pin. Everything else is outside it.
 | Anchor | Value | How to check it out of band |
 |---|---|---|
 | AMD Milan ARK | SHA-256 `69:d0:63:b4:53:44:d2:6a:2e:94:e1:f4:21:0d:e4:9e:f5:55:30:82:87:d4:c1:74:44:5c:95:63:9a:54:0b:cd` | Compare with AMD's published ARK for Milan; the constant is in `tools/snp_report.py` |
-| AMD ASK and VCEK | `tests/fixtures/amd/ask.pem`, `vcek.pem` | `openssl verify -CAfile ark.pem -untrusted ask.pem vcek.pem` |
-| AMD KDS (a tenant) | `https://kdsintf.amd.com/vcek/v1/Milan/<raw chip id>?blSPL=…&teeSPL=…&snpSPL=…&ucodeSPL=…` | The returned VCEK must chain to the pinned ARK and name the report's chip and TCB; a proxy on the TLS path can substitute only a certificate that still passes both |
+| AMD ASK and ARK | `tests/fixtures/amd/ask.pem`, `ark.pem` | `openssl verify -CAfile ark.pem -untrusted ask.pem <the KDS VCEK>`; the VCEK is per chip and is fetched, not vendored |
+| AMD KDS (every live run) | `https://kdsintf.amd.com/vcek/v1/Milan/<raw chip id>?blSPL=…&teeSPL=…&snpSPL=…&ucodeSPL=…` | The returned VCEK must chain to the pinned ARK and name the report's chip and TCB; a proxy on the TLS path can substitute only a certificate that still passes both |
+| Synthetic fixture chain | `tests/fixtures/verify/synthetic-amd/` | Test-only: the fixture's `trust` block names the ARK SHA-256, and only a local `--report` file may use it. The shipped pin keeps AMD's ARK |
 | Measurement | `odile-verify.pin` | The signed report itself, plus a rebuild of the measured release |
 | Verifier code | `odile-verify`, `tools/snp_report.py` | Read both files: standard library and `openssl` only |
 
 The report and the certificates are public; there is no secret in the verifier,
-the fixtures or the output. The HTTPS request only carries the bytes: the proof
-is the CPU signature, not TLS. A proxy that rewrites the JSON is caught by
-`served` and `signature`. The KDS fetch is over TLS, but the certificate it
-returns is not trusted because of TLS: it must chain to the ARK pinned in the
-repository and name the report's chip and TCB, and the report signature must
-verify with it. A substituted KDS answer fails one of those three checks.
+the fixtures or the output. The repository ships no real VCEK and no live chip
+id: the test fixtures carry an `ODILE-SYNTHETIC-` marker, and the synthetic
+chain is a test-only root. The HTTPS request only carries the bytes: the proof is the CPU
+signature, not TLS. A proxy that rewrites the JSON is caught by `served` and
+`signature`. The KDS fetch is over TLS, but the certificate it returns is not
+trusted because of TLS: it must chain to the ARK pinned in the repository and
+name the report's chip and TCB, and the report signature must verify with it. A
+substituted KDS answer fails one of those three checks.
 
 ## The pin file
 
@@ -531,11 +578,13 @@ from prose.
 
 ## Refreshing the AMD certificates
 
-The machine is a Milan guest. The VCEK is per chip and per TCB; a firmware
-update, a host move or a rebuild on another chip breaks `cpu binding` on the
-demo's vendored chain and the fixture must be refreshed. A tenant run does not
-need this: it fetches the report's own VCEK from the KDS. The fixture is what
-the demo and the offline tests verify against.
+The machine is a Milan guest. The VCEK is per chip and per TCB, so a firmware
+update, a host move or a rebuild on another chip needs no fixture refresh: the
+verifier fetches the report's own VCEK from the KDS on every run that does not
+carry a local `--amd-dir` chain that binds the report. The repository
+vendors AMD's Milan ASK and ARK, which change only when AMD rotates its roots.
+The test fixtures are synthetic and are regenerated by
+`tools/make_synthetic_report.py`, not fetched from AMD.
 
 The chip id is one 64-byte value, and the KDS takes it in hex, not hashed:
 
@@ -573,17 +622,22 @@ open("tests/fixtures/amd/ask.pem", "w", encoding="utf-8").write(certs[0])
 open("tests/fixtures/amd/ark.pem", "w", encoding="utf-8").write(certs[1])
 PY
 
-# 3. Fetch the VCEK for that chip id and TCB (both printed in step 1).
+# 3. Fetch the VCEK for that chip id and TCB (both printed in step 1), to
+#    inspect it. It is not vendored: the verifier fetches it per run.
 curl -fsS "https://kdsintf.amd.com/vcek/v1/Milan/<chip_id>?blSPL=<a>&teeSPL=<b>&snpSPL=<c>&ucodeSPL=<d>" \
   -o /tmp/vcek.der
-openssl x509 -inform DER -in /tmp/vcek.der -out tests/fixtures/amd/vcek.pem
 
 # 4. Verify the chain, then run the gate. The chain alone does not name a chip:
 #    a VCEK from another chip verifies against ASK and ARK. `make check` runs
 #    `cpu binding`, which is what catches the mismatch.
+openssl x509 -inform DER -in /tmp/vcek.der -out /tmp/vcek.pem
 openssl verify -CAfile tests/fixtures/amd/ark.pem \
-  -untrusted tests/fixtures/amd/ask.pem tests/fixtures/amd/vcek.pem
+  -untrusted tests/fixtures/amd/ask.pem /tmp/vcek.pem
 make check
+
+# 5. The synthetic test fixtures are generated, not fetched. A re-run rotates
+#    their P-384 chain and rewrites the four documents; no AMD access needed.
+/usr/bin/python3 tools/make_synthetic_report.py
 ```
 
 Three pitfalls, all observed on this box on 7 and 10 November 2026:
@@ -704,12 +758,15 @@ the pin records, from the release directory fetched to
 # A report changed after the CPU signed it
 python3 - <<'PY'
 import base64, json
-d = json.load(open("tests/fixtures/verify/report-2026-11-06.json"))
+d = json.load(open("tests/fixtures/verify/synthetic-report.json"))
 raw = bytearray(base64.b64decode(d["report_b64"])); raw[0x90] ^= 1
 d["report_b64"] = base64.b64encode(bytes(raw)).decode()
-json.dump(d, open("/tmp/tampered.json", "w"))
+# Next to the fixture so its `trust` block still resolves.
+json.dump(d, open("tests/fixtures/verify/synthetic-tampered.json", "w"))
 PY
-./odile-verify --report /tmp/tampered.json                 # signature FAIL, exit 1
+./odile-verify --report tests/fixtures/verify/synthetic-tampered.json
+# signature FAIL, exit 1
+rm tests/fixtures/verify/synthetic-tampered.json
 
 # A document from a release the pin does not carry
 ./odile-verify --report /tmp/unknown-release.json --expect <measurement>
@@ -717,23 +774,24 @@ PY
 # FAIL, exit 1 — never a fallback to the newest pinned release
 
 # A tenant run with no --expect: the chain alone is not a boot check
-./odile-verify --report tests/fixtures/verify/tenant-2026-11-12.json
+./odile-verify --report tests/fixtures/verify/synthetic-tenant.json
 # odile-verify: error: a tenant run needs --expect <measurement>; ...
 # exit 2
 
 # A tenant report changed after the CPU signed it (the KDS-fetched VCEK)
 python3 - <<'PY'
 import base64, json
-d = json.load(open("tests/fixtures/verify/tenant-2026-11-12.json"))
+d = json.load(open("tests/fixtures/verify/synthetic-tenant.json"))
 raw = bytearray(base64.b64decode(d["report_b64"])); raw[0x90] ^= 1
 d["report_b64"] = base64.b64encode(bytes(raw)).decode()
-json.dump(d, open("/tmp/tenant-tampered.json", "w"))
+json.dump(d, open("tests/fixtures/verify/synthetic-tenant-tampered.json", "w"))
 PY
-./odile-verify --report /tmp/tenant-tampered.json \
+./odile-verify --report tests/fixtures/verify/synthetic-tenant-tampered.json \
   --expect 9f01725a…f137                          # signature FAIL, exit 1
+rm tests/fixtures/verify/synthetic-tenant-tampered.json
 
 # A KDS that does not answer: fail closed on the vcek row, no fallback
-./odile-verify --report tests/fixtures/verify/tenant-2026-11-12.json \
+./odile-verify --report tests/fixtures/verify/synthetic-tenant.json \
   --expect 9f01725a…f137 --kds-base http://127.0.0.1:9
 # vcek        FAIL  AMD KDS is unreachable at http://127.0.0.1:9/...
 # exit 1
@@ -903,10 +961,11 @@ value and needs no transaction.
 
 | Risk | Owner | Review |
 |---|---|---|
-| A genuine report can be replayed; `odile-verify` does not challenge the machine with a nonce | security | V0.1.1 sealed auto-unlock |
+| A genuine report can be replayed; `odile-verify` does not challenge the machine with a nonce | security | not scheduled; re-reviewed at A9 (V0.0.1) |
 | The pin lives in the same repository as the verifier; a compromised repo can pin a different image | Savio | after V1.0, if a customer asks (`docs/architecture/ADR-anchor.md`) |
-| The vendored chain is for one chip; a host move or TCB change needs a reviewed fixture refresh for the demo | security | on every release or TCB change |
-| A tenant run needs AMD's KDS and TLS to `kdsintf.amd.com`; the KDS can be slow or down, and the VCEK is re-signed per request | security | every release; `--no-kds` is the offline fallback for the demo only |
+| The vendored roots are AMD's Milan ASK/ARK; a root rotation needs a reviewed refresh | security | on every release or AMD root change |
+| A live run needs AMD's KDS and TLS to `kdsintf.amd.com`; the KDS can be slow or down, and the VCEK is re-signed per request | security | every release; `--no-kds` is the offline fallback for a directory that carries a VCEK (the synthetic fixtures) |
+| The synthetic test fixtures carry an `ODILE-SYNTHETIC-` chip id and a test-only root; the scanner skips that marker and reports any other chip id | security | when `tools/make_synthetic_report.py` changes |
 | The KDS answer is trusted only after the pinned-ARK chain, the VCEK's chip/TCB binding and the report signature all pass | security | every release |
 | The TCB floor covers SNP SPL only; microcode is not floored | security | when AMD publishes a new advisory |
 | `openssl` and the Python interpreter are trusted binaries | security | base image review |

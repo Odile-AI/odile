@@ -29,11 +29,14 @@ Every test runs the real scanner against a throwaway git repository, so the
 from __future__ import annotations
 
 import hashlib
+import io
 import os
 import subprocess
 import sys
+import tarfile
 import tempfile
 import unittest
+import zipfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -45,6 +48,14 @@ LITERAL = "deadbeefcafe"
 # a test that plants a leak must not itself be a leak, or the gate it tests fails.
 PROBE_IP = ".".join(["45", "33", "32", "156"])
 PROBE_IP_2 = ".".join(["45", "33", "32", "157"])
+# The bare vendor-id positions: synthetic 8-hex tokens and a synthetic name,
+# never a live id. The public build's stand-ins (`0badc0de`, `odl-fake01`) are
+# the negative control, so a stand-in stays a stand-in in the new positions too.
+PROBE_ID = "ab12" + "cd34"
+PROBE_ID_2 = "5c0f" + "fe12"
+PROBE_HOST = "probe" + "host1"
+STAND_IN_ID = "0bad" + "c0de"
+STAND_IN_HOST = "odl-" + "fake01"
 
 
 def git_env() -> dict[str, str]:
@@ -110,6 +121,20 @@ class ForbidClass(unittest.TestCase):
         self.assertIn("FINDING allow-file", result.stdout)
         self.assertIn("missing-forbid.txt", result.stdout)
 
+    def write_tar(self, member: str, payload: bytes, name: str = "bundle.tar.gz") -> None:
+        buffer = io.BytesIO()
+        with tarfile.open(fileobj=buffer, mode="w:gz") as archive:
+            info = tarfile.TarInfo(member)
+            info.size = len(payload)
+            archive.addfile(info, io.BytesIO(payload))
+        (self.repo / name).write_bytes(buffer.getvalue())
+
+    def write_zip(self, member: str, payload: bytes, name: str = "bundle.zip") -> None:
+        buffer = io.BytesIO()
+        with zipfile.ZipFile(buffer, "w") as archive:
+            archive.writestr(member, payload)
+        (self.repo / name).write_bytes(buffer.getvalue())
+
     def test_a_planted_forbidden_literal_fails_then_passes(self) -> None:
         self.write_list()
         probe = self.repo / "probe.txt"
@@ -122,6 +147,45 @@ class ForbidClass(unittest.TestCase):
         passed = self.scan()
         self.assertEqual(passed.returncode, 0, passed.stdout)
         self.assertIn("PASS: nothing to leak", passed.stdout)
+
+    def test_a_forbidden_literal_inside_a_tar_member_fails(self) -> None:
+        # The forbid class read a whole file's text but not an archive member's;
+        # a literal planted in a member passed the class the list exists for.
+        self.write_list()
+        self.write_tar("member.txt", f"vendor box {LITERAL}\n".encode("utf-8"))
+        result = self.scan()
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn("FINDING forbidden-value", result.stdout)
+        self.assertIn("bundle.tar.gz!member.txt:1", result.stdout)
+        self.assertIn(f"({LABEL})", result.stdout)
+
+    def test_a_forbidden_literal_inside_a_zip_member_fails(self) -> None:
+        self.write_list()
+        self.write_zip("member.txt", f"vendor box {LITERAL}\n".encode("utf-8"))
+        result = self.scan()
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn("FINDING forbidden-value", result.stdout)
+        self.assertIn("bundle.zip!member.txt:1", result.stdout)
+
+    def test_a_forbidden_literal_outside_an_archive_fails(self) -> None:
+        # The same member bytes outside the archive: the wrapper is not what
+        # makes the literal a finding, so the archive test above isolates it.
+        self.write_list()
+        (self.repo / "member.txt").write_text(f"vendor box {LITERAL}\n", encoding="utf-8")
+        result = self.scan()
+        self.assertEqual(result.returncode, 1, result.stdout)
+        findings = [line for line in result.stdout.splitlines()
+                    if line.startswith("FINDING forbidden-value")]
+        self.assertEqual(len(findings), 1, result.stdout)
+        self.assertIn("member.txt:1", findings[0])
+        self.assertNotIn("!", findings[0])
+
+    def test_a_benign_archive_member_is_not_a_finding(self) -> None:
+        self.write_list()
+        self.write_tar("member.txt", b"nothing private here\n")
+        result = self.scan()
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertIn("PASS: nothing to leak", result.stdout)
 
     def test_the_list_itself_is_not_a_finding(self) -> None:
         # The list carries the literals by definition; if the walk scanned it,
@@ -292,6 +356,143 @@ class AllowlistRecord(unittest.TestCase):
         # login-page row and the README copy of the same value) and the two
         # demo secrets (the spent image seed token, the retired session seed).
         self.assertEqual(sum(1 for row in rows if row.credential == "yes"), 4)
+
+    def test_a_planted_chip_id_in_a_fixture_fails_the_gate(self) -> None:
+        import base64
+        import json
+        raw = bytearray(1184)
+        raw[0:4] = (5).to_bytes(4, "little")
+        raw[0x90:0xC0] = b"\x11" * 48
+        raw[0x1A0:0x1E0] = bytes.fromhex("0123456789abcdef" * 8)
+        fixture = self.repo / "synthetic-report.json"
+        fixture.write_text(json.dumps({
+            "report_b64": base64.b64encode(bytes(raw)).decode("ascii"),
+        }), encoding="utf-8")
+        first = self.scan()
+        self.assertEqual(first.returncode, 1, first.stdout)
+        self.assertIn("machine-identity", first.stdout)
+        # The generator's marker is not silicon; the same fixture passes.
+        raw[0x1A0:0x1E0] = b"ODILE-SYNTHETIC-CHIP-ID".ljust(64, b"\x00")
+        fixture.write_text(json.dumps({
+            "report_b64": base64.b64encode(bytes(raw)).decode("ascii"),
+        }), encoding="utf-8")
+        second = self.scan()
+        self.assertEqual(second.returncode, 0, second.stdout)
+        self.assertIn("PASS:", second.stdout)
+
+    def test_a_pem_certificate_with_a_live_chip_id_fails_the_gate(self) -> None:
+        import base64
+        import json
+        hwid = bytes.fromhex("0123456789abcdef" * 8)
+        oid = bytes.fromhex("2b060104019c780104")
+        inner = (b"\x02\x01\x01" + b"\x06\x09" + oid
+                 + b"\x04\x40" + hwid)
+        der = (b"\x30" + bytes([len(inner) + 2])
+               + b"\x30" + bytes([len(inner)]) + inner)
+        pem = ("-----BEGIN CERTIFICATE-----\n"
+               + base64.b64encode(der).decode("ascii") + "\n"
+               "-----END CERTIFICATE-----\n")
+        (self.repo / "fixture.pem").write_text(pem, encoding="utf-8")
+        first = self.scan()
+        self.assertEqual(first.returncode, 1, first.stdout)
+        self.assertIn("VCEK HWID (chip id) (PEM)", first.stdout)
+        # A certificate without the HWID extension is not a VCEK.
+        inner = b"\x02\x01\x01"
+        der = (b"\x30" + bytes([len(inner) + 2])
+               + b"\x30" + bytes([len(inner)]) + inner)
+        pem = ("-----BEGIN CERTIFICATE-----\n"
+               + base64.b64encode(der).decode("ascii") + "\n"
+               "-----END CERTIFICATE-----\n")
+        (self.repo / "fixture.pem").write_text(pem, encoding="utf-8")
+        second = self.scan()
+        self.assertEqual(second.returncode, 0, second.stdout)
+
+
+class BareVendorIdPositions(unittest.TestCase):
+    """The positions a live vendor id used, and the look-alikes it does not.
+
+    A card's tree hid the tenant's instance id and slug in three shapes the
+    bare rules did not pin: an unlabelled assignment of a quoted token, a
+    `/manage/<id>/` path whose link text is the machine's name, and two ids
+    written as one whitespace-separated list on a `printf` line. `make check`
+    was green on that tree; only the publication scrub pass caught it. Each
+    test runs the real scanner against a throwaway git repository and asserts
+    the exit code, so the rule and the walk that carries it are one behaviour.
+    """
+
+    def setUp(self) -> None:
+        self.temp = tempfile.TemporaryDirectory()
+        self.repo = Path(self.temp.name)
+        subprocess.run(["git", "init", "-q"], cwd=self.repo, env=git_env(), check=True)
+        (self.repo / "leak-allow.tsv").write_text(
+            "# no exceptions in this fixture\n", encoding="utf-8")
+
+    def tearDown(self) -> None:
+        self.temp.cleanup()
+
+    def scan(self) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            [sys.executable, str(SCANNER), "--tree"],
+            cwd=self.repo, env=git_env(), capture_output=True, text=True, timeout=120)
+
+    def write(self, name: str, text: str) -> None:
+        (self.repo / name).write_text(text, encoding="utf-8")
+
+    @staticmethod
+    def reference(value: str) -> str:
+        # The finding line names the path and line, then the digest of the
+        # value; the value itself is never echoed, so the digest is the pin.
+        return "sha256:" + hashlib.sha256(value.encode("utf-8")).hexdigest()[:12]
+
+    def test_an_unlabelled_quoted_assignment_fails_then_the_stand_in_passes(self) -> None:
+        self.write("probe.py", f'OTHER = "{PROBE_ID}"\n')
+        failed = self.scan()
+        self.assertEqual(failed.returncode, 1, failed.stdout)
+        self.assertIn("FINDING vendor-resource-id", failed.stdout)
+        self.assertIn(f"probe.py:1 {self.reference(PROBE_ID)}", failed.stdout)
+        self.assertIn("bare instance id", failed.stdout)
+        self.write("probe.py", f'OTHER = "{STAND_IN_ID}"\n')
+        passed = self.scan()
+        self.assertEqual(passed.returncode, 0, passed.stdout)
+        self.assertIn("PASS: nothing to leak", passed.stdout)
+
+    def test_a_manage_path_and_its_link_text_fail_then_the_stand_ins_pass(self) -> None:
+        self.write("dashboard.html", f'<a href="/manage/{PROBE_ID}/">{PROBE_HOST}</a>\n')
+        failed = self.scan()
+        self.assertEqual(failed.returncode, 1, failed.stdout)
+        self.assertIn(f"dashboard.html:1 {self.reference(PROBE_ID)}", failed.stdout)
+        self.assertIn(f"dashboard.html:1 {self.reference(PROBE_HOST)}", failed.stdout)
+        self.assertIn("bare host name", failed.stdout)
+        self.write("dashboard.html",
+                   f'<a href="/manage/{STAND_IN_ID}/">{STAND_IN_HOST}</a>\n')
+        passed = self.scan()
+        self.assertEqual(passed.returncode, 0, passed.stdout)
+        self.assertIn("PASS: nothing to leak", passed.stdout)
+
+    def test_a_bare_whitespace_list_of_ids_fails_then_the_stand_ins_pass(self) -> None:
+        # The recycle runbook restored the fence with one `printf` line naming
+        # two machines; neither token sat in any of the labelled positions.
+        self.write("restore.sh", f"printf '%s\\n' {PROBE_ID} {PROBE_ID_2} > fence\n")
+        failed = self.scan()
+        self.assertEqual(failed.returncode, 1, failed.stdout)
+        self.assertIn(f"restore.sh:1 {self.reference(PROBE_ID)}", failed.stdout)
+        self.assertIn(f"restore.sh:1 {self.reference(PROBE_ID_2)}", failed.stdout)
+        self.write("restore.sh", f"printf '%s\\n' {STAND_IN_ID} cafebabe > fence\n")
+        passed = self.scan()
+        self.assertEqual(passed.returncode, 0, passed.stdout)
+        self.assertIn("PASS: nothing to leak", passed.stdout)
+
+    def test_the_look_alikes_are_not_bare_ids(self) -> None:
+        # The shapes an 8-hex token is far more often than a machine id.
+        self.write("probe.txt", "\n".join([
+            f"merged pre-flip at `{PROBE_ID}`",
+            f"the tint is #{PROBE_ID}",
+            f"uuid {PROBE_ID}-0000-4000-8000-000000000000",
+            f"checksum sha256:{PROBE_ID}" + "0" * 56,
+        ]) + "\n")
+        result = self.scan()
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertIn("PASS: nothing to leak", result.stdout)
 
 
 if __name__ == "__main__":

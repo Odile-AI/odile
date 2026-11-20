@@ -144,9 +144,57 @@ SCRATCH_SEED_URL = "http://127.0.0.1:8081/seed"
 # writes it into the nightly unit's ExecStartPost; `--heartbeat-url` overrides
 # it for a receiver at another address.
 HEARTBEAT_URL = "https://odile.fyi/heartbeat"
+
+
+def endpoint_origin(url: str) -> str:
+    """`scheme://host[:port]` of an endpoint URL, or "" when it is not one.
+
+    The seed endpoint is the one per-environment value the measured command
+    line carries (ODL-340 follow-up): its origin names the HQ that issued the
+    seed, so every call this machine makes back to HQ is derived from it
+    instead of from a constant that only production answers.
+    """
+    parts = urllib.parse.urlsplit((url or "").strip())
+    if parts.scheme not in ("http", "https") or not parts.hostname:
+        return ""
+    return f"{parts.scheme}://{parts.netloc}"
+
+
+def heartbeat_url_for(seed_url: str) -> str:
+    """The heartbeat receiver in the environment that issued the seed.
+
+    `https://test.odile.fyi/seed` -> `https://test.odile.fyi/heartbeat`;
+    production is unchanged. A seed URL that is not an http(s) endpoint falls
+    back to the production route, which is what the installer shipped before
+    this derivation existed.
+    """
+    origin = endpoint_origin(seed_url)
+    return f"{origin}/heartbeat" if origin else HEARTBEAT_URL
+
+
+def public_url_for(slug: str, seed_url: str) -> str:
+    """The tenant's public name in the environment that issued the seed.
+
+    A tenant is `<slug>.<the seed endpoint's host>`: `odile.fyi` keeps
+    `<slug>.odile.fyi`, and a second environment at `test.odile.fyi` becomes
+    `<slug>.test.odile.fyi` without a disk write. `--public-url` overrides it
+    (a name the owner moved, or an environment whose names are not shaped this
+    way).
+    """
+    parts = urllib.parse.urlsplit((seed_url or "").strip())
+    host = (parts.hostname or "").lower()
+    if not host or host == "odile.fyi":
+        return f"https://{slug}.odile.fyi"
+    return f"https://{slug}.{host}"
+
+
 DEFAULT_TENANT_PORT = 9120
 # The first-visit service's loopback port (ODL-457); Caddy is the listener.
 FIRST_VISIT_PORT = 8091
+# The /verify program's own loopback port (t_4fcd465f). It runs as root
+# because the handoff audit reads /etc/shadow and sshd's journal; Caddy is the
+# only public listener, at /verify, and the page is no-store.
+VERIFY_PORT = 8098
 # The signed-manifest listener's loopback port (ODL-472); Caddy is the
 # listener at /manifest and /manifest.sig, exactly as it is for /first-visit.
 MANIFEST_PORT = 8012
@@ -3028,7 +3076,7 @@ printf 'members %s\n' "${members# }"
 # The first-visit service and its page are the reviewed files, byte for
 # byte, so the signed installer carries exactly the program and page it
 # writes to /usr/local/lib/odile/. --self-test fails on a one-byte edit.
-FIRST_VISIT_SHA256 = "d1c761f0325516b2ccc8611344eb53827090c7ad70e6901d3d451f495f0e4bb6"
+FIRST_VISIT_SHA256 = "00af16519ada1104191b99fc39349cde908f70d67f37eff176da5c6d89852915"
 FIRST_VISIT_SOURCE = r'''#!/usr/bin/python3
 """odile first-visit service — set the Odile sign-in on the guest.
 
@@ -3044,9 +3092,11 @@ service's state file (the hashes).
 
     GET  /first-visit?t=<token>   the form, while the token is unspent
     POST /first-visit             write the basic-auth hash; spend the token
-    GET  /first-visit/recovery    the recovery file, with the code as the key
-    GET  /first-visit/reset       the reset form (recovery code + new password)
-    POST /first-visit/reset       write a new hash; rotate the recovery code
+    GET  /first-visit/recovery    the recovery page: enter the code, get the file
+    POST /first-visit/recovery    spend the code, rotate it, mint a download token
+    GET  /first-visit/recovery?d=<download token>   the recovery file, once
+    GET  /first-visit/reset       the reset form (recovery code + new sign-in)
+    POST /first-visit/reset       write a new hash; rotate the code and the session secret
     GET  /health                  ok
     GET  /favicon.ico             the website icon, 16/32/48
     GET  /icon-32.png             the website icon, 32
@@ -3066,13 +3116,29 @@ Design notes a reviewer should check:
   before they typed anything. The same choice is recorded for the claim page in
   ``docs/architecture/DESIGN-claim-ceremony.md``. After the sign-in is set the
   token is dead for good: every later GET or POST answers 410.
-* **The recovery file is behind the recovery code.** The done page shows the
-  code once and links to ``/first-visit/recovery?c=<code>``; the GET verifies
-  the code against its scrypt hash before it reads anything. The link is
-  same-origin, the page is ``Referrer-Policy: no-referrer`` and Caddy discards
-  the access log, so the code is not copied into a log or a third-party
-  request. The file holds the backup password, so an unauthenticated URL would
-  be a leak; the code is ~100 bits and rotates on a reset.
+* **The code is never a bearer in a URL (ODL-579).** The done page shows the
+  code once and links the recovery file with a **one-time download token**
+  (``?d=``, 32 bytes, stored as its SHA-256, ten minutes, one use). The code is
+  only ever POSTed: at ``/first-visit/recovery`` (download the file) and at
+  ``/first-visit/reset`` (change the sign-in). Both spend it and both rotate it,
+  and the response shows the new code once; the first visit's download does not
+  spend the code, so the code it shows stays live.
+* **A use is recorded, not just replaced.** ``recovery_used_at`` marks the
+  stored code as spent before the new code is written, and a presented code is
+  refused while that marker is set. The write order is spend, then rotate, so a
+  crash between them can never replay a code (the machine then needs the
+  recovery file's restore, exactly as a lost response would).
+* **The recovery file is behind the code or a live download token.** The file
+  holds the backup password, so neither an unauthenticated URL nor a permanent
+  one may serve it. The link is same-origin, the page is
+  ``Referrer-Policy: no-referrer`` and Caddy discards the access log; the
+  download token is the file's own bearer, bounded by ten minutes and one use.
+* **A whole-machine restore must not restore ``/etc/odile`` (A3's rule).** The
+  state file holds this machine's sign-in hash and recovery-code hash; a restore
+  that brought back the backup's copy would revoke the code the user was shown
+  after the rebuild. A3's restore excludes it (or rotates the code afterwards);
+  this service only records the rule, because the state is the anchor the code
+  is verified against.
 * **The fingerprint is the certificate the browser is using.** When the request
   arrived over TLS (Caddy's ``X-Forwarded-Proto: https``), the service reads
   the certificate for the request's host from Caddy's store and writes its
@@ -3149,9 +3215,11 @@ DEFAULT_RELOAD = "systemctl restart odile-agent"
 # and hands it to the browser that holds the recovery code.
 DEFAULT_RECOVERY = "/etc/odile/recovery.txt"
 # The machine's own access report (ODL-473). The boot oneshot writes it 0644
-# from `verify_and_unlock.sh --mode access --out`; this service renders it at
-# /verify with the provenance line the file carries. The page is the same
-# template HQ serves (web/verify.html), rendered in its tenant state.
+# from `verify_and_unlock.sh --mode access --out`; the support bundle reads it.
+# The tenant's /verify page is not this service's: it is `verify/verify.py`
+# under `odile-verify.service` on its own loopback port (t_4fcd465f). The
+# renderer below stays for HQ's demo page (`web/verify.html`), which app.py
+# serves and the demo-host checks exercise.
 DEFAULT_VERIFY_PAGE = "/usr/local/lib/odile/verify.html"
 DEFAULT_REPORT = "/var/lib/odile/access-report.txt"
 DEFAULT_ATTEST = "/var/lib/odile/attestation.json"
@@ -3196,6 +3264,10 @@ MIN_PASSWORD = 16
 MAX_PASSWORD = 1024
 RATE_LIMIT = 10
 RATE_WINDOW = 600
+# The recovery file's own bearer (ODL-579): 32 bytes, stored as SHA-256, ten
+# minutes and one use. Short enough that a copied link is worth little, long
+# enough that the download from the done page does not race the user.
+DOWNLOAD_TTL = 600
 
 # Recovery code alphabet: no I, O, 0 or 1, so a code read off a screen and
 # typed on a phone is unambiguous. Five groups of four is ~100 bits.
@@ -3220,7 +3292,8 @@ CODE_SENTINEL = "\x00recovery-code\x00"
 ERROR_FIELDS = ("code", "password", "password2")
 
 BLOCK_RE = re.compile(
-    r"<!--(form|done|reset-done|reset|refused-unknown|refused)-->(.*?)<!--/\1-->", re.S)
+    r"<!--(form|done|recover|recovery-done|reset-done|reset|refused-unknown|refused)-->"
+    r"(.*?)<!--/\1-->", re.S)
 
 _hits: dict[str, list[float]] = {}
 _lock = threading.Lock()
@@ -3303,6 +3376,11 @@ def empty_state() -> dict:
         "recovery_hash": None,
         "recovery_issued_at": None,
         "recovery_used_at": None,
+        # The recovery file's one-time bearer (ODL-579): its SHA-256, when it
+        # expires, and when it was spent. All null until a page mints one.
+        "download_sha256": None,
+        "download_expires_at": None,
+        "download_used_at": None,
     }
 
 
@@ -3315,10 +3393,15 @@ def validate_state(state: object) -> dict:
     token_hash = state.get("token_sha256")
     if not isinstance(token_hash, str) or not TOKEN_RE.match(token_hash):
         raise ValueError("token_sha256 is not 64 lowercase hex")
-    for key in ("used_at", "signin_set_at", "recovery_issued_at", "recovery_used_at"):
+    for key in ("used_at", "signin_set_at", "recovery_issued_at", "recovery_used_at",
+                "download_expires_at", "download_used_at"):
         value = state.get(key)
         if value is not None and not isinstance(value, str):
             raise ValueError("%s is not a string or null" % key)
+    download = state.get("download_sha256")
+    if download is not None and not (isinstance(download, str)
+                                     and TOKEN_RE.match(download)):
+        raise ValueError("download_sha256 is not 64 lowercase hex or null")
     recovery = state.get("recovery_hash")
     if recovery is not None and not (isinstance(recovery, str) and recovery.startswith("scrypt$")):
         raise ValueError("recovery_hash is not an scrypt hash")
@@ -3539,23 +3622,78 @@ def recovery_filename(recovery: RecoveryFile) -> str:
     return "odile-recovery-%s.txt" % recovery.slug if recovery.slug else "odile-recovery.txt"
 
 
-def recovery_code_ok(state: dict, raw: str) -> bool:
-    """The download's key is the recovery code the page showed once."""
+def recovery_status(state: dict, raw: str) -> str:
+    """'ok', 'used' or 'bad' for a code presented at either use site.
+
+    A code that verifies against the stored hash is still refused while
+    ``recovery_used_at`` is set: that marker is written before the rotation, so
+    a crash between the two writes cannot leave a spent code replayable. The
+    marker is cleared in the same write that stores the new code.
+    """
     stored = state.get("recovery_hash")
     if not isinstance(stored, str) or not stored.startswith("scrypt$"):
-        return False
+        return "bad"
     normalised = normalise_code(raw)
     if not CODE_RE.match(normalised):
-        return False
-    return verify_password(normalised, stored)
+        return "bad"
+    if not verify_password(normalised, stored):
+        return "bad"
+    return "used" if state.get("recovery_used_at") else "ok"
 
 
-def recovery_file_block(recovery: RecoveryFile | None, code: str) -> str:
+def spend_code(state: dict) -> None:
+    """Mark the live code spent; the caller saves before minting the next one."""
+    state["recovery_used_at"] = utc_now()
+
+
+def rotate_code(state: dict) -> str:
+    """Issue the next code and make it live; returns the code to show once."""
+    code = new_recovery_code()
+    state["recovery_hash"] = hash_password(normalise_code(code))
+    state["recovery_issued_at"] = utc_now()
+    state["recovery_used_at"] = None
+    return code
+
+
+def issue_download(state: dict) -> str:
+    """Mint the recovery file's bearer: 32 bytes, hashed, ten minutes, one use."""
+    token = secrets.token_hex(32)
+    state["download_sha256"] = hash_token(token)
+    state["download_expires_at"] = iso_after(DOWNLOAD_TTL)
+    state["download_used_at"] = None
+    return token
+
+
+def download_status(state: dict, raw: str) -> str:
+    """'ok', 'unknown', 'used' or 'expired' for a ``?d=`` token."""
+    stored = state.get("download_sha256")
+    if not isinstance(stored, str) or not TOKEN_RE.match(stored):
+        return "unknown"
+    if not raw or not TOKEN_RE.match(raw):
+        return "unknown"
+    if not secrets.compare_digest(hash_token(raw), stored):
+        return "unknown"
+    if state.get("download_used_at"):
+        return "used"
+    # Both timestamps are UTC in one fixed-width format, so the string
+    # comparison is the chronological one.
+    expires = state.get("download_expires_at")
+    if not isinstance(expires, str) or utc_now() >= expires:
+        return "expired"
+    return "ok"
+
+
+def iso_after(seconds: int) -> str:
+    return datetime.fromtimestamp(time.time() + seconds, timezone.utc).strftime(
+        "%Y-%m-%dT%H:%M:%SZ")
+
+
+def recovery_file_block(recovery: RecoveryFile | None, token: str) -> str:
     """The done page's download, or the sentence that names the absence."""
     if recovery is None:
         return ('<p class="note" id="recovery-file">'
                 'The recovery file is not available on this machine.</p>')
-    href = "/first-visit/recovery?c=" + quote(code, safe="")
+    href = "/first-visit/recovery?d=" + quote(token, safe="")
     filename = recovery_filename(recovery)
     if recovery.filled:
         holds = "the backup password and this machine's certificate fingerprint"
@@ -3564,7 +3702,7 @@ def recovery_file_block(recovery: RecoveryFile | None, code: str) -> str:
                  "on this machine")
     return ('<div class="recovery-file" id="recovery-file">\n'
             '    <a class="download" href="%s" download="%s">Download your recovery file</a>\n'
-            '    <p class="note">It holds %s.</p>\n'
+            '    <p class="note">It holds %s. This link works once, for ten minutes.</p>\n'
             '  </div>'
             % (html.escape(href, quote=True), html.escape(filename, quote=True),
                html.escape(holds)))
@@ -3581,36 +3719,48 @@ def env_values(text: str) -> dict[str, str]:
     return values
 
 
-def render_env(text: str, password_hash: str) -> str:
-    """Replace the one hash line, keeping every other line and its order.
+def render_env(text: str, password_hash: str, secret: str | None = None) -> str:
+    """Replace the hash line, and the session secret when one is given.
 
     A line is replaced in place; a file without the key gets it appended, so a
     hand-edited .env still converges. Comments are preserved because they are
-    the installer's explanation of the allowlist.
+    the installer's explanation of the allowlist. ``secret=None`` keeps the
+    existing secret byte for byte.
     """
     lines = text.splitlines()
     replaced = False
+    secret_replaced = secret is None
     rendered: list[str] = []
     for line in lines:
         if line.startswith(PASSWORD_KEY + "="):
             rendered.append("%s=%s" % (PASSWORD_KEY, password_hash))
             replaced = True
+        elif secret is not None and line.startswith(SECRET_KEY + "="):
+            rendered.append("%s=%s" % (SECRET_KEY, secret))
+            secret_replaced = True
         else:
             rendered.append(line)
     if not replaced:
         rendered.append("%s=%s" % (PASSWORD_KEY, password_hash))
+    if not secret_replaced:
+        rendered.append("%s=%s" % (SECRET_KEY, secret))
     body = "\n".join(rendered)
     return body + "\n" if body and not body.endswith("\n") else body
 
 
-def write_env_hash(env_path: Path, password_hash: str) -> str:
+def write_env_hash(env_path: Path, password_hash: str, *,
+                   rotate_secret: bool = False) -> str:
     """Write the hash into the tenant .env; return the username it names.
 
-    Only the hash line moves: the session-signing secret the first boot
-    generated for this machine (``HERMES_DASHBOARD_BASIC_AUTH_SECRET``) is kept
-    byte for byte, or every session cookie the owner had would be invalidated
-    by setting a password. A file without a secret is refused rather than
-    written: the tenant would come back with no way to sign a cookie.
+    Setting the sign-in the first time keeps the session-signing secret the
+    first boot generated for this machine
+    (``HERMES_DASHBOARD_BASIC_AUTH_SECRET``) byte for byte, so the owner's
+    browsers stay signed in through the password they just chose. A **reset**
+    passes ``rotate_secret=True``: the same write replaces the secret with 32
+    fresh bytes, so every cookie signed with the old value is refused on its
+    next request — the other signed-in browsers end with the old sign-in
+    (ODL-579, ADR-006 §5 defect 3). A file without a secret is refused rather
+    than written: the tenant would come back with no way to sign a cookie.
     """
     try:
         original = env_path.read_text(encoding="utf-8")
@@ -3623,8 +3773,11 @@ def write_env_hash(env_path: Path, password_hash: str) -> str:
         raise SystemExit(
             "error: %s has no %s; the first-visit write would leave the tenant "
             "with no session secret" % (env_path, SECRET_KEY))
+    secret = None
+    if rotate_secret:
+        secret = base64.b64encode(secrets.token_bytes(32)).decode("ascii")
     owner = (stat.st_uid, stat.st_gid)
-    updated = render_env(original, password_hash)
+    updated = render_env(original, password_hash, secret)
     if updated != original:
         write_atomic(env_path, updated.encode("utf-8"), stat.st_mode & 0o777, owner)
     return env_values(updated).get(USERNAME_KEY) or DEFAULT_USERNAME
@@ -3923,12 +4076,19 @@ class FirstVisit:
     # -- responses -------------------------------------------------------
 
     def done(self, keep: str, title: str, code: str, username: str,
-             host: str, secure: bool) -> tuple[int, str]:
-        """The one page that shows the code, and the file it unlocks."""
+             host: str, secure: bool, download: str) -> tuple[int, str]:
+        """The one page that shows the code, and the file it unlocks once."""
         recovery = self.complete_recovery(host, secure)
         body = render(self.template(), keep, title=title, recovery=code,
                       username=username,
-                      recovery_file=recovery_file_block(recovery, code))
+                      recovery_file=recovery_file_block(recovery, download))
+        return 200, body
+
+    def recover_form(self, error: FieldError | None = None) -> tuple[int, str]:
+        """The recovery page: the code is POSTed here, never carried in a URL."""
+        body = render(self.template(), "recover",
+                      title="Your recovery file — Odile", error=error,
+                      username=self.username())
         return 200, body
 
     def refused(self, code: int, can_reset: bool = True) -> tuple[int, str]:
@@ -4130,22 +4290,51 @@ def build_handler(service: FirstVisit):
             proto = self.headers.get("X-Forwarded-Proto", "")
             return proto.split(",")[0].strip().lower() == "https"
 
-        def _recovery_download(self, head: bool) -> None:
+        def _recovery_page(self, head: bool, query: dict[str, list[str]]) -> None:
+            """The recovery page, or the file its one-time token names.
+
+            ``?d=`` is the file's own bearer (32 bytes, hashed, ten minutes,
+            one use); no code ever travels in a URL. Without it the page is a
+            form whose POST spends the code and shows the next one once.
+            """
+            if "d" in query:
+                return self._download_file((query.get("d") or [""])[0], head)
             state = self._load_state()
             if state is None:
                 return
+            if not state.get("recovery_hash"):
+                code, body = service.refused(409, False)
+                return self._send(code, body, head)
+            code, body = service.recover_form()
+            return self._send(code, body, head)
+
+        def _download_file(self, token: str, head: bool) -> None:
             if not allow(self.client_address[0], bucket="recovery"):
                 return self._send(429, "Too many attempts. Try again in ten minutes.\n",
                                   head, "text/plain; charset=utf-8")
-            raw = (parse_qs(urlparse(self.path).query, keep_blank_values=True)
-                   .get("c") or [""])[0]
-            if not recovery_code_ok(state, raw):
-                return self._send(404, "The recovery file is not available on this machine.\n",
-                                  head, "text/plain; charset=utf-8")
-            recovery = service.complete_recovery(self._host(), self._secure())
-            if recovery is None:
-                return self._send(404, "The recovery file is not available on this machine.\n",
-                                  head, "text/plain; charset=utf-8")
+            with locked(service.state):
+                state = self._load_state()
+                if state is None:
+                    return
+                verdict = download_status(state, token)
+                if verdict == "unknown":
+                    return self._send(
+                        404, "The recovery file is not available on this machine.\n",
+                        head, "text/plain; charset=utf-8")
+                if verdict != "ok":
+                    return self._send(
+                        410, "This download link has been used or has expired.\n",
+                        head, "text/plain; charset=utf-8")
+                recovery = service.complete_recovery(self._host(), self._secure())
+                if recovery is None:
+                    return self._send(
+                        404, "The recovery file is not available on this machine.\n",
+                        head, "text/plain; charset=utf-8")
+                # A HEAD answers "is it there" without spending the one use: a
+                # link previewer or a scanner must not burn the owner's click.
+                if not head:
+                    state["download_used_at"] = utc_now()
+                    save_state(service.state, state)
             return self._send(200, recovery.text, head, "text/plain; charset=utf-8",
                               filename=service.filename(recovery))
 
@@ -4164,11 +4353,8 @@ def build_handler(service: FirstVisit):
                 code, ctype, data = icon
                 return self._send_bytes(code, data, head, ctype,
                                         cache=ICON_CACHE if code == 200 else "no-store")
-            if path in ("/verify", "/verify/"):
-                code, body = service.verify()
-                return self._send(code, body, head)
             if path in ("/first-visit/recovery", "/first-visit/recovery/"):
-                return self._recovery_download(head)
+                return self._recovery_page(head, query)
             if path in ("/first-visit", "/first-visit/"):
                 token = (query.get("t") or [""])[0]
                 state = self._load_state()
@@ -4202,7 +4388,8 @@ def build_handler(service: FirstVisit):
                 length = int(self.headers.get("Content-Length", "0"))
             except ValueError:
                 length = 0
-            if path not in ("/first-visit", "/first-visit/reset"):
+            if path not in ("/first-visit", "/first-visit/reset",
+                            "/first-visit/recovery"):
                 # Drain a small body so the next request on this connection
                 # starts where it should; a large one is not worth reading.
                 if 0 < length <= MAX_BODY:
@@ -4219,6 +4406,8 @@ def build_handler(service: FirstVisit):
                                   ctype="text/plain; charset=utf-8")
             if path == "/first-visit":
                 return self._set_signin(fields)
+            if path == "/first-visit/recovery":
+                return self._recover_file(fields)
             return self._reset_signin(fields)
 
         def _set_signin(self, fields: dict[str, list[str]]) -> None:
@@ -4255,6 +4444,10 @@ def build_handler(service: FirstVisit):
                 state["signin_set_at"] = state["used_at"]
                 state["recovery_hash"] = hash_password(normalise_code(code_value))
                 state["recovery_issued_at"] = state["used_at"]
+                # The code stays live: the button beside it carries a one-time
+                # download token, so fetching the file does not spend the code
+                # the visitor is being asked to save (ODL-579).
+                download = issue_download(state)
                 save_state(service.state, state)
             print("first-visit: sign-in set for %r (token %s… spent)"
                   % (username, state["token_sha256"][:8]), flush=True)
@@ -4264,14 +4457,48 @@ def build_handler(service: FirstVisit):
             # The recovery code exists only in this response: no-store, and the
             # state keeps its scrypt hash, never the code.
             code, body = service.done("done", "Your sign-in is set — Odile",
-                                      code_value, username, self._host(), self._secure())
+                                      code_value, username, self._host(), self._secure(),
+                                      download)
+            return self._send(code, body)
+
+        def _recover_file(self, fields: dict[str, list[str]]) -> None:
+            """Spend the code at the recovery page: rotate it, serve the file once.
+
+            The file holds the backup password, so the page asks for the code
+            and the response carries only a one-time download token. Both uses
+            of the code (here and the reset) spend it and show the next one.
+            """
+            code_value = (fields.get("code") or [""])[0]
+            with locked(service.state):
+                state = self._load_state()
+                if state is None:
+                    return
+                if not state.get("recovery_hash"):
+                    code, body = service.refused(409, False)
+                    return self._send(code, body)
+                if recovery_status(state, code_value) != "ok":
+                    code, body = service.recover_form(
+                        FieldError("That recovery code does not match.", "code", ("code",)))
+                    return self._send(code, body)
+                # Spend first, then rotate: a crash between the two writes can
+                # never leave the used code replayable (recovery_status reads
+                # the marker). The new code exists only in this response.
+                spend_code(state)
+                save_state(service.state, state)
+                new_code = rotate_code(state)
+                download = issue_download(state)
+                save_state(service.state, state)
+            print("first-visit: recovery file unlocked with the recovery code; "
+                  "the code rotated", flush=True)
+            code, body = service.done("recovery-done", "Your recovery file — Odile",
+                                      new_code, service.username(), self._host(),
+                                      self._secure(), download)
             return self._send(code, body)
 
         def _reset_signin(self, fields: dict[str, list[str]]) -> None:
             code_value = (fields.get("code") or [""])[0]
             password = (fields.get("password") or [""])[0]
             repeat = (fields.get("password2") or [""])[0]
-            normalised = normalise_code(code_value)
             with locked(service.state):
                 state = self._load_state()
                 if state is None:
@@ -4280,7 +4507,7 @@ def build_handler(service: FirstVisit):
                 if not isinstance(stored, str) or not stored.startswith("scrypt$"):
                     code, body = service.refused(409, False)
                     return self._send(code, body)
-                if not CODE_RE.match(normalised) or not verify_password(normalised, stored):
+                if recovery_status(state, code_value) != "ok":
                     code, body = service.reset_form(
                         FieldError("That recovery code does not match.", "code", ("code",)),
                         code_value)
@@ -4292,21 +4519,28 @@ def build_handler(service: FirstVisit):
 
                 password_hash = hash_password(password)
                 try:
-                    username = write_env_hash(service.env, password_hash)
+                    # The reset rotates the session secret in the same write as
+                    # the hash (ADR-006 §5 defect 3): every other signed-in
+                    # browser on this machine is refused on its next request.
+                    username = write_env_hash(service.env, password_hash,
+                                              rotate_secret=True)
                     service.reload()
                 except (SystemExit, RuntimeError) as exc:
                     print("first-visit: refused: %s" % exc, file=sys.stderr, flush=True)
                     return self._send(500, "The sign-in was not reset. Try again.\n",
                                       ctype="text/plain; charset=utf-8")
 
-                new_code = new_recovery_code()
-                state["recovery_hash"] = hash_password(normalise_code(new_code))
-                state["recovery_issued_at"] = utc_now()
-                state["recovery_used_at"] = state["recovery_issued_at"]
+                spend_code(state)
                 save_state(service.state, state)
-            print("first-visit: sign-in reset with the recovery code; the code rotated", flush=True)
+                new_code = rotate_code(state)
+                download = issue_download(state)
+                save_state(service.state, state)
+            print("first-visit: sign-in reset with the recovery code; the code rotated, "
+                  "the session secret rotated", flush=True)
+            service.refresh_report()
             code, body = service.done("reset-done", "Your sign-in is reset — Odile",
-                                      new_code, username, self._host(), self._secure())
+                                      new_code, username, self._host(), self._secure(),
+                                      download)
             return self._send(code, body)
 
     return Handler
@@ -4371,6 +4605,10 @@ def summary(state: dict) -> dict:
         "recovery_hash": ("scrypt…" if state.get("recovery_hash") else None),
         "recovery_issued_at": state["recovery_issued_at"],
         "recovery_used_at": state["recovery_used_at"],
+        "download_sha256": (state.get("download_sha256") or "")[:16] + "…"
+        if state.get("download_sha256") else None,
+        "download_expires_at": state.get("download_expires_at"),
+        "download_used_at": state.get("download_used_at"),
     }
 
 
@@ -4411,7 +4649,7 @@ def main(argv: list[str] | None = None) -> int:
 if __name__ == "__main__":
     sys.exit(main())
 '''
-FIRST_VISIT_PAGE_SHA256 = "810a596d561fb7ae28fcd67b864a836fe2c5b808dce223b89d573fd9d622ef29"
+FIRST_VISIT_PAGE_SHA256 = "eed3a6e9d12877abd10f604a52aa9fda5f759a8e85fbced88f95649a06c9213f"
 FIRST_VISIT_PAGE = r'''<!doctype html>
 <html lang="en">
 <head>
@@ -4487,6 +4725,16 @@ input[aria-invalid=true]{border-bottom-color:var(--error)}
   text-transform:uppercase;letter-spacing:.28em;transition:background .18s,color .18s}
 .download:hover{background:var(--ink-hover);border-color:var(--ink-hover);color:var(--paper)}
 .download:focus-visible{outline:2px solid var(--ink);outline-offset:3px}
+.consent{display:flex;align-items:flex-start;gap:12px;margin:16px 0 0;min-height:44px;padding:8px 0;
+  font-size:16px;line-height:1.5;color:var(--soft);cursor:pointer;max-width:54ch}
+input[type=checkbox]{appearance:none;-webkit-appearance:none;width:18px;height:18px;margin:4px 0 0;flex:none;
+  border:1px solid var(--edge);background:var(--paper);border-radius:0;position:relative;cursor:pointer}
+input[type=checkbox]:checked{border-color:var(--ink)}
+input[type=checkbox]:checked::after{content:"";position:absolute;left:3px;top:3px;width:10px;height:10px;background:var(--ink)}
+input[type=checkbox]:focus-visible{outline:2px solid var(--ink);outline-offset:3px}
+@media (forced-colors:active){input[type=checkbox]{border-color:ButtonText}
+  input[type=checkbox]:checked::after{background:ButtonText}}
+.consent:not(:has(input:checked)) + .act .quiet{visibility:hidden}
 section{margin:0 0 8px}
 .rule{margin:24px 0 0;padding-top:16px;border-top:1px solid var(--line)}
 .foot{margin:32px 0 0;padding-top:16px;border-top:1px solid var(--line-soft);
@@ -4545,13 +4793,14 @@ h1,h2,h3,.brand,.mark,.wordmark,.focus{font-family:var(--serif)}
     {{RECOVERY_FILE}}
     <p class="note">A recovery code and a recovery file are the way back: the code resets your sign-in, the file opens your backup. Your first visit gives you both; keep them off the machine. While the machine is still running, the agent can show it again.</p>
   </section>
+  <label class="consent"><input type="checkbox" id="saved"> I have saved the code and the file</label>
   <div class="act">
     <a class="quiet" href="/">Open your workspace</a>
   </div>
 <!--/done-->
 <!--reset-->
-  <h1>Reset your sign-in</h1>
-  <p class="lede">Enter the recovery code you saved, then choose a new password.</p>
+  <h1>Reset your machine's sign-in</h1>
+  <p class="lede">Enter the recovery code you saved at your first visit, then choose a new sign-in. This changes the sign-in on this machine only. Your account password is reset at your account site.</p>
   <form method="post" action="/first-visit/reset">
     <div class="field">
       <label for="code">Recovery code</label>
@@ -4560,7 +4809,7 @@ h1,h2,h3,.brand,.mark,.wordmark,.focus{font-family:var(--serif)}
       <!--code-error-->
     </div>
     <div class="field">
-      <label for="password">New password</label>
+      <label for="password">New sign-in</label>
       <p class="hint" id="password-hint">At least 16 characters.</p>
       <input type="password" id="password" name="password" autocomplete="new-password"
              minlength="16" required{{PASSWORD_ATTRS}}>
@@ -4572,24 +4821,53 @@ h1,h2,h3,.brand,.mark,.wordmark,.focus{font-family:var(--serif)}
              minlength="16" required{{PASSWORD2_ATTRS}}>
       <!--password2-error-->
     </div>
-    <button class="primary" type="submit">Set a new password</button>
+    <button class="primary" type="submit">Set the sign-in</button>
   </form>
   <p class="foot">The code you used stops working; a new one is shown next.</p>
 <!--/reset-->
 <!--reset-done-->
-  <h1>Your sign-in is reset.</h1>
-  <p class="lede">The old password no longer opens the workspace.</p>
+  <h1>Your sign-in is changed.</h1>
+  <p class="lede">Every other signed-in browser on this machine has been signed out.</p>
   <section aria-labelledby="recovery">
     <p class="label" id="recovery">Your new recovery code</p>
     <p class="code" id="code">{{RECOVERY}}</p>
-    <p>This is the only time the new code is shown. The code you saved before no longer works.</p>
+    <p>This is the only time the new code is shown. The page will not show it again. The code you saved before no longer works.</p>
     {{RECOVERY_FILE}}
     <p class="note">A recovery code and a recovery file are the way back: the code resets your sign-in, the file opens your backup. Your first visit gives you both; keep them off the machine. While the machine is still running, the agent can show it again.</p>
   </section>
+  <label class="consent"><input type="checkbox" id="saved"> I have saved the code and the file</label>
   <div class="act">
     <a class="quiet" href="/">Open your workspace</a>
   </div>
 <!--/reset-done-->
+<!--recover-->
+  <h1>Download your recovery file</h1>
+  <p class="lede">Enter the recovery code you saved at your first visit. This file holds your backup password.</p>
+  <form method="post" action="/first-visit/recovery">
+    <div class="field">
+      <label for="code">Recovery code</label>
+      <input type="text" id="code" name="code" autocomplete="off" autocapitalize="characters"
+             spellcheck="false" required{{CODE_ATTRS}}>
+      <!--code-error-->
+    </div>
+    <button class="primary" type="submit">Show the download</button>
+  </form>
+  <p class="foot">Your sign-in does not change. The code you use stops working; a new one is shown next.</p>
+<!--/recover-->
+<!--recovery-done-->
+  <h1>Your recovery file is ready.</h1>
+  <p class="lede">Download it now, before you close this page.</p>
+  <section aria-labelledby="recovery">
+    <p class="label" id="recovery">Your new recovery code</p>
+    <p class="code" id="code">{{RECOVERY}}</p>
+    <p>This is the only time the new code is shown. The page will not show it again. The code you saved before no longer works.</p>
+    {{RECOVERY_FILE}}
+  </section>
+  <label class="consent"><input type="checkbox" id="saved"> I have saved the code and the file</label>
+  <div class="act">
+    <a class="quiet" href="/">Open your workspace</a>
+  </div>
+<!--/recovery-done-->
 <!--refused-->
   <h1>This link is closed.</h1>
   <p class="lede">The sign-in was already set, or the link is not valid.</p>
@@ -4631,213 +4909,1283 @@ ICON_SET = (
 
 # BEGIN VERIFY SURFACE (ODL-473)
 # Generated by installer/embed_verify.py; do not edit by hand.
-# The /verify page and the two programs that write and read its report
-# are the reviewed files, byte for byte, so the signed installer carries
-# exactly the surface it writes to /usr/local/lib/odile/. --self-test
-# fails on a one-byte edit. The handoff audit (ODL-208) is embedded the
-# same way and installed at /usr/local/bin/odile-audit.
-VERIFY_PAGE_SHA256 = "00552a5cdeca35a34a9aad8766422b48fa2425c9dad3e0d9dcb1ed73fb577e78"
-VERIFY_PAGE = r'''<!doctype html>
+# The /verify program and the page template it renders, plus the two
+# programs that write and read the access report and the handoff
+# audit, are the reviewed files, byte for byte, so the signed installer
+# carries exactly the surface it writes under /usr/local/. --self-test
+# fails on a one-byte edit.
+VERIFY_PROGRAM_SHA256 = "70d8f469bb298dfb916b2a3abac30feb2fe6c6741d3c3d71b7dc1edf49af5dc7"
+VERIFY_PROGRAM = r'''#!/usr/bin/python3
+"""The machine's own /verify page: every claim, with where it was checked.
+
+Serve this on the guest and a sceptical stranger can read the machine's own
+records for ninety seconds: the live SEV-SNP boot report, the full launch
+measurement, the release and vCPU count, the boot key in the measured command
+line (fingerprint only, no private half), every line in authorized_keys, the
+SSH host key, root lock, password authentication, the panel's root reset (there
+is no guest agent), the accounts, the LUKS keyslots, the boot/unlock state, the
+support-grant state, the signed manifest, and the three deeper checks a laptop
+can run. Every row carries one tag: `checked from your laptop` or `read from
+the machine`. A root shell can change the machine rows; the CPU's signature is
+what it cannot fake.
+
+Where the numbers come from, all read at request time and none invented:
+
+  /var/lib/odile/attestation.json   the boot report (ODL-397) — measurement,
+                                    report bytes, release, command line, vCPUs
+  /etc/odile/boot-record.json       what the user verified at install (ODL-396)
+  /proc/cmdline                     the measured command line's bb.key=
+  /etc/ssh/ssh_host_ed25519_key.pub the host key the user compares
+  /etc/passwd, /etc/shadow          the accounts and root's lock
+  /run/bb/sealed-unlock.state       the initramfs seal's boot outcome
+  <home>/.hermes/.env               the scrypt sign-in hash, never the password
+  /etc/odile/manifest.json(.sig)    the signed app-layer manifest
+  odile-audit --json                the handoff audit (ODL-208), for the
+                                    access rows it already checks
+  odile-support status --json       the grant state (ODL-217), read from the
+                                    program that writes it
+  cryptsetup luksDump               the root container's header, header only
+
+The audit and the support program are the machine's own reviewed programs, so
+the page never re-implements a verdict: it wraps theirs. A row whose program is
+not on this machine says so instead of guessing.
+
+    /usr/bin/python3 verify/verify.py                      # the page on stdout
+    /usr/bin/python3 verify/verify.py --json               # the same rows
+    /usr/bin/python3 verify/verify.py --out /var/lib/odile/verify.html
+    /usr/bin/python3 verify/verify.py --serve --port 8098  # Caddy's upstream
+
+On a bench, point it at a mounted machine root and the dump the audit uses:
+
+    /usr/bin/python3 verify/verify.py --root /mnt/guest \
+        --luks-dump /tmp/luks.txt --now 2026-11-13T12:00:00Z
+
+`--now` pins the provenance line. Nothing is written except `--out`, which is
+atomic and 0644. `--serve` answers `/`, `/verify` and `/verify/` with the
+page (Caddy proxies the last two), `/health` with `ok` and everything else
+with 404, `Cache-Control: no-store`; it holds no state and runs no timer. On a
+guest the `odile-verify.service` unit runs it as root because
+the handoff audit reads `/etc/shadow` and sshd's journal, and it binds loopback
+on 127.0.0.1:8098: Caddy is the public listener at `/verify`.
+"""
+
+from __future__ import annotations
+
+import argparse
+import base64
+import glob
+import hashlib
+import html
+import json
+import os
+import re
+import subprocess
+import sys
+import tempfile
+import time
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
+# Beside the program on a tenant (/usr/local/lib/odile/verify.html, written by
+# the installer's embedded copy), the repository template on a checkout.
+_TEMPLATE_BESIDE = Path(__file__).resolve().parent / "verify.html"
+TEMPLATE_PATH = _TEMPLATE_BESIDE if _TEMPLATE_BESIDE.is_file() else ROOT / "templates" / "verify.html"
+DEFAULT_PORT = 8098
+
+ATTESTATION = "/var/lib/odile/attestation.json"
+BOOT_RECORD = "/etc/odile/boot-record.json"
+CMDLINE = "/proc/cmdline"
+HOST_KEYS = ("/etc/ssh/ssh_host_ed25519_key.pub",
+             "/etc/ssh/ssh_host_ecdsa_key.pub",
+             "/etc/ssh/ssh_host_rsa_key.pub")
+SEAL_STATE = "/run/bb/sealed-unlock.state"
+MANIFEST = "/etc/odile/manifest.json"
+MANIFEST_SIG = "/etc/odile/manifest.json.sig"
+MANIFEST_KEY = "/etc/odile/odile-signing-key.pub"
+AUDIT_PROGRAM = "/usr/local/bin/odile-audit"
+SUPPORT_PROGRAM = "/usr/local/sbin/odile-support"
+GRANT_STATE = "/var/lib/odile/support-grant.json"
+STATUS_URL = "https://odile.fyi/status"
+# The deck's own command for the header, printed on every LUKS row. The LUKS
+# container is not the mapper: `cryptsetup luksDump /dev/mapper/root_crypt` is
+# refused because the mapper is plaintext (docs/runbooks/support.md, measured on
+# the tenant). `cryptsetup status` names the device the mapper was opened from,
+# which is what luksDump reads.
+LUKS_DEVICE = "cryptsetup status root_crypt | sed -n 's/^ *device: *//p'"
+LUKS_COMMAND = ('cryptsetup luksDump "$(%s)" | '
+                "sed -n '/Keyslots:/,/Tokens:/p'" % LUKS_DEVICE)
+
+HEX96_RE = re.compile(r"^[0-9a-f]{96}$")
+ISO_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$")
+# A machine value the eye compares character by character: a fingerprint, a
+# hash (full or truncated), a timestamp, a path, a config pair. Rendered in the
+# mono role wherever it appears in a row's value.
+VALUE_RE = re.compile(
+    r"SHA256:[A-Za-z0-9+/=]{16,}"                     # an OpenSSH key fingerprint
+    r"|\b[0-9a-f]{96}\b"                              # the launch measurement
+    r"|\b[0-9a-f]{64}\b"                              # a SHA-256
+    r"|\b[0-9a-f]{8,}\u2026"                          # a truncated hash
+    r"|\b[0-9a-f]{12}\b"                              # a grant id
+    r"|\b\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z\b"      # a UTC timestamp
+    r"|\b(?:PasswordAuthentication|PermitRootLogin) \S+\b"  # sshd's answer
+    r"|(?:/[A-Za-z0-9._*<>-]+)+")                     # a path on the machine
+PUBKEY_ALGOS = ("ssh-ed25519", "ssh-rsa", "ecdsa-sha2-nistp256",
+                "ecdsa-sha2-nistp384", "ecdsa-sha2-nistp521",
+                "sk-ssh-ed25519@openssh.com", "sk-ecdsa-sha2-nistp256@openssh.com",
+                "the-platform-does-not-know-this-algorithm")
+GUEST_AGENT_PATHS = ("/usr/local/bin/bb-agent", "/usr/sbin/bb-agent",
+                     "/usr/bin/blackbox-agent", "/usr/local/bin/servury-agent",
+                     "/usr/sbin/servury-agent")
+GUEST_AGENT_NAMES = ("servury", "blackbox", "bb-agent", "servury-agent")
+
+LAPTOP_TAG = "checked from your laptop"
+MACHINE_TAG = "read from the machine"
+
+# The seal's signed policy (SNP guest policy) and the two .env keys the
+# sign-in row reads. The sign-in row never prints the hash, only that it is a
+# scrypt hash and that no plaintext password sits beside it.
+SEAL_POLICY = 0x30000
+SIGNIN_HASH_KEY = "HERMES_DASHBOARD_BASIC_AUTH_PASSWORD_HASH"
+SIGNIN_PASSWORD_KEY = "HERMES_DASHBOARD_BASIC_AUTH_PASSWORD"
+SCRYPT_RE = re.compile(
+    r"^scrypt\$\d+\$\d+\$\d+\$[A-Za-z0-9+/=]+\$[A-Za-z0-9+/=]+$")
+
+
+class PageError(Exception):
+    """Bad input: a missing template, an unreadable root."""
+
+
+# ---------------------------------------------------------------------------
+# reading the machine
+
+
+def now_utc() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def parse_iso(text: str | None) -> datetime | None:
+    if not isinstance(text, str) or not ISO_RE.match(text.strip()):
+        return None
+    try:
+        return datetime.strptime(text.strip(), "%Y-%m-%dT%H:%M:%SZ").replace(
+            tzinfo=timezone.utc)
+    except ValueError:
+        return None
+
+
+def iso(stamp: datetime) -> str:
+    return stamp.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def read_text(path: Path, default: str = "") -> str:
+    try:
+        return path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return default
+
+
+def read_json(path: Path) -> dict | None:
+    try:
+        document = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return document if isinstance(document, dict) else None
+
+
+def sha256_hex(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
+
+
+def fingerprint(blob_b64: str) -> str:
+    """The OpenSSH SHA256 fingerprint of one base64 public-key blob."""
+    return "SHA256:" + base64.b64encode(
+        hashlib.sha256(base64.b64decode(blob_b64)).digest()).decode().rstrip("=")
+
+
+def parse_public_key(line: str) -> tuple[str, str, str] | None:
+    fields = line.split()
+    for index in range(len(fields) - 1):
+        if fields[index] not in PUBKEY_ALGOS:
+            continue
+        try:
+            base64.b64decode(fields[index + 1], validate=True)
+        except (ValueError, TypeError):
+            continue
+        return fields[index], fields[index + 1], " ".join(fields[index + 2:])
+    return None
+
+
+def cmdline_token(cmdline: str, name: str) -> str | None:
+    match = re.search(r"(?:^|\s)%s=(\S+)" % re.escape(name), cmdline)
+    return match.group(1) if match else None
+
+
+def run(argv: list[str], *, timeout: int = 60, env: dict | None = None):
+    try:
+        return subprocess.run(argv, capture_output=True, text=True,
+                              timeout=timeout, env=env)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return subprocess.CompletedProcess(argv, 127, "", str(exc))
+
+
+@dataclass
+class Row:
+    name: str
+    state: str            # PASS, FAIL, INFO or N/A
+    value: str
+    tag: str              # "laptop" or "machine"
+    command: str = ""
+    # Values the reader compares character by character, set in the mono role.
+    # Fingerprints, hashes, timestamps and paths are found automatically; this
+    # tuple adds the ones no pattern can know (a release id, a tool name).
+    mono: tuple[str, ...] = ()
+
+    def as_dict(self) -> dict:
+        return {"name": self.name, "state": self.state, "value": self.value,
+                "tag": self.tag, "command": self.command}
+
+
+@dataclass
+class Source:
+    """One program the page reads, and the JSON it answered with."""
+
+    document: dict | None = None
+    error: str = ""
+
+
+@dataclass
+class Machine:
+    root: Path
+    now: datetime
+    luks_dump: Path | None = None
+    audit_program: Path | None = None
+    support_program: Path | None = None
+    now_pinned: bool = False
+    rows: list[Row] = field(default_factory=list)
+    values: dict[str, str] = field(default_factory=dict)
+
+    def path(self, absolute: str) -> Path:
+        if str(self.root) == "/":
+            return Path(absolute)
+        return self.root / absolute.lstrip("/")
+
+    def read(self, absolute: str) -> str:
+        return read_text(self.path(absolute))
+
+    # -- programs -----------------------------------------------------------
+
+    def program(self, override: Path | None, default: str) -> Path:
+        if override is not None:
+            return override
+        if str(self.root) == "/":
+            return Path(default)
+        return self.path(default)
+
+    def run_program(self, path: Path, arguments: list[str], env: dict | None = None) -> Source:
+        if not path.is_file():
+            return Source(None, "not installed on this machine yet (%s)" % path)
+        argv = [sys.executable, str(path)]
+        if str(self.root) != "/":
+            argv += ["--root", str(self.root)]
+        argv += arguments
+        done = run(argv, env=env)
+        if done.returncode not in (0, 1):
+            detail = (done.stderr or done.stdout).strip().splitlines()
+            return Source(None, "no answer (%s)" % (detail[-1] if detail else
+                                                    "exit %d" % done.returncode))
+        try:
+            document = json.loads(done.stdout)
+        except ValueError:
+            return Source(None, "its answer was not JSON")
+        return Source(document if isinstance(document, dict) else None,
+                      "" if isinstance(document, dict) else "its answer was not a JSON object")
+
+    def audit(self) -> Source:
+        arguments = ["--json"]
+        if self.luks_dump is not None:
+            arguments = ["--luks-dump", str(self.luks_dump)] + arguments
+        return self.run_program(self.program(self.audit_program, AUDIT_PROGRAM),
+                                arguments)
+
+    def support(self) -> Source:
+        env = dict(os.environ)
+        env["ODILE_SUPPORT_NOW"] = iso(self.now)
+        return self.run_program(self.program(self.support_program, SUPPORT_PROGRAM),
+                                ["status", "--json", "--no-expire"], env)
+
+    # -- the machine's records ---------------------------------------------
+
+    def attestation(self) -> tuple[dict | None, bytes | None, str]:
+        document = read_json(self.path(ATTESTATION))
+        if document is None:
+            return None, None, "no boot report at %s" % ATTESTATION
+        if document.get("available") is not True:
+            return None, None, str(document.get("error") or "the boot report is unavailable")
+        measurement = document.get("measurement")
+        if not isinstance(measurement, str) or not HEX96_RE.match(measurement):
+            return None, None, "the boot report has no 96-hex measurement"
+        try:
+            report = base64.b64decode(document.get("report_b64") or "", validate=True)
+        except ValueError:
+            return None, None, "the boot report's bytes are not base64"
+        if not report:
+            return None, None, "the boot report has no bytes"
+        return document, report, ""
+
+    def boot_record(self) -> dict | None:
+        document = read_json(self.path(BOOT_RECORD))
+        if document is None or document.get("schema") != "odile.boot-record.v1":
+            return None
+        return document
+
+    def cmdline(self) -> str:
+        return self.read(CMDLINE).strip()
+
+    def boot_key(self) -> tuple[str, str, int]:
+        """(public key line, fingerprint, count of bb.key= tokens)."""
+        values = re.findall(r"(?:^|\s)bb\.key=(\S+)", self.cmdline())
+        if len(values) != 1:
+            return "", "", len(values)
+        try:
+            line = base64.b64decode(values[0], validate=True).decode(
+                "utf-8", "replace").strip()
+        except (ValueError, UnicodeDecodeError):
+            return "", "", 1
+        parsed = parse_public_key(line)
+        if parsed is None:
+            return "", "", 1
+        return line, fingerprint(parsed[1]), 1
+
+    def host_key(self) -> tuple[str, str]:
+        for absolute in HOST_KEYS:
+            text = self.read(absolute).strip()
+            parsed = parse_public_key(text)
+            if parsed is not None:
+                return fingerprint(parsed[1]), absolute
+        return "", ""
+
+    def accounts(self) -> list[tuple[str, int, str, str]]:
+        rows = []
+        for line in self.read("/etc/passwd").splitlines():
+            fields = line.split(":")
+            if len(fields) < 7:
+                continue
+            try:
+                uid = int(fields[2])
+            except ValueError:
+                continue
+            rows.append((fields[0], uid, fields[5], fields[6]))
+        return rows
+
+    def agent_user(self) -> str:
+        for name, uid, home, shell in self.accounts():
+            if uid >= 1000 and shell not in ("", "/usr/sbin/nologin", "/bin/false"):
+                if (self.path(home) / ".hermes").is_dir():
+                    return name
+        for name, uid, home, shell in self.accounts():
+            if uid >= 1000 and shell not in ("", "/usr/sbin/nologin", "/bin/false"):
+                return name
+        return ""
+
+    def guest_agent(self) -> str:
+        """A Servury/Blackbox guest agent, if this machine carries one."""
+        for absolute in GUEST_AGENT_PATHS:
+            if self.path(absolute).exists():
+                return absolute
+        for name, _uid, _home, _shell in self.accounts():
+            if name in GUEST_AGENT_NAMES:
+                return "the %s account" % name
+        for unit in sorted(glob.glob(str(self.path("/etc/systemd/system") / "*"))):
+            base = os.path.basename(unit).lower()
+            if "servury" in base or "blackbox" in base:
+                return os.path.basename(unit)
+        return ""
+
+    def seal_state(self) -> str:
+        return self.read(SEAL_STATE).strip()
+
+    def home_of(self, user: str) -> str:
+        for name, _uid, home, _shell in self.accounts():
+            if name == user:
+                return home
+        return ""
+
+    def seal(self, document: dict | None, report: bytes | None) -> tuple[str, str, tuple[str, ...]]:
+        """(state, detail, mono) for the signed seal policy and the seal_id.
+
+        The policy is the report's own first 8-byte field; ``seal_id`` is in
+        the measured command line and must still be the running one. This is
+        the same check ``verify_and_unlock.sh --mode access`` prints, so the
+        page and the report cannot disagree about the seal.
+        """
+        if not report or len(report) < 16:
+            return "FAIL", "no report bytes to read a policy from", ()
+        policy = int.from_bytes(report[8:16], "little")
+        signed = report[0x90:0xC0].hex() if len(report) >= 0xC0 else ""
+        measured = document.get("cmdline") if isinstance(document, dict) else ""
+        if not isinstance(measured, str):
+            measured = ""
+        seal_id = cmdline_token(measured, "seal_id")
+        running_seal = cmdline_token(self.cmdline(), "seal_id")
+        problems = []
+        if policy != SEAL_POLICY:
+            problems.append("policy is 0x%x, not 0x%x" % (policy, SEAL_POLICY))
+        if len(signed) != 96 or signed == "0" * 96:
+            problems.append("the signed report carries no measurement")
+        if seal_id is None:
+            problems.append("the measured command line has no seal_id")
+        elif running_seal != seal_id:
+            problems.append("the running command line has no measured seal_id")
+        detail = "policy 0x%x; seal_id %s; measurement %s" % (
+            policy, seal_id or "missing", signed or "missing")
+        if problems:
+            detail += " (%s)" % "; ".join(problems)
+        marks = tuple(mark for mark in ("0x%x" % policy, seal_id or "", signed)
+                      if mark)
+        return ("FAIL" if problems else "PASS"), detail, marks
+
+    def signin_hash(self) -> tuple[str, str, str]:
+        """(state, detail, command) for the scrypt sign-in hash, never its value."""
+        user = self.agent_user()
+        home = self.home_of(user) if user else ""
+        if not home:
+            return "N/A", "no agent account with a home directory", ""
+        absolute = home.rstrip("/") + "/.hermes/.env"
+        command = "grep -c '^%s=' %s" % (SIGNIN_HASH_KEY, absolute)
+        path = self.path(absolute)
+        if not path.is_file():
+            return "FAIL", "no %s" % absolute, command
+        values = {}
+        for line in read_text(path).splitlines():
+            if "=" in line and not line.lstrip().startswith("#"):
+                name, value = line.split("=", 1)
+                values[name.strip()] = value.strip()
+        encoded = values.get(SIGNIN_HASH_KEY, "")
+        plaintext = SIGNIN_PASSWORD_KEY in values
+        valid = bool(SCRYPT_RE.match(encoded))
+        if valid:
+            try:
+                valid = int(encoded.split("$")[1]) >= 16384
+            except (IndexError, ValueError):
+                valid = False
+        if not encoded:
+            return "FAIL", "no scrypt hash in %s" % absolute, command
+        if plaintext:
+            return "FAIL", "plaintext password in %s" % absolute, command
+        if not valid:
+            return "FAIL", "the hash in %s is not scrypt" % absolute, command
+        return ("PASS",
+                "scrypt hash present in %s; no plaintext password" % absolute,
+                command)
+
+    def luks_device(self) -> str:
+        """The block device the root mapper was opened from, or ''.
+
+        `cryptsetup luksDump /dev/mapper/root_crypt` is refused: the mapper is
+        the plaintext device, not the LUKS container (docs/runbooks/support.md,
+        measured on the tenant). `cryptsetup status` names the container; a
+        machine without it falls back to the mounted root's source, and a
+        source that is itself a mapper is reported as-is rather than guessed.
+        """
+        status = run(["cryptsetup", "status", "root_crypt"])
+        for line in (status.stdout + status.stderr).splitlines():
+            match = re.match(r"^\s*device:\s+(\S+)", line)
+            if match and Path(match.group(1)).exists():
+                return match.group(1)
+        mounted = run(["findmnt", "-no", "SOURCE", "/"])
+        source = (mounted.stdout or "").strip().splitlines()
+        if source and Path(source[0]).exists() and not source[0].startswith("/dev/mapper/"):
+            return source[0]
+        return ""
+
+    def luks(self) -> tuple[list[str], list[str], str]:
+        """(keyslots, tokens, command) from the header, never the volume."""
+        if self.luks_dump is not None:
+            dump = read_text(self.luks_dump)
+            command = "cryptsetup luksDump (from %s)" % self.luks_dump
+        elif str(self.root) == "/":
+            device = self.luks_device()
+            done = run(["cryptsetup", "luksDump", device]) if device else None
+            dump = (done.stdout + done.stderr) if done is not None else ""
+            command = "cryptsetup luksDump %s" % device if device else "lsblk -f"
+        else:
+            # A mounted guest root's /dev/mapper name is not a host device; the
+            # bench passes the dump it took inside the guest with --luks-dump.
+            dump, command = "", "cryptsetup luksDump (a mounted root needs --luks-dump)"
+        keyslots, tokens = [], []
+        section = ""
+        for line in dump.splitlines():
+            stripped = line.strip()
+            if stripped in ("Keyslots:", "Tokens:", "Digests:", "Data segments:"):
+                section = stripped
+                continue
+            match = re.match(r"^(\d+):\s+(\S+)", stripped)
+            if not match:
+                continue
+            if section == "Keyslots:":
+                keyslots.append(match.group(1))
+            elif section == "Tokens:":
+                tokens.append(match.group(1))
+        return keyslots, tokens, command
+
+    def manifest(self) -> tuple[str, str, str]:
+        """(state, detail, key fingerprint) for the signed app-layer manifest."""
+        path = self.path(MANIFEST)
+        signature_path = self.path(MANIFEST_SIG)
+        key_path = self.path(MANIFEST_KEY)
+        if not path.is_file():
+            return "N/A", "no signed manifest at %s" % MANIFEST, ""
+        try:
+            data = path.read_bytes()
+            document = json.loads(data)
+        except (OSError, ValueError):
+            return "FAIL", "the manifest at %s is not JSON" % MANIFEST, ""
+        if not isinstance(document, dict):
+            return "FAIL", "the manifest at %s is not a JSON object" % MANIFEST, ""
+        if not signature_path.is_file() or not key_path.is_file():
+            return "N/A", ("the manifest is present but its signature or key is "
+                           "missing; verify it against the key in your recovery kit"), ""
+        try:
+            raw = b"".join(signature_path.read_bytes().split())
+            signature = base64.b64decode(raw, validate=True) if len(raw) != 64 else raw
+        except ValueError:
+            return "FAIL", "the manifest signature is not base64", ""
+        if len(signature) != 64:
+            return "FAIL", "the manifest signature is not 64 bytes", ""
+        key_fingerprint = self.signing_key_fingerprint(key_path)
+        handle = tempfile.NamedTemporaryFile(prefix="odile-manifest-", delete=False)
+        try:
+            handle.write(signature)
+            handle.close()
+            # `openssl dgst -verify` reads the data on stdin.
+            done = subprocess.run(["openssl", "dgst", "-verify", str(key_path),
+                                   "-signature", handle.name],
+                                  input=data, capture_output=True, timeout=30)
+        except (OSError, subprocess.TimeoutExpired):
+            return "FAIL", "openssl could not check the manifest signature", key_fingerprint
+        finally:
+            try:
+                os.unlink(handle.name)
+            except OSError:
+                pass
+        generated = document.get("generated_at")
+        installer = document.get("installer_sha256")
+        detail = []
+        if isinstance(generated, str):
+            detail.append("generated %s" % generated)
+        if isinstance(installer, str):
+            detail.append("installer %s…" % installer[:12])
+        if done.returncode == 0:
+            detail.append("signature verified with Odile's key %s" % key_fingerprint)
+            return "PASS", " · ".join(detail), key_fingerprint
+        detail.append("signature BAD: the bytes do not match the signature")
+        return "FAIL", " · ".join(detail), key_fingerprint
+
+    def signing_key_fingerprint(self, key_path: Path) -> str:
+        try:
+            done = subprocess.run(["openssl", "pkey", "-pubin", "-in", str(key_path),
+                                   "-outform", "DER"], capture_output=True, timeout=30)
+        except (OSError, subprocess.TimeoutExpired):
+            return ""
+        if done.returncode != 0 or not done.stdout:
+            return ""
+        digest = hashlib.sha256(done.stdout).digest()
+        return "SHA256:" + base64.b64encode(digest).decode().rstrip("=")
+
+
+# ---------------------------------------------------------------------------
+# the rows
+
+
+def audit_row(source: Source, name: str) -> dict | None:
+    if source.document is None:
+        return None
+    for check in source.document.get("checks") or []:
+        if isinstance(check, dict) and check.get("name") == name:
+            return check
+    return None
+
+
+def value_marks(text: str) -> tuple[str, ...]:
+    """Every machine value in a row's text, in the order it appears."""
+    return tuple(dict.fromkeys(match.group(0) for match in VALUE_RE.finditer(text)))
+
+
+def from_audit(source: Source, name: str, page_name: str,
+               mono: tuple[str, ...] = ()) -> Row:
+    check = audit_row(source, name)
+    if check is None:
+        return Row(page_name, "N/A",
+                   "the handoff audit did not report this row (%s)" % (source.error or "no answer"),
+                   "machine", "sudo odile-audit")
+    return Row(page_name, "PASS" if check.get("ok") else "FAIL",
+               str(check.get("detail") or ""), "machine",
+               str(check.get("command") or ""), mono=mono)
+
+
+def collect(machine: Machine) -> Machine:
+    """Every row the page shows, built from the machine and its programs."""
+    audit = machine.audit()
+    support = machine.support()
+    document, report, report_error = machine.attestation()
+    record = machine.boot_record()
+    boot_line, boot_fingerprint, boot_count = machine.boot_key()
+    host_fingerprint, host_path = machine.host_key()
+    keyslots, tokens, _luks_command = machine.luks()
+    seal = machine.seal_state()
+    agent = machine.guest_agent()
+    manifest_state, manifest_detail, signing_fingerprint = machine.manifest()
+    stamp_text = iso(machine.now)
+
+    release = None
+    vcpus = None
+    if document is not None:
+        release = document.get("release") if isinstance(document.get("release"), str) else None
+        reported = document.get("vcpus")
+        if isinstance(reported, int) and not isinstance(reported, bool):
+            vcpus = reported
+    if record is not None:
+        release = release or (record.get("release") if isinstance(record.get("release"), str) else None)
+        recorded = record.get("vcpus")
+        if vcpus is None and isinstance(recorded, int) and not isinstance(recorded, bool):
+            vcpus = recorded
+
+    machine.values = {
+        "stamp": stamp_text,
+        "measurement": document.get("measurement") if document else "",
+        "measurement_short": (document.get("measurement") or "")[:16] if document else "",
+        "release": release or "",
+        "vcpus": str(vcpus) if vcpus is not None else "",
+        "report_fingerprint": sha256_hex(report) if report else "",
+        "fetched_at": document.get("fetched_at") if document and isinstance(
+            document.get("fetched_at"), str) else "",
+        "boot_key": boot_fingerprint,
+        "host_key": host_fingerprint,
+        "signing_key": signing_fingerprint,
+        "state": "available" if document is not None else "unavailable",
+        "state_text": "" if document is not None else report_error,
+    }
+
+    # -- from your laptop ---------------------------------------------------
+    laptop = [
+        Row("chain", "CHECK",
+            "AMD VCEK \u2192 ASK \u2192 ARK, and the ARK is pinned at SHA-256 "
+            "69:d0:63:b4\u2026:9a:54:0b:cd. snpguest walks the chain on your own "
+            "computer.", "laptop",
+            mono=("69:d0:63:b4\u2026:9a:54:0b:cd", "snpguest")),
+        Row("signature", "CHECK",
+            "ECDSA P-384 over the report's signed bytes, with the VCEK. Change one "
+            "byte and the signature fails.", "laptop"),
+        Row("pin", "CHECK",
+            "Rebuild the measurement from the published UKI, the firmware, the vCPU "
+            "count and the command line (sev-snp-measure); it must equal the "
+            "measurement below and the one in your ready email.", "laptop",
+            mono=("sev-snp-measure",)),
+    ]
+
+    # -- read from the machine ---------------------------------------------
+    reported = []
+    if document is None:
+        reported.append(Row("report", "FAIL", report_error, "machine",
+                            "curl -s https://<slug>.odile.fyi/attestation"))
+        reported.append(Row("measurement", "N/A", "no report to measure", "machine"))
+        reported.append(Row("release", "N/A", "no report to name a release", "machine"))
+    else:
+        fetched = machine.values["fetched_at"]
+        report_bytes = report if report is not None else b""
+        report_hash = sha256_hex(report_bytes)
+        reported.append(Row(
+            "report", "PASS",
+            "fetched %s; the SHA-256 of the signed %d-byte report is %s" % (
+                fetched, len(report_bytes), report_hash),
+            "machine", "curl -s https://<slug>.odile.fyi/attestation",
+            mono=(fetched, "%d-byte" % len(report_bytes), report_hash)))
+        reported.append(Row(
+            "measurement", "PASS", document["measurement"], "machine",
+            "curl -s https://<slug>.odile.fyi/attestation | "
+            "jq '{measurement, report_version, fetched_at}'",
+            mono=(document["measurement"],)))
+        if release:
+            detail = release
+            marks = [release]
+            if vcpus is not None:
+                detail += " \u00b7 %d vCPU" % vcpus
+                marks.append("%d vCPU" % vcpus)
+            if record is not None and record.get("measurement") not in (None, document["measurement"]):
+                reported.append(Row(
+                    "release", "FAIL",
+                    "the installer's boot record names a different measurement than "
+                    "the live report", "machine"))
+            elif record is not None and record.get("release") not in (None, release):
+                reported.append(Row(
+                    "release", "FAIL",
+                    "the installer recorded release %s, the live report names %s" % (
+                        record.get("release"), release), "machine"))
+            else:
+                reported.append(Row("release", "PASS", detail, "machine",
+                                    mono=tuple(marks)))
+        else:
+            reported.append(Row(
+                "release", "N/A",
+                "the report names no release id; the boot image is older than the "
+                "release field", "machine"))
+
+    # The boot key is the one key in the measured command line: the audit reads
+    # /proc/cmdline and names the fingerprint, so the binding is the row itself.
+    reported.append(from_audit(audit, "boot key", "boot key", mono=("bb.key",)))
+    # The door, not the key: every line in authorized_keys must be that same
+    # measured boot key. During a grant this row fails and names the grant's key,
+    # which is what the ODL-217 drill measured on the live tenant.
+    reported.append(from_audit(audit, "authorized keys", "authorized keys"))
+
+    if host_fingerprint and boot_fingerprint and host_fingerprint != boot_fingerprint:
+        reported.append(Row(
+            "host key", "PASS",
+            "%s from %s \u2014 the machine's SSH host key, distinct from the boot key"
+            % (host_fingerprint, host_path), "machine",
+            "ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub",
+            mono=(host_fingerprint, host_path)))
+    elif host_fingerprint:
+        reported.append(Row(
+            "host key", "FAIL",
+            "%s is the boot key as well; the host key must be a different key"
+            % host_fingerprint, "machine",
+            "ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub",
+            mono=(host_fingerprint,)))
+    else:
+        reported.append(Row("host key", "FAIL",
+                            "no SSH host key on the machine", "machine"))
+
+    reported.append(from_audit(audit, "root password", "root password"))
+    reported.append(from_audit(audit, "password auth", "password auth",
+                               mono=("PasswordAuthentication no",)))
+    if agent:
+        reported.append(Row("panel root reset", "FAIL",
+                            "a guest agent is installed: %s \u2014 the panel may reset root"
+                            % agent, "machine", "getent passwd"))
+    else:
+        reported.append(Row(
+            "panel root reset", "PASS",
+            "none \u2014 no guest agent on the machine", "machine",
+            "getent passwd; ls /etc/systemd/system"))
+    reported.append(from_audit(audit, "operator account", "accounts"))
+    reported.append(from_audit(audit, "login history", "logins"))
+
+    if keyslots and len(keyslots) == 1 and not tokens:
+        reported.append(Row("LUKS", "PASS",
+                            "one keyslot (slot %s), no token: one volume key, no "
+                            "second way in" % keyslots[0], "machine",
+                            LUKS_COMMAND, mono=("slot %s" % keyslots[0],)))
+    elif not keyslots:
+        reported.append(Row("LUKS", "FAIL",
+                            "cannot read the root container's LUKS header",
+                            "machine", LUKS_COMMAND))
+    elif (support.document is not None and support.document.get("grant")
+          and len(keyslots) == 2 and not tokens):
+        reported.append(Row("LUKS", "INFO",
+                            "2 keyslots (%s) \u2014 the second is the support grant's "
+                            "handover; after revoke the header must be one keyslot again"
+                            % ", ".join(keyslots), "machine", LUKS_COMMAND,
+                            mono=(", ".join(keyslots),)))
+    else:
+        reported.append(Row("LUKS", "FAIL",
+                            "%d keyslots (%s)%s" % (
+                                len(keyslots), ", ".join(keyslots),
+                                " and %d token(s)" % len(tokens) if tokens else ""),
+                            "machine", LUKS_COMMAND,
+                            mono=(", ".join(keyslots),) if keyslots else ()))
+
+    if seal == "opened":
+        reported.append(Row("boot and unlock", "PASS",
+                            "booted %s; the initramfs seal opened the root "
+                            "(/run/bb/sealed-unlock.state: opened)" % (
+                                machine.values["fetched_at"] or "at an unrecorded time"),
+                            "machine", "cat /run/bb/sealed-unlock.state"))
+    elif seal.startswith("opened-bootstrap"):
+        reported.append(Row("boot and unlock", "INFO",
+                            "first boot: the bootstrap key opened the root; the "
+                            "chip-derived key is added on this boot", "machine",
+                            "cat /run/bb/sealed-unlock.state"))
+    elif seal:
+        reported.append(Row("boot and unlock", "FAIL",
+                            "/run/bb/sealed-unlock.state says %r" % seal,
+                            "machine", "cat /run/bb/sealed-unlock.state"))
+    else:
+        reported.append(Row("boot and unlock", "N/A",
+                            "this image does not record an initramfs unlock "
+                            "(/run/bb/sealed-unlock.state is absent)", "machine",
+                            "cat /run/bb/sealed-unlock.state"))
+
+    seal_verdict, seal_detail, seal_marks = machine.seal(document, report)
+    reported.append(Row("seal policy", seal_verdict, seal_detail, "machine",
+                        "cat /proc/cmdline", mono=seal_marks))
+
+    signin_state, signin_detail, signin_command = machine.signin_hash()
+    reported.append(Row("sign-in hash", signin_state, signin_detail, "machine",
+                        signin_command))
+
+    reported.append(support_row(machine, support, keyslots))
+    reported.append(Row("manifest", manifest_state, manifest_detail, "machine",
+                        "curl -s https://<slug>.odile.fyi/manifest | jq"))
+    reported.append(Row(
+        "app layer", "INFO",
+        "not hardware-measured: Hermes, the installer and the skills are pinned by "
+        "the signed manifest and a published hash, and the manifest records the "
+        "machine as provisioned", "machine"))
+
+    machine.rows = laptop + reported
+    return machine
+
+
+def support_row(machine: Machine, support: Source, keyslots: list[str]) -> Row:
+    """The grant state, from the program that writes it."""
+    if support.document is None:
+        return Row("support access", "N/A",
+                   "the grant program is not installed on this machine yet (%s)"
+                   % (support.error or "no answer"), "machine",
+                   "odile-support status")
+    grant = support.document.get("grant")
+    if isinstance(grant, dict):
+        keys = support.document.get("authorized_keys") or {}
+        lines = keys.get("lines")
+        grant_lines = keys.get("grant_lines")
+        detail = "grant live: %s" % (grant.get("grant_id") or "no id")
+        if isinstance(grant.get("expires_at"), str):
+            detail += ", expires %s" % grant["expires_at"]
+        if grant.get("reason"):
+            detail += ", reason %s" % grant["reason"]
+        if isinstance(lines, int):
+            detail += " \u00b7 %d keys in authorized_keys" % lines
+        if isinstance(grant_lines, int) and grant_lines:
+            detail += " (%d grant)" % grant_lines
+        detail += " \u00b7 %d keyslots" % len(keyslots)
+        if grant.get("key_fingerprint"):
+            detail += " \u00b7 support key %s" % grant["key_fingerprint"]
+        if not grant.get("key_installed"):
+            detail += " \u00b7 the key line is missing from authorized_keys"
+        grant_id = grant.get("grant_id")
+        return Row("support access", "INFO", detail, "machine",
+                   "odile-support status",
+                   mono=(grant_id,) if isinstance(grant_id, str) and grant_id else ())
+    expired = support.document.get("expired_at")
+    revoked = support.document.get("revoked_at")
+    if isinstance(expired, str):
+        return Row("support access", "PASS", "no grant (expired %s)" % expired,
+                   "machine", "odile-support status")
+    if isinstance(revoked, str):
+        return Row("support access", "PASS", "no grant (revoked %s)" % revoked,
+                   "machine", "odile-support status")
+    return Row("support access", "PASS", "no grant", "machine", "odile-support status")
+
+
+# ---------------------------------------------------------------------------
+# the page
+
+
+class Verdict:
+    LABELS = {"PASS": "PASS", "FAIL": "FAIL", "CHECK": "CHECK",
+              "INFO": "NOTE", "N/A": "N/A"}
+
+    @classmethod
+    def css(cls, state: str) -> str:
+        return {"PASS": "pass", "FAIL": "fail", "CHECK": "note",
+                "INFO": "note", "N/A": "none"}.get(state, "none")
+
+    @classmethod
+    def label(cls, state: str) -> str:
+        return cls.LABELS.get(state, "N/A")
+
+
+def row_html(row: Row) -> str:
+    value = html.escape(row.value)
+    # The mono role is the machine-value role (BRAND.md §Typography): every hash,
+    # fingerprint, timestamp and path in a value is set in it, so a stranger can
+    # compare the page with their own command output character by character.
+    marks = tuple(dict.fromkeys(
+        mark for mark in row.mono + value_marks(row.value) if mark.strip()))
+    for mark in sorted(marks, key=len, reverse=True):
+        escaped = html.escape(mark)
+        if escaped in value:
+            value = value.replace(escaped, '<span class="mono">%s</span>' % escaped)
+    parts = [
+        '<tr class="check">',
+        '<th scope="row">%s</th>' % html.escape(row.name),
+        '<td><span class="verdict %s">%s</span> %s' % (
+            Verdict.css(row.state), Verdict.label(row.state), value),
+    ]
+    if row.command:
+        parts.append(' <code class="cmd">%s</code>' % html.escape(row.command))
+    parts.append('</td><td class="prov">%s</td></tr>' % html.escape(
+        LAPTOP_TAG if row.tag == "laptop" else MACHINE_TAG))
+    return "".join(parts)
+
+
+def render(machine: Machine, template: str) -> str:
+    values = machine.values
+    available = values["state"] == "available"
+    state_block = ""
+    if not available:
+        state_block = (
+            '<p class="state state-unavailable">Report unavailable.</p>'
+            '<p class="note">%s. <a href="/verify">Try again</a> in a minute.</p>'
+            % html.escape(values["state_text"] or "The CPU has not produced a report yet"))
+    head = ""
+    if available:
+        parts = []
+        if values["release"]:
+            parts.append("release <span class=\"mono\">%s</span>" % html.escape(values["release"]))
+        if values["vcpus"]:
+            parts.append("<span class=\"mono\">%s</span> vCPU" % html.escape(values["vcpus"]))
+        if values["measurement_short"]:
+            parts.append("measurement <span class=\"mono\">%s\u2026</span>" % html.escape(
+                values["measurement_short"]))
+        if parts:
+            head = " <span class=\"mono\">\u00b7</span> " + " <span class=\"mono\">\u00b7</span> ".join(parts)
+    body = template
+    for name, value in (
+        ("TITLE", "Verify \u2014 Odile"),
+        ("STAMP", html.escape(values["stamp"])),
+        # The demo page's one-line verifier command carries {{MEASUREMENT}}
+        # (deploy/demo-host/apply_demo_public.py); a customer page has no
+        # such slot. Filled here, never left to a second renderer.
+        ("MEASUREMENT", html.escape(values.get("measurement") or "unavailable")),
+        ("ROBOTS", "noindex"),
+        ("STATE_BLOCK", state_block),
+        ("HEAD", head),
+        ("LAPTOP_ROWS", "".join(row_html(row) for row in machine.rows
+                                if row.tag == "laptop")),
+        ("MACHINE_ROWS", "".join(row_html(row) for row in machine.rows
+                                 if row.tag == "machine")),
+    ):
+        body = body.replace("{{%s}}" % name, value)
+    leftover = re.search(r"\{\{[A-Z_]+\}\}", body)
+    if leftover:
+        raise PageError("the template left %s unfilled" % leftover.group(0))
+    return body
+
+
+def document(machine: Machine) -> dict:
+    groups = [
+        {"name": "From your laptop", "tag": "laptop",
+         "rows": [row.as_dict() for row in machine.rows if row.tag == "laptop"]},
+        {"name": "From the machine", "tag": "machine",
+         "rows": [row.as_dict() for row in machine.rows if row.tag == "machine"]},
+    ]
+    failed = [row.name for row in machine.rows if row.state == "FAIL"]
+    return {"schema": 1, "stamp": machine.values["stamp"],
+            "state": machine.values["state"],
+            "summary": ("PASS \u2014 no row failed" if not failed else
+                        "FAIL \u2014 %d row(s): %s" % (len(failed), ", ".join(failed))),
+            "groups": groups}
+
+
+# ---------------------------------------------------------------------------
+# serving
+
+
+class Handler(BaseHTTPRequestHandler):
+    root: Path = Path("/")
+    luks_dump: Path | None = None
+    audit_path: Path | None = None
+    support_path: Path | None = None
+    stamp: datetime | None = None
+    template_path: Path = TEMPLATE_PATH
+    server_version = "odile-verify"
+    sys_version = ""
+
+    def log_message(self, format: str, *args) -> None:  # noqa: A002
+        return
+
+    def _machine(self) -> Machine:
+        # One Machine per request: collect() fills it in, so two requests must
+        # never share one.
+        return Machine(root=self.root, now=self.stamp or now_utc(),
+                       luks_dump=self.luks_dump, audit_program=self.audit_path,
+                       support_program=self.support_path)
+
+    def _send(self, status: int, body: bytes, content_type: str) -> None:
+        self.send_response(status)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header(
+            "Content-Security-Policy",
+            "default-src 'none'; style-src 'unsafe-inline'; font-src data:; "
+            "img-src data:; base-uri 'none'; form-action 'none'")
+        self.end_headers()
+        if self.command != "HEAD":
+            self.wfile.write(body)
+
+    def do_GET(self) -> None:
+        if self.path.split("?")[0] in ("/", "/verify", "/verify/"):
+            try:
+                page = render(collect(self._machine()), read_text(self.template_path))
+            except PageError as exc:
+                self._send(500, ("%s\n" % exc).encode("utf-8"), "text/plain; charset=utf-8")
+                return
+            self._send(200, page.encode("utf-8"), "text/html; charset=utf-8")
+            return
+        if self.path.split("?")[0] == "/health":
+            self._send(200, b"ok\n", "text/plain; charset=utf-8")
+            return
+        self._send(404, b"not found\n", "text/plain; charset=utf-8")
+
+    do_HEAD = do_GET
+
+
+def serve(machine: Machine, template_path: Path, bind: str, port: int) -> int:
+    if not template_path.is_file():
+        print("verify: no template at %s" % template_path, file=sys.stderr)
+        return 2
+    handler = type("BoundHandler", (Handler,), {
+        "root": machine.root, "luks_dump": machine.luks_dump,
+        "audit_path": machine.audit_program, "support_path": machine.support_program,
+        "stamp": machine.now if machine.now_pinned else None,
+        "template_path": template_path})
+    with ThreadingHTTPServer((bind, port), handler) as server:
+        host, chosen = server.server_address[:2]
+        print("http://%s:%d/" % (host, chosen), flush=True)
+        try:
+            server.serve_forever()
+        except KeyboardInterrupt:
+            pass
+    return 0
+
+
+# ---------------------------------------------------------------------------
+# the command line
+
+
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Render the machine's own /verify page.")
+    parser.add_argument("--root", default="/", help="the machine root (default /)")
+    parser.add_argument("--out", help="write the page here (atomic, 0644)")
+    parser.add_argument("--json", action="store_true", help="print the rows")
+    parser.add_argument("--serve", action="store_true", help="serve the page")
+    parser.add_argument("--bind", default="127.0.0.1", help="address to bind")
+    parser.add_argument("--port", type=int, default=DEFAULT_PORT,
+                        help="port to bind (default %d)" % DEFAULT_PORT)
+    parser.add_argument("--audit", help="the handoff audit program (default %s)" % AUDIT_PROGRAM)
+    parser.add_argument("--support", help="the grant program (default %s)" % SUPPORT_PROGRAM)
+    parser.add_argument("--luks-dump", help="read this luksDump output instead of a live device")
+    parser.add_argument("--now", help="pin the provenance clock (ISO-8601 UTC)")
+    parser.add_argument("--template", default=str(TEMPLATE_PATH),
+                        help="the page template (default %s)" % TEMPLATE_PATH)
+    return parser.parse_args(argv)
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = parse_args(argv)
+    root = Path(args.root).resolve()
+    if not root.is_dir():
+        print("verify: --root is not a directory: %s" % root, file=sys.stderr)
+        return 2
+    if args.now:
+        stamp = parse_iso(args.now)
+        if stamp is None:
+            print("verify: --now is not an ISO-8601 UTC time: %s" % args.now, file=sys.stderr)
+            return 2
+    else:
+        stamp = now_utc()
+    luks_dump = Path(args.luks_dump).resolve() if args.luks_dump else None
+    if luks_dump is not None and not luks_dump.is_file():
+        print("verify: --luks-dump does not exist: %s" % luks_dump, file=sys.stderr)
+        return 2
+    machine = Machine(root=root, now=stamp, luks_dump=luks_dump,
+                      audit_program=Path(args.audit) if args.audit else None,
+                      support_program=Path(args.support) if args.support else None,
+                      now_pinned=bool(args.now))
+    template_path = Path(args.template).resolve()
+
+    if args.serve:
+        return serve(machine, template_path, args.bind, args.port)
+    if not template_path.is_file():
+        print("verify: no template at %s" % template_path, file=sys.stderr)
+        return 2
+    collect(machine)
+    if args.json:
+        print(json.dumps(document(machine), indent=2, sort_keys=True))
+        return 0
+    try:
+        page = render(machine, read_text(template_path))
+    except PageError as exc:
+        print("verify: %s" % exc, file=sys.stderr)
+        return 2
+    if args.out:
+        target = Path(args.out)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        temporary = target.with_name(".%s.%d.tmp" % (target.name, os.getpid()))
+        temporary.write_text(page, encoding="utf-8")
+        os.chmod(temporary, 0o644)
+        os.replace(temporary, target)
+        print("verify: wrote %s (%d bytes)" % (target, len(page)), file=sys.stderr)
+        return 0
+    sys.stdout.write(page)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
+'''
+VERIFY_TEMPLATE_SHA256 = "e48500c76877f4d37cfc64519f8f81b1746d13511763ed0fe982155874ff67ab"
+VERIFY_TEMPLATE = r'''<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<!-- Icon: Lucas Cranach the Elder, Saints Christina and Ottilia (Katharinenaltar, Dresden). Public domain. Source: Wikimedia Commons. -->
-<link rel="icon" href="/favicon.ico" sizes="16x16 32x32 48x48">
-<link rel="icon" type="image/png" sizes="32x32" href="/icon-32.png">
-<link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png">
 <title>{{TITLE}}</title>
+<meta name="description" content="This machine, checked: the boot report, the access rows and where each one was checked.">
 <meta name="color-scheme" content="light">
 <meta name="robots" content="{{ROBOTS}}">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; img-src 'self' data:; font-src data:; base-uri 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; font-src data:; img-src data:; base-uri 'none'; form-action 'none'">
+<link rel="icon" href="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAzMiAzMiI+PHJlY3Qgd2lkdGg9IjMyIiBoZWlnaHQ9IjMyIiBmaWxsPSIjZWFkZmM0Ii8+PGNpcmNsZSBjeD0iMTYiIGN5PSIxNiIgcj0iNy41IiBmaWxsPSJub25lIiBzdHJva2U9IiMxYzE4MTMiIHN0cm9rZS13aWR0aD0iMS42Ii8+PC9zdmc+">
 <style>
 @font-face{font-family:"Cormorant Garamond";font-style:normal;font-weight:300 700;font-display:swap;src:url(data:font/woff2;base64,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) format("woff2")}
 *{box-sizing:border-box}
-:root{--serif:"Cormorant Garamond","Iowan Old Style","Palatino Linotype",Palatino,Georgia,serif;--text:"Iowan Old Style","Palatino Linotype",Palatino,Georgia,"DejaVu Serif",serif;--paper:#eadfc4;--card:#f2e9d4;--panel:#ddd0ae;--ink:#1c1813;--soft:#4a4136;--oxblood:#6e2a2a;
-  --line:rgba(28,24,19,.18);--line-soft:rgba(28,24,19,.10);--edge:rgba(28,24,19,.55);
-  --term:#17130f;--term-edge:#2a241d;--term-ink:#efe7d8;--term-command:#fff8ea;--term-prompt:#8f8677;--error:#6e2a2a}
+:root{--paper:#EADFC4;--card:#F2E9D4;--panel:#DDD0AE;--ink:#1C1813;--soft:#4A4136;
+  --oxblood:#6E2A2A;--line:rgba(28,24,19,.18);--line-soft:rgba(28,24,19,.10);
+  --term:#17130F;--term-edge:#2A241D;--term-ink:#EFE7D8;--term-command:#FFF8EA;
+  --term-prompt:#8F8677;
+  --serif:"Cormorant Garamond","Iowan Old Style","Palatino Linotype",Palatino,Georgia,serif;
+  --text:"Iowan Old Style","Palatino Linotype",Palatino,Georgia,"DejaVu Serif",serif}
 html{-webkit-text-size-adjust:100%}
 body{margin:0;background:var(--paper);color:var(--ink);
   font:400 18px/1.6 var(--text);
   -webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility}
-::selection{background:#1c1813;color:#eadfc4}
-main{max-width:760px;margin:0 auto;padding:32px 24px 64px}
+::selection{background:var(--ink);color:var(--paper)}
+main{max-width:820px;margin:0 auto;padding:32px 24px 64px}
 .top{display:flex;flex-wrap:wrap;align-items:baseline;justify-content:space-between;gap:0 24px;margin:0 0 32px}
-.brand{display:inline-block;padding:12px 0;margin:-12px 0;color:var(--ink);text-decoration:none;font-size:2rem;font-weight:500;letter-spacing:-.03em;line-height:.88}
+.brand{display:inline-block;padding:12px 0;margin:-12px 0;color:var(--ink);text-decoration:none;
+  font-size:2rem;font-weight:500;letter-spacing:-.03em;line-height:.88}
 .brand:focus-visible{outline:2px solid var(--ink);outline-offset:3px}
-.back{display:inline-flex;align-items:center;min-height:44px;color:var(--ink);text-decoration:none;border-bottom:1px solid var(--line);
-  font:600 10px/1 var(--text);
-  text-transform:uppercase;letter-spacing:.20em}
-.back:hover{border-bottom-color:var(--ink)}
-.back:focus-visible{outline:2px solid var(--ink);outline-offset:3px}
-.arrow{font-family:ui-monospace,"SF Mono","Cascadia Mono","Liberation Mono",Menlo,Consolas,monospace;font-size:12px;letter-spacing:0;margin-right:8px}
+h1,h2,.brand{font-family:var(--serif)}
 h1{margin:0 0 16px;font-size:clamp(2.5rem,5vw,4.1rem);line-height:1.02;letter-spacing:-.025em;font-weight:500}
 h2{margin:0 0 16px;font-size:clamp(1.9rem,3vw,2.6rem);line-height:1.04;letter-spacing:-.02em;font-weight:500}
-p{margin:0 0 16px;max-width:66ch}
+p{margin:0 0 16px;max-width:68ch}
 a{color:var(--ink);text-decoration-color:var(--soft);text-underline-offset:2px}
 a:focus-visible{outline:2px solid var(--ink);outline-offset:3px}
 .lede{font-size:18px;line-height:1.6;color:var(--soft)}
-/* One contained plate: the same painting, a lower detail, no frame, no caption. */
-.plate{display:block;width:100%;height:clamp(120px,18vw,180px);object-fit:cover;object-position:center 70%;
-  margin:16px 0 24px;background:var(--ink)}
+.provenance{margin:0 0 8px;font:400 12px/1.6 ui-monospace,"SF Mono","Cascadia Mono","Liberation Mono",Menlo,Consolas,monospace;
+  color:var(--soft);letter-spacing:normal;overflow-wrap:anywhere}
 section{margin:48px 0 0;padding-top:24px;border-top:1px solid var(--line)}
-.caption{margin:0 0 8px;max-width:none;font:600 9px/1.2 ui-monospace,"SF Mono","Cascadia Mono","Liberation Mono",Menlo,Consolas,monospace;
-  letter-spacing:.20em;text-transform:uppercase;color:var(--soft)}
+.note{margin:0 0 16px;font-size:16px;line-height:1.6;color:var(--soft);max-width:68ch}
 .state{display:inline-block;margin:0 0 12px;padding:4px 9px 3px;border:1px solid var(--ink);color:var(--ink);
   font:600 9px/1.2 ui-monospace,"SF Mono","Cascadia Mono","Liberation Mono",Menlo,Consolas,monospace;
   letter-spacing:.20em;text-transform:uppercase}
 .state-unavailable{color:var(--oxblood);border-color:var(--oxblood)}
-.report-card{background:var(--panel);border:1px solid var(--line);padding:24px;margin:0 0 16px}
-.report-card>p:last-child{margin-bottom:0}
 table{width:100%;border-collapse:collapse;margin:0 0 16px}
 th,td{text-align:left;vertical-align:top;padding:12px 16px;border-top:1px solid var(--line-soft)}
 thead th{font:600 .72rem/1.3 ui-monospace,"SF Mono","Cascadia Mono","Liberation Mono",Menlo,Consolas,monospace;
   letter-spacing:.12em;text-transform:uppercase;color:var(--soft)}
 .checks thead th{border-bottom:1px solid var(--oxblood)}
 .checks tbody th,.checks tbody td{border-top:1px solid var(--line)}
-.report{table-layout:fixed}
-.report th{width:8.5rem;padding-left:0;font:600 .78rem/1.4 ui-monospace,"SF Mono","Cascadia Mono","Liberation Mono",Menlo,Consolas,monospace;color:var(--soft)}
-.report td{padding-right:0}
-.report tr:first-child th,.report tr:first-child td{border-top:0}
-.report a{display:inline-block;min-height:44px;padding:9px 0;margin:-9px 0}
-.checks th:first-child{width:60%}
-code{font-family:ui-monospace,"SF Mono","Cascadia Mono","Liberation Mono",Menlo,Consolas,monospace;font-size:.84em}
-.mono{font-family:ui-monospace,"SF Mono","Cascadia Mono","Liberation Mono",Menlo,Consolas,monospace}
-.nowrap{white-space:nowrap}
-.measure{display:block;overflow-wrap:anywhere;word-break:break-all}
-pre{margin:0 0 16px;padding:16px;background:var(--term);border:1px solid var(--term-edge);color:var(--term-ink);overflow-x:auto}
+.checks tbody th:first-child{width:22%}
+.checks tbody th{font:600 .8rem/1.4 ui-monospace,"SF Mono","Cascadia Mono","Liberation Mono",Menlo,Consolas,monospace;
+  color:var(--soft)}
+.checks td{overflow-wrap:anywhere}
+.checks .prov{width:26%;font:600 .72rem/1.4 ui-monospace,"SF Mono","Cascadia Mono","Liberation Mono",Menlo,Consolas,monospace;
+  letter-spacing:normal;color:var(--oxblood)}
+.verdict{display:inline-block;margin-right:6px;padding:1px 5px;border:1px solid currentColor;
+  font:600 9px/1.4 ui-monospace,"SF Mono","Cascadia Mono","Liberation Mono",Menlo,Consolas,monospace;
+  letter-spacing:.12em;text-transform:uppercase;vertical-align:1px}
+.verdict.pass{color:var(--ink)}
+.verdict.fail{color:var(--oxblood)}
+.verdict.note{color:var(--soft)}
+.verdict.none{color:var(--soft)}
+code,.mono{font-family:ui-monospace,"SF Mono","Cascadia Mono","Liberation Mono",Menlo,Consolas,monospace;
+  font-size:.84em}
+.cmd{display:block;margin-top:6px;color:var(--soft);font-size:.78em;overflow-wrap:anywhere}
+pre{margin:0 0 16px;padding:16px;background:var(--term);border:1px solid var(--term-edge);
+  color:var(--term-ink);overflow-x:auto}
 pre:focus-visible{outline:2px solid var(--ink);outline-offset:3px}
 pre code{font-size:.86rem;line-height:1.6;color:var(--term-command);white-space:pre}
-/* The page's selection is paper on ink; on the terminal that paints ink on
-   near-black (1.05:1) and the highlight vanishes while a reader copies the
-   fingerprint. Paper on ink inside the terminal instead. */
-pre code::selection{background:var(--term-ink);color:var(--term)}
-/* The access report is one long line per check: wrap it, never scroll the page. */
 .report-pre code{white-space:pre-wrap;overflow-wrap:anywhere}
-/* The prompt is decoration: a copy of the command must paste without it. */
+pre code::selection{background:var(--term-ink);color:var(--term)}
 .prompt{color:var(--term-prompt);user-select:none;-webkit-user-select:none}
-.note{margin:0 0 12px;font-size:16px;line-height:1.6;color:var(--soft)}
 .gaps{list-style:none;margin:0;padding:0}
-.gaps li{display:grid;grid-template-columns:2.2rem minmax(0,1fr);gap:0 12px;margin:0 0 24px;max-width:66ch}
+.gaps li{display:grid;grid-template-columns:2.2rem minmax(0,1fr);gap:0 12px;margin:0 0 24px;max-width:68ch}
 .gaps .num{font-size:1.3rem;line-height:1.15;color:var(--oxblood);font-weight:500;padding-top:2px}
-.gaps strong{display:block;margin-bottom:3px;font-size:17px;line-height:1.4;font-weight:600}
-.foot{margin:32px 0 0;padding-top:16px;border-top:1px solid var(--line);font-size:16px;color:var(--soft)}
+.gaps strong{display:block;margin-bottom:3px;font-size:1.06rem;line-height:1.3;font-weight:600}
+.foot{margin:32px 0 0;padding-top:16px;border-top:1px solid var(--line);font-size:16px;line-height:1.6;color:var(--soft)}
 .foot a{display:inline-flex;align-items:center;min-height:44px;margin-right:12px;vertical-align:middle}
 @media (max-width:560px){
-  body{font-size:18px}
+  body{font-size:17px}
   main{padding:24px 18px 48px}
   .top{margin-bottom:24px}
-  .plate{height:120px;margin:16px 0 24px}
   section{margin-top:32px;padding-top:24px}
-  .report,.report tbody,.report tr,.report th,.report td{display:block;width:auto}
-  .report tr{border-top:1px solid var(--line-soft);padding:12px 0}
-  .report th,.report td{border:0;padding:0 0 4px}
-  .report td{padding-bottom:4px}
+  .checks,.checks tbody,.checks tr,.checks th,.checks td{display:block;width:auto}
   .checks thead{display:none}
-  .checks,.checks tbody,.checks tr,.checks td{display:block;width:auto}
   .checks tr{border-top:1px solid var(--line-soft);padding:12px 0}
-  .checks td{border:0;padding:0 0 4px}
-  .checks td:last-child{color:var(--soft)}
-  .checks th:first-child{width:auto}
-  th,td{padding:8px}
+  .checks th,.checks td{border:0;padding:0 0 4px}
+  .checks tbody th:first-child,.checks .prov{width:auto}
+  .checks .prov{color:var(--soft);padding-top:2px}
+  th,td{padding:8px 0}
   .gaps li{grid-template-columns:1.9rem minmax(0,1fr);gap:0 8px}
 }
-h1,h2,h3,.brand,.mark,.wordmark,.focus{font-family:var(--serif)}
 </style>
 </head>
 <body>
 <main>
   <header class="top">
     <a class="brand" href="/">Odile</a>
-    <!--demo-->
-    <a class="back" href="https://demo.odile.fyi/login"><span class="arrow" aria-hidden="true">&larr;</span>Back to the demo</a>
-    <!--/demo-->
   </header>
-  <h1>Verify</h1>
-  <!--demo-->
-  <p class="lede">This is Odile's tenant machine: one shared workspace on our measured AMD SEV-SNP machine. Odile holds this machine's boot key and can log in.</p>
-  <!--/demo-->
-  <!--tenant-->
-  <p class="lede">No one at Odile can log in to a tenant machine.</p>
-  <!--/tenant-->
-  <!--demo-->
-  <!-- Rachel Ruysch, Still-Life with Flowers, c. 1717. Public domain. Lower detail crop; decorative, no caption. -->
-  <img class="plate" src="/bg-ruysch.webp" alt="" width="1400" height="875" decoding="async">
-  <!--/demo-->
+  <h1>This machine, checked.</h1>
+  <!--tenant--><p class="lede">No one at Odile can log in to a tenant machine.</p><!--/tenant-->
+  <p class="provenance">read from your machine <span class="mono">&middot;</span> <time datetime="{{STAMP}}">{{STAMP}}</time>{{HEAD}}</p>
+  {{STATE_BLOCK}}
 
-  <!--demo-->
-  <section aria-labelledby="check">
-    <h2 id="check">Check it yourself</h2>
-    <p>Check the machine before you trust it: the verifier prints PASS or FAIL.</p>
-    <p class="caption">From your laptop</p>
-    <pre><code><span class="prompt" aria-hidden="true">$</span> curl -sSLO https://odile.fyi/odile-verify.tar.gz
-<span class="prompt" aria-hidden="true">$</span> tar xzf odile-verify.tar.gz
-<span class="prompt" aria-hidden="true">$</span> cd odile-verify &amp;&amp; ./odile-verify https://odile.fyi</code></pre>
-    <p class="note">The verifier needs Python 3 and the <code>openssl</code> binary. It fetches one URL: <a href="/attestation">/attestation</a>.</p>
-    <table class="checks" aria-labelledby="check">
-      <thead><tr><th scope="col">Check</th><th scope="col">Where it is checked</th></tr></thead>
-      <tbody>
-        <tr><td><code>chain</code> — AMD VCEK <span class="mono">&rarr;</span> ASK <span class="mono">&rarr;</span> ARK, ARK <span class="nowrap">SHA-256</span> 69:d0:63:b4:<span class="mono">&hellip;</span>:9a:54:0b:cd</td><td>checked from your laptop</td></tr>
-        <tr><td><code>signature</code> — ECDSA P-384 over the report, with the VCEK</td><td>checked from your laptop</td></tr>
-        <tr><td><code>pin</code> — the signed measurement equals <span class="nowrap"><code>odile-verify.pin</code></span></td><td>checked from your laptop</td></tr>
-      </tbody>
+  <section id="laptop" aria-labelledby="laptop-h">
+    <h2 id="laptop-h">From your laptop</h2>
+    <p class="note">These three are the deeper check: run them on your own computer, against the report this machine serves at <code>/attestation</code>.</p>
+    <table class="checks" aria-labelledby="laptop-h">
+      <thead><tr><th scope="col">Check</th><th scope="col">What it shows</th><th scope="col">Where it is checked</th></tr></thead>
+      <tbody>{{LAPTOP_ROWS}}</tbody>
+    </table>
+  </section>
+
+  <section id="machine" aria-labelledby="machine-h">
+    <h2 id="machine-h">From the machine</h2>
+    <p class="note">Every row below is read from this machine at the time above. A root shell can change them; the CPU's signed report is what says which software was supposed to be running.</p>
+    <table class="checks" aria-labelledby="machine-h">
+      <thead><tr><th scope="col">Row</th><th scope="col">What the machine says</th><th scope="col">Where it is checked</th></tr></thead>
+      <tbody>{{MACHINE_ROWS}}</tbody>
     </table>
     <p class="note">Each row is tagged: checked from your laptop, or read from the machine. A root shell can change the machine rows.</p>
   </section>
-  <!--/demo-->
 
-  <section aria-labelledby="report">
-    <h2 id="report">The report</h2>
-    <div class="report-card">
-      <p class="state state-{{REPORT_STATE}}">{{REPORT_LINE}}</p>{{REPORT_CAUSE}}
-      <p class="lede">The machine is an AMD SEV-SNP confidential VM. The report is served live at <a href="/attestation">/attestation</a>. The boot is measured: firmware, kernel, initramfs and command line are hashed into a value the CPU signs.</p>
-      <table class="report" aria-labelledby="report">
-        <tbody>
-          <tr><th scope="row">fetched_at</th><td><code>{{FETCHED_AT}}</code></td></tr>
-          <tr><th scope="row">measurement</th><td><code class="measure">{{MEASUREMENT}}</code></td></tr>
-          <tr><th scope="row">report format</th><td><code>{{REPORT_META}}</code></td></tr>
-          <tr><th scope="row">raw JSON</th><td><a href="/attestation">/attestation</a></td></tr>
-        </tbody>
-      </table>
-      <p class="note"><code>fetched_at</code> is when the CPU produced this report.</p>
-    </div>
+  <section id="check" aria-labelledby="check-h">
+    <h2 id="check-h">Check it yourself</h2>
+    <p class="note">The commands from the claims deck, as root on this machine. They print the same values as the rows above; a stranger can run them without asking us for anything.</p>
+    <pre class="report-pre"><code><span class="prompt" aria-hidden="true">$</span> cat /root/.ssh/authorized_keys
+<span class="prompt" aria-hidden="true">$</span> ssh-keygen -lf /root/.ssh/authorized_keys
+<span class="prompt" aria-hidden="true">$</span> passwd -S root
+<span class="prompt" aria-hidden="true">$</span> sshd -T | grep -i '^passwordauthentication'
+<span class="prompt" aria-hidden="true">$</span> getent passwd | grep -i odile
+<span class="prompt" aria-hidden="true">$</span> lsblk -f
+<span class="prompt" aria-hidden="true">$</span> DEV=$(cryptsetup status root_crypt \
+| sed -n 's/^ *device: *//p')
+<span class="prompt" aria-hidden="true">$</span> cryptsetup luksDump "$DEV" \
+| sed -n '/Keyslots:/,/Tokens:/p'
+<span class="prompt" aria-hidden="true">$</span> odile-support status
+<span class="prompt" aria-hidden="true">$</span> grep -c odile-support \
+/root/.ssh/authorized_keys
+<span class="prompt" aria-hidden="true">$</span> sha256sum /usr/local/bin/odile-install.sh</code></pre>
+    <p class="note">And from your laptop, the report and the signed manifest. The report's JSON carries <code>measurement</code>, <code>report_version</code> and <code>fetched_at</code>; the manifest is the bytes the signature covers.</p>
+    <pre class="report-pre"><code><span class="prompt" aria-hidden="true">$</span> curl -s https://&lt;slug&gt;.odile.fyi/attestation
+<span class="prompt" aria-hidden="true">$</span> curl -s https://&lt;slug&gt;.odile.fyi/manifest
+<span class="prompt" aria-hidden="true">$</span> curl -fsSLO \
+https://odile.fyi/releases/m1/odile-tenant.efi
+<span class="prompt" aria-hidden="true">$</span> sha256sum odile-tenant.efi</code></pre>
+    <p class="note">The manifest lists the Hermes commit, package versions, skill hashes, installer hash and model pin. It is signed with Odile's Ed25519 key; the public key is in your recovery kit and at <code>https://odile.fyi/odile-signing-key.pub</code>. This is an operator signature, not a hardware measurement; see gap 1.</p>
   </section>
 
-  <!--bench-->
-  <section aria-labelledby="access">
-    <h2 id="access">The access report, from a test machine</h2>
-    <p class="caption">Read from the machine, 10 November 2026</p>
-    <pre class="report-pre"><code>verify_and_unlock — access report
-
-  usable keys    PASS  0 usable user keys; every authorized_keys line is the measured boot key (SHA256:LLwDfYyE3VMc9T9o+XvydfNzrXxyzaQ2lysSxCSSEWA)
-  boot key       PASS  ssh-ed25519 SHA256:LLwDfYyE3VMc9T9o+XvydfNzrXxyzaQ2lysSxCSSEWA; public key only, no private half of it on the machine
-  seal           PASS  policy 0x30000; seal_id strict-bench-v1; measurement 519c7c9aae54bf139cacd783e1b69bd98b01e79b9e8b52feb41aadb7a483f481227a8a3b64ea2b885234ca56e09c9ee8
-  sign-in hash   PASS  scrypt hash present in /home/odile/.hermes/.env; no plaintext password
-  operator key   PASS  none (authorized_keys: 1 line(s), the measured throwaway)
-
-  PASS — five checks: zero usable user keys, the throwaway boot key, the seal, the sign-in hash, no operator key.</code></pre>
-  </section>
-  <!--/bench-->
-
-  <!--machine-->
-  <section aria-labelledby="access">
-    <h2 id="access">The access report, from your machine</h2>
-    <p class="caption">read from your machine <span class="mono">&middot;</span> <time datetime="{{REPORT_AT}}">{{REPORT_AT}}</time></p>
-    <pre class="report-pre"><code>{{REPORT_TEXT}}</code></pre>
-    <p class="note">A root shell can change the machine rows.</p>
-  </section>
-  <!--/machine-->
-
-  <!--noaccess-->
-  <section aria-labelledby="access">
-    <h2 id="access">The access report</h2>
-    <p class="state state-unavailable">Report unavailable.</p>
-    <p class="note">{{ACCESS_CAUSE}}</p>
-  </section>
-  <!--/noaccess-->
-
-  <section aria-labelledby="gaps">
-    <h2 id="gaps">The three gaps we state before anyone asks</h2>
+  <section id="gaps" aria-labelledby="gaps-h">
+    <h2 id="gaps-h">The three gaps we state before anyone asks</h2>
     <ol class="gaps">
       <li><span class="num" aria-hidden="true">1</span><div><strong>The app layer is not hardware-measured yet.</strong> Measured boot covers firmware, kernel, initramfs and command line. Hermes, the installer and the skills are pinned by a signed manifest and a published hash, but the CPU does not measure them. The installer is signed, inspectable and audited at handoff for keys, passwords and keyslots; only a measured image can prove there is no hidden backdoor. The manifest records the machine as provisioned; anything you install afterwards is yours.</div></li>
       <li><span class="num" aria-hidden="true">2</span><div><strong>The console passes through the host.</strong> Serial and VNC can be watched. Never type a secret there; the sign-in goes over TLS to the guest, after the report checks out.</div></li>
@@ -4845,7 +6193,7 @@ h1,h2,h3,.brand,.mark,.wordmark,.focus{font-family:var(--serif)}
     </ol>
   </section>
 
-  <p class="foot"><!--demo--><a href="https://demo.odile.fyi/login">Back to the demo</a> <span class="mono">&middot;</span> <!--/demo--><a href="/">odile.fyi</a></p>
+  <p class="foot">The status page counts waiting-for-owner separately and names no tenant. <a href="https://odile.fyi/status">odile.fyi/status</a></p>
 </main>
 </body>
 </html>
@@ -7774,7 +9122,7 @@ Never ask again after a skip. Never ask "are you sure?".
     (
         "odile-help",
         "skills/odile-help/SKILL.md",
-        "b726ca8c7dc43c8d2d16ca9a2ad53ef4231badf1937950214dc829a006108b5e",
+        "09c301f2843f39a2e89d772432af526143c16a203db124a2904e9b3a09bdb8cd",
         r'''---
 name: odile-help
 description: Stuck? odile.fyi/faq · run odile-diag · support by grant.
@@ -7862,11 +9210,10 @@ not open, the machine is rebuilt and you restore from your backup.
 
 ### 4. A bill or a charge
 
-> $49 a month, founding price, month-to-month. The $12 inference allowance is
-> included and hard-capped; at the cap I stop and tell you. Stripe holds the
-> card; we hold the customer id, the subscription id and whether it is paid.
-> Reply to help@odile.fyi for anything on the charge; it is read by a person,
-> and the target is an answer within 24 hours.
+> The private alpha has no price: Odile pays for the machine and the inference.
+> Stripe holds the card; we hold the customer id, the subscription id and
+> whether it is paid. Reply to help@odile.fyi for anything on the charge; it is
+> read by a person, and the target is an answer within 24 hours.
 
 Never promise a refund, a credit or a discount. Say the target is an answer
 within 24 hours and mean it.
@@ -9200,11 +10547,16 @@ CADDY_SITE_TEMPLATE = """\
 # always present and the page itself refuses a spent token. The route is exact
 # (`/first-visit*`), so no other path reaches the service.
 #
+# `/verify` is the machine's own page (t_4fcd465f), served by
+# `odile-verify.service` on its own loopback port: the program reads the
+# boot report, the audit and the grant state as root, so it is not the
+# first-visit service's page. The route is exact and no-store.
+#
 # `/manifest` and `/manifest.sig` are the signed app-layer manifest (ODL-472).
-# They proxy to the loopback listener only when the machine holds the signed
-# pair, so a classic install with no pair keeps the Webapp catch-all instead of
-# proxying to a dead port. `{{first_visit_handle}}` below carries whichever of
-# these exact routes exist on this machine.
+# They proxy to the loopback listeners only when the machine holds the
+# surface, so a classic install with no page keeps the Webapp catch-all instead
+# of proxying to a dead port. `{{first_visit_handle}}` below carries whichever
+# of these exact routes exist on this machine.
 {fqdn} {{
 	encode zstd gzip
 
@@ -9237,17 +10589,20 @@ CADDY_SITE_TEMPLATE = """\
 # END {begin}
 """
 
-# The /verify and /first-visit routes, spliced only when the first-visit
-# service is part of this machine. They share one loopback port: the service
-# that sets the sign-in also renders the machine's access report (ODL-473).
-# One value, so the site template keeps working when a classic install has no
-# first-visit page; Caddy never proxies to a dead port.
-CADDY_FIRST_VISIT_HANDLE = """\
+# The /verify and /first-visit routes, spliced only when the services they
+# name are part of this machine. They are two loopback programs now: the
+# first-visit service sets the sign-in, and `odile-verify.service` renders the
+# machine's own page from its records (t_4fcd465f). One value, so the site
+# template keeps working when a classic install has no page; Caddy never
+# proxies to a dead port.
+CADDY_VERIFY_HANDLE = """\
 	handle /verify {{
 		header Cache-Control "no-store"
 		reverse_proxy 127.0.0.1:{port}
 	}}
+"""
 
+CADDY_FIRST_VISIT_HANDLE = """\
 	handle /first-visit* {{
 		header Cache-Control "no-store"
 		reverse_proxy 127.0.0.1:{port}
@@ -9312,7 +10667,7 @@ Before={unit}.service
 [Service]
 Type=simple
 User=root
-ExecStart=/usr/bin/python3 {source} --bind 127.0.0.1 --port {port} --state {state} --env-file {env_file} --page {page} --verify-page {verify_page} --icons {icons} --report-file {report} --attest-file {attest} --report-command 'systemctl restart --no-block odile-access-report.service' --recovery-file {recovery} --reload-command 'systemctl restart {unit}'
+ExecStart=/usr/bin/python3 {source} --bind 127.0.0.1 --port {port} --state {state} --env-file {env_file} --page {page} --icons {icons} --report-command 'systemctl restart --no-block odile-access-report.service' --recovery-file {recovery} --reload-command 'systemctl restart {unit}'
 Restart=on-failure
 RestartSec=3
 NoNewPrivileges=true
@@ -9327,23 +10682,52 @@ ReadWritePaths={hermes_home} {etc}
 WantedBy=multi-user.target
 """
 
+VERIFY_UNIT_TEMPLATE = """\
+# Odile verify — the machine's own /verify page (t_4fcd465f); installed by
+# odile-install. Edit this program, not the unit.
+#
+# The page reads the boot report, the boot record, /proc/cmdline, the host key,
+# /run/bb/sealed-unlock.state, the signed manifest and the tenant .env, and it
+# wraps `odile-audit --json` and `odile-support status --json`. The audit reads
+# /etc/shadow and sshd's journal, so the unit runs as root; it binds loopback
+# only and Caddy is the public listener at /verify. It writes nothing.
+[Unit]
+Description=Odile verify — the machine's own /verify page
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+ExecStart=/usr/bin/python3 {source} --serve --bind 127.0.0.1 --port {port} --template {template}
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+
+[Install]
+WantedBy=multi-user.target
+"""
+
 ACCESS_REPORT_UNIT_TEMPLATE = """\
 # Odile access report — installed by odile-install (ODL-473); edit this
 # program, not the unit.
 #
-# /verify shows this machine's own five lines, not a bench block. This oneshot
-# runs the strict bar's report as root at boot, writes
-# /var/lib/odile/access-report.txt 0644, and the first-visit service renders
-# it at /verify. It runs again after the first visit (the first-visit POST
-# starts this unit when the tenant's hash replaces the placeholder) and on
-# every boot.
+# This oneshot writes the machine's own access report as root at boot,
+# /var/lib/odile/access-report.txt 0644, for the support bundle. Since
+# t_4fcd465f the public /verify page is odile-verify.service's program
+# (verify/verify.py), not a render of this file. It runs again after the first
+# visit (the first-visit POST starts this unit when the tenant's hash replaces
+# the placeholder) and on every boot.
 #
 # Read-only on the machine: the reporter reads /proc/cmdline, the attestation
 # document, every authorized_keys and the tenant .env; it writes only the
 # report file. The pin it passes to --expect is resolved by the wrapper
 # (tenant-image.pin, then the boot record, then the boot report).
 [Unit]
-Description=Odile access report — write the machine's own /verify report
+Description=Odile access report — write the machine's own report
 After=local-fs.target odile-attest-boot.service
 Wants=odile-attest-boot.service
 Before={agent_unit}.service
@@ -9941,6 +11325,7 @@ class Layout:
     installer_args: tuple[str, ...]
     hermes_commit: str
     first_visit_port: int = FIRST_VISIT_PORT
+    verify_port: int = VERIFY_PORT
 
     def path(self, absolute: str) -> Path:
         if self.mode == "tenant":
@@ -10074,8 +11459,17 @@ class Layout:
 
     @property
     def verify_page(self) -> Path:
-        """/verify template the first-visit service renders on a tenant."""
+        """/verify template, the reviewed `templates/verify.html` (t_4fcd465f)."""
         return self.path("/usr/local/lib/odile/verify.html")
+
+    @property
+    def verify_program(self) -> Path:
+        """The /verify program `odile-verify.service` runs on loopback."""
+        return self.path("/usr/local/lib/odile/verify.py")
+
+    @property
+    def verify_unit(self) -> Path:
+        return self.unit_dir / "odile-verify.service"
 
     @property
     def icons_dir(self) -> Path:
@@ -10118,7 +11512,8 @@ class Layout:
     @classmethod
     def tenant(cls, *, user: str, webapp_port: int,
                public_url: str, commit: str = HERMES_COMMIT,
-               first_visit_port: int = FIRST_VISIT_PORT) -> "Layout":
+               first_visit_port: int = FIRST_VISIT_PORT,
+               verify_port: int = VERIFY_PORT) -> "Layout":
         home = Path("/home") / user
         hermes_home = home / ".hermes"
         install_dir = hermes_home / "hermes-agent"
@@ -10141,12 +11536,14 @@ class Layout:
                             "--skip-browser", "--skip-computer-use"),
             hermes_commit=commit,
             first_visit_port=first_visit_port,
+            verify_port=verify_port,
         )
 
     @classmethod
     def scratch(cls, *, root: Path, user: str, webapp_port: int,
                 public_url: str, commit: str = HERMES_COMMIT,
-                first_visit_port: int = FIRST_VISIT_PORT) -> "Layout":
+                first_visit_port: int = FIRST_VISIT_PORT,
+                verify_port: int = VERIFY_PORT) -> "Layout":
         base = root
         home = base / "home" / user
         hermes_home = home / ".hermes"
@@ -10170,6 +11567,7 @@ class Layout:
                             "--skip-browser", "--skip-computer-use"),
             hermes_commit=commit,
             first_visit_port=first_visit_port,
+            verify_port=verify_port,
         )
 
 
@@ -11094,6 +12492,8 @@ def exact_handles(layout: Layout) -> str:
     port nothing listens on, and a classic install keeps the Webapp catch-all.
     """
     handles = ""
+    if layout.verify_program.is_file() and layout.verify_page.is_file():
+        handles += CADDY_VERIFY_HANDLE.format(port=layout.verify_port)
     if layout.first_visit_state.is_file():
         handles += CADDY_FIRST_VISIT_HANDLE.format(port=layout.first_visit_port)
         # The icon routes travel with the page server that has the set
@@ -11106,11 +12506,22 @@ def exact_handles(layout: Layout) -> str:
     return handles
 
 
+def site_name(layout: Layout, slug: str) -> str:
+    """The one name this machine serves (ODL-340 follow-up).
+
+    `layout.fqdn` is the public URL's host, so `--public-url` names the Caddy
+    site, the DNS wait, the ACME wait and the certificate fingerprint alike.
+    A layout whose public URL carries no host (a malformed override) keeps the
+    production name rather than an empty site block.
+    """
+    return layout.fqdn or f"{slug}.odile.fyi"
+
+
 def render_caddy_site(layout: Layout, slug: str) -> tuple[str, str]:
     begin = f"# BEGIN odile-{slug}"
     end = f"# END odile-{slug}"
     return CADDY_SITE_TEMPLATE.format(
-        begin=f"odile-{slug}", end=f"odile-{slug}", fqdn=f"{slug}.odile.fyi",
+        begin=f"odile-{slug}", end=f"odile-{slug}", fqdn=site_name(layout, slug),
         user=layout.user, webapp_port=layout.webapp_port, var=layout.var,
         first_visit_handle=exact_handles(layout),
     ), begin
@@ -11120,7 +12531,7 @@ def ensure_caddy_site(layout: Layout, slug: str, dry: bool) -> bool:
     # A classic install has no first-visit page and no signed manifest pair, so
     # it gets no dead routes; a machine that has one gets its exact proxy.
     block = CADDY_SITE_TEMPLATE.format(
-        begin=f"odile-{slug}", fqdn=f"{slug}.odile.fyi",
+        begin=f"odile-{slug}", fqdn=site_name(layout, slug),
         user=layout.user, webapp_port=layout.webapp_port, var=layout.var,
         first_visit_handle=exact_handles(layout),
     )
@@ -12081,13 +13492,13 @@ def ensure_env(layout: Layout, password: str | None, username: str,
 
 
 def ensure_verify_surface(layout: Layout, dry: bool, boot_key_b64: str = "") -> bool:
-    """Write the /verify page, the two programs that write and read its report,
-    and the one authorized key the report expects (ODL-473).
+    """Write the /verify program and template, the two programs that write and
+    read its access report, and the one authorized key the report expects.
 
-    The page is world-readable; the reporter and its wrapper are root-owned
-    executables. Each embedded copy is checked against its pin before it is
-    written, so a stale embed stops the install instead of shipping a page
-    that does not match the program that feeds it.
+    The page is world-readable; the program, the reporter and its wrapper are
+    root-owned executables. Each embedded copy is checked against its pin
+    before it is written, so a stale embed stops the install instead of
+    shipping a page that does not match the program that feeds it.
 
     ``boot_key_b64`` is bb.key= from the boot report's measured command line.
     The strict bar's report passes only when every authorized_keys line is that
@@ -12109,8 +13520,10 @@ def ensure_verify_surface(layout: Layout, dry: bool, boot_key_b64: str = "") -> 
                                    *current_ids(layout), dry,
                                    detail="(the throwaway boot key, public half only)")
     for target, data, expected, mode, detail in (
-        (layout.verify_page, VERIFY_PAGE.encode("utf-8"), VERIFY_PAGE_SHA256,
-         0o644, "(the /verify page)"),
+        (layout.verify_program, VERIFY_PROGRAM.encode("utf-8"), VERIFY_PROGRAM_SHA256,
+         0o755, "(the /verify program)"),
+        (layout.verify_page, VERIFY_TEMPLATE.encode("utf-8"), VERIFY_TEMPLATE_SHA256,
+         0o644, "(the /verify template)"),
         (layout.access_report_source, ACCESS_REPORT_SCRIPT.encode("utf-8"),
          ACCESS_REPORT_SCRIPT_SHA256, 0o755, "(the boot report wrapper)"),
         (layout.verify_unlock_source, VERIFY_UNLOCK.encode("utf-8"),
@@ -12293,9 +13706,7 @@ def ensure_units(layout: Layout, slug: str, dry: bool, first_visit: bool = False
         first_visit_unit = FIRST_VISIT_UNIT_TEMPLATE.format(
             source=layout.first_visit_source, state=layout.first_visit_state,
             env_file=layout.hermes_home / ".env", page=layout.first_visit_page,
-            verify_page=layout.verify_page, icons=layout.icons_dir,
-            report=layout.access_report_file,
-            attest=layout.served_attestation,
+            icons=layout.icons_dir,
             recovery=layout.recovery,
             port=layout.first_visit_port, unit=layout.unit_name,
             hermes_home=layout.hermes_home, etc=layout.etc,
@@ -12303,6 +13714,12 @@ def ensure_units(layout: Layout, slug: str, dry: bool, first_visit: bool = False
         changed |= ensure_file(layout.first_visit_unit, first_visit_unit.encode("utf-8"),
                                0o644, *current_ids(layout), dry,
                                detail="(first visit, loopback only)")
+        verify_unit = VERIFY_UNIT_TEMPLATE.format(
+            source=layout.verify_program, template=layout.verify_page,
+            port=layout.verify_port)
+        changed |= ensure_file(layout.verify_unit, verify_unit.encode("utf-8"),
+                               0o644, *current_ids(layout), dry,
+                               detail="(the machine's own /verify page, root, loopback)")
         access_unit = ACCESS_REPORT_UNIT_TEMPLATE.format(
             wrapper=layout.access_report_source, var=layout.var,
             agent_unit=layout.unit_name,
@@ -12510,6 +13927,32 @@ def ensure_scratch_services(layout: Layout, dry: bool) -> bool:
                 print(f"listening    first visit 127.0.0.1:{layout.first_visit_port} "
                       "(reload: the unit restarts the agent; the simulation does not)")
                 changed = True
+    if layout.verify_program.is_file() and layout.verify_page.is_file():
+        if port_open("127.0.0.1", layout.verify_port):
+            print(f"same         verify listening on 127.0.0.1:{layout.verify_port}")
+        else:
+            print(f"{'would start' if dry else 'start':<12} the /verify page on "
+                  f"127.0.0.1:{layout.verify_port}")
+            if not dry:
+                log = layout.var / "verify.log"
+                log.parent.mkdir(parents=True, exist_ok=True)
+                with open(log, "ab") as handle:
+                    process = subprocess.Popen(
+                        [sys.executable, str(layout.verify_program),
+                         "--serve", "--bind", "127.0.0.1",
+                         "--port", str(layout.verify_port),
+                         "--root", str(layout.root),
+                         "--template", str(layout.verify_page)],
+                        stdout=handle, stderr=subprocess.STDOUT, start_new_session=True,
+                        env=os.environ.copy(),
+                    )
+                (layout.var / "verify.pid").write_text(f"{process.pid}\n",
+                                                      encoding="utf-8")
+                if not wait_for_http(
+                        f"http://127.0.0.1:{layout.verify_port}/health", 60):
+                    raise SystemExit(f"error: the /verify page did not start; see {log}")
+                print(f"listening    verify 127.0.0.1:{layout.verify_port}")
+                changed = True
     return changed
 
 
@@ -12587,8 +14030,20 @@ def ensure_systemd_services(layout: Layout, dry: bool, units_changed: bool,
                 raise SystemExit("error: the first-visit service is not answering on "
                                  f"127.0.0.1:{layout.first_visit_port}")
             print(f"listening    first visit 127.0.0.1:{layout.first_visit_port}")
+    if layout.verify_unit.is_file():
+        # The machine's own /verify page (t_4fcd465f). Root, loopback only;
+        # Caddy is the public listener at /verify.
+        changed |= ensure_one_service(layout, "odile-verify", dry, units_changed,
+                                      wait=False)
+        if not dry:
+            if not wait_for_http(f"http://127.0.0.1:{layout.verify_port}/health", 60):
+                raise SystemExit("error: the verify page is not answering on "
+                                 f"127.0.0.1:{layout.verify_port}")
+            print(f"listening    verify 127.0.0.1:{layout.verify_port}")
     if layout.access_report_unit.is_file():
-        # The report the /verify page reads. It runs before the agent unit and
+        # The support bundle's report, still written at boot by the oneshot the
+        # first-visit POST restarts. /verify no longer reads this file: its
+        # program reads the machine's records directly.
         # again after the first visit; here it runs once so the page has it.
         # A failed report is a stale /verify, not a dead machine: it must not
         # abort the run before the agent restart below.
@@ -13176,11 +14631,11 @@ def self_test() -> int:
                  "--reload-command 'systemctl restart odile-agent'" in first_unit
                  and "ProtectHome=read-only" in first_unit
                  and "ReadWritePaths=/home/odile/.hermes /etc/odile" in first_unit)
-        check.ok("the first-visit unit renders /verify from the machine's report",
-                 "--verify-page /usr/local/lib/odile/verify.html" in first_unit
-                 and "--icons /usr/local/lib/odile/icons" in first_unit
-                 and "--report-file /var/lib/odile/access-report.txt" in first_unit
-                 and "--attest-file /var/lib/odile/attestation.json" in first_unit
+        check.ok("the first-visit unit leaves /verify to odile-verify",
+                 "--icons /usr/local/lib/odile/icons" in first_unit
+                 and "--verify-page " not in first_unit
+                 and "--report-file " not in first_unit
+                 and "--attest-file " not in first_unit
                  and "systemctl restart --no-block odile-access-report.service" in first_unit)
         embedded_first = FIRST_VISIT_SOURCE.encode("utf-8")
         check.ok("the embedded first-visit service matches its pinned SHA-256",
@@ -13249,9 +14704,11 @@ def self_test() -> int:
                  and once_shell.count("odile-brand.js") == 1
                  and once_shell.count('href="./odile-') == 3)
 
-        # the /verify surface (ODL-473): pins, checkout parity, the wrapper
+        # the /verify surface (ODL-473; the page moved to its own program in
+        # t_4fcd465f): pins, checkout parity, the units
         for name, text, expected in (
-            ("/verify page", VERIFY_PAGE, VERIFY_PAGE_SHA256),
+            ("/verify program", VERIFY_PROGRAM, VERIFY_PROGRAM_SHA256),
+            ("/verify template", VERIFY_TEMPLATE, VERIFY_TEMPLATE_SHA256),
             ("access-report wrapper", ACCESS_REPORT_SCRIPT, ACCESS_REPORT_SCRIPT_SHA256),
             ("access reporter", VERIFY_UNLOCK, VERIFY_UNLOCK_SHA256),
             ("handoff audit", AUDIT_SCRIPT, AUDIT_SCRIPT_SHA256),
@@ -13259,8 +14716,11 @@ def self_test() -> int:
             data = text.encode("utf-8")
             check.ok(f"the embedded {name} matches its pinned SHA-256",
                      sha256(data) == expected, sha256(data)[:12])
+        check.ok("the embedded /verify program compiles",
+                 compile(VERIFY_PROGRAM, "verify.py", "exec") is not None)
         for posix, text in (
-            ("web/verify.html", VERIFY_PAGE),
+            ("verify/verify.py", VERIFY_PROGRAM),
+            ("templates/verify.html", VERIFY_TEMPLATE),
             ("installer/access_report.sh", ACCESS_REPORT_SCRIPT),
             ("scripts/verify_and_unlock.sh", VERIFY_UNLOCK),
             ("scripts/audit.py", AUDIT_SCRIPT),
@@ -13282,6 +14742,19 @@ def self_test() -> int:
                  and "ReadWritePaths=/var/lib/odile" in access_unit
                  and "Before=odile-agent.service" in access_unit
                  and "WantedBy=multi-user.target" in access_unit)
+        verify_unit = VERIFY_UNIT_TEMPLATE.format(
+            source=Path("/usr/local/lib/odile/verify.py"),
+            template=Path("/usr/local/lib/odile/verify.html"),
+            port=VERIFY_PORT)
+        check.ok("the /verify unit runs the page as root on loopback, no-store by Caddy",
+                 "User=root" in verify_unit
+                 and "ExecStart=/usr/bin/python3 /usr/local/lib/odile/verify.py --serve "
+                     "--bind 127.0.0.1 --port 8098 "
+                     "--template /usr/local/lib/odile/verify.html" in verify_unit
+                 and "ProtectSystem=strict" in verify_unit
+                 and "ProtectHome=read-only" in verify_unit
+                 and "WantedBy=multi-user.target" in verify_unit
+                 and "0.0.0.0" not in verify_unit)
         wrapper_path = root / "access_report.sh"
         wrapper_path.write_text(ACCESS_REPORT_SCRIPT, encoding="utf-8")
         wrapper_path.chmod(0o755)
@@ -13330,6 +14803,13 @@ def self_test() -> int:
                  and (authorized.stat().st_mode & 0o777) == 0o600
                  and (authorized.parent.stat().st_mode & 0o777) == 0o700,
                  str(authorized))
+        check.ok("the installer writes the /verify program 0755 and its template 0644",
+                 layout.verify_program.is_file() and layout.verify_page.is_file()
+                 and (layout.verify_program.stat().st_mode & 0o777) == 0o755
+                 and (layout.verify_page.stat().st_mode & 0o777) == 0o644
+                 and layout.verify_program.read_text(encoding="utf-8") == VERIFY_PROGRAM
+                 and layout.verify_page.read_text(encoding="utf-8") == VERIFY_TEMPLATE,
+                 str(layout.verify_program))
         state_token = "ab" * 32
         state_body = first_visit_state(state_token)
         state = json.loads(state_body)
@@ -13350,7 +14830,8 @@ def self_test() -> int:
         with_first_visit = CADDY_SITE_TEMPLATE.format(
             begin="odile-odl-test", fqdn="odl-test.odile.fyi", user="odile",
             webapp_port=9120, var=Path("/var/lib/odile"),
-            first_visit_handle=(CADDY_FIRST_VISIT_HANDLE.format(port=8091)
+            first_visit_handle=(CADDY_VERIFY_HANDLE.format(port=8098)
+                                + CADDY_FIRST_VISIT_HANDLE.format(port=8091)
                                 + CADDY_ICON_HANDLE.format(port=8091)))
         spliced = splice_marked(fixture, block, "# BEGIN odile-odl-test", "# END odile-odl-test")
         check.ok("the Caddy block is appended after the existing file", "odl-test.odile.fyi {" in spliced)
@@ -13374,7 +14855,10 @@ def self_test() -> int:
                  with_first_visit.count("reverse_proxy") == 8
                  and "handle /verify {" in with_first_visit
                  and "handle /first-visit* {" in with_first_visit
-                 and "reverse_proxy 127.0.0.1:8091" in with_first_visit
+                 and "handle /verify {\n\t\theader Cache-Control \"no-store\"\n"
+                     "\t\treverse_proxy 127.0.0.1:8098" in with_first_visit
+                 and "handle /first-visit* {\n\t\theader Cache-Control \"no-store\"\n"
+                     "\t\treverse_proxy 127.0.0.1:8091" in with_first_visit
                  and with_first_visit.index("handle /first-visit*")
                  < with_first_visit.index("handle {\n\t\treverse_proxy 127.0.0.1:9120"))
         check.ok("a first-visit machine proxies the five icon paths to the page server",
@@ -13826,6 +15310,65 @@ def self_test() -> int:
                  and "WantedBy=timers.target" in backup_timer)
         check.ok("the installer's heartbeat default is the program's default",
                  HEARTBEAT_URL == "https://odile.fyi/heartbeat")
+        # ODL-340 follow-up: the one name and the one heartbeat, both from the
+        # environment the seed came from. A production seed keeps today's
+        # values; a second environment's seed moves both.
+        check.ok("the heartbeat follows the seed endpoint's environment",
+                 heartbeat_url_for("https://test.odile.fyi/seed")
+                 == "https://test.odile.fyi/heartbeat"
+                 and heartbeat_url_for("https://odile.fyi/seed") == HEARTBEAT_URL
+                 and heartbeat_url_for("http://127.0.0.1:8081/seed")
+                 == "http://127.0.0.1:8081/heartbeat"
+                 and heartbeat_url_for("not-a-url") == HEARTBEAT_URL)
+        bench_units = backup_unit_files(backup_layout, "odl-test",
+                                        heartbeat_url_for("https://test.odile.fyi/seed"))
+        check.ok("a bench tenant's nightly unit posts its heartbeat to the bench",
+                 "--url https://test.odile.fyi/heartbeat"
+                 in bench_units[backup_layout.backup_service]
+                 and "--url https://odile.fyi/heartbeat"
+                 not in bench_units[backup_layout.backup_service])
+        check.ok("the tenant's public name is the seed's environment",
+                 public_url_for("odl-test", "https://test.odile.fyi/seed")
+                 == "https://odl-test.test.odile.fyi"
+                 and public_url_for("odl-test", "https://odile.fyi/seed")
+                 == "https://odl-test.odile.fyi"
+                 and public_url_for("odl-test", "") == "https://odl-test.odile.fyi")
+        bench_layout = Layout.tenant(user="odile", webapp_port=9120,
+                                     public_url="https://odl-test.test.odile.fyi")
+        bench_block, _ = render_caddy_site(bench_layout, "odl-test")
+        check.ok("the Caddy site is the machine's own name, not the slug's production name",
+                 "\nodl-test.test.odile.fyi {" in "\n" + bench_block
+                 and "\nodl-test.odile.fyi {" not in "\n" + bench_block)
+        prod_block, _ = render_caddy_site(backup_layout, "odl-test")
+        check.ok("a production layout still renders the slug's production name",
+                 "\nodl-test.odile.fyi {" in "\n" + prod_block
+                 and "\nodl-test.test.odile.fyi {" not in "\n" + prod_block)
+        # The machine-free plan is the one proof that runs before a seed is
+        # fetched, so it must name the machine from the kit (`--dry-run
+        # --recovery-kit <kit>` is `install.md` §6), never the `<slug>`
+        # placeholder: the site, the Webapp's public_url and the DNS/ACME wait
+        # are the same one name the install then serves.
+        dry_kit = root / "dry-run-kit.json"
+        dry_kit.write_text(json.dumps({"slug": "odl-dry", "instance_id": "168020b4",
+                                       "setup_token": "0" * 64}), encoding="utf-8")
+        dry_plan = {}
+        for label, extra in (("production", []),
+                             ("bench", ["--seed-url", "https://test.odile.fyi/seed"])):
+            buffer = io.StringIO()
+            with contextlib.redirect_stdout(buffer):
+                dry_run(build_parser().parse_args(
+                    ["--dry-run", "--recovery-kit", str(dry_kit)] + extra))
+            dry_plan[label] = buffer.getvalue()
+        check.ok("the machine-free dry run names the kit's machine, not <slug>",
+                 "<slug>.odile.fyi" not in dry_plan["production"]
+                 and "site odl-dry.odile.fyi" in dry_plan["production"]
+                 and "public_url https://odl-dry.odile.fyi" in dry_plan["production"]
+                 and "retry ACME for odl-dry.odile.fyi" in dry_plan["production"])
+        check.ok("a bench seed moves the dry run's name and its heartbeat",
+                 "site odl-dry.test.odile.fyi" in dry_plan["bench"]
+                 and "heartbeat https://test.odile.fyi/heartbeat" in dry_plan["bench"]
+                 and "public_url https://odl-dry.test.odile.fyi" in dry_plan["bench"]
+                 and "<slug>." not in dry_plan["bench"])
 
         # the support programs (ODL-474): pin, checkout parity, and the two
         # installed names — the A10 answer's `odile-diag` and `odile-support`
@@ -14082,7 +15625,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--user", help="OS user (tenant default: odile; simulation default: you)")
     parser.add_argument("--port", type=int, help=f"Webapp port (tenant {DEFAULT_TENANT_PORT}, simulation {DEFAULT_SCRATCH_PORT})")
     parser.add_argument("--slug", help="tenant slug, if it is not in the recovery kit")
-    parser.add_argument("--seed-url", help=f"seed endpoint (default {DEFAULT_SEED_URL})")
+    parser.add_argument("--seed-url", help=f"seed endpoint (default {DEFAULT_SEED_URL}); "
+                                           "its host names the environment the machine "
+                                           "reports back to")
     parser.add_argument("--recovery-kit",
                         help="JSON kit: setup token, instance id, signing public key, "
                              "signing_key_sha256")
@@ -14104,11 +15649,14 @@ def build_parser() -> argparse.ArgumentParser:
                              "setup_token). Stored on the guest as SHA-256 only")
     parser.add_argument("--first-visit-port", type=int,
                         help=f"first-visit service loopback port (tenant default {FIRST_VISIT_PORT})")
+    parser.add_argument("--verify-port", type=int,
+                        help=f"the /verify program's loopback port (tenant default {VERIFY_PORT})")
     parser.add_argument("--signin-username", default="odile", help="the Odile sign-in name (default odile)")
     parser.add_argument("--backup-password", help="backup password for the recovery file (16+); blank generates 32")
-    parser.add_argument("--heartbeat-url", default=HEARTBEAT_URL,
+    parser.add_argument("--heartbeat-url", default=None,
                         help=f"where the nightly unit posts its signed heartbeat "
-                             f"(default {HEARTBEAT_URL})")
+                             f"(default: the seed endpoint's host, "
+                             f"<seed origin>/heartbeat; production is {HEARTBEAT_URL})")
     parser.add_argument("--public-url", help="override the Webapp public URL")
     parser.add_argument("--hermes-commit", default=HERMES_COMMIT, help="pinned Hermes commit")
     parser.add_argument("--no-tmux", action="store_true", help="run the long install inline")
@@ -14120,7 +15668,7 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def resolve_layout(args: argparse.Namespace) -> Layout:
+def resolve_layout(args: argparse.Namespace, slug: str | None = None) -> Layout:
     if args.root:
         root = Path(args.root).resolve()
         user = args.user or pwd.getpwuid(os.geteuid()).pw_name
@@ -14129,20 +15677,30 @@ def resolve_layout(args: argparse.Namespace) -> Layout:
         return Layout.scratch(root=root, user=user, webapp_port=port,
                               public_url=public_url,
                               commit=args.hermes_commit,
-                              first_visit_port=args.first_visit_port or FIRST_VISIT_PORT)
+                              first_visit_port=args.first_visit_port or FIRST_VISIT_PORT,
+                              verify_port=args.verify_port or VERIFY_PORT)
     user = args.user or "odile"
     port = args.port or DEFAULT_TENANT_PORT
-    slug = args.slug or "<slug>"
-    public_url = args.public_url or f"https://{slug}.odile.fyi"
+    # The slug can come from the recovery kit rather than a flag (ODL-340
+    # follow-up, round 2): it names the tenant's default public URL, so a
+    # caller that has read the kit passes it here instead of letting the
+    # `<slug>` placeholder name the machine.
+    name = slug or args.slug or "<slug>"
+    public_url = args.public_url or public_url_for(name, args.seed_url or DEFAULT_SEED_URL)
     return Layout.tenant(user=user, webapp_port=port,
                         public_url=public_url, commit=args.hermes_commit,
-                        first_visit_port=args.first_visit_port or FIRST_VISIT_PORT)
+                        first_visit_port=args.first_visit_port or FIRST_VISIT_PORT,
+                        verify_port=args.verify_port or VERIFY_PORT)
 
 
 def dry_run(args: argparse.Namespace) -> int:
-    layout = resolve_layout(args)
+    # The kit is read before the layout is resolved: `--dry-run
+    # --recovery-kit <kit>` is the machine-free proof, and the kit's slug — not
+    # the placeholder — names the site, the Webapp's public_url and the DNS and
+    # ACME waits, exactly as the install does once it has a seed.
     kit = load_recovery_kit(Path(args.recovery_kit) if args.recovery_kit else None, args)
     slug = kit.get("slug") or args.slug or "<slug>"
+    layout = resolve_layout(args, slug=slug)
     instance = kit.get("instance_id") or args.instance_id or "<instance>"
     pubkey = kit_pubkey(kit) or (Path(args.pubkey) if args.pubkey else None)
     print(f"odile installer {VERSION} — tenant plan (dry run, {layout.mode})")
@@ -14157,7 +15715,10 @@ def dry_run(args: argparse.Namespace) -> int:
     boot_report = Path(args.boot_report) if args.boot_report else layout.path(BOOT_REPORT_DEFAULT)
     print(f"would check  the boot report {boot_report} against --expect "
           f"(record {layout.boot_record})")
-    print(f"would fetch  seed from {args.seed_url or (SCRATCH_SEED_URL if layout.mode == 'scratch' else DEFAULT_SEED_URL)}")
+    seed_url = args.seed_url or (SCRATCH_SEED_URL if layout.mode == "scratch" else DEFAULT_SEED_URL)
+    heartbeat_url = args.heartbeat_url or heartbeat_url_for(seed_url)
+    print(f"would fetch  seed from {seed_url}")
+    print(f"would use    site {site_name(layout, slug)} (heartbeat {heartbeat_url})")
     if layout.mode == "tenant":
         print(f"would install OS packages from the pinned snapshot {OS_SNAPSHOT} "
               f"(Debian 13 {OS_SUITE}):")
@@ -14183,17 +15744,19 @@ def dry_run(args: argparse.Namespace) -> int:
           f"EnvironmentFile= on {layout.unit_target}")
     if args.first_visit:
         print(f"would write a placeholder sign-in hash; the first-visit page at "
-              f"https://{slug}.odile.fyi/first-visit sets the real one")
+              f"https://{site_name(layout, slug)}/first-visit sets the real one")
         print(f"would write {layout.first_visit_source}, {layout.first_visit_page}, "
               f"{layout.first_visit_state} (token sha256 only) and {layout.first_visit_unit}")
         print(f"would listen on 127.0.0.1:{layout.first_visit_port} and proxy /first-visit* to it")
-        print(f"would write {layout.verify_page}, {layout.access_report_source}, "
-              f"{layout.verify_unlock_source} and {layout.access_report_unit}")
-        print(f"would write {layout.access_report_file} (the machine's own report) "
-              f"and proxy /verify to the same loopback service")
+        print(f"would write {layout.verify_program}, {layout.verify_page}, "
+              f"{layout.access_report_source}, {layout.verify_unlock_source} and "
+              f"{layout.access_report_unit}")
+        print(f"would run the /verify page as root on 127.0.0.1:{layout.verify_port} "
+              f"(unit {layout.verify_unit}) and proxy /verify to it, no-store")
+        print(f"would serve /first-visit* from 127.0.0.1:{layout.first_visit_port}")
     print(f"would write the agent unit {layout.unit_target} (EnvironmentFile={layout.key_env})")
     print(f"would write the backup program {layout.backup_source}, {layout.backup_service} "
-          f"and {layout.backup_timer} (daily 03:00; heartbeat {args.heartbeat_url})")
+          f"and {layout.backup_timer} (daily 03:00; heartbeat {heartbeat_url})")
     print(f"would write the support programs {layout.support_program} and "
           f"{layout.support_diag_link} (the A10 answer's two commands)")
     print(f"would write the guest export program {layout.export_program} (the bytes "
@@ -14203,7 +15766,8 @@ def dry_run(args: argparse.Namespace) -> int:
     print(f"would splice {layout.caddyfile} (# BEGIN odile-{slug})")
     if layout.mode == "tenant":
         print("would lock root, set PasswordAuthentication no, and write /etc/sudoers.d/odile")
-        print(f"would wait for DNS and retry ACME for {slug}.odile.fyi, then print the fingerprint")
+        print(f"would wait for DNS and retry ACME for {site_name(layout, slug)}, "
+              f"then print the fingerprint")
     else:
         print("skip  DNS/ACME/sshd/root lock (the simulation has no public listener)")
     print(f"would write {layout.recovery} (backup password, certificate fingerprint placeholder)")
@@ -14230,7 +15794,8 @@ def manifest() -> int:
         "export_program_sha256": EXPORT_PROGRAM_SHA256,
         "first_visit_sha256": FIRST_VISIT_SHA256,
         "first_visit_page_sha256": FIRST_VISIT_PAGE_SHA256,
-        "verify_page_sha256": VERIFY_PAGE_SHA256,
+        "verify_program_sha256": VERIFY_PROGRAM_SHA256,
+        "verify_template_sha256": VERIFY_TEMPLATE_SHA256,
         "access_report_script_sha256": ACCESS_REPORT_SCRIPT_SHA256,
         "verify_unlock_sha256": VERIFY_UNLOCK_SHA256,
         "audit_sha256": AUDIT_SCRIPT_SHA256,
@@ -14319,10 +15884,18 @@ def tenant_main(args: argparse.Namespace) -> int:
 
     seed = load_or_fetch_seed(layout, kit, args, pubkey)
     slug = seed["slug"]
-    if layout.webapp_public_url.endswith("<slug>.odile.fyi") or layout.mode == "tenant":
+    # One site name (ODL-340 follow-up): the name the Webapp answers to is also
+    # the Caddy site, the DNS wait, the ACME wait and the certificate the
+    # recovery file pins. `--public-url` names it; without it the seed endpoint
+    # names the environment and the tenant is `<slug>.<that host>`.
+    if layout.mode == "tenant" or layout.webapp_public_url.endswith("<slug>.odile.fyi"):
         layout = dataclasses.replace(layout, webapp_public_url=(
-            args.public_url or f"https://{slug}.odile.fyi"))
+            args.public_url or public_url_for(slug, seed_url)))
+    # The nightly backup's heartbeat goes to the HQ that issued this seed, never
+    # to a constant: a bench tenant's record is accepted by the bench.
+    heartbeat_url = args.heartbeat_url or heartbeat_url_for(seed_url)
     print(f"seed         {slug} · instance {seed['instance_id']} · model {seed['model']}")
+    print(f"site         {site_name(layout, slug)} (heartbeat {heartbeat_url})")
 
     changed |= ensure_packages(layout, args.dry_run)
     changed |= ensure_user(layout, args.dry_run)
@@ -14352,7 +15925,7 @@ def tenant_main(args: argparse.Namespace) -> int:
         changed |= ensure_verify_surface(layout, args.dry_run,
                                          verdict.boot_key_b64 if verdict else "")
     units_changed = ensure_units(layout, slug, args.dry_run, first_visit=first_visit_enabled,
-                                 heartbeat_url=args.heartbeat_url)
+                                 heartbeat_url=heartbeat_url)
     changed |= units_changed
     changed |= ensure_sudoers(layout, args.dry_run)
     changed |= ensure_sshd(layout, args.dry_run)
@@ -14378,11 +15951,12 @@ def tenant_main(args: argparse.Namespace) -> int:
 
     fingerprint = None
     if layout.mode == "tenant" and not args.dry_run:
-        if not wait_for_dns(f"{slug}.odile.fyi"):
-            raise SystemExit(f"error: {slug}.odile.fyi did not resolve within 15 minutes")
-        if not wait_for_acme(f"{slug}.odile.fyi"):
-            raise SystemExit(f"error: no valid certificate for {slug}.odile.fyi within 15 minutes")
-        fingerprint = certificate_fingerprint(layout, f"{slug}.odile.fyi")
+        site = site_name(layout, slug)
+        if not wait_for_dns(site):
+            raise SystemExit(f"error: {site} did not resolve within 15 minutes")
+        if not wait_for_acme(site):
+            raise SystemExit(f"error: no valid certificate for {site} within 15 minutes")
+        fingerprint = certificate_fingerprint(layout, site)
         print(f"certificate  {fingerprint or '(not found in Caddy store)'}")
 
     smoke_ok = run_smoke(layout, username, password, args.dry_run, args.force_smoke,

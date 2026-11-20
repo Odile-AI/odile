@@ -41,7 +41,7 @@ Open the Set your sign-in link in your ready email. The same URL is printed
 at the top of this file. The link expires {{token_expiry_prose}}.
 Set the password that opens your workspace: at least 16 characters. Your
 Odile sign-in is set on your machine at first visit and hashed there. We
-never see it. It is the only app-layer gate: no 2FA in V0.1.
+never see it. It is the only app-layer gate: no 2FA in alpha.0.
 
 The link carries a single-use setup token. If the link has expired or was
 already opened, write to help@odile.fyi for a new one.
@@ -59,7 +59,12 @@ The recovery code resets your sign-in. Open
 {{url}}/first-visit/reset
 and enter the code you saved from the first visit. The code is shown once,
 on the first visit. After a reset the old code stops working, and a new one
-is shown.
+is shown. The same code fetches your recovery file at
+{{url}}/first-visit/recovery; using it there rotates it too.
+
+Your account password is not reset on the machine. It resets at your account
+site — the site in your invitation email. Open that site and add /forgot. That
+reset works while the machine is down; the recovery code needs the machine up.
 
 The recovery file opens your backup. Download your copy on the first visit
 and keep it off the machine: it is your only copy of the backup password. It
@@ -73,6 +78,10 @@ Write to help@odile.fyi and ask for a rebuild. Your slug is yours for the
 life of the tenant, so the URL and the recovery file's name stay the same.
 Ask the agent on the new machine to restore the backup with your recovery
 file.
+
+A restore keeps the rebuilt machine's own /etc/odile: the recovery code you
+were shown after the rebuild is the one that works, not the one in the
+backup.
 
 The encrypted backup is kept 30 days after cancellation, then deleted. Odile
 can delete it, not read it.

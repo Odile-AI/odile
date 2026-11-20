@@ -90,6 +90,7 @@ done
 if [ "$DRY_RUN" = 1 ]; then
     say would "debootstrap $SUITE from $MIRROR into $MNT ($SIZE raw image $RAW)"
     say would "copy deploy/image/ into the root and run install-stack.sh (Hermes v0.23.0)"
+    say would "serial console: ttyS0 autologin tenant (bench drill shell)"
     say would "install GRUB (i386-pc) on $RAW and regenerate the initramfs"
     say would "write $QCOW with qemu-img convert"
     say would "record kernel, initramfs and command line under $BOOT"
@@ -191,6 +192,8 @@ for f in install-stack.sh bench-heartbeat.sh bench.py smoke.sh odile-webapp-bran
 done
 for f in config.yaml tenant.service odile-bench-smoke.service \
          odile-bench-proxy.service odile-bench-proxy.socket \
+         odile-bench-proxy-firstvisit.service odile-bench-proxy-firstvisit.socket \
+         odile-bench-proxy-verify.service odile-bench-proxy-verify.socket \
          odile-bench-proxy-manifest.service odile-bench-proxy-manifest.socket \
          odile-webapp-brand.service odile-webapp-brand.path \
          odile-webapp-brand.conf webapp-brand.js \
@@ -247,6 +250,12 @@ virtio_net
 ext4
 EOF
 
+# The bench drill shell. This builder makes the bench image only, so `tenant`
+# logs in on ttyS0 with no password: that shell is what the drill and the
+# guest smoke use (docs/runbooks/image.md §5.1). A production image comes from
+# sealed-image.sh --production, which installs no autologin — the Servury
+# panel's interactive console is the same port, so an autologin there would
+# hand a panel holder a root-capable shell with no user credential (ODL-914).
 install -d "$MNT/etc/systemd/system/serial-getty@ttyS0.service.d"
 cat > "$MNT/etc/systemd/system/serial-getty@ttyS0.service.d/autologin.conf" <<'EOF'
 [Service]

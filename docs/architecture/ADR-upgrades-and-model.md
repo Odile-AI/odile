@@ -258,9 +258,11 @@ for them. That is gap 1, it is already stated, and this ADR does not narrow it.
    prompt passes through an Odile service". An option that fails its own
    milestone's criterion is not an option.
 3. **It re-creates what ODL-205 retired.** The meter was removed for one NEAR key
-   per user, deployed at install and spent directly. A proxy holds the account
-   key and meters per request — the central key, the per-request ledger and the
-   cap setting all come back.
+   per user, deployed at install and spent directly; the allowance's cap is the
+   provider's per-key `spendLimit`, set at mint (ODL-567 §7: a minted key refuses
+   at its limit with `402 api_key_limit_exceeded`, and the check is post-charge).
+   A proxy holds the account key and meters per request — the central key, the
+   per-request ledger and a proxy-side cap knob all come back.
 4. **It moves the attestation story.** Today the guest calls the enclave and the
    model attestation binds to that endpoint. Through a proxy, the attested call
    is the proxy's, and the user's evidence no longer covers the hop that holds

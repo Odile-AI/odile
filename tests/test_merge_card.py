@@ -33,6 +33,7 @@ from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 TOOL_MISSING = "merge_card.py is HQ-only machinery and is not in this tree"
+REAL_GIT = shutil.which("git") or "/usr/bin/git"
 
 
 def clean_env(extra: dict[str, str] | None = None) -> dict[str, str]:
@@ -87,6 +88,7 @@ class Fixture:
         self.repo = self.tmp / "repo"
         self.bin_dir = self.tmp / "bin"
         self.record = self.tmp / "gate-env.txt"
+        self.shim: Path | None = None
         self.bin_dir.mkdir()
         self.probe = self.tmp / "signal_probe.py"
         self.probe.write_text(
@@ -134,15 +136,51 @@ class Fixture:
         tool.write_text("#!/bin/sh\n" + body, encoding="utf-8")
         tool.chmod(0o755)
 
-    def run_tool(self, *, make: str, env: dict[str, str] | None = None) -> tuple[subprocess.CompletedProcess[str], float]:
-        self.write_make(make)
-        run_env = clean_env(env)
-        run_env["PATH"] = f"{self.bin_dir}{os.pathsep}{run_env.get('PATH', '')}"
+    def block_reset(self) -> None:
+        """Put a `git` on PATH that refuses `reset`, the way a bare repository does.
+
+        `git reset --hard` fails with "this operation must be run in a work tree"
+        once `core.bare` is true; here the command is refused outright so the
+        failure cannot be repaired away, which is what makes the claim testable.
+        Everything else goes to the real git.
+        """
+        shim = self.tmp / "shim"
+        shim.mkdir(exist_ok=True)
+        wrapper = shim / "git"
+        wrapper.write_text(
+            "#!/bin/sh\n"
+            'for arg in "$@"; do\n'
+            '  if [ "$arg" = reset ]; then\n'
+            "    echo 'fatal: this operation must be run in a work tree' >&2\n"
+            "    exit 128\n"
+            "  fi\n"
+            "done\n"
+            f'exec "{REAL_GIT}" "$@"\n',
+            encoding="utf-8",
+        )
+        wrapper.chmod(0o755)
+        self.shim = shim
+
+    def tool_env(self, *, shim: bool = False, extra: dict[str, str] | None = None) -> dict[str, str]:
+        run_env = clean_env(extra)
+        paths = [str(self.bin_dir)]
+        if shim:
+            paths.insert(0, str(self.shim))
+        run_env["PATH"] = os.pathsep.join(paths + [run_env.get("PATH", "")])
         run_env["MERGE_TEST_RECORD"] = str(self.record)
+        return run_env
+
+    def tool_command(self) -> list[str]:
+        return [sys.executable, str(TOOL), "--repo", str(self.repo),
+                "--branch", self.BRANCH, "--allow-any"]
+
+    def run_tool(self, *, make: str, env: dict[str, str] | None = None,
+                 shim: bool = False) -> tuple[subprocess.CompletedProcess[str], float]:
+        self.write_make(make)
+        run_env = self.tool_env(shim=shim, extra=env)
         started = time.monotonic()
         proc = subprocess.run(
-            [sys.executable, str(TOOL), "--repo", str(self.repo),
-             "--branch", self.BRANCH, "--allow-any"],
+            self.tool_command(),
             cwd=str(self.tmp),
             env=run_env,
             capture_output=True,
@@ -150,6 +188,29 @@ class Fixture:
             timeout=120,
         )
         return proc, time.monotonic() - started
+
+    def start_tool(self, *, make: str, env: dict[str, str] | None = None) -> subprocess.Popen[str]:
+        """Run the tool without waiting, so a caller can signal it mid-gate."""
+        self.write_make(make)
+        return subprocess.Popen(
+            self.tool_command(),
+            cwd=str(self.tmp),
+            env=self.tool_env(extra=env),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+        )
+
+    def wait_for(self, path: Path, timeout: float = 20) -> None:
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if path.exists():
+                return
+            time.sleep(0.05)
+        raise AssertionError(f"{path} never appeared; the stand-in gate did not start")
+
+    def head_commit(self) -> str:
+        return self.git("rev-parse", "HEAD").stdout.strip()
 
     def parents_of_main(self) -> list[str]:
         return self.git("rev-list", "--parents", "-n", "1", "main").stdout.split()
@@ -267,6 +328,118 @@ class GateSemanticsTests(unittest.TestCase):
                          "main was left at a merge whose gate ran and failed")
         self.assertIn(f"main reset to {self.fixture.before[:12]}", proc.stdout)
         self.assertIn("make check failed", proc.stdout)
+
+
+@unittest.skipUnless(TOOL, TOOL_MISSING)
+class RollbackTests(unittest.TestCase):
+    """A gate failure rolls `main` back, verifiably — or says it did not.
+
+    Three measured ways the old `git reset --hard before` (line ~140, and the
+    publish path below it, both `check=False`) told the caller what had not
+    happened:
+
+    - t_ce763ea9, 2026-11-15: a fixture inside the gate left `core.bare=true`;
+      the reset failed, main stayed at the merge commit, and the log still said
+      "main reset to 91aa597893e0" with no reflog entry.
+    - t_69832025, 2026-11-15: another session checked out a new branch from
+      main mid-gate, so the reset moved *that* branch and left main at the
+      merge.
+    - the publish path carried the same blind reset and the same claim.
+
+    The tool now names `refs/heads/main` (not HEAD), repairs the bare flag,
+    verifies what it moved, and prints the reset's stderr instead of a claim.
+    """
+
+    def setUp(self) -> None:
+        self.fixture = Fixture()
+
+    def tearDown(self) -> None:
+        self.fixture.cleanup()
+
+    def test_a_blocked_reset_still_rolls_main_back_and_does_not_claim_a_reset(self) -> None:
+        """The DoD case: `git reset` fails; main must still be `before`, loudly."""
+        self.fixture.block_reset()
+        proc, _ = self.fixture.run_tool(make='echo "1 test failed"; exit 1\n', shim=True)
+
+        self.assertIn(proc.returncode, (1, 6), proc.stdout + proc.stderr)
+        self.assertEqual(self.fixture.head(), self.fixture.before,
+                         "main was left at the merge although the tool reported a rollback")
+        self.assertEqual(self.fixture.head_commit(), self.fixture.before,
+                         "HEAD is not the pre-merge commit after the rollback")
+        self.assertNotIn(f"main reset to {self.fixture.before[:12]}", proc.stdout,
+                         "the tool claimed a reset that the shim refused")
+        self.assertIn(f"main moved back to {self.fixture.before[:12]}", proc.stdout)
+        self.assertIn("must be run in a work tree", proc.stdout,
+                      "the reset's own error is not printed")
+        self.assertIn("merge_card: main returned to", self.fixture.git("reflog", "show", "main").stdout,
+                      "the rollback left no reflog entry a reviewer can see")
+
+    def test_a_bare_flag_left_by_the_gate_is_repaired_before_the_reset(self) -> None:
+        """The observed t_ce763ea9 shape: `core.bare=true` mid-gate, gate red."""
+        proc, _ = self.fixture.run_tool(
+            make='git config core.bare true\necho "1 test failed"; exit 1\n',
+        )
+
+        self.assertEqual(proc.returncode, 1, proc.stdout + proc.stderr)
+        self.assertEqual(self.fixture.head(), self.fixture.before,
+                         "main stayed at the merge because core.bare was left true")
+        self.assertEqual(self.fixture.head_commit(), self.fixture.before)
+        self.assertIn("core.bare was true", proc.stdout)
+        self.assertIn(f"main reset to {self.fixture.before[:12]}", proc.stdout)
+        self.assertEqual(self.fixture.git("config", "--bool", "core.bare").stdout.strip(), "false",
+                         "the bare flag a fixture inside the gate set was left behind")
+
+    def test_a_branch_checked_out_mid_gate_keeps_its_head(self) -> None:
+        """The t_69832025 shape: another session checks out a branch from main mid-gate."""
+        proc, _ = self.fixture.run_tool(
+            make='git checkout -q -b probe/other main\necho "1 test failed"; exit 1\n',
+        )
+
+        self.assertEqual(proc.returncode, 1, proc.stdout + proc.stderr)
+        self.assertEqual(self.fixture.head(), self.fixture.before,
+                         "main was not rolled back")
+        other = self.fixture.git("rev-list", "--parents", "-n", "1", "probe/other").stdout.split()
+        self.assertEqual(len(other), 3,
+                         "the branch another session checked out was moved by the rollback")
+        self.assertEqual(self.fixture.head_commit(), other[0],
+                         "the checked-out branch no longer holds its own head")
+        self.assertIn("HEAD is on refs/heads/probe/other", proc.stdout)
+
+
+@unittest.skipUnless(TOOL, TOOL_MISSING)
+class InterruptedGateTests(unittest.TestCase):
+    """A signal that stops the gate mid-run must not leave the merge on main.
+
+    Measured by the verifier (t_6f345d59, 2026-11-15 11:22Z): the caller's
+    process was cut by the host's foreground cap after `git merge` and before
+    the gate printed, so an ungated red merge stayed on main with nobody told.
+    """
+
+    def setUp(self) -> None:
+        self.fixture = Fixture()
+
+    def tearDown(self) -> None:
+        self.fixture.cleanup()
+
+    def test_a_sigterm_during_the_gate_rolls_main_back(self) -> None:
+        marker = self.fixture.tmp / "gate-started"
+        proc = self.fixture.start_tool(make=f'touch "{marker}"\nsleep 30\nexit 0\n')
+        try:
+            self.fixture.wait_for(marker)
+            time.sleep(0.2)  # the tool installs its handler right after spawning the gate
+            proc.send_signal(signal.SIGTERM)
+            out, _ = proc.communicate(timeout=60)
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+                proc.communicate()
+
+        self.assertEqual(proc.returncode, 128 + signal.SIGTERM, out)
+        self.assertEqual(self.fixture.head(), self.fixture.before,
+                         "SIGTERM left the ungated merge on main")
+        self.assertEqual(self.fixture.head_commit(), self.fixture.before)
+        self.assertIn("SIGTERM stopped the gate", out)
+        self.assertIn(f"main reset to {self.fixture.before[:12]}", out)
 
 
 @unittest.skipUnless(TOOL, TOOL_MISSING)

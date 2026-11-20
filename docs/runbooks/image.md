@@ -508,6 +508,34 @@ provision time:
    requires exactly one `bb.ip4=` (it writes the address into
    `/etc/odile/boot-record.json`), and a line without it installs the seed
    and then exits 5 with no Caddy — measured on ODL-332 round 4.
+   The first-boot tokens ride the same line: `odile.token=` (the setup
+   token), `odile.seed_url=` (the seed endpoint, whose **host names the
+   environment** — the boot record posts there and the installer's heartbeat
+   receiver and default site name derive from it), and `odile.public_url=`
+   (the name this tenant serves, when it is not `<bb.host>.<seed host>`; a
+   moved name, or an environment whose tenant names are not shaped that way).
+   `odile.public_url=` is what a bench tenant needs instead of a systemd
+   drop-in, a second Caddy block and a `public_url` patch: the release setup
+   passes it to the installer as `--public-url`, and the installer serves that
+   one name for Caddy, the DNS and ACME waits and the certificate the recovery
+   file pins (ODL-340 follow-up, §12.4 of `install.md`).
+   Measured on the bench, 2026-11-19: a `--production` disk built from the
+   `release/` of the `2026.11.19-3` cut (installer `00a84542…`, manifest
+   `49850448…`; the tree now cuts `2026.11.19-4`, §12.6 of `install.md`) with
+   the line above was written over the disposable tenant
+   by the panel and booted. The installer logged `site
+   odl-340a1e.test.odile.fyi (heartbeat https://test.odile.fyi/heartbeat)`, and
+   the Caddy site, the DNS wait, the ACME wait (its own Let's Encrypt
+   certificate, `sha256:70fff718…`) and `certificate_fingerprint` all used that
+   one name; the setup ended `=== rc=0` with `installer_sha256 00a84542…`.
+   `odile-firstboot` posted the boot record to the bench and the bench's spine
+   answered `first_boot -> first_visit` (`record_source=first_boot`,
+   13:20:10Z). The disk carried no `test-site.caddy`, no
+   `odile-test-site.service`, no `odile-release-setup.service.d/` and no
+   Caddyfile, and its tenant `config.yaml` still named the build's
+   `http://tenant.odile.test:9130`; `check_bench.sh` passed all 16 checks
+   against the new measurement `674cc40d…`. Evidence:
+   `docs/evidence/a1-bench-followup.md` §9–§10.
    `sealed-image.sh --cmdline-file` now refuses such a line before the build.
    The disk is sealed to those exact bytes; on the
    bench the same file is replayed with
@@ -546,7 +574,31 @@ provision time:
    the user's way back is the recovery code and the backup password, with
    rebuild + restore for a seal break. Root inside the guest can derive the
    key (the ioctl is guest-available); the seal protects against the host and
-   an offline disk, which is the V0.1 threat model.
+   an offline disk, which is the alpha.0 threat model.
+7. **The console log, off once the transcript is saved.** Reading the boot is
+   what turning the log on is for, and the panel is explicit about what the
+   switch costs: *the hypervisor keeps a transcript of everything this machine
+   prints to its serial console … It is a plaintext file on the host: switch it
+   off when you are done debugging and the file is emptied.*
+   `tools/servury_cycle.py` (and `make uki-cycle` through it) arms the log,
+   captures one boot, and turns the log off again on every exit path once the
+   transcript is written — including a `--wait-for` timeout; `--keep-console`
+   is the only way to leave it on. The switch lands a moment after the POST, and
+   a guest that is still booting flushes its last lines into the file seconds
+   later — measured twice in a row on the bench on 2026-11-19: the same 55-byte
+   getty banner arrived 3–8 s after the off, *after* an immediate read-back had
+   seen nothing. So the disarm does not take one read as proof: it watches the
+   host's copy for up to 15 s, switches the log off again whenever a tail
+   arrives, and prints "emptied" only after a read that succeeded and returned
+   nothing — otherwise it says how many bytes are still there, without changing
+   the cycle's exit code. Measured 2026-11-19: the cycle had armed the
+   log and never disarmed it, and the tenant box carried **209 KB** of its own
+   boot (kernel and systemd lines, hostname, instance id, file sha256s and an
+   8-hex prefix of the first-visit token) until a human switched it off. After a
+   cycle, `./tools/servury_panel.py --console --server <id> --action read`
+   prints nothing and the console page reads **Console log · Off**. The
+   measurement and the transcript are in
+   `docs/ops/evidence/console-log-2026-11-19.md`.
 
 ## 10. What the bench proves, and what only a Blackbox can prove
 

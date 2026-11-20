@@ -134,7 +134,7 @@ h1,h2,h3,.brand,.mark,.wordmark,.focus{font-family:var(--serif)}
     <pre><code><span class="prompt" aria-hidden="true">$</span> curl -sSLO https://odile.fyi/odile-verify.tar.gz
 <span class="prompt" aria-hidden="true">$</span> tar xzf odile-verify.tar.gz
 <span class="prompt" aria-hidden="true">$</span> cd odile-verify &amp;&amp; ./odile-verify https://odile.fyi</code></pre>
-    <p class="note">The verifier needs Python 3 and the <code>openssl</code> binary. It fetches one URL: <a href="/attestation">/attestation</a>.</p>
+    <p class="note">The verifier needs Python 3 and the <code>openssl</code> binary. It fetches two URLs: <a href="/attestation">/attestation</a>, and that report's own VCEK from AMD's KDS.</p>
     <table class="checks" aria-labelledby="check">
       <thead><tr><th scope="col">Check</th><th scope="col">Where it is checked</th></tr></thead>
       <tbody>

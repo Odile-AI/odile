@@ -1,26 +1,16 @@
 # Odile
 
-A full agent, privately.
+Full agent with full privacy.
 
-Odile is an AI agent that gets things done with privacy. Every Odile agent runs on its own AMD SEV-SNP confidential virtual machine, with memory encrypted by the CPU and [NEAR AI](https://near.ai/) inference inside a hardware enclave.
+Odile is a privacy-friendly AI agent that gets things done for you. Every Odile agent runs on its own AMD SEV-SNP confidential virtual machine with encrypted memory and [NEAR AI](https://near.ai/) confidential model inference within hardware enclaves, enabling full confidentiality throughout agentic workflows.
 
 ## Demo
 
 Live demo: https://demo.odile.fyi/login
 
-The machine's own report is at <https://demo.odile.fyi/verify>. It prints the one-line verifier command with the measurement it serves; a tenant run needs `--expect`.
+The live demo is a shared Odile instance showcasing how could Odile looks and works. Odile the project is in active development, stay tuned for its first release.
 
-| Field | Value |
-|---|---|
-| Username | `judge` |
-| Password | `odile-demo-kestrel-2026` |
-
-The password is public by design: one shared workspace on Odile's own tenant machine.
-
-## How NEAR fits in
-
-Inference runs on NEAR AI's confidential cloud, inside a hardware enclave.
-In this demo your prompts go from the browser to Odile's tenant machine and then to the NEAR AI enclave.
+The demo instance's hardware attestation report is available at https://demo.odile.fyi/verify. It prints the one-line verifier command with the measurement it serves.
 
 ## Core components
 

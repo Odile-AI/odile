@@ -17,6 +17,13 @@ drives it; a human can too:
     ./deploy/demo-host/tenant_console.py --user judge --password-file PATH \\
         --run 'id -un; sudo -n true'
 
+Hermes keeps a row per session, and the console's `shell.exec` runs in one, so
+the CLI deletes the session it opened before it returns — a leaked row is an
+untitled, empty session in the judge's sidebar. The delete is Hermes's fenced
+`DELETE /api/sessions/<id>` (the revision and generation the API lists, then a
+`GET` that must answer 404). `--keep-session` leaves the row for a probe that
+wants to look at it.
+
 Standard library only: the socket is a WebSocket the way RFC 6455 describes
 one, and the frames are the same JSON-RPC frames the Webapp sends.
 """
@@ -28,11 +35,13 @@ import base64
 import http.cookiejar
 import json
 import os
+import secrets
 import socket
 import ssl
 import struct
 import sys
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 
@@ -63,6 +72,7 @@ class Console:
         self.buffer = b""
         self.rid = 0
         self.session_id = ""
+        self.cookie = ""
         self.ready: dict = {}
 
     # -- framing ---------------------------------------------------------
@@ -122,7 +132,10 @@ class Console:
         pairs = [f"{cookie.name}={cookie.value}" for cookie in cookies]
         if not pairs:
             raise ConsoleError(f"sign-in as {username!r} set no cookie: {reply[:120]}")
-        return "; ".join(pairs)
+        #: Kept: deleting the console's own session is an HTTP call, so the
+        #: cleanup needs the cookie after the run has finished (or failed).
+        self.cookie = "; ".join(pairs)
+        return self.cookie
 
     def ticket(self, cookie: str) -> str:
         request = urllib.request.Request(
@@ -270,6 +283,100 @@ def connect_any(username: str, password: str,
     raise ConsoleError(f"no console answered as {username!r} on {', '.join(tried)}: {last}")
 
 
+def fetch(url: str, *, method: str = "GET",
+          cookie: str = "") -> tuple[int, str]:
+    """One dashboard request; returns (status, body). Never raises for a status.
+
+    The cleanup runs in a `finally`, so a dead socket or a refused connection
+    comes back as code 0 with the reason as the body: the delete retries it and
+    the CLI reports the survivor instead of masking the run's own error.
+    """
+    request = urllib.request.Request(url, data=(b"" if method != "GET" else None),
+                                     method=method)
+    if cookie:
+        request.add_header("Cookie", cookie)
+    try:
+        with urllib.request.urlopen(request, timeout=30) as response:
+            return response.status, response.read().decode("utf-8", "replace")
+    except urllib.error.HTTPError as exc:
+        return exc.code, exc.read().decode("utf-8", "replace")
+    except (urllib.error.URLError, OSError) as exc:
+        return 0, str(exc)
+
+
+def session_row(console: "Console", session_id: str) -> tuple[int, dict]:
+    """The API's own row for one session: its revision and generation.
+
+    `/api/sessions` is a 20-row window, so the row is read by id; Hermes's
+    fenced delete needs the pair this row carries, and a row that is already
+    gone answers 404.
+    """
+    code, body = fetch(console.base + "/api/sessions/" + session_id,
+                       cookie=console.cookie)
+    if code != 200:
+        return code, {}
+    try:
+        row = json.loads(body)
+    except ValueError:
+        return code, {}
+    return code, row if isinstance(row, dict) else {}
+
+
+def delete_session(console: "Console", session_id: str, *,
+                   attempts: int = 4) -> tuple[bool, int, str]:
+    """Delete one session with Hermes's fence, and prove it is gone.
+
+    A bare `DELETE` answers 409 `client_upgrade_required`; the SPA sends
+    `request_id` plus the row's own revision and generation, which is what the
+    API lists. A storage hiccup answers 503 (measured 2026-11-14), so the
+    delete is retried — and a 200 is not the proof: the row's own `GET` must
+    answer 404, or the row is still in the judge's sidebar.
+    """
+    code, text = 0, ""
+    for attempt in range(attempts):
+        code, row = session_row(console, session_id)
+        if code == 404:
+            return True, 404, "already gone"
+        if code == 200 and row:
+            query = (f"?request_id={secrets.token_hex(16)}"
+                     f"&expected_revision={row.get('runtime_revision')}"
+                     f"&expected_generation={row.get('runtime_generation')}")
+            code, text = fetch(console.base + "/api/sessions/" + session_id + query,
+                               method="DELETE", cookie=console.cookie)
+            try:
+                deleted = json.loads(text).get("ok") is True
+            except ValueError:
+                deleted = False
+            if code == 200 and deleted:
+                code, _ = session_row(console, session_id)
+                if code == 404:
+                    return True, 200, text
+            text = f"DELETE -> {code} {text[:200]}"
+        if attempt + 1 < attempts:
+            time.sleep(2)
+    return False, code, text
+
+
+def close_session(console: "Console", session_id: str, *,
+                  keep: bool = False) -> tuple[bool, int, str]:
+    """Delete the session this CLI opened; say what happened, either way.
+
+    Called from `main`'s `finally`, so it runs on the success and the error
+    path both. A survivor is printed on stderr and turns the CLI's exit status
+    into 3: a leaked row is the defect this lifecycle exists to prevent, so it
+    must be visible to a script and not only in the judge's sidebar.
+    """
+    if keep or not session_id:
+        print(f"session kept: {session_id}")
+        return True, 0, "kept"
+    ok, code, text = delete_session(console, session_id)
+    if ok:
+        print(f"session deleted: {session_id}")
+    else:
+        print(f"session cleanup: {session_id} survived ({text or code})", file=sys.stderr)
+    return ok, code, text
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Run one command on the tenant over its Webapp.")
     parser.add_argument("--base", default=DEFAULT_BASE)
@@ -278,27 +385,36 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--run", action="append", default=[], help="a command to run")
     parser.add_argument("--put", action="append", default=[], metavar="LOCAL:REMOTE")
     parser.add_argument("--get", default="", metavar="REMOTE")
+    parser.add_argument("--keep-session", action="store_true",
+                        help="leave the console's own session on the tenant (a probe wants it)")
     args = parser.parse_args(argv)
 
-    password = open(args.password_file, encoding="utf-8").read().strip()
+    with open(args.password_file, encoding="utf-8") as handle:
+        password = handle.read().strip()
     console = Console(args.base)
     console.connect(args.user, password)
     ready = (console.ready.get("params") or {}).get("type", "?")
-    print(f"ready: {ready}  session: {console.open_session()}")
-    for pair in args.put:
-        local, _, remote = pair.partition(":")
-        console.put(local, remote)
-        print(f"put  {local} -> {remote}")
-    for command in args.run:
-        result = console.shell(command)
-        print(f"$ {command}\n[code {result.get('code')}]")
-        if result.get("stdout"):
-            print(result["stdout"].rstrip("\n"))
-        if result.get("stderr"):
-            print("stderr:", result["stderr"].rstrip("\n"))
-    if args.get:
-        sys.stdout.buffer.write(console.read(args.get))
-    return 0
+    session_id = console.open_session()
+    print(f"ready: {ready}  session: {session_id}")
+    cleaned: tuple[bool, int, str] = (True, 0, "kept")
+    try:
+        for pair in args.put:
+            local, _, remote = pair.partition(":")
+            console.put(local, remote)
+            print(f"put  {local} -> {remote}")
+        for command in args.run:
+            result = console.shell(command)
+            print(f"$ {command}\n[code {result.get('code')}]")
+            if result.get("stdout"):
+                print(result["stdout"].rstrip("\n"))
+            if result.get("stderr"):
+                print("stderr:", result["stderr"].rstrip("\n"))
+        if args.get:
+            sys.stdout.buffer.write(console.read(args.get))
+            sys.stdout.buffer.flush()
+    finally:
+        cleaned = close_session(console, session_id, keep=args.keep_session)
+    return 0 if cleaned[0] else 3
 
 
 if __name__ == "__main__":

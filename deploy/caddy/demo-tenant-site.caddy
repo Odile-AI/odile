@@ -1,7 +1,8 @@
 # BEGIN odile-demo-public
 # demo.odile.fyi — the hosted demo, served by Odile's own tenant machine
-# (odl-fake01, 203.0.113.87): the `tenant` gateway on 127.0.0.1:9130 and the
-# first-visit service on 127.0.0.1:8091. Card: ODL-503.
+# (odl-7971a8, 203.0.113.87): the `tenant` gateway on 127.0.0.1:9130, the
+# first-visit service on 127.0.0.1:8091 and the machine's own /verify page on
+# 127.0.0.1:8098. Card: ODL-503.
 #
 # Committed source of truth for the live block in the tenant's
 # /etc/caddy/Caddyfile. Apply and verify it with
@@ -13,8 +14,8 @@
 # posts to Hermes's own /auth/password-login; the sign-in gate, its cookie and
 # the judge account stay Hermes's. Every other path is the Webapp.
 #
-# `/verify` and `/attestation` are this machine's own report: the first-visit
-# service renders the access report the machine wrote, and the attestation is
+# `/verify` and `/attestation` are this machine's own evidence: the
+# odile-verify service renders the machine's records, and the attestation is
 # the CPU's own JSON. A judge sent to https://demo.odile.fyi/verify reads the
 # report of the machine that answered, not Odile's HQ page.
 #
@@ -45,11 +46,13 @@ demo.odile.fyi {
 		file_server
 	}
 
-	# The machine's own access report (ODL-473), rendered by the tenant's
-	# first-visit service. Exact path: nothing else reaches the service here.
+	# The machine's own page (t_4fcd465f), rendered by odile-verify.service
+	# from the boot report, the audit and the grant state. Exact path: nothing
+	# else reaches the service here. (It was the first-visit service's page
+	# under ODL-473; the page and its program moved to 8098.)
 	handle /verify {
 		header Cache-Control "no-store"
-		reverse_proxy 127.0.0.1:8091
+		reverse_proxy 127.0.0.1:8098
 	}
 
 	# The CPU's own report, the file /verify reads. Public by design; one file,

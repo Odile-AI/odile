@@ -145,7 +145,7 @@ email. The certificate fingerprint is in your recovery file (A9), not on
 
 ```sh
 curl -fsSLO https://odile.fyi/odile-verify.tar.gz
-echo 'd200329260d66ce4ec545b8d34e05b262c06111ee506449c6c44958937250b53  odile-verify.tar.gz' | sha256sum -c -
+echo '815dbc26c8a584d0271620445009d8242466223d0ad8d6ff71ed21fd95208d4c  odile-verify.tar.gz' | sha256sum -c -
 tar xzf odile-verify.tar.gz
 cd odile-verify && ./odile-verify --expect <measurement from your ready email> https://<slug>.odile.fyi
 ```
@@ -525,10 +525,11 @@ quote them.
   fresh scratch root the merged installer made (24/24, run 2 `tenant: same`);
   `docs/runbooks/install.md` §12.6 carries the full record.
 
-Still held, and named in `docs/CLAIMS.md` §1a: the 30-day retention row (its
-page is `web/privacy.html`, outside this card's `touches`) and "Backups are
-off-site" (its page is `web/faq.html`, outside the five passages this card's
-DoD names) — card `t_5f10dd14`.
+Still held, and named in `docs/CLAIMS.md` §1a: "Backups are off-site" — its
+page is `web/faq.html`, and ADR-004 §1 measures the bytes on HQ's disk, the
+same provider and the same city as the machine, until the R2 migration card
+(§8) and its drill land — card `t_66fcaa02`. The 30-day retention row landed on
+`web/privacy.html` and in `web/faq.html` with `t_5f10dd14` on 19 November 2026.
 
 Two measured details bound the A10 answer; neither rewords it. The post-revoke
 check names `crontab -l`, and Debian 13 on the tenant image has no `cron`

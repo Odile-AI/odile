@@ -1,0 +1,10 @@
+queue rows: 3
+  GQ-001: status='staged — not sent' send_condition=yes kill_line=yes
+  GQ-002: status='staged — not sent' send_condition=yes kill_line=yes
+  GQ-003: status='staged — not sent' send_condition=yes kill_line=yes
+message bodies: 3
+  GQ-001: 129 words, 6 placeholders: [Name], [the consequence, in their words], [the task], [two times], [what they said]
+  GQ-002: 95 words, 4 placeholders: [Name], [post], [the ceiling], [time]
+  GQ-003: 88 words, 5 placeholders: [Mutual], [Name]
+total placeholders in message bodies: 15
+OK: three rows, all staged — not sent; three bodies; 15 placeholders

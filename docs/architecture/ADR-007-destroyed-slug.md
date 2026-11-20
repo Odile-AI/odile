@@ -2,12 +2,12 @@
 
 **Status:** Accepted · 15 November 2026 · Architect · card `t_ce52bb8d` (ODL-218
 follow-up). Number 007 is the merge-time assignment: `main` holds `ADR-004` (the
-Backblaze B2 backup), `ADR-005` (upgrade inventory) and `ADR-006` (the account
-password), so this decision — drafted while `main` still ended at 003 — was
-renumbered before merge. Implemented on this branch: `odilectl/state.py`,
-`odilectl/provision.py`, `tests/test_state.py`, `tests/test_odilectl.py`,
-`docs/runbooks/backup.md` §9, `docs/runbooks/offboard.md` §5 and
-`docs/runbooks/provision.md` §9.
+tenant backup: Cloudflare R2 interim, Backblaze B2 target), `ADR-005` (upgrade
+inventory) and `ADR-006` (the account password), so this decision — drafted
+while `main` still ended at 003 — was renumbered before merge. Implemented on
+this branch: `odilectl/state.py`, `odilectl/provision.py`,
+`tests/test_state.py`, `tests/test_odilectl.py`, `docs/runbooks/backup.md` §9,
+`docs/runbooks/offboard.md` §5 and `docs/runbooks/provision.md` §9.
 **Answers:** ODL-218 follow-up — "which way does a tenant come back after a
 destroy, and what happens to its URL?"
 **Short answer:** an edge back. `destroyed -> claimed` is in `TRANSITIONS`, and

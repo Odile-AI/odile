@@ -4,7 +4,8 @@ ODL-214. `scripts/manifest.py` builds one JSON document that makes the app
 layer pinnable — the Hermes commit, the hash the installer required of the
 fetched `install.sh`, every installed Python and npm package version, the
 managed toolchain, the OS package versions, every skill hash, the installer's
-own sha256 and the handoff audit script — signs it with Odile's
+own sha256, the tenant backup program the nightly unit runs and the handoff
+audit script — signs it with Odile's
 Ed25519 key and serves it at `/manifest`.
 
 **This is an operator signature, not a hardware measurement.** Measured boot
@@ -25,7 +26,7 @@ checking it against the installed tree — is ODL-332's evidence.
 | File | Role |
 |---|---|
 | `scripts/manifest.py` | build, sign, verify, diff and serve; standard library plus the system `openssl` |
-| `tests/test_manifest.py` | 34 hermetic tests: two roots, the signature, a changed file, the install-script pin, the HTTP surface |
+| `tests/test_manifest.py` | 40 hermetic tests: two roots, the signature, a changed file, the install-script pin, the backup program's row, the HTTP surface |
 | `docs/runbooks/manifest.md` | this page |
 | `installer/odile-signing-key.pub` | the published public key; the recovery kit carries the same bytes |
 | `/root/.odile/installer-signing.pem` | the HQ private key, mode 0600, never in git |
@@ -44,6 +45,7 @@ what the installer put on the machine.
 |---|---|
 | `installer_sha256` | the installer file that made the machine (`/usr/local/bin/odile-install.sh` on a tenant; `--installer` names another copy) |
 | `audit_sha256` | the handoff audit script `/usr/local/bin/odile-audit` (ODL-208), the one the installer places and `/verify` quotes |
+| `backup_sha256` | the tenant backup program `/usr/local/lib/odile/backup.py`, the one the nightly `odile-backup` unit runs (ODL-215); a tenant build (`--root /`) without the file is refused, and any other root without it falls back to the installer's own `--manifest` pin — the bytes that installer writes |
 | `hermes.commit` | the Hermes checkout's `HEAD`, checked against the Webapp bundle's `pinnedCommit`; a mismatch is refused |
 | `hermes.install_script_sha256` | the sha256 the installer required of the fetched `install.sh` before running it (ODL-399); read from the installer's own `--manifest`, which refuses one that predates the pin |
 | `hermes.lockfiles` | sha256 of `package-lock.json` and `uv.lock` |
@@ -91,7 +93,11 @@ The scratch simulation, from the worktree:
 `--generated-at 2026-11-08T14:00:00Z` fixes the timestamp for a reproducible
 diff. `--packages-json` supplies a fixed version map instead of probing. A
 missing installer, Hermes checkout, Webapp bundle, venv, lockfile or
-skill is an error that names the path; nothing is silently omitted.
+skill is an error that names the path; nothing is silently omitted. A tenant
+build (`--root /`) without `/usr/local/lib/odile/backup.py` is refused for the
+same reason — the installer writes it, so its absence is a broken app layer —
+while any other root falls back to the installer's `backup_sha256` pin, the
+bytes that installer would write.
 
 ## 4. Two fresh installs (DoD line 1)
 
@@ -309,6 +315,7 @@ On the tenant, after the install:
 ```sh
 curl -sD- https://<slug>.odile.fyi/manifest | grep -i '^cache-control'
 sha256sum /usr/local/bin/odile-install.sh        # must equal manifest.installer_sha256
+sha256sum /usr/local/lib/odile/backup.py         # must equal manifest.backup_sha256
 git -C ~odile/.hermes/hermes-agent rev-parse HEAD # must equal manifest.hermes.commit
 ./scripts/manifest.py build --root / --user odile --out /tmp/tenant.json
 ```
@@ -317,7 +324,7 @@ The tenant build reads dpkg, so `packages.os` carries the guest's exact
 versions rather than HQ's probe; it refuses a package without an installed
 version. Compare the app-layer fields, not the whole document: `mode`,
 `packages.source` and the version strings are build provenance; the installer,
-commit, webapp, skill and package *sets* are the pinned layer.
+backup program, commit, webapp, skill and package *sets* are the pinned layer.
 
 ## 9. Re-signing (HQ only)
 

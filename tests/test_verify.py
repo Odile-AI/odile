@@ -1,10 +1,13 @@
 """Tests for odile-verify.
 
 The verifier's job is to fail closed. These tests run the real command against
-a saved report and the vendored AMD chain, with no network: a good report
-passes, a wrong pin fails, and a report that was changed after the CPU signed
-it fails the signature check. One loopback server proves the URL mode fetches
-exactly one path.
+a saved report and the synthetic chain the fixture names (a test-only trust
+root; the shipped pin keeps AMD's ARK), with no network: a good report passes, a
+wrong pin fails, and a report that was changed after the CPU signed it fails the
+signature check. One loopback server proves the URL mode fetches `/attestation`
+and nothing else when a local chain binds the report, and ignores a served
+`trust` block; a second, with a loopback KDS, proves the command the page prints
+fetches two URLs — the machine and the VCEK AMD publishes for its chip.
 
 The release tests use a document derived from the fixture — a JSON summary may
 grow a `release` and a `cmdline` without touching the signed bytes. They prove
@@ -22,6 +25,7 @@ import html
 import importlib.util
 import json
 import re
+import shutil
 import stat
 import struct
 import subprocess
@@ -39,14 +43,14 @@ ROOT = Path(__file__).resolve().parent.parent
 VERIFY = ROOT / "odile-verify"
 ACCESS = ROOT / "scripts" / "verify_and_unlock.sh"
 ATTEST = ROOT / "attest.py"
-FIXTURE = ROOT / "tests" / "fixtures" / "verify" / "report-2026-11-06.json"
+FIXTURE = ROOT / "tests" / "fixtures" / "verify" / "synthetic-report.json"
 # The same saved report with the two unsigned summary fields a v2 boot report
 # carries: the release it booted and the command line the CPU measured. The
 # signed bytes are identical (test_the_v2_fixture_only_adds_unsigned_fields).
-FIXTURE_V2 = ROOT / "tests" / "fixtures" / "verify" / "report-2026-11-06-v2.json"
-TENANT_FIXTURE = ROOT / "tests" / "fixtures" / "verify" / "tenant-2026-11-12.json"
-DEMO_FIXTURE = ROOT / "tests" / "fixtures" / "verify" / "demo-2026-11-13.json"
-TENANT_VCEK = ROOT / "tests" / "fixtures" / "verify" / "tenant-vcek.der"
+FIXTURE_V2 = ROOT / "tests" / "fixtures" / "verify" / "synthetic-report-v2.json"
+TENANT_FIXTURE = ROOT / "tests" / "fixtures" / "verify" / "synthetic-tenant.json"
+DEMO_FIXTURE = ROOT / "tests" / "fixtures" / "verify" / "synthetic-demo.json"
+TENANT_VCEK = ROOT / "tests" / "fixtures" / "verify" / "synthetic-vcek.der"
 RELEASE_2026_11_2 = ROOT / "tests" / "fixtures" / "verify" / "servury-RELEASE-2026.11.2.json"
 PIN = ROOT / "odile-verify.pin"
 FIXTURE_BYTES = FIXTURE.read_bytes()
@@ -60,6 +64,11 @@ TENANT_MEASUREMENT = TENANT_DOC["measurement"]
 TENANT_REPORT = base64.b64decode(TENANT_DOC["report_b64"])
 TENANT_CHIP = TENANT_REPORT[0x1A0:0x1E0].hex()
 TENANT_TCB = TENANT_REPORT[0x180:0x188]
+# The synthetic fixtures name their own test-only chain. A URL run must pass
+# it explicitly, because a served document may not choose its trust root.
+SYNTHETIC_TRUST = TENANT_DOC["trust"]
+SYNTHETIC_AMD_DIR = TENANT_FIXTURE.parent / SYNTHETIC_TRUST["amd_dir"]
+SYNTHETIC_ARK = SYNTHETIC_TRUST["ark_sha256"]
 
 # The /verify page (ODL-236): the program, its template and the machine's
 # reported sources. The release pair is the real signed manifest this tree
@@ -108,7 +117,8 @@ def tampered_document(offset: int | None = None, json_measurement: str | None = 
         data["report_b64"] = base64.b64encode(bytes(raw)).decode("ascii")
     if json_measurement is not None:
         data["measurement"] = json_measurement
-    handle = tempfile.NamedTemporaryFile("w", suffix=".json", delete=False, encoding="utf-8")
+    handle = tempfile.NamedTemporaryFile("w", suffix=".json", delete=False,
+                                         encoding="utf-8", dir=FIXTURE.parent)
     with handle:
         json.dump(data, handle)
     return handle.name
@@ -118,7 +128,8 @@ def document_with(**fields: object) -> str:
     """The fixture summary plus extra, unsigned fields (release, cmdline)."""
     data = json.loads(FIXTURE_BYTES)
     data.update(fields)
-    handle = tempfile.NamedTemporaryFile("w", suffix=".json", delete=False, encoding="utf-8")
+    handle = tempfile.NamedTemporaryFile("w", suffix=".json", delete=False,
+                                         encoding="utf-8", dir=FIXTURE.parent)
     with handle:
         json.dump(data, handle)
     return handle.name
@@ -188,13 +199,78 @@ class VerifyTests(unittest.TestCase):
         thread.start()
         try:
             url = "http://127.0.0.1:%d" % server.server_address[1]
-            result = run(url, "--expect", DEMO_DOC["measurement"])
+            # The served document carries a `trust` block; it must be ignored
+            # (explicit --amd-dir/--ark-sha256 below), so the only fetch is
+            # /attestation.
+            result = run(url, "--expect", DEMO_DOC["measurement"],
+                         "--amd-dir", str(SYNTHETIC_AMD_DIR),
+                         "--ark-sha256", SYNTHETIC_ARK)
         finally:
             server.shutdown()
             server.server_close()
             thread.join(timeout=5)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertEqual(seen, ["/attestation"])
+
+    def test_a_served_trust_block_is_not_honoured(self) -> None:
+        """A remote document must not choose the key it is verified against.
+
+        DEMO_BYTES carries a `trust` block naming the synthetic chain. In URL
+        mode the verifier ignores it; with --no-kds the missing vendored VCEK
+        fails closed instead of accepting the served root.
+        """
+        class Handler(BaseHTTPRequestHandler):
+            def do_GET(self) -> None:  # noqa: N802 - stdlib name
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(DEMO_BYTES)))
+                self.end_headers()
+                self.wfile.write(DEMO_BYTES)
+
+            def log_message(self, format: str, *args: object) -> None:
+                pass
+
+        server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            url = "http://127.0.0.1:%d" % server.server_address[1]
+            result = run(url, "--expect", DEMO_DOC["measurement"], "--no-kds")
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=5)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertRegex(result.stdout, r"vcek\s+FAIL")
+        self.assertNotRegex(result.stdout, r"trust\s+PASS")
+
+    def test_a_fixture_trust_block_cannot_escape_its_directory(self) -> None:
+        data = json.loads(FIXTURE_BYTES)
+        data["trust"] = dict(data["trust"], amd_dir="../../..")
+        handle = tempfile.NamedTemporaryFile("w", suffix=".json", delete=False,
+                                             encoding="utf-8", dir=FIXTURE.parent)
+        with handle:
+            json.dump(data, handle)
+        try:
+            result = run("--report", handle.name)
+        finally:
+            Path(handle.name).unlink()
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("unsafe amd_dir", result.stdout)
+
+    def test_a_fixture_naming_a_missing_chain_fails_closed(self) -> None:
+        data = json.loads(FIXTURE_BYTES)
+        data["trust"] = dict(data["trust"], amd_dir="no-such-chain")
+        handle = tempfile.NamedTemporaryFile("w", suffix=".json", delete=False,
+                                             encoding="utf-8", dir=FIXTURE.parent)
+        with handle:
+            json.dump(data, handle)
+        try:
+            result = run("--report", handle.name)
+        finally:
+            Path(handle.name).unlink()
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("trust chain is missing", result.stdout)
 
     def test_a_redirect_is_not_followed(self) -> None:
         seen: list[str] = []
@@ -238,7 +314,8 @@ class VerifyTests(unittest.TestCase):
         data = json.loads(FIXTURE_BYTES)
         data["report_b64"] = base64.b64encode(b"\x05" + b"\x00" * 31).decode("ascii")
         data["report_size"] = 32
-        handle = tempfile.NamedTemporaryFile("w", suffix=".json", delete=False, encoding="utf-8")
+        handle = tempfile.NamedTemporaryFile("w", suffix=".json", delete=False,
+                                             encoding="utf-8", dir=FIXTURE.parent)
         with handle:
             json.dump(data, handle)
         try:
@@ -481,7 +558,9 @@ class VerifyTests(unittest.TestCase):
         with handle:
             json.dump(pin, handle, ensure_ascii=False)
         try:
-            result = run(url, "--pin", handle.name)
+            result = run(url, "--pin", handle.name,
+                         "--amd-dir", str(SYNTHETIC_AMD_DIR),
+                         "--ark-sha256", SYNTHETIC_ARK)
         finally:
             server.shutdown()
             server.server_close()
@@ -1220,18 +1299,12 @@ class OwnReportTests(unittest.TestCase):
         self.assertNotIn("<script>", page)
         self.assertIn("&lt;script&gt;alert(1)&lt;/script&gt;", page)
 
-    def test_the_tenant_service_renders_the_same_page_as_app(self) -> None:
-        """One template, two renderers: the bytes must agree."""
+    def test_the_first_visit_service_no_longer_serves_verify(self) -> None:
+        """One page, not two: /verify belongs to odile-verify (t_4fcd465f)."""
         sys.path.insert(0, str(ROOT / "installer"))
         import first_visit  # noqa: E402
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
-            report = self.write_report(tmp_path)
-            attest = tmp_path / "attestation.json"
-            attest.write_text(json.dumps({
-                "available": True, "measurement": "b" * 96,
-                "fetched_at": "2026-11-11T09:59:00Z", "report_version": 5,
-                "report_size": 1184}), encoding="utf-8")
             state = tmp_path / "state.json"
             state.write_text(json.dumps({
                 "version": 1, "token_sha256": "c" * 64, "created_at": self.AT,
@@ -1242,33 +1315,23 @@ class OwnReportTests(unittest.TestCase):
             service = first_visit.FirstVisit(
                 state=state, env=env, page=ROOT / "web" / "first-visit.html",
                 recovery=tmp_path / "recovery.txt", reload_command=[],
-                bind="127.0.0.1", port=0, caddy_stores=(),
-                verify_page=ROOT / "web" / "verify.html", report=report,
-                attest=attest, report_command=[])
-            server = ThreadingHTTPServer(("127.0.0.1", 0), first_visit.build_handler(service))
+                bind="127.0.0.1", port=0, caddy_stores=())
+            server = ThreadingHTTPServer(("127.0.0.1", 0),
+                                         first_visit.build_handler(service))
             port = server.server_address[1]
             thread = threading.Thread(target=server.serve_forever, daemon=True)
             thread.start()
+            base = "http://127.0.0.1:%d" % port
             try:
-                import http.client
-                conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
-                conn.request("GET", "/verify")
-                response = conn.getresponse()
-                body = response.read().decode("utf-8")
-                conn.close()
+                with urllib.request.urlopen(base + "/health", timeout=5) as response:
+                    self.assertEqual(response.status, 200)
+                with self.assertRaises(urllib.error.HTTPError) as caught:
+                    urllib.request.urlopen(base + "/verify", timeout=5)
+                self.assertEqual(caught.exception.code, 404,
+                                 "the first-visit service still answers /verify")
             finally:
                 server.shutdown()
                 server.server_close()
-            app = load_app()
-            saved = (app.ACCESS_REPORT_PATH, app.ATTEST_PATH)
-            app.ACCESS_REPORT_PATH = str(report)
-            app.ATTEST_PATH = str(attest)
-            try:
-                direct = app.render_verify("tenant")
-            finally:
-                app.ACCESS_REPORT_PATH, app.ATTEST_PATH = saved
-        self.assertEqual(response.status, 200)
-        self.assertEqual(body, direct, "the tenant service and app.py disagree on /verify")
 
 
     def test_the_image_creates_the_report_directory_before_it_starts_the_units(self) -> None:
@@ -1316,11 +1379,11 @@ class OwnReportTests(unittest.TestCase):
 class RefreshRunbookTests(unittest.TestCase):
     """The refresh recipe hands AMD's KDS the chip id, not a digest of it.
 
-    ``docs/runbooks/verify.md`` is the only documented way to renew the
-    vendored VCEK, and its step 1 once printed ``sha256(chip_id)`` as the
+    ``docs/runbooks/verify.md`` is the documented way to read the KDS path
+    segment for a report, and its step 1 once printed ``sha256(chip_id)`` as the
     ``hwid`` a KDS URL takes, which answers ``400 Bad Request``. Nothing else
     exercises that snippet — the verifier reads the fixture, not the prose — so
-    this test runs the snippet itself against the vendored report.
+    this test runs the snippet itself against the fixture report.
     """
 
     def step_one(self) -> str:
@@ -1404,10 +1467,11 @@ class KDSFixture:
 class TenantVcekTests(unittest.TestCase):
     """ODL-319 follow-up: a tenant's report is checked with the tenant's VCEK.
 
-    The vendored chain is the demo machine's. These tests serve the tenant's own
-    VCEK from a loopback KDS and prove the verifier fetches it by the report's
-    raw chip id and reported TCB, checks it against the pinned ARK, and fails
-    closed when the KDS or the report is wrong. No test reaches AMD.
+    The chain in ``--amd-dir`` is the synthetic fixture root. These tests serve
+    the tenant's own VCEK from a loopback KDS and prove the verifier fetches it
+    by the report's raw chip id and reported TCB, checks it against the pinned
+    ARK, and fails closed when the KDS or the report is wrong. No test reaches
+    AMD.
     """
 
     def run_against_kds(self, *args: str, document: Path = TENANT_FIXTURE,
@@ -1454,7 +1518,7 @@ class TenantVcekTests(unittest.TestCase):
         data = dict(TENANT_DOC)
         data["report_b64"] = base64.b64encode(bytes(raw)).decode("ascii")
         handle = tempfile.NamedTemporaryFile("w", suffix=".json", delete=False,
-                                             encoding="utf-8")
+                                             encoding="utf-8", dir=TENANT_FIXTURE.parent)
         with handle:
             json.dump(data, handle)
         try:
@@ -1491,6 +1555,54 @@ class TenantVcekTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertNotIn("kds", result.stdout)
         self.assertEqual(kds.seen, [])
+
+    def test_the_url_mode_page_command_fetches_two_urls(self) -> None:
+        """The command `web/verify.html` prints fetches two URLs, not one.
+
+        URL mode with the shipped defaults: no `--report`, no `--no-kds`. The
+        only overrides are the loopback KDS and the synthetic trust root the
+        fixtures are signed with (a served document never names its own). The
+        chain directory carries the synthetic ASK and ARK and no VCEK, so the
+        report's own VCEK can only come from the KDS. The count is the sentence
+        the page now states.
+        """
+        seen: list[str] = []
+
+        class Handler(BaseHTTPRequestHandler):
+            def do_GET(self) -> None:  # noqa: N802 - stdlib name
+                seen.append(self.path)
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(TENANT_BYTES)))
+                self.end_headers()
+                self.wfile.write(TENANT_BYTES)
+
+            def log_message(self, format: str, *args: object) -> None:
+                pass
+
+        server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            url = "http://127.0.0.1:%d" % server.server_address[1]
+            with tempfile.TemporaryDirectory(prefix="odile-amd-") as amd_dir:
+                for name in ("ark.pem", "ask.pem"):
+                    (Path(amd_dir) / name).write_bytes(
+                        (SYNTHETIC_AMD_DIR / name).read_bytes())
+                with KDSFixture() as kds:
+                    result = run(url, "--expect", TENANT_MEASUREMENT,
+                                 "--amd-dir", amd_dir,
+                                 "--ark-sha256", SYNTHETIC_ARK,
+                                 "--kds-base", kds.base)
+                    kds_seen = list(kds.seen)
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=5)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertRegex(result.stdout, r"vcek\s+PASS")
+        self.assertEqual(seen, ["/attestation"])
+        self.assertEqual(kds_seen, [TENANT_KDS_PATH])
 
     def test_no_kds_refuses_the_fetch(self) -> None:
         result, seen = self.run_against_kds("--no-kds")
@@ -1553,6 +1665,32 @@ class TenantVcekTests(unittest.TestCase):
                          hashlib.sha256(cmdline.encode("utf-8")).hexdigest())
 
 
+class SyntheticFixtureTests(unittest.TestCase):
+    """The generator is the source of the committed fixtures; it must verify."""
+
+    def test_the_generator_builds_a_verifiable_fixture(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="odl-synthetic-") as tmp:
+            result = subprocess.run(
+                [sys.executable, str(ROOT / "tools" / "make_synthetic_report.py"),
+                 "--out-dir", tmp],
+                capture_output=True, text=True, timeout=120, cwd=ROOT,
+            )
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            document = json.loads(
+                (Path(tmp) / "synthetic-report.json").read_text(encoding="utf-8"))
+            module = load_snp_report()
+            report = module.Report(base64.b64decode(document["report_b64"]))
+            trust = document["trust"]
+            checks = module.run_checks(
+                report, str(Path(tmp) / trust["amd_dir"]), trust["ark_sha256"])
+            self.assertTrue(all(check.ok for check in checks),
+                            [check.detail for check in checks if not check.ok])
+            self.assertTrue(report.chip_id.startswith(b"ODILE-SYNTHETIC-"))
+            self.assertEqual(report.measurement_hex, document["measurement"])
+            self.assertEqual(report.version, 5)
+            self.assertEqual(len(report.raw), 1184)
+
+
 class BundleTests(unittest.TestCase):
     """The published tarball is reproducible and its hash is the one we print."""
 
@@ -1575,6 +1713,59 @@ class BundleTests(unittest.TestCase):
         for path in (VERIFY_MD, RECUT_MD, VERDICT_MD):
             self.assertIn(digest, path.read_text(encoding="utf-8"),
                           "%s does not name the bundle this tree builds" % path)
+
+
+class VerifyPageNoteTests(unittest.TestCase):
+    """The public /verify note's fetch count, fenced.
+
+    The note is the page's one sentence about the verifier's network path. It
+    said "one URL" while the shipped verifier also fetched the report's VCEK
+    from AMD's KDS; after `t_3cd62ef9` it says two. Pin the narrow phrase and
+    forbid the wide one, so a later edit cannot quietly widen it back.
+    """
+
+    def test_both_pages_state_two_urls_and_not_one(self) -> None:
+        for name in ("verify.html", "verify-public.html"):
+            with self.subTest(page=name):
+                page = (ROOT / "web" / name).read_text(encoding="utf-8")
+                self.assertIn(
+                    'It fetches two URLs: <a href="/attestation">/attestation</a>, '
+                    "and that report's own VCEK from AMD's KDS.", page)
+                self.assertNotIn("fetches one URL", page)
+                self.assertNotIn("exactly one URL", page)
+
+
+class VerifyReadmeNoteTests(unittest.TestCase):
+    """`verify/README.md` is a published surface; its network sentences are fenced.
+
+    main added the file in `t_5ce34861` after this branch's base, so no gate had
+    read it. It said the verifier fetches one URL and that the demo binds the
+    vendored VCEK; `t_3cd62ef9` deletes the vendored VCEK, so every default run
+    — the demo's included — fetches the report's own VCEK from AMD's KDS. Pin
+    the true sentences and forbid the wide ones, so a later edit cannot widen
+    them back.
+    """
+
+    README = ROOT / "verify" / "README.md"
+
+    def text(self) -> str:
+        # Whitespace-normalised: a re-wrap must not be able to break the fence.
+        return " ".join(self.README.read_text(encoding="utf-8").split())
+
+    def test_the_readme_states_the_default_runs_two_fetches(self) -> None:
+        text = self.text()
+        self.assertIn("it fetches two URLs on the default run", text)
+        for stale in ("fetches one URL", "exactly one URL",
+                      "demo binds the vendored VCEK", "vendored chain only",
+                      "vendored AMD chain"):
+            self.assertNotIn(stale, text)
+
+    def test_the_readme_states_no_kds_fails_closed_and_the_tests_use_the_synthetic_chain(self) -> None:
+        text = self.text()
+        self.assertIn(
+            "needs `--amd-dir` holding a chain that binds the report, and fails "
+            "closed otherwise", text)
+        self.assertIn("synthetic test-only chain with no network", text)
 
 
 class VerifyPageTests(unittest.TestCase):
@@ -1701,7 +1892,8 @@ Digests:
         write("/etc/sudoers.d/odile", "odile ALL=(ALL) NOPASSWD:ALL\n", 0o440)
         write("/root/.ssh/authorized_keys", self.BOOT_LINE + "\n", 0o600)
         write("/home/odile/.hermes/.env",
-              "HERMES_DASHBOARD_BASIC_AUTH_PASSWORD_HASH=$scrypt$ln=16,r=8,p=1$c2FsdA$aGFzaA\n",
+              "HERMES_DASHBOARD_BASIC_AUTH_PASSWORD_HASH="
+              "scrypt$16384$8$1$c2FsdA$aGFzaA\n",
               0o600)
         write("/run/bb/sealed-unlock.state", "opened\n")
         write("/var/log/auth.log",
@@ -1820,6 +2012,43 @@ Digests:
         self.assertRegex(body, r"LUKS.*?one keyslot \(slot 0\)", re.S)
         self.assertRegex(body, r"boot and unlock.*?opened", re.S)
 
+    def test_the_page_shows_the_seal_policy_and_the_signin_hash(self) -> None:
+        """CLAIMS §4.4 names both rows; the page must render them (t_4fcd465f)."""
+        body = self.page()
+        cell = self.row(body, "seal policy")
+        text = self.plain(cell)
+        self.assertIn("verdict pass", cell)
+        self.assertIn("policy 0x30000", text)
+        self.assertIn('<span class="mono">0x30000</span>', cell)
+        seal_id = re.search(r"(?:^|\s)seal_id=(\S+)", TENANT_DOC["cmdline"]).group(1)
+        self.assertIn("seal_id %s" % seal_id, text)
+        self.assertIn('<span class="mono">%s</span>' % TENANT_MEASUREMENT, cell)
+        signin = self.row(body, "sign-in hash")
+        self.assertIn("verdict pass", signin)
+        self.assertIn("scrypt hash present in /home/odile/.hermes/.env; "
+                      "no plaintext password", self.plain(signin))
+        # The hash itself is a secret-shaped value: presence, never the value.
+        self.assertNotIn("$scrypt$", body)
+
+    def test_a_missing_seal_id_and_a_plaintext_password_fail_their_rows(self) -> None:
+        root, dump = self.build()
+        cmdline_path = root / "proc/cmdline"
+        cmdline_path.write_text(
+            re.sub(r"\s*seal_id=\S+", "", cmdline_path.read_text(encoding="utf-8")),
+            encoding="utf-8")
+        env = root / "home/odile/.hermes/.env"
+        env.write_text(env.read_text(encoding="utf-8")
+                       + "HERMES_DASHBOARD_BASIC_AUTH_PASSWORD=plaintext\n",
+                       encoding="utf-8")
+        result = self.run_page(root, dump)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        seal = self.row(result.stdout, "seal policy")
+        self.assertIn("verdict fail", seal)
+        self.assertIn("no measured seal_id", seal)
+        signin = self.row(result.stdout, "sign-in hash")
+        self.assertIn("verdict fail", signin)
+        self.assertIn("plaintext password", signin)
+
     # -- the manifest -------------------------------------------------------
 
     def test_the_signed_manifest_is_verified_on_the_machine(self) -> None:
@@ -1889,11 +2118,58 @@ Digests:
         for command in ("passwd -S root",
                         "sshd -T | grep -i '^passwordauthentication'",
                         "ssh-keygen -lf /root/.ssh/authorized_keys",
-                        "cryptsetup luksDump /dev/&lt;luks-device&gt;",
+                        "DEV=$(cryptsetup status root_crypt",
+                        'cryptsetup luksDump "$DEV"',
                         "odile-support status",
                         "curl -s https://&lt;slug&gt;.odile.fyi/attestation",
                         "sha256sum /usr/local/bin/odile-install.sh"):
             self.assertIn(command, body, "the deck's command is missing: %s" % command)
+
+    def test_the_luks_row_prints_the_container_resolution_not_the_mapper(self) -> None:
+        """The mapper is plaintext: luksDump on it is refused (support.md)."""
+        cell = html.unescape(self.row(self.page(), "LUKS"))
+        self.assertIn('cryptsetup luksDump "$(cryptsetup status root_crypt', cell)
+        self.assertNotIn("/dev/mapper/root_crypt", cell)
+
+    def test_the_two_command_panels_carry_the_page_wrap_rule(self) -> None:
+        """At 390 the three long lines were clipped by a 320 px code box."""
+        body = self.page()
+        self.assertEqual(body.count('<pre class="report-pre">'), 2,
+                         "both command panels must wrap, not scroll sideways")
+        self.assertRegex(body, r"\.report-pre code\{[^}]*white-space:pre-wrap[^}]*\}")
+
+    def test_the_live_luks_row_resolves_the_device_from_the_mapper_name(self) -> None:
+        """On `/` the program asks cryptsetup status which device to dump."""
+        spec = importlib.util.spec_from_file_location(
+            "odile_verify_luks_device", PAGE)
+        assert spec is not None and spec.loader is not None
+        module = importlib.util.module_from_spec(spec)
+        sys.modules["odile_verify_luks_device"] = module
+        spec.loader.exec_module(module)
+        stamp = module.parse_iso(self.NOW)
+        self.assertIsNotNone(stamp)
+        with tempfile.TemporaryDirectory() as tmp:
+            device = Path(tmp) / "sda3"
+            device.write_text("", encoding="utf-8")
+            calls = []
+
+            def fake_run(argv, **_kwargs):
+                calls.append(argv)
+                if argv[:2] == ["cryptsetup", "status"]:
+                    return subprocess.CompletedProcess(
+                        argv, 0, "  type:    LUKS2\n  device:  %s\n" % device, "")
+                if argv[:2] == ["cryptsetup", "luksDump"]:
+                    return subprocess.CompletedProcess(
+                        argv, 0, self.LUKS_ONE, "")
+                return subprocess.CompletedProcess(argv, 127, "", "missing")
+
+            with mock.patch.object(module, "run", fake_run):
+                machine = module.Machine(root=Path("/"), now=stamp)
+                keyslots, tokens, command = machine.luks()
+        self.assertEqual(keyslots, ["0"])
+        self.assertEqual(tokens, [])
+        self.assertIn(["cryptsetup", "luksDump", str(device)], calls)
+        self.assertEqual(command, "cryptsetup luksDump %s" % device)
 
     def test_the_three_gaps_are_stated_in_order_with_the_manifest_note(self) -> None:
         body = self.page()
@@ -1964,6 +2240,34 @@ Digests:
         self.assertIn("Cormorant Garamond", body)
         self.assertIn("data:font/woff2", body)
         self.assertIn("@media (max-width:560px)", body)
+
+    def test_prose_reads_in_the_text_face_and_headings_keep_the_display_face(self) -> None:
+        """BRAND.md §Typography: the display face never sets a reading sentence.
+
+        The surface table's row for /verify reads "Text serif for prose;
+        display for headings; mono for credentials and machine values", and the
+        page this card replaces (`web/verify.html`, t_ae833f3f) already reads
+        in the text face. Measured on the painted face: Cormorant at 18/1.55
+        for the body, 15.2 px notes and a 15.2 px foot regress the type roles
+        on the same URL.
+        """
+        text = TEMPLATE.read_text(encoding="utf-8")
+        self.assertIn('--text:"Iowan Old Style","Palatino Linotype",Palatino,Georgia,'
+                      '"DejaVu Serif",serif}', text)
+        self.assertIn("font:400 18px/1.6 var(--text);", text)
+        self.assertIn(".lede{font-size:18px;line-height:1.6;", text)
+        self.assertIn(".note{margin:0 0 16px;font-size:16px;line-height:1.6;", text)
+        self.assertIn(".foot{margin:32px 0 0;padding-top:16px;border-top:1px solid "
+                      "var(--line);font-size:16px;line-height:1.6;", text)
+        self.assertIn("h1,h2,.brand{font-family:var(--serif)}", text)
+        self.assertNotIn("font:400 18px/1.55", text,
+                         "the prose is back on the display face at display leading")
+        self.assertNotIn(".note{margin:0 0 16px;font-size:.95rem", text,
+                         "the note is back below the 16 px text role")
+        # Cormorant is named by the @font-face and the --serif token only;
+        # a third occurrence is a prose selector setting the display face.
+        self.assertEqual(text.count('"Cormorant Garamond"'), 2,
+                         "the display face is set on a prose selector")
 
     # -- brand round 1: the machine value role ------------------------------
 
@@ -2044,6 +2348,46 @@ Digests:
             for pipe in (process.stdout, process.stderr):
                 if pipe is not None:
                     pipe.close()
+
+    def test_the_installed_program_finds_the_template_beside_it(self) -> None:
+        """The unit runs /usr/local/lib/odile/verify.py with no --template.
+
+        The program's default must be the template the installer writes beside
+        it, not a checkout path that does not exist on a tenant.
+        """
+        root, dump = self.build()
+        with tempfile.TemporaryDirectory(prefix="odile-verify-install-") as tmp:
+            lib = Path(tmp) / "usr/local/lib/odile"
+            lib.mkdir(parents=True)
+            shutil.copy2(ROOT / "verify" / "verify.py", lib / "verify.py")
+            shutil.copy2(ROOT / "templates" / "verify.html", lib / "verify.html")
+            process = subprocess.Popen(
+                [sys.executable, str(lib / "verify.py"), "--root", str(root),
+                 "--luks-dump", str(dump), "--now", self.NOW,
+                 "--serve", "--bind", "127.0.0.1", "--port", "0"],
+                text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            try:
+                assert process.stdout is not None
+                line = process.stdout.readline().strip()
+                match = re.search(r"http://(\S+):(\d+)/", line)
+                assert match is not None, "the server did not print its address: %r" % line
+                with urllib.request.urlopen(
+                        "http://%s:%s/verify" % (match.group(1), match.group(2)),
+                        timeout=10) as response:
+                    body = response.read().decode("utf-8")
+                    self.assertEqual(response.status, 200)
+                    self.assertEqual(response.headers.get("Cache-Control"), "no-store")
+            finally:
+                process.terminate()
+                process.wait(timeout=10)
+                for pipe in (process.stdout, process.stderr):
+                    if pipe is not None:
+                        pipe.close()
+        self.assertIn(TENANT_MEASUREMENT, body)
+        # The page renders the seal policy and the sign-in hash here too: the
+        # installed layout is the shipped one, not the checkout's.
+        self.assertIn("policy 0x30000", self.plain(body))
+        self.assertIn("scrypt hash present", self.plain(body))
 
     # -- honest failure -----------------------------------------------------
 

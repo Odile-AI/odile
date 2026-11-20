@@ -326,8 +326,8 @@ Default record file: `/var/lib/odile/mail/dsn.jsonl`. One record per report:
 
 - **Hard** (`5.x.x` or `Action: failed`) — remove the address from the
   waitlist (`./manage.py rm <email>`) and write one line in the daily brief.
-  There is no auto-suppression list at V0.1; the waitlist *is* the suppression
-  list.
+  There is no auto-suppression list at alpha.0; the waitlist *is* the
+  suppression list.
 - **Soft** (`4.x.x` or `Action: delayed`) — nothing for 24 hours. Postfix
   retries on its own schedule; `postqueue -p` shows the queue.
 - **Complaint** (`kind: complaint`) — a human marks the message as spam. Gmail
@@ -342,7 +342,7 @@ Default record file: `/var/lib/odile/mail/dsn.jsonl`. One record per report:
 **Who sees a failure.** The operator runs `mail_dsn.py` with the daily brief
 and reads the counts; a hard bounce or a complaint is a line in the brief and a
 removal from the waitlist. There is no pager, no webhook, and no automatic
-suppression at V0.1 — that is ODL-235's problem, not a hidden cron.
+suppression at alpha.0 — that is ODL-235's problem, not a hidden cron.
 
 ## 8. Queue monitoring
 

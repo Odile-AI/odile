@@ -1,0 +1,2 @@
+claims lint: OK (18 file(s), 13 forbidden phrases)
+exit=0

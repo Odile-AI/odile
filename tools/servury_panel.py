@@ -4,7 +4,7 @@
 The reseller API has a boot-image verb now (`?action=boot-image`, probed 12
 November), and `tools/servury_cycle.py` uses it when the account holding a
 machine has a reseller key. The panel is the route for an account with a session
-but no key — `<servury-account:dev>`, which owns `<server:ukitest>`. Its login is
+but no key — `lkbxu6i9`, which owns the bench `168020b4` and the tenant box. Its login is
 not an email form: it is one **32-character credential** field
 (`input#credential`) plus a CSRF token, with a 30-day "remember me". That makes
 the panel drivable with a cookie jar — no headless browser, no brittle clicking.
@@ -17,6 +17,49 @@ the panel drivable with a cookie jar — no headless browser, no brittle clickin
         --url … --sha256 … [--apply --confirm]
     ./tools/servury_panel.py --power --server <server:ukitest> --action restart
     ./tools/servury_panel.py --console --server <server:ukitest> --action on|off|read
+    ./tools/servury_panel.py --order --plan 108 --ssh-key-file key.pub --apply
+    ./tools/servury_panel.py --reinstall --server <server:ukitest> --os debian13 \\
+        --want-snp --want-fde --want-measured --ssh-key-file key.pub [--apply --confirm]
+    ./tools/servury_panel.py --recycle --server <server:ukitest> \\
+        --os debian13 --want-snp --want-fde --want-measured --ssh-key-file key.pub \\
+        --boot-url … --boot-sha256 … [--cmdline-file line.txt] \\
+        --disk-url … --disk-sha256 … --format raw [--apply --confirm]
+
+A freed machine comes back as **three writes, not one call**
+(`docs/product/SPIKE-servury-reinstall.md` §6): the reinstall, the boot image,
+then the disk image. `--recycle` is that composite, in that order; the disk
+write starts the machine itself, so the first boot is the operator's step
+(`docs/runbooks/recycle.md`).
+
+The reinstall is the Danger Zone form, and the credential can erase every
+machine on the account, so the verb is fenced harder than the image writes:
+
+* the allow-list in `SERVER_ID_FILE` must name **exactly one** id and it must
+  be `--server` (exact match); `--allow-server` is refused for this verb;
+* `ERASE` is typed by the tool, never an argument, and the tool refuses to POST
+  unless the page still carries "Erase and reinstall";
+* `os`, `want_snp`, `want_fde` and `want_measured` are required with **no
+  defaults** — the vendor's own rule is "what you do not send is off";
+* `ssh_key` comes from `--ssh-key-file`, never argv (argv is world-readable);
+* the audit line is written **before** the POST and carries the pre-write `os`,
+  the three flags, the key's comment and the boot/disk pair about to be lost;
+* `--apply` alone is a dry run; the destructive write needs `--confirm`.
+
+The path guard is not enough: the form posts to `/manage/<id>/danger/`, whose
+path names no forbidden verb. What stops it is the **field** `action=reinstall`,
+permitted only by `--reinstall`/`--recycle`, and `action=delete` (the destroy
+form next door) is never permitted at all.
+
+The panel's own page for the reinstall says it plainly: everything on the disk
+is destroyed, the address and rDNS stay, and the boot-image and disk-image
+fields come back cleared.
+
+Buying is the one thing that does **not** use the panel any more: `--order` POSTs
+`?action=create` with the account's API key, because the panel order form charges
+list price and the key charges the partner price (5% off orders, renewals and
+upgrades). The panel is still the only route for the disk image, the boot image,
+the console and power. The affiliate route and coupon codes were retired in
+November 2026; `--coupon` is gone.
 
 `<server:ukitest>` is the one id in `/root/.odile/servury_uki_server_id` (one id
 per line; the file is untracked, so a clone has no live target).
@@ -45,6 +88,7 @@ from __future__ import annotations
 import argparse
 import datetime
 import http.cookiejar
+import json
 import os
 import re
 import sys
@@ -57,6 +101,14 @@ from pathlib import Path
 
 BASE = "https://servury.com"
 LOGIN = f"{BASE}/login/"
+# The login form's own names, accepted **only** at the login path. `credential`
+# is a 32-character secret and `remember_me` is the "Remember me for 30 days"
+# checkbox; neither belongs in POST_FIELDS, because the fence's meaning is that a
+# manage form cannot carry a login name (and a login form cannot carry a manage
+# name). Measured 2026-11-20: the live form renders exactly csrf_token,
+# credential and remember_me.
+LOGIN_PATH = urllib.parse.urlparse(LOGIN).path
+LOGIN_FIELDS = frozenset({"csrf_token", "credential", "remember_me"})
 CREDENTIAL_FILE = Path("/root/.odile/servury_panel_credential")
 COOKIE_FILE = Path("/root/.odile/servury_panel.cookies")
 UA = "Mozilla/5.0 (X11; Linux x86_64) odile-panel/1"
@@ -67,28 +119,44 @@ CSRF = re.compile(r'name="csrf_token"\s+value="([^"]+)"', re.I)
 # it is read from the untracked file below, and a missing file allows nothing.
 SERVER_ID_FILE = Path("/root/.odile/servury_uki_server_id")
 FORBIDDEN_PATH = re.compile(r"(delete|terminate|rebuild|reinstall|power|destroy|cancel|upgrade|resize)", re.I)
-# The disk-image form on /manage/<id>/admin/: replace the disk with a published
-# image, verify it, optionally start the machine. Nothing else may be posted here.
+# The Danger Zone form on /manage/<id>/danger/ (recorded 2026-11-19,
+# spike/servury-reinstall/evidence/danger-dump.txt). Its reinstall and destroy
+# buttons are one word apart, so the fence for it is the **field** `action`,
+# in `refuse_action` below, not the path: `/danger/` names no forbidden verb.
+REINSTALL_FIELDS = frozenset({
+    "os", "want_snp", "want_fde", "want_measured", "new_password",
+    "new_password_confirm", "ssh_key", "confirm",
+})
+# The configure forms this tool may post: the disk-image and boot-image forms
+# on /manage/<id>/admin/, the console switch, the hostname, power and the
+# Danger Zone's reinstall. The order form is not one of them any more — it
+# charges list price, so buying moved to the API (`order()`), and banning
+# /order/ here makes a retail order impossible by tool.
 POST_FIELDS = frozenset({
     "csrf_token", "action", "disk_url", "disk_sha256", "disk_format", "disk_start", "disk_confirm",
     "image_kernel_url", "image_kernel_sha256", "image_initrd_url", "image_initrd_sha256",
     "image_cmdline", "hostname", "enabled",
-})
-# Ordering is the one other write this tool may make: a plan, a location, 31 days,
-# a coupon, and funds. No payment method other than the account balance.
-ORDER_FIELDS = frozenset({
-    "csrf_token", "plan", "location", "os", "days", "coupon", "payment_method", "hostname",
-    "snp_requested", "fde_requested", "measured_requested", "auto_renew", "ssh_key",
-    "calculate", "submit_order", "preset_days",
-})
+}) | REINSTALL_FIELDS
+# `action=delete` is the destroy form next door (literal `DELETE`); it is
+# never permitted, by any verb.
+NEVER_ACTIONS = frozenset({"delete", "destroy", "terminate", "cancel"})
+REINSTALL_ACTION = "reinstall"
+# The page's own label for the button. The tool refuses to post at a page that
+# no longer carries it, so a vendor rename fails loudly instead of erasing.
+REINSTALL_CONTROL = "Erase and reinstall"
+# Typed by the tool, never supplied by a caller.
+ERASE = "ERASE"
 AUDIT = Path("/root/.odile/servury-panel.log")
-# Every Servury purchase goes through the referral route: the discount stacks with
-# the account's referral tier (10% and better), and an order placed without it
-# silently forfeits that. Only a demonstrably cheaper route may beat it.
-PURCHASE_URL = "https://servury.com/ref/web"
-DEFAULT_COUPON = "WEB"
+# Every Servury purchase goes through the API with the account's key: 5% off
+# list on orders, renewals and upgrades, applied automatically. The affiliate
+# route was retired in November 2026 — /ref/web 301s to / with no cookie and
+# `WEB` answers "Invalid coupon code" — and the panel order form is list price
+# even on an account that holds a key, so the panel is no longer an order path
+# (docs/ops/evidence/2026-11-19-servury-purchase-route/EVIDENCE.md).
+ORDER_ROUTE = "https://servury.com/api/reseller.php?action=create"
+ORDER_KEY_FILE = Path("/root/.odile/servury_reseller_key_lkbxu6i9")
 FORM_ACTION = re.compile(r"<form[^>]*action=\"([^\"]*)\"[^>]*>", re.I)
-FIELD = re.compile(r"<(input|select|textarea)\b[^>]*>", re.I)
+FIELD = re.compile(r"<(input|select|textarea|button)\b[^>]*>", re.I)
 NAME = re.compile(r"name=[\"']([^\"']+)[\"']", re.I)
 
 
@@ -98,11 +166,14 @@ def parse_csrf(html: str) -> str | None:
 
 
 def field_names(html: str) -> list[tuple[str, str]]:
-    """(tag, name) for every named form control: input, select and textarea.
+    """(tag, name) for every named form control: input, select, textarea, button.
 
     The manage form's disk format is a `<select>` and the boot command line is a
     `<textarea>`; a dump that lists only `<input>` hides exactly the fields the
-    tool posts.
+    tool posts. The button matters too: the Danger Zone's two forms differ
+    **only** in their button's `name="action"` value (`reinstall` and the
+    destroy form's `delete`), so a dump that drops buttons cannot show the
+    difference between erasing the disk and the whole machine.
     """
     fields: list[tuple[str, str]] = []
     for tag in FIELD.finditer(html or ""):
@@ -168,6 +239,139 @@ def refuse_path(path: str) -> str | None:
     return None
 
 
+def refuse_action(fields: dict, permitted_actions: tuple[str, ...] = ()) -> str | None:
+    """The reason a form's `action` is too dangerous to post, or None when allowed.
+
+    The Danger Zone's reinstall form posts to `/manage/<id>/danger/`, whose path
+    names no forbidden verb — `refuse_path` waves it through. The destroy form
+    sits in the same block: one word apart (`action=delete`, literal `DELETE`).
+    So the fence for these two is the **field**. `reinstall` is permitted only
+    by the verb that owns it (passed in by `write_reinstall`), and the destroy
+    values are never permitted at all.
+    """
+    action = (fields or {}).get("action", "")
+    if action in NEVER_ACTIONS:
+        return f"the field action={action} is never permitted (it is the destroy form)"
+    if action == REINSTALL_ACTION and REINSTALL_ACTION not in permitted_actions:
+        return ("the field action=reinstall is only permitted by --reinstall or "
+                "--recycle (it is the Danger Zone's Erase and reinstall form)")
+    return None
+
+
+SECTION = r"<h2>\s*{word} image\b.*?</section>"
+PAGE_URL = re.compile(r"https?://[^\s<>\"']+")
+PAGE_SHA = re.compile(r"\b[0-9a-f]{64}\b")
+
+
+def _section(html: str, word: str) -> str:
+    match = re.search(SECTION.format(word=word), html or "", re.S | re.I)
+    return match.group(0) if match else ""
+
+
+def _pair(section: str, marker: str) -> tuple[str, str]:
+    """(URL, SHA-256) of the image a section shows, or ("", "") when none is set.
+
+    The admin page shows an attached image as a `<dl>` whose first URL is the
+    image and whose first 64-hex value is its hash; a cleared field is prose
+    ("By default that is our published release"), so the marker — `Since` for
+    the boot image, `Written` for the disk — is what says an image is there.
+    """
+    if marker not in section:
+        return "", ""
+    text = re.sub(r"<[^>]+>", " ", section)
+    url = PAGE_URL.search(text)
+    if not url:
+        return "", ""
+    digest = PAGE_SHA.search(text[url.end():])
+    return url.group(0), digest.group(0) if digest else ""
+
+
+def image_pairs(html: str) -> dict[str, str]:
+    """The boot and disk pairs a reinstall is about to clear.
+
+    Both image fields live on the machine's storage, so the reinstall wipes
+    them (`docs/product/SPIKE-servury-reinstall.md` §4). The line the operator
+    needs back is exactly this pair, read before the POST.
+    """
+    boot_url, boot_sha = _pair(_section(html, "Boot"), "Since")
+    disk_url, disk_sha = _pair(_section(html, "Disk"), "Written")
+    return {"boot_url": boot_url, "boot_sha256": boot_sha,
+            "disk_url": disk_url, "disk_sha256": disk_sha}
+
+
+def recycle_target(server: str) -> str | None:
+    """The reason the destructive verb may not name `server`, or None when it may.
+
+    Rule (a) of the fence (`SPIKE-servury-reinstall.md` §8): one id, exact
+    match. The allow-list is shared with the non-destructive writes, and those
+    legitimately reach more than one machine (the tenant's box is on it), so the
+    destructive verb reads it strictly: the file must name exactly one id and
+    `--server` must be that id. A widened list refuses rather than guessing.
+    """
+    allowed = allowed_servers()
+    if len(allowed) != 1:
+        return (f"the allow-list {SERVER_ID_FILE} names {len(allowed)} ids "
+                f"{sorted(allowed) or '[]'}; the reinstall is fenced to exactly one "
+                "(trim the file to the machine that may be erased)")
+    only = next(iter(allowed))
+    if server != only:
+        return f"{server} is not the allow-list's one id ({only}) — no prefix, no case folding"
+    return None
+
+
+DASHBOARD = f"{BASE}/dashboard/"
+# One `/manage/<id>/` link per machine **the session's account owns**. The
+# dashboard is the only page that answers "whose machine is this": the manage
+# page itself renders identically for an id on another account, so ownership is
+# read from here and a foreign id is a refusal.
+MANAGE_LINK = re.compile(r"/manage/([0-9a-f]{8})/")
+_ACCOUNT: str | None = None
+
+
+def owned_servers(opener) -> frozenset[str]:
+    """The ids this session's account owns, from the dashboard's manage links."""
+    return frozenset(MANAGE_LINK.findall(get(opener, DASHBOARD)))
+
+
+def account_of(opener) -> str:
+    """The account this session belongs to, read once per run.
+
+    Readings are cached because every write needs it and each one is a page
+    fetch; `?` (the settings page did not name an id) is **not** cached, so a
+    blank read leaves the account unknown and the write refuses.
+    """
+    global _ACCOUNT
+    if _ACCOUNT is None:
+        user, _ = whoami(opener)
+        if user != "?":
+            _ACCOUNT = user
+    return _ACCOUNT or "?"
+
+
+def require_owned(opener, server: str) -> int | None:
+    """`None` when `server` is this account's, else 2 after saying why.
+
+    Two logins exist on the vendor: the reseller account that owns HQ and the
+    old demo tenant, and the account the tenant now lives on. A POST naming a
+    machine the session does not own is the one mistake that reaches another
+    account, so it is refused before any form is posted.
+    """
+    account = account_of(opener)
+    if account == "?":
+        print("panel: the session's account could not be read — refusing to write",
+              file=sys.stderr)
+        return 2
+    owned = owned_servers(opener)
+    if server not in owned:
+        print(
+            f"panel: {server} is not a machine on account {account} "
+            f"(the dashboard lists {sorted(owned) or 'none'}) — refusing",
+            file=sys.stderr,
+        )
+        return 2
+    return None
+
+
 def allowed_servers() -> frozenset[str]:
     """The server ids this tool may touch, from the untracked file.
 
@@ -191,6 +395,16 @@ def audit(line: str) -> None:
             handle.write(line.rstrip() + "\n")
     except OSError:
         pass
+
+
+def audit_line(opener, message: str) -> str:
+    """The line every write leaves: UTC stamp, **the account**, then the write.
+
+    A `server=<id>` alone stopped being enough once the tenant moved onto the
+    account the team owns: two logins hold machines, and the log has to answer
+    "which account did this land in" without a second command.
+    """
+    return f"{datetime_stamp()} account={account_of(opener)} {message}"
 
 
 COOKIE_HEADER = Path("/root/.odile/servury_panel.cookie")   # "name=value; name=value", 0600
@@ -248,15 +462,28 @@ def get(opener, url: str) -> str:
     return body
 
 
-def post(opener, url: str, fields: dict[str, str]) -> str:
-    why = refuse_path(urllib.parse.urlparse(url).path)
+def post(opener, url: str, fields: dict[str, str], *,
+         permitted_actions: tuple[str, ...] = ()) -> str:
+    path = urllib.parse.urlparse(url).path
+    why = refuse_path(path)
     if why:
         raise SystemExit(f"panel: refusing to POST to {url}: {why}")
-    allowed = ORDER_FIELDS if "/order/" in urllib.parse.urlparse(url).path else POST_FIELDS
+    why = refuse_action(fields, permitted_actions)
+    if why:
+        raise SystemExit(f"panel: refusing to POST to {url}: {why}")
+    # The login form is the only path whose fields are not a manage form's, so
+    # its two extra names are accepted there and nowhere else. Widening
+    # POST_FIELDS instead would let any manage form carry `credential`.
+    allowed = (POST_FIELDS | LOGIN_FIELDS) if path == LOGIN_PATH else POST_FIELDS
     unknown = set(fields) - allowed
     if unknown:
         raise SystemExit(f"panel: refusing unknown form field(s) {sorted(unknown)}")
-    audit(f"{datetime_stamp()} POST {url} fields={sorted(fields)}")
+    # Every write path audits before it posts, so `account_of` is normally a
+    # cache hit here. Reading it through the function (not `_ACCOUNT`) means a
+    # future path that posts first still writes a line naming the account it
+    # landed in, or `?` when the session could not be read — never a bare POST.
+    account = account_of(opener)
+    audit(f"{datetime_stamp()} POST {url} fields={sorted(fields)} account={account}")
     body = urllib.parse.urlencode(fields).encode()
     with opener.open(request_for(url, data=body), timeout=40) as response:
         text = response.read().decode("utf-8", "replace")
@@ -307,13 +534,26 @@ def login(opener, jar) -> int:
             return 0
         print("panel: no csrf_token on the login page — the form changed", file=sys.stderr)
         return 1
+    # The POST *is* the login, so no account exists yet: /settings/ answers the
+    # login page. Cache the honest `?` for the POST's audit line rather than
+    # spending a fetch whose answer cannot name an account, and restore it after
+    # so a caller that already read one does not lose it.
+    global _ACCOUNT
+    previous_account = _ACCOUNT
+    _ACCOUNT = "?"
     landed = post(opener, LOGIN, {"csrf_token": token, "credential": credential, "remember_me": "on"})
-    if "logout" not in landed.lower() and "csrf_token" in landed.lower() and "credential" in landed.lower():
-        print("panel: login refused (still on the form)", file=sys.stderr)
+    _ACCOUNT = previous_account
+    lowered = landed.lower()
+    # The dashboard's logout control is what says the session is in. `dashboard`
+    # alone is not enough: the public login page carries that word in its meta
+    # keywords. A form rendered again (a wrong credential, or the captcha gate)
+    # carries the two field names and is a refusal.
+    if "logout" not in lowered or 'name="credential"' in lowered:
+        print("panel: login refused — the answer is not the dashboard", file=sys.stderr)
         return 1
     jar.save(ignore_discard=True, ignore_expires=True)
     os.chmod(COOKIE_FILE, 0o600)
-    print(f"panel: logged in, session saved to {COOKIE_FILE}")
+    print(f"panel: logged in — the dashboard answered — session saved to {COOKIE_FILE}")
     return 0
 
 
@@ -338,6 +578,9 @@ def dump(opener, server: str) -> int:
 
 def write_disk(opener, server: str, url: str, fmt: str, apply: bool, sha256: str = "") -> int:
     """Point the machine's disk at a published image. Two flags are needed, on purpose."""
+    refused = require_owned(opener, server)
+    if refused is not None:
+        return refused
     page = admin_url(server)
     html = get(opener, page)
     token = parse_csrf(html)
@@ -354,7 +597,7 @@ def write_disk(opener, server: str, url: str, fmt: str, apply: bool, sha256: str
     }
     if sha256:
         fields["disk_sha256"] = sha256
-    audit(f"{datetime_stamp()} DISK_WRITE server={server} url={url} format={fmt} apply={apply}")
+    audit(audit_line(opener, f"DISK_WRITE server={server} url={url} format={fmt} apply={apply}"))
     print(f"panel: {'wrote' if apply else 'would write'} {server} ← {url} ({fmt})")
     if not apply:
         print("panel: dry run — pass --apply and --confirm to submit")
@@ -389,6 +632,9 @@ def write_boot_image(
     so replacing an image is detach, attach, then wait for the node to report the
     download ready. Rushing the power action before that boots the old image.
     """
+    refused = require_owned(opener, server)
+    if refused is not None:
+        return refused
     page = admin_url(server)
     html = get(opener, page)
     token = parse_csrf(html)
@@ -407,10 +653,11 @@ def write_boot_image(
         "image_initrd_sha256": "",
         "image_cmdline": cmdline,
     }
-    audit(
-        f"{datetime_stamp()} BOOT_IMAGE server={server} url={url} "
-        f"sha256={sha256[:16]} cmdline={'yes' if cmdline else 'empty'} apply={apply}"
-    )
+    audit(audit_line(
+        opener,
+        f"BOOT_IMAGE server={server} url={url} "
+        f"sha256={sha256[:16]} cmdline={'yes' if cmdline else 'empty'} apply={apply}",
+    ))
     print(f"panel: {'set' if apply else 'would set'} {server} boot image ← {url}")
     print(f"panel:   sha256 {sha256 or '(not given)'}")
     print(f"panel:   cmdline {'passed verbatim' if cmdline else 'empty (the UKI carries its own)'}")
@@ -460,15 +707,206 @@ def write_boot_image(
     return 1
 
 
+def danger_url(server: str) -> str:
+    """The Danger Zone page: where the reinstall (and the destroy) form posts."""
+    return f"{BASE}/manage/{server}/danger/"
+
+
+def manage_url(server: str) -> str:
+    return f"{BASE}/manage/{server}/"
+
+
+STATUS_REINSTALLING = re.compile(r"\bReinstalling\b", re.I)
+STATUS_RUNNING = re.compile(r"\bRunning\b", re.I)
+
+
+def machine_status(html: str) -> str:
+    """"reinstalling", "running" or "?" from the manage page's own header."""
+    if STATUS_REINSTALLING.search(html or ""):
+        return "reinstalling"
+    if STATUS_RUNNING.search(html or ""):
+        return "running"
+    return "?"
+
+
+def ssh_keys_from(path: str) -> tuple[str, str, int]:
+    """(field value, first key's comment, count) for the reinstall form.
+
+    The vendor's textarea takes "SSH public keys, one per line" and "whatever is
+    in this box becomes the whole authorized_keys file of the new install". The
+    key comes from a file, never from argv: argv is world-readable in `ps`, and
+    a caller who could hand the form a line could hand it another tenant's key.
+    """
+    text = Path(path).read_text(encoding="utf-8")
+    keys = [line.strip() for line in text.splitlines() if line.strip()]
+    if not keys:
+        raise ValueError(f"{path} holds no public key")
+    for key in keys:
+        if not key.startswith(("ssh-", "ecdsa-", "sk-")):
+            raise ValueError(f"{path} holds a line that is not a public key: {key[:24]!r}")
+    comment = keys[0].split()[-1] if len(keys[0].split()) > 2 else "(no comment)"
+    return "\n".join(keys), comment, len(keys)
+
+
+def write_reinstall(
+    opener, server: str, os_name: str, want_snp: bool, want_fde: bool,
+    want_measured: bool, ssh_key_file: str, apply: bool, *,
+    wait: float = 300.0, interval: float = 10.0,
+) -> int:
+    """ERASE the machine's disk and rebuild it from the chosen stock template.
+
+    This is the one call that replaces a tenant's disk and its measured boot
+    image without the user, and it sets the machine's `authorized_keys` to
+    whatever key is posted — so a machine recycled for tenant B must be given
+    tenant B's key here, and this is the step that enforces it. The tool types
+    `ERASE` itself, requires the page's own "Erase and reinstall" label, and
+    writes the line before it posts.
+    """
+    why = recycle_target(server)
+    if why:
+        print(f"panel: refusing the reinstall: {why}", file=sys.stderr)
+        return 2
+    refused = require_owned(opener, server)
+    if refused is not None:
+        return refused
+    try:
+        ssh_key, comment, count = ssh_keys_from(ssh_key_file)
+    except (OSError, ValueError) as error:
+        print(f"panel: --ssh-key-file {ssh_key_file}: {error}", file=sys.stderr)
+        return 2
+    page = danger_url(server)
+    html = get(opener, page)
+    token = parse_csrf(html)
+    if not token:
+        print("panel: no csrf_token on the danger page — the session may have expired", file=sys.stderr)
+        return 1
+    if REINSTALL_CONTROL not in html:
+        print(
+            f"panel: the danger page carries no {REINSTALL_CONTROL!r} control — refusing "
+            "(the form changed, or this page is not the reinstall form)",
+            file=sys.stderr,
+        )
+        return 1
+    pairs = image_pairs(get(opener, admin_url(server)))
+    snp = "1" if want_snp else "0"
+    fde = "1" if want_fde else "0"
+    measured = "1" if want_measured else "0"
+    audit(audit_line(
+        opener,
+        f"REINSTALL server={server} os={os_name} snp={snp} fde={fde} measured={measured} "
+        f"key={comment} keys={count} "
+        f"boot={pairs['boot_url'] or 'none'} boot_sha256={pairs['boot_sha256'] or 'none'} "
+        f"disk={pairs['disk_url'] or 'none'} disk_sha256={pairs['disk_sha256'] or 'none'} "
+        f"apply={int(bool(apply))} route=panel/danger",
+    ))
+    print(f"panel: {'erasing and reinstalling' if apply else 'would erase and reinstall'} "
+          f"{server} (os={os_name})")
+    print(f"panel:   page {page} carries {REINSTALL_CONTROL!r}")
+    print(f"panel:   builds on snp={snp} fde={fde} measured={measured}")
+    print(f"panel:   authorized_keys ← {count} key(s) from {ssh_key_file} ({comment})")
+    print(f"panel:   confirm {ERASE} — typed by the tool, never an argument")
+    print(f"panel:   loses boot   {pairs['boot_url'] or '(none)'} "
+          f"{('(' + pairs['boot_sha256'][:16] + '…)') if pairs['boot_sha256'] else ''}")
+    print(f"panel:   loses disk   {pairs['disk_url'] or '(none)'} "
+          f"{('(' + pairs['disk_sha256'][:16] + '…)') if pairs['disk_sha256'] else ''}")
+    if not apply:
+        print("panel: dry run — pass --apply and --confirm to erase the disk")
+        return 0
+    fields = {
+        "csrf_token": token,
+        "os": os_name,
+        "want_snp": snp,
+        "want_fde": fde,
+        "want_measured": measured,
+        "ssh_key": ssh_key,
+        "confirm": ERASE,
+        "action": REINSTALL_ACTION,
+    }
+    result = post(opener, page, fields, permitted_actions=(REINSTALL_ACTION,))
+    refusal = refused_note(result)
+    if refusal:
+        print(f"panel: reinstall refused: {refusal}", file=sys.stderr)
+        return 1
+    submitted = notice(result)
+    print(f"panel: reinstall submitted for {server}" + (f" — {submitted}" if submitted else ""))
+    if wait <= 0:
+        return 0
+    started = time.time()
+    status = machine_status(get(opener, manage_url(server)))
+    while True:
+        print(f"panel:   {round(time.time() - started)}s — {status}")
+        if status == "running":
+            break
+        if time.time() - started >= wait:
+            print(f"panel: the machine did not report Running in {int(wait)}s "
+                  f"(last {status!r})", file=sys.stderr)
+            return 1
+        time.sleep(max(interval, 1))
+        status = machine_status(get(opener, manage_url(server)))
+    print(f"panel: {server} is Running; its boot and disk image fields are now cleared")
+    return 0
+
+
+def recycle(
+    opener, server: str, *, os_name: str, want_snp: bool, want_fde: bool,
+    want_measured: bool, ssh_key_file: str, boot_url: str, boot_sha256: str,
+    cmdline: str, disk_url: str, disk_sha256: str, fmt: str, apply: bool,
+    wait: float = 300.0, interval: float = 10.0,
+) -> int:
+    """The three writes a freed machine needs, in the order the vendor requires.
+
+    A reinstall clears the boot-image and disk-image fields and leaves a stock
+    template, so the pair has to be re-applied afterwards; and the disk write
+    starts the machine itself, which is the first boot of the recycled disk
+    (`docs/product/SPIKE-servury-reinstall.md` §6). The console is armed first:
+    the first boot's transcript is the machine's own evidence, and it cannot be
+    recovered after the fact.
+
+    The one-id fence runs **before the first write**, not on the way to the
+    erase: arming the console is a POST too, so a `--recycle` aimed at a
+    widened allow-list must be refused before it touches anything. (Round-1
+    review of this card found the console going out to the live tenant before
+    `write_reinstall` reached its own fence.)
+    """
+    why = recycle_target(server)
+    if why:
+        print(f"panel: refusing the recycle: {why}", file=sys.stderr)
+        return 2
+    print(f"panel: recycle {server} — console log, reinstall, boot image, disk image")
+    code = console(opener, server, "on", dry_run=not apply)
+    if code:
+        return code
+    code = write_reinstall(opener, server, os_name, want_snp, want_fde, want_measured,
+                           ssh_key_file, apply=apply, wait=wait, interval=interval)
+    if code:
+        return code
+    code = write_boot_image(opener, server, boot_url, boot_sha256, cmdline,
+                            apply=apply, wait=wait, interval=interval)
+    if code:
+        return code
+    code = write_disk(opener, server, disk_url, fmt, apply, disk_sha256)
+    if code:
+        return code
+    if apply:
+        print(f"panel: recycle submitted. The disk write starts {server}; its first boot "
+              "is the machine's own step (docs/runbooks/recycle.md §3)")
+    else:
+        print("panel: dry run — pass --apply and --confirm to run the three writes")
+    return 0
+
+
 def power(opener, server: str, action: str, *, dry_run: bool = False) -> int:
     """Press one of the manage page's power buttons (start/stop/restart/forcestop)."""
+    refused = require_owned(opener, server)
+    if refused is not None:
+        return refused
     page = admin_url(server)
     html = get(opener, page)
     token = parse_csrf(html)
     if not token:
         print("panel: no csrf_token on the admin page — the session may have expired", file=sys.stderr)
         return 1
-    audit(f"{datetime_stamp()} POWER server={server} action={action} apply={not dry_run}")
+    audit(audit_line(opener, f"POWER server={server} action={action} apply={not dry_run}"))
     print(f"panel: {'would press' if dry_run else 'pressing'} {action} on {server}")
     if dry_run:
         return 0
@@ -515,13 +953,16 @@ def console(opener, server: str, action: str, *, dry_run: bool = False) -> int:
     if action == "read":
         print(console_text(get(opener, url)), end="")
         return 0
+    refused = require_owned(opener, server)
+    if refused is not None:
+        return refused
     html = get(opener, url)
     token = parse_csrf(html)
     if not token:
         print("panel: no csrf_token on the console page — the session may have expired", file=sys.stderr)
         return 1
     enabled = "1" if action == "on" else "0"
-    audit(f"{datetime_stamp()} CONSOLE server={server} enabled={enabled} apply={not dry_run}")
+    audit(audit_line(opener, f"CONSOLE server={server} enabled={enabled} apply={not dry_run}"))
     print(f"panel: {'would turn' if dry_run else 'turning'} the console log {action} for {server}")
     if dry_run:
         return 0
@@ -540,35 +981,108 @@ def console(opener, server: str, action: str, *, dry_run: bool = False) -> int:
     return 0
 
 
-def order(opener, plan: str, location: str, os_name: str, days: str, hostname: str,
-          coupon: str, apply: bool, ssh_key_file: str) -> int:
-    """Buy one machine through the referral route. Dry run unless --apply."""
-    page = f"{BASE}/order/?location={location}&plan={plan}&os={os_name}"
-    html = get(opener, page)
-    token = parse_csrf(html)
-    if not token:
-        print("panel: no csrf_token on the order page — the session may have expired", file=sys.stderr)
-        return 1
-    fields = {
-        "csrf_token": token, "plan": plan, "location": location, "os": os_name,
-        "days": days, "coupon": coupon, "payment_method": "account_funds",
-        "hostname": hostname, "snp_requested": "1", "fde_requested": "1",
-        "measured_requested": "1", "auto_renew": "1", "submit_order": "1",
+def api_order(key: str, plan: str, os_name: str, days: str, hostname: str,
+              ssh_key: str, preorder: bool = False) -> dict:
+    """POST ?action=create; the key's account is charged its partner price."""
+    params: dict[str, object] = {
+        "plan_id": int(plan), "hostname": hostname, "os": os_name, "days": int(days),
+        "ssh_key": ssh_key, "snp": True, "fde": True, "measured": True,
     }
-    if ssh_key_file:
-        fields["ssh_key"] = Path(ssh_key_file).read_text(encoding="utf-8").strip()
-    audit(f"{datetime_stamp()} ORDER plan={plan} loc={location} days={days} coupon={coupon} host={hostname} apply={apply}")
-    print(f"panel: {'ordering' if apply else 'would order'} plan {plan} in {location} for {days} days,"
-          f" coupon {coupon} — {PURCHASE_URL}")
+    if preorder:
+        params["preorder"] = True
+    request = urllib.request.Request(
+        ORDER_ROUTE,
+        data=json.dumps(params).encode(),
+        headers={"X-Reseller-Key": key, "Content-Type": "application/json", "Accept": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=90) as response:
+            payload = json.load(response)
+    except urllib.error.HTTPError as error:
+        detail = error.read().decode("utf-8", "replace")
+        raise RuntimeError(f"HTTP {error.code} {detail[:300]}") from None
+    if not payload.get("success", True):
+        raise RuntimeError(str(payload.get("error") or "order refused"))
+    return payload.get("data") or {}
+
+
+def order(opener, plan: str, location: str, os_name: str, days: str, hostname: str,
+          apply: bool, ssh_key_file: str, key_file: str = str(ORDER_KEY_FILE),
+          preorder: bool = False) -> int:
+    """Buy one machine through the API at the account's partner price.
+
+    The panel order form charges list price even on an account that holds a key,
+    so it is no longer an order path. `location` does not travel: a plan id names
+    its location (108 is Canada Core, 127 the US one), and it stays in the
+    signature only so the audit line reads the same way it always did. A measured
+    box takes exactly one SSH key and it must be given here — there is no later
+    add.
+    """
+    if not ssh_key_file:
+        print("panel: --order needs --ssh-key-file (measured boot takes exactly one key)", file=sys.stderr)
+        return 2
+    if not str(plan).isdigit():
+        print(f"panel: --plan must be an API plan id (a number), not {plan!r}", file=sys.stderr)
+        return 2
+    key_path = Path(key_file)
+    if not key_path.is_file():
+        print(f"panel: no API key at {key_path}", file=sys.stderr)
+        return 2
+    ssh_key = Path(ssh_key_file).read_text(encoding="utf-8").strip()
+    audit(audit_line(
+        opener,
+        f"ORDER route=api plan={plan} loc={location} days={days} host={hostname} "
+        f"key={key_path.name} apply={apply}",
+    ))
+    print(f"panel: {'ordering' if apply else 'would order'} plan {plan} for {days} days at the "
+          f"partner price — {ORDER_ROUTE}")
     if not apply:
         print("panel: dry run — pass --apply to buy")
         return 0
-    landed = post(opener, page, fields)
-    if "You must set either" in landed:
-        print("panel: the order form needs a root password or a public key — pass --ssh-key-file", file=sys.stderr)
+    try:
+        result = api_order(key_path.read_text(encoding="utf-8").strip(), plan, os_name, days,
+                           hostname, ssh_key, preorder)
+    except (RuntimeError, OSError) as error:
+        print(f"panel: order refused — {error}", file=sys.stderr)
         return 1
-    print(f"panel: order submitted; check /servers/ for the new machine (coupon {coupon})")
+    print(f"panel: ordered {result.get('server_id')} — {result.get('hostname')} "
+          f"{result.get('status')}, charged ${result.get('amount_charged')}")
     return 0
+
+
+def _reinstall_missing(args) -> str | None:
+    """The flags the destructive verb needs and was not given, or None.
+
+    No defaults, on purpose: the vendor's rule is "what you do not send is off",
+    so an omitted `--want-measured` would silently build an unmeasured machine
+    and an omitted `--os` a stock template nobody chose.
+    """
+    missing = []
+    if not args.os_name:
+        missing.append("--os")
+    for flag, value in (("--want-snp", args.want_snp),
+                        ("--want-fde", args.want_fde),
+                        ("--want-measured", args.want_measured)):
+        if value is None:
+            missing.append(flag)
+    if not args.ssh_key_file:
+        missing.append("--ssh-key-file")
+    return ", ".join(missing) or None
+
+
+def _recycle_missing(args, cmdline: str) -> str | None:
+    missing = [flag for flag, value in (
+        ("--boot-url", args.boot_url), ("--boot-sha256", args.boot_sha256),
+        ("--disk-url", args.disk_url), ("--disk-sha256", args.disk_sha256),
+    ) if not value]
+    if not cmdline:
+        missing.append("--cmdline-file")
+    for flag, value in (("--boot-sha256", args.boot_sha256),
+                        ("--disk-sha256", args.disk_sha256)):
+        if value and not re.fullmatch(r"[0-9a-fA-F]{64}", value):
+            return f"{flag} must be 64 hex characters"
+    return ", ".join(missing) or None
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -580,23 +1094,49 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--set-boot-image", action="store_true", help="set the kernel (UKI) from --url and --sha256")
     parser.add_argument("--power", action="store_true", help="press a power button: --action start|stop|restart|forcestop")
     parser.add_argument("--console", action="store_true", help="serial log: --action on|off|read")
+    parser.add_argument("--reinstall", action="store_true",
+                        help="the Danger Zone reinstall (ERASE), fenced to the allow-list's one id")
+    parser.add_argument("--recycle", action="store_true",
+                        help="console log, reinstall, boot image, disk image — the order a freed "
+                             "machine needs; the disk write starts the machine itself")
+    parser.add_argument("--want-snp", action="store_true", default=None,
+                        help="build the machine with RAM encryption (required, no default: "
+                             "the vendor's rule is 'what you do not send is off')")
+    parser.add_argument("--want-fde", action="store_true", default=None,
+                        help="build the machine with disk encryption (required, no default)")
+    parser.add_argument("--want-measured", action="store_true", default=None,
+                        help="build the machine with measured boot (required, no default)")
     parser.add_argument("--action", default="restart", help="the power/console action (default: restart)")
     parser.add_argument("--cmdline", default="", help="with --set-boot-image: a command line passed verbatim (default empty)")
+    parser.add_argument("--cmdline-file", default="",
+                        help="with --recycle: read the per-machine command line from a file "
+                             "(passed verbatim to the boot image)")
+    parser.add_argument("--boot-url", default="", help="with --recycle: the published UKI URL")
+    parser.add_argument("--boot-sha256", default="", help="with --recycle: that UKI's SHA-256")
+    parser.add_argument("--disk-url", default="", help="with --recycle: the published disk image URL")
+    parser.add_argument("--disk-sha256", default="", help="with --recycle: that image's SHA-256")
+    parser.add_argument("--wait", type=float, default=300.0,
+                        help="with --reinstall/--recycle: seconds to wait for Running (default 300)")
+    parser.add_argument("--interval", type=float, default=10.0,
+                        help="with --reinstall/--recycle: poll interval in seconds (default 10)")
     parser.add_argument("--server", default="", help="8-character server id")
     parser.add_argument("--url", default="")
     parser.add_argument("--sha256", default="")
-    parser.add_argument("--order", action="store_true", help="buy one machine through the referral route")
-    parser.add_argument("--plan", default="108")
-    parser.add_argument("--location", default="2")
-    parser.add_argument("--os", dest="os_name", default="debian12")
+    parser.add_argument("--order", action="store_true", help="buy one machine through the API at the partner price")
+    parser.add_argument("--plan", default="108", help="API plan id (a plan id names its location: 108 Canada, 127 US)")
+    parser.add_argument("--location", default="2", help="label only — the plan id names the location")
+    parser.add_argument("--os", dest="os_name", default=None,
+                        help="the stock template id (required for --reinstall/--recycle; "
+                             "default debian12 for --order)")
     parser.add_argument("--days", default="31")
     parser.add_argument("--hostname", default="odl-dev")
-    parser.add_argument("--coupon", default=DEFAULT_COUPON, help=f"default {DEFAULT_COUPON}: the referral stacks with the tier")
-    parser.add_argument("--ssh-key-file", default="", help="public key pasted into the order form (required for measured/FDE)")
+    parser.add_argument("--key-file", default=str(ORDER_KEY_FILE), help="API key of the account that pays")
+    parser.add_argument("--preorder", action="store_true", help="accept a sold-out plan (paid now, final)")
+    parser.add_argument("--ssh-key-file", default="", help="public key pasted into the order (required: measured boot)")
     parser.add_argument("--whoami", action="store_true", help="print the account this session belongs to")
     parser.add_argument("--expect-user", default=None, help="refuse to write unless the session's User ID matches")
-    parser.add_argument("--apply", action="store_true", help="with --set/--set-boot-image: actually submit")
-    parser.add_argument("--confirm", action="store_true", help="with --set: the disk's contents will be replaced")
+    parser.add_argument("--apply", action="store_true", help="with --set/--set-boot-image/--reinstall/--recycle: actually submit")
+    parser.add_argument("--confirm", action="store_true", help="with --set/--reinstall/--recycle: the disk's contents will be replaced")
     parser.add_argument("--dry-run", action="store_true", help="with --power/--console: print the action, change nothing")
     parser.add_argument("--format", default="auto", choices=("auto", "qcow2", "raw"), help="image format")
     parser.add_argument("--allow-server", action="append", default=[], help="extra server id this tool may touch")
@@ -630,8 +1170,59 @@ def main(argv: list[str] | None = None) -> int:
     if args.show:
         return dump(opener, args.server)
     if args.order:
-        return order(opener, args.plan, args.location, args.os_name, args.days, args.hostname,
-                     args.coupon, args.apply, args.ssh_key_file)
+        return order(opener, args.plan, args.location, args.os_name or "debian12", args.days,
+                     args.hostname, args.apply, args.ssh_key_file, args.key_file, args.preorder)
+    if args.reinstall or args.recycle:
+        # The destructive verb is fenced to the allow-list's own one id, so the
+        # deliberate-widening flag is refused rather than folded in.
+        if args.allow_server:
+            print("panel: --reinstall/--recycle refuse --allow-server: the destructive "
+                  f"verb is fenced to the one id in {SERVER_ID_FILE}", file=sys.stderr)
+            return 2
+        if not args.server:
+            print("panel: --reinstall/--recycle need --server", file=sys.stderr)
+            return 2
+        missing = _reinstall_missing(args)
+        cmdline = None
+        if args.recycle:
+            if args.cmdline and args.cmdline_file:
+                print("panel: --recycle takes --cmdline-file, not both", file=sys.stderr)
+                return 2
+            if args.cmdline_file:
+                try:
+                    cmdline = Path(args.cmdline_file).read_text(encoding="utf-8").strip()
+                except OSError as error:
+                    print(f"panel: --cmdline-file {args.cmdline_file}: {error}", file=sys.stderr)
+                    return 2
+            elif args.cmdline:
+                cmdline = args.cmdline
+            if missing is None:
+                missing = _recycle_missing(args, cmdline)
+        if missing:
+            if missing.endswith("characters"):
+                print(f"panel: {missing}", file=sys.stderr)
+            else:
+                print(f"panel: {'--recycle' if args.recycle else '--reinstall'} needs "
+                      f"{missing} (no defaults: what you do not send is off)", file=sys.stderr)
+            return 2
+        if args.apply and not args.confirm:
+            print("panel: --apply also needs --confirm (the disk's contents are replaced)",
+                  file=sys.stderr)
+            return 2
+        if args.reinstall:
+            return write_reinstall(
+                opener, args.server, args.os_name, args.want_snp, args.want_fde,
+                args.want_measured, args.ssh_key_file, apply=args.apply and args.confirm,
+                wait=args.wait, interval=args.interval,
+            )
+        return recycle(
+            opener, args.server, os_name=args.os_name, want_snp=args.want_snp,
+            want_fde=args.want_fde, want_measured=args.want_measured,
+            ssh_key_file=args.ssh_key_file, boot_url=args.boot_url,
+            boot_sha256=args.boot_sha256, cmdline=cmdline or "",
+            disk_url=args.disk_url, disk_sha256=args.disk_sha256, fmt=args.format,
+            apply=args.apply and args.confirm, wait=args.wait, interval=args.interval,
+        )
     if args.set:
         if not (args.server and args.url):
             print("panel: --set needs --server and --url", file=sys.stderr)

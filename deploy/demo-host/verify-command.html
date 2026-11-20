@@ -1,11 +1,10 @@
 <!--demo-check-->
-<section aria-labelledby="check">
-  <h2 id="check">Check it yourself</h2>
-  <p>Check the machine before you trust it: the verifier prints PASS or FAIL.</p>
-  <p class="caption">From your laptop</p>
+<section aria-labelledby="demo-check">
+  <h2 id="demo-check">Run the verifier</h2>
+  <p class="note">Check the machine from your laptop before you trust it: the verifier prints PASS or FAIL.</p>
   <pre class="report-pre"><code><span class="prompt" aria-hidden="true">$</span> curl -sSLO https://odile.fyi/odile-verify.tar.gz
 <span class="prompt" aria-hidden="true">$</span> tar xzf odile-verify.tar.gz
 <span class="prompt" aria-hidden="true">$</span> cd odile-verify &amp;&amp; ./odile-verify https://demo.odile.fyi --expect {{MEASUREMENT}}</code></pre>
-  <p class="note">The number after <code>--expect</code> is this machine's measurement, shown in the report below. The verifier needs Python 3 and the <code>openssl</code> binary.</p>
+  <p class="note">The number after <code>--expect</code> is this machine's measurement: the <code>measurement</code> row above. The verifier needs Python 3 and the <code>openssl</code> binary.</p>
 </section>
 <!--/demo-check-->

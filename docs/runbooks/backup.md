@@ -28,6 +28,17 @@ the worker's 420 s per-call limit stopped the first attempt before the restore).
 restic and nothing else: a tenant repository has a different password, a
 different destination and a different owner.
 
+**19 November 2026 — interim destination.** The tenant destination is
+**Cloudflare R2**, not the SFTP box described below, until Savio's Backblaze B2
+account is restored (`docs/architecture/ADR-backup.md` §4). Everything in this
+runbook about the program, the password, the include set, retention and the
+restore path is unchanged; the SFTP material in §3, §5 and §8 is the **v5
+record** of the drill that measured the restore. The interim's bucket, keys and
+9 GB cap are §3.1; the migration back to B2 is ADR-004 §10. **HQ's own
+`hermes-hq-backup` bucket is not part of the interim and must never be written
+to by a tenant** — the two bucket namespaces, jurisdictions and tokens are
+disjoint.
+
 All guest commands run as root on the tenant. The operator has no SSH: the
 drill drove the machine through its own Webapp (the tenant's sign-in) and its
 own Hermes cron, which is the same path the user has.
@@ -41,8 +52,9 @@ own Hermes cron, which is the same path the user has.
 | Repository password (32 chars) | `/etc/odile/recovery.txt` on the guest, mode 0600; the only copy the user holds | the user (first-visit download), root on the guest, and `scripts/backup.py` for one restic call |
 | Repository password during a rebuild | sealed under the one-time setup token in `/var/lib/odile/seed-rebuilds.json` on HQ (ciphertext only, 0600 `odile`) | the guest, which holds the token; HQ holds ciphertext it cannot open |
 | Repository URL | `/etc/odile/backup-repo.txt` (from the seed, 0644) and the tenant row | everyone; it is an address, not a secret |
-| Repository contents | the SFTP box, restic ciphertext | anyone can copy the bytes; only the password decrypts them |
+| Repository contents | the SFTP box (v5) / the tenant's R2 bucket `odile-t-<slug>` (interim), restic ciphertext | anyone can copy the bytes; only the password decrypts them |
 | SFTP transport key | `/etc/odile/backup-ssh/id_ed25519` (0600, generated on the guest); public half registered on the backup box | root on the guest; the backup box sees the public half |
+| R2 transport token (interim) | `/etc/odile/backup-s3.env` (0600 root): endpoint, bucket, `AWS_DEFAULT_REGION=auto`, cap and the **Object Read & Write** token scoped to `odile-t-<slug>`; the read-only twin is in the user's recovery file | root on the guest; Cloudflare; HQ holds a copy only to re-seed a rebuild |
 | Last status, size, snapshot id | `/var/lib/odile/backup.json` on the guest; the signed heartbeat carries the same fields to HQ | the user, HQ (the fields only) |
 | File names, file contents | inside the encrypted repository | nobody without the password |
 
@@ -56,8 +68,12 @@ reads only the row's `detail.backup`, runs `restic snapshots` as the control
 check (with the user's recovery file when the operator has it, and without it
 otherwise — restic's "wrong password" still proves the directory is a restic
 repository), deletes `/srv/odile-backup/tenants/<slug>` and the guest's
-`authorized_keys` line, and records the purge on the row. It reads no file
-name, decrypts nothing, and prints no password.
+`authorized_keys` line, and records the purge on the row. **Both of those
+paths are v5 (the SFTP stand-in): on an interim tenant the same command is
+designed to empty `odile-t-<slug>` through the tenant's own token, and the empty
+bucket is then deleted in the Cloudflare dashboard — §3.1, and ADR-004 §8's exit
+row gives that change to `t_9d6fb595`.** The command reads no file name,
+decrypts nothing, and prints no password.
 
 **HQ cannot read the repository.** Measured 2026-11-12T23:24Z on the host that
 stores the bytes (the password is the live tenant's, from the recovery file
@@ -94,6 +110,14 @@ none of the three control-plane trees.)
 ---
 
 ## 2. The nightly job
+
+**v5 (SFTP).** The block below is the live tenant's unit as `systemctl cat`
+prints it against the SFTP stand-in — `--repo sftp://…` with `--key` and
+`--known-hosts`. On an interim tenant the same program is designed to run
+against the R2 repository (§3.1): an `s3:` URL from the seed, the bucket token
+in `/etc/odile/backup-s3.env`, and no `--key` or `--known-hosts`. That `s3:`
+branch is ADR-004 §8's `backup.py` + installer card and **is not shipped at
+this head**; until it lands, a tenant's unit is the SFTP form below.
 
 ```
 /usr/local/lib/odile/backup.py run
@@ -430,6 +454,64 @@ The repository is created **once**. A second `init` answers
 `the repository already answers; init is a no-op`. A wrong recovery-file
 password against an existing repository is refused by name, never re-initialised.
 
+### 3.1 The interim destination — Cloudflare R2, 19 November 2026
+
+The live destination until B2 is restored. A tenant repository is an R2 bucket,
+**one bucket per tenant**, and the URL is the provider's, not ours:
+
+```
+s3:https://<account_id>.r2.cloudflarestorage.com/odile-t-<slug>/repo
+```
+
+The `repo` segment is the restic repository's prefix inside the bucket; a fresh
+start without a restore (`repo-<4 hex>`) uses the same bucket, so there is no
+dashboard step in that branch.
+
+- **Bucket:** `odile-t-<slug>` (the `t` is tenant; for example
+  `odile-t-odl-7f3a2c`), **default
+  jurisdiction**, `locationHint=enam`, no public access. It is disjoint from HQ's
+  `hermes-hq-backup` in name, in endpoint (`<account_id>.r2.cloudflarestorage.com`
+  vs `<account_id>.eu.r2.cloudflarestorage.com`) and in token resource. **Never
+  touch `hermes-hq-backup`; it is HQ's only copy.**
+- **Keys:** two bucket-scoped tokens, both minted by **Savio in the Cloudflare
+  dashboard** (there is no account-wide R2 credential at HQ): **Object Read &
+  Write** for the guest, **Object Read only** for the user's recovery file. The
+  guest's pair, the endpoint, the bucket and `AWS_DEFAULT_REGION=auto` live in
+  `/etc/odile/backup-s3.env` (0600 root); the same pair is kept on HQ at
+  `/root/.odile/r2/odile-t-<slug>.env` (0600) only so a rebuild can
+  re-deliver it. Neither token can create or delete a bucket.
+- **Cap:** **2.0 GB per repository, at most three buckets in total (the demo
+  `odl-7971a8`, the bench `odl-bench`, the first paying tenant), 9 GB across the
+  account** (which already holds HQ's 1.15 GB). `backup.py run` reads
+  `R2_TENANT_CAP_BYTES=2000000000` and reports `status: over_cap` with the size
+  when the repository after prune exceeds it; a run that starts over cap does not
+  upload. `odilectl backup-usage` lists all four buckets daily and alerts at
+  **8.0 GB (warn) / 9.0 GB (critical)**. The **fourth bucket — the second
+  paying tenant — waits for B2.**
+- **Verification after minting:** `HeadBucket` on `odile-t-<slug>` must answer,
+  and `HeadBucket` on `hermes-hq-backup` with the tenant token must **not** be
+  200. Record both codes in the handoff — that is the proof the token is scoped.
+- **Purge:** an Object Read & Write token can empty its bucket but **cannot
+  delete the bucket**. At `keep_until`, `odilectl purge` empties
+  `odile-t-<slug>` through the tenant token and records `bucket_emptied_at` (the
+  dashboard's **Empty Bucket** is the fallback if the token is gone); the empty
+  bucket is deleted in the Cloudflare dashboard. The 30-day promise and the
+  deletion are unchanged; only the last click is manual.
+
+The first `init` is §3's second half removed: no SSH key, no `known_hosts`, no
+human on the provider's side. With `/etc/odile/backup-s3.env` in place (0600
+root), the guest runs
+
+```sh
+backup.py init --repo 's3:https://<account_id>.r2.cloudflarestorage.com/odile-t-<slug>/repo'
+```
+
+and a second run answers `same`, exactly as in §3.
+
+The readback that proves HQ's bucket was untouched at the re-cut is in
+`docs/architecture/ADR-backup.md` §4.2 (75 objects / 1,149,539,702 bytes, one
+snapshot `8d521571…`), and the migration back to B2 is that ADR's §10.
+
 ---
 
 ## 4. Drill 1 — delete a file, restore it, compare
@@ -759,7 +841,11 @@ sentence is quoted (ODL-474 lands it).
   user's recovery file. Never all three without a successful drill between.
 - **Move the repository:** a new URL is `--repo` on the next `init`/`run` and
   the seed's `backup_repo_url`; the password and the program do not change.
-  Keep the old box for 30 days, then delete it.
+  Keep the old box for 30 days, then delete it. **The interim → B2 move
+  (19 November 2026)** is `restic init` on the B2 bucket with the tenant's existing
+  password, `restic copy --from-repo <the R2 repository>`, one drill, a re-rendered
+  recovery file (new URL and read-only key, same password line), then 30 days and
+  the R2 bucket is emptied and deleted; ADR-004 §10 has the paragraph.
 - **Exit:** the encrypted repository is kept 30 days after cancellation, then
   deleted. The user can download it with the password before then; Odile can
   delete it, not read it. The deletion is `odilectl purge <slug>`
@@ -784,6 +870,14 @@ sentence is quoted (ODL-474 lands it).
 
 ## 9. What this card leaves open
 
+- **The interim destination (19 November 2026).** The items below describe the
+  SFTP stand-in; the live interim is Cloudflare R2 (§3.1). What remains open:
+  Savio creates at most three `odile-t-<slug>` buckets (the demo `odl-7971a8`,
+  the bench `odl-bench`, the first paying tenant) and mints two bucket-scoped
+  tokens each; `odilectl provision` records
+  them and verifies the scope; the demo and bench repositories are re-initialised
+  against the R2 URL; and the 9 GB readback/alert lands with the usage card.
+  The return to B2 is ADR-004 §10, not a new design.
 - **The repository and its key registration.** The installer now places the
   program and arms the timer (t_19148cba), so a fresh tenant has the job. The
   repository still needs its first `backup.py init`: it generates the SFTP key

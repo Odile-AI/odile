@@ -11,7 +11,8 @@ console (``tenant_console.py``): Odile holds no SSH key to a tenant.
 It puts, as root:
 
   * ``installer/first_visit.py``           -> the page server, with the routes
-  * ``web/verify.html``                     -> the release /verify template
+  * ``verify/verify.py``                   -> the /verify page program (ODL-236)
+  * ``templates/verify.html``              -> the /verify page the program renders
   * ``verify-lede.html``, ``verify-command.html`` -> the demo's two paragraphs,
     beside the apply that injects them (an icons deploy leaves the page the
     demo-public deploy does: the demo lede and one ``<!--demo-check-->``
@@ -25,8 +26,9 @@ It puts, as root:
     and the two the shell links
 
 Then it converges with ``apply_demo_public.py``'s own functions (the demo
-lede, the sign-in page and the Caddy block), restarts ``odile-first-visit``,
-and runs the re-assert twice so a second run proves ``same``.
+lede, the sign-in page and the Caddy block), restarts ``odile-first-visit``
+and ``odile-verify``, and runs the re-assert twice so a second run proves
+``same``.
 
 The chrome rides along because the titlebar's ``Verify this machine`` link is
 the demo's own ``/verify`` on this host (ODL-564). The installed script is the
@@ -88,6 +90,8 @@ TAB_ICONS = ("favicon.ico", "icon-32.png", "apple-touch-icon.png")
 #: (local source, remote path, mode) — the machine's own copies.
 PUTS = (
     (REPO / "installer" / "first_visit.py", f"{LIB}/first_visit.py", "0755"),
+    (REPO / "verify" / "verify.py", f"{LIB}/verify.py", "0755"),
+    (REPO / "templates" / "verify.html", f"{LIB}/verify.html", "0644"),
     (REPO / "web" / "first-visit.html", f"{LIB}/first-visit.html", "0644"),
     *[(REPO / "web" / name, f"{ICON_ROOT}/{name}", "0644")
       for name, _sha, _type in ICONS],
@@ -195,7 +199,7 @@ def template_bytes(repo: Path = REPO) -> bytes:
     until the apply re-added it (ODL-563's root cause, and the reason the
     deploy's `same` line has to compare against this result).
     """
-    release = (repo / "web" / "verify.html").read_text(encoding="utf-8")
+    release = (repo / "templates" / "verify.html").read_text(encoding="utf-8")
     lede = (repo / "deploy" / "demo-host" / "verify-lede.html").read_text(encoding="utf-8")
     command = (repo / "deploy" / "demo-host" / "verify-command.html").read_text(encoding="utf-8")
     try:
@@ -208,8 +212,9 @@ def template_bytes(repo: Path = REPO) -> bytes:
 def converge_verify_template(console, say) -> bool:
     """Put the release /verify page only when its converged result differs.
 
-    The machine's file is the release page with the demo's lede and command
-    section inside its tenant block, so comparing the raw release page would
+    The machine's file is the release page with the demo's lede in its tenant
+    block and the command section after the `#machine` section, so comparing
+    the raw release page would
     rewrite on every run. `template_bytes` is the target; the upload is still
     the release page, because the apply writes the rollback copy from it (the
     page a customer machine would have).
@@ -221,7 +226,7 @@ def converge_verify_template(console, say) -> bool:
     if current and current[0] == wanted:
         say("same", f"{remote} ({wanted[:16]}…)")
         return False
-    console.put(str(REPO / "web" / "verify.html"), remote, mode="0644")
+    console.put(str(REPO / "templates" / "verify.html"), remote, mode="0644")
     say("write", f"{remote} (the release page; the demo lede and command follow)")
     return True
 
@@ -386,7 +391,8 @@ def main(argv: list[str] | None = None) -> int:
         console.connect("judge", password)
         console.open_session()
     for command in ("systemctl is-active caddy",
-                    "systemctl is-active odile-first-visit"):
+                    "systemctl is-active odile-first-visit",
+                    "systemctl is-active odile-verify"):
         result = console.run(f"sudo {command}", check=False)
         say("state", f"{command}: {(result.get('stdout') or '').strip()}")
     block = console.run("sudo grep -c '@tabicons path /favicon.ico' /etc/caddy/Caddyfile",
