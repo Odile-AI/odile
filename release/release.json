@@ -1,8 +1,8 @@
 {
   "artifacts": {
     "installer": {
-      "sha256": "d48f73aabb2d2d079f9b7df4b15a70a96dee07db707f78d826058dfb05da5ae4",
-      "size": 1503831,
+      "sha256": "34e195c35d4c87d78ed38a777be7eddf81b534d8f0caefa2011d30ac1405bb6d",
+      "size": 1504711,
       "url": "odile_install.py"
     },
     "skills": {
@@ -14,14 +14,14 @@
   "boot": {
     "kernel": "6.12.115+deb13.1-amd64"
   },
-  "generated_at": "2026-11-20T07:01:51Z",
+  "generated_at": "2026-11-20T12:43:56Z",
   "manifest": {
-    "sha256": "1aca64464902a3987ff914678a15a55d0d4e0d1dd25f3701d2f16be08e2c597b",
+    "sha256": "bf774034554713704b112baa7cfb30b20146c4ff315be89f16b504bb1e697486",
     "signature_url": "manifest.json.sig",
     "url": "manifest.json"
   },
-  "notes": "t_080f8a83: the installed help's bill answer states alpha.0's no-price line (Odile pays for the machine and the inference) instead of the v5 $49 and the held $12 allowance; re-embedded in the signed installer and in the skills artifact rebuilt from a fresh scratch root.",
+  "notes": "ODL-579 follow-up (t_eaa22faa) over 2026.11.20-1 (t_080f8a83). BRAND.md \u00a7Accessibility tokens, Keyboard row: every state of the tenant /verify page (templates/verify.html, rendered by verify/verify.py) and of the first-visit page (web/first-visit.html, served by first_visit.py) now opens with a skip link that targets the page's own main, is off screen until :focus-visible, and then paints the sheet's 2 px --ink ring at 3 px offset. Both pages keep their one h1 and their landmark set: the skip link is an anchor before main, so no landmark is added or removed. tests/test_first_visit.py and tests/test_verify.py walk the rendered document order and pin the rule's declarations; the settled ring is measured in the render probe. The embedded page pins (FIRST_VISIT_PAGE_SHA256, VERIFY_TEMPLATE_SHA256) and this installer's bytes move; the programs, their rows and the pages' copy are otherwise unchanged.",
   "product": "odile",
-  "release": "2026.11.20-1",
+  "release": "2026.11.20-2",
   "schema": 1
 }

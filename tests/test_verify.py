@@ -37,6 +37,7 @@ import urllib.error
 import urllib.request
 from unittest import mock
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from html.parser import HTMLParser
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -1768,6 +1769,185 @@ class VerifyReadmeNoteTests(unittest.TestCase):
         self.assertIn("synthetic test-only chain with no network", text)
 
 
+class FocusOrder(HTMLParser):
+    """The document order of what a browser would tab to, and nothing else.
+
+    ``<a href>``, ``<button>``, ``<input>`` that is not hidden, ``<select>``,
+    ``<textarea>`` and any element with a non-negative ``tabindex``. A class
+    name proves nothing about order, so the tests read the rendered page: the
+    skip link's whole contract is that it comes first.
+    """
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.stops: list[dict[str, str | None]] = []
+
+    def handle_starttag(self, tag: str,
+                        attrs: list[tuple[str, str | None]]) -> None:
+        attributes = dict(attrs)
+        tabindex = (attributes.get("tabindex") or "").strip()
+        kind = (attributes.get("type") or "text").strip().lower()
+        focusable = (
+            (tag == "a" and attributes.get("href") is not None)
+            or tag in ("button", "select", "textarea")
+            or (tag == "input" and kind != "hidden")
+            or (tabindex.isdigit() and int(tabindex) >= 0)
+        )
+        if focusable:
+            self.stops.append({
+                "tag": tag,
+                "class": attributes.get("class") or "",
+                "id": attributes.get("id"),
+                "href": attributes.get("href"),
+            })
+
+
+def focus_order(body: str) -> list[dict[str, str | None]]:
+    """What the page's own markup makes tabbable, in document order."""
+    parser = FocusOrder()
+    parser.feed(body)
+    parser.close()
+    return parser.stops
+
+
+def main_id(body: str) -> str | None:
+    """The ``id`` on the page's ``<main>``, or None when it carries none."""
+    element = re.search(r"<main\b([^>]*)>", body)
+    if element is None:
+        return None
+    attribute = re.search(r'\bid="([^"]+)"', element.group(1))
+    return attribute.group(1) if attribute else None
+
+
+class VerifySkipLinkTests(unittest.TestCase):
+    """BRAND.md's Keyboard row on HQ's /verify page.
+
+    The page exposes four landmarks in the demo role and three on a tenant, so
+    the rule applies: a skip link is the first focusable element and it names
+    the page's own ``main``. HQ serves ``web/verify-public.html``; the review
+    reads ``web/verify.html``; the machine's page is ``templates/verify.html``,
+    rendered by ``odile-verify`` (asserted in ``VerifyPageTests``). One shell,
+    three carriers, so all three must carry the same rule.
+    """
+
+    AT = "2026-11-11T10:00:00Z"
+    REPORT = (
+        "read from your machine, 2026-11-11T10:00:00Z\n"
+        "verify_and_unlock \u2014 access report\n\n"
+        "  usable keys    PASS  0 usable user keys; every authorized_keys line is the measured boot key\n"
+        "  boot key       PASS  ssh-ed25519 SHA256:LLwDfYyE3VMc9T9o+XvydfNzrXxyzaQ2lysSxCSSEWA; public key only\n"
+        "  seal           PASS  policy 0x30000; seal_id strict-bench-v1; measurement " + "a" * 96 + "\n"
+        "  sign-in hash   PASS  scrypt hash present in /home/odile/.hermes/.env; no plaintext password\n"
+        "  operator key   PASS  none (authorized_keys: 1 line(s), the measured throwaway)\n\n"
+        "  PASS \u2014 five checks: zero usable user keys, the throwaway boot key, the seal, "
+        "the sign-in hash, no operator key.\n"
+    )
+
+    def setUp(self) -> None:
+        self._dir = tempfile.TemporaryDirectory(prefix="odile-verify-skip-")
+        self.base = Path(self._dir.name)
+
+    def tearDown(self) -> None:
+        self._dir.cleanup()
+
+    def page(self, role: str, report: str | None) -> str:
+        """app.py's render of the HQ page, with or without a report file."""
+        app = load_app()
+        saved = app.ACCESS_REPORT_PATH
+        if report is None:
+            app.ACCESS_REPORT_PATH = str(self.base / "no-report.txt")
+        else:
+            path = self.base / "access-report.txt"
+            path.write_text(report, encoding="utf-8")
+            app.ACCESS_REPORT_PATH = str(path)
+        try:
+            return app.render_verify(role)
+        finally:
+            app.ACCESS_REPORT_PATH = saved
+
+    def states(self) -> dict[str, str]:
+        """The demo's bench fallback and report, and a tenant with each."""
+        return {
+            "demo-bench": self.page("demo", None),
+            "demo-machine": self.page("demo", self.REPORT),
+            "tenant-machine": self.page("tenant", self.REPORT),
+            "tenant-noaccess": self.page("tenant", None),
+        }
+
+    def test_the_first_tab_stop_in_every_state_is_a_skip_link_to_that_pages_main(self):
+        for name, body in self.states().items():
+            with self.subTest(state=name):
+                stops = focus_order(body)
+                self.assertTrue(stops, "the %s page has no focusable element" % name)
+                first = stops[0]
+                self.assertEqual(first["tag"], "a",
+                                 "the first tab stop is <%s>, not the skip link"
+                                 % first["tag"])
+                self.assertIn("skip", (first["class"] or "").split(),
+                              "the first tab stop is not the skip link: %r" % first)
+                target = main_id(body)
+                self.assertIsNotNone(target, "the page's <main> carries no id")
+                self.assertEqual(first["href"], "#" + str(target),
+                                 "the skip link points at %r, not the page's main"
+                                 % first["href"])
+                self.assertIn('<a class="skip" href="#%s">Skip to content</a>'
+                              % target, body)
+
+    def test_every_state_keeps_its_landmarks_and_its_one_heading(self):
+        """The skip link is an anchor before ``main``, so nothing else moves.
+
+        The demo role keeps the laptop section, the report, the access report
+        and the three gaps; a tenant keeps the report, its own access section
+        and the gaps. The header sits inside ``main``, so it is not a banner
+        landmark of its own, and one ``<h1>`` stays one ``<h1>``.
+        """
+        expected = {
+            "demo-bench": ["check", "report", "access", "gaps"],
+            "demo-machine": ["check", "report", "access", "gaps"],
+            "tenant-machine": ["report", "access", "gaps"],
+            "tenant-noaccess": ["report", "access", "gaps"],
+        }
+        for name, body in self.states().items():
+            with self.subTest(state=name):
+                self.assertEqual(
+                    re.findall(r'<section\b[^>]*aria-labelledby="([^"]+)"', body),
+                    expected[name], "a landmark was added or removed")
+                self.assertEqual(len(re.findall(r"<h1\b", body)), 1)
+                self.assertEqual(len(re.findall(r"<main\b", body)), 1)
+                self.assertEqual(len(re.findall(r"<header\b", body)), 1)
+
+    def test_the_shipped_carriers_read_the_skip_link_first_and_paint_the_ring(self):
+        """The review copy, the served copy and the machine's template agree."""
+        carriers = (ROOT / "web" / "verify.html",
+                    ROOT / "web" / "verify-public.html",
+                    TEMPLATE)
+        for path in carriers:
+            with self.subTest(page=path.name):
+                text = path.read_text(encoding="utf-8")
+                stops = focus_order(text)
+                self.assertTrue(stops, "the page has no focusable element")
+                self.assertIn("skip", (stops[0]["class"] or "").split(),
+                              "the first tab stop in the markup is %r" % stops[0])
+                self.assertEqual(stops[0]["href"], "#" + str(main_id(text)))
+                self.assertIn(".skip{position:absolute;left:-9999px;top:0}", text)
+                rule = re.search(r"\.skip:focus-visible\{([^}]*)\}", text)
+                self.assertIsNotNone(rule, "no :focus-visible rule reveals the skip link")
+                assert rule is not None  # the assertion above names the failure
+                declarations = rule.group(1)
+                self.assertIn("left:24px", declarations)
+                self.assertIn("min-height:44px", declarations)
+                self.assertIn("background:var(--ink)", declarations)
+                self.assertIn("color:var(--paper)", declarations)
+                self.assertIn("outline:2px solid var(--ink)", declarations,
+                              "the focus ring is not the sheet's 2 px --ink")
+                self.assertIn("outline-offset:3px", declarations,
+                              "the focus ring is not at the sheet's 3 px offset")
+                self.assertNotIn(".skip:focus{", text,
+                                 "the link shows on a mouse focus too")
+                self.assertIn(".skip:focus-visible{left:18px}", text,
+                              "the link does not follow main's 18 px inset at 390")
+
+
 class VerifyPageTests(unittest.TestCase):
     """The /verify page: every row, its provenance, and a page that fails honest.
 
@@ -2449,6 +2629,36 @@ Digests:
                              "PASS" if verdicts[audit_name] else "FAIL",
                              "the page and the audit disagree on %s" % audit_name)
         self.assertEqual(names["LUKS"]["state"], "PASS")
+
+    # -- the keyboard contract ---------------------------------------------
+
+    def test_the_first_tab_stop_is_the_skip_link_and_the_landmarks_did_not_move(self) -> None:
+        """BRAND.md's Keyboard row on the page a tenant actually reads.
+
+        The rendered page has four named sections, so a skip link comes first:
+        it is an anchor before ``main``, points at the page's own ``main``,
+        and adds or removes no landmark. The rule that paints the sheet's ring
+        is read in ``VerifySkipLinkTests``; here the page is the render
+        ``odile-verify`` produced, not the template text.
+        """
+        body = self.page()
+        stops = focus_order(body)
+        self.assertTrue(stops, "the rendered page has no focusable element")
+        self.assertEqual(stops[0]["tag"], "a",
+                         "the first tab stop is <%s>, not the skip link"
+                         % stops[0]["tag"])
+        self.assertIn("skip", (stops[0]["class"] or "").split())
+        target = main_id(body)
+        self.assertIsNotNone(target, "the page's <main> carries no id")
+        self.assertEqual(stops[0]["href"], "#" + str(target))
+        self.assertIn('<a class="skip" href="#%s">Skip to content</a>' % target, body)
+        self.assertEqual(
+            re.findall(r'<section\b[^>]*aria-labelledby="([^"]+)"', body),
+            ["laptop-h", "machine-h", "check-h", "gaps-h"],
+            "a landmark was added or removed")
+        self.assertEqual(len(re.findall(r"<h1\b", body)), 1)
+        self.assertEqual(len(re.findall(r"<main\b", body)), 1)
+        self.assertEqual(len(re.findall(r"<header\b", body)), 1)
 
 
 if __name__ == "__main__":

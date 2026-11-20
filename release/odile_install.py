@@ -4649,7 +4649,7 @@ def main(argv: list[str] | None = None) -> int:
 if __name__ == "__main__":
     sys.exit(main())
 '''
-FIRST_VISIT_PAGE_SHA256 = "eed3a6e9d12877abd10f604a52aa9fda5f759a8e85fbced88f95649a06c9213f"
+FIRST_VISIT_PAGE_SHA256 = "6758b591aafe700a386c50c6cbdff94c245f8a4ac8dfed995dfecc376ba29649"
 FIRST_VISIT_PAGE = r'''<!doctype html>
 <html lang="en">
 <head>
@@ -4676,6 +4676,12 @@ body{margin:0;background:var(--paper);color:var(--ink);
   -webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility}
 ::selection{background:#1c1813;color:#eadfc4}
 main{max-width:720px;margin:0 auto;padding:32px 24px 64px}
+.skip{position:absolute;left:-9999px;top:0}
+.skip:focus-visible{left:24px;top:12px;z-index:10;display:inline-block;min-height:44px;padding:12px 16px;
+  background:var(--ink);color:var(--paper);text-decoration:none;
+  font:600 10px/1.2 var(--text);
+  letter-spacing:.20em;text-transform:uppercase;
+  outline:2px solid var(--ink);outline-offset:3px}
 .top{margin:0 0 24px}
 .brand{display:inline-block;padding:12px 0;margin:-12px 0;color:var(--ink);text-decoration:none;
   font-size:2rem;font-weight:500;letter-spacing:-.03em;line-height:.88}
@@ -4742,6 +4748,7 @@ section{margin:0 0 8px}
 @media (max-width:560px){
   body{font-size:18px}
   main{padding:24px 18px 48px}
+  .skip:focus-visible{left:18px}
   .act{display:block;margin-top:24px}
   .primary{width:100%}
   .quiet{margin:10px 0 0}
@@ -4756,7 +4763,8 @@ h1,h2,h3,.brand,.mark,.wordmark,.focus{font-family:var(--serif)}
 </style>
 </head>
 <body>
-<main>
+<a class="skip" href="#main">Skip to content</a>
+<main id="main">
   <!-- A7 and A9 of the decided strict-bar deck (docs/product/CLAIMS-RECUT-STRICT.md);
        ODL-462 lands the deck in docs/CLAIMS.md. -->
   <header class="top">{{BRAND}}</header>
@@ -6032,7 +6040,7 @@ def main(argv: list[str] | None = None) -> int:
 if __name__ == "__main__":
     sys.exit(main())
 '''
-VERIFY_TEMPLATE_SHA256 = "e48500c76877f4d37cfc64519f8f81b1746d13511763ed0fe982155874ff67ab"
+VERIFY_TEMPLATE_SHA256 = "2ec8c054932b319b3e34ce49cdd55dbdb713badc2a832821ea29b349acce57ea"
 VERIFY_TEMPLATE = r'''<!doctype html>
 <html lang="en">
 <head>
@@ -6059,6 +6067,12 @@ body{margin:0;background:var(--paper);color:var(--ink);
   -webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility}
 ::selection{background:var(--ink);color:var(--paper)}
 main{max-width:820px;margin:0 auto;padding:32px 24px 64px}
+.skip{position:absolute;left:-9999px;top:0}
+.skip:focus-visible{left:24px;top:12px;z-index:10;display:inline-block;min-height:44px;padding:12px 16px;
+  background:var(--ink);color:var(--paper);text-decoration:none;
+  font:600 10px/1.2 var(--text);
+  letter-spacing:.20em;text-transform:uppercase;
+  outline:2px solid var(--ink);outline-offset:3px}
 .top{display:flex;flex-wrap:wrap;align-items:baseline;justify-content:space-between;gap:0 24px;margin:0 0 32px}
 .brand{display:inline-block;padding:12px 0;margin:-12px 0;color:var(--ink);text-decoration:none;
   font-size:2rem;font-weight:500;letter-spacing:-.03em;line-height:.88}
@@ -6116,6 +6130,7 @@ pre code::selection{background:var(--term-ink);color:var(--term)}
 @media (max-width:560px){
   body{font-size:17px}
   main{padding:24px 18px 48px}
+  .skip:focus-visible{left:18px}
   .top{margin-bottom:24px}
   section{margin-top:32px;padding-top:24px}
   .checks,.checks tbody,.checks tr,.checks th,.checks td{display:block;width:auto}
@@ -6130,7 +6145,8 @@ pre code::selection{background:var(--term-ink);color:var(--term)}
 </style>
 </head>
 <body>
-<main>
+<a class="skip" href="#main">Skip to content</a>
+<main id="main">
   <header class="top">
     <a class="brand" href="/">Odile</a>
   </header>
