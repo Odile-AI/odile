@@ -2435,6 +2435,44 @@ t_e23f3288's `/verify` grant cut (16:34Z), and `2026.11.20-3` is later than
 every cut before it by `generated_at` (20:12Z). A build of this tree carries
 the `-3` pair of 2026-11-20.
 
+**The `2026.11.20-4` cut (t_e3540242: the frozen pair's dry-run fixture).**
+This branch is cut from `main` `f54dc6e`, whose `-3` is the skip-link cut
+above. The installer's own `--self-test` writes a dry-run kit before it exercises
+`--dry-run --recovery-kit <kit>`, and that fixture named the live Servury box id
+(`json.dumps({"slug": "odl-dry", "instance_id": …})`, added by `4fd9731`,
+ODL-340's round 2). `installer/` and `release/` are `FROZEN` in
+`tools/build_public_tree.py` — the installer pins a SHA-256 for every file it
+embeds and `release/` carries detached signatures — so the public build never
+scrubbed it, and the forbid list's `servury-box-id` class found it in a built
+tree at both frozen paths (`forbidden-value`, line 15353 at `e399191` and
+15538 at this head, digest `3e5275784e44`). The fixture now carries the scrub's
+own same-length stand-in, `deadbeef`, so the frozen bytes are clean at the
+source: `make leak` at this head finds nothing there, and a built tree PASSes
+with the two `forbidden-value` rows for these two paths deleted from its own
+allowlist as well, so nothing is waived. `release/odile_install.py` is the
+checkout's byte-identical copy (`cmp` exit 0) at `e58f31af…` (1,512,539 bytes —
+the stand-in is the same length, so the size is `-3`'s), and
+`tools/recut_release.py` re-derived and re-signed the pair: `manifest.json` is
+`d1fa29c3…` (50,044 bytes) and against the committed `-3` document its diff is
+two lines, `installer_sha256` and `generated_at`. `release/release.json`
+(`783deb94…`) names `2026.11.20-4` at `2026-11-20T23:12:39Z`. No root rebuild
+is claimed: the skills artifact (`ccff7327…`, 851,913 bytes), the `odile-help`
+row, the `539e205f…` handoff audit and the `d9c4278a…` backup row are
+unchanged. `--self-test` prints `self-test: PASS` on both the checkout's
+installer and `release/odile_install.py`; `--verify-signature` prints
+`signature: OK (sha256 e58f31af…)` on both; a one-byte edit prints
+`signature: BAD (sha256 d05974c4…)` and exits 3; and
+`tools/recut_release.py --check` prints ten `ok` lines. The two allowlist rows
+for these paths stay, reworded to what they now cover: `origin/main`'s history
+still carries the blob that named the id (`4fd9731`), so CI's `history-secrets`
+job needs the row, while the tree no longer does. The id ledger: `-1` is
+t_080f8a83's installed-help cut (07:01Z), `-2` is t_e23f3288's `/verify` grant
+cut (16:34Z), `-3` is t_7d51ffba's skip-link cut (20:12Z), and `2026.11.20-4`
+is later than every cut before it by `generated_at` (23:12Z). It is committed,
+not deployed: measured 2026-11-20T23:16:57Z the URL serves `2026.11.19-5`
+(`1d946c44…`, 1,503,889 bytes; manifest `7031d4a0…`). §2 of `image.md` remains
+the `-3` bench measurement; a build of this tree carries the `-4` pair.
+
 
 The clock starts at the build's `uki.sh --sign` and stops when
 `https://<slug>.odile.fyi/login` answers 200 over TLS. The gate is 30 minutes.

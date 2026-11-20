@@ -1,7 +1,7 @@
 {
   "artifacts": {
     "installer": {
-      "sha256": "d869402ead2adf269a4ac8f2ceab711366109962c2b1ec2b5a07e6e5ba21c01f",
+      "sha256": "e58f31afe209a16e54d09469c19e89d202e556a0990236eef7a974e1c9a413dc",
       "size": 1512539,
       "url": "odile_install.py"
     },
@@ -14,14 +14,14 @@
   "boot": {
     "kernel": "6.12.115+deb13.1-amd64"
   },
-  "generated_at": "2026-11-20T20:12:55Z",
+  "generated_at": "2026-11-20T23:12:39Z",
   "manifest": {
-    "sha256": "364341fdc30915c59731c038b5b243f492123c72642ff48de088a65aa676cfcd",
+    "sha256": "d1fa29c3d08dd811121149f6963d659fadd094237591050949c543efff8f26df",
     "signature_url": "manifest.json.sig",
     "url": "manifest.json"
   },
-  "notes": "ODL-579 follow-up (t_eaa22faa), round 3: merges main 4d75a02, whose own 2026.11.20-2 (t_e23f3288 round 7, 2159bb2a) re-cut the /verify grant verdict. This cut adds the skip link BRAND.md's Keyboard row requires to both embedded pages: web/first-visit.html and templates/verify.html now open with <a class=\"skip\" href=\"#main\"> before <main id=\"main\">, hidden at left:-9999px until :focus-visible, then the 2 px ink ring at 3 px. The pages keep their one h1 and their landmark set. The embedded first_visit.py is 21c84e64 and the page pin is 6758b591; the /verify program is 70d8f469, its template 548bc270, the wrapper 332eccdf and the handoff audit 539e205f. The skills artifact is unchanged (ccff7327). The cut id 2026.11.20-3 is later than main's 2026.11.20-2 by generated_at.",
+  "notes": "t_e3540242: the frozen installer pair's dry-run fixture named the live Servury box id (added by 4fd9731, ODL-340 round 2); installer/ and release/ are FROZEN, so the public build never scrubbed it and the forbid list's servury-box-id class found it in a built tree. The fixture now carries the build's own same-length stand-in, deadbeef, so the frozen bytes are clean at the source rather than waived by an allowlist row. Only installer_sha256 and generated_at move; the skills artifact, the odile-help row and the 539e205f handoff audit are unchanged.",
   "product": "odile",
-  "release": "2026.11.20-3",
+  "release": "2026.11.20-4",
   "schema": 1
 }
