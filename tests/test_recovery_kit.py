@@ -54,6 +54,16 @@ MEASUREMENT = "ab" * 48
 REPO = "sftp:odile-backup@backup.odile.fyi:/tenants/odl-7f3a2c"
 URL = f"https://{SLUG}.odile.fyi"
 FIRST_VISIT = f"{URL}/first-visit?t={TOKEN}"
+ACCOUNT = "https://test.odile.fyi"
+
+# The sentence a reader acts on when the renderer is given no account host: the
+# fallback is byte-for-byte the paragraph ODL-579 shipped, so a caller that
+# passes no slot reads exactly what it read before.
+FALLBACK_PARAGRAPH = (
+    "Your account password is not reset on the machine. It resets at your account\n"
+    "site — the site in your invitation email. Open that site and add /forgot. That\n"
+    "reset works while the machine is down; the recovery code needs the machine up.\n"
+)
 
 # Every one of these is a decided v3.9 row (`docs/product/CLAIMS-RECUT-STRICT.md`)
 # or a deck row that row keeps. The kit may not coin a trust sentence of its own.
@@ -252,6 +262,46 @@ class RenderTests(unittest.TestCase):
         self.assertIn(f"odile-{SLUG}-recovery-kit.txt", text, "this kit is named separately")
         self.assertIn("backup password", text)
         self.assertIn("certificate fingerprint", text)
+
+    def test_without_the_account_slot_the_sentence_is_byte_identical(self) -> None:
+        """No slot: the paragraph the reader acts on is exactly ODL-579's bytes."""
+        text = kit_text()
+        self.assertIn(FALLBACK_PARAGRAPH, text)
+        self.assertNotIn("{{", text)
+        self.assertEqual(kit_text(account_host=""), text,
+                         "an empty --account-host is the unset slot, not a different kit")
+
+    def test_the_account_slot_prints_an_address_the_reader_can_type(self) -> None:
+        """The action sentence carries the literal URL, and nothing else moves."""
+        fallback = kit_text()
+        text = kit_text(account_host=ACCOUNT)
+        self.assertIn(
+            "Your account password is not reset on the machine. It resets at\n"
+            f"{ACCOUNT}/forgot. That reset works while the machine is down;\n"
+            "the recovery code needs the machine up.\n",
+            text)
+        self.assertNotIn("{{", text, "no placeholder survives a render")
+        self.assertNotIn("invitation email", text)
+        self.assertEqual(text.count(f"{ACCOUNT}/forgot"), 1)
+        self.assertNotIn(f"{ACCOUNT}//forgot", text)
+        # Only the sentence's own lines move; the rest of the kit is byte-identical.
+        self.assertEqual(len(fallback.splitlines()), len(text.splitlines()))
+        differing = [(a, b) for a, b in zip(fallback.splitlines(), text.splitlines()) if a != b]
+        self.assertEqual(len(differing), 3, differing)
+
+    def test_a_trailing_slash_on_the_account_host_does_not_double_the_path(self) -> None:
+        text = kit_text(account_host=f"{ACCOUNT}/")
+        self.assertIn(f"{ACCOUNT}/forgot.", text)
+        self.assertNotIn(f"{ACCOUNT}//forgot", text)
+
+    def test_a_bad_account_host_is_refused_naming_the_flag(self) -> None:
+        for value in ("http://test.odile.fyi", "test.odile.fyi",
+                      "https://test odile.fyi", "https://"):
+            with self.subTest(value):
+                result = render(account_host=value)
+                self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+                self.assertIn("recovery kit:", result.stderr)
+                self.assertIn("--account-host", result.stderr)
 
     def test_the_kit_carries_both_public_halves_and_the_certificate(self) -> None:
         """ODL-514: a kit that names one key stops being an anchor the day the other signs."""
