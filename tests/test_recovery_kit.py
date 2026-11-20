@@ -42,7 +42,9 @@ SIGNING_KEY = ROOT / "installer" / "odile-signing-key.pub"
 DECIDED = ROOT / "docs" / "product" / "CLAIMS-RECUT-STRICT.md"
 
 sys.path.insert(0, str(ROOT / "tools"))
+sys.path.insert(0, str(ROOT))
 import claims_lint  # noqa: E402
+from odilectl.config import Config  # noqa: E402
 
 SLUG = "odl-7f3a2c"
 IPV4 = "203.0.113.120"
@@ -293,6 +295,56 @@ class RenderTests(unittest.TestCase):
         text = kit_text(account_host=f"{ACCOUNT}/")
         self.assertIn(f"{ACCOUNT}/forgot.", text)
         self.assertNotIn(f"{ACCOUNT}//forgot", text)
+
+    def test_a_pasted_reset_url_renders_exactly_one_forgot(self) -> None:
+        """`<host>/forgot` is the value the decision doc prints; it stands for the host.
+
+        Measured on t_cc6cb872: the flag trimmed only a trailing `/`, so the
+        natural paste from `DECISION-password-reset.md` rendered
+        `https://test.odile.fyi/forgot/forgot` at rc=0, with no warning.
+        """
+        expected = kit_text(account_host=ACCOUNT)
+        for value in (f"{ACCOUNT}/forgot", f"{ACCOUNT}/forgot/"):
+            with self.subTest(value):
+                text = kit_text(account_host=value)
+                self.assertNotIn(f"{ACCOUNT}/forgot/forgot", text)
+                self.assertEqual(text.count(f"{ACCOUNT}/forgot"), 1)
+                self.assertEqual(
+                    text, expected,
+                    "a pasted reset URL renders the host it starts with, byte for byte")
+
+    def test_the_config_example_names_the_slot_and_uncomments_to_a_working_host(self) -> None:
+        """The example is where an operator learns the key (the second t_cc6cb872 nit).
+
+        `odilectl/config.py` treats `#` as an ordinary character in a value, so
+        an inline comment on the key line would land in the value the moment the
+        line is uncommented. Pin the whole discovery path: uncomment the
+        example's own line, load it through the real loader, render with it.
+        """
+        lines = (ROOT / "odilectl" / "config.example.yaml").read_text(
+            encoding="utf-8").splitlines()
+        slots = [line for line in lines if line.startswith("# account_host:")]
+        self.assertEqual(len(slots), 1,
+                         "the example names account_host once, as a comment")
+        key, _, value = slots[0][len("# "):].partition(":")
+        self.assertEqual(key, "account_host")
+        value = value.strip()
+        self.assertTrue(value.startswith("https://"), value)
+
+        body = [line for line in lines
+                if line.strip() and not line.lstrip().startswith("#")]
+        body.append(f"{key}: {value}")
+        with tempfile.TemporaryDirectory(prefix="odile-kit-config-") as directory:
+            path = Path(directory) / "config.yaml"
+            path.write_text("\n".join(body) + "\n", encoding="utf-8")
+            path.chmod(0o600)
+            loaded = Config.load(path)
+        self.assertEqual(loaded.get("account_host"), value,
+                         "uncommenting the example's line yields the bare value")
+
+        text = kit_text(account_host=loaded.get("account_host"))
+        self.assertEqual(text.count(f"{value}/forgot"), 1)
+        self.assertNotIn("the site in your invitation email", text)
 
     def test_a_bad_account_host_is_refused_naming_the_flag(self) -> None:
         for value in ("http://test.odile.fyi", "test.odile.fyi",

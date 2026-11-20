@@ -256,8 +256,14 @@ def build_values(args: argparse.Namespace) -> dict[str, object]:
     # shipped with, which points at the invitation email instead of at a host.
     account_host = (getattr(args, "account_host", None) or "").strip()
     if account_host:
-        if account_host.endswith("/"):
-            account_host = account_host[:-1]
+        # `DECISION-password-reset.md` prints this value as `<account host>/forgot`,
+        # so the natural paste is the reset URL itself. The slot is the host and
+        # the template appends `/forgot`, so strip the path the template would
+        # add (the paste then renders the URL it was) before validating what is
+        # left: https:// only, one token, no whitespace.
+        account_host = account_host.rstrip("/")
+        if account_host.endswith("/forgot"):
+            account_host = account_host[: -len("/forgot")].rstrip("/")
         if not account_host.startswith("https://") or any(
                 char.isspace() for char in account_host):
             raise BadInput(
@@ -321,7 +327,8 @@ def build_parser() -> argparse.ArgumentParser:
     render_p.add_argument("--account-host",
                           help="the account site the invitation email names, e.g. "
                                "https://odile.fyi; the kit then prints "
-                               "<host>/forgot (default: point at the invitation email)")
+                               "<host>/forgot (a pasted <host>/forgot is accepted; "
+                               "default: point at the invitation email)")
     render_p.add_argument("--written-at", help="render timestamp, ISO 8601 UTC (tests)")
     render_p.add_argument("--out", help="write the kit here (default: stdout)")
     return parser
