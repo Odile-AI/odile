@@ -131,9 +131,29 @@ disk write started.
 It arms the console log first (the first boot's transcript cannot be recovered
 after the fact), **after** the one-id fence (§1 rule 8), then reinstall → boot
 image → disk image, in the vendor's order. The disk write **starts the machine
-itself**; the command ends at that submission. Without `--apply --confirm` the
-same command is a dry run and prints every field it would post, including the
-pair it would lose.
+itself**. Without `--apply --confirm` the same command is a dry run and prints
+every field it would post, including the pair it would lose.
+
+**The disk write clears the boot-image field**, measured twice on this box on
+2026-11-20 (`t_556631d6`; `t_6d956aee` earlier), so the command does not end at
+the disk write's submission. It waits for the panel's own `Written <UTC>` stamp
+in the Disk image section — the POST returns a minute or two before the image is
+on the disk, so a read straight after it is a pre-write read — then reads
+`?action=boot-image&id=<id>` back from the API with the account's key
+(`--key-file`, default `/root/.odile/servury_reseller_key_lkbxu6i9`; the run
+refuses before the reinstall without one) and:
+
+* when `next_start` is `custom` with the same URL, SHA-256 and line, writes
+  nothing and restarts nothing — it prints `the field survived the write (no
+  re-attach)`;
+* otherwise it attaches the same pair and per-machine line again, reads the
+  field back to prove it stuck, and presses **restart** — the disk write already
+  started the machine, so only the next start has to be the requested UKI.
+
+The run's last line names the pair the next start will use. A disk write that
+reports no new `Written` stamp in `--wait` seconds fails (exit 1) as unfinished,
+and a re-attach that does not read back as `custom` fails too: neither is
+printed as success.
 
 If the wait for `Running` ends the command (the machine is still `reinstalling`
 at `--wait`), the erase has already happened and the boot/disk fields are
@@ -151,7 +171,7 @@ machine stops, writes and starts. The spike measured 1 m 32 s and 6 s and
 77 s for the same three steps on the same class of box; treat the ones digit
 as "a minute or so", the order as the contract.
 
-**Check the boot-image field after the recycle, before reading the boot.**
+**The same read-back by hand, when the command was not the one that ran.**
 Measured 2026-11-20 on the same box (`t_556631d6`): the reinstall reported
 `Running` at 32 s, the attach printed its success, the disk write completed at
 10:36:14Z — and `?action=boot-image` then answered `next_start: release` with

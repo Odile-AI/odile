@@ -29,7 +29,15 @@ A freed machine comes back as **three writes, not one call**
 (`docs/product/SPIKE-servury-reinstall.md` §6): the reinstall, the boot image,
 then the disk image. `--recycle` is that composite, in that order; the disk
 write starts the machine itself, so the first boot is the operator's step
-(`docs/runbooks/recycle.md`).
+(`docs/runbooks/recycle.md`). The disk write also **clears the boot-image
+field** (measured twice on 2026-11-20), so the composite does not trust its own
+attach print: after the write reports its own `Written` stamp it reads
+`?action=boot-image` back, re-attaches the same URL, SHA-256 and line when the
+field is gone (a plain restart follows, because the disk write already started
+the machine), and ends by naming the pair the next start will use. That
+read-back is an API call, so `--recycle --apply` needs the account's key —
+`--key-file`, default `/root/.odile/servury_reseller_key_lkbxu6i9`, checked
+before the first write.
 
 The reinstall is the Danger Zone form, and the credential can erase every
 machine on the account, so the verb is fenced harder than the image writes:
@@ -101,6 +109,11 @@ from pathlib import Path
 
 BASE = "https://servury.com"
 LOGIN = f"{BASE}/login/"
+# The reseller API. The boot-image read-back is the one call the panel cannot
+# answer as data: `/manage/<id>/admin/` shows the field as prose, and the write
+# forms say nothing about what the next start will be. `?action=boot-image`
+# answers `next_start` and the image's URL, SHA-256 and command line.
+API = "https://servury.com/api/reseller.php"
 # The login form's own names, accepted **only** at the login path. `credential`
 # is a 32-character secret and `remember_me` is the "Remember me for 30 days"
 # checkbox; neither belongs in POST_FIELDS, because the fence's meaning is that a
@@ -617,6 +630,161 @@ def attached_image(html: str) -> bool:
     return bool(re.search(r"<dt>Since</dt>", html or ""))
 
 
+WRITTEN = re.compile(r"Written\s+(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z)", re.I)
+
+
+def disk_written_at(html: str) -> str:
+    """The Disk section's own `Written <UTC>` stamp, or "" when none is set.
+
+    The disk write answers at its POST, a minute or two before the image is on
+    the disk (the SPIKE measured 18:50:35Z submitted → `Written 18:51:52Z`), so
+    the POST's success says nothing about what the machine will start next. This
+    stamp is the vendor's completion record, and it is what the boot-image
+    read-back is taken after.
+    """
+    section = re.sub(r"<[^>]+>", " ", _section(html, "Disk"))
+    match = WRITTEN.search(section)
+    return match.group(1) if match else ""
+
+
+def wait_disk_written(opener, server: str, since: str, *,
+                      wait: float, interval: float) -> str | None:
+    """Poll the panel's Disk section until its `Written` stamp is this write's.
+
+    `since` is the UTC stamp taken when the POST returned. The stamp is the
+    vendor's own, so "at or after `since`" is this write; a stamp that merely
+    differs from the first read covers a vendor clock running a few seconds
+    behind ours. Returns the stamp, or None when `wait` seconds pass with no new
+    write recorded — a failed write rolls the old disk back and leaves the old
+    stamp, which must not be read as "the disk write finished".
+    """
+    page = admin_url(server)
+    baseline = disk_written_at(get(opener, page))
+    started = time.time()
+    while True:
+        stamp = disk_written_at(get(opener, page))
+        if stamp and (stamp >= since or stamp != baseline):
+            return stamp
+        if time.time() - started >= wait:
+            return None
+        time.sleep(max(interval, 1))
+
+
+def read_boot_image(key_file: str | Path, server: str, *, timeout: float = 40.0) -> dict:
+    """`GET ?action=boot-image&id=<server>`: what the machine's next start is.
+
+    The panel renders the attached image as prose (`Since …`); the reseller API
+    answers the same fact as data — `next_start` plus the image's URL, SHA-256
+    and command line — which is what a read-back can compare. The key is the
+    account's own and comes from a file, never argv.
+    """
+    path = Path(key_file)
+    try:
+        key = path.read_text(encoding="utf-8").strip()
+    except OSError as error:
+        raise RuntimeError(f"{path}: {error.strerror or error}") from None
+    if not key:
+        raise RuntimeError(f"{path} is empty")
+    url = f"{API}?{urllib.parse.urlencode({'action': 'boot-image', 'id': server})}"
+    request = urllib.request.Request(
+        url, headers={"X-Reseller-Key": key, "Accept": "application/json"}, method="GET",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            payload = json.load(response)
+    except urllib.error.HTTPError as error:
+        detail = error.read().decode("utf-8", "replace")
+        try:
+            sentence = json.loads(detail).get("error") or detail
+        except ValueError:
+            sentence = detail
+        raise RuntimeError(str(sentence)[:300]) from None
+    if not payload.get("success", True):
+        raise RuntimeError(str(payload.get("error") or "the API refused the read"))
+    return (payload.get("data") or {}).get("boot_image") or {}
+
+
+def boot_image_matches(state: dict, url: str, sha256: str, cmdline: str) -> str | None:
+    """None when the next start is exactly this pair and line, else why not.
+
+    The line is compared after a strip: the panel stores what was posted and the
+    file is read with `strip()`, so a trailing newline is transport noise — but
+    any other difference changes the boot's measurement and is a mismatch.
+    """
+    if not state:
+        return "the API answered no boot_image"
+    if state.get("next_start") != "custom":
+        return f"next_start is {state.get('next_start')!r}"
+    image = state.get("image") or {}
+    if not image:
+        return "next_start is 'custom' but image is null"
+    if str(image.get("sha256") or "").lower() != sha256.lower():
+        return f"image.sha256 is {(image.get('sha256') or 'null')[:16]}…, not {sha256[:16]}…"
+    if image.get("url") != url:
+        return f"image.url is {image.get('url')!r}, not {url!r}"
+    wanted = (cmdline or "").strip()
+    got = (image.get("cmdline") or "").strip()
+    if got != wanted:
+        return f"image.cmdline differs ({len(got)} B, requested {len(wanted)} B)"
+    return None
+
+
+def ensure_boot_image(opener, server: str, url: str, sha256: str, cmdline: str,
+                      key_file: str | Path, *, wait: float, interval: float) -> int:
+    """Read the boot-image field back after the disk write; restore it if lost.
+
+    The composite used to trust its own attach print. Measured twice on
+    2026-11-20 (`t_556631d6`, and `t_6d956aee` earlier): the attach printed
+    success at 10:34:30Z, the disk write completed at 10:36:14Z, and
+    `?action=boot-image` then answered `next_start: release` with `image: null`
+    — the machine had started the vendor release against the new disk and sat at
+    its own unlock prompt. So the write's `Written` stamp is waited for, the
+    field is read from the API (never from the attach's output), and a lost or
+    different field is re-attached with the same URL, SHA-256 and line.
+
+    A re-attach costs a plain restart, not a second disk write: the disk write
+    already started the machine, so only the next start has to be the UKI. A
+    field that already holds the pair is left alone — no attach, no restart.
+    """
+    since = datetime_stamp()
+    written = wait_disk_written(opener, server, since, wait=wait, interval=interval)
+    if written is None:
+        print(f"panel: the disk write did not report a new Written stamp in "
+              f"{int(wait)}s — the boot-image field cannot be read back as this "
+              "write's", file=sys.stderr)
+        return 1
+    print(f"panel: the disk write completed at {written}; reading ?action=boot-image back")
+    try:
+        state = read_boot_image(key_file, server)
+    except (RuntimeError, OSError) as error:
+        print(f"panel: the boot-image read-back failed — {error}", file=sys.stderr)
+        return 1
+    why = boot_image_matches(state, url, sha256, cmdline)
+    if why is None:
+        print(f"panel: read back — next_start custom, image {sha256[:16]}…, the "
+              "requested line; the field survived the write (no re-attach)")
+        return 0
+    print(f"panel: the disk write cleared the boot-image field ({why}) — re-attaching "
+          f"{url} with the same SHA-256 and line")
+    code = write_boot_image(opener, server, url, sha256, cmdline, apply=True,
+                            wait=wait, interval=interval)
+    if code:
+        return code
+    try:
+        state = read_boot_image(key_file, server)
+    except (RuntimeError, OSError) as error:
+        print(f"panel: the boot-image read-back failed after the re-attach — {error}",
+              file=sys.stderr)
+        return 1
+    why = boot_image_matches(state, url, sha256, cmdline)
+    if why is not None:
+        print(f"panel: the re-attach did not stick — {why}", file=sys.stderr)
+        return 1
+    print(f"panel: read back — next_start custom, image {sha256[:16]}…, the line restored")
+    print(f"panel: restarting {server} so its next start is the requested UKI")
+    return power(opener, server, "restart")
+
+
 def write_boot_image(
     opener, server: str, url: str, sha256: str, cmdline: str, apply: bool,
     *, wait: float = 300.0, interval: float = 5.0,
@@ -852,6 +1020,7 @@ def recycle(
     want_measured: bool, ssh_key_file: str, boot_url: str, boot_sha256: str,
     cmdline: str, disk_url: str, disk_sha256: str, fmt: str, apply: bool,
     wait: float = 300.0, interval: float = 10.0,
+    key_file: str = str(ORDER_KEY_FILE),
 ) -> int:
     """The three writes a freed machine needs, in the order the vendor requires.
 
@@ -862,6 +1031,13 @@ def recycle(
     the first boot's transcript is the machine's own evidence, and it cannot be
     recovered after the fact.
 
+    The disk write also **clears the boot-image field**, measured twice on
+    2026-11-20 (`t_556631d6`, `t_6d956aee`): the attach prints its success and
+    the machine then starts the vendor release. So the composite waits for the
+    write's own `Written` stamp, reads `?action=boot-image` back, and re-attaches
+    the same pair and line when it is gone. That read-back is why the verb needs
+    an API key, and it is checked before the first write.
+
     The one-id fence runs **before the first write**, not on the way to the
     erase: arming the console is a POST too, so a `--recycle` aimed at a
     widened allow-list must be refused before it touches anything. (Round-1
@@ -871,6 +1047,11 @@ def recycle(
     why = recycle_target(server)
     if why:
         print(f"panel: refusing the recycle: {why}", file=sys.stderr)
+        return 2
+    if apply and not Path(key_file).is_file():
+        print(f"panel: the boot-image read-back needs an API key at {key_file}; "
+              "pass --key-file (the composite reads ?action=boot-image after the "
+              "disk write, because the write can clear the field)", file=sys.stderr)
         return 2
     print(f"panel: recycle {server} — console log, reinstall, boot image, disk image")
     code = console(opener, server, "on", dry_run=not apply)
@@ -887,11 +1068,18 @@ def recycle(
     code = write_disk(opener, server, disk_url, fmt, apply, disk_sha256)
     if code:
         return code
-    if apply:
-        print(f"panel: recycle submitted. The disk write starts {server}; its first boot "
-              "is the machine's own step (docs/runbooks/recycle.md §3)")
-    else:
+    if not apply:
+        print("panel: would read ?action=boot-image back after the disk write and "
+              "re-attach the same pair + line if the write cleared it")
         print("panel: dry run — pass --apply and --confirm to run the three writes")
+        return 0
+    code = ensure_boot_image(opener, server, boot_url, boot_sha256, cmdline, key_file,
+                             wait=wait, interval=interval)
+    if code:
+        return code
+    print(f"panel: recycle complete — {server}'s next start is {boot_url} "
+          f"({boot_sha256[:16]}…) with the per-machine line; the first boot is the "
+          "machine's own step (docs/runbooks/recycle.md §3)")
     return 0
 
 
@@ -1130,7 +1318,9 @@ def main(argv: list[str] | None = None) -> int:
                              "default debian12 for --order)")
     parser.add_argument("--days", default="31")
     parser.add_argument("--hostname", default="odl-dev")
-    parser.add_argument("--key-file", default=str(ORDER_KEY_FILE), help="API key of the account that pays")
+    parser.add_argument("--key-file", default=str(ORDER_KEY_FILE),
+                        help="the account's API key: what --order charges and what the "
+                             "--recycle boot-image read-back reads")
     parser.add_argument("--preorder", action="store_true", help="accept a sold-out plan (paid now, final)")
     parser.add_argument("--ssh-key-file", default="", help="public key pasted into the order (required: measured boot)")
     parser.add_argument("--whoami", action="store_true", help="print the account this session belongs to")
@@ -1222,6 +1412,7 @@ def main(argv: list[str] | None = None) -> int:
             boot_sha256=args.boot_sha256, cmdline=cmdline or "",
             disk_url=args.disk_url, disk_sha256=args.disk_sha256, fmt=args.format,
             apply=args.apply and args.confirm, wait=args.wait, interval=args.interval,
+            key_file=args.key_file,
         )
     if args.set:
         if not (args.server and args.url):
