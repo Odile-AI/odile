@@ -453,8 +453,11 @@ keys never reach HQ at all" is false under this design — the bucket token does
 reach HQ, because a rebuild has to re-deliver it. What stays true is the
 invariant's *purpose*: **the password never reaches HQ, so HQ cannot read a
 backup.** This ADR amends the letter with Savio's yes (§4) and names the stale
-sentence; `docs/MVP-V0.1.md` is outside this card's `touches`, so it lands with
-the provisioning card (§8), not here. The recovery file's read-only key is the
+sentence. `docs/MVP-V0.1.md` was outside this card's `touches`; the follow-up
+card `t_2522fa72` corrected §6.1 on 20 November 2026 to that letter, and the
+provisioning card (§8) makes the token path it describes true: the password
+stays on the guest and in the user's file, and the one tenant credential HQ
+holds is the tenant's own bucket token. The recovery file's read-only key is the
 same class of credential, held by the user; it also sits in the seed so the
 guest can render the file, which gives HQ nothing the read-write token does not
 already give.
@@ -599,7 +602,7 @@ message containing a secret.
 | **The user lost the recovery file** | the page offers "start fresh without a restore": the guest mints a new password into a new recovery file, uses a new repository prefix (`repo-<4 hex>`) in the **same** bucket, and the old prefix is kept 30 days and then emptied (`t_9d6fb595`); the bucket, and therefore the manual dashboard step, does not change. The page says, in one sentence, that the old data is unrecoverable without the old file — which is the promise, not a bug |
 | **The restore is interrupted** | `odile-restore.service` is a oneshot and the page re-offers the step; restic restore overwrites into the same target, so a second run converges. The backup timer stays stopped until a run completes, and if the user never comes back the 36-hour freshness watchdog is the signal. Nothing else in the machine depends on it, so the user is never blocked |
 | **The process is killed mid-write** | `state.db` is overwritten under a live gateway — the torn-database failure `docs/RESTORE.md` §2 already refuses. The unit stops the agent first and starts it after; the drill asserts the session list is readable afterwards |
-| **The nightly timer fires before the user pastes** | The backup **service** carries `ConditionPathExists=/etc/odile/recovery.txt`, and on a rebuild the installer **does not create that file**: `ensure_recovery` (`installer/odile_install.py:10988`) skips when the seed carries the previous instance id **and the file is absent**, because a freshly minted password would not open the old repository. So a rebuilt-but-not-yet-restored machine's timer fires, the condition fails, the service is skipped silently, and no false "backup failed" reaches the watchdog. The paste writes `/etc/odile/recovery.txt`, and `odile-restore.service` runs one snapshot before the next 03:00. Once the file exists, a later installer run keeps its password and refreshes only the instance and certificate lines, exactly as today. On a **fresh** tenant there is no previous instance id, the installer mints the recovery file at install as today, and the first backup is not suppressed |
+| **The nightly timer fires before the user pastes** | **Designed here; shipped by the `backup.py` + installer card (§8) — at this head neither the unit template nor `ensure_recovery` carries it.** The backup **service** carries `ConditionPathExists=/etc/odile/recovery.txt`, and on a rebuild the installer **does not create that file**: `ensure_recovery` (`installer/odile_install.py:10988`) skips when the seed carries the previous instance id **and the file is absent**, because a freshly minted password would not open the old repository. So a rebuilt-but-not-yet-restored machine's timer fires, the condition fails, the service is skipped silently, and no false "backup failed" reaches the watchdog. The paste writes `/etc/odile/recovery.txt`, and `odile-restore.service` runs one snapshot before the next 03:00. Once the file exists, a later installer run keeps its password and refreshes only the instance and certificate lines, exactly as today. On a **fresh** tenant there is no previous instance id, the installer mints the recovery file at install as today, and the first backup is not suppressed |
 | **A password typed into the chat instead of the page** | it travels to NEAR AI's TEE in the prompt **and** lands in `state.db`, which is inside the backup it opens. The restore step is a page POST for exactly this reason, and the help text says so |
 | **The destination is down, or the bucket is over the 9 GB cap** | the restore waits and retries; the machine is usable without it. A failed upload is a `status: failed` heartbeat, and a repository over `R2_TENANT_CAP_BYTES` is `status: over_cap`; the freshness watchdog reports either. The cap never silently deletes: the last good snapshot stays until an operator prunes or moves the tenant to B2 |
 | **HQ is gone** | the bucket, the user's recovery file and the signed image are enough to rebuild the machine by hand on any provider; what is lost is the convenience of `odilectl`, not the data. This is the first time that sentence has been true |
@@ -752,11 +755,16 @@ Measured, at this head, unless marked *modelled*:
 - **No new claim in the deck.** §9 names the one sentence that gets stronger; it
   lands through Product and Savio or not at all. The interim makes "Backups are
   off-site" true in fact before the B2 cutover, but the page sentence stays held.
-- **No `docs/MVP-V0.1.md` edit** for §6.1's diagram, §6.7's "off-site SFTP box",
-  §8's $0.60 line, §6.1 invariant 5 ("tenant backup keys never reach HQ") or
-  `AGENTS.md`'s "off-site SFTP storage box": all five are outside this card's
-  `touches` and are named in §8's card list instead of smuggled in here. **No
-  `web/privacy.html` edit in this card either**: its destination cell (line 149,
+- **No `docs/MVP-V0.1.md` edit from this card** for §6.1's diagram, §6.7's
+  "off-site SFTP box", §8's $0.60 line or `AGENTS.md`'s "off-site SFTP storage
+  box": all four are outside this card's `touches` and are named in §8's card
+  list instead of smuggled in here. **§6.1 invariant 5 was corrected by the
+  follow-up card `t_2522fa72` (20 November 2026)** — the one sentence that
+  could not wait, because §5 above already calls "tenant backup keys never
+  reach HQ at all" false, and a false invariant left live beside its own
+  correction is worse than either. The provisioning card (§8) makes the
+  corrected sentence true. **No `web/privacy.html` edit in this card either**:
+  its destination cell (line 149,
   "an off-site SFTP storage box") was wrong today and staler after this ADR;
   `t_5f10dd14` corrected it to "an SFTP storage box at HQ" on 19 November 2026
   (§1 item 5).
