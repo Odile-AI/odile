@@ -193,6 +193,7 @@ done
 for f in config.yaml tenant.service odile-bench-smoke.service \
          odile-bench-proxy.service odile-bench-proxy.socket \
          odile-bench-proxy-firstvisit.service odile-bench-proxy-firstvisit.socket \
+         odile-bench-proxy-verify.service odile-bench-proxy-verify.socket \
          odile-bench-proxy-manifest.service odile-bench-proxy-manifest.socket \
          odile-webapp-brand.service odile-webapp-brand.path \
          odile-webapp-brand.conf webapp-brand.js \

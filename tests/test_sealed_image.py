@@ -29,6 +29,7 @@ import os
 import pathlib
 import re
 import select
+import shlex
 import shutil
 import signal
 import stat
@@ -661,6 +662,370 @@ class ScriptTests(unittest.TestCase):
             )
             self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
             self.assertIn("mutually exclusive", result.stderr)
+
+
+# ---------------------------------------------------------------------------
+# The builders' copy lists, derived from the installer they feed
+#
+# install-stack.sh runs in the image from /usr/local/lib/odile-image/ and
+# opens its units as `$HERE/<name>`. Each builder decides for itself which
+# deploy/image/ files to put in that directory, so a name added to
+# install-stack.sh reaches neither image until both lists learn it — and the
+# lists have drifted twice: ODL-457's first-visit proxy pair reached
+# sealed-image.sh and not mkdisk.sh, so on `main` at af4b65c the bench build
+# died eight minutes into a debootstrap; then ODL-236's follow-up taught
+# install-stack.sh to read the /verify proxy pair and mkdisk.sh did not learn
+# them, which this check names. The names below are read out of
+# install-stack.sh itself, so the test adds no third copy of the list.
+#
+# The reader is deliberately small: it walks the script's logical lines
+# (backslash continuations joined), expands the `for` loops it is inside
+# (resolving the shell's `${x%%:*}` / `${x##*:}` field splits), and notes the
+# enclosing `if` conditions so a unit that only the guest-smoke or the seed
+# branch reads is not required of a builder that never runs that branch.
+IMAGE_LIB_DIR = "/usr/local/lib/odile-image"
+
+_FOR_RE = re.compile(r"^for\s+(\w+)\s+in\s+(.*?);\s*do$")
+# `while`/`until` carry no loop variable, but their `done` must not close a
+# `for` this reader is tracking — sealed-image.sh has retry loops inside `if`
+# blocks, and popping the wrong frame would leak the wrong gate onto a line.
+_LOOP_RE = re.compile(r"^(?:while|until)\s+.*;\s*do$")
+_IF_RE = re.compile(r"^(if|elif)\s+(.*?);\s*then$")
+_ASSIGN_RE = re.compile(r"(\w+)=\$\{(\w+)(#{1,2}|%{1,2})(\*:|:\*)\}")
+_HERE_RE = re.compile(r"\$HERE/([A-Za-z0-9_.@+-]+)")
+# `[ -f "$HERE/x" ]` asks whether a file exists; it installs nothing, and a
+# builder that ships none of an optional group is allowed to (install-stack.sh
+# prints `skip`). A reference only counts when the line uses the file.
+_PROBE_RE = re.compile(r"-[ef]\s+\"?\$HERE/[A-Za-z0-9_.@+-]+\"?")
+_IMAGE_LIB_RE = re.compile(re.escape(IMAGE_LIB_DIR) + r"/([A-Za-z0-9_.@+-]+)")
+# What puts a file into the image: only these commands. A `say`/`printf` line
+# that prints the destination is a log line, not a copy.
+_COPY_RE = re.compile(r"^\s*(?:install|cp|mv|ln|rsync)\s")
+# The three files whose presence opens install-stack.sh's /verify block. A
+# builder that ships none of them skips the block (mkdisk.sh's bench image);
+# one that ships any must ship all three, or the image loses the page it was
+# built to serve.
+_VERIFY_SURFACE = ("verify.html", "access_report.sh", "verify_and_unlock.sh")
+
+
+def _logical_lines(text: str) -> list[str]:
+    """The script's lines with backslash continuations joined."""
+    out: list[str] = []
+    pending = ""
+    for raw in text.splitlines():
+        line = raw.rstrip()
+        if pending:
+            line = f"{pending} {line.strip()}"
+            pending = ""
+        if line.endswith("\\"):
+            pending = line[:-1].rstrip()
+            continue
+        out.append(line)
+    if pending:
+        out.append(pending)
+    return out
+
+
+def _field_removal(value: str, op: str, pattern: str) -> str:
+    """The shell's `${x#*:}`, `${x##*:}`, `${x%:*}` and `${x%%:*}`."""
+    if ":" not in value:
+        return value
+    if pattern == "*:":            # a prefix ending at a colon
+        return value.split(":", 1)[1] if op == "#" else value.rsplit(":", 1)[1]
+    return value.rsplit(":", 1)[0] if op == "%" else value.split(":", 1)[0]
+
+
+def _resolve(name: str, loop_var: str, item: str, env: dict, depth: int = 0) -> str | None:
+    """A variable's value for one item of the enclosing `for` list."""
+    if name == loop_var:
+        return item
+    if name not in env or depth > 8:
+        return None
+    src, op, pattern = env[name]
+    base = _resolve(src, loop_var, item, env, depth + 1)
+    return None if base is None else _field_removal(base, op, pattern)
+
+
+def _bindings(stack: list[dict]) -> list[dict]:
+    """Every variable binding the enclosing `for` loops make for one line."""
+    combos: list[dict] = [{}]
+    for frame in stack:
+        if frame["kind"] != "for":
+            continue
+        options = []
+        for item in frame["items"]:
+            bind = {frame["var"]: item}
+            for name in frame["env"]:
+                value = _resolve(name, frame["var"], item, frame["env"])
+                if value is not None:
+                    bind[name] = value
+            options.append(bind)
+        combos = [{**combo, **bind} for combo in combos for bind in options]
+    return combos
+
+
+def _substitute(line: str, bind: dict) -> str:
+    def repl(match: re.Match) -> str:
+        name = match.group(1) or match.group(2)
+        return bind.get(name, match.group(0))
+    return re.sub(r"\$\{(\w+)\}|\$(\w+)", repl, line)
+
+
+def _pop(stack: list[dict], kinds: tuple[str, ...]) -> None:
+    """Close the frame this `done`/`fi` belongs to, if it is the top one."""
+    if stack and stack[-1]["kind"] in kinds:
+        stack.pop()
+
+
+def _walk(text: str):
+    """Yield (line, enclosing `if` conditions) per executed line.
+
+    `for` loop variables are substituted from the loop's own items (nested one
+    level per loop), so `"$HERE/$f"` reaches the caller as
+    `"$HERE/bench.py"` and the rest of this module needs no variable syntax.
+    """
+    stack: list[dict] = []
+    for line in _logical_lines(text):
+        body = line.strip()
+        if not body or body.startswith("#"):
+            continue
+        match = _FOR_RE.match(body)
+        if match:
+            stack.append({"kind": "for", "var": match.group(1),
+                          "items": shlex.split(match.group(2)), "env": {}})
+            continue
+        if _LOOP_RE.match(body):
+            stack.append({"kind": "loop"})
+            continue
+        if body == "done":
+            _pop(stack, ("for", "loop"))
+            continue
+        if body == "fi":
+            _pop(stack, ("if",))
+            continue
+        if body in ("else", "then"):
+            continue
+        match = _IF_RE.match(body)
+        if match:
+            if match.group(1) == "if":
+                stack.append({"kind": "if", "cond": match.group(2)})
+            else:
+                for frame in reversed(stack):
+                    if frame["kind"] == "if":
+                        frame["cond"] = match.group(2)
+                        break
+        assignments = _ASSIGN_RE.findall(body)
+        if assignments:
+            for frame in reversed(stack):
+                if frame["kind"] == "for":
+                    for name, src, op, pattern in assignments:
+                        frame["env"][name] = (src, op, pattern)
+                    break
+        conditions = [frame["cond"] for frame in stack if frame["kind"] == "if"]
+        for bind in _bindings(stack):
+            yield _substitute(line, bind), conditions
+
+
+def _gate(conditions: list[str]) -> frozenset[str]:
+    """Which branch a reference sits in: always, guest-smoke, seed or verify.
+
+    An `if` this module does not recognise is transparent: it neither adds nor
+    removes a requirement (the inner `[ -f ... ]` guards on individual files
+    are the common case).
+    """
+    gates = set()
+    for cond in conditions:
+        if "SEED_FILE" in cond:
+            gates.add("seed")
+        if "GUEST_SMOKE" in cond:
+            gates.add("guest-smoke")
+        if any(name in cond for name in _VERIFY_SURFACE):
+            gates.add("verify")
+    return frozenset(gates or {"always"})
+
+
+def install_stack_reads(text: str) -> dict[str, frozenset[str]]:
+    """Name -> the branches that read it out of install-stack.sh's own `$HERE`."""
+    reads: dict[str, set[str]] = {}
+    for line, conditions in _walk(text):
+        if "$HERE/" not in line:
+            continue
+        if "$HERE/" not in _PROBE_RE.sub("", line):
+            continue  # every reference on this line is an existence probe
+        for name in _HERE_RE.findall(line):
+            reads.setdefault(name, set()).update(_gate(conditions))
+    return {name: frozenset(gates) for name, gates in reads.items()}
+
+
+def image_dir_files(text: str) -> set[str]:
+    """The names a builder installs into /usr/local/lib/odile-image/.
+
+    Only a copy command's *destination* counts. A `say`/`echo` line that
+    mentions the path announces something; it does not put a file there, and a
+    builder whose only mention of a unit is a log line does not ship it. (The
+    first version of this counted the path anywhere on a line, so a `say` line
+    silenced the check — a false negative the reviewer probed.)
+    """
+    names: set[str] = set()
+    for line, _conditions in _walk(text):
+        if not _COPY_RE.match(line):
+            continue
+        match = _IMAGE_LIB_RE.search(line.split()[-1].strip("\"'"))
+        if match:
+            names.add(match.group(1))
+    return names
+
+
+def _runs_flag(flag: str, builder_text: str, installed: set[str],
+               scripts: dict[str, str]) -> bool:
+    """Whether this builder makes install-stack.sh run with `flag`.
+
+    The builder's own command line is the first place to look; the second is a
+    program it ships into the image — `odile-firstboot.py` is what runs
+    `install-stack.sh --seed` on the sealed image's first boot. install-stack.sh
+    itself is in both copy lists, so it is excluded: it is the callee, and its
+    own `--seed` text says nothing about who calls it that way.
+    """
+    if flag in builder_text:
+        return True
+    return any(flag in text for name, text in scripts.items()
+               if name in installed and name != "install-stack.sh")
+
+
+def copy_list_gaps(scripts: dict[str, str]) -> list[str]:
+    """Every file install-stack.sh reads that a builder that needs it omits."""
+    reads = install_stack_reads(scripts["install-stack.sh"])
+    verify_group = {name for name, gates in reads.items() if "verify" in gates}
+    gaps: list[str] = []
+    for builder in ("sealed-image.sh", "mkdisk.sh"):
+        text = scripts.get(builder, "")
+        installed = image_dir_files(text)
+        active = {
+            "guest-smoke": _runs_flag("--guest-smoke", text, installed, scripts),
+            "seed": _runs_flag("--seed", text, installed, scripts),
+            "verify": bool(installed & verify_group),
+        }
+        for name in sorted(reads):
+            if not all(key == "always" or active[key] for key in reads[name]):
+                continue
+            if name not in installed:
+                gates = ", ".join(sorted(reads[name]))
+                gaps.append(f"{builder}: {IMAGE_LIB_DIR}/{name} ({gates})")
+    return gaps
+
+
+class CopyListTests(unittest.TestCase):
+    """Both builders copy what install-stack.sh reads out of its own directory.
+
+    install-stack.sh runs *inside* the image, from /usr/local/lib/odile-image/,
+    and opens its units as `$HERE/<name>`. Each builder keeps a private list of
+    deploy/image/ files to put there. The lists drifted: ODL-457's first-visit
+    proxy pair reached sealed-image.sh and not mkdisk.sh, so on `main` at
+    af4b65c the bench build died eight minutes into a debootstrap with
+
+        sed: can't read /usr/local/lib/odile-image/odile-bench-proxy-firstvisit.socket
+
+    The thing under test is a copy list, and a copy list is text, so these
+    tests read the three scripts — no debootstrap, no root, no image. The names
+    are derived from install-stack.sh's own sed/install/cmp lines and its `for`
+    lists (`install_stack_reads`), so the suite adds no third copy of the list
+    to drift out of step. What stays per-builder is the *need*: a list is only
+    required of a builder that causes install-stack.sh to run that branch —
+    `--guest-smoke` on its own command line, or a program it ships (the first
+    boot) that runs install-stack.sh `--seed`.
+    """
+
+    def _scripts(self) -> dict[str, str]:
+        # odile-firstboot.py is here because it is the program that runs
+        # `install-stack.sh --seed` in the guest; that is how the seed units
+        # become required of sealed-image.sh and of no other builder.
+        return {
+            name: (IMAGE / name).read_text(encoding="utf-8")
+            for name in ("install-stack.sh", "sealed-image.sh", "mkdisk.sh",
+                         "odile-firstboot.py")
+        }
+
+    def test_the_installer_names_the_units_it_reads_out_of_its_own_directory(self) -> None:
+        # A pin on the derivation itself: if the reader stops seeing a `for`
+        # list or a `sed` line, the two tests below go quiet instead of red.
+        reads = install_stack_reads(self._scripts()["install-stack.sh"])
+        self.assertEqual(reads["odile-bench-proxy-firstvisit.socket"],
+                         frozenset({"guest-smoke"}))
+        self.assertEqual(reads["odile-bench-proxy-manifest.service"],
+                         frozenset({"guest-smoke"}))
+        self.assertEqual(reads["odile-bench-proxy-verify.socket"],
+                         frozenset({"guest-smoke"}),
+                         "ODL-236's follow-up: the /verify stand-in pair")
+        self.assertEqual(reads["webapp-brand.js"], frozenset({"always"}),
+                         "the brand pair list is a `for` loop of name:mode items")
+        self.assertEqual(reads["verify.html"], frozenset({"verify"}))
+        self.assertEqual(reads["recovery-seed.py"], frozenset({"seed"}))
+        for name in ("tenant.service", "config.yaml", "bench-heartbeat.sh",
+                     "bench.py", "smoke.sh", "odile-webapp-brand.conf"):
+            self.assertEqual(reads.get(name), frozenset({"always"}), name)
+        # The chroot call names install-stack.sh itself; the file is not read
+        # from $HERE and is copied by both builders for another reason.
+        self.assertNotIn("install-stack.sh", reads)
+
+    def test_both_builders_copy_every_file_install_stack_reads(self) -> None:
+        gaps = copy_list_gaps(self._scripts())
+        self.assertEqual(gaps, [],
+                         "install-stack.sh reads these and no builder copies them:\n"
+                         + "\n".join(gaps))
+
+    def test_a_builder_that_loses_one_unit_is_named_by_the_check(self) -> None:
+        # The red-first plant: the exact drift that ODL-914 repaired by hand.
+        scripts = self._scripts()
+        dropped = "odile-bench-proxy-firstvisit.socket"
+        line = ("         odile-bench-proxy-firstvisit.service "
+                "odile-bench-proxy-firstvisit.socket \\\n")
+        self.assertIn(line, scripts["mkdisk.sh"])
+        scripts["mkdisk.sh"] = scripts["mkdisk.sh"].replace(
+            line, "         odile-bench-proxy-firstvisit.service \\\n")
+        self.assertIn(dropped, scripts["sealed-image.sh"],
+                      "the plant must leave the other builder intact")
+        self.assertEqual(
+            copy_list_gaps(scripts),
+            [f"mkdisk.sh: {IMAGE_LIB_DIR}/{dropped} (guest-smoke)"],
+        )
+
+    def test_a_builder_that_only_mentions_a_unit_has_not_copied_it(self) -> None:
+        # A `say` line that prints the destination path is an announcement,
+        # not a copy. The first version of image_dir_files() counted the path
+        # anywhere on a line, so this shape silenced the check.
+        scripts = self._scripts()
+        unit = "odile-bench-proxy-verify.service"
+        line = ("         odile-bench-proxy-verify.service "
+                "odile-bench-proxy-verify.socket \\\n")
+        self.assertIn(line, scripts["mkdisk.sh"])
+        scripts["mkdisk.sh"] = scripts["mkdisk.sh"].replace(
+            line, "         odile-bench-proxy-verify.socket \\\n")
+        scripts["mkdisk.sh"] += (
+            f'say note "would install {IMAGE_LIB_DIR}/{unit}"\n')
+        self.assertEqual(
+            copy_list_gaps(scripts),
+            [f"mkdisk.sh: {IMAGE_LIB_DIR}/{unit} (guest-smoke)"],
+        )
+
+    def test_the_seed_units_are_required_only_of_the_builder_that_first_boots(self) -> None:
+        scripts = self._scripts()
+        bench = image_dir_files(scripts["mkdisk.sh"])
+        sealed = image_dir_files(scripts["sealed-image.sh"])
+        self.assertNotIn("odile-firstboot.py", bench)
+        self.assertIn("odile-firstboot.py", sealed)
+        for name in ("odile-first-visit.service", "first_visit.py", "first-visit.html"):
+            self.assertNotIn(name, bench, "the bench image has no first boot")
+            self.assertIn(name, sealed)
+        self.assertEqual(copy_list_gaps(scripts), [])
+        # ...and sealed-image.sh's own need is enforced, not just satisfied:
+        # drop the unit its first boot starts and the check names it.
+        scripts["sealed-image.sh"] = scripts["sealed-image.sh"].replace(
+            "odile-firstboot.service odile-first-visit.service \\\n",
+            "odile-firstboot.service \\\n")
+        self.assertEqual(
+            copy_list_gaps(scripts),
+            [f"sealed-image.sh: {IMAGE_LIB_DIR}/odile-first-visit.service (seed)"],
+        )
 
 
 class PinTests(unittest.TestCase):
