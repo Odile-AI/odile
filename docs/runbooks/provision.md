@@ -432,6 +432,39 @@ re-create the A record for the same slug (`docs/runbooks/offboard.md` §5).
 `claim._advance_state_provisioned` (`claim.py`) already took the same
 `provisioning -> first_boot` step after an order; this path now does too.
 
+### A live row whose machine is gone
+
+`reconcile --apply` is what marks a *missing* machine `destroyed`; `provision`
+is not. A live row — `ready`, `suspended`, `waiting_for_owner`, or one still at
+`provisioning`/`first_boot`/`first_visit` — has no edge back to `provisioning`,
+so an order recorded there could only be the old silent `web_row: "skipped"`: a
+paid machine no row names, whose first boot the web row then refuses. The run is
+refused **before** `provider.create` instead:
+
+```
+$ odilectl provision odl-7f3a2c --key <user.pub> --pin odile-verify.pin --apply --json
+exit: 4
+{
+  "command": "provision",
+  "dry_run": false,
+  "error": "provision: odl-7f3a2c is ready and its state row names 'srv-old-0001', but the provider lists no machine named odl-7f3a2c; ordering one now would be a paid machine no row names. Mark the old machine gone first, then run this command again:\n  odilectl reconcile odl-7f3a2c --apply",
+  "ok": false
+}
+provider calls: ['servers']          # the list, and no create: no money
+spine: ready server_id: srv-old-0001
+events: invited -> claimed -> provisioning -> first_boot -> first_visit -> ready
+web row: active srv-old-0001
+```
+
+(The `error` string is one long line followed by the remedy's own line; the run
+made one provider call, `servers`, and never `create`. Neither row moved and the
+event log gained nothing.) The way back is two commands, and both are already
+here: `odilectl reconcile <slug> --apply` marks the row `destroyed`, and its
+finding names `provision <slug>: same slug, destroyed -> claimed (reopen)`; the
+re-provision above then reopens it, orders, and records the order on both rows.
+A dry run lists `state.guard` between `provider.list` and `provider.create`, so
+the refusal is visible before anything is ordered.
+
 ## 10. What this page does not prove
 
 - The signed report, the measurement equality and the host-key binding are the

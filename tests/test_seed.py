@@ -1152,7 +1152,7 @@ class RecordedProvision:
     """
 
     def __init__(self, db_path: str, slug: str, server_id: str,
-                 ipv4: str = "203.0.113.120"):
+                 ipv4: str = "203.0.113.120", *, listed: bool = False):
         self.db_path = db_path
         self.slug = slug
         self.server_id = server_id
@@ -1160,17 +1160,42 @@ class RecordedProvision:
         self.calls: list[str] = []
         self.poll_ledger: list[tuple] = []
         self.create_body: dict = {}
+        # `?action=servers` lists the machine the account holds. Before the
+        # order there is none; once `create` answered (or a previous run did),
+        # the real list carries it — the live capture in
+        # docs/runbooks/provision.md §1 read `total 2` — so a second provision
+        # reuses it instead of ordering again.
+        self.listed = listed
+
+    def _machine(self) -> dict:
+        return {
+            "id": self.server_id,
+            "hostname": self.slug,
+            "plan_id": 113,
+            "plan": "Blackbox Plus",
+            "status": "active",
+            "ipv4_address": self.ipv4,
+            "ipv6_address": "2001:0db8:0:2a::1",
+            "powered_on": True,
+            "snp_enabled": True,
+            "fde_requested": True,
+            "measured_boot": True,
+            "expiration_date": MACHINE_EXPIRES,
+            "expired": False,
+        }
 
     def __call__(self, method: str, url: str, headers: dict, body: bytes | None):
         query = urllib.parse.parse_qs(urllib.parse.urlsplit(url).query)
         action = query.get("action", [None])[0]
         self.calls.append(action or "")
         if action == "servers":
+            servers = [self._machine()] if self.listed else []
             return 200, json.dumps(
-                {"success": True, "data": {"servers": [], "total": 0}}
+                {"success": True, "data": {"servers": servers, "total": len(servers)}}
             ).encode()
         if action == "create":
             self.create_body = json.loads(body or b"{}")
+            self.listed = True
             return 200, json.dumps({"success": True, "data": {
                 "message": "Order accepted. The machine is built in the background ...",
                 "server_id": self.server_id,
@@ -1188,21 +1213,7 @@ class RecordedProvision:
                     " WHERE instance_id = ?", (self.server_id,)).fetchone() or ()))
             finally:
                 con.close()
-            return 200, json.dumps({"success": True, "data": {"server": {
-                "id": self.server_id,
-                "hostname": self.slug,
-                "plan_id": 113,
-                "plan": "Blackbox Plus",
-                "status": "active",
-                "ipv4_address": self.ipv4,
-                "ipv6_address": "2001:0db8:0:2a::1",
-                "powered_on": True,
-                "snp_enabled": True,
-                "fde_requested": True,
-                "measured_boot": True,
-                "expiration_date": MACHINE_EXPIRES,
-                "expired": False,
-            }}}).encode()
+            return 200, json.dumps({"success": True, "data": {"server": self._machine()}}).encode()
         raise AssertionError("no recorded response for %s action=%r" % (method, action))
 
 
@@ -1383,8 +1394,8 @@ class ProvisionBinding(unittest.TestCase):
         finally:
             con.close()
 
-    def provision(self) -> tuple[int, str, str, RecordedProvision]:
-        transport = RecordedProvision(self.db, self.slug, self.server_id)
+    def provision(self, *, listed: bool = False) -> tuple[int, str, str, RecordedProvision]:
+        transport = RecordedProvision(self.db, self.slug, self.server_id, listed=listed)
         code, out, err = run_odilectl(
             ["provision", self.slug, "--key", self.key_file, "--pin", self.pin,
              "--interval", "0", "--apply", "--json"],
@@ -1430,8 +1441,10 @@ class ProvisionBinding(unittest.TestCase):
             REBUILD_PASSWORD)
 
         # A later provision without the file clears the entry: a token never
-        # carries the previous attempt's secret.
-        code, out, err, _transport = self.provision()
+        # carries the previous attempt's secret. The provider lists the machine
+        # the first run ordered, so this run records it rather than ordering a
+        # second one (a live row takes no new machine; see provision's guard).
+        code, out, err, _transport = self.provision(listed=True)
         self.assertEqual(code, 0, err)
         document = json.loads(Path(self.seed_rebuilds).read_text(encoding="utf-8"))
         self.assertNotIn(self.slug, document)
