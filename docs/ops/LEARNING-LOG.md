@@ -5,6 +5,46 @@ Evidence is a path, a commit or a card; no adjectives. The weekly exchange owns
 the scar table, the borrowed-practice pairs and coverage; a session owns its own
 line.
 
+## 2026-11-20 · finance · F2 — a closed day restates, and the balance caught a charge the ledger missed
+
+- **Source:** `docs/ops/finance/POLICY.md` (sources of truth; a `committed`
+  row's amount is the standing renewal) and `tools/spend.py`, read with the
+  generator that writes the series,
+  `~/.hermes/profiles/finance/scripts/finance_check.py` line 276 — the day
+  bucket is `last_activity_at`, not `started_at`. The billing system of record is
+  the Servury Blackbox API, <https://servury.com/docs/?api=blackbox>
+  (`?action=invoices`, `?action=server`), read 2026-11-20.
+- **Exercise:** reconciled 13–19 Nov. Inference $269.74 over 1,059 sessions; the
+  same 9–15 Nov window reads $286.66 in the 16 Nov memo, $285.01 in the 17 Nov
+  reconciliation and $276.34 today (−$10.32, −3.6%), and only two closed days
+  moved — 13 Nov −$6.89 and 14 Nov −$3.43, the other five under $0.005 — because
+  23 sessions started on 13/14 Nov and resumed later carry $11.49 to their
+  last-activity day. External cash in the week was $11.18: $9.03 (invoice
+  58093838, host Blackbox Max auto-renewal, 7 days) and $2.15 (07250b99, dev API
+  renewal). The $2.15 is in FIN-006's note; the $9.03 is in no row and no note,
+  and FIN-001's `renews_on` still reads 2026-11-19 while the API says the box
+  expires 2026-11-26T11:25:32Z. The balance corroborates the charge
+  independently: $31.55 − $9.03 = $22.52, the balance the renew job read this
+  morning. Owner `savio`; the evidence that closes it is the invoice and expiry
+  in `servury-read-2026-11-20.json`, after which the row's date becomes
+  2026-11-26 and its note carries the $9.03 and the $0.45/term list-price
+  premium (≈$23/yr). MTD reconciles: $447.8762 in `SPEND.csv` = $447.8762 from
+  the live check at 06:57 UTC.
+- **Lesson:** 1) A daily series is a view, not a ledger: a session's whole cost
+  rides its last activity, so a closed day restates and a week figure is only
+  true of the snapshot it came from — date it, derive it once, and never compare
+  a Monday number with a Friday file. 2) The balance is the second witness: a
+  charge the invoice list shows and `LEDGER.csv` does not is found by the
+  balance delta in one line, and a renewal that fired must advance `renews_on` in
+  the same week — a `committed` row whose date is past cannot trigger its own
+  30-day alert.
+- **Evidence:** `docs/ops/evidence/2026-11-20-finance/README.md`,
+  `reconcile_week.py`, `reconcile-week.txt`, `servury-read-2026-11-20.json`,
+  `make-check.txt` (`Ran 2328 tests in 580.330s`, `make check: OK`, exit 0);
+  `docs/craft/finance.md` — principle 11, one checklist item, one Source.
+- **Next:** F3 — Bessemer Cloud 100 benchmarks: copy one mechanism (cohort gross
+  margin or NRR), reject one metric that does not apply pre-revenue.
+
 ## 2026-11-19 · growth · G2 — a recruit is an install, and the queue cannot send
 
 - **Source:** Paul Graham, “Do Things That Don’t Scale” (July 2013) —

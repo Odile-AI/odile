@@ -1,0 +1,184 @@
+{
+  "server_34bc6c43": {
+    "success": true,
+    "data": {
+      "server": {
+        "id": "34bc6c43",
+        "hostname": "oqwaclzm",
+        "plan_id": 114,
+        "plan": "Blackbox Max",
+        "location": "Canada",
+        "os": "ubuntu26",
+        "username": "root",
+        "ipv4_address": "23.155.44.139",
+        "ipv4_extra_addresses": [],
+        "ipv6_address": "2602:F41C:0:1c9::1",
+        "ipv6_subnet": "2602:F41C:0:1c9::/64",
+        "status": "active",
+        "status_reason": null,
+        "powered_on": true,
+        "snp_enabled": true,
+        "fde_requested": true,
+        "fde_enabled": true,
+        "measured_boot": true,
+        "measured_release": "2026.11.2",
+        "expiration_date": 1795692332,
+        "expired": false,
+        "deleted_after": 1795778732,
+        "specs": {
+          "cores": 6,
+          "ram_mb": 16384,
+          "disk_gb": 200
+        },
+        "rate_monthly": 39.99,
+        "auto_renew": true,
+        "ipv6_routed_block": null,
+        "bandwidth": {
+          "quota_tb": 16,
+          "allowance_bytes": 14450005973715,
+          "unmetered": false,
+          "used_bytes": 334861969452,
+          "window_start": 1793273401,
+          "capped": false
+        },
+        "pending_upgrade": null
+      }
+    }
+  },
+  "invoices": {
+    "success": true,
+    "data": {
+      "invoices": [
+        {
+          "id": "58093838",
+          "type": "server_renew",
+          "method": "account_funds",
+          "status": "completed",
+          "amount_usd": "9.03",
+          "description": "Auto-renewal for 7 days",
+          "server_id": "34bc6c43",
+          "created_at": 1795046454,
+          "updated_at": 1795046454
+        },
+        {
+          "id": "e0e6fbce",
+          "type": "server_create",
+          "method": "account_funds",
+          "status": "completed",
+          "amount_usd": "2.15",
+          "description": "[API] Server deployment: Blackbox Core for 7 days",
+          "server_id": null,
+          "created_at": 1794540598,
+          "updated_at": 1794540598
+        },
+        {
+          "id": "b473060c",
+          "type": "server_create",
+          "method": "account_funds",
+          "status": "completed",
+          "amount_usd": "2.15",
+          "description": "[API] Server deployment: Blackbox Core for 7 days",
+          "server_id": null,
+          "created_at": 1794540270,
+          "updated_at": 1794540270
+        },
+        {
+          "id": "2db571a9",
+          "type": "server_upgrade",
+          "method": "account_funds",
+          "status": "completed",
+          "amount_usd": "5.81",
+          "description": "Server upgrade to Blackbox Max",
+          "server_id": "34bc6c43",
+          "created_at": 1794388625,
+          "updated_at": 1794388625
+        },
+        {
+          "id": "999fe4ee",
+          "type": "balance_deposit",
+          "method": "crypto",
+          "status": "completed",
+          "amount_usd": "40.00",
+          "description": "Balance deposit via crypto: $40",
+          "server_id": null,
+          "created_at": 1794282956,
+          "updated_at": 1794283346,
+          "payment_url": "https://servury.com/pay/999fe4ee/"
+        },
+        {
+          "id": "7dd9a99c",
+          "type": "server_create",
+          "method": "account_funds",
+          "status": "completed",
+          "amount_usd": "18.99",
+          "description": "[API] Server deployment: Blackbox Plus for 31 days",
+          "server_id": null,
+          "created_at": 1794240090,
+          "updated_at": 1794240090
+        },
+        {
+          "id": "5e38f448",
+          "type": "server_upgrade",
+          "method": "account_funds",
+          "status": "completed",
+          "amount_usd": "4.84",
+          "description": "Server upgrade to Blackbox Plus",
+          "server_id": "34bc6c43",
+          "created_at": 1793856823,
+          "updated_at": 1793856823
+        },
+        {
+          "id": "f7a8f2a4",
+          "type": "server_renew",
+          "method": "account_funds",
+          "status": "completed",
+          "amount_usd": "4.51",
+          "description": "Auto-renewal for 14 days",
+          "server_id": "34bc6c43",
+          "created_at": 1793836859,
+          "updated_at": 1793836859
+        },
+        {
+          "id": "a5213c51",
+          "type": "balance_deposit",
+          "method": "crypto",
+          "status": "completed",
+          "amount_usd": "30.00",
+          "description": "Balance deposit via crypto: $30",
+          "server_id": null,
+          "created_at": 1793611495,
+          "updated_at": 1793611761,
+          "payment_url": "https://servury.com/pay/a5213c51/"
+        },
+        {
+          "id": "5814c5d0",
+          "type": "server_renew",
+          "method": "crypto",
+          "status": "expired",
+          "amount_usd": "9.99",
+          "description": "Server renewal: oqwaclzm for 31 days",
+          "server_id": "34bc6c43",
+          "created_at": 1793611156,
+          "updated_at": 1793612961,
+          "payment_url": "https://servury.com/pay/5814c5d0/"
+        },
+        {
+          "id": "0485fd21",
+          "type": "server_create",
+          "method": "crypto",
+          "status": "completed",
+          "amount_usd": "2.26",
+          "description": "Server deployment: Blackbox Core for 7 days",
+          "server_id": "34bc6c43",
+          "created_at": 1793272868,
+          "updated_at": 1793273132,
+          "payment_url": "https://servury.com/pay/0485fd21/"
+        }
+      ],
+      "total": 11,
+      "limit": 50,
+      "offset": 0,
+      "balance": 22.52
+    }
+  }
+}
