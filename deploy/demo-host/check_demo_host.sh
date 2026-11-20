@@ -573,6 +573,37 @@ expect() { # label expected actual
         bad "$1: got '$3', expected '$2'"
     fi
 }
+# The demo's facts, named once (t_a9edc561). The block's matcher names and the
+# machine's timers are compared as sorted sets, so the check asserts *which*
+# names are there, not the order the file or systemd happens to list them in.
+# A bare timer count reddened when a legitimate unit that deploys its own timer
+# (deploy/attest-refresh/) joined the machine.
+#
+# The matcher set is the runbook's sentence (docs/runbooks/demo-public.md §4):
+# the sign-in page's three tab files, the `.ico`-only Content-Type matcher
+# inside that handle, and the operator map's 404. The timers are the nightly
+# backup, the five-minute heartbeat and the attestation refresh.
+DEMO_MATCHERS="apidocs favicon tabicons"
+ODILE_TIMERS="odile-attest-refresh.timer odile-backup-tenant.timer odile-heartbeat.timer"
+
+# One sorted, space-joined set of the names on stdin: order-insensitive.
+name_set() {
+    sed '/^[[:space:]]*$/d' | sort -u | tr '\n' ' ' | sed 's/ $//'
+}
+
+# Every matcher the block *defines*, by name — the apply's own regex, so the
+# check and the report count the same lines.
+matcher_set() {
+    sed -n 's/^[[:space:]]*@\([A-Za-z_][A-Za-z0-9_-]*\).*/\1/p' "${1:-/dev/null}" \
+        | name_set
+}
+
+# Every odile-* timer systemd knows about here, by name. The ACTIVATES column
+# of list-timers is a `.service`, so one `.timer` token per line.
+odile_timer_set() {
+    systemctl list-timers --all --no-legend --no-pager 2>/dev/null \
+        | grep -oE 'odile-[A-Za-z0-9_.-]*\.timer' | name_set
+}
 
 for tool in curl getent ip openssl pgrep python3 sha256sum ssh-keygen ssh-keyscan ss stat systemctl; do
     command -v "$tool" >/dev/null 2>&1 || { echo "check_demo_host: missing $tool" >&2; exit 2; }
@@ -1044,8 +1075,7 @@ for unit in odile-backup-tenant.timer odile-heartbeat.timer; do
     expect "systemctl is-enabled $unit" "enabled" "$(systemctl is-enabled "$unit" 2>&1 || true)"
     expect "systemctl is-active $unit" "active" "$(systemctl is-active "$unit" 2>&1 || true)"
 done
-expect "odile timers on this machine" "2" \
-    "$(systemctl list-timers --all --no-legend --no-pager 2>/dev/null | grep -c 'odile' || true)"
+expect "odile timers on this machine" "$ODILE_TIMERS" "$(odile_timer_set)"
 
 if [ -s /var/lib/odile/backup.json ]; then
     LAST_BACKUP=$(/usr/bin/python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print(d.get("last_success_at") or "")' /var/lib/odile/backup.json 2>/dev/null || true)
@@ -1114,11 +1144,12 @@ INSTALLED_BLOCK=$(sha256sum "$LIB/demo-tenant-site.caddy" 2>/dev/null | awk '{pr
 expect "the live Caddy block is the installed block" "$INSTALLED_BLOCK" "$LIVE_BLOCK"
 expect "marker lines (BEGIN END)" "1 1" "$(grep -cxF "$BEGIN_MARK" /etc/caddy/Caddyfile) $(grep -cxF "$END_MARK" /etc/caddy/Caddyfile)"
 # t_69f1a5f3 (Savio, 2026-11-13): the freeze is removed product-wide — no
-# deny-by-default matcher and no `path /__disabled__` runtime line. The only
-# named matcher left in the block is the operator map's 404.
+# deny-by-default matcher and no `path /__disabled__` runtime line. t_6b25f6e5
+# left the three matchers the runbook names (docs/runbooks/demo-public.md §4);
+# the assertion is the set, so the block's line order is not a fact it depends
+# on.
 expect "freeze lines in the Caddyfile (__disabled__)" "0" "$(grep -c '__disabled__' /etc/caddy/Caddyfile || true)"
-expect "named matchers in the demo block" "apidocs" \
-    "$(grep -oE '@[A-Za-z_][A-Za-z0-9_-]*' "$BLOCK_FILE" | sed 's/^@//' | sort -u | tr '\n' ' ' | sed 's/ $//')"
+expect "named matchers in the demo block" "$DEMO_MATCHERS" "$(matcher_set "$BLOCK_FILE")"
 expect "the sign-in page handler in the demo block" "1" "$(grep -c 'handle /login\*' "$BLOCK_FILE" || true)"
 expect "the Webapp upstream in the demo block" "1" "$(grep -c 'reverse_proxy 127.0.0.1:9130' "$BLOCK_FILE" || true)"
 rm -f "$BLOCK_FILE"
@@ -1146,13 +1177,22 @@ d = r.get("caddy") or {}
 s = r.get("session") or {}
 v = r.get("verify") or {}
 messages = s.get("messages") or 0
+def matcher_names(value):
+    if isinstance(value, str):
+        names = value.split()
+    elif isinstance(value, (list, tuple, set)):
+        names = list(value)
+    else:
+        names = []
+    return " ".join(sorted({str(n).strip().lstrip("@") for n in names
+                            if str(n).strip()}))
 print("near_ai_direct={} public_url={} provider={} at={} meter_object={} meter={}/{}/{} caddy_same={} markers={} matchers={} residue={} lede={}/{} rollback={} seed={} seed_messages={} seed_ok={}".format(
     c.get("near_ai_direct"), c.get("public_url"),
     p.get("name"), p.get("base_url"),
     m,
     mo.get("enabled"), mo.get("active"), mo.get("unit_installed"),
     d.get("installed_sha256") == d.get("live_block_sha256"),
-    d.get("markers"), d.get("matchers"), d.get("residue_lines"),
+    d.get("markers"), matcher_names(d.get("matchers")), d.get("residue_lines"),
     v.get("demo_lede"), v.get("customer_lede"), v.get("rollback"),
     bool(s.get("id")), messages, bool(s.get("id")) and messages >= 2))
 PY
@@ -1181,9 +1221,11 @@ case "$FIELDS" in
         ok "the meter is not installed (removed product-wide)" ;;
     *) bad "the meter is still on this machine: $FIELDS" ;;
 esac
+# The matcher list is printed as a sorted set by the generator above, so the
+# arm compares the names, not the block's line order (t_a9edc561).
 case "$FIELDS" in
-    *"caddy_same=True markers=[1, 1] matchers=['apidocs'] residue=0"*)
-        ok "the installed Caddy block is the live block (1 marker pair, only @apidocs, residue 0)" ;;
+    *"caddy_same=True markers=[1, 1] matchers=$DEMO_MATCHERS residue=0"*)
+        ok "the installed Caddy block is the live block (1 marker pair, the three named matchers, residue 0)" ;;
     *) bad "the Caddy block is not converged: $FIELDS" ;;
 esac
 case "$FIELDS" in

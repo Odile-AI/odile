@@ -831,5 +831,188 @@ class HostDriverConsoleTests(unittest.TestCase):
         self.assertEqual(namespace["CONSOLES"], ["local-" + "c7" * 32])
 
 
+def host_check_function(name: str) -> str:
+    """One shell function, body included, cut from the check."""
+    text = CHECK_HOST.read_text(encoding="utf-8")
+    start = text.index(f"{name}() {{")
+    end = text.index("\n}\n", start) + 3
+    return text[start:end]
+
+
+def host_check_literal(name: str) -> str:
+    """One top-level ``NAME=value`` assignment, cut from the check."""
+    for line in CHECK_HOST.read_text(encoding="utf-8").splitlines():
+        if line.startswith(f"{name}="):
+            return line
+    raise AssertionError(f"{name}= is not an assignment in {CHECK_HOST}")
+
+
+def host_check_statement(label: str) -> str:
+    """One ``expect "<label>" ...`` statement, continuation lines included."""
+    text = CHECK_HOST.read_text(encoding="utf-8")
+    start = text.index(f'expect "{label}"')
+    lines = text[start:].split("\n")
+    statement = [lines[0]]
+    while statement[-1].rstrip().endswith("\\"):
+        statement.append(lines[len(statement)])
+    return "\n".join(statement)
+
+
+def host_check_arm(functions: tuple[str, ...], literals: tuple[str, ...], body: str,
+                   env: dict | None = None) -> subprocess.CompletedProcess:
+    """Run cut pieces of check_demo_host.sh under its own ok/bad/expect."""
+    script = ("set -u\n"
+              "ok() { printf 'ok\\n'; }\n"
+              "bad() { printf 'bad\\n'; }\n"
+              + host_check_function("expect")
+              + "".join(host_check_function(name) for name in functions)
+              + "".join(host_check_literal(name) + "\n" for name in literals)
+              + body + "\n")
+    environment = dict(os.environ)
+    environment.update(env or {})
+    return subprocess.run(["/bin/bash", "-c", script], env=environment,
+                          capture_output=True, text=True)
+
+
+def matcher_verdict(block: str) -> str:
+    """The check's matcher assertion over one Caddy block: ok or bad."""
+    statement = host_check_statement("named matchers in the demo block")
+    with tempfile.TemporaryDirectory(prefix="odile-matchers-") as directory:
+        path = Path(directory) / "block.caddy"
+        path.write_text(block, encoding="utf-8")
+        result = host_check_arm(("name_set", "matcher_set"), ("DEMO_MATCHERS",),
+                                f"BLOCK_FILE={shlex.quote(str(path))}\n{statement}")
+    return result.stdout.strip()
+
+
+def timer_verdict(listing: str) -> str:
+    """The check's timer assertion over one `systemctl list-timers` listing."""
+    statement = host_check_statement("odile timers on this machine")
+    with tempfile.TemporaryDirectory(prefix="odile-timers-") as directory:
+        bin_dir = Path(directory) / "bin"
+        bin_dir.mkdir()
+        systemctl = bin_dir / "systemctl"
+        systemctl.write_text("#!/bin/bash\ncat <<'LIST'\n"
+                             + listing.rstrip("\n") + "\nLIST\n", encoding="utf-8")
+        systemctl.chmod(0o755)
+        result = host_check_arm(("name_set", "odile_timer_set"), ("ODILE_TIMERS",),
+                                statement,
+                                env={"PATH": f"{bin_dir}:{os.environ['PATH']}"})
+    return result.stdout.strip()
+
+
+def caddy_verdict(fields: str) -> str:
+    """The check's Caddy case arm over one ``FIELDS`` line: ok or bad."""
+    text = CHECK_HOST.read_text(encoding="utf-8")
+    hit = text.index('*"caddy_same=True markers=[1, 1] matchers=')
+    start = text.rindex('case "$FIELDS" in', 0, hit)
+    end = text.index("\nesac", hit)
+    block = text[start:end]
+    script = ("ok() { printf 'ok\\n'; }\n"
+              "bad() { printf 'bad\\n'; }\n"
+              + host_check_literal("DEMO_MATCHERS") + "\n"
+              + f"FIELDS={shlex.quote(fields)}\n{block}\nesac\n")
+    result = subprocess.run(["/bin/bash", "-c", script], capture_output=True,
+                            text=True)
+    return result.stdout.strip()
+
+
+def report_caddy(matchers: list[str], *, same: bool = True) -> dict:
+    """One report's ``caddy`` object, as apply_demo_public.py writes it."""
+    return {"installed_sha256": "a" * 64,
+            "live_block_sha256": ("a" if same else "b") * 64,
+            "markers": [1, 1], "matchers": list(matchers), "residue_lines": 0}
+
+
+class HostCheckDriftTests(unittest.TestCase):
+    """t_a9edc561: the host check names the demo its own tree ships.
+
+    The matcher set and the timer names are cut out of check_demo_host.sh and
+    run here, so a literal edited on one side only reddens in this file instead
+    of on the machine. The three matchers are the runbook's (§4); the three
+    timers are the nightly backup, the five-minute heartbeat and the unit
+    deploy/attest-refresh/ installs.
+    """
+
+    def block(self, *names: str) -> str:
+        """A Caddy site block that defines ``@name`` for each name, in order."""
+        body = "".join(f"\t@{name} path /{name}\n"
+                       f"\thandle @{name} {{\n\t\trespond 200\n\t}}\n"
+                       for name in names)
+        return "site {\n" + body + "}\n"
+
+    def listing(self, *units: str) -> str:
+        """A `systemctl list-timers` listing, one timer per unit."""
+        return "\n".join(f"n/a n/a n/a {unit} {unit[:-len('.timer')]}.service"
+                         for unit in units) + "\n"
+
+    # The matcher set, cut from the expect line that runs on the machine.
+
+    def test_the_matcher_set_passes_in_any_order(self) -> None:
+        for order in (("apidocs", "favicon", "tabicons"),
+                      ("tabicons", "favicon", "apidocs"),  # the live block's order
+                      ("favicon", "tabicons", "apidocs")):
+            with self.subTest(order=order):
+                self.assertEqual(matcher_verdict(self.block(*order)), "ok")
+
+    def test_a_matcher_this_tree_does_not_ship_fails(self) -> None:
+        self.assertEqual(
+            matcher_verdict(self.block("apidocs", "favicon", "tabicons", "vendor")),
+            "bad")
+
+    def test_a_missing_matcher_fails(self) -> None:
+        self.assertEqual(matcher_verdict(self.block("apidocs", "tabicons")), "bad")
+
+    # The same set through the machine's own report and the case arm.
+
+    def test_the_report_matchers_pass_in_any_order(self) -> None:
+        fields = host_report_fields(
+            {"caddy": report_caddy(["tabicons", "favicon", "apidocs"])})
+        self.assertIn("matchers=apidocs favicon tabicons", fields)
+        self.assertEqual(caddy_verdict(fields), "ok")
+
+    def test_a_report_matchers_are_a_sorted_set(self) -> None:
+        fields = host_report_fields({"caddy": report_caddy(["@tabicons", "apidocs"])})
+        self.assertIn("matchers=apidocs tabicons", fields)
+
+    def test_a_report_with_an_extra_matcher_fails(self) -> None:
+        fields = host_report_fields(
+            {"caddy": report_caddy(["apidocs", "favicon", "tabicons", "vendor"])})
+        self.assertIn("vendor", fields)
+        self.assertEqual(caddy_verdict(fields), "bad")
+
+    def test_a_report_with_no_matcher_fails(self) -> None:
+        fields = host_report_fields({"caddy": report_caddy([])})
+        self.assertEqual(caddy_verdict(fields), "bad")
+
+    # The timers, by name.
+
+    def test_the_three_timers_pass_in_systemd_order(self) -> None:
+        listing = self.listing("odile-heartbeat.timer", "odile-attest-refresh.timer",
+                               "odile-backup-tenant.timer")
+        self.assertEqual(timer_verdict(listing), "ok")
+
+    def test_a_fourth_odile_timer_fails(self) -> None:
+        listing = self.listing("odile-attest-refresh.timer", "odile-backup-tenant.timer",
+                               "odile-claim.timer", "odile-heartbeat.timer")
+        self.assertEqual(timer_verdict(listing), "bad")
+
+    def test_a_missing_timer_fails(self) -> None:
+        listing = self.listing("odile-attest-refresh.timer", "odile-backup-tenant.timer")
+        self.assertEqual(timer_verdict(listing), "bad")
+
+    def test_other_timers_are_not_counted(self) -> None:
+        listing = (self.listing("odile-attest-refresh.timer", "odile-backup-tenant.timer",
+                                "odile-heartbeat.timer")
+                   + "n/a n/a n/a sysstat-collect.timer sysstat-collect.service\n"
+                   + "n/a n/a n/a hermes-disk-care.timer hermes-disk-care.service\n")
+        self.assertEqual(timer_verdict(listing), "ok")
+
+    def test_the_runbook_names_the_same_three_matchers(self) -> None:
+        runbook = (ROOT / "docs" / "runbooks" / "demo-public.md").read_text(encoding="utf-8")
+        for name in ("@apidocs", "@favicon", "@tabicons"):
+            self.assertIn(name, runbook)
+
+
 if __name__ == "__main__":
     unittest.main()
