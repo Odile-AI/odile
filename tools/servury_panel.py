@@ -101,6 +101,14 @@ from pathlib import Path
 
 BASE = "https://servury.com"
 LOGIN = f"{BASE}/login/"
+# The login form's own names, accepted **only** at the login path. `credential`
+# is a 32-character secret and `remember_me` is the "Remember me for 30 days"
+# checkbox; neither belongs in POST_FIELDS, because the fence's meaning is that a
+# manage form cannot carry a login name (and a login form cannot carry a manage
+# name). Measured 2026-11-20: the live form renders exactly csrf_token,
+# credential and remember_me.
+LOGIN_PATH = urllib.parse.urlparse(LOGIN).path
+LOGIN_FIELDS = frozenset({"csrf_token", "credential", "remember_me"})
 CREDENTIAL_FILE = Path("/root/.odile/servury_panel_credential")
 COOKIE_FILE = Path("/root/.odile/servury_panel.cookies")
 UA = "Mozilla/5.0 (X11; Linux x86_64) odile-panel/1"
@@ -456,13 +464,17 @@ def get(opener, url: str) -> str:
 
 def post(opener, url: str, fields: dict[str, str], *,
          permitted_actions: tuple[str, ...] = ()) -> str:
-    why = refuse_path(urllib.parse.urlparse(url).path)
+    path = urllib.parse.urlparse(url).path
+    why = refuse_path(path)
     if why:
         raise SystemExit(f"panel: refusing to POST to {url}: {why}")
     why = refuse_action(fields, permitted_actions)
     if why:
         raise SystemExit(f"panel: refusing to POST to {url}: {why}")
-    allowed = POST_FIELDS
+    # The login form is the only path whose fields are not a manage form's, so
+    # its two extra names are accepted there and nowhere else. Widening
+    # POST_FIELDS instead would let any manage form carry `credential`.
+    allowed = (POST_FIELDS | LOGIN_FIELDS) if path == LOGIN_PATH else POST_FIELDS
     unknown = set(fields) - allowed
     if unknown:
         raise SystemExit(f"panel: refusing unknown form field(s) {sorted(unknown)}")
@@ -522,13 +534,26 @@ def login(opener, jar) -> int:
             return 0
         print("panel: no csrf_token on the login page — the form changed", file=sys.stderr)
         return 1
+    # The POST *is* the login, so no account exists yet: /settings/ answers the
+    # login page. Cache the honest `?` for the POST's audit line rather than
+    # spending a fetch whose answer cannot name an account, and restore it after
+    # so a caller that already read one does not lose it.
+    global _ACCOUNT
+    previous_account = _ACCOUNT
+    _ACCOUNT = "?"
     landed = post(opener, LOGIN, {"csrf_token": token, "credential": credential, "remember_me": "on"})
-    if "logout" not in landed.lower() and "csrf_token" in landed.lower() and "credential" in landed.lower():
-        print("panel: login refused (still on the form)", file=sys.stderr)
+    _ACCOUNT = previous_account
+    lowered = landed.lower()
+    # The dashboard's logout control is what says the session is in. `dashboard`
+    # alone is not enough: the public login page carries that word in its meta
+    # keywords. A form rendered again (a wrong credential, or the captcha gate)
+    # carries the two field names and is a refusal.
+    if "logout" not in lowered or 'name="credential"' in lowered:
+        print("panel: login refused — the answer is not the dashboard", file=sys.stderr)
         return 1
     jar.save(ignore_discard=True, ignore_expires=True)
     os.chmod(COOKIE_FILE, 0o600)
-    print(f"panel: logged in, session saved to {COOKIE_FILE}")
+    print(f"panel: logged in — the dashboard answered — session saved to {COOKIE_FILE}")
     return 0
 
 
