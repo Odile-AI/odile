@@ -211,8 +211,18 @@ class HistoryUsesTheBaseScanner(unittest.TestCase):
 
     def test_it_runs_the_base_scanner(self):
         self.assertIn('git show "$base_sha:tools/leak_scan.py"', self.block)
-        self.assertIn("/tmp/base-leak_scan.py --history", self.block)
+        self.assertIn("scanner=/tmp/base-leak_scan.py", self.block)
+        self.assertIn('"$scanner" --history', self.block)
         self.assertNotIn("python3 tools/leak_scan.py --history", self.block)
+
+    def test_a_base_that_predates_the_flag_falls_back_with_a_line(self):
+        # `--forbid-only` lands with this branch, so the base of the pull
+        # request that carries it has a scanner that rejects the flag. The step
+        # probes for it, says so, and uses the tree's scanner for that one run;
+        # every later run reads the base's.
+        self.assertIn("--help", self.block)
+        self.assertIn("predates --forbid-only", self.block)
+        self.assertIn("scanner=tools/leak_scan.py", self.block)
 
     def test_it_runs_the_base_allowlist_and_the_secret_list(self):
         self.assertIn('git show "$base_sha:leak-allow.tsv"', self.block)
@@ -298,6 +308,49 @@ class HistoryUsesTheBaseScanner(unittest.TestCase):
         # would skip, so the red path leaves the PR's own allowlist in place.
         self.assertEqual((tree / "leak-allow.tsv").read_text(encoding="utf-8"), pr_allowlist,
                          "the red path left the base's allowlist in the checkout")
+
+    def test_a_base_without_the_flag_still_catches_the_literal(self) -> None:
+        # The transition run: the base scanner knows only `--history`, so the
+        # flag probe must fall back to the tree's scanner. A base scanner that
+        # would pass everything is the discriminating control — if the step ran
+        # it with the flag appended the run would die, and if it ran it without
+        # the flag this PR's literal would pass. Both are red here.
+        tmp = Path(tempfile.mkdtemp(prefix="ci-history-old-"))
+        self.addCleanup(shutil.rmtree, tmp, True)
+        origin = tmp / "origin.git"
+        base_repo = tmp / "base"
+        tree = tmp / "tree"
+        git("init", "-q", "--bare", "--initial-branch=main", str(origin), cwd=tmp)
+        git("init", "-q", "--initial-branch=main", str(base_repo), cwd=tmp)
+        (base_repo / "tools").mkdir()
+        (base_repo / "tools" / "leak_scan.py").write_text(
+            "#!/usr/bin/python3\nimport sys\nprint('PASS: a base scanner that knows nothing')\n"
+            "sys.exit(0)\n", encoding="utf-8")
+        (base_repo / "leak-allow.tsv").write_text("# no exceptions\n", encoding="utf-8")
+        (base_repo / "README.md").write_text("clean tree\n", encoding="utf-8")
+        commit_all(base_repo, "base")
+        base_sha = git("rev-parse", "HEAD", cwd=base_repo).stdout.strip()
+        git("remote", "add", "origin", str(origin), cwd=base_repo)
+        git("push", "-q", "origin", "main", cwd=base_repo)
+        git("clone", "-q", "-b", "main", str(origin), str(tree), cwd=tmp)
+
+        # The PR's tree carries the real scanner (the branch that lands the
+        # flag); only the BASE is old.
+        shutil.copy2(ROOT / "tools" / "leak_scan.py", tree / "tools" / "leak_scan.py")
+        (tree / "probe.md").write_text(f"host {HQ_IP}\n", encoding="utf-8")
+        commit_all(tree, "a literal the base scanner cannot see")
+        (tree / "docs" / "ops").mkdir(parents=True)
+        (tree / "docs" / "ops" / "leak-forbid.txt").write_text(LIST_TEXT, encoding="utf-8")
+
+        env = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
+        env.update({"EVENT_NAME": "push", "REF_NAME": "main", "BASE_REF": "main",
+                    "PUSH_BASE": base_sha})
+        result = subprocess.run(["/bin/sh", "-c", history_gate_script()], cwd=tree,
+                                text=True, capture_output=True, env=env)
+        self.assertIn("predates --forbid-only", result.stdout + result.stderr)
+        self.assertNotEqual(result.returncode, 0,
+                            "the transition run passed a literal its base scanner cannot see")
+        self.assertIn("FINDING forbidden-value", result.stdout + result.stderr)
 
 
 if __name__ == "__main__":

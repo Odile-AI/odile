@@ -404,7 +404,16 @@ jobs:
           # trap: a plain `cp` after the scan would be skipped on the red path.
           trap 'cp /tmp/pr-leak-allow.tsv leak-allow.tsv' EXIT
           cp /tmp/base-leak-allow.tsv leak-allow.tsv
-          /usr/bin/python3 /tmp/base-leak_scan.py --history \
+          # `--forbid-only` landed with the list, so a base that predates this
+          # branch has a scanner that rejects the flag. Fall back to the tree's
+          # scanner for that one transition run (the pull request that lands the
+          # flag), with a line saying so; every later run reads the base's.
+          scanner=/tmp/base-leak_scan.py
+          if ! /usr/bin/python3 "$scanner" --help 2>&1 | grep -q -- "--forbid-only"; then
+            echo "base scanner predates --forbid-only; this run uses the tree's scanner"
+            scanner=tools/leak_scan.py
+          fi
+          /usr/bin/python3 "$scanner" --history \
             --forbid-file docs/ops/leak-forbid.txt --forbid-only
       # The repository is the source of truth: one root, cut once from `main`
       # `65e2764` (`24ee323`), and every commit after it is ordinary work on
