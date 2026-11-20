@@ -45,6 +45,7 @@ from odilectl import claim  # noqa: E402
 from odilectl.config import Config  # noqa: E402
 from odilectl.errors import ConfigError  # noqa: E402
 from odilectl.providers.base import validate_ssh_public_key  # noqa: E402
+from tests.test_web_pages import REGION, focus_order, main_id  # noqa: E402
 
 EMAIL = "ada@example.com"
 MEASUREMENT = "cd" * 48
@@ -332,6 +333,48 @@ class ClaimPageTests(unittest.TestCase):
             (tenant["id"],),
         )
         self.assertEqual(len(events), 1)
+
+    def test_every_rendered_claim_state_opens_with_the_skip_link_to_its_main(self) -> None:
+        """The three states the claim template can render, not the template.
+
+        The template keeps all three blocks, so its shape is pinned in
+        test_web_pages; here each block is pruned by render_claim and the
+        document a browser receives is walked in order. The closed link is a
+        page with one landmark (main), and still opens with the link.
+        """
+        status, form = request(self.port, "GET", "/claim?t=" + self.issued.token)
+        self.assertEqual(status, 200, form)
+        status, claimed = request(self.port, "POST", "/claim", {
+            "step": "claim",
+            "token": self.issued.token,
+            "email": self.email,
+            "consent": "yes",
+        })
+        self.assertEqual(status, 200, claimed)
+        status, closed = request(self.port, "GET", "/claim?t=" + "f" * 48)
+        self.assertEqual(status, 404, closed)
+        states = {
+            "form": (form, ["who", "next"]),
+            "claimed": (claimed, ["next"]),
+            "closed": (closed, []),
+        }
+        for name, (body, regions) in states.items():
+            with self.subTest(state=name):
+                target = main_id(body)
+                self.assertIsNotNone(target, "the state's <main> carries no id")
+                stops = focus_order(body)
+                self.assertTrue(stops, "the state has no focusable element")
+                self.assertEqual(stops[0]["tag"], "a",
+                                 "the first tab stop is <%s>, not the skip link"
+                                 % stops[0]["tag"])
+                self.assertEqual(stops[0]["attributes"].get("href"), "#" + str(target),
+                                 "the skip link points at %r, not the state's main"
+                                 % stops[0]["attributes"].get("href"))
+                self.assertEqual(len(re.findall(r"<h1\b", body)), 1,
+                                 "the state's one heading moved")
+                self.assertEqual(len(re.findall(r"<main\b", body)), 1)
+                self.assertEqual(REGION.findall(body), regions,
+                                 "a landmark was added or removed")
 
     def test_a_replay_shows_the_claimed_page(self) -> None:
         status, page = request(self.port, "POST", "/claim", {

@@ -20,10 +20,15 @@ the round trip and the transcript are in `docs/evidence/odl-238/`.
 """
 
 import re
+import sys
 import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from tests.test_web_pages import focus_order, main_id  # noqa: E402
 FAQ = ROOT / "docs" / "FAQ.md"
 DECK = ROOT / "docs" / "CLAIMS.md"
 DECIDED = ROOT / "docs" / "product" / "CLAIMS-RECUT-STRICT.md"
@@ -294,6 +299,24 @@ class SupportAnswers(unittest.TestCase):
         # collides with a core command is skipped by agent/skill_commands.py.
         skill = SKILL.read_text(encoding="utf-8")
         self.assertNotIn("name: help\n", skill)
+
+    def test_the_page_opens_with_the_skip_link_to_its_main(self):
+        """BRAND.md's Keyboard row, read from the order, not from a class.
+
+        The page names seven regions, so a skip link is the first focusable
+        element; its href is the page's own main. test_web_pages reads the
+        rule's declarations and pins the landmark set.
+        """
+        document = PAGE.read_text(encoding="utf-8")
+        target = main_id(document)
+        self.assertIsNotNone(target, "the page's <main> carries no id")
+        stops = focus_order(document)
+        self.assertTrue(stops, "the page has no focusable element")
+        self.assertEqual(stops[0]["tag"], "a",
+                         "the first tab stop is <%s>, not the skip link" % stops[0]["tag"])
+        self.assertEqual(stops[0]["attributes"].get("href"), "#" + str(target),
+                         "the skip link points at %r, not the page's main"
+                         % stops[0]["attributes"].get("href"))
 
 
 if __name__ == "__main__":
