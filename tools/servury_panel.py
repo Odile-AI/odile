@@ -36,8 +36,8 @@ attach print: after the write reports its own `Written` stamp it reads
 field is gone (a plain restart follows, because the disk write already started
 the machine), and ends by naming the pair the next start will use. That
 read-back is an API call, so `--recycle --apply` needs the account's key —
-`--key-file`, default `/root/.odile/servury_reseller_key_lkbxu6i9`, checked
-before the first write.
+`--key-file`, default `/root/.odile/servury_reseller_key_lkbxu6i9`, read and
+checked (present and non-empty) before the first write.
 
 The reinstall is the Danger Zone form, and the credential can erase every
 machine on the account, so the verb is fenced harder than the image writes:
@@ -49,6 +49,9 @@ machine on the account, so the verb is fenced harder than the image writes:
 * `os`, `want_snp`, `want_fde` and `want_measured` are required with **no
   defaults** — the vendor's own rule is "what you do not send is off";
 * `ssh_key` comes from `--ssh-key-file`, never argv (argv is world-readable);
+* the per-machine line comes from `--cmdline-file`, never argv — it carries the
+  seed token and argv is world-readable in `ps`, so `--cmdline` is refused with
+  `--recycle` (exit 2 before the fence);
 * the audit line is written **before** the POST and carries the pre-write `os`,
   the three flags, the key's comment and the boot/disk pair about to be lost;
 * `--apply` alone is a dry run; the destructive write needs `--confirm`.
@@ -681,8 +684,8 @@ def read_boot_image(key_file: str | Path, server: str, *, timeout: float = 40.0)
     path = Path(key_file)
     try:
         key = path.read_text(encoding="utf-8").strip()
-    except OSError as error:
-        raise RuntimeError(f"{path}: {error.strerror or error}") from None
+    except (OSError, ValueError) as error:
+        raise RuntimeError(f"{path}: {getattr(error, 'strerror', None) or error}") from None
     if not key:
         raise RuntimeError(f"{path} is empty")
     url = f"{API}?{urllib.parse.urlencode({'action': 'boot-image', 'id': server})}"
@@ -699,6 +702,10 @@ def read_boot_image(key_file: str | Path, server: str, *, timeout: float = 40.0)
         except ValueError:
             sentence = detail
         raise RuntimeError(str(sentence)[:300]) from None
+    except ValueError as error:
+        # An expired session serves the login page, not the API's JSON. This
+        # read happens after the disk write, so it must be a sentence.
+        raise RuntimeError(f"the API answered no JSON: {error}") from None
     if not payload.get("success", True):
         raise RuntimeError(str(payload.get("error") or "the API refused the read"))
     return (payload.get("data") or {}).get("boot_image") or {}
@@ -747,7 +754,12 @@ def ensure_boot_image(opener, server: str, url: str, sha256: str, cmdline: str,
     field that already holds the pair is left alone — no attach, no restart.
     """
     since = datetime_stamp()
-    written = wait_disk_written(opener, server, since, wait=wait, interval=interval)
+    try:
+        written = wait_disk_written(opener, server, since, wait=wait, interval=interval)
+    except (RuntimeError, OSError, ValueError) as error:
+        print(f"panel: waiting for the disk write's Written stamp failed — {error}",
+              file=sys.stderr)
+        return 1
     if written is None:
         print(f"panel: the disk write did not report a new Written stamp in "
               f"{int(wait)}s — the boot-image field cannot be read back as this "
@@ -756,7 +768,7 @@ def ensure_boot_image(opener, server: str, url: str, sha256: str, cmdline: str,
     print(f"panel: the disk write completed at {written}; reading ?action=boot-image back")
     try:
         state = read_boot_image(key_file, server)
-    except (RuntimeError, OSError) as error:
+    except (RuntimeError, OSError, ValueError) as error:
         print(f"panel: the boot-image read-back failed — {error}", file=sys.stderr)
         return 1
     why = boot_image_matches(state, url, sha256, cmdline)
@@ -772,7 +784,7 @@ def ensure_boot_image(opener, server: str, url: str, sha256: str, cmdline: str,
         return code
     try:
         state = read_boot_image(key_file, server)
-    except (RuntimeError, OSError) as error:
+    except (RuntimeError, OSError, ValueError) as error:
         print(f"panel: the boot-image read-back failed after the re-attach — {error}",
               file=sys.stderr)
         return 1
@@ -1015,6 +1027,23 @@ def write_reinstall(
     return 0
 
 
+def key_problem(key_file: str | Path) -> str | None:
+    """Why the read-back's key file cannot be used, or None.
+
+    The read-back runs after the disk write, so a missing or **empty** key found
+    there would spend the reinstall and the disk write before failing. The
+    pre-flight reads the file, not only its name, before the first write.
+    """
+    path = Path(key_file)
+    try:
+        key = path.read_text(encoding="utf-8")
+    except (OSError, ValueError) as error:
+        return f"pass --key-file — {getattr(error, 'strerror', None) or error}"
+    if not key.strip():
+        return "the file is empty — write the account's key to it"
+    return None
+
+
 def recycle(
     opener, server: str, *, os_name: str, want_snp: bool, want_fde: bool,
     want_measured: bool, ssh_key_file: str, boot_url: str, boot_sha256: str,
@@ -1048,11 +1077,13 @@ def recycle(
     if why:
         print(f"panel: refusing the recycle: {why}", file=sys.stderr)
         return 2
-    if apply and not Path(key_file).is_file():
-        print(f"panel: the boot-image read-back needs an API key at {key_file}; "
-              "pass --key-file (the composite reads ?action=boot-image after the "
-              "disk write, because the write can clear the field)", file=sys.stderr)
-        return 2
+    if apply:
+        problem = key_problem(key_file)
+        if problem:
+            print(f"panel: the boot-image read-back needs an API key at {key_file}; "
+                  f"{problem} (the composite reads ?action=boot-image after the disk "
+                  "write, because the write can clear the field)", file=sys.stderr)
+            return 2
     print(f"panel: recycle {server} — console log, reinstall, boot image, disk image")
     code = console(opener, server, "on", dry_run=not apply)
     if code:
@@ -1373,10 +1404,16 @@ def main(argv: list[str] | None = None) -> int:
             print("panel: --reinstall/--recycle need --server", file=sys.stderr)
             return 2
         missing = _reinstall_missing(args)
-        cmdline = None
+        cmdline = ""
         if args.recycle:
             if args.cmdline and args.cmdline_file:
                 print("panel: --recycle takes --cmdline-file, not both", file=sys.stderr)
+                return 2
+            if args.cmdline:
+                # The line carries the per-machine seed token, and argv is
+                # world-readable in `ps`; the file is the only accepted source.
+                print("panel: --recycle takes the per-machine line from --cmdline-file "
+                      "only (argv is world-readable in `ps`)", file=sys.stderr)
                 return 2
             if args.cmdline_file:
                 try:
@@ -1384,8 +1421,6 @@ def main(argv: list[str] | None = None) -> int:
                 except OSError as error:
                     print(f"panel: --cmdline-file {args.cmdline_file}: {error}", file=sys.stderr)
                     return 2
-            elif args.cmdline:
-                cmdline = args.cmdline
             if missing is None:
                 missing = _recycle_missing(args, cmdline)
         if missing:

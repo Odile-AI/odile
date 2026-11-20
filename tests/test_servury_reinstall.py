@@ -26,6 +26,7 @@ import json
 import sys
 import tempfile
 import unittest
+import urllib.error
 from pathlib import Path
 from unittest import mock
 
@@ -717,6 +718,44 @@ class RecycleTests(FencedCase):
         self.assertEqual(seen["sha"], BOOT_SHA)
         self.assertTrue(seen["apply"])
 
+    def test_the_line_is_refused_from_argv(self) -> None:
+        # The line carries the per-machine seed token, and argv is world-readable
+        # in `ps` (the tool's own `ssh_keys_from` docstring). `--recycle` takes
+        # it from --cmdline-file only, and the refusal lands before the fence,
+        # the console arm or any POST.
+        argv = self.recycle_argv("--apply", "--confirm")
+        index = argv.index("--cmdline-file")
+        del argv[index:index + 2]
+        argv += ["--cmdline", "SECRET-ON-ARGV-LINE"]
+        posts: list = []
+        code, _, err = self.run_tool(argv, posts=posts)
+
+        self.assertEqual(code, 2)
+        self.assertIn("--cmdline-file", err)
+        self.assertIn("argv is world-readable", err)
+        self.assertEqual(posts, [])
+        self.assertEqual(self.lines(), [], "a refused line is not an attempt")
+
+    def test_both_line_flags_are_still_refused(self) -> None:
+        code, _, err = self.run_tool(self.recycle_argv("--cmdline", "x"))
+
+        self.assertEqual(code, 2)
+        self.assertIn("not both", err)
+
+    def test_an_empty_key_file_refuses_before_the_console_write(self) -> None:
+        # The read-back runs after the disk write, so an empty key discovered
+        # there would spend the erase and the reinstall first. The pre-flight
+        # reads the file, not only its name.
+        self.api_key.write_text("\n", encoding="utf-8")
+        posts: list = []
+        code, _, err = self.run_tool(self.recycle_argv("--apply", "--confirm"), posts=posts)
+
+        self.assertEqual(code, 2)
+        self.assertIn("empty", err)
+        self.assertIn("read-back", err)
+        self.assertEqual(posts, [])
+        self.assertEqual(self.lines(), [], "a refused key is not an attempt")
+
 
 # The line the recycle passes to the attach; the same string the file holds.
 CMDLINE = "root=/dev/mapper/root_crypt ro console=ttyS0,115200"
@@ -830,6 +869,19 @@ class BootImageStateTests(unittest.TestCase):
                 panel.read_boot_image(self.key, SERVER)
 
         self.assertIn("Server not found", str(caught.exception))
+
+    def test_a_page_instead_of_json_is_a_sentence(self) -> None:
+        # An expired session serves the login page, not the API's JSON. That is
+        # a ValueError from json.load; the caller must read a sentence, not a
+        # traceback, because this read happens after the disk write.
+        def fake_urlopen(request, timeout=None):  # noqa: ARG001
+            return _FakeHttpResponse("<html>sign in</html>")
+
+        with mock.patch("urllib.request.urlopen", fake_urlopen):
+            with self.assertRaises(RuntimeError) as caught:
+                panel.read_boot_image(self.key, SERVER)
+
+        self.assertIn("no JSON", str(caught.exception))
 
 
 class ReadBackTests(FencedCase):
@@ -972,6 +1024,35 @@ class ReadBackTests(FencedCase):
         self.assertEqual(code, 0, err)
         self.assertEqual(self.names(calls), ["console", "reinstall", "boot", "disk"])
         self.assertIn("read ?action=boot-image back", out)
+
+    def test_a_read_error_after_the_write_is_a_sentence_not_a_traceback(self) -> None:
+        # The read-back runs after the disk write, so a panel/API hiccup must
+        # end the run with a sentence and exit 1, not a JSONDecodeError.
+        err = io.StringIO()
+        with mock.patch.object(panel, "wait_disk_written",
+                               return_value="2026-11-20T10:36:14Z"), \
+                mock.patch.object(panel, "read_boot_image",
+                                  side_effect=json.JSONDecodeError("Expecting value",
+                                                                   "<html>", 0)), \
+                contextlib.redirect_stdout(io.StringIO()), \
+                contextlib.redirect_stderr(err):
+            code = panel.ensure_boot_image(None, SERVER, BOOT_URL, BOOT_SHA, CMDLINE,
+                                           self.key, wait=1, interval=0)
+
+        self.assertEqual(code, 1)
+        self.assertIn("read-back failed", err.getvalue())
+
+    def test_a_page_error_while_waiting_is_a_sentence_not_a_traceback(self) -> None:
+        err = io.StringIO()
+        with mock.patch.object(panel, "wait_disk_written",
+                               side_effect=urllib.error.URLError("timed out")), \
+                contextlib.redirect_stdout(io.StringIO()), \
+                contextlib.redirect_stderr(err):
+            code = panel.ensure_boot_image(None, SERVER, BOOT_URL, BOOT_SHA, CMDLINE,
+                                           self.key, wait=1, interval=0)
+
+        self.assertEqual(code, 1)
+        self.assertIn("Written", err.getvalue())
 
 
 if __name__ == "__main__":

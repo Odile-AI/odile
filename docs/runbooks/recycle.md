@@ -134,6 +134,10 @@ image → disk image, in the vendor's order. The disk write **starts the machine
 itself**. Without `--apply --confirm` the same command is a dry run and prints
 every field it would post, including the pair it would lose.
 
+The line comes from `--cmdline-file` only: `--recycle` refuses `--cmdline`
+(exit 2, before the fence and the console), because argv is world-readable in
+`ps` and the line carries the per-machine seed token.
+
 **The disk write clears the boot-image field**, measured twice on this box on
 2026-11-20 (`t_556631d6`; `t_6d956aee` earlier), so the command does not end at
 the disk write's submission. It waits for the panel's own `Written <UTC>` stamp
@@ -141,7 +145,7 @@ in the Disk image section — the POST returns a minute or two before the image 
 on the disk, so a read straight after it is a pre-write read — then reads
 `?action=boot-image&id=<id>` back from the API with the account's key
 (`--key-file`, default `/root/.odile/servury_reseller_key_lkbxu6i9`; the run
-refuses before the reinstall without one) and:
+refuses before the reinstall without one, or with an empty file) and:
 
 * when `next_start` is `custom` with the same URL, SHA-256 and line, writes
   nothing and restarts nothing — it prints `the field survived the write (no
@@ -153,7 +157,8 @@ refuses before the reinstall without one) and:
 The run's last line names the pair the next start will use. A disk write that
 reports no new `Written` stamp in `--wait` seconds fails (exit 1) as unfinished,
 and a re-attach that does not read back as `custom` fails too: neither is
-printed as success.
+printed as success. A read-back that errors — a panel fetch failure, or a page
+instead of the API's JSON — also exits 1 with a sentence, never a traceback.
 
 If the wait for `Running` ends the command (the machine is still `reinstalling`
 at `--wait`), the erase has already happened and the boot/disk fields are
