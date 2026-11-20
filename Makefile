@@ -74,12 +74,14 @@ acceptance: check check-hq
 	@echo "make acceptance: OK $(CARD)"
 
 # The HQ half of the suite (ODL-479). A card worktree is a fresh checkout, so
-# `unittest discover -s tests` there finds the 64 tracked modules; 15 more exist
-# only at HQ (`.git/info/exclude`) and carry rules about the tree — every
-# `docs/*.md` quoting the UKI `f7bc0ceb…` must name `t_c1e0f336`, every craft
-# playbook keeps its five sections — so a card breaking one was green in its
-# worktree and red for everyone in main. `tools/hq_gate.py` runs those modules
-# against this checkout's own commit: a throwaway worktree with the HQ-only
+# `unittest discover -s tests` there finds only the tracked modules — 66 of the
+# 82 `tests/test_*.py` at `main` `ef23edf`; the other 16 exist only at HQ
+# (`.git/info/exclude`) and carry rules about the tree — every `docs/*.md`
+# quoting the UKI `f7bc0ceb…` must name `t_c1e0f336`, every craft playbook
+# keeps its five sections — so a card breaking one was green in its worktree and
+# red for everyone in main. `tools/hq_gate.py` runs those modules against this
+# checkout's *merge preview*: a throwaway worktree at the branch's commit with
+# the paths the branch left alone taken as HQ's HEAD has them and the HQ-only
 # files overlaid, removed afterwards, so the card's tree is never written to.
 # Outside HQ (a public clone) the tool prints one skip line and passes.
 check-hq:

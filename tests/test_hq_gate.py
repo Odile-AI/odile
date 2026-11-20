@@ -13,6 +13,12 @@ These tests pin the properties the gate's answer depends on:
 
 * the branch's committed tree is what is under test — a violation that only
   exists in the commit is red, and the same tree without it is green;
+* the tree is the *merge preview*: what main gained after the branch was cut
+  arrives, main's repair of a document the branch left alone arrives, the
+  branch's own bytes win where it changed the file, and a file the branch
+  deleted is not resurrected (a branch cut before main moved used to red
+  `test_craft` on a playbook nobody had touched);
+* the committed bytes arrive, not HQ's working copy, which is often dirty;
 * an HQ-only path the branch also tracks keeps the branch's bytes (the overlay
   must never overwrite a tracked file);
 * the overlay really is there: a module that only exists at HQ runs at all;
@@ -212,6 +218,140 @@ class GateRunTest(FixtureCase):
         empty.mkdir()
         code, output = quiet_main(["--hq", str(self.hq), "--tree", str(empty)])
         self.assertEqual(code, 2, output)
+
+
+PREVIEW_MODULE = '''\
+"""Fixture: what the merge takes from main, and what stays the branch's."""
+import unittest
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+
+
+class PreviewTest(unittest.TestCase):
+    def test_a_document_main_gained_arrives(self):
+        self.assertEqual((ROOT / "docs" / "gained.md").read_text().strip(), "GAINED")
+
+    def test_a_document_main_repaired_arrives(self):
+        self.assertEqual((ROOT / "docs" / "rule.md").read_text().strip(), "REPAIRED")
+
+    def test_a_document_the_branch_changed_keeps_the_branch_bytes(self):
+        self.assertEqual((ROOT / "docs" / "mine.md").read_text().strip(), "BRANCH")
+
+    def test_a_document_the_branch_deleted_stays_deleted(self):
+        self.assertFalse((ROOT / "docs" / "gone.md").exists())
+
+    def test_a_document_the_branch_wrote_is_here(self):
+        self.assertEqual((ROOT / "docs" / "branch.md").read_text().strip(), "GOOD")
+'''
+
+
+class MergePreviewCase(unittest.TestCase):
+    """HQ and the card's branch share one git directory, as they do on this host.
+
+    The branch is a linked worktree, so `merge-base` is answerable: this is the
+    only fixture shape that can tell "main moved" from "the branch decided".
+    """
+
+    def setUp(self) -> None:
+        base = Path(tempfile.mkdtemp(prefix="hq-gate-merge-"))
+        self.addCleanup(shutil.rmtree, base, ignore_errors=True)
+        self.base = base
+        self.hq = base / "hq"
+        self.tree = base / "tree"
+        self.make_hq()
+        self.branch_it()
+        self.main_moves()
+
+    def make_hq(self) -> None:
+        self.hq.mkdir(parents=True)
+        git("init", "-q", "-b", "main", cwd=self.hq)
+        git("config", "user.email", "fixture@example.com", cwd=self.hq)
+        git("config", "user.name", "fixture", cwd=self.hq)
+        (self.hq / "docs").mkdir()
+        (self.hq / "docs" / "rule.md").write_text("GOOD\n", encoding="utf-8")
+        (self.hq / "docs" / "mine.md").write_text("BASE\n", encoding="utf-8")
+        (self.hq / "docs" / "gone.md").write_text("KEPT\n", encoding="utf-8")
+        (self.hq / "docs" / "README.md").write_text("public\n", encoding="utf-8")
+        git("add", "-A", cwd=self.hq)
+        git("commit", "-q", "-m", "hq base", cwd=self.hq)
+        (self.hq / ".git" / "info" / "exclude").write_text(
+            "docs/backlog.yaml\n"
+            "tests/test_hq_only.py\n",
+            encoding="utf-8",
+        )
+        (self.hq / "docs" / "backlog.yaml").write_text("hq-only\n", encoding="utf-8")
+        (self.hq / "tests").mkdir()
+        (self.hq / "tests" / "test_hq_only.py").write_text(PREVIEW_MODULE, encoding="utf-8")
+
+    def branch_it(self) -> None:
+        """The card's commit: one document written, one changed, one deleted."""
+        git("worktree", "add", "-q", "-b", "card", str(self.tree), cwd=self.hq)
+        (self.tree / "docs" / "branch.md").write_text("GOOD\n", encoding="utf-8")
+        (self.tree / "docs" / "mine.md").write_text("BRANCH\n", encoding="utf-8")
+        (self.tree / "docs" / "gone.md").unlink()
+        git("add", "-A", cwd=self.tree)
+        git("commit", "-q", "-m", "the card", cwd=self.tree)
+
+    def main_moves(self) -> None:
+        """Main after the fork: a document gained, a repair, a competing edit."""
+        (self.hq / "docs" / "gained.md").write_text("GAINED\n", encoding="utf-8")
+        (self.hq / "docs" / "rule.md").write_text("REPAIRED\n", encoding="utf-8")
+        (self.hq / "docs" / "mine.md").write_text("MAIN-EDITED\n", encoding="utf-8")
+        git("add", "-A", cwd=self.hq)
+        git("commit", "-q", "-m", "main moves", cwd=self.hq)
+
+    def carried(self) -> list[str]:
+        hq_head = hq_gate.head_commit(self.hq)
+        common = hq_gate.merge_base(self.tree, hq_head)
+        return hq_gate.carried_paths(
+            hq_gate.tree_entries(self.hq, hq_head),
+            hq_gate.tree_entries(self.tree, common),
+            hq_gate.tree_entries(self.tree, "HEAD"),
+        )
+
+    def run_gate(self, *args: str) -> tuple[int, str]:
+        return quiet_main(["--hq", str(self.hq), "--tree", str(self.tree), *args])
+
+
+class MergePreviewTest(MergePreviewCase):
+    def test_the_carried_set_is_main_added_and_main_untouched_paths(self):
+        carried = self.carried()
+        # Main gained it; the branch never had it.
+        self.assertIn("docs/gained.md", carried)
+        # The branch left it at the base's bytes and main repaired it.
+        self.assertIn("docs/rule.md", carried)
+        # Both sides changed it: the branch's bytes stay.
+        self.assertNotIn("docs/mine.md", carried)
+        # The branch deleted it: the merge deletes it.
+        self.assertNotIn("docs/gone.md", carried)
+        # Private machinery is not in HQ's HEAD; the HQ-only overlay owns it.
+        self.assertNotIn("docs/backlog.yaml", carried)
+
+    def test_the_gate_runs_the_merge_preview_not_the_stale_branch(self):
+        # Without the carry, two of the five assertions red: main's gained
+        # document and main's repair of a file the branch left alone.
+        code, output = self.run_gate()
+        self.assertEqual(code, 0, output)
+        self.assertIn("hq-gate: OK", output)
+        self.assertIn("Ran 5 tests", output)
+
+    def test_the_committed_bytes_arrive_not_the_dirty_working_copy(self):
+        (self.hq / "docs" / "gained.md").write_text("UNCOMMITTED\n", encoding="utf-8")
+        code, output = self.run_gate()
+        self.assertEqual(code, 0, output)
+
+    def test_a_violation_in_the_branchs_own_commit_is_still_red(self):
+        # The carry only fills paths the branch left alone; it cannot excuse a
+        # document the branch itself wrote wrong.
+        (self.tree / "docs" / "branch.md").write_text("BAD\n", encoding="utf-8")
+        git("commit", "-q", "-am", "break the branch", cwd=self.tree)
+        code, output = self.run_gate()
+        self.assertEqual(code, 1, output)
+        self.assertRegex(output, r"FAIL\s+test_hq_only")
+
+    def test_the_default_hq_is_the_primary_checkout_of_a_linked_worktree(self):
+        self.assertEqual(hq_gate.main_checkout(self.tree), self.hq.resolve())
 
 
 if __name__ == "__main__":
