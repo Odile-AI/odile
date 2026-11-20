@@ -172,7 +172,7 @@ leak: prereqs
 	@if [ -f "$(FORBID_FILE)" ]; then \
 		$(PYTHON) tools/leak_scan.py --tree --forbid-file "$(FORBID_FILE)"; \
 	else \
-		printf 'leak: forbid list absent: %s — the forbidden-value class did not run\n' "$(FORBID_FILE)"; \
+		printf 'leak: forbid list absent: %s — the forbidden-value and forbidden-path classes did not run\n' "$(FORBID_FILE)"; \
 		printf 'leak: supply it at that path (HQ keeps it; CI reads the LEAK_FORBID_B64 secret)\n'; \
 		$(PYTHON) tools/leak_scan.py --tree; \
 	fi

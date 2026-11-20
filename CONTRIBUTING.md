@@ -25,8 +25,8 @@ so a clone has no list — and says so:
 
 ```
 $ make leak
-leak: forbid list absent: docs/ops/leak-forbid.txt — the forbidden-value class did not run
-forbid list:     absent (docs/ops/leak-forbid.txt) — the forbidden-value class did not run
+leak: forbid list absent: docs/ops/leak-forbid.txt — the forbidden-value and forbidden-path classes did not run
+forbid list:     absent (docs/ops/leak-forbid.txt) — the forbidden-value and forbidden-path classes did not run
 ```
 
 Put the list at that path (HQ `cp`, or `base64 -d` from the secret) to arm the

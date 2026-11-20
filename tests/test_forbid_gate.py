@@ -601,7 +601,7 @@ class OneList(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn(f"leak: forbid list absent: {LIST_PATH}", result.stdout)
         self.assertIn(f"forbid list:     absent ({LIST_PATH})", result.stdout)
-        self.assertIn("forbidden-value class did not run", result.stdout)
+        self.assertIn("forbidden-value and forbidden-path classes did not run", result.stdout)
 
         # Naming a path that does not exist is the same absent branch in the
         # target: `make leak` is about the tree, so it passes with the line.
