@@ -3076,7 +3076,7 @@ printf 'members %s\n' "${members# }"
 # The first-visit service and its page are the reviewed files, byte for
 # byte, so the signed installer carries exactly the program and page it
 # writes to /usr/local/lib/odile/. --self-test fails on a one-byte edit.
-FIRST_VISIT_SHA256 = "00af16519ada1104191b99fc39349cde908f70d67f37eff176da5c6d89852915"
+FIRST_VISIT_SHA256 = "21c84e640b278668deec43535ef696cf3372c4cf9a73eb89471e9f3897b9c524"
 FIRST_VISIT_SOURCE = r'''#!/usr/bin/python3
 """odile first-visit service — set the Odile sign-in on the guest.
 
@@ -3886,6 +3886,7 @@ def render(template: str, keep: str, *, title: str, error: FieldError | None = N
 
 ACCESS_REPORT_MAX = 64 * 1024
 ACCESS_TAGS = ("usable keys", "boot key", "seal", "sign-in hash", "operator key")
+ACCESS_GRANT_TAG = "support grant"
 ACCESS_HEAD = "read from your machine, "
 ACCESS_TITLE = "verify_and_unlock \u2014 access report"
 ISO_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$")
@@ -3901,6 +3902,11 @@ def access_report(path: Path) -> dict:
     "missing"}`` when the file does not exist, ``{"state": "bad"}`` when it
     does and is not what ``--mode access --out`` writes. A file that exists
     and does not parse is never silently replaced by the bench block.
+
+    Two shapes are the script's own: five rows and a PASS/FAIL verdict, or the
+    same five plus a ``support grant`` row and an OPEN verdict while a grant is
+    live (t_e23f3288). A grant row without an OPEN verdict (or the reverse) is
+    a bad file, not a state the page may guess at.
     """
     try:
         with open(path, encoding="utf-8", errors="replace") as handle:
@@ -3912,17 +3918,28 @@ def access_report(path: Path) -> dict:
     if len(data) > ACCESS_REPORT_MAX:
         return {"state": "bad"}
     lines = data.splitlines()
-    if len(lines) != 10 or not lines[0].startswith(ACCESS_HEAD):
+    if len(lines) not in (10, 11) or not lines[0].startswith(ACCESS_HEAD):
         return {"state": "bad"}
     at = lines[0][len(ACCESS_HEAD):]
     if not ISO_RE.match(at):
         return {"state": "bad"}
-    if lines[1] != ACCESS_TITLE or lines[2] != "" or lines[8] != "":
+    if lines[1] != ACCESS_TITLE or lines[2] != "":
         return {"state": "bad"}
-    for index, tag in enumerate(ACCESS_TAGS):
-        if not re.match(r"^  %s +(PASS|FAIL) +" % re.escape(tag), lines[3 + index]):
+    granted = len(lines) == 11
+    tags = ACCESS_TAGS + ((ACCESS_GRANT_TAG,) if granted else ())
+    for index, tag in enumerate(tags):
+        row = lines[3 + index]
+        if tag == ACCESS_GRANT_TAG:
+            if not re.match(r"^  %s +OPEN +" % re.escape(tag), row):
+                return {"state": "bad"}
+        elif not re.match(r"^  %s +(PASS|FAIL) +" % re.escape(tag), row):
             return {"state": "bad"}
-    if not re.match(r"^  (PASS|FAIL) \u2014 ", lines[9]):
+    if lines[3 + len(tags)] != "":
+        return {"state": "bad"}
+    verdict = lines[4 + len(tags)]
+    if not re.match(r"^  (PASS|FAIL|OPEN) \u2014 ", verdict):
+        return {"state": "bad"}
+    if granted != verdict.startswith("  OPEN "):
         return {"state": "bad"}
     return {"state": "ok", "at": at, "text": "\n".join(lines[1:])}
 
@@ -6032,7 +6049,7 @@ def main(argv: list[str] | None = None) -> int:
 if __name__ == "__main__":
     sys.exit(main())
 '''
-VERIFY_TEMPLATE_SHA256 = "e48500c76877f4d37cfc64519f8f81b1746d13511763ed0fe982155874ff67ab"
+VERIFY_TEMPLATE_SHA256 = "543f42eabc5b22fa39dc51496dc4d7f34c896bab60edc1eab19fb8afccce7688"
 VERIFY_TEMPLATE = r'''<!doctype html>
 <html lang="en">
 <head>
@@ -6135,7 +6152,7 @@ pre code::selection{background:var(--term-ink);color:var(--term)}
     <a class="brand" href="/">Odile</a>
   </header>
   <h1>This machine, checked.</h1>
-  <!--tenant--><p class="lede">No one at Odile can log in to a tenant machine.</p><!--/tenant-->
+  <!--tenant--><p class="lede">No one at Odile can log in unless you grant it.</p><!--/tenant-->
   <p class="provenance">read from your machine <span class="mono">&middot;</span> <time datetime="{{STAMP}}">{{STAMP}}</time>{{HEAD}}</p>
   {{STATE_BLOCK}}
 
@@ -6295,7 +6312,7 @@ echo "access-report: $PIN_FILE pins $PIN"
 echo "access-report: verify_and_unlock.sh --mode access --root $ROOT --user $TENANT_USER --expect $PIN --out $OUT"
 exec "$REPORTER" --mode access --root "$ROOT" --user "$TENANT_USER" --expect "$PIN" --out "$OUT"
 '''
-VERIFY_UNLOCK_SHA256 = "7cff6f470e3d1fbd938f92982012bf29132ebc6fc7c16389a3c6f482a1c49caa"
+VERIFY_UNLOCK_SHA256 = "332eccdfc7adb0f9fc75aa80a7ead3f524204bdca59991d4944d34de850e4abb"
 VERIFY_UNLOCK = r'''#!/usr/bin/env bash
 # verify_and_unlock.sh — the first-boot ceremony's one command.
 #
@@ -6334,8 +6351,13 @@ VERIFY_UNLOCK = r'''#!/usr/bin/env bash
 # on the machine itself (or on a bench root): it reads the measured command
 # line, the signed report bytes, every account's authorized_keys, every private
 # key in the writable state roots and the tenant's Hermes .env, and prints one
-# PASS/FAIL line for each of the five access facts the claims re-cut cites. It
-# needs no ssh, no release directory and no network. `--out FILE` writes the
+# PASS/FAIL line for each of the five access facts the claims re-cut cites. A
+# live support grant (`/var/lib/odile/support-grant.json`, inside its window,
+# with no tombstone) adds a sixth `support grant  OPEN` row — its id, its
+# expiry and the key fingerprint — and the verdict names the grant instead of
+# the bare FAIL; the state may only account for the exact forced-command line
+# `odile-support grant` wrote, so a hand-written grant-shaped key still fails.
+# It needs no ssh, no release directory and no network. `--out FILE` writes the
 # same report for /verify to read: one provenance line, then the report, 0644
 # and atomic. The boot oneshot passes it; a human run does not need it.
 #
@@ -6423,7 +6445,10 @@ The strict bar's report runs on the booted machine, not from a laptop:
                    private half; the seal policy and measurement; the sign-in
                    hash; no operator key. Every account's authorized_keys is
                    read, and the private-half scan covers /root, every /home,
-                   /etc/odile and /var/lib/odile. No ssh and no network.
+                   /etc/odile and /var/lib/odile. A live support grant adds a
+                   `support grant  OPEN` row (id, expiry, key fingerprint) and
+                   an OPEN verdict; a grant whose window has closed, or a line
+                   no live state accounts for, still fails. No ssh, no network.
   --root <dir>     guest root to inspect (default: /; a bench passes a tree)
   --user <name>    the tenant's Hermes user (default: odile)
   --out <file>     write the report to <file> (0644, atomic) and print it too.
@@ -6832,10 +6857,15 @@ import re
 import shutil
 import subprocess
 import sys
+from datetime import datetime, timezone
 
 root, user, expect = sys.argv[1:4]
 root = os.path.abspath(root)
 fails = 0
+# The labels that failed, in row order. The verdict names them when a live
+# grant explains some of the FAILs but not all of them: a count alone cannot
+# say which checks a visitor is looking at.
+failed = []
 att_rel = "var/lib/odile/attestation.json"
 
 
@@ -6844,6 +6874,7 @@ def row(label, ok, detail):
     print("  %-14s %s  %s" % (label, "PASS" if ok else "FAIL", detail))
     if not ok:
         fails += 1
+        failed.append(label)
 
 
 def read(path):
@@ -6955,6 +6986,80 @@ ak_lines = [line for _, line in ak_entries]
 ak_keys = [key for key in (key_line(line) for line in ak_lines) if key]
 ak_fps = {fingerprint(key) for key in ak_keys}
 
+# A live support grant, named on its own row (t_e23f3288). A granted key is in
+# authorized_keys by design, so "usable keys" and "operator key" fail while the
+# door is open; without a row saying so the page read as a broken machine. The
+# state file is the witness, and it may only excuse the exact line `grant`
+# wrote: our marker, our key, our forced command, from root's own key file. A
+# hand-written grant-shaped line, or a state edited to name another key, still
+# fails. Expiry and revoke are closures; a reboot is not, so the state (not the
+# line) is what makes the grant live.
+state_rel = "var/lib/odile/support-grant.json"
+state_path = os.path.join(root, state_rel)
+GRANT_MARKER = "odile-support-grant-"
+GRANT_ID_RE = re.compile(r"^[0-9a-f]{12}$")
+GRANT_FP_RE = re.compile(r"^SHA256:[A-Za-z0-9+/]{43}$")
+
+
+def live_grant():
+    """The grant state document while its window is open, else None."""
+    raw_state = read(state_path)
+    if raw_state is None:
+        return None
+    try:
+        state = json.loads(raw_state)
+    except ValueError:
+        return None
+    if not isinstance(state, dict):
+        return None
+    if state.get("revoked_at") or state.get("expired_at"):
+        return None
+    grant_id = state.get("grant_id")
+    named = state.get("key_fingerprint")
+    if not (isinstance(grant_id, str) and GRANT_ID_RE.match(grant_id)):
+        return None
+    if not (isinstance(named, str) and GRANT_FP_RE.match(named)):
+        return None
+    try:
+        expires = datetime.fromisoformat(str(state["expires_at"]).replace("Z", "+00:00"))
+    except (KeyError, ValueError):
+        return None
+    if expires.tzinfo is None:
+        expires = expires.replace(tzinfo=timezone.utc)
+    return state if expires > datetime.now(timezone.utc) else None
+
+
+def grant_entry(state):
+    """`(path, line)` of the one line this grant owns, or None."""
+    for path, line in ak_entries:
+        if path != ak_path:
+            continue
+        key = key_line(line)
+        if key is None or not has_options(line):
+            continue
+        found = re.search(r'command="([^"]*)"', line)
+        if found is None:
+            continue
+        tokens = found.group(1).split()
+        if not tokens or not tokens[0].endswith("/usr/local/sbin/odile-support"):
+            continue
+        if "session" not in tokens:
+            continue
+        parts = line.strip().split()
+        blob = key.split()[1]
+        if blob not in parts:
+            continue
+        if " ".join(parts[parts.index(blob) + 1:]) != GRANT_MARKER + state["grant_id"]:
+            continue
+        if fingerprint(key) != state["key_fingerprint"]:
+            continue
+        return path, line
+    return None
+
+
+grant = live_grant()
+grant_owned = grant_entry(grant) if grant is not None else None
+
 # Private halves anywhere an account or the installer can write, not only in
 # */.ssh. A private key that matches an authorized key is a usable login, and
 # the measured throwaway's private half is the strict bar's one sin wherever it
@@ -7051,7 +7156,10 @@ boot_private = [path for path, public, named in private
                 or (boot_fp is not None and named == boot_fp)]
 
 # 1. Zero usable user keys: every authorized line is the measured throwaway,
-# and no private half on the machine matches an authorized key.
+# and no private half on the machine matches an authorized key. `grant_only`
+# records the pure live-grant case (one foreign key, and it is the grant's)
+# so the verdict can keep its causal sentence only when it measured it.
+usable_grant_only = False
 if ak_text is None:
     row("usable keys", False, "no %s" % guest(ak_path))
 elif not ak_keys:
@@ -7064,12 +7172,19 @@ else:
                if (public is not None and public in ak_keys)
                or (named is not None and named in ak_fps)]
     if extras or malformed or matched or unidentified:
+        usable_grant_only = bool(
+            grant is not None and not (malformed or matched or unidentified)
+            and len(extras) == 1
+            and fingerprint(extras[0][1]) == grant["key_fingerprint"])
         detail = []
         if extras:
             detail.append("%d authorized key(s) other than the measured throwaway in %s: %s"
                           % (len(extras),
                              ", ".join(sorted({guest(path) for path, _ in extras})),
                              ", ".join(fingerprint(key) for _, key in extras)))
+            if grant_owned is not None:
+                detail.append("the support grant %s explains one of them (expires %s)"
+                              % (grant["grant_id"], grant["expires_at"]))
         if malformed:
             detail.append("%d line(s) that are not a plain public key in %s"
                           % (len(malformed),
@@ -7162,7 +7277,9 @@ else:
 # 5. No operator key: no grant-shaped line (options plus a forced command),
 # and no authorized key that names an operator. A different user key fails
 # "usable keys" above; a private key that is not authorized (a backup key for
-# the storage box, say) does not open this machine.
+# the storage box, say) does not open this machine. `grant_only` says the
+# only grant-shaped line is the one this live grant's state owns.
+operator_grant_only = False
 if ak_text is None:
     row("operator key", False, "no %s" % guest(ak_path))
 else:
@@ -7176,13 +7293,70 @@ else:
         if key != boot_line and any(word in comment for word in ("odile", "operator", "support", "hq")):
             grants.append((path, line))
     if grants:
+        operator_grant_only = bool(
+            grant_owned is not None and len(grants) == 1
+            and grants[0][0] == grant_owned[0] and grants[0][1] == grant_owned[1])
         where = sorted({guest(path) for path, _ in grants})
         suffix = "" if where == [guest(ak_path)] else " (in %s)" % ", ".join(where)
-        row("operator key", False, "authorized_keys carries %s%s"
-            % ("; ".join(line for _, line in grants), suffix))
+        named = ""
+        if grant_owned is not None:
+            named = ("; one is the support grant %s (expires %s)"
+                     % (grant["grant_id"], grant["expires_at"]))
+        row("operator key", False, "authorized_keys carries %s%s%s"
+            % ("; ".join(line for _, line in grants), suffix, named))
     else:
         row("operator key", True,
             "none (authorized_keys: %d line(s), the measured throwaway)" % len(ak_entries))
+
+# The live grant, as the row the page was missing. Its state makes it live;
+# the line is what an operator can use. `row()` is not used: OPEN is neither
+# PASS nor FAIL, and it must not change the verdict's exit status.
+if grant is not None:
+    if grant_owned is not None:
+        line_state = "line present in %s" % guest(grant_owned[0])
+    else:
+        line_state = ("line missing from %s (the timer restores it within 30 s)"
+                      % guest(ak_path))
+    print("  %-14s %s  %s" % ("support grant", "OPEN",
+                              "grant %s; expires %s; key %s; %s"
+                              % (grant["grant_id"], grant["expires_at"],
+                                 grant["key_fingerprint"], line_state)))
+
+# The verdict is built from the rows that failed, not from the grant alone. A
+# live grant explains at most the two key rows, so any other FAIL is still
+# named: choosing the grant's sentence first hid a failed seal behind "the two
+# key rows fail" (ODL-217 round 2, verifier). The pure case keeps the causal
+# sentence; a compound one says the report did not pass, and every verdict
+# still starts `OPEN` so app.py / first_visit.py read the 11-line shape.
+verdict = None
+if grant is None:
+    if fails:
+        verdict = "FAIL — the access report did not pass"
+    else:
+        verdict = ("PASS — five checks: zero usable user keys, the throwaway boot key, "
+                   "the seal, the sign-in hash, no operator key.")
+else:
+    explained = set()
+    if usable_grant_only:
+        explained.add("usable keys")
+    if operator_grant_only:
+        explained.add("operator key")
+    other = [label for label in failed if label not in explained]
+    if other:
+        verdict = ("OPEN — a support grant is live until %s (grant %s); %d other "
+                   "check%s FAIL (%s): the report did not pass."
+                   % (grant["expires_at"], grant["grant_id"], len(other),
+                      "" if len(other) == 1 else "s", ", ".join(other)))
+    elif grant_owned is not None and explained == {"usable keys", "operator key"}:
+        verdict = ("OPEN — a support grant is live until %s (grant %s): the two "
+                   "key rows fail because that granted key is in %s."
+                   % (grant["expires_at"], grant["grant_id"], guest(ak_path)))
+    else:
+        verdict = ("OPEN — a support grant is live until %s (grant %s); its line "
+                   "is missing from %s (the timer restores it within 30 s)."
+                   % (grant["expires_at"], grant["grant_id"], guest(ak_path)))
+print("")
+print("  %s" % verdict)
 
 sys.exit(1 if fails else 0)
 PY
@@ -7193,7 +7367,8 @@ PY
 # sees either the old report or the new one, never half of each. A FAIL run
 # still writes: the five lines and their FAIL are what the page must show
 # (a tampered authorized_keys or a missing sign-in hash is a report, not an
-# error). Exit status is the mode's own.
+# error). The verdict line is report_access's own, so the file and the terminal
+# cannot disagree about a live grant. Exit status is the mode's own.
 write_access_report() {
     local dir tmp stamp rc=0
     dir=$(dirname -- "$ACCESS_OUT")
@@ -7203,11 +7378,6 @@ write_access_report() {
         printf 'read from your machine, %s\n' "$stamp"
         printf 'verify_and_unlock — access report\n\n'
         report_access || rc=$?
-        if [ "$rc" -ne 0 ]; then
-            printf '\n  %s\n' "FAIL — the access report did not pass"
-        else
-            printf '\n  %s\n' "PASS — five checks: zero usable user keys, the throwaway boot key, the seal, the sign-in hash, no operator key."
-        fi
     } > "$tmp"
     chmod 0644 "$tmp"
     mv -f -- "$tmp" "$ACCESS_OUT"
@@ -7422,9 +7592,9 @@ main() {
             exit $?
         fi
         printf 'verify_and_unlock — access report\n\n'
-        report_access || failed "the access report did not pass"
-        printf '\n  %s\n' "PASS — five checks: zero usable user keys, the throwaway boot key, the seal, the sign-in hash, no operator key."
-        exit 0
+        rc=0
+        report_access || rc=$?
+        exit "$rc"
     fi
 
     TMP=$(mktemp -d "${TMPDIR:-/tmp}/odile-ceremony.XXXXXX")

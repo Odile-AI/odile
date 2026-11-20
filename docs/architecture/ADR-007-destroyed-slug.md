@@ -212,7 +212,7 @@ migration, `STATE_SCHEMA_VERSION` stays 3).
 tenant" is already published in `docs/CLAIMS.md` §1. This ADR makes the code
 honour it; choosing the other way would have required weakening that sentence.
 The point after which the decision stops being cheap is the **first live
-same-slug rebuild** (`t_8d50106b`'s destroy-and-rebuild of `odl-7971a8`):
+same-slug rebuild** (`t_8d50106b`'s destroy-and-rebuild of `odl-fake01`):
 after that, the tenant's history contains the edge and a second rebuild needs
 it back.
 

@@ -85,9 +85,9 @@ $ grep -rlF -e "$(sed -n 's/^Backup password:[[:space:]]*//p' \
       /root/.odile /etc/odile /opt/odile; echo rc=$?
 rc=1
 $ RESTIC_PASSWORD=wrong-password-000000000000 \
-      restic -r /srv/odile-backup/tenants/odl-7971a8 snapshots
+      restic -r /srv/odile-backup/tenants/odl-fake01 snapshots
 Fatal: wrong password or no key found
-$ strings /srv/odile-backup/tenants/odl-7971a8/data/77/77c52743… | grep -c odile
+$ strings /srv/odile-backup/tenants/odl-fake01/data/77/77c52743… | grep -c odile
 0
 ```
 
@@ -121,15 +121,15 @@ this head**; until it lands, a tenant's unit is the SFTP form below.
 
 ```
 /usr/local/lib/odile/backup.py run
-  --repo sftp://odile-backup@203.0.113.139:2222/tenants/odl-7971a8
+  --repo sftp://odile-backup@203.0.113.139:2222/tenants/odl-fake01
   --repo-file /etc/odile/backup-repo.txt      # the seed's URL; --repo wins
   --recovery  /etc/odile/recovery.txt
   --home      /home/tenant
   --key       /etc/odile/backup-ssh/id_ed25519
   --known-hosts /etc/odile/backup-ssh/known_hosts
   --status    /var/lib/odile/backup.json
-  --slug      odl-7971a8
-ExecStartPost=-/usr/local/lib/odile/backup.py heartbeat --status … --slug odl-7971a8
+  --slug      odl-fake01
+ExecStartPost=-/usr/local/lib/odile/backup.py heartbeat --status … --slug odl-fake01
   --url http://203.0.113.139:8099/heartbeat --key-dir /etc/odile/heartbeat
 ```
 
@@ -142,12 +142,12 @@ is the same body with the production URL:
 
 One run does, in order:
 
-1. `restic backup /home/tenant --tag tenant --host odl-7971a8 --json`
+1. `restic backup /home/tenant --tag tenant --host odl-fake01 --json`
    — `--host` is the **slug**, not the kernel hostname, so a rebuilt guest
    keeps one retention group.
 2. `restic stats --mode raw-data --json` — the repository size HQ is allowed
    to know.
-3. `restic forget --keep-daily 7 --keep-weekly 4 --group-by host --host odl-7971a8 --prune`
+3. `restic forget --keep-daily 7 --keep-weekly 4 --group-by host --host odl-fake01 --prune`
    — the retention the card specifies.
 4. Writes `/var/lib/odile/backup.json` atomically, mode 0600, the HQ-visible
    fields only. A failed run writes `status: failed` and keeps the previous
@@ -274,10 +274,10 @@ the Webapp). On a guest that has the file:
 ```sh
 install -m 0755 scripts/backup.py /usr/local/lib/odile/backup.py
 /usr/local/lib/odile/backup.py init \
-    --repo 'sftp://***@backup.odile.fyi/tenants/odl-7971a8' --dry-run
+    --repo 'sftp://***@backup.odile.fyi/tenants/odl-fake01' --dry-run
 /usr/local/lib/odile/backup.py install \
-    --repo 'sftp://***@backup.odile.fyi/tenants/odl-7971a8' \
-    --slug odl-7971a8 --home /home/tenant
+    --repo 'sftp://***@backup.odile.fyi/tenants/odl-fake01' \
+    --slug odl-fake01 --home /home/tenant
 systemctl list-timers odile-backup-tenant.timer
 ```
 
@@ -368,8 +368,8 @@ $ journalctl -u odile-backup-tenant.service -n 5 --no-pager
 Nov 12 22:24:54 odile-bench systemd[1]: Starting odile-backup-tenant.service - Odile tenant backup (restic, nightly)...
 Nov 12 22:25:00 odile-bench python3[8104]: ok           snapshot fb0f6694 of /home/tenant in 1.0s (47366363 bytes processed, 0 new files)
 Nov 12 22:25:00 odile-bench python3[8104]: status       /var/lib/odile/backup.json
-Nov 12 22:25:00 odile-bench python3[8153]: posted       heartbeat for odl-7971a8 at 1794522300 -> http://203.0.113.139:8099/heartbeat
-Nov 12 22:25:00 odile-bench python3[8153]: HQ said      {"at": 1794522300, "ok": true, "received_at": "2026-11-12T22:25:04Z", "slug": "odl-7971a8"}
+Nov 12 22:25:00 odile-bench python3[8153]: posted       heartbeat for odl-fake01 at 1794522300 -> http://203.0.113.139:8099/heartbeat
+Nov 12 22:25:00 odile-bench python3[8153]: HQ said      {"at": 1794522300, "ok": true, "received_at": "2026-11-12T22:25:04Z", "slug": "odl-fake01"}
 ```
 
 The timer is armed for the next 03:00, and it has fired on its own before the
@@ -387,12 +387,12 @@ enabled
 ### What HQ shows
 
 ```
-$ odilectl status odl-7971a8
-status: 1 machine(s) for odl-7971a8
+$ odilectl status odl-fake01
+status: 1 machine(s) for odl-fake01
   SERVER     HOSTNAME                 STATE      IPV4             EXPIRES
-  31a63bbb   odl-7971a8               active     203.0.113.87     2026-12-10
+  0badc0de   odl-fake01               active     203.0.113.87     2026-12-10
   release:   intended not recorded, booted no report (unknown)
-  backup:    last 2026-11-12T22:25:00Z, (37m ago), snapshot fb0f6694, 1017507922 bytes in the repository, sftp://odile-backup@203.0.113.139:2222/tenants/odl-7971a8
+  backup:    last 2026-11-12T22:25:00Z, (37m ago), snapshot fb0f6694, 1017507922 bytes in the repository, sftp://odile-backup@203.0.113.139:2222/tenants/odl-fake01
 ```
 
 (The repository URL prints with the account masked as `***@` in some
@@ -436,7 +436,7 @@ The SFTP key is generated **on the guest** (`init`), and only its public half
 travels:
 
 ```
-$ backup.py init --repo 'sftp://odile-backup@203.0.113.139:2222/tenants/odl-7971a8'
+$ backup.py init --repo 'sftp://odile-backup@203.0.113.139:2222/tenants/odl-fake01'
 created      /etc/odile/backup-ssh/id_ed25519 (ed25519, no passphrase)
 recorded     203.0.113.139 in /etc/odile/backup-ssh/known_hosts (6 line(s))
 created      the restic repository
@@ -522,8 +522,8 @@ restores it from the snapshot into a temporary directory, compares SHA-256, and
 puts the file back in place. A second run is safe and still passes.
 
 ```
-$ backup.py drill --repo 'sftp://odile-backup@203.0.113.139:2222/tenants/odl-7971a8' \
-    --slug odl-7971a8 --home /home/tenant
+$ backup.py drill --repo 'sftp://odile-backup@203.0.113.139:2222/tenants/odl-fake01' \
+    --slug odl-fake01 --home /home/tenant
 drill        backed up /home/tenant/backup-drill/canary.txt as 74e1507d, deleted it, restored it
 sha256       before 896bcb5bc104dac7c9bb351eeba3c852f4929d781d907dd98eb04cc219cf0fde
              after  896bcb5bc104dac7c9bb351eeba3c852f4929d781d907dd98eb04cc219cf0fde
@@ -546,8 +546,8 @@ $ cat /home/tenant/backup/drill.json
   "at_iso": "2026-11-12T19:04:15Z",
   "duration_seconds": 7.553,
   "file": "/home/tenant/backup-drill/canary.txt",
-  "host": "odl-7971a8",
-  "repo": "sftp://odile-backup@203.0.113.139:2222/tenants/odl-7971a8",
+  "host": "odl-fake01",
+  "repo": "sftp://odile-backup@203.0.113.139:2222/tenants/odl-fake01",
   "rpo_seconds": 0.0,
   "rto_seconds": 0.931,
   "schema": 1,
@@ -578,8 +578,8 @@ restic      restic 0.18.0 (guest)
 The password check, also on the live tenant:
 
 ```
-$ backup.py verify --repo 'sftp://odile-backup@203.0.113.139:2222/tenants/odl-7971a8'
-repo         sftp://…@203.0.113.139:2222/tenants/odl-7971a8
+$ backup.py verify --repo 'sftp://odile-backup@203.0.113.139:2222/tenants/odl-fake01'
+repo         sftp://…@203.0.113.139:2222/tenants/odl-fake01
 password     opens the repository (2 snapshot(s))
 wrong one    refused
 ```
@@ -857,12 +857,12 @@ sentence is quoted (ODL-474 lands it).
 
 | Date | What | Result |
 |---|---|---|
-| 2026-11-12T19:01Z | First repository on the drill box (`init`, 3 calls: 2 failures before the key was registered) | created; `config`, `data`, `index`, `keys`, `snapshots` under `/srv/odile-backup/tenants/odl-7971a8` |
+| 2026-11-12T19:01Z | First repository on the drill box (`init`, 3 calls: 2 failures before the key was registered) | created; `config`, `data`, `index`, `keys`, `snapshots` under `/srv/odile-backup/tenants/odl-fake01` |
 | 2026-11-12T19:02:41Z | First nightly run (`backup.py run`) | snapshot `b50aa5e5`; 156,311 files / 3,139,596,963 bytes in 27.3 s; repository 1,017,111,156 bytes |
 | 2026-11-12T19:04:08Z | **Drill 1** (`backup.py drill`) | PASS: canary `896bcb5b…` before = after; snapshot `74e1507d`; RTO 0.931 s; RPO 0.0 s; the whole drill 7.553 s |
 | 2026-11-12T19:07:29Z | Password check (`backup.py verify`) | password opens (2 snapshots); a wrong password refused |
 | 2026-11-12T19:08:34Z | Unit run (`systemctl start odile-backup-tenant.service`) | snapshot `08c1103b` in 6.5 s; heartbeat accepted `{"ok": true}`; timer next 2026-11-13T03:00:17Z |
-| 2026-11-12T19:08:44Z | `odilectl status odl-7971a8` | `backup: last 2026-11-12T19:08:44Z … snapshot 08c1103b, 1017383711 bytes` |
+| 2026-11-12T19:08:44Z | `odilectl status odl-fake01` | `backup: last 2026-11-12T19:08:44Z … snapshot 08c1103b, 1017383711 bytes` |
 | 2026-11-12T19:14:56Z | HQ cannot read | no password in `/root/.odile`, `/etc/odile`, `/opt/odile`; the storing host gets `wrong password`; a pack has no plaintext name |
 | 2026-11-12T22:25:00Z | Nightly unit again (`systemctl start`) | snapshot `fb0f6694` in 1.0 s; heartbeat accepted; `odilectl status` shows `last 22:25:00Z … snapshot fb0f6694` |
 | 2026-11-12T22:28:39Z–23:52:52Z | **Drill 2** (destroy A, rebuild as B and then C, restore A's home with A's recovery file) | PASS: 550 files / 3.630 MiB restored in 0.861 s; `sha256sum -c` OK for all three manifest files; canary `17469543…`; end-to-end RTO 84m13s, of which the timed rebuild-and-restore is 38m03s; RPO 10m51s |

@@ -37,7 +37,7 @@ from unittest import mock
 ROOT = Path(__file__).resolve().parent.parent
 SCRIPT = ROOT / "scripts" / "backup.py"
 PASSWORD = "test-backup-password-2026-0001"
-SLUG = "odl-7971a8"
+SLUG = "odl-fake01"
 
 
 def load_backup():

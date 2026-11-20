@@ -1687,7 +1687,7 @@ def transcript() -> None:
 
         print("== 1. a provision run binds the token to the create id, before the poll ==")
         slug = "odl-7f3a2c"
-        server_id = "31a63bbb"
+        server_id = "0badc0de"
         con.execute(
             "INSERT INTO tenants (slug, email, created_at) VALUES (?, ?, ?)",
             (slug, "ada@example.com", iso(now())),

@@ -118,8 +118,9 @@ class ForbidClass(unittest.TestCase):
             cwd=self.repo, env=git_env(), check=True)
 
     def write_list(self) -> None:
-        (self.repo / "leak-forbid.txt").write_text(
-            f"# label<TAB>regex\n{LABEL}\t{LITERAL}\n", encoding="utf-8")
+        target = self.repo / "docs" / "ops" / "leak-forbid.txt"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(f"# label<TAB>regex\n{LABEL}\t{LITERAL}\n", encoding="utf-8")
 
     def test_a_named_list_that_does_not_exist_exits_2(self) -> None:
         result = self.scan("--forbid-file", "missing-forbid.txt")
@@ -199,17 +200,18 @@ class ForbidClass(unittest.TestCase):
         self.write_list()
         result = self.scan()
         self.assertEqual(result.returncode, 0, result.stdout)
-        self.assertIn(f"forbid list:     leak-forbid.txt (1 labels)", result.stdout)
+        self.assertIn("forbid list:     docs/ops/leak-forbid.txt (1 labels)", result.stdout)
 
     def test_an_absent_default_is_printed_not_silent(self) -> None:
         result = self.scan()
         self.assertEqual(result.returncode, 0, result.stdout)
-        self.assertIn("absent (leak-forbid.txt)", result.stdout)
-        self.assertIn("forbidden-value class did not run", result.stdout)
+        self.assertIn("absent (docs/ops/leak-forbid.txt)", result.stdout)
+        self.assertIn("forbidden-value and forbidden-path classes did not run", result.stdout)
 
     def test_a_malformed_list_row_is_a_finding(self) -> None:
-        (self.repo / "leak-forbid.txt").write_text(
-            f"# label<TAB>regex\n{LABEL} no-tab-here\n", encoding="utf-8")
+        target = self.repo / "docs" / "ops" / "leak-forbid.txt"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(f"# label<TAB>regex\n{LABEL} no-tab-here\n", encoding="utf-8")
         result = self.scan()
         self.assertEqual(result.returncode, 1, result.stdout)
         self.assertIn("FINDING forbid-file", result.stdout)
@@ -273,7 +275,9 @@ class ForbiddenPath(unittest.TestCase):
             cwd=self.repo, env=git_env(), check=True)
 
     def write_list(self) -> None:
-        (self.repo / "leak-forbid.txt").write_text(
+        target = self.repo / "docs" / "ops" / "leak-forbid.txt"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(
             f"# label<TAB>regex\n{LABEL}\t{LITERAL}\n", encoding="utf-8")
 
     def write_allow(self, *rows: str) -> None:
@@ -312,6 +316,20 @@ class ForbiddenPath(unittest.TestCase):
         passed = self.scan()
         self.assertEqual(passed.returncode, 0, passed.stdout)
         self.assertIn("PASS: nothing to leak", passed.stdout)
+
+    def test_a_skipped_suffix_cannot_hide_a_name(self) -> None:
+        # `.sig` bytes are never opened (see SKIP_SUFFIXES), so the path read
+        # has to happen before the suffix skip. Moving `scan_forbidden_path`
+        # below it leaves this case green — this test is that mutation's
+        # witness, and the name is a publication surface exactly as a `.txt`
+        # name is.
+        self.write_list()
+        probe = self.repo / f"probe_{LITERAL}.txt.sig"
+        probe.write_text("a detached signature\n", encoding="utf-8")
+        result = self.scan()
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn("FINDING forbidden-path", result.stdout)
+        self.assertIn(f"probe_{LITERAL}.txt.sig:1", result.stdout)
 
     def test_a_stand_in_in_a_file_name_is_not_a_path_finding(self) -> None:
         # The builder's scrub writes this stand-in for the dev account id; a
@@ -362,7 +380,8 @@ class ForbiddenPath(unittest.TestCase):
         # The card's own shape: the reseller key file named with the live dev
         # account id, contents clean. The id and the label are assembled here,
         # so the test file itself is not a leak.
-        (self.repo / "leak-forbid.txt").write_text(
+        (self.repo / "docs" / "ops").mkdir(parents=True, exist_ok=True)
+        (self.repo / "docs" / "ops" / "leak-forbid.txt").write_text(
             f"servury-dev-account\t{DEV_ID}\n", encoding="utf-8")
         planted = f"servury_reseller_key_{DEV_ID}.txt"
         (self.repo / planted).write_text("a plain marker file\n", encoding="utf-8")
