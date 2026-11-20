@@ -1,8 +1,8 @@
 {
   "artifacts": {
     "installer": {
-      "sha256": "d48f73aabb2d2d079f9b7df4b15a70a96dee07db707f78d826058dfb05da5ae4",
-      "size": 1503831,
+      "sha256": "2159bb2a3e46c908035ae3b8dd8c0dfc0f0bb8e15a76b2c93f328a74faffd229",
+      "size": 1511659,
       "url": "odile_install.py"
     },
     "skills": {
@@ -14,14 +14,14 @@
   "boot": {
     "kernel": "6.12.115+deb13.1-amd64"
   },
-  "generated_at": "2026-11-20T07:01:51Z",
+  "generated_at": "2026-11-20T16:34:05Z",
   "manifest": {
-    "sha256": "1aca64464902a3987ff914678a15a55d0d4e0d1dd25f3701d2f16be08e2c597b",
+    "sha256": "306b8de6c9f63fbef8764a53a4e7633dac067e1d94ebea03ed8e686f68f28b19",
     "signature_url": "manifest.json.sig",
     "url": "manifest.json"
   },
-  "notes": "t_080f8a83: the installed help's bill answer states alpha.0's no-price line (Odile pays for the machine and the inference) instead of the v5 $49 and the held $12 allowance; re-embedded in the signed installer and in the skills artifact rebuilt from a fresh scratch root.",
+  "notes": "ODL-474 follow-up (t_e23f3288), round 7, merging main 88b5751. A tenant's /verify names a live support grant: the support access row carries the grant id, expiry, reason and key fingerprint, and the access reporter's verdict names the grant instead of a bare FAIL (\"OPEN - a support grant is live until ... (grant <id>)\"), with any failed rows still named; no grant keeps the five-check PASS. templates/verify.html and both copies of HQ's /verify page carry the published scoped row \"No one at Odile can log in unless you grant it.\" (docs/CLAIMS.md 1 Access). The embedded first_visit.py is 21c84e64 (main's ODL-236 file plus this branch's access-report parser); the page pins are verify.py 70d8f469 and verify.html 543f42ea; the reporter is scripts/verify_and_unlock.sh 332eccdf. The skills artifact is unchanged (ccff7327). The cut id 2026.11.20-2 resolves the collision of the two 2026.11.20-1 cuts (this branch's 00:45Z and main's 07:01Z).",
   "product": "odile",
-  "release": "2026.11.20-1",
+  "release": "2026.11.20-2",
   "schema": 1
 }
