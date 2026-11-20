@@ -25,6 +25,7 @@ import html
 import importlib.util
 import json
 import re
+import shutil
 import stat
 import struct
 import subprocess
@@ -1599,18 +1600,12 @@ class OwnReportTests(unittest.TestCase):
         self.assertNotIn("<script>", page)
         self.assertIn("&lt;script&gt;alert(1)&lt;/script&gt;", page)
 
-    def test_the_tenant_service_renders_the_same_page_as_app(self) -> None:
-        """One template, two renderers: the bytes must agree."""
+    def test_the_first_visit_service_no_longer_serves_verify(self) -> None:
+        """One page, not two: /verify belongs to odile-verify (t_4fcd465f)."""
         sys.path.insert(0, str(ROOT / "installer"))
         import first_visit  # noqa: E402
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
-            report = self.write_report(tmp_path)
-            attest = tmp_path / "attestation.json"
-            attest.write_text(json.dumps({
-                "available": True, "measurement": "b" * 96,
-                "fetched_at": "2026-11-11T09:59:00Z", "report_version": 5,
-                "report_size": 1184}), encoding="utf-8")
             state = tmp_path / "state.json"
             state.write_text(json.dumps({
                 "version": 1, "token_sha256": "c" * 64, "created_at": self.AT,
@@ -1621,33 +1616,23 @@ class OwnReportTests(unittest.TestCase):
             service = first_visit.FirstVisit(
                 state=state, env=env, page=ROOT / "web" / "first-visit.html",
                 recovery=tmp_path / "recovery.txt", reload_command=[],
-                bind="127.0.0.1", port=0, caddy_stores=(),
-                verify_page=ROOT / "web" / "verify.html", report=report,
-                attest=attest, report_command=[])
-            server = ThreadingHTTPServer(("127.0.0.1", 0), first_visit.build_handler(service))
+                bind="127.0.0.1", port=0, caddy_stores=())
+            server = ThreadingHTTPServer(("127.0.0.1", 0),
+                                         first_visit.build_handler(service))
             port = server.server_address[1]
             thread = threading.Thread(target=server.serve_forever, daemon=True)
             thread.start()
+            base = "http://127.0.0.1:%d" % port
             try:
-                import http.client
-                conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
-                conn.request("GET", "/verify")
-                response = conn.getresponse()
-                body = response.read().decode("utf-8")
-                conn.close()
+                with urllib.request.urlopen(base + "/health", timeout=5) as response:
+                    self.assertEqual(response.status, 200)
+                with self.assertRaises(urllib.error.HTTPError) as caught:
+                    urllib.request.urlopen(base + "/verify", timeout=5)
+                self.assertEqual(caught.exception.code, 404,
+                                 "the first-visit service still answers /verify")
             finally:
                 server.shutdown()
                 server.server_close()
-            app = load_app()
-            saved = (app.ACCESS_REPORT_PATH, app.ATTEST_PATH)
-            app.ACCESS_REPORT_PATH = str(report)
-            app.ATTEST_PATH = str(attest)
-            try:
-                direct = app.render_verify("tenant")
-            finally:
-                app.ACCESS_REPORT_PATH, app.ATTEST_PATH = saved
-        self.assertEqual(response.status, 200)
-        self.assertEqual(body, direct, "the tenant service and app.py disagree on /verify")
 
 
     def test_the_image_creates_the_report_directory_before_it_starts_the_units(self) -> None:
@@ -2208,7 +2193,8 @@ Digests:
         write("/etc/sudoers.d/odile", "odile ALL=(ALL) NOPASSWD:ALL\n", 0o440)
         write("/root/.ssh/authorized_keys", self.BOOT_LINE + "\n", 0o600)
         write("/home/odile/.hermes/.env",
-              "HERMES_DASHBOARD_BASIC_AUTH_PASSWORD_HASH=$scrypt$ln=16,r=8,p=1$c2FsdA$aGFzaA\n",
+              "HERMES_DASHBOARD_BASIC_AUTH_PASSWORD_HASH="
+              "scrypt$16384$8$1$c2FsdA$aGFzaA\n",
               0o600)
         write("/run/bb/sealed-unlock.state", "opened\n")
         write("/var/log/auth.log",
@@ -2327,6 +2313,43 @@ Digests:
         self.assertRegex(body, r"LUKS.*?one keyslot \(slot 0\)", re.S)
         self.assertRegex(body, r"boot and unlock.*?opened", re.S)
 
+    def test_the_page_shows_the_seal_policy_and_the_signin_hash(self) -> None:
+        """CLAIMS §4.4 names both rows; the page must render them (t_4fcd465f)."""
+        body = self.page()
+        cell = self.row(body, "seal policy")
+        text = self.plain(cell)
+        self.assertIn("verdict pass", cell)
+        self.assertIn("policy 0x30000", text)
+        self.assertIn('<span class="mono">0x30000</span>', cell)
+        seal_id = re.search(r"(?:^|\s)seal_id=(\S+)", TENANT_DOC["cmdline"]).group(1)
+        self.assertIn("seal_id %s" % seal_id, text)
+        self.assertIn('<span class="mono">%s</span>' % TENANT_MEASUREMENT, cell)
+        signin = self.row(body, "sign-in hash")
+        self.assertIn("verdict pass", signin)
+        self.assertIn("scrypt hash present in /home/odile/.hermes/.env; "
+                      "no plaintext password", self.plain(signin))
+        # The hash itself is a secret-shaped value: presence, never the value.
+        self.assertNotIn("$scrypt$", body)
+
+    def test_a_missing_seal_id_and_a_plaintext_password_fail_their_rows(self) -> None:
+        root, dump = self.build()
+        cmdline_path = root / "proc/cmdline"
+        cmdline_path.write_text(
+            re.sub(r"\s*seal_id=\S+", "", cmdline_path.read_text(encoding="utf-8")),
+            encoding="utf-8")
+        env = root / "home/odile/.hermes/.env"
+        env.write_text(env.read_text(encoding="utf-8")
+                       + "HERMES_DASHBOARD_BASIC_AUTH_PASSWORD=plaintext\n",
+                       encoding="utf-8")
+        result = self.run_page(root, dump)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        seal = self.row(result.stdout, "seal policy")
+        self.assertIn("verdict fail", seal)
+        self.assertIn("no measured seal_id", seal)
+        signin = self.row(result.stdout, "sign-in hash")
+        self.assertIn("verdict fail", signin)
+        self.assertIn("plaintext password", signin)
+
     # -- the manifest -------------------------------------------------------
 
     def test_the_signed_manifest_is_verified_on_the_machine(self) -> None:
@@ -2396,11 +2419,58 @@ Digests:
         for command in ("passwd -S root",
                         "sshd -T | grep -i '^passwordauthentication'",
                         "ssh-keygen -lf /root/.ssh/authorized_keys",
-                        "cryptsetup luksDump /dev/&lt;luks-device&gt;",
+                        "DEV=$(cryptsetup status root_crypt",
+                        'cryptsetup luksDump "$DEV"',
                         "odile-support status",
                         "curl -s https://&lt;slug&gt;.odile.fyi/attestation",
                         "sha256sum /usr/local/bin/odile-install.sh"):
             self.assertIn(command, body, "the deck's command is missing: %s" % command)
+
+    def test_the_luks_row_prints_the_container_resolution_not_the_mapper(self) -> None:
+        """The mapper is plaintext: luksDump on it is refused (support.md)."""
+        cell = html.unescape(self.row(self.page(), "LUKS"))
+        self.assertIn('cryptsetup luksDump "$(cryptsetup status root_crypt', cell)
+        self.assertNotIn("/dev/mapper/root_crypt", cell)
+
+    def test_the_two_command_panels_carry_the_page_wrap_rule(self) -> None:
+        """At 390 the three long lines were clipped by a 320 px code box."""
+        body = self.page()
+        self.assertEqual(body.count('<pre class="report-pre">'), 2,
+                         "both command panels must wrap, not scroll sideways")
+        self.assertRegex(body, r"\.report-pre code\{[^}]*white-space:pre-wrap[^}]*\}")
+
+    def test_the_live_luks_row_resolves_the_device_from_the_mapper_name(self) -> None:
+        """On `/` the program asks cryptsetup status which device to dump."""
+        spec = importlib.util.spec_from_file_location(
+            "odile_verify_luks_device", PAGE)
+        assert spec is not None and spec.loader is not None
+        module = importlib.util.module_from_spec(spec)
+        sys.modules["odile_verify_luks_device"] = module
+        spec.loader.exec_module(module)
+        stamp = module.parse_iso(self.NOW)
+        self.assertIsNotNone(stamp)
+        with tempfile.TemporaryDirectory() as tmp:
+            device = Path(tmp) / "sda3"
+            device.write_text("", encoding="utf-8")
+            calls = []
+
+            def fake_run(argv, **_kwargs):
+                calls.append(argv)
+                if argv[:2] == ["cryptsetup", "status"]:
+                    return subprocess.CompletedProcess(
+                        argv, 0, "  type:    LUKS2\n  device:  %s\n" % device, "")
+                if argv[:2] == ["cryptsetup", "luksDump"]:
+                    return subprocess.CompletedProcess(
+                        argv, 0, self.LUKS_ONE, "")
+                return subprocess.CompletedProcess(argv, 127, "", "missing")
+
+            with mock.patch.object(module, "run", fake_run):
+                machine = module.Machine(root=Path("/"), now=stamp)
+                keyslots, tokens, command = machine.luks()
+        self.assertEqual(keyslots, ["0"])
+        self.assertEqual(tokens, [])
+        self.assertIn(["cryptsetup", "luksDump", str(device)], calls)
+        self.assertEqual(command, "cryptsetup luksDump %s" % device)
 
     def test_the_three_gaps_are_stated_in_order_with_the_manifest_note(self) -> None:
         body = self.page()
@@ -2471,6 +2541,34 @@ Digests:
         self.assertIn("Cormorant Garamond", body)
         self.assertIn("data:font/woff2", body)
         self.assertIn("@media (max-width:560px)", body)
+
+    def test_prose_reads_in_the_text_face_and_headings_keep_the_display_face(self) -> None:
+        """BRAND.md §Typography: the display face never sets a reading sentence.
+
+        The surface table's row for /verify reads "Text serif for prose;
+        display for headings; mono for credentials and machine values", and the
+        page this card replaces (`web/verify.html`, t_ae833f3f) already reads
+        in the text face. Measured on the painted face: Cormorant at 18/1.55
+        for the body, 15.2 px notes and a 15.2 px foot regress the type roles
+        on the same URL.
+        """
+        text = TEMPLATE.read_text(encoding="utf-8")
+        self.assertIn('--text:"Iowan Old Style","Palatino Linotype",Palatino,Georgia,'
+                      '"DejaVu Serif",serif}', text)
+        self.assertIn("font:400 18px/1.6 var(--text);", text)
+        self.assertIn(".lede{font-size:18px;line-height:1.6;", text)
+        self.assertIn(".note{margin:0 0 16px;font-size:16px;line-height:1.6;", text)
+        self.assertIn(".foot{margin:32px 0 0;padding-top:16px;border-top:1px solid "
+                      "var(--line);font-size:16px;line-height:1.6;", text)
+        self.assertIn("h1,h2,.brand{font-family:var(--serif)}", text)
+        self.assertNotIn("font:400 18px/1.55", text,
+                         "the prose is back on the display face at display leading")
+        self.assertNotIn(".note{margin:0 0 16px;font-size:.95rem", text,
+                         "the note is back below the 16 px text role")
+        # Cormorant is named by the @font-face and the --serif token only;
+        # a third occurrence is a prose selector setting the display face.
+        self.assertEqual(text.count('"Cormorant Garamond"'), 2,
+                         "the display face is set on a prose selector")
 
     # -- brand round 1: the machine value role ------------------------------
 
@@ -2551,6 +2649,46 @@ Digests:
             for pipe in (process.stdout, process.stderr):
                 if pipe is not None:
                     pipe.close()
+
+    def test_the_installed_program_finds_the_template_beside_it(self) -> None:
+        """The unit runs /usr/local/lib/odile/verify.py with no --template.
+
+        The program's default must be the template the installer writes beside
+        it, not a checkout path that does not exist on a tenant.
+        """
+        root, dump = self.build()
+        with tempfile.TemporaryDirectory(prefix="odile-verify-install-") as tmp:
+            lib = Path(tmp) / "usr/local/lib/odile"
+            lib.mkdir(parents=True)
+            shutil.copy2(ROOT / "verify" / "verify.py", lib / "verify.py")
+            shutil.copy2(ROOT / "templates" / "verify.html", lib / "verify.html")
+            process = subprocess.Popen(
+                [sys.executable, str(lib / "verify.py"), "--root", str(root),
+                 "--luks-dump", str(dump), "--now", self.NOW,
+                 "--serve", "--bind", "127.0.0.1", "--port", "0"],
+                text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            try:
+                assert process.stdout is not None
+                line = process.stdout.readline().strip()
+                match = re.search(r"http://(\S+):(\d+)/", line)
+                assert match is not None, "the server did not print its address: %r" % line
+                with urllib.request.urlopen(
+                        "http://%s:%s/verify" % (match.group(1), match.group(2)),
+                        timeout=10) as response:
+                    body = response.read().decode("utf-8")
+                    self.assertEqual(response.status, 200)
+                    self.assertEqual(response.headers.get("Cache-Control"), "no-store")
+            finally:
+                process.terminate()
+                process.wait(timeout=10)
+                for pipe in (process.stdout, process.stderr):
+                    if pipe is not None:
+                        pipe.close()
+        self.assertIn(TENANT_MEASUREMENT, body)
+        # The page renders the seal policy and the sign-in hash here too: the
+        # installed layout is the shipped one, not the checkout's.
+        self.assertIn("policy 0x30000", self.plain(body))
+        self.assertIn("scrypt hash present", self.plain(body))
 
     # -- honest failure -----------------------------------------------------
 

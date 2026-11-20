@@ -20,10 +20,11 @@ What it owns, each step idempotent and printed as `same` / `write` / `restart`:
   0. the demo machine's /verify page: the release template's one tenant-block
      paragraph is replaced by `verify-lede.html`, because on this machine Odile
      holds the boot key and the sign-in is shared, and the one-line `--expect`
-     verifier command is added after it from `verify-command.html`, with the
-     measurement the page serves filled in by the first-visit renderer. A
-     customer machine never runs this program and keeps the general row and no
-     demo command;
+     verifier command is added after the `#machine` section (the row its
+     `measurement` row the note names) from `verify-command.html`, with the
+     measurement the page serves filled in by the page renderer. A customer
+     machine never runs this program and keeps the general row and no demo
+     command;
   1. the sign-in page at /srv/odile-demo/login.html, and the three tab files
      it links beside it (pinned to the committed web/ renditions);
   2. the `demo.odile.fyi` block in /etc/caddy/Caddyfile — spliced between its
@@ -112,11 +113,11 @@ ATTEST_FILE = Path("/var/lib/odile/attestation.json")
 ATTEST_SERVICE_UNIT = "odile-attest-refresh.service"
 ATTEST_TIMER_UNIT = "odile-attest-refresh.timer"
 
-#: The release installer's /verify template. It is read by the first-visit
-#: service on every request (`FirstVisit.verify`), so replacing the file is
-#: served without a restart. The release installer writes it once, on the
-#: first boot (`odile-release-setup.service` now converges once); this deploy
-#: is the only writer after that (ODL-503 finding 1).
+#: The release installer's /verify template. It is read by
+#: `odile-verify.service` on every request (`verify/verify.py`), so replacing
+#: the file is served without a restart. The release installer writes it once,
+#: on the first boot (`odile-release-setup.service` now converges once); this
+#: deploy is the only writer after that (ODL-503 finding 1).
 VERIFY_TEMPLATE = Path("/usr/local/lib/odile/verify.html")
 #: The demo's lede, uploaded beside this program. It replaces the one lede
 #: paragraph inside the template's tenant block; a customer machine never runs
@@ -134,6 +135,9 @@ VERIFY_COMMAND = LIB / "verify-command.html"
 COMMAND_BEGIN = "<!--demo-check-->"
 COMMAND_END = "<!--/demo-check-->"
 COMMAND_RE = re.compile(r"<!--demo-check-->.*?<!--/demo-check-->", re.S)
+#: The page section whose `measurement` row the demo note points at ("shown
+#: above"): the injected section has to follow it, not the lede.
+MACHINE_SECTION_RE = re.compile(r'<section id="machine"[^>]*>.*?</section>', re.S)
 PAGE_COMMAND = ("./odile-verify https://demo.odile.fyi"
                 " --expect {{MEASUREMENT}}")
 #: The release page as the boot left it, kept for the runbook's rollback.
@@ -416,13 +420,16 @@ def command_problem(markup: str) -> str:
 
 
 def inject_command(page: str, command: str) -> str:
-    """Return *page* with the demo's command section inside its tenant block.
+    """Return *page* with the demo's command section after the machine section.
 
-    The first apply appends the section after the tenant block's lede; a later
-    apply replaces the marked block in place, so a changed command converges
-    and a second run is byte-identical. The rest of the page — the demo block,
-    the report card, the CSS — is untouched, and a customer machine never runs
-    this program.
+    The section's note names the measurement row above it, so it has to
+    render below the `measurement` row it names: the section goes after
+    `id="machine"`'s closing tag, before the page's own "Check it yourself"
+    commands. The first apply inserts it there; a later apply replaces the
+    marked block in place (and moves a copy an older revision left inside the
+    tenant block), so a changed command converges and a second run is
+    byte-identical. The rest of the page — the lede, the tables, the CSS — is
+    untouched, and a customer machine never runs this program.
     """
     problem = command_problem(command)
     if problem:
@@ -430,28 +437,41 @@ def inject_command(page: str, command: str) -> str:
     matches = tenant_blocks(page)
     if len(matches) != 1:
         raise ValueError("the verify page has %d tenant blocks, expected 1" % len(matches))
-    match = matches[0]
-    body = match.group(2)
-    existing = list(COMMAND_RE.finditer(body))
+    existing = list(COMMAND_RE.finditer(page))
     if len(existing) > 1:
-        raise ValueError("the tenant block has %d command blocks, expected at most 1"
+        raise ValueError("the page has %d command blocks, expected at most 1"
                          % len(existing))
-    wanted = command.strip()
+    body = page
     if existing:
-        replaced = body[:existing[0].start()] + wanted + body[existing[0].end():]
-    else:
-        replaced = body.rstrip() + "\n" + wanted + "\n"
-    return page[:match.start(2)] + replaced + page[match.end(2):]
+        start, end = existing[0].span()
+        # Both revisions append the block with one newline on each side; drop
+        # them with it so the page returns to what the append found.
+        if page[start - 1:start] == "\n":
+            start -= 1
+        if page[end:end + 1] == "\n":
+            end += 1
+        body = page[:start] + page[end:]
+    anchor = MACHINE_SECTION_RE.search(body)
+    if anchor is None:
+        raise ValueError('the verify page has no <section id="machine"> to put '
+                         "the demo command after")
+    wanted = command.strip()
+    tail = body[anchor.end():]
+    if not tail.startswith("\n"):
+        tail = "\n" + tail
+    return body[:anchor.end()] + "\n\n" + wanted + tail
 
 
 def ensure_verify_command(dry: bool) -> bool:
     """Put the demo's verifier command on this machine's /verify template.
 
     The demo's page is the only public tenant /verify, so the command lives in
-    the demo layer: the release template's tenant block stays the customer's
-    page (no command, no demo hostname). The write goes to the same file the
-    first-visit service reads per request; the lede's update wrote the backup,
-    so this step must not overwrite it with a half-injected page.
+    the demo layer: the release template keeps the customer's page (no command,
+    no demo hostname), and the section is placed after the machine section so
+    its note names a row the reader has already passed. The write
+    goes to the same file `odile-verify.service` reads per request; the lede's
+    update wrote the backup, so this step must not overwrite it with a
+    half-injected page.
     """
     source = command_source()
     if not source.is_file():
@@ -489,13 +509,17 @@ def verify_state() -> dict:
     except ValueError:
         block = ""
     first_lede = LEDE_RE.search(block)
-    section = COMMAND_RE.search(block)
+    section = COMMAND_RE.search(page)
+    machine_section = MACHINE_SECTION_RE.search(page)
     return {
         "template_sha256": hashlib.sha256(page.encode("utf-8")).hexdigest() if page else "",
         "demo_lede": bool(block) and first_lede is not None
                      and first_lede.group(0).strip() == lede and bool(lede),
         "demo_command": section is not None and section.group(0).strip() == command
                         and bool(command),
+        "demo_command_after_machine": bool(
+            section is not None and machine_section is not None
+            and section.start() > machine_section.end()),
         "customer_lede": "No one at Odile can log in unless you grant it." in block,
         "rollback": VERIFY_BACKUP.is_file(),
     }
@@ -1892,7 +1916,15 @@ def self_test() -> int:
     check(command.count("{{MEASUREMENT}}") == 1 and PAGE_COMMAND in command
           and "--expect" in command,
           "the demo command carries the --expect line and one live measurement slot")
-    release = "<!--tenant-->\n<p class=\"lede\">No one at Odile can log in unless you grant it.</p>\n<!--/tenant-->\n"
+    release = ("<!--tenant-->\n"
+               '<p class="lede">No one at Odile can log in unless you grant it.</p>\n'
+               "<!--/tenant-->\n"
+               '<section id="machine" aria-labelledby="machine-h">\n'
+               '<h2 id="machine-h">From the machine</h2>\n'
+               "</section>\n"
+               '<section id="check" aria-labelledby="check-h">\n'
+               '<h2 id="check-h">Check it yourself</h2>\n'
+               "</section>\n")
     check(COMMAND_BEGIN not in release, "the release tenant block carries no demo command")
     demo = inject_lede(release, lede)
     check(tenant_block(demo).strip() == lede.strip()
@@ -1901,11 +1933,20 @@ def self_test() -> int:
           "the injection replaces the tenant lede once and is idempotent")
     with_command = inject_command(demo, command)
     block = tenant_block(with_command)
-    check(block.strip().startswith(lede.strip()) and PAGE_COMMAND in block,
-          "the command lands in the tenant block after the lede")
+    check(block.strip() == lede.strip(),
+          "the tenant block keeps only the demo lede")
+    machine = MACHINE_SECTION_RE.search(with_command)
+    check(machine is not None
+          and with_command.index(COMMAND_BEGIN) > machine.end()
+          and with_command.index(COMMAND_BEGIN) < with_command.index('id="check"'),
+          "the command follows the machine section and precedes the page's own commands")
     check(inject_command(with_command, command) == with_command
           and with_command.count(COMMAND_BEGIN) == 1,
           "the command injection is idempotent")
+    old_layout = demo.replace("<!--/tenant-->", command + "\n<!--/tenant-->")
+    migrated = inject_command(old_layout, command)
+    check(migrated == with_command,
+          "a page that carried the command in the tenant block converges on the machine-section place")
     check(bool(command_problem(command.replace("--expect {{MEASUREMENT}}", ""))),
           "a command without --expect is refused")
 

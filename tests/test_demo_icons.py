@@ -38,7 +38,7 @@ import deploy_demo_public as deploy_public  # noqa: E402
 DEMO = ROOT / "deploy" / "demo-host"
 LOGIN_PAGE = DEMO / "login.html"
 SITE_BLOCK = ROOT / "deploy" / "caddy" / "demo-tenant-site.caddy"
-VERIFY_PAGE = ROOT / "web" / "verify.html"
+VERIFY_PAGE = ROOT / "templates" / "verify.html"
 VERIFY_LEDE = DEMO / "verify-lede.html"
 VERIFY_COMMAND = DEMO / "verify-command.html"
 
@@ -174,8 +174,10 @@ class DemoVerifyTemplateTests(unittest.TestCase):
         release = VERIFY_PAGE.read_text(encoding="utf-8")
         lede = VERIFY_LEDE.read_text(encoding="utf-8")
         wanted = apply.inject_lede(release, lede)
-        for line in deploy.SITE_LINKS:
-            self.assertIn(line, wanted)
+        # The tenant template ships its own data: icon; the five site paths
+        # are for the first-visit page and the browser tab of the Webapp.
+        self.assertIn('href="data:image/svg+xml;base64,', wanted)
+        self.assertIn("<!--tenant-->", wanted)
         self.assertEqual(apply.inject_lede(wanted, lede), wanted)
         self.assertNotEqual(wanted, release)
 

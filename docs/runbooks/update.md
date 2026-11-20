@@ -117,11 +117,11 @@ value the installer's own `--manifest` prints, and the installer's `--self-test`
 checks that pin against `scripts/backup.py`, so a stranger can compare the two
 records and see that the installer a release ships writes the program the
 release names (t_e0475dba). The cuts made before the row existed carry no such
-key: the served `2026.11.19-1` (measured 2026-11-19T17:32Z) and `main`'s
-`2026.11.19-3`/`-4` — a re-cut of `-3`'s pair — do not. The merge cut
-`2026.11.19-7` is the first to carry it (`d9c4278a…`, the same
-`scripts/backup.py` the installer pins), because `tools/recut_release.py`
-re-derives the row from the installer it ships. The row is optional in the
+key: the served `2026.11.19-1` and `main`'s `2026.11.19-3`/`-4` — a re-cut
+of `-3`'s pair — do not. `main`'s `2026.11.19-5` and the cut this card lands on
+top of it, `2026.11.20-1`, carry it (`d9c4278a…`, the same `scripts/backup.py`
+the installer pins), because `tools/recut_release.py` re-derives the row from
+the installer it ships. The row is optional in the
 schema: a document cut before it existed still verifies,
 and `check`/`apply` warn rather than refuse; a row that is present has to be a
 64-hex digest.

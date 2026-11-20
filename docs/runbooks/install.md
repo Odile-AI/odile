@@ -964,7 +964,7 @@ Verify (this is also step 2 of the ritual):
 ```sh
 $ ./installer/odile_install.py --verify-signature --pubkey installer/odile-signing-key.pub
 signing key  sha256 13e8c2aee8263f550033448c8193a82b89498f533f52943e09c14d22e5b036e2 · SHA256:ZyFEbkw2oetDml63XaHTix0kUrR2kAVGZaaeDAHvXu8
-signature: OK (sha256 f692dd6d7ccf1b7c709932c619ab26105583aa7a3a6f91c3211dccb29d72edc2)
+signature: OK (sha256 4d77575c888841ff0f794f613ef46a1e7321e2048782c1bae35bb15e4e12e6ee)
 ```
 
 The first value is `sha256sum` of the exact PEM file the run used — here the
@@ -988,18 +988,19 @@ issued — fails against the same detached signature:
 $ cp installer/odile_install.py /tmp/edited.py
 $ printf 'x' >> /tmp/edited.py
 $ sha256sum /tmp/edited.py
-e121ef9e6df6b566bdd1ee6d6a00fa82b2c051d22ac985846000b9bcf4524acf  /tmp/edited.py
+38693bb3588891b971bbd65c24b82340e1cb8311457a8c65f2d3f35fa2777256  /tmp/edited.py
 $ /usr/bin/python3 /tmp/edited.py --verify-signature \
       --pubkey installer/odile-signing-key.pub --signature installer/odile_install.py.sig
 signing key  sha256 13e8c2aee8263f550033448c8193a82b89498f533f52943e09c14d22e5b036e2 · SHA256:ZyFEbkw2oetDml63XaHTix0kUrR2kAVGZaaeDAHvXu8
-signature: BAD (sha256 e121ef9e6df6b566bdd1ee6d6a00fa82b2c051d22ac985846000b9bcf4524acf)
+signature: BAD (sha256 38693bb3588891b971bbd65c24b82340e1cb8311457a8c65f2d3f35fa2777256)
 $ echo $?
 3
 ```
 
-Recorded on 2026-11-14 and re-measured on 2026-11-19 from the merged installer
-(`main`'s `97563f8` merged with this card's branch, which re-cut the pair as
-`2026.11.19-7`) that carries the handoff audit
+Recorded on 2026-11-14 and re-measured on 2026-11-20 from the merged installer
+(`main`'s `5587074` — whose `2026.11.19-5` is ODL-236's `/verify` type re-cut —
+merged with this card's branch, which re-cut the pair as `2026.11.20-1`) that
+carries the handoff audit
 (ODL-208's `/usr/local/bin/odile-audit`, re-cut by the follow-up that reads
 `authorized_keys2` and scans `/root` for the boot key's private half) beside
 the strict-bar help surface (ODL-470's five answers), ODL-457's first-visit
@@ -1050,20 +1051,9 @@ from AMD's KDS), this card's round 2 (the machine-free `--dry-run
 --recovery-kit <kit>` plan reads the kit before it resolves the layout, so its
 site line, the Webapp's `public_url` and the DNS/ACME wait name the kit's
 machine rather than the `<slug>` placeholder — `--public-url` then `--slug`
-still win), t_e23f3288's live-grant row (the access reporter reads
-`/var/lib/odile/support-grant.json` and prints `support grant  OPEN` with the
-grant id, the expiry and the key fingerprint plus an OPEN verdict; a machine
-with no grant keeps the five-row PASS/FAIL report byte for byte, and the state
-only accounts for the exact forced-command line `odile-support grant` wrote,
-and its round 3 builds the verdict from the rows that failed, so a grant beside
-a failed seal reads `OPEN — …; 1 other check FAIL (seal): the report did not
-pass` instead of blaming only the two key rows; the pure-grant and no-grant
-reports keep their bytes), ODL-579's recovery-code first-visit service and page
-(the code is single-use at both use sites and rotated on use, the one-time `?d=`
-download token, the session secret rotated in the same write as the sign-in
-hash), and the self-test's whole-bundle hash (`8ea15e2`), sha256
-`f692dd6d…` (1,456,215 bytes, `--verify-signature` OK, re-cut as
-`2026.11.19-7`); the edited copy above is 1,456,216 bytes. The BAD line prints the edited copy's own sha256 — the `sha256sum` above — so the hex moves
+still win), and the self-test's whole-bundle hash (`8ea15e2`), sha256
+`6d2c3161…` (1,448,387 bytes, `--verify-signature` OK, re-cut as
+`2026.11.19-4`); the edited copy above is 1,448,388 bytes. The BAD line prints the edited copy's own sha256 — the `sha256sum` above — so the hex moves
 whenever the installer's bytes do; `signature: BAD` and exit 3 are the
 invariant. The edited copy is a different `INSTALLER_PATH`, so this runs the
 *whole* installer and it still checks its own bytes. A tenant run does the same
@@ -1217,7 +1207,7 @@ builder command with a transcript; everything after it is the image.
 | 5 | the signed measured UKI and the pre-sealed disk | **yes, round 8 at 10:28Z, saved 14:42:53Z and booted 14:43:54Z** — UKI `5cb31808…`, disk `c1278242…`, measurement `9f01725a…`, 4-vCPU pin, published 10:29Z; the earlier builds and the defect each exposed are in `docs/evidence/m1-tenant.md` §9–§9.8 and `docs/evidence/m1-image.md` |
 | 6 | a fresh setup token bound to `31a63bbb` | **yes** — ledger `67de1ba9…`, live until 2026-11-13T10:23Z; its plaintext is the `odile.token=` of the sealed line |
 | 7 | the owner's boot key, a passphrase, any operator key | **none** — the image's `bb.key` is a throwaway public key whose private half is shredded |
-| 8 | a signed installer a stranger can obtain (independent of the image) | **yes** — on 2026-11-11 the served release `2026.11.11-5` shipped the strict-bar installer `fde7a48f…`, its `.sig`, the published key and a skills tarball carrying `odile-recipes` (§12.6); the repository's cut is `2026.11.19-7` (`f692dd6d…` installer, 1,456,215 bytes, `d8c2f17b…` manifest, §12.6), the merge cut of `main` at ODL-579's `2026.11.19-4` (`6d2c3161…` installer, 1,448,387 bytes, `653b3ed5…` manifest — the recovery-code first-visit re-embed: the code single-use at both use sites and rotated on use, the one-time `?d=` token, the session secret rotated with the sign-in hash) with this card's `2026.11.19-4`/`-5`/`-6` (16:00Z, 17:00Z and 20:00Z, none deployed: the live-grant row, the scoped lede, the verdict built from the failed rows), which itself merges `2026.11.19-1` (`e4a3554b…` installer, 1,428,062 bytes, `65c56be3…` manifest; the `/verify` page's two-URL note) with the ODL-340 follow-up's one site name and seed-derived environment — `2026.11.15-4` was re-cut at the head that merges `main`'s `-3` (ODL-522's per-machine session secret, `e0cec88a…` installer, 1,357,306 bytes, `4f0e3ef9…` manifest) and carries this card's `-2` landing (the five v3.10 access sentences on ODL-505's `-8` and t_ae833f3f's `2026.11.15-1`), then re-embedded every surface; `-6` re-embeds only the support program with t_afb081be's session signal-window fix, `-9` adds t_2efbd6e3's guest export placement, and `2026.11.19-1` re-embeds the `/verify` page with the verifier's two-URL note (`2026.11.19-2` was this branch's pre-review cut and `2026.11.19-3` the ODL-340 follow-up's merged head, both superseded before any deploy) — and the served URL serves `2026.11.15-9` (`2cdf0801…` installer, 1,424,179 bytes, manifest `4664da84…` — measured 2026-11-16T01:44Z; still `2026.11.15-9` at 2026-11-19T11:38Z, and `2026.11.19-1` at 2026-11-19T13:01Z, 2026-11-19T15:48Z, 2026-11-19T16:47Z, 2026-11-19T20:07Z and 2026-11-19T21:10Z) until a `./deploy.sh` from a `main` that carries these merges; that live cut carries the `c73dad4d…` vendor pin, and an image a build of this tree makes carries the `2026.11.19-7` pair in its `release/` directory, so the machine's `/manifest` and `/usr/local/bin/odile-install.sh` agree with each other. The live tenant's image is still `2026.11.11-8` (`4aee80c5…`, `1ed9dcad…`) until it is re-provisioned |
+| 8 | a signed installer a stranger can obtain (independent of the image) | **yes** — on 2026-11-11 the served release `2026.11.11-5` shipped the strict-bar installer `fde7a48f…`, its `.sig`, the published key and a skills tarball carrying `odile-recipes` (§12.6); the repository's cut is `2026.11.20-1` (`4d77575c…` installer, 1,511,717 bytes, `7bf88c65…` manifest, §12.6): this card's round-6 landing of the scoped tenant lede and the grant rows on the head that merges `main`'s `5587074` (`2026.11.19-5`, `1d946c44…` installer, 1,503,889 bytes, `7031d4a0…` manifest — ODL-236's `/verify` type re-cut), whose own head merges `2026.11.19-4` (ODL-579's recovery-code cut, `6d2c3161…` installer, 1,448,387 bytes, `653b3ed5…` manifest), which re-cut `2026.11.19-3` (`00a84542…` installer, 1,436,019 bytes, `49850448…` manifest) on the head that merges `2026.11.19-1` (`e4a3554b…` installer, 1,428,062 bytes, `65c56be3…` manifest; the `/verify` page's two-URL note) with the ODL-340 follow-up's one site name and seed-derived environment — `2026.11.15-4` was re-cut at the head that merges `main`'s `-3` (ODL-522's per-machine session secret, `e0cec88a…` installer, 1,357,306 bytes, `4f0e3ef9…` manifest) and carries this card's `-2` landing (the five v3.10 access sentences on ODL-505's `-8` and t_ae833f3f's `2026.11.15-1`), then re-embedded every surface; `-6` re-embeds only the support program with t_afb081be's session signal-window fix, `-9` adds t_2efbd6e3's guest export placement, `2026.11.19-1` re-embeds the `/verify` page with the verifier's two-URL note, `2026.11.19-3` is the ODL-340 follow-up's merged head, `2026.11.19-4` is ODL-579's recovery-code cut (`2026.11.19-2` was this branch's pre-review cut, superseded before any deploy), and `2026.11.19-5` is ODL-236's round-4 re-cut on the head that merges `-4` — and the served URL serves `2026.11.15-9` (`2cdf0801…` installer, 1,424,179 bytes, manifest `4664da84…` — measured 2026-11-16T01:44Z; still `2026.11.15-9` at 2026-11-19T11:38Z, and `2026.11.19-1` at 2026-11-19T13:01Z, 2026-11-19T21:18Z and 2026-11-20T00:20Z) until a `./deploy.sh` from a `main` that carries these merges; that live cut carries the `c73dad4d…` vendor pin, and an image a build of this tree makes carries the `2026.11.20-1` pair in its `release/` directory, so the machine's `/manifest` and `/usr/local/bin/odile-install.sh` agree with each other. The live tenant's image is still `2026.11.11-8` (`4aee80c5…`, `1ed9dcad…`) until it is re-provisioned |
 
 ### 12.2 The builder's half (everything before the panel)
 
@@ -2306,149 +2296,69 @@ pre-review cut (11:40Z, never deployed), `-3` is the ODL-340 follow-up's
 (15:45Z). §2 of `image.md` remains the `-3` bench measurement; a build of
 this tree carries the `-4` pair.
 
-**The `2026.11.19-4` cut (t_e23f3288 — `/verify` names a live support grant).**
-The ODL-474 follow-up's remaining half: while a support grant is inside its
-window, `/verify`'s access report shows a sixth row instead of a bare FAIL. The
-reporter (`scripts/verify_and_unlock.sh --mode access`, embedded and pinned in
-this installer) reads `/var/lib/odile/support-grant.json` and prints
-`support grant  OPEN  grant <id>; expires <expiry>; key <fingerprint>; line
-present|missing`, and the verdict names the grant (`OPEN — a support grant is
-live until …`) rather than `FAIL — the access report did not pass`. The state
-may only account for the exact forced-command line `odile-support grant` wrote
-(our marker, our key, our command, from root's own key file); a hand-written
-grant-shaped line, a revoked or expired state, or a state naming another key
-still fails the two key rows. With no grant the report is byte-identical to
-before. `app.py` and `installer/first_visit.py` accept the 11-line shape and
-require the row and the OPEN verdict together (the installer's embedded
-`first_visit.py` is that same file). `installer/access_report.sh`
-(`c85b4c37…`) and `web/verify.html` (`97e6e93a…`) are unchanged: the wrapper
-only resolves the pin, and the row is a row of the report the page already
-prints. The pins that moved are `first_visit.py` (`693c0058…`) and
-`verify_and_unlock.sh` (`fa234608…`). The installer is therefore `e0cc10e9…`
-(1,441,860 bytes); `release/manifest.json` is `268cf237…` (49,957 bytes, its
-only move is `installer_sha256`), so no root rebuild is claimed; the skills
-artifact (`9d82653f…`, 851,945 bytes) and the `539e205f…` audit row are
-unchanged. `release/release.json` (`f3cf7606…`) names `2026.11.19-4` at
-`2026-11-19T16:00:00Z`; `--self-test` prints `self-test: PASS`,
-`--verify-signature` prints `signature: OK`, and
-`tools/recut_release.py --check` prints `ok` for the installer, its release
-copy and both documents. It is committed, not deployed: measured
-2026-11-19T15:48Z the URL serves `2026.11.19-1` (`e4a3554b…`, 1,428,062
-bytes; manifest `65c56be3…`). The id ledger: `-1` is t_3cd62ef9's `/verify`
-cut (05:00Z), `-2` is t_73334f58's pre-review cut (11:40Z, never deployed),
-`-3` is that card's review-round cut (13:10Z), and `2026.11.19-4` is later
-than every cut by `generated_at`.
-
-**The `2026.11.19-5` cut (t_e23f3288, designer round 2 — the lede says where
-the boundary stops).** The tenant `/verify` page said "No one at Odile can log
-in to a tenant machine." while the same page, during a live support grant added
-by `-4`, printed `operator key FAIL … one is the support grant …` and `OPEN — a
-support grant is live until …`; the word "grant" appeared nowhere in the page's
-prose. The one access sentence is now the published scoped row `No one at Odile
-can log in unless you grant it.` (the first clause of `docs/CLAIMS.md` §1
-*Access*, already on `web/faq.html` and `web/privacy.html`; no new claim), in
-both byte-identical copies (`web/verify.html` = `web/verify-public.html`,
-sha256 `05c8c0e9…`), re-embedded with `installer/embed_verify.py`; no other
-embedded pin moved (`access_report.sh` `c85b4c37…`, `verify_and_unlock.sh`
-`fa234608…`, `audit.py` `539e205f…`, `first_visit.py` `693c0058…`). The copies
-of the tenant row outside the page (`deploy/demo-host/apply_demo_public.py`
-twice, `check_demo_public.py`, `deploy_demo_public.py`) and
-`tests/test_demo_public.py` carry the new sentence, so the demo injection still
-replaces exactly that row and the demo lede is still refused when it carries it.
-The installer is therefore `d393b558…` (1,441,860 bytes, the same size as
-`-4`); `release/manifest.json` is `1dd0d05d…` (49,957 bytes, its only move is
-`installer_sha256`), so no root rebuild is claimed; the skills artifact
-(`9d82653f…`, 851,945 bytes) and the `539e205f…` audit row are unchanged.
-`release/release.json` (`2caa57df…`) names `2026.11.19-5` at
-`2026-11-19T17:00:00Z`; `--self-test` prints `self-test: PASS`,
-`--verify-signature` prints `signature: OK`, a one-byte edit fails with
-`signature: BAD` (`dee9d381…`) and exit 3, and `tools/recut_release.py --check`
-prints `ok` for the installer, its release copy and both documents. It is
-committed, not deployed: measured 2026-11-19T16:47Z the URL serves
+**The `2026.11.19-5` cut (t_4fcd465f's round-4 `/verify` on the merged head).**
+The head merges `2026.11.19-4` (ODL-579's recovery-code cut, `6d2c3161…`), so
+the installer carries that cut's first-visit service and page and this card's
+`/verify` surface. `installer/embed_first_visit.py` and
+`installer/embed_verify.py` re-embedded both; `tools/recut_release.py`
+re-derived and re-signed the pair (`--check` prints `ok` for the installer, its
+release copy, the `backup` row and both documents), `--self-test` prints
+`self-test: PASS`, and `--verify-signature` prints `signature: OK
+(sha256 1d946c44…)`. The installer is `1d946c44…` (1,503,889 bytes) and the
+manifest `7031d4a0…` (50,044 bytes); against the committed `-4` document its
+diff is two lines — `installer_sha256` and the `backup_sha256` row the `-4`
+document predated, which the cut now writes, so `--check`'s old `warn` for that
+row is `ok` here. `release/release.json` (`fa5b11fc…`) names `2026.11.19-5` at
+`2026-11-19T21:20:00Z`. No root rebuild is claimed: the skills artifact
+(`9d82653f…`, 851,945 bytes) and the `539e205f…` audit row are unchanged. What
+moved since `-4` is the tenant page's type roles: `templates/verify.html`
+declares `--text` and `--serif` in `:root`, sets body prose at 18 px/1.6 on the
+text face and notes and the foot at 16 px/1.6, and keeps Cormorant Garamond for
+`.brand`, `h1` and `h2`; `tests/test_verify.py` pins the roles. It is
+committed, not deployed: measured 2026-11-19T21:18Z the URL serves
 `2026.11.19-1` (`e4a3554b…`, 1,428,062 bytes; manifest `65c56be3…`). The id
-ledger: `-4` is this card's first cut (16:00Z, never deployed) and `-5` is
-later than every cut by `generated_at`.
+ledger: `-1` is t_3cd62ef9's `/verify` cut (05:00Z), `2026.11.19-2` was this
+branch's pre-review cut (11:40Z, never deployed), `-3` is the ODL-340
+follow-up's (13:10Z), `-4` is ODL-579's recovery-code cut (15:45Z), and
+`2026.11.19-5` is later than every cut by `generated_at` (21:20Z). This
+branch's round-3 cut also used the id `2026.11.19-4` (installer `6959f3fe…`,
+1,491,364 bytes, at 20:16Z) before `main` took that id; it was superseded by
+the merge and never deployed. §2 of `image.md` remains the `-3` bench
+measurement; a build of this tree carries the `-5` pair.
 
-**The `2026.11.19-6` cut (t_e23f3288, round 3 — the verdict is built from the
-failed rows).** The round-2 reviewer measured the reporter picking its verdict
-from `grant` **before** `fails`, so a live grant replaced every other failure:
-with the grant line present and attestation policy `0x30001` the report showed
-`seal  FAIL` and still ended `OPEN — … : the two key rows fail because that
-granted key is in …`, and with a planted key and its private half the row said
-two foreign keys while the verdict blamed only the grant. The verdict is now
-derived from the rows that failed. A grant accounts for `usable keys` only when
-the single foreign key is the state's own fingerprint (and nothing else is
-malformed, matched or unidentified) and for `operator key` only when the one
-grant-shaped line is the exact line the state owns; every other failing label is
-named: `OPEN — a support grant is live until … (grant <id>); N other check(s)
-FAIL (<labels>): the report did not pass.` Measured on the gate's own bench:
-`1 other check FAIL (seal)` at policy `0x30001` (exit 1) and `1 other check
-FAIL (usable keys)` with a planted key plus private half (exit 1). The pure
-live-grant report (both key rows, nothing else) keeps its sentence and its
-bytes, and the no-grant report body is byte-identical to `main`'s. The page's
-text did not move (`web/verify.html` = `web/verify-public.html`, `05c8c0e9…`);
-the pins that moved are `scripts/verify_and_unlock.sh` (`332eccdf…`, 65,354
-bytes, re-embedded; `access_report.sh` `c85b4c37…`, `audit.py` `539e205f…` and
-`first_visit.py` `693c0058…` unchanged). The installer is therefore
-`031d3a87132e…` (1,443,847 bytes); `release/manifest.json` is `2b6e2dff…`
-(49,957 bytes, its only move is `installer_sha256`), so no root rebuild is
-claimed; the skills artifact (`9d82653f…`, 851,945 bytes) is unchanged.
-`release/release.json` (`39bf5e94…`) names `2026.11.19-6` at
-`2026-11-19T20:00:00Z`; `--self-test` prints `self-test: PASS`,
-`--verify-signature` prints `signature: OK`, a one-byte edit fails with
-`signature: BAD` (`1c875b4f…`) and exit 3, and `tools/recut_release.py --check`
-prints `ok` for the installer, its release copy and both documents. It is
-committed, not deployed: measured 2026-11-19T20:07Z the URL serves
-`2026.11.19-1` (`e4a3554b…`, 1,428,062 bytes; manifest `65c56be3…`). The id
-ledger: `-4` and `-5` are this card's earlier cuts (16:00Z, 17:00Z, never
-deployed), and `-6` is later than every cut by `generated_at`.
 
-**The `2026.11.19-7` cut (t_e23f3288, round 4 — the merge cut).** `main` moved
-six minutes after this branch's round-3 acceptance stamp (ODL-579 merged at
-20:43:33Z; this head was stamped 20:37:22Z) and re-cut the same signed chain,
-so this cut lands the branch on `main`. The merge resolves one generated
-conflict — the `FIRST_VISIT_SHA256` constant in the `BEGIN FIRST VISIT
-(ODL-457)` block — re-derived with `installer/embed_first_visit.py` (the merged
-`installer/first_visit.py`, `b36cebe8…`: main's ODL-579 service plus this
-card's 11-line parser) and `installer/embed_verify.py` (`web/verify.html`
-`05c8c0e9…`, the same page as `-5` and `-6`). Nothing in
-`scripts/verify_and_unlock.sh`, `tests/test_verify.py`, `app.py` or
-`web/verify.html` conflicts, so the reporter, the verdict and both pages are the
-ones rounds 1–3 measured; the pins that moved are `first_visit.py`
-(`b36cebe8…`, 72,346 bytes) and the generated constants around it, while
-`access_report.sh` `c85b4c37…`, `verify_and_unlock.sh` `332eccdf…` and
-`audit.py` `539e205f…` are unchanged. The installer is therefore
-`f692dd6d…` (1,456,215 bytes); `release/manifest.json` is `d8c2f17b…` (50,044
-bytes — the `installer_sha256` move plus the `backup_sha256` row main's
-document predated, naming the same `scripts/backup.py`), so no root rebuild is
-claimed; the skills artifact (`9d82653f…`, 851,945 bytes) and the
-`539e205f…` audit row are unchanged. `release/release.json` (`8fd4c9c9…`) names
-`2026.11.19-7` at `2026-11-19T23:05:00Z`; `--self-test` prints `self-test:
-PASS`, `--verify-signature` prints `signature: OK`, a one-byte edit fails with
-`signature: BAD` (`e121ef9e…`) and exit 3, and `tools/recut_release.py --check`
-prints `ok` for the installer, its release copy and both documents. It is
-committed, not deployed: measured 2026-11-19T21:10Z the URL serves
-`2026.11.19-1` (`e4a3554b…`, 1,428,062 bytes; manifest `65c56be3…`). The id
-ledger: `-4` is two cuts — ODL-579's (`6d2c3161…`, 15:45Z) and this card's
-first (`e0cc10e9…`, 16:00Z) — followed by this card's `-5` (17:00Z) and `-6`
-(20:00Z), all three of this card's earlier cuts never deployed; `2026.11.19-7`
-is later than every cut by `generated_at`.
-
-**The `2026.11.19-7` re-cut (t_e23f3288, round 5 — the note fix).** Round 4's
-`release.json` note said `first_visit.py` was main's ODL-579 file,
-`b0cac695…`, which is main's pre-merge copy; the file the cut ships, and the
-one §12.6 above records, is `b36cebe8…` (main's service plus this card's
-11-line parser, 72,346 bytes). Round 5 corrects that sentence and nothing else:
-`installer/odile_install.py` stays `f692dd6d…` (1,456,215 bytes),
-`release/manifest.json` stays `d8c2f17b…` (50,044 bytes) and both `/verify`
-pages stay `05c8c0e9…`; `release/release.json` moves to `8fd4c9c9…` (the
-corrected note at `generated_at` `2026-11-19T23:05:00Z`), re-signed. The note
-now names both sides of the re-derive — main's `b0cac695…` explicitly as
-main's side, and the shipped `b36cebe8…` — so the signed document and this
-runbook name the same artifact. `tests/test_release_notes.py` holds the line: a
-note that mentions `first_visit.py` must name the prefix this cut ships; the
-round-4 note fails that test and round 5's passes.
-
+**The `2026.11.20-1` cut (this card's round-6 landing on the merged head).** The
+head merges `main`'s `5587074` — ODL-236's follow-up that moved a tenant's
+`/verify` page to `verify/verify.py` + `templates/verify.html` and retired the
+first-visit `/verify` route — so the installer carries that cut's page program
+and template and this branch's work on them. `installer/embed_first_visit.py`
+and `installer/embed_verify.py` re-embedded every surface (`verify.py`
+`70d8f469…`, `verify.html` `543f42ea…`, `first_visit.py` `21c84e64…`,
+`verify_and_unlock.sh` `332eccdf…`), `tools/recut_release.py` re-derived and
+re-signed the pair (`--check` prints 10 `ok`), `--self-test` prints `self-test:
+PASS`, and `--verify-signature` prints `signature: OK (sha256 4d77575c…)`. The
+installer is `4d77575c…` (1,511,717 bytes), the manifest `7bf88c65…` (50,044
+bytes) and `release/release.json` (`01138107…`) names `2026.11.20-1` at
+`2026-11-20T00:45:00Z`. No root rebuild is claimed: the skills artifact
+(`9d82653f…`, 851,945 bytes) and the `539e205f…` audit row are unchanged. What
+moved since `-5`: `templates/verify.html`'s tenant block carries the published
+scoped row — `No one at Odile can log in unless you grant it.`
+(`docs/CLAIMS.md` §1 *Access*) — and the documents that quote that block moved
+with it (`deploy/demo-host/apply_demo_public.py`'s stand-in and `customer_lede`
+probe, `tests/test_demo_public.py`'s `CUSTOMER_SENTENCE`); a live grant is its
+own `support access` row (grant id, expiry, reason, key fingerprint, the line
+count in `authorized_keys` and the keyslot count, read from `odile-support
+status`), with the second keyslot named as the grant's handover in the LUKS row;
+and the reporter keeps the five-check PASS with no grant, printing a `support
+grant OPEN` row with the same three values during a grant, its verdict built from
+the failed rows. It is committed, not deployed: measured 2026-11-20T00:20Z the
+URL serves `2026.11.19-1` (`e4a3554b…`, 1,428,062 bytes; manifest
+`65c56be3…`). The id ledger: `-1` 05:00Z, `-2` 11:40Z (never deployed), `-3`
+13:10Z, `-4` 15:45Z, `-5` 21:20Z; this branch's earlier `2026.11.19-6` (20:00Z)
+and `-7` (23:05Z) were superseded by the merge and never deployed; and
+`2026.11.20-1` is later than every cut by `generated_at` (00:45Z on
+20 November). §2 of `image.md` remains the `-3` bench measurement; a build of
+this tree carries the `2026.11.20-1` pair.
 
 The clock starts at the build's `uki.sh --sign` and stops when
 `https://<slug>.odile.fyi/login` answers 200 over TLS. The gate is 30 minutes.

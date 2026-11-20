@@ -60,9 +60,30 @@ def load(path: Path, name: str):
 
 def embedded_page(path: Path) -> str:
     text = path.read_text(encoding="utf-8")
-    match = re.search(r"VERIFY_PAGE = r'''(.*?)'''", text, re.S)
-    assert match is not None, f"{path} carries no VERIFY_PAGE"
+    match = re.search(r"VERIFY_TEMPLATE = r'''(.*?)'''", text, re.S)
+    assert match is not None, f"{path} carries no VERIFY_TEMPLATE"
     return match.group(1)
+
+
+def render_page(page: str, measurement: str = "9f" * 48) -> str:
+    """Render *page* through the shipped /verify program (t_4fcd465f).
+
+    The demo's template is read by `odile-verify.service` now, not by the
+    first-visit renderer; this builds the Machine the renderer needs without
+    touching a machine root, so the test checks the bytes a browser gets.
+    """
+    verify = load(ROOT / "verify" / "verify.py", "demo_public_verify_render")
+    machine = verify.Machine(root=Path("/"), now=verify.parse_iso("2026-11-14T00:00:00Z"))
+    machine.values = {
+        "stamp": "2026-11-14T00:00:00Z", "measurement": measurement,
+        "measurement_short": measurement[:16] if measurement else "",
+        "release": "2026.11.2" if measurement else "", "vcpus": "4" if measurement else "",
+        "report_fingerprint": "", "fetched_at": "2026-11-14T00:00:00Z" if measurement else "",
+        "boot_key": "", "host_key": "", "signing_key": "",
+        "state": "available" if measurement else "unavailable",
+        "state_text": "" if measurement else "The CPU has not produced a report yet",
+    }
+    return verify.render(machine, page)
 
 
 def flatten(text: str) -> str:
@@ -201,29 +222,25 @@ class RenderTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.apply = load(DEMO / "apply_demo_public.py", "demo_apply_render_test")
-        cls.first_visit = load(ROOT / "installer" / "first_visit.py", "demo_first_visit_test")
         cls.lede = LEDE.read_text(encoding="utf-8").strip()
         cls.page = embedded_page(INSTALLERS[0])
-        cls.report = {"state": "ok", "at": "2026-11-14T00:00:00Z", "text": "report body"}
-        cls.attestation = {"measurement": "9f" * 48, "fetched_at": "2026-11-14T00:00:00Z",
-                           "meta": "version 3, 1184 bytes"}
+        cls.measurement = "9f" * 48
 
     def render(self, page: str) -> str:
-        return self.first_visit.render_verify_page(page, self.report, self.attestation)
+        return render_page(page, self.measurement)
 
     def test_a_customer_page_renders_the_general_row(self):
         rendered = self.render(self.page)
         self.assertIn(CUSTOMER_SENTENCE, rendered)
         self.assertNotIn(self.lede, rendered)
 
-    def test_the_demo_page_renders_the_demo_row_and_keeps_the_live_report(self):
+    def test_the_demo_page_renders_the_demo_row_and_keeps_the_live_measurement(self):
         rendered = self.render(self.apply.inject_lede(self.page, self.lede))
         first = re.search(r'<p class="lede">.*?</p>', rendered, re.S)
         self.assertIsNotNone(first)
         self.assertEqual(first.group(0), self.lede)
         self.assertNotIn(CUSTOMER_SENTENCE, rendered)
-        self.assertIn(self.attestation["measurement"], rendered)
-        self.assertIn(self.report["text"], rendered)
+        self.assertIn(self.measurement[:16], rendered)
 
 
 class TenantProgramTests(unittest.TestCase):

@@ -441,11 +441,37 @@ exact line the state owns, so a second planted key keeps its own FAIL label.
 
 HQ audits a grant through the log the tenant carries
 (`/var/log/odile-support.log`), `odile-support status --json`, and the
-`audit`/`logs` sections of the bundle the user emails. The `/verify` row landed
-with `t_e23f3288` in release `2026.11.19-7` (`docs/runbooks/install.md`
-§12.6): the reporter is `scripts/verify_and_unlock.sh`, embedded in the signed
-installer, and the parsers in `app.py` and `installer/first_visit.py` accept
-the sixth row only together with the OPEN verdict.
+`audit`/`logs` sections of the bundle the user emails.
+
+A tenant's `/verify` is `verify/verify.py` + `templates/verify.html`
+(`odile-verify.service` on 127.0.0.1:8098 behind Caddy's one no-store handle),
+and it names a live grant in its own `support access` row, read from the state
+file by the program that writes it (`odile-support status --json`). Rendered on
+2026-11-20 with the shipped program over a bench root
+(`verify/verify.py --root <bench> --luks-dump <dump> --now <t> --out <page>`),
+the grant state reads:
+
+```
+support access  NOTE  grant live: 544895ed3819, expires 2026-11-21T00:36:31Z, reason ODL-217 drill: grant, use, expire · 2 keys in authorized_keys (1 grant) · 2 keyslots · support key SHA256:9wJnb+0o…
+LUKS            NOTE  2 keyslots (0, 1) — the second is the support grant's handover; after revoke the header must be one keyslot again
+```
+
+and with the state removed the same two rows read `support access  PASS  no
+grant` and `LUKS  PASS  one keyslot (slot 0), no token: one volume key, no
+second way in`. The page's tenant block carries the published scoped row
+(`No one at Odile can log in unless you grant it.`, `docs/CLAIMS.md` §1
+*Access*), so the sentence above the rows and the row that proves it agree.
+
+The report's sixth row is this card's too. The reporter
+(`scripts/verify_and_unlock.sh`, `332eccdf…`) ships inside the signed installer
+and `2026.11.20-1`: with no grant it prints the five rows and `PASS — five
+checks …` (exit 0); with a live grant it prints the same five plus
+`support grant  OPEN  grant <id>; expires …; key …; line present …` and an
+`OPEN — …` verdict (exit 1). The parsers in `app.py` and
+`installer/first_visit.py` accept the sixth row only together with the OPEN
+verdict. The tenant's page no longer reads the report file — it reads the state
+directly — so the report is the support bundle's copy and HQ's fallback page's
+copy of the machine's own audit (`docs/runbooks/install.md` §12.6).
 
 ---
 

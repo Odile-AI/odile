@@ -50,9 +50,25 @@ def load(path: Path, name: str):
 
 def embedded_page(path: Path) -> str:
     text = path.read_text(encoding="utf-8")
-    match = re.search(r"VERIFY_PAGE = r'''(.*?)'''", text, re.S)
-    assert match is not None, f"{path} carries no VERIFY_PAGE"
+    match = re.search(r"VERIFY_TEMPLATE = r'''(.*?)'''", text, re.S)
+    assert match is not None, f"{path} carries no VERIFY_TEMPLATE"
     return match.group(1)
+
+
+def render_page(page: str, measurement: str | None = MEASUREMENT) -> str:
+    """Render *page* through the shipped /verify program (t_4fcd465f)."""
+    verify = load(ROOT / "verify" / "verify.py", "demo_command_verify_render")
+    machine = verify.Machine(root=Path("/"), now=verify.parse_iso("2026-11-14T00:00:00Z"))
+    machine.values = {
+        "stamp": "2026-11-14T00:00:00Z", "measurement": measurement or "",
+        "measurement_short": (measurement or "")[:16],
+        "release": "2026.11.2" if measurement else "", "vcpus": "4" if measurement else "",
+        "report_fingerprint": "", "fetched_at": "2026-11-14T00:00:00Z" if measurement else "",
+        "boot_key": "", "host_key": "", "signing_key": "",
+        "state": "available" if measurement else "unavailable",
+        "state_text": "" if measurement else "The CPU has not produced a report yet",
+    }
+    return verify.render(machine, page)
 
 
 def copied_lines(page: str) -> list[str]:
@@ -171,7 +187,7 @@ class WrapTests(unittest.TestCase):
     def setUpClass(cls):
         cls.text = COMMAND.read_text(encoding="utf-8")
         cls.page = embedded_page(INSTALLERS[0])
-        cls.checkout_page = (ROOT / "web" / "verify.html").read_text(encoding="utf-8")
+        cls.checkout_page = (ROOT / "templates" / "verify.html").read_text(encoding="utf-8")
 
     def test_the_terminal_block_carries_a_wrap_class_the_page_defines(self):
         block = re.search(r"<pre([^>]*)>", self.text)
@@ -190,16 +206,50 @@ class WrapTests(unittest.TestCase):
                     + r" code\{[^}]*white-space:pre-wrap[^}]*\}",
                     f"the page defines no wrap rule for .{token} code")
 
-    def test_the_note_points_below_to_the_report_it_describes(self):
-        note = re.search(r'<p class="note">(.*?)</p>', self.text, re.S)
-        self.assertIsNotNone(note)
-        copy = html.unescape(re.sub(r"<[^>]+>", "", note.group(1)))
-        self.assertIn("shown in the report below", copy)
-        self.assertNotIn("measurement above", copy)
+    def test_the_note_names_the_measurement_row_above_it(self):
+        notes = re.findall(r'<p class="note">(.*?)</p>', self.text, re.S)
+        self.assertTrue(notes, "the section carries no note")
+        copies = [html.unescape(re.sub(r"<[^>]+>", "", note)) for note in notes]
+        self.assertTrue(any("measurement row above" in copy for copy in copies),
+                        copies)
+        self.assertFalse(any("shown in the report below" in copy for copy in copies),
+                         copies)
+
+    def test_every_class_the_section_uses_is_painted_by_the_page(self):
+        """A class the page does not define paints as prose, not as its role.
+
+        The section lands in the release template, so only that sheet paints
+        it. A bare ``class="caption"`` label (what this section carried until
+        round 4) had no rule in ``templates/verify.html`` and painted at 17 px
+        body copy instead of the 9 px micro-label the page it replaces used,
+        so the check is the page, not the author's intent.
+        """
+        page = (ROOT / "templates" / "verify.html").read_text(encoding="utf-8")
+        classes: set[str] = set()
+        for match in re.finditer(r'class="([^"]+)"', self.text):
+            classes.update(match.group(1).split())
+        self.assertTrue(classes, "the section carries no class at all")
+        for name in sorted(classes):
+            with self.subTest(className=name):
+                self.assertRegex(
+                    page, r"\." + re.escape(name) + r"(?![\w-])",
+                    f"the section uses .{name}, which the page never paints")
+
+    def test_the_location_sits_in_the_sentence_not_a_caption(self):
+        """The page's convention for a command panel is a `.note` sentence."""
+        first = re.search(r"<h2[^>]*>.*?</h2>\s*<p([^>]*)>(.*?)</p>", self.text, re.S)
+        self.assertIsNotNone(first, "the section opens with no prose")
+        assert first is not None
+        self.assertIn('class="note"', first.group(1),
+                      "the panel's opening sentence is not a .note")
+        copy = html.unescape(re.sub(r"<[^>]+>", "", first.group(2)))
+        self.assertIn("from your laptop", copy)
+        self.assertIn("PASS or FAIL", copy)
+        self.assertNotIn("caption", self.text)
 
 
 class InjectionTests(unittest.TestCase):
-    """The command lands in the tenant block, and nowhere near a customer."""
+    """The command lands after the machine section, and nowhere near a customer."""
 
     @classmethod
     def setUpClass(cls):
@@ -218,18 +268,36 @@ class InjectionTests(unittest.TestCase):
                 self.assertNotIn("<!--demo-check-->", page)
                 self.assertNotIn(COMMAND_SLOT, page)
 
-    def test_the_command_is_inside_the_tenant_block_after_the_lede(self):
-        page = embedded_page(INSTALLERS[0])
+    def test_the_tenant_block_keeps_only_the_lede(self):
         injected = self.demo_page()
-        before, after = self.apply.tenant_block(page), self.apply.tenant_block(injected)
-        self.assertIn(self.lede, after)
-        self.assertIn(self.command, after)
-        self.assertLess(after.index(self.lede), after.index(self.command))
-        # Everything outside the tenant block is byte-identical.
-        head = page.index(before)
-        new_head = injected.index(after)
-        self.assertEqual(page[:head] + page[head + len(before):],
-                         injected[:new_head] + injected[new_head + len(after):])
+        block = self.apply.tenant_block(injected)
+        self.assertEqual(block.strip(), self.lede)
+        self.assertNotIn(self.command, block)
+
+    def test_the_command_follows_the_machine_section_it_names(self):
+        """The note names the `measurement` row: it must be above the section."""
+        injected = self.demo_page()
+        machine = self.apply.MACHINE_SECTION_RE.search(injected)
+        self.assertIsNotNone(machine)
+        start = injected.index(self.command)
+        self.assertGreater(start, machine.end())
+        self.assertLess(start, injected.index('id="check"'))
+        self.assertLess(injected.index('id="machine"'), start)
+        # The section is the only change after the lede: removing it restores
+        # the lede-injected page exactly.
+        lede_page = self.apply.inject_lede(embedded_page(INSTALLERS[0]), self.lede)
+        end = self.apply.MACHINE_SECTION_RE.search(lede_page).end()
+        head, _sep, rest = injected.partition(self.command)
+        self.assertEqual(head, lede_page[:end] + "\n\n")
+        self.assertEqual(rest, lede_page[end:])
+
+    def test_a_page_that_carried_the_command_in_the_tenant_block_converges(self):
+        """The demo machine's live page was written before the move."""
+        page = embedded_page(INSTALLERS[0])
+        old = self.apply.inject_lede(page, self.lede).replace(
+            "<!--/tenant-->", self.command + "\n<!--/tenant-->")
+        self.assertIn(self.command, self.apply.tenant_block(old))
+        self.assertEqual(self.apply.inject_command(old, self.command), self.demo_page())
 
     def test_the_injection_is_idempotent_and_replaces_a_stale_section(self):
         once = self.demo_page()
@@ -249,28 +317,27 @@ class InjectionTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.apply.inject_command("<html><body>Verify</body></html>", self.command)
 
+    def test_a_page_without_the_machine_section_fails_loudly(self):
+        page = ("<!--tenant-->\n<p class=\"lede\">one</p>\n<!--/tenant-->\n"
+                '<section id="check"><h2>Check it yourself</h2></section>\n')
+        with self.assertRaises(ValueError):
+            self.apply.inject_command(page, self.command)
+
 
 class RenderTests(unittest.TestCase):
-    """What a browser actually reads, through the tenant's own renderer."""
+    """What a browser actually reads, through the shipped renderer."""
 
     @classmethod
     def setUpClass(cls):
         cls.apply = load(DEMO / "apply_demo_public.py", "demo_command_render_test")
-        cls.first_visit = load(ROOT / "installer" / "first_visit.py",
-                               "demo_command_first_visit_test")
         cls.lede = LEDE.read_text(encoding="utf-8").strip()
         cls.command = COMMAND.read_text(encoding="utf-8").strip()
-        cls.report = {"state": "ok", "at": "2026-11-14T00:00:00Z",
-                      "text": "report body"}
-        cls.attestation = {"measurement": MEASUREMENT,
-                           "fetched_at": "2026-11-14T00:00:00Z",
-                           "meta": "version 3, 1184 bytes"}
 
     def rendered(self) -> str:
         page = self.apply.inject_command(
             self.apply.inject_lede(embedded_page(INSTALLERS[0]), self.lede),
             self.command)
-        return self.first_visit.render_verify_page(page, self.report, self.attestation)
+        return render_page(page)
 
     def test_the_command_carries_the_measurement_the_page_serves(self):
         rendered = self.rendered()
@@ -283,12 +350,20 @@ class RenderTests(unittest.TestCase):
                  if "./odile-verify" in line]
         self.assertEqual(lines, [EXPECTED])
 
+    def test_the_command_sits_below_the_machine_section_it_cites(self):
+        """The note names the `measurement` row: the section must follow #machine."""
+        rendered = self.rendered()
+        self.assertLess(rendered.index('<h2 id="machine-h">'),
+                        rendered.index("./odile-verify"))
+        self.assertLess(rendered.index("./odile-verify"),
+                        rendered.index('<h2 id="check-h">'))
+
     def test_without_a_report_the_page_still_renders_and_names_it(self):
-        rendered = self.first_visit.render_verify_page(
+        rendered = render_page(
             self.apply.inject_command(
                 self.apply.inject_lede(embedded_page(INSTALLERS[0]), self.lede),
                 self.command),
-            {"state": "missing"}, None)
+            measurement=None)
         self.assertIn("--expect unavailable", rendered)
         self.assertIn("Report unavailable", rendered)
 
@@ -300,16 +375,11 @@ class CheckTests(unittest.TestCase):
     def setUpClass(cls):
         cls.check = load(DEMO / "check_demo_public.py", "demo_command_check_test")
         cls.apply = load(DEMO / "apply_demo_public.py", "demo_command_check_apply_test")
-        cls.first_visit = load(ROOT / "installer" / "first_visit.py",
-                               "demo_command_check_first_visit_test")
         page = cls.apply.inject_command(
             cls.apply.inject_lede(embedded_page(INSTALLERS[0]),
                                   LEDE.read_text(encoding="utf-8").strip()),
             COMMAND.read_text(encoding="utf-8").strip())
-        cls.page = cls.first_visit.render_verify_page(
-            page, {"state": "ok", "at": "2026-11-14T00:00:00Z", "text": "report body"},
-            {"measurement": MEASUREMENT, "fetched_at": "2026-11-14T00:00:00Z",
-             "meta": "version 3, 1184 bytes"})
+        cls.page = render_page(page)
 
     def test_the_check_extracts_the_line_a_browser_copies(self):
         self.assertEqual(self.check.page_command(self.page), EXPECTED)

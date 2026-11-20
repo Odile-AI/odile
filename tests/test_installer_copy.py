@@ -372,5 +372,94 @@ class InstallerExportProgramTest(unittest.TestCase):
         self.assertEqual(document["export_program_sha256"], self.digest)
 
 
+class InstallerVerifySurfaceTest(unittest.TestCase):
+    """The /verify program and template the signed installer carries (t_4fcd465f).
+
+    The page moved off the first-visit service: the installer now embeds
+    `verify/verify.py` and `templates/verify.html`, places them under
+    `/usr/local/lib/odile/`, and splices one exact Caddy route to the program's
+    own loopback port. These tests load the installer and the generator and
+    check the copy, the pin, the placement and a one-byte edit.
+    """
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.installer = load_module(INSTALLER, "odile_install_verify_copy_under_test")
+        cls.generator = load_module(ROOT / "installer" / "embed_verify.py",
+                                    "embed_verify_under_test")
+        cls.program = (ROOT / "verify" / "verify.py").read_bytes()
+        cls.template = (ROOT / "templates" / "verify.html").read_bytes()
+
+    def scratch(self, tmp: str, port: int):
+        return self.installer.Layout.scratch(
+            root=Path(tmp), user=pwd.getpwuid(os.geteuid()).pw_name,
+            webapp_port=port, public_url=f"http://verify.test:{port}",
+        )
+
+    def test_the_embedded_program_and_template_are_the_reviewed_files(self):
+        self.assertEqual(self.installer.VERIFY_PROGRAM.encode("utf-8"), self.program)
+        self.assertEqual(self.installer.VERIFY_TEMPLATE.encode("utf-8"), self.template)
+        self.assertEqual(self.installer.VERIFY_PROGRAM_SHA256,
+                         hashlib.sha256(self.program).hexdigest())
+        self.assertEqual(self.installer.VERIFY_TEMPLATE_SHA256,
+                         hashlib.sha256(self.template).hexdigest())
+
+    def test_the_generator_renders_exactly_the_block_the_installer_carries(self):
+        block = self.generator.render_block(
+            self.program, self.template,
+            (ROOT / "installer" / "access_report.sh").read_bytes(),
+            (ROOT / "scripts" / "verify_and_unlock.sh").read_bytes(),
+            (ROOT / "scripts" / "audit.py").read_bytes())
+        self.assertIn(block, INSTALLER.read_text(encoding="utf-8"))
+
+    def test_the_placement_writes_0755_and_0644_and_a_second_run_reads_same(self):
+        with tempfile.TemporaryDirectory(prefix="odile-verify-surface-") as tmp:
+            layout = self.scratch(tmp, 9158)
+            self.assertTrue(self.installer.ensure_verify_surface(layout, False))
+            program = Path(tmp) / "usr/local/lib/odile/verify.py"
+            template = Path(tmp) / "usr/local/lib/odile/verify.html"
+            self.assertEqual(program.stat().st_mode & 0o777, 0o755)
+            self.assertEqual(template.stat().st_mode & 0o777, 0o644)
+            self.assertEqual(program.read_bytes(), self.program)
+            self.assertEqual(template.read_bytes(), self.template)
+            self.assertFalse(self.installer.ensure_verify_surface(layout, False))
+
+    def test_a_one_byte_edit_to_either_copy_is_refused(self):
+        for name in ("VERIFY_PROGRAM", "VERIFY_TEMPLATE"):
+            with self.subTest(constant=name), \
+                    tempfile.TemporaryDirectory(prefix="odile-verify-edit-") as tmp:
+                layout = self.scratch(tmp, 9159)
+                original = getattr(self.installer, name)
+                try:
+                    setattr(self.installer, name, original.replace("a", "b", 1))
+                    with self.assertRaises(SystemExit):
+                        self.installer.ensure_verify_surface(layout, False)
+                finally:
+                    setattr(self.installer, name, original)
+                template_path = Path(tmp) / "usr/local/lib/odile/verify.html"
+                self.assertFalse(template_path.exists(), "the tampered template was written")
+                if name == "VERIFY_PROGRAM":
+                    self.assertFalse((Path(tmp) / "usr/local/lib/odile/verify.py").exists(),
+                                     "the tampered program was written")
+
+    def test_the_caddy_splice_names_the_program_port_and_not_the_first_visit_one(self):
+        handles = (self.installer.CADDY_VERIFY_HANDLE.format(port=8098)
+                   + self.installer.CADDY_FIRST_VISIT_HANDLE.format(port=8091))
+        self.assertIn("handle /verify {\n\t\theader Cache-Control \"no-store\"\n"
+                      "\t\treverse_proxy 127.0.0.1:8098", handles)
+        self.assertNotIn("handle /verify", self.installer.CADDY_FIRST_VISIT_HANDLE)
+        block = self.installer.CADDY_SITE_TEMPLATE.format(
+            begin="odile-odl-test", fqdn="odl-test.odile.fyi", user="odile",
+            webapp_port=9120, var=Path("/var/lib/odile"), first_visit_handle=handles)
+        self.assertLess(block.index("handle /attestation"),
+                        block.index("handle /verify {"))
+        self.assertLess(block.index("handle /verify {"),
+                        block.index("handle {\n\t\treverse_proxy 127.0.0.1:9120"))
+        classic = self.installer.CADDY_SITE_TEMPLATE.format(
+            begin="odile-odl-test", fqdn="odl-test.odile.fyi", user="odile",
+            webapp_port=9120, var=Path("/var/lib/odile"), first_visit_handle="")
+        self.assertNotIn("handle /verify", classic)
+
+
 if __name__ == "__main__":
     unittest.main()
