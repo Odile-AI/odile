@@ -1153,7 +1153,7 @@ class FirstbootUnitTests(unittest.TestCase):
             pin.write_text(json.dumps({"release": "2026.11.1"}), encoding="utf-8")
             line = ("root=/dev/mapper/root_crypt bb.iid=%s bb.host=odl-bench bb.key=%s"
                     % (self.IID, base64.b64encode(BOOT_KEY_TEXT.encode()).decode()))
-            record, fingerprint, reason = firstboot.boot_record_facts(
+            record, fingerprint, reason, note = firstboot.boot_record_facts(
                 line, pin_path=str(pin), boot_key_path=str(root / "absent.pub"),
                 boot_record_path=str(root / "absent.json"),
                 host_key_path=str(root / "absent-host.pub"),
@@ -1185,25 +1185,81 @@ class FirstbootUnitTests(unittest.TestCase):
         self.assertEqual(parsed[0], BOOT_KEY_TEXT)
         self.assertRegex(parsed[1], r"^SHA256:[A-Za-z0-9+/]{43}$")
 
-    def test_the_boot_record_skips_a_mismatched_key_file(self) -> None:
+    def test_a_shared_disks_boot_key_is_refreshed_from_the_line(self) -> None:
+        """One disk, a per-machine line: the measured key wins (t_556631d6).
+
+        A recycled disk image is shared across machines, so its baked
+        `/etc/odile/boot-key.pub` names the key of whichever machine the disk
+        was built for. The line that boots carries this machine's own `bb.key`,
+        and the file is only the verify surface's copy of the measured key —
+        so the boot refreshes it from the line and posts the record instead of
+        skipping the POST on a disagreement. A second boot finds the file
+        already equal and writes nothing.
+        """
+        other = (
+            "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIL7Tzl2nYSnGVbP/Vfp9wJwD7q2Wt2mJKT5p8g4oWn7Z "
+            "odile-other"
+        )
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)
             pin = root / "pin.json"
             pin.write_text(json.dumps({"release": "2026.11.1"}), encoding="utf-8")
             key_file = root / "boot-key.pub"
-            key_file.write_text(
-                "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIL7Tzl2nYSnGVbP/Vfp9wJwD7q2Wt2mJKT5p8g4oWn7Z "
-                "other\n", encoding="utf-8")
+            key_file.write_text(other + "\n", encoding="utf-8")
             line = ("root=/dev/mapper/root_crypt bb.iid=%s bb.key=%s"
                     % (self.IID, base64.b64encode(BOOT_KEY_TEXT.encode()).decode()))
-            record, _, reason = firstboot.boot_record_facts(
-                line, pin_path=str(pin), boot_key_path=str(key_file),
+
+            def facts(**kwargs):
+                return firstboot.boot_record_facts(
+                    line, pin_path=str(pin), boot_key_path=str(key_file),
+                    boot_record_path=str(root / "absent.json"),
+                    host_key_path=str(root / "absent-host.pub"),
+                    first_visit_path=str(root / "absent.json"), **kwargs)
+
+            # A read-only probe (--check) must not touch the image's file.
+            record, fingerprint, reason, note = facts(refresh=False)
+            untouched = key_file.read_text(encoding="utf-8")
+            record, fingerprint, reason, note = facts()
+            stored = key_file.read_text(encoding="utf-8")
+            second = facts()
+
+        self.assertEqual(untouched, other + "\n")
+        self.assertEqual(reason, "")
+        self.assertEqual(record["release"], "2026.11.1")
+        self.assertEqual(record["cmdline"], line)
+        self.assertEqual(stored, BOOT_KEY_TEXT + "\n")
+        self.assertEqual(fingerprint, firstboot.public_key_line(BOOT_KEY_TEXT)[1])
+        self.assertIn("refreshed", note)
+        self.assertEqual(second[2], "")
+        self.assertEqual(second[3], "", "a converged file must not be rewritten or noted")
+        self.assertEqual(second[1], fingerprint)
+
+    def test_a_line_with_no_bb_key_is_refused_not_read_from_the_image(self) -> None:
+        """No `bb.key=` means no measured key: the record is skipped.
+
+        The image's own copy is the *build's* key, and on a shared disk that
+        is another machine's. Nothing in this boot measures it, so it is never
+        reported as this machine's boot key — the refusal stays for a missing
+        line key even when the image carries one.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            pin = root / "pin.json"
+            pin.write_text(json.dumps({"release": "2026.11.1"}), encoding="utf-8")
+            key_file = root / "boot-key.pub"
+            key_file.write_text(BOOT_KEY_TEXT + "\n", encoding="utf-8")
+            record, fingerprint, reason, _ = firstboot.boot_record_facts(
+                "root=/dev/mapper/root_crypt bb.iid=%s" % self.IID,
+                pin_path=str(pin), boot_key_path=str(key_file),
                 boot_record_path=str(root / "absent.json"),
                 host_key_path=str(root / "absent-host.pub"),
                 first_visit_path=str(root / "absent.json"),
             )
+            stored = key_file.read_text(encoding="utf-8")
         self.assertIsNone(record)
-        self.assertIn("disagree", reason)
+        self.assertEqual(fingerprint, "")
+        self.assertIn("no bb.key=", reason)
+        self.assertEqual(stored, BOOT_KEY_TEXT + "\n")
 
 
 
@@ -1283,7 +1339,7 @@ class HostKeyTests(unittest.TestCase):
         def record(cmdline, **kwargs):
             order.append("boot record")
             seen["key_present"] = pathlib.Path(kwargs["host_key_path"]).is_file()
-            return None, "", "test"
+            return None, "", "test", ""
 
         cmdline = self.root / "cmdline"
         cmdline.write_text("root=/dev/mapper/root_crypt ro\n", encoding="utf-8")
@@ -1741,7 +1797,7 @@ class FirstbootExchangeTests(unittest.TestCase):
         self.assertEqual(spine["state"], "first_boot")
         self.assertEqual(spine["initramfs_host_key"], "SHA256:bench-initramfs")
 
-    def test_a_key_file_that_disagrees_with_the_measured_line_skips_the_record(self) -> None:
+    def test_a_key_file_that_disagrees_with_the_measured_line_posts_the_record(self) -> None:
         other = (
             "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIL7Tzl2nYSnGVbP/Vfp9wJwD7q2Wt2mJKT5p8g4oWn7Z "
             "odile-other"
@@ -1750,7 +1806,21 @@ class FirstbootExchangeTests(unittest.TestCase):
         self.write_cmdline(self.token)
         code, output = self.run_boot()
         self.assertEqual(code, 0, output)
-        self.assertIn("record skipped (the measured boot key and", output)
+        self.assertNotIn("record skipped", output)
+        self.assertIn("record 2026.11.1 pending key SHA256:", output)
+        self.assertIn("refreshed", output)
+        self.assertEqual(self.boot_key_path.read_text(encoding="utf-8"),
+                         BOOT_KEY_TEXT + "\n")
+        con = self.seed.connect(str(self.dir / "seed.db"))
+        con.row_factory = self.seed.sqlite3.Row
+        try:
+            spine = con.execute(
+                "SELECT state, detail FROM tenant_state WHERE slug = ?",
+                (self.SLUG,)).fetchone()
+        finally:
+            con.close()
+        self.assertEqual(spine["state"], "first_visit")
+        self.assertEqual(json.loads(spine["detail"])["boot_key"], BOOT_KEY_TEXT)
 
 
     def test_a_second_boot_is_same_and_calls_no_installer(self) -> None:
