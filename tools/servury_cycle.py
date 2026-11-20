@@ -53,8 +53,17 @@ PANEL_TOOL = Path(__file__).resolve().parent / "servury_panel.py"
 POWER_ACTIONS = ("start", "stop", "restart", "forcestop")
 # The panel's serial buffer is a fixed ~128 KiB window: new output pushes the
 # old boot out, so the length never grows. A new boot is therefore recognised
-# by content — the kernel's first line anchors the latest boot, and
-# odile-release-setup stamps each boot with a UTC time — not by an offset.
+# by content, not by an offset: the kernel's first line anchors the latest boot,
+# and a --fresh cycle waits until the buffer has *gained* one since the
+# baseline it read before the power action.
+#
+# The anchor cannot be the release-setup stamp. A *converged* machine prints
+# `odile-release-setup: already converged — ran <stamp>`, the same stamp on
+# every boot, and no `odile-release-setup <stamp>` line at all; keying freshness
+# on that stamp made every --fresh cycle skip a matched boot until --timeout
+# (measured 2026-11-19 on the bench 168020b4: 603 s, matched=False, while the
+# same boot without --fresh matched in 86 s; ODL-913's transcripts). The stamp
+# is still counted for the header, as evidence of what the buffer held.
 BOOT_MARKER = "Linux version "
 RELEASE_LINE = re.compile(r"odile-release-setup (\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ)")
 # The console switch lands a moment after the off POST, and a boot that is still
@@ -74,7 +83,39 @@ def latest_boot(text: str) -> str:
     return text[index:] if index >= 0 else (text or "")
 
 
+def appended_text(earlier: str, current: str) -> str:
+    """The bytes the transcript gained since `earlier` was read.
+
+    The host's buffer is a rolling window: the new output is written after the
+    text that was already there, and the oldest bytes fall off the front, so
+    what is left of the earlier read is a *prefix* of `current` and everything
+    after that prefix is new. (The two boots' text is nearly identical — same
+    kernel line, same command line, often the same second — so comparing the
+    two, or matching the earlier boot's tail, cannot tell them apart.)
+
+    The probe is the first 64 characters of `current`: in the common case it
+    is the head of the retained prefix, and `find` locates it in `earlier` in
+    one C scan. A candidate is accepted only when the whole remaining earlier
+    text is a prefix of `current`, which is what rejects a buffer that rolled
+    all the way past the earlier read (then all of `current` is new).
+    """
+    if not earlier:
+        return current
+    if not current:
+        return ""
+    probe = current[:64]
+    start = 0
+    while True:
+        at = earlier.find(probe, start)
+        if at < 0:
+            return current
+        if current.startswith(earlier[at:]):
+            return current[len(earlier) - at:]
+        start = at + 1
+
+
 def release_times(text: str) -> set[str]:
+    """The release-setup stamps in the text; the header reports how many."""
     return set(RELEASE_LINE.findall(text or ""))
 
 
@@ -320,8 +361,9 @@ def main(argv: list[str] | None = None) -> int:
                         help="the machine already points at this image: do not set it again")
     parser.add_argument(
         "--fresh", action="store_true",
-        help="empty the host transcript before arming the log, so --wait-for "
-             "cannot match a line from a previous boot")
+        help="ignore the boot the transcript already holds, so --wait-for cannot "
+             "match a line from a previous boot (the API path empties the buffer; "
+             "the panel path waits until the buffer has gained a kernel start)")
     parser.add_argument(
         "--keep-console", action="store_true",
         help="leave the console log on after the cycle (default: turn it off once "
@@ -340,6 +382,8 @@ def main(argv: list[str] | None = None) -> int:
     wanted = args.wait_for or []
     via = choose_via(args.via, key, args.server_id)
     seen: set[str] = set()
+    earlier = ""
+    earlier_full = ""
 
     image_path = "unchanged (--panel-done)"
     # Once the log is armed the host is holding a plaintext transcript, so every
@@ -377,9 +421,11 @@ def main(argv: list[str] | None = None) -> int:
         else:
             # Arming is idempotent. The host's buffer is not emptied by off/on
             # (measured: off→on left the previous boot in place) and it rotates
-            # rather than growing, so --fresh records which boots it already held
-            # and only a boot with a release-setup stamp that was not there before
-            # counts as this one.
+            # rather than growing, so --fresh records the boot the buffer already
+            # holds and only a *different* latest boot counts as this one. The
+            # comparison is on the boot's own text, not on a setup stamp: a
+            # converged machine prints the same stamp on every boot and no
+            # `odile-release-setup <stamp>` line at all (see appended_text).
             # Even a failed or hung arm may have posted the switch, so the way
             # out disarms unconditionally once the attempt is made. The flag is
             # set before the call: the panel wrapper's subprocess.run(timeout=300)
@@ -391,8 +437,11 @@ def main(argv: list[str] | None = None) -> int:
                 return 1
             print(armed.stdout.rstrip())
             if args.fresh:
-                seen = release_times(panel_log(args.server_id) or "")
-                print(f"serial    {len(seen)} earlier boot stamp(s) in the buffer; only a new one counts")
+                earlier_full = panel_log(args.server_id) or ""
+                earlier = latest_boot(earlier_full)
+                seen = release_times(earlier)
+                print(f"serial    {len(seen)} earlier boot stamp(s) in the buffer; "
+                      f"the {len(earlier)}-byte boot already there does not count as this one")
             pressed = panel("--power", "--server", args.server_id, "--action", args.action)
             if pressed.returncode != 0:
                 print(pressed.stderr.strip() or f"the panel refused power {args.action}", file=sys.stderr)
@@ -411,7 +460,12 @@ def main(argv: list[str] | None = None) -> int:
                 else:
                     full = panel_log(args.server_id) or ""
                     text = latest_boot(full) if args.fresh else full
-                    if args.fresh and not (release_times(text) - seen):
+                    # A boot counts only once the transcript has *gained* a
+                    # kernel start since the baseline: the node can take a
+                    # minute to start after a restart (measured 2026-11-20 on
+                    # the bench 168020b4: 75 s), and until then the buffer
+                    # holds the earlier boot plus its shutdown tail.
+                    if args.fresh and BOOT_MARKER not in appended_text(earlier_full, full):
                         continue
             except Exception as error:  # noqa: BLE001 — a poll failure is not a boot failure
                 print(f"serial    poll error: {error}")
@@ -426,7 +480,7 @@ def main(argv: list[str] | None = None) -> int:
             f"# servury_cycle {args.server_id} action={args.action} via={via}",
             f"# image_sha256 {args.image_sha256 or '(not given)'}",
             f"# boot_image {image_path}",
-            f"# fresh {args.fresh} earlier_boot_stamps {len(seen)}",
+            f"# fresh {args.fresh} earlier_boot_stamps {len(seen)} earlier_boot_bytes {len(earlier)}",
             f"# waited_for {' + '.join(wanted) or '(none)'} matched={matched}",
             f"# seconds {round(time.time() - started)}",
             "",
