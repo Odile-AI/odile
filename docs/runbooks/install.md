@@ -988,11 +988,11 @@ issued — fails against the same detached signature:
 $ cp installer/odile_install.py /tmp/edited.py
 $ printf 'x' >> /tmp/edited.py
 $ sha256sum /tmp/edited.py
-c8c5cd023687a14087acc79b4da9c811cdedcd7f09a3d807a105ff613aa6ceee  /tmp/edited.py
+7ff94a11fa5e916baa79f70b78e6887cb51d48ba8d16514ed8bd409639e37a9a  /tmp/edited.py
 $ /usr/bin/python3 /tmp/edited.py --verify-signature \
       --pubkey installer/odile-signing-key.pub --signature installer/odile_install.py.sig
 signing key  sha256 13e8c2aee8263f550033448c8193a82b89498f533f52943e09c14d22e5b036e2 · SHA256:ZyFEbkw2oetDml63XaHTix0kUrR2kAVGZaaeDAHvXu8
-signature: BAD (sha256 c8c5cd023687a14087acc79b4da9c811cdedcd7f09a3d807a105ff613aa6ceee)
+signature: BAD (sha256 7ff94a11fa5e916baa79f70b78e6887cb51d48ba8d16514ed8bd409639e37a9a)
 $ echo $?
 3
 ```
@@ -2382,8 +2382,9 @@ to content</a>` before a `<main id="main">`. The link is at
 `left:-9999px` until `:focus-visible`, when it paints the sheet's 2 px `--ink`
 ring at a 3 px offset and follows `main`'s 24 px inset at 1440 and 18 px at
 390. BRAND.md §Accessibility tokens, Keyboard row, requires it: these pages
-carry more than one landmark (the first-visit done states three, the tenant
-`/verify` four), and the first Tab stop was the `Odile` wordmark.
+carry more than one landmark (`main` plus the named section; `main` plus four
+named regions on the tenant `/verify`), and the first Tab stop was the `Odile`
+wordmark.
 `installer/embed_first_visit.py` and `installer/embed_verify.py` re-embedded
 both pages (`6758b591…` page, 44,512 bytes; `2ec8c054…` template, 42,968
 bytes); `tools/recut_release.py` re-derived and re-signed the pair (`--check`
