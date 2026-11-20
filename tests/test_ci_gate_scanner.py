@@ -472,5 +472,27 @@ class HistoryUsesTheBaseScanner(unittest.TestCase):
         self.assertIn("FINDING forbidden-value", result.stdout + result.stderr)
 
 
+class TheSkipLinesNameBothDenyListClasses(unittest.TestCase):
+    """Every "the class is off" line names both deny-list classes.
+
+    The gate runs two deny-list classes now, `forbidden-value` and the
+    `forbidden-path` class that landed beside it, and both skip together when
+    the secret is absent. A message that still says "the forbidden-value class"
+    (or "the history deny-list class") tells an operator one class was lost
+    when two were, so the skip line has to name the pair. Pinned over the whole
+    workflow, not one step: the absent branches are the path a run takes when
+    nobody armed the secret, which is exactly when the line is read.
+    """
+
+    def test_every_class_off_line_names_both_classes(self) -> None:
+        lines = [line.strip() for line in WORKFLOW.read_text(encoding="utf-8").splitlines()
+                 if "class" in line and " off" in line]
+        self.assertTrue(lines, "the workflow has no skip line to check")
+        for line in lines:
+            with self.subTest(line=line):
+                self.assertIn("forbidden-value", line)
+                self.assertIn("forbidden-path", line)
+
+
 if __name__ == "__main__":
     unittest.main()

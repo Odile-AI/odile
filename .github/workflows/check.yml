@@ -232,7 +232,7 @@ jobs:
           set -euo pipefail
           if [ -z "${LEAK_FORBID_B64:-}" ]; then
             echo "forbid list: absent (no LEAK_FORBID_B64 repository secret)"
-            echo "forbid list: the forbidden-value class is off in this run"
+            echo "forbid list: the forbidden-value and forbidden-path classes are off in this run"
             exit 0
           fi
           mkdir -p docs/ops
@@ -264,7 +264,7 @@ jobs:
             /usr/bin/python3 /tmp/base-leak_scan.py --tree --root "$PWD" \
               --forbid-file docs/ops/leak-forbid.txt
           else
-            echo "forbid list: absent (the forbidden-value class is off in this tree)"
+            echo "forbid list: absent (the forbidden-value and forbidden-path classes are off in this tree)"
             /usr/bin/python3 /tmp/base-leak_scan.py --tree --root "$PWD"
           fi
       # On a push to main this is the whole gate: the tree's own scanner with
@@ -276,7 +276,7 @@ jobs:
             /usr/bin/python3 tools/leak_scan.py --tree \
               --forbid-file docs/ops/leak-forbid.txt
           else
-            echo "forbid list: absent (the forbidden-value class is off in this tree)"
+            echo "forbid list: absent (the forbidden-value and forbidden-path classes are off in this tree)"
             /usr/bin/python3 tools/leak_scan.py --tree
           fi
 
@@ -364,7 +364,7 @@ jobs:
           set -euo pipefail
           if [ -z "${LEAK_FORBID_B64:-}" ]; then
             echo "forbid list: absent (no LEAK_FORBID_B64 repository secret)"
-            echo "forbid list: the history deny-list class is off in this run"
+            echo "forbid list: the forbidden-value and forbidden-path classes are off in this run"
             exit 0
           fi
           mkdir -p docs/ops
@@ -385,7 +385,7 @@ jobs:
           base_sha=$(git rev-parse FETCH_HEAD)
           echo "base: pull_request at $base_sha"
           if [ ! -f docs/ops/leak-forbid.txt ]; then
-            echo "forbid list: absent (the history deny-list class is off in this run)"
+            echo "forbid list: absent (the forbidden-value and forbidden-path classes are off in this run)"
             exit 0
           fi
           git show "$base_sha:tools/leak_scan.py" > /tmp/base-leak_scan.py
@@ -413,7 +413,7 @@ jobs:
         run: |
           set -euo pipefail
           if [ ! -f docs/ops/leak-forbid.txt ]; then
-            echo "forbid list: absent (the history deny-list class is off in this run)"
+            echo "forbid list: absent (the forbidden-value and forbidden-path classes are off in this run)"
             exit 0
           fi
           /usr/bin/python3 tools/leak_scan.py --history \
