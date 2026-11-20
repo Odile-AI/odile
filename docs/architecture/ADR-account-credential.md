@@ -309,9 +309,10 @@ the Product Lead's, and its honest form is one sentence, not a retreat:
 *20 November 2026 (B-once).* This re-cut **dies and is not replaced**: both
 clauses are false under B-once (decision §4). Its replacement is D-1 + D-10 on
 the deck and D-17 on the account page. Read the table's B column as B-push, which
-was refused: the replacement rows are D-2, D-3, D-4, D-8, D-9, D-10 and D-19, and
-"between the first visit and a rebuild" becomes "unless the operator kept the
-password" (D-3).
+was refused: the replacement rows are D-2, D-3, D-4, D-7, D-8, D-9, D-10 and D-19,
+and “between the first visit and a rebuild” becomes D-3’s “The password you chose
+is the only sign-in” — true of the credential, not of who has it: the kept-password
+residual is the one §1’s I1 note and §6 state (decision §2.1).
 
 Nothing else in the access deck moves, except `:156`'s inventory list, which
 gains the account and its password hash in the same re-cut (the `:156` row
@@ -547,7 +548,7 @@ form, and why it still holds:
   decision §2.4): a change at either end leaves the other's verifier alone;
 - a verifier is **not a bearer**: the gate recomputes scrypt from the typed
   password and compares (`verify_password`,
-  `installer/odile_install.py:3316`), so typing the stored string at the gate
+  `installer/odile_install.py:3241`), so typing the stored string at the gate
   fails;
 - **no `accounts` column holds a plaintext password or a token**: the plaintext
   exists only in a request (registration, account sign-in), which is the residual
