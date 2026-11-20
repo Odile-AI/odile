@@ -48,6 +48,14 @@ LITERAL = "deadbeefcafe"
 # a test that plants a leak must not itself be a leak, or the gate it tests fails.
 PROBE_IP = ".".join(["45", "33", "32", "156"])
 PROBE_IP_2 = ".".join(["45", "33", "32", "157"])
+# The bare vendor-id positions: synthetic 8-hex tokens and a synthetic name,
+# never a live id. The public build's stand-ins (`0badc0de`, `odl-fake01`) are
+# the negative control, so a stand-in stays a stand-in in the new positions too.
+PROBE_ID = "ab12" + "cd34"
+PROBE_ID_2 = "5c0f" + "fe12"
+PROBE_HOST = "probe" + "host1"
+STAND_IN_ID = "0bad" + "c0de"
+STAND_IN_HOST = "odl-" + "fake01"
 
 
 def git_env() -> dict[str, str]:
@@ -398,6 +406,93 @@ class AllowlistRecord(unittest.TestCase):
         (self.repo / "fixture.pem").write_text(pem, encoding="utf-8")
         second = self.scan()
         self.assertEqual(second.returncode, 0, second.stdout)
+
+
+class BareVendorIdPositions(unittest.TestCase):
+    """The positions a live vendor id used, and the look-alikes it does not.
+
+    A card's tree hid the tenant's instance id and slug in three shapes the
+    bare rules did not pin: an unlabelled assignment of a quoted token, a
+    `/manage/<id>/` path whose link text is the machine's name, and two ids
+    written as one whitespace-separated list on a `printf` line. `make check`
+    was green on that tree; only the publication scrub pass caught it. Each
+    test runs the real scanner against a throwaway git repository and asserts
+    the exit code, so the rule and the walk that carries it are one behaviour.
+    """
+
+    def setUp(self) -> None:
+        self.temp = tempfile.TemporaryDirectory()
+        self.repo = Path(self.temp.name)
+        subprocess.run(["git", "init", "-q"], cwd=self.repo, env=git_env(), check=True)
+        (self.repo / "leak-allow.tsv").write_text(
+            "# no exceptions in this fixture\n", encoding="utf-8")
+
+    def tearDown(self) -> None:
+        self.temp.cleanup()
+
+    def scan(self) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            [sys.executable, str(SCANNER), "--tree"],
+            cwd=self.repo, env=git_env(), capture_output=True, text=True, timeout=120)
+
+    def write(self, name: str, text: str) -> None:
+        (self.repo / name).write_text(text, encoding="utf-8")
+
+    @staticmethod
+    def reference(value: str) -> str:
+        # The finding line names the path and line, then the digest of the
+        # value; the value itself is never echoed, so the digest is the pin.
+        return "sha256:" + hashlib.sha256(value.encode("utf-8")).hexdigest()[:12]
+
+    def test_an_unlabelled_quoted_assignment_fails_then_the_stand_in_passes(self) -> None:
+        self.write("probe.py", f'OTHER = "{PROBE_ID}"\n')
+        failed = self.scan()
+        self.assertEqual(failed.returncode, 1, failed.stdout)
+        self.assertIn("FINDING vendor-resource-id", failed.stdout)
+        self.assertIn(f"probe.py:1 {self.reference(PROBE_ID)}", failed.stdout)
+        self.assertIn("bare instance id", failed.stdout)
+        self.write("probe.py", f'OTHER = "{STAND_IN_ID}"\n')
+        passed = self.scan()
+        self.assertEqual(passed.returncode, 0, passed.stdout)
+        self.assertIn("PASS: nothing to leak", passed.stdout)
+
+    def test_a_manage_path_and_its_link_text_fail_then_the_stand_ins_pass(self) -> None:
+        self.write("dashboard.html", f'<a href="/manage/{PROBE_ID}/">{PROBE_HOST}</a>\n')
+        failed = self.scan()
+        self.assertEqual(failed.returncode, 1, failed.stdout)
+        self.assertIn(f"dashboard.html:1 {self.reference(PROBE_ID)}", failed.stdout)
+        self.assertIn(f"dashboard.html:1 {self.reference(PROBE_HOST)}", failed.stdout)
+        self.assertIn("bare host name", failed.stdout)
+        self.write("dashboard.html",
+                   f'<a href="/manage/{STAND_IN_ID}/">{STAND_IN_HOST}</a>\n')
+        passed = self.scan()
+        self.assertEqual(passed.returncode, 0, passed.stdout)
+        self.assertIn("PASS: nothing to leak", passed.stdout)
+
+    def test_a_bare_whitespace_list_of_ids_fails_then_the_stand_ins_pass(self) -> None:
+        # The recycle runbook restored the fence with one `printf` line naming
+        # two machines; neither token sat in any of the labelled positions.
+        self.write("restore.sh", f"printf '%s\\n' {PROBE_ID} {PROBE_ID_2} > fence\n")
+        failed = self.scan()
+        self.assertEqual(failed.returncode, 1, failed.stdout)
+        self.assertIn(f"restore.sh:1 {self.reference(PROBE_ID)}", failed.stdout)
+        self.assertIn(f"restore.sh:1 {self.reference(PROBE_ID_2)}", failed.stdout)
+        self.write("restore.sh", f"printf '%s\\n' {STAND_IN_ID} cafebabe > fence\n")
+        passed = self.scan()
+        self.assertEqual(passed.returncode, 0, passed.stdout)
+        self.assertIn("PASS: nothing to leak", passed.stdout)
+
+    def test_the_look_alikes_are_not_bare_ids(self) -> None:
+        # The shapes an 8-hex token is far more often than a machine id.
+        self.write("probe.txt", "\n".join([
+            f"merged pre-flip at `{PROBE_ID}`",
+            f"the tint is #{PROBE_ID}",
+            f"uuid {PROBE_ID}-0000-4000-8000-000000000000",
+            f"checksum sha256:{PROBE_ID}" + "0" * 56,
+        ]) + "\n")
+        result = self.scan()
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertIn("PASS: nothing to leak", result.stdout)
 
 
 if __name__ == "__main__":

@@ -27,7 +27,8 @@ Classes:
 * ``vendor-resource-id`` a provider's server / box / account id, a tenant slug,
                          or a host name — labeled (``bb.iid=…``, ``server_id=…``)
                          or bare (a code span, a query parameter or flag, an
-                         assignment, a hostname position).
+                         assignment, a ``/manage/<id>/`` path, a whitespace
+                         list of ids, a hostname position).
 * ``dns-resource-id``    a DNS zone or record id (32 hex).
 * ``ssh-fingerprint``    a ``SHA256:`` / ``MD5:`` key fingerprint. Unlike the
                          high-entropy rule, this class is not blinded by the
@@ -278,7 +279,8 @@ INSTANCE_ID = re.compile(
     r"\s*[=:]\s*[\"']?([0-9A-Fa-f]{8})\b")
 HOST_NAME = re.compile(
     r"(?i)\b(?:bb\.host|host[_-]?name)\b\s*[=:]\s*[\"']?([a-z][a-z0-9]{5,11})\b")
-HOST_NAME_ALLOW = {"hostfake", "hostname", "localhost", "machine", "odlukitest", "scratch", "tokens"}
+HOST_NAME_ALLOW = {"hostfake", "hostname", "localhost", "machine", "odl-fake01", "odlukitest",
+                   "scratch", "tokens"}
 # Synthetic instance ids the tests use; a fixture is not a provider's machine.
 # The last five are the public build's scrub stand-ins (the box id, the three
 # account ids, and the panel/UKI fixture id): a stand-in is a stand-in in any
@@ -300,9 +302,11 @@ ACCOUNT_ID = re.compile(
 # names them. An 8-hex token is also a short commit id, a uuid fragment or a
 # colour, so this rule pins the positions in which a bare token is an id — a
 # code span of the token alone, a query parameter or command-line flag, an
-# assignment, or a hostname position — and pins the negatives: a token inside a
-# longer hex run or a uuid, a digest behind ``sha256:``, a colour behind ``#``,
-# and a code span whose clause names a commit, a snapshot, an invoice or a pin.
+# assignment (labelled or not, quoted or bare), a `/manage/<id>/` path, a run
+# of two or more tokens written as one whitespace list, or a hostname position
+# — and pins the negatives: a token inside a longer hex run or a uuid, a digest
+# behind ``sha256:``, a colour behind ``#``, and a code span whose clause names
+# a commit, a snapshot, an invoice or a pin.
 BARE_INSTANCE_ID = re.compile(
     r"(?:"
     r"(?<![\w.#-])`(?P<span>[0-9a-f]{8})`(?!-)"
@@ -312,6 +316,9 @@ BARE_INSTANCE_ID = re.compile(
     r"|\b(?:instance|server|box|host|machine|tenant)(?:[ _-]?(?:id|iid))?"
     r"\s*[:=]\s*[\"']?(?P<assign>[0-9a-f]{8})(?![\w-])"
     r"|\b(?:instance|server|box|host|machine)\s+(?P<prose>[0-9a-f]{8})(?![\w-])"
+    r"|\b[A-Za-z_][A-Za-z0-9_]*\s*=\s*[\"'](?P<quoted>[0-9a-f]{8})[\"']"
+    r"|/manage/(?P<manage>[0-9a-f]{8})(?![0-9a-f])/"
+    r"|(?<![\w.-])(?P<list>[0-9a-f]{8}(?:[ \t]+[0-9a-f]{8})+)(?![\w-])"
     r")")
 BARE_HOST_NAME = re.compile(
     r"(?:"
@@ -320,6 +327,8 @@ BARE_HOST_NAME = re.compile(
     r"|(?<![\w.#-])`(?P<span>[a-z][a-z0-9]{7})`(?!-)"
     r"|^[A-Z][a-z]{2}\s+\d{1,2}\s+\d\d:\d\d:\d\d\s+(?P<syslog>[a-z][a-z0-9]{7})"
     r"\s+\S+\[\d+\]:"
+    r"|\bhref\s*=\s*[\"']?/manage/[0-9a-f]{8}/[\"']?[^>]*>\s*"
+    r"(?P<link>[a-z][a-z0-9-]{5,19})(?=\s*</)"
     r")")
 # A code span in a clause that names a different kind of id is not a machine
 # id. The window reaches back 48 characters, and into the previous line's tail
@@ -599,8 +608,15 @@ def text_candidates(line: str, number: int, before: str = "") -> list[tuple[str,
     # clause decides: the token is an id unless the clause names a commit, a
     # snapshot, an invoice or a pin.
     for match in BARE_INSTANCE_ID.finditer(line):
+        if match.group("list"):
+            # One match carries the whole run; every token in it is an id.
+            for value in re.split(r"[ \t]+", match.group("list")):
+                if value.lower() not in BARE_ALLOW:
+                    add("vendor-resource-id", value, "bare instance id")
+            continue
         value = (match.group("span") or match.group("param") or match.group("flag")
-                 or match.group("assign") or match.group("prose"))
+                 or match.group("assign") or match.group("prose")
+                 or match.group("quoted") or match.group("manage"))
         if value.lower() in BARE_ALLOW:
             continue
         if match.group("span"):
@@ -610,7 +626,8 @@ def text_candidates(line: str, number: int, before: str = "") -> list[tuple[str,
         add("vendor-resource-id", value, "bare instance id")
     for match in BARE_HOST_NAME.finditer(line):
         value = (match.group("local") or match.group("realm")
-                 or match.group("span") or match.group("syslog"))
+                 or match.group("span") or match.group("syslog")
+                 or match.group("link"))
         if value.lower() in BARE_ALLOW:
             continue
         if match.group("span") and not (TENANT_SLUG.search(line) or HOST_SPAN_CUE.search(line)):
