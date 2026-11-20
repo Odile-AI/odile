@@ -68,8 +68,12 @@ reads only the row's `detail.backup`, runs `restic snapshots` as the control
 check (with the user's recovery file when the operator has it, and without it
 otherwise — restic's "wrong password" still proves the directory is a restic
 repository), deletes `/srv/odile-backup/tenants/<slug>` and the guest's
-`authorized_keys` line, and records the purge on the row. It reads no file
-name, decrypts nothing, and prints no password.
+`authorized_keys` line, and records the purge on the row. **Both of those
+paths are v5 (the SFTP stand-in): on an interim tenant the same command is
+designed to empty `odile-t-<slug>` through the tenant's own token, and the empty
+bucket is then deleted in the Cloudflare dashboard — §3.1, and ADR-004 §8's exit
+row gives that change to `t_9d6fb595`.** The command reads no file name,
+decrypts nothing, and prints no password.
 
 **HQ cannot read the repository.** Measured 2026-11-12T23:24Z on the host that
 stores the bytes (the password is the live tenant's, from the recovery file
@@ -106,6 +110,14 @@ none of the three control-plane trees.)
 ---
 
 ## 2. The nightly job
+
+**v5 (SFTP).** The block below is the live tenant's unit as `systemctl cat`
+prints it against the SFTP stand-in — `--repo sftp://…` with `--key` and
+`--known-hosts`. On an interim tenant the same program is designed to run
+against the R2 repository (§3.1): an `s3:` URL from the seed, the bucket token
+in `/etc/odile/backup-s3.env`, and no `--key` or `--known-hosts`. That `s3:`
+branch is ADR-004 §8's `backup.py` + installer card and **is not shipped at
+this head**; until it lands, a tenant's unit is the SFTP form below.
 
 ```
 /usr/local/lib/odile/backup.py run
