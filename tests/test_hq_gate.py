@@ -15,8 +15,9 @@ These tests pin the properties the gate's answer depends on:
   exists in the commit is red, and the same tree without it is green;
 * `main`'s side of the merge arrives: what main gained after the branch was cut
   (ODL-941), what main repaired while the branch left it alone (ODL-479), a path
-  both sides changed keeps the branch's bytes, and a path the branch deleted is
-  not resurrected;
+  both sides changed keeps the branch's bytes, a path the branch deleted is
+  not resurrected, and a path `main` deleted while the branch left it alone is
+  removed from the preview (or the gate reds on a tree the merge never makes);
 * the committed bytes arrive, not HQ's working copy, which is often dirty;
 * an HQ-only path the branch also tracks keeps the branch's bytes (the overlay
   must never overwrite a tracked file);
@@ -330,6 +331,7 @@ class MergePreviewCase(unittest.TestCase):
         (self.hq / "docs" / "rule.md").write_text("GOOD\n", encoding="utf-8")
         (self.hq / "docs" / "mine.md").write_text("BASE\n", encoding="utf-8")
         (self.hq / "docs" / "gone.md").write_text("KEPT\n", encoding="utf-8")
+        (self.hq / "docs" / "kept.md").write_text("BASE\n", encoding="utf-8")
         (self.hq / "docs" / "README.md").write_text("public\n", encoding="utf-8")
         git("add", "-A", cwd=self.hq)
         git("commit", "-q", "-m", "hq base", cwd=self.hq)
@@ -347,6 +349,7 @@ class MergePreviewCase(unittest.TestCase):
         git("worktree", "add", "-q", "-b", "card", str(self.tree), cwd=self.hq)
         (self.tree / "docs" / "branch.md").write_text("GOOD\n", encoding="utf-8")
         (self.tree / "docs" / "mine.md").write_text("BRANCH\n", encoding="utf-8")
+        (self.tree / "docs" / "kept.md").write_text("BRANCH\n", encoding="utf-8")
         (self.tree / "docs" / "gone.md").unlink()
         git("add", "-A", cwd=self.tree)
         git("commit", "-q", "-m", "the card", cwd=self.tree)
@@ -410,6 +413,91 @@ class MergePreviewTest(MergePreviewCase):
 
     def test_the_default_hq_is_the_primary_checkout_of_a_linked_worktree(self):
         self.assertEqual(hq_gate.main_checkout(self.tree), self.hq.resolve())
+
+
+DELETION_MODULE = '''\
+"""Fixture: main deleted a document; the preview must delete it too."""
+import unittest
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+
+
+class DeletionTest(unittest.TestCase):
+    def test_a_document_main_deleted_is_gone_from_the_preview(self):
+        # The branch left it at the base bytes, so the merge deletes it.
+        self.assertFalse((ROOT / "docs" / "README.md").exists())
+
+    def test_a_document_the_branch_changed_survives_main_deleting_it(self):
+        # A modify/delete conflict keeps the branch's bytes; card_acceptance
+        # owns the conflict, the preview must not invent the deletion.
+        self.assertEqual((ROOT / "docs" / "kept.md").read_text().strip(), "BRANCH")
+
+    def test_main_repairs_still_arrive(self):
+        self.assertEqual((ROOT / "docs" / "rule.md").read_text().strip(), "REPAIRED")
+
+    def test_the_branch_document_is_here(self):
+        self.assertEqual((ROOT / "docs" / "branch.md").read_text().strip(), "GOOD")
+'''
+
+
+class MainDeletesTest(MergePreviewCase):
+    """`main` deletes documents after the cut — ODL-941's mirror image.
+
+    A path `main` deleted and the branch left at the base bytes is neither
+    carried nor overlaid, so the preview kept it: an HQ-only rule that requires
+    it gone red on a tree nobody's merge produces. The preview has to remove it,
+    and only it: the branch's own edits and deletions stay the branch's answer.
+    """
+
+    def setUp(self) -> None:
+        super().setUp()
+        (self.hq / "docs" / "README.md").unlink()
+        (self.hq / "docs" / "kept.md").unlink()
+        git("commit", "-q", "-am", "main deletes", cwd=self.hq)
+        (self.hq / "tests" / "test_hq_only.py").write_text(DELETION_MODULE, encoding="utf-8")
+
+    def deleted(self) -> list[str]:
+        revision = hq_gate.integration_commit(self.hq)
+        shared = hq_gate.merge_base(self.tree, revision)
+        return hq_gate.deleted_paths(
+            hq_gate.tree_entries(self.hq, revision),
+            hq_gate.tree_entries(self.tree, shared) if shared else {},
+            hq_gate.tree_entries(self.tree, "HEAD"),
+        )
+
+    def test_only_the_path_the_branch_left_alone_is_deleted(self):
+        deleted = self.deleted()
+        # Main deleted it; the branch never touched it.
+        self.assertIn("docs/README.md", deleted)
+        # Main deleted it; the branch changed it — the branch's bytes survive.
+        self.assertNotIn("docs/kept.md", deleted)
+        # The branch deleted it itself; no second removal is needed.
+        self.assertNotIn("docs/gone.md", deleted)
+
+    def test_the_preview_removes_what_main_deleted(self):
+        code, output = self.run_gate()
+        self.assertEqual(code, 0, output)
+        self.assertIn("1 path(s) main deleted removed from the preview", output)
+        self.assertIn("Ran 4 tests", output)
+
+    def test_the_removal_is_what_turns_the_gate_green(self):
+        # Pin the failure the fix removes: with the removal disabled, the
+        # fixture's first assertion reds on the file the merge would delete.
+        original = hq_gate.remove_paths
+        hq_gate.remove_paths = lambda destination, files: []  # type: ignore[assignment]
+        try:
+            code, output = self.run_gate()
+        finally:
+            hq_gate.remove_paths = original  # type: ignore[assignment]
+        self.assertEqual(code, 1, output)
+        self.assertIn("a_document_main_deleted_is_gone_from_the_preview", output)
+
+    def test_list_names_the_removal(self):
+        code, output = self.run_gate("--list")
+        self.assertEqual(code, 0, output)
+        self.assertIn("-docs/README.md", output.splitlines())
+        self.assertIn("1 deleted by main", output)
 
 
 if __name__ == "__main__":

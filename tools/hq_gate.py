@@ -29,9 +29,12 @@ This tool closes the gap. It:
 3. overlays both sets on it, which is what the merged tree in `main` looks
    like: the branch's tracked files plus the private machinery plus main's side
    of the merge (bytes read from the commits, so an uncommitted edit at HQ
-   changes nothing). A path both sides changed keeps the branch's bytes, and a
-   path the branch deleted stays deleted; `card_acceptance` owns the
-   clean-merge question;
+   changes nothing). A path both sides changed keeps the branch's bytes; a path
+   the branch deleted stays deleted; and a path `main` deleted while the branch
+   left it at the base bytes is removed from the preview, so the gate cannot
+   run — or red on — a document the merge will never produce (the ODL-941
+   shape in the deletion direction). `card_acceptance` owns the clean-merge
+   question;
 4. runs every `tests/test_*.py` module among those files there and reports one
    line per module — the branch's documents in front of HQ's rules;
 5. removes the worktree and the copy, so the card's own tree is never touched.
@@ -204,6 +207,60 @@ def carried_paths(main: dict[str, tuple[str, str]], base: dict[str, tuple[str, s
         elif branch_entry == base.get(path) and branch_entry != entry:
             carried.append(path)
     return sorted(carried)
+
+
+def deleted_paths(main: dict[str, tuple[str, str]], base: dict[str, tuple[str, str]],
+                  branch: dict[str, tuple[str, str]]) -> list[str]:
+    """The paths the merge deletes because `main` deleted them.
+
+    The mirror of `carried_paths`, and three-way for the same reason: `main`
+    lacks the path; if the branch still carries the base's bytes, the merge
+    deletes it and so must the preview. A path the branch changed survives (a
+    modify/delete conflict, which `card_acceptance` reports); a path the branch
+    deleted is already absent, so it needs no second removal. With no shared
+    history (`base` empty) nothing is known to have been deleted on either side.
+    """
+    deleted: list[str] = []
+    for path, entry in base.items():
+        if path in main:
+            continue
+        branch_entry = branch.get(path)
+        if branch_entry is not None and branch_entry == entry:
+            deleted.append(path)
+    return sorted(deleted)
+
+
+def main_deleted_files(hq: Path, tree: Path, revision: str | None = None) -> list[str]:
+    """Paths the preview must remove: `main` deleted them, the branch left them.
+
+    Without this set the throwaway worktree keeps a file the merge would delete,
+    so an HQ-only rule that requires it gone reds on a tree nobody's merge
+    produces — the ODL-941 shape in the deletion direction. Noise is dropped
+    for the same reason as the overlay: a cache is not a merge decision.
+    """
+    if revision is None:
+        revision = integration_commit(hq)
+    if revision is None:
+        return []
+    shared = merge_base(tree, revision)
+    if shared is None:
+        return []
+    return [path for path in deleted_paths(
+        tree_entries(hq, revision),
+        tree_entries(tree, shared),
+        tree_entries(tree, "HEAD"),
+    ) if not is_noise(path)]
+
+
+def remove_paths(destination: Path, files: list[str]) -> list[str]:
+    """Delete `files` from the throwaway tree; return the paths removed."""
+    removed: list[str] = []
+    for relative in files:
+        target = destination / relative
+        if target.is_symlink() or target.exists():
+            target.unlink()
+            removed.append(relative)
+    return removed
 
 
 def main_side_files(hq: Path, tree: Path, revision: str | None = None) -> list[str]:
@@ -379,13 +436,17 @@ def main(argv: list[str] | None = None) -> int:
     revision = integration_commit(hq)
     hq_files = hq_only_files(hq, tracked)
     main_files = main_side_files(hq, tree, revision)
+    main_deleted = main_deleted_files(hq, tree, revision)
     files = sorted(set(hq_files) | set(main_files))
     modules = modules_from(files)
 
     if args.list:
         for path in files:
             print(path)
-        print(f"hq-gate: {len(modules)} HQ-only module(s), {len(files)} file(s)")
+        for path in main_deleted:
+            print(f"-{path}")
+        print(f"hq-gate: {len(modules)} HQ-only module(s), {len(files)} file(s), "
+              f"{len(main_deleted)} deleted by main")
         return 0
 
     if not modules:
@@ -394,7 +455,8 @@ def main(argv: list[str] | None = None) -> int:
 
     print(f"hq-gate: {len(modules)} module(s) to run, {len(files)} file(s) to overlay "
           f"from {hq} ({len(hq_files)} HQ-only, {len(main_files)} from main's side "
-          f"of the merge)")
+          f"of the merge); {len(main_deleted)} path(s) main deleted removed from the "
+          f"preview")
 
     tmp_parent = Path(os.environ.get("ODILE_HQ_GATE_TMP") or DEFAULT_TMP)
     tmp_parent.mkdir(parents=True, exist_ok=True)
@@ -411,6 +473,9 @@ def main(argv: list[str] | None = None) -> int:
         overlay(hq, destination, hq_files)
         if revision is not None:
             overlay_commit(hq, revision, destination, main_files)
+        # Deletions last: a path main removed wins over anything an overlay put
+        # there, exactly as the merge's `ours`/`theirs` resolution would.
+        remove_paths(destination, main_deleted)
         failed, total = run_modules(destination, modules)
     finally:
         if args.keep:
