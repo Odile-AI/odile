@@ -80,6 +80,12 @@ class ReleaseCut(unittest.TestCase):
         # The exported installer must be the committed one: the repository's
         # signature is made over those bytes, which is the pair under test.
         shutil.copyfile(INSTALLER, self.root / "bootstrap" / "odile_install.py")
+        # ...and the root must carry the bytes that installer writes. The
+        # committed installer embeds `scripts/backup.py`, so its pin is that
+        # file's sha256; a root with other bytes is the drifted state the cut
+        # now refuses (see the contradiction test below).
+        shutil.copyfile(ROOT / "scripts" / "backup.py",
+                        self.root / "usr/local/lib/odile/backup.py")
         self.layout = self.update.resolve_layout(self.root, "tester")
         self.manifest = self.update._self_test_manifest(
             self.layout, generated_at="2026-11-10T00:00:00Z")
@@ -168,6 +174,38 @@ class ReleaseCut(unittest.TestCase):
         self.assertIn("backup_sha256", str(caught.exception))
         self.assertFalse(self.out.exists())
 
+    def test_a_row_the_shipped_installer_contradicts_refuses_the_cut(self):
+        """A candidate root can carry the old program under a new installer.
+
+        An installer-only update replaces `/usr/local/bin/odile-install.sh` and
+        never runs it, so the root keeps the backup program the *old* installer
+        wrote while the installer beside it pins the new one. `manifest.py
+        build` records the installed file, so the row is the old program; a
+        full cut from that root would ship an installer that writes bytes the
+        manifest does not name. The cutter refuses and names both.
+        """
+        program = self.root / "usr/local/lib/odile/backup.py"
+        program.write_bytes(program.read_bytes() + b"# drifted\n")
+        manifest = self.update._self_test_manifest(
+            self.layout, generated_at="2026-11-10T00:00:00Z")
+        self.assertEqual(manifest["backup_sha256"], self.update.sha256_file(program),
+                         "the fixture is not the state this test claims")
+        drifted = self.base / "manifest-drifted-program.json"
+        drifted.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n",
+                           encoding="utf-8")
+        pin = self.update.installer_backup_pin(INSTALLER)
+        self.assertIsNotNone(pin, "the committed installer no longer answers --manifest")
+        self.assertNotEqual(manifest["backup_sha256"], pin)
+
+        with self.assertRaises(self.update.UpdateError) as caught:
+            self.cut(manifest_path=drifted)
+        self.assertEqual(caught.exception.code, self.update.EXIT_BAD_INPUT)
+        message = str(caught.exception)
+        self.assertIn("backup_sha256", message)
+        self.assertIn(manifest["backup_sha256"][:12], message)
+        self.assertIn(pin[:12], message)
+        self.assertFalse(self.out.exists(), "a refused cut created the bundle directory")
+
 
 class QuietHandler(http.server.SimpleHTTPRequestHandler):
     """A static release server with no access log in the test output."""
@@ -193,6 +231,10 @@ class GuestCheckTests(unittest.TestCase):
         self.update = load_update()
         self.root = self.update._self_test_root(self.base)
         shutil.copyfile(INSTALLER, self.root / "bootstrap" / "odile_install.py")
+        # A root the committed installer could have produced: the program bytes
+        # the installer pins, so the cut's cross-check has nothing to refuse.
+        shutil.copyfile(ROOT / "scripts" / "backup.py",
+                        self.root / "usr/local/lib/odile/backup.py")
         self.layout = self.update.resolve_layout(self.root, "tester")
         self.manifest = self.update._self_test_manifest(
             self.layout, generated_at="2026-11-10T00:00:00Z")
@@ -267,6 +309,38 @@ class GuestCheckTests(unittest.TestCase):
             self.update.validate_manifest(bad)
         self.assertEqual(caught.exception.code, self.update.EXIT_INCONSISTENT)
         self.assertIn("backup_sha256", str(caught.exception))
+
+    def test_check_reports_a_machine_whose_program_drifted(self):
+        """The row is a release fact; the machine's file is a machine fact.
+
+        `check` used to print the release's value while a machine carrying
+        other bytes still passed, because `verify_installed` has no row for the
+        program: `apply` never rewrites it, so it can never converge by
+        refusing. The drift is reported, with both values named, and the plan
+        is still printed (exit 0).
+        """
+        url = self.publish(self.manifest, "drift")
+        program = self.root / "usr/local/lib/odile/backup.py"
+        program.write_bytes(program.read_bytes() + b"# one line more\n")
+        drifted = self.update.sha256_file(program)
+        self.assertNotEqual(drifted, self.manifest["backup_sha256"])
+
+        result = self.check(url)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        output = result.stdout + result.stderr
+        self.assertIn(f"backup {drifted[:12]}", output)
+        self.assertIn(self.manifest["backup_sha256"][:12], output)
+        self.assertIn("drifted", output)
+
+        # `apply` prints the plan through the same routine, so its dry run says
+        # the same thing and writes nothing.
+        dry = subprocess.run(
+            [sys.executable, str(SCRIPT), "apply", "--dry-run", "--root", str(self.root),
+             "--user", "tester", "--release-url", url, "--pubkey", str(self.pub)],
+            capture_output=True, text=True)
+        self.assertEqual(dry.returncode, 0, dry.stderr)
+        self.assertIn("drifted", dry.stderr)
+        self.assertIn("dry run      nothing written", dry.stdout)
 
 
 if __name__ == "__main__":
