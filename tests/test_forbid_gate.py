@@ -562,6 +562,13 @@ class OneList(unittest.TestCase):
         self.assertNotEqual(tracked.returncode, 0,
                             "the repository still tracks a root leak-forbid.txt")
 
+    def test_the_list_cannot_be_committed_from_a_clone(self) -> None:
+        # A clone has no .git/info/exclude entry from HQ, so an installed list
+        # would ride into a commit on `git add -A` and the 11 literals would be
+        # published. The tracked .gitignore is what stops it.
+        ignored = git("check-ignore", "-q", LIST_PATH, cwd=ROOT)
+        self.assertEqual(ignored.returncode, 0, f"{LIST_PATH} is not gitignored")
+
     def test_every_gate_names_the_documented_path(self) -> None:
         # One path in the scanner's default, the Makefile, the hook and CI, so
         # there is one place to put the list and one place to rotate it.

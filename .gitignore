@@ -19,6 +19,9 @@ venv/
 *-signing.pem
 # The live host values; the committed template beside it is deploy/hosts.example
 /deploy/hosts.local
+# The deny list is HQ-only and CI installs it from the LEAK_FORBID_B64 secret.
+# Never commit it: the list carries the very literals it denies.
+/docs/ops/leak-forbid.txt
 
 # Runtime state
 *.db
