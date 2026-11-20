@@ -85,11 +85,10 @@ not open, the machine is rebuilt and you restore from your backup.
 
 ### 4. A bill or a charge
 
-> $49 a month, founding price, month-to-month. The $12 inference allowance is
-> included and hard-capped; at the cap I stop and tell you. Stripe holds the
-> card; we hold the customer id, the subscription id and whether it is paid.
-> Reply to help@odile.fyi for anything on the charge; it is read by a person,
-> and the target is an answer within 24 hours.
+> The private alpha has no price: Odile pays for the machine and the inference.
+> Stripe holds the card; we hold the customer id, the subscription id and
+> whether it is paid. Reply to help@odile.fyi for anything on the charge; it is
+> read by a person, and the target is an answer within 24 hours.
 
 Never promise a refund, a credit or a discount. Say the target is an answer
 within 24 hours and mean it.

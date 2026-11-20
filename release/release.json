@@ -1,27 +1,27 @@
 {
   "artifacts": {
     "installer": {
-      "sha256": "1d946c4463a83cac6c1ea5e74b2c50b7694c22aa70ecb442b9c57fd5554b39de",
-      "size": 1503889,
+      "sha256": "d48f73aabb2d2d079f9b7df4b15a70a96dee07db707f78d826058dfb05da5ae4",
+      "size": 1503831,
       "url": "odile_install.py"
     },
     "skills": {
-      "sha256": "9d82653f88504fd9391fffaeb68b59d0e943651336efb7ccc1026dacba2730c8",
-      "size": 851945,
+      "sha256": "ccff7327b9f55ec2b21e4df3e3ebecd0d4cd2b894784d8655944b7b8bc4b12f7",
+      "size": 851913,
       "url": "skills.tar.gz"
     }
   },
   "boot": {
     "kernel": "6.12.115+deb13.1-amd64"
   },
-  "generated_at": "2026-11-19T21:20:00Z",
+  "generated_at": "2026-11-20T07:01:51Z",
   "manifest": {
-    "sha256": "7031d4a046239e39e8397d5e70b97e1b02dc35e3b1ca429120c5edd319f9083e",
+    "sha256": "1aca64464902a3987ff914678a15a55d0d4e0d1dd25f3701d2f16be08e2c597b",
     "signature_url": "manifest.json.sig",
     "url": "manifest.json"
   },
-  "notes": "ODL-236 follow-up (t_4fcd465f), round 4, over 2026.11.19-4 (t_73334f58). The tenant /verify page \u2014 verify/verify.py + templates/verify.html, pinned in this installer and served by odile-verify.service on 127.0.0.1:8098 behind Caddy's one no-store /verify handle \u2014 now sets its reading prose in the text face: --text and --serif are declared in :root, body prose is 18 px/1.6 on the text face, notes and the foot are 16 px/1.6, and Cormorant Garamond is kept for .brand, h1 and h2 (BRAND.md \u00a7Typography; the page t_ae833f3f shipped). The program, its 21 rows and the demo injection are unchanged from 2026.11.19-4; the embedded template's SHA-256 moves and tests/test_verify.py pins the type roles.",
+  "notes": "t_080f8a83: the installed help's bill answer states alpha.0's no-price line (Odile pays for the machine and the inference) instead of the v5 $49 and the held $12 allowance; re-embedded in the signed installer and in the skills artifact rebuilt from a fresh scratch root.",
   "product": "odile",
-  "release": "2026.11.19-5",
+  "release": "2026.11.20-1",
   "schema": 1
 }
