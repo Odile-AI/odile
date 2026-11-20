@@ -1801,6 +1801,29 @@ class TenantVcekTests(unittest.TestCase):
         self.assertIn("PASS — the CPU signed this report", result.stdout)
         self.assertEqual(seen, [TENANT_KDS_PATH])
 
+    def test_the_two_vcpu_plan_is_measured_by_the_pin(self) -> None:
+        """The demo is a 2-vCPU Blackbox Core; the pin must carry that count.
+
+        `vcpu_counts` means "plan sizes this release was measured at", not
+        "plan sizes we sell": the demo's UKI (`47be81ca…`) measures
+        `83bd3fce…` at 2 vCPU, so the release row has to accept 2. The
+        document is the tenant fixture with only the unsigned `vcpus` field
+        changed, which is the field the row reads.
+        """
+        data = dict(TENANT_DOC)
+        data["vcpus"] = 2
+        handle = tempfile.NamedTemporaryFile("w", suffix=".json", delete=False,
+                                             encoding="utf-8", dir=TENANT_FIXTURE.parent)
+        with handle:
+            json.dump(data, handle)
+        try:
+            result, _ = self.run_against_kds(document=Path(handle.name))
+        finally:
+            Path(handle.name).unlink()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertRegex(result.stdout, r"release\s+PASS")
+        self.assertIn("2026.11.2 is pinned", result.stdout)
+
     def test_the_kds_path_is_the_raw_chip_id_and_reported_tcb(self) -> None:
         _, seen = self.run_against_kds()
         self.assertEqual(len(seen), 1)
@@ -1934,6 +1957,9 @@ class TenantVcekTests(unittest.TestCase):
                          "https://servury.com/downloads/blackbox/2026.11.2/")
         self.assertIn(4, entry["vcpu_counts"])
         self.assertIn(6, entry["vcpu_counts"])
+        # The demo moved to a 2-vCPU Blackbox Core; its UKI (`47be81ca…`)
+        # measures `83bd3fce…` at 2 vCPU, so the entry names that plan too.
+        self.assertIn(2, entry["vcpu_counts"])
         # Rotation is additive: the old entry a running tenant boots stays.
         self.assertIn("2026.11.1", pin["releases"])
 
