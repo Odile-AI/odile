@@ -15,7 +15,9 @@ plaintext file on the host — *"209 KB so far … switch it off when you are do
 debugging and the file is emptied"* — so a cycle that armed the log and walked
 away left the whole boot transcript there (measured 2026-11-19: the tenant box
 held 209 KB, the bench 1,174 KB). `--keep-console` is the operator asking to
-keep it.
+keep it. The off is checked rather than assumed: the switch lands seconds after
+the POST, so the way out watches the host's copy for a settle window and posts
+again if a tail from the still-booting guest arrives behind the first off.
 
     ./tools/servury_cycle.py --server-id 31a63bbb --action restart \\
         --wait-for "bb-sealed-unlock" --serial-out docs/evidence/uki-boot.txt
@@ -55,6 +57,15 @@ POWER_ACTIONS = ("start", "stop", "restart", "forcestop")
 # odile-release-setup stamps each boot with a UTC time — not by an offset.
 BOOT_MARKER = "Linux version "
 RELEASE_LINE = re.compile(r"odile-release-setup (\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ)")
+# The console switch lands a moment after the off POST, and a boot that is still
+# printing flushes its last lines into the host's copy seconds later (measured
+# 2026-11-19: 55 bytes of getty banner at +8 s on two consecutive bench cycles,
+# after an immediate read-back had seen nothing). So "off" is not the same fact
+# as "empty": the disarm watches the copy for this window and posts again when a
+# tail arrives.
+CONSOLE_SETTLE_READS = 15
+CONSOLE_SETTLE_INTERVAL = 1.0
+CONSOLE_MAX_OFFS = 3
 
 
 def latest_boot(text: str) -> str:
@@ -164,6 +175,42 @@ def panel_console(server_id: str, action: str) -> subprocess.CompletedProcess[st
     return panel("--console", "--server", server_id, "--action", action)
 
 
+def host_console_copy(via: str, key: str, server_id: str) -> tuple[str | None, str]:
+    """The host's transcript copy; (None, why) when the read itself failed.
+
+    "The copy is empty" and "the read did not answer" are different facts, and
+    only the first can support the word *emptied*. The panel's read reports a
+    nonzero code through `panel_log` → None; the API's bare GET can raise.
+    """
+    try:
+        if via == "api":
+            return transcript(call("serial", None, key=key, server_id=server_id)), ""
+        text = panel_log(server_id)
+    except Exception as error:  # noqa: BLE001 — an unread copy is not an empty one
+        return None, str(error) or error.__class__.__name__
+    if text is None:
+        return None, "the panel did not answer the read"
+    return text, ""
+
+
+def switch_console_off(via: str, key: str, server_id: str) -> tuple[bool, str]:
+    """POST the off; (True, the panel's own line) or (False, one refusal line)."""
+    if via == "api":
+        try:
+            call("serial", {"log": False}, key=key, server_id=server_id)
+        except Exception as error:  # noqa: BLE001 — a refusal is a note, not a failure
+            return False, str(error) or error.__class__.__name__
+        return True, ""
+    try:
+        done = panel_console(server_id, "off")
+    except Exception as error:  # noqa: BLE001 — the wrapper's subprocess.run raises on a hang
+        return False, str(error) or error.__class__.__name__
+    if done.returncode != 0:
+        detail = (done.stderr or done.stdout or "").strip().splitlines()
+        return False, detail[-1] if detail else "the panel refused"
+    return True, done.stdout.strip()
+
+
 def disarm_console(via: str, key: str, server_id: str) -> bool:
     """Turn the console log off; True when the host's plaintext copy is emptied.
 
@@ -178,60 +225,60 @@ def disarm_console(via: str, key: str, server_id: str) -> bool:
     A refusal is one line and never a changed exit code: the boot transcript is
     what the cycle is judged on, and a panel hiccup must not turn a good
     transcript into a failed cycle. The audit log still names the attempt.
+
+    "Off" is checked, not assumed. The switch applies a moment after the POST
+    and a still-printing boot can flush its last lines after it, so this watches
+    the copy for the settle window (`CONSOLE_SETTLE_READS`) and posts another
+    off whenever a tail arrives. It prints *emptied* only from a read that
+    succeeded and returned nothing; otherwise it says what it actually saw.
     """
-    if via == "api":
-        try:
-            call("serial", {"log": False}, key=key, server_id=server_id)
-            left = transcript(call("serial", None, key=key, server_id=server_id))
-            if left:
-                # The switch lands a moment after the POST, so a boot that is
-                # still printing can leave a tail in the file (measured
-                # 2026-11-19: 55 bytes of getty banner after a mid-boot match).
-                # Recording stops with the switch, so one more off empties what
-                # arrived, and the read-back is what makes "emptied" true.
-                call("serial", {"log": False}, key=key, server_id=server_id)
-                left = transcript(call("serial", None, key=key, server_id=server_id))
-        except Exception as error:  # noqa: BLE001 — a refusal is a note, not a failure
-            print(f"console   disarm refused ({error}); the log stays on and the host keeps its transcript")
-            return False
-        if left:
-            print(f"console   off, but the host still shows {len(left)} bytes "
-                  "(the tail landed as the switch applied)")
-            return False
-        print("console   off; the host's transcript file is emptied")
-        return True
-    try:
-        left = ""
-        for attempt in range(2):
-            done = panel_console(server_id, "off")
-            if done.returncode != 0:
-                detail = (done.stderr or done.stdout or "").strip().splitlines()
-                print(f"console   disarm refused ({detail[-1] if detail else 'the panel refused'}); "
-                      "the log stays on and the host keeps its transcript")
+    ok, note = switch_console_off(via, key, server_id)
+    if not ok:
+        print(f"console   disarm refused ({note}); the log stays on and the host keeps its transcript")
+        return False
+    if note:
+        print(note)
+
+    offs = 1
+    left = ""
+    unread = ""
+    for _ in range(CONSOLE_SETTLE_READS):
+        time.sleep(CONSOLE_SETTLE_INTERVAL)
+        copy, why = host_console_copy(via, key, server_id)
+        if copy is None:
+            unread = why
+            continue
+        unread = ""
+        left = copy
+        if copy and offs < CONSOLE_MAX_OFFS:
+            # The tail arrived before the switch applied; recording stops with
+            # it, so another off empties what landed. (Measured: one manual
+            # second off emptied the 55-byte getty banner.)
+            ok, note = switch_console_off(via, key, server_id)
+            if not ok:
+                print(f"console   disarm refused ({note}); the log stays on and the host keeps its transcript")
                 return False
-            if attempt == 0 and done.stdout.strip():
-                print(done.stdout.rstrip())
-            left = panel_log(server_id)
-            if not left:
-                print("console   off; the host's transcript file is emptied")
-                return True
-            # As in the api branch: the off lands a moment after the POST, so a
-            # still-printing boot can leave a tail. The second pass empties it.
+            offs += 1
+    if unread:
+        print(f"console   off, but the host's copy could not be read ({unread}); "
+              "check it with --console --action read")
+        return False
+    if left:
         print(f"console   off, but the host still shows {len(left)} bytes "
               "(the tail landed as the switch applied)")
         return False
-    except Exception as error:  # noqa: BLE001 — a refusal is a note, not a failure
-        # The panel wrapper runs subprocess.run(timeout=300), so a hang raises
-        # instead of returning a code. A matched cycle must not become a
-        # traceback because its way out was slow.
-        print(f"console   disarm refused ({error}); the log stays on and the host keeps its transcript")
-        return False
+    print("console   off; the host's transcript file is emptied")
+    return True
 
 
-def panel_log(server_id: str) -> str:
-    """The serial log the panel holds, read with a plain GET."""
+def panel_log(server_id: str) -> str | None:
+    """The serial log the panel holds: "" when empty, None when the read failed.
+
+    None rather than "": a read-back that did not answer must not look like an
+    empty file, or the disarm says "emptied" without having seen it.
+    """
     done = panel_console(server_id, "read")
-    return done.stdout if done.returncode == 0 else ""
+    return done.stdout if done.returncode == 0 else None
 
 
 def choose_via(via: str, key: str | None, server_id: str) -> str:
@@ -344,7 +391,7 @@ def main(argv: list[str] | None = None) -> int:
                 return 1
             print(armed.stdout.rstrip())
             if args.fresh:
-                seen = release_times(panel_log(args.server_id))
+                seen = release_times(panel_log(args.server_id) or "")
                 print(f"serial    {len(seen)} earlier boot stamp(s) in the buffer; only a new one counts")
             pressed = panel("--power", "--server", args.server_id, "--action", args.action)
             if pressed.returncode != 0:
@@ -362,7 +409,7 @@ def main(argv: list[str] | None = None) -> int:
                     # old poll posted exactly that, so --wait-for never matched.
                     text = transcript(call("serial", None, key=key, server_id=args.server_id))
                 else:
-                    full = panel_log(args.server_id)
+                    full = panel_log(args.server_id) or ""
                     text = latest_boot(full) if args.fresh else full
                     if args.fresh and not (release_times(text) - seen):
                         continue
