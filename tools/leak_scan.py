@@ -50,6 +50,15 @@ Classes:
                          never appear in a published tree. The list itself is the
                          one file that carries them, so it is not scanned for its
                          own literals.
+* ``forbidden-path``     the same list matched against a file's relative path
+                         (and an archive member's name). A tree publishes its
+                         paths as surely as its bytes, and the builder's scrub
+                         rewrites text and never renames, so a file *named* with
+                         a vendor id would otherwise ship with clean contents.
+                         The value is the matched literal, so an allowlist row
+                         pins it by digest exactly as it pins a value inside a
+                         file. ``line`` is 1: a path finding is the file as a
+                         whole, in the ``path:line`` shape every finding uses.
 
 Opaque payloads. A base64 run longer than 128 characters is decoded and
 scanned; a UTF-16 payload is decoded before the text rules run; a DER or PEM
@@ -1021,6 +1030,40 @@ def scan_forbidden(text: str, path: str, forbid: list[tuple[str, re.Pattern[str]
     return found
 
 
+def scan_forbidden_path(report: Report, root: Path, allows: list[Allow], today: date,
+                        path: str, forbid: list[tuple[str, re.Pattern[str]]],
+                        seen: set[tuple[str, str, str]] | None = None) -> None:
+    """File the forbid literals carried by one path.
+
+    The tree publishes a path as surely as a file's bytes, so the walk reads the
+    name too: a file called ``servury_reseller_key_<id>.txt`` is a leak even
+    when the file's contents are clean, and the builder's ``scrub()`` rewrites
+    text in place and never renames. The value is the matched literal, so an
+    allowlist row pins it by digest exactly as it pins a value inside a file —
+    the row's rule is ``forbidden-path``, not ``forbidden-value``, so a waiver
+    names the shape it waives. ``seen`` dedupes one path across the commits a
+    history scan walks, so a name is one finding, at the commit that first
+    carried it.
+    """
+    candidates: list[tuple[str, int, str, str]] = []
+    seen_here: set[tuple[str, str]] = set()
+    for label, pattern in forbid:
+        for match in pattern.finditer(path):
+            value = match.group(0)
+            here = (label, value)
+            if here in seen_here:
+                continue
+            seen_here.add(here)
+            if seen is not None:
+                key = (path, label, value)
+                if key in seen:
+                    continue
+                seen.add(key)
+            candidates.append(("forbidden-path", 1, value, label))
+    if candidates:
+        apply(report, root, allows, today, path, candidates)
+
+
 def scan_tree(root: Path, allows: list[Allow], today: date,
               forbid: list[tuple[str, re.Pattern[str]]],
               skip: set[str] | None = None) -> Report:
@@ -1035,6 +1078,10 @@ def scan_tree(root: Path, allows: list[Allow], today: date,
             continue
         if any(part in SKIP_DIRS for part in relative.split("/")):
             continue
+        # The path is published before and regardless of the bytes: read it
+        # before the file is opened, so an unreadable file and a skipped suffix
+        # cannot hide a name.
+        scan_forbidden_path(report, root, allows, today, relative, forbid)
         if relative.endswith(SKIP_SUFFIXES):
             continue
         path = root / relative
@@ -1047,6 +1094,9 @@ def scan_tree(root: Path, allows: list[Allow], today: date,
         for scanned_path, candidates, text in scan_data(relative, data):
             apply(report, root, allows, today, scanned_path, candidates)
             report.findings.extend(scan_forbidden(text, scanned_path, forbid))
+            if scanned_path != relative:
+                # An archive member's name is published inside the archive too.
+                scan_forbidden_path(report, root, allows, today, scanned_path, forbid)
     return report
 
 
@@ -1060,6 +1110,7 @@ def scan_history(root: Path, allows: list[Allow], today: date,
         capture_output=True).stdout.split() if c]
     report.commits = len(commits)
     first: dict[str, tuple[str, str]] = {}
+    seen_paths: set[tuple[str, str, str]] = set()
     for commit in commits:
         tree = subprocess.run(["git", "-C", str(root), "ls-tree", "-r", "-z", "--full-tree", commit],
                               capture_output=True).stdout
@@ -1070,7 +1121,17 @@ def scan_history(root: Path, allows: list[Allow], today: date,
             fields = meta.split()
             if len(fields) < 3 or fields[1] != b"blob":
                 continue
-            first.setdefault(fields[2].decode(), (commit, raw_path.decode("utf-8", "replace")))
+            path = raw_path.decode("utf-8", "replace")
+            # A path enters the history the moment a commit carries it. Read it
+            # here, once per name, so a file deleted before the push is still a
+            # finding at the commit that first carried it — the blob walk below
+            # would not see the name at all.
+            if path not in skip and not any(part in SKIP_DIRS for part in path.split("/")):
+                before = len(report.findings)
+                scan_forbidden_path(report, root, allows, today, path, forbid, seen_paths)
+                for finding in report.findings[before:]:
+                    finding.commit = commit[:7]
+            first.setdefault(fields[2].decode(), (commit, path))
     report.blobs = len(first)
     process = subprocess.Popen(["git", "-C", str(root), "cat-file", "--batch"],
                                stdin=subprocess.PIPE, stdout=subprocess.PIPE)
@@ -1094,6 +1155,11 @@ def scan_history(root: Path, allows: list[Allow], today: date,
             for scanned_path, candidates, text in scan_data(path, data):
                 apply(report, root, allows, today, scanned_path, candidates)
                 report.findings.extend(scan_forbidden(text, scanned_path, forbid))
+                if scanned_path != path:
+                    # A member's name is published inside the archive too; the
+                    # tree walk checks it in the working tree, this checks the
+                    # archive a commit carries.
+                    scan_forbidden_path(report, root, allows, today, scanned_path, forbid, seen_paths)
             for finding in report.findings[before:]:
                 finding.commit = commit[:7]
     finally:
