@@ -102,4 +102,10 @@ cannot trigger its own 30-day alert.
   `?action=server&id=34bc6c43`, header `X-Reseller-Key` from
   `/root/.odile/servury_reseller_key` (0600), read-only.
 
+**Leak gate.** The raw read is verbatim: it names the box, the checkout this
+ran from and the host's addresses. Those five values are allow-listed by path
+and digest in `leak-allow.tsv` (constant, no credential) instead of redacted, so
+this folder can be diffed against the live API; `tools/build_public_tree.py`
+scrubs all five in a public build.
+
 _No payment, approval, cap, price or ledger row was changed by this session._
