@@ -149,7 +149,10 @@ curl -s https://odile.fyi/odile-signing-key.pub | sha256sum
    non-interactively).
 9. **Smoke.** The sign-in gate (302/401/200), one chat turn that runs a shell
    command and writes a file, and one cron job that runs. The cron job is
-   `odile-smoke`, every 5 minutes, no agent, delivering locally.
+   `odile-smoke`, every 5 minutes, no agent, delivering locally. A 401 in the
+   chat row is an ordering between the boot's own gateway and
+   `/etc/odile/key.env`, not an expired key — §10 has the one command that
+   tells them apart.
 
 ### 3a. The boot check (ODL-396)
 
@@ -964,7 +967,7 @@ Verify (this is also step 2 of the ritual):
 ```sh
 $ ./installer/odile_install.py --verify-signature --pubkey installer/odile-signing-key.pub
 signing key  sha256 13e8c2aee8263f550033448c8193a82b89498f533f52943e09c14d22e5b036e2 · SHA256:ZyFEbkw2oetDml63XaHTix0kUrR2kAVGZaaeDAHvXu8
-signature: OK (sha256 1d946c4463a83cac6c1ea5e74b2c50b7694c22aa70ecb442b9c57fd5554b39de)
+signature: OK (sha256 7cf9e2f9675929925a3d0d94c700922e92c783351c41a8dbf05327d039e2ee46)
 ```
 
 The first value is `sha256sum` of the exact PEM file the run used — here the
@@ -988,18 +991,18 @@ issued — fails against the same detached signature:
 $ cp installer/odile_install.py /tmp/edited.py
 $ printf 'x' >> /tmp/edited.py
 $ sha256sum /tmp/edited.py
-a8c204cb0f898c6263671502ad7920740b259a64c6d4821d89accaf6fc70dffc  /tmp/edited.py
+f0fdff4def1f051adf23c5dc7205decc7fe1a32929f1e9ffbc8c6aa34b72ce67  /tmp/edited.py
 $ /usr/bin/python3 /tmp/edited.py --verify-signature \
       --pubkey installer/odile-signing-key.pub --signature installer/odile_install.py.sig
 signing key  sha256 13e8c2aee8263f550033448c8193a82b89498f533f52943e09c14d22e5b036e2 · SHA256:ZyFEbkw2oetDml63XaHTix0kUrR2kAVGZaaeDAHvXu8
-signature: BAD (sha256 a8c204cb0f898c6263671502ad7920740b259a64c6d4821d89accaf6fc70dffc)
+signature: BAD (sha256 f0fdff4def1f051adf23c5dc7205decc7fe1a32929f1e9ffbc8c6aa34b72ce67)
 $ echo $?
 3
 ```
 
 Recorded on 2026-11-14 and re-measured on 2026-11-19 from the merged installer
 (`main`'s `97563f8` — whose `2026.11.19-4` is ODL-579's recovery-code cut —
-merged with this card's branch, which re-cut the pair as `2026.11.19-5`) that
+merged with this card's branch, which re-cut the pair as `2026.11.19-5`, and now `2026.11.20-1`) that
 carries the handoff audit
 (ODL-208's `/usr/local/bin/odile-audit`, re-cut by the follow-up that reads
 `authorized_keys2` and scans `/root` for the boot key's private half) beside
@@ -1164,6 +1167,34 @@ runs on the installer's real code path in the simulation.
   after everything else has converged, and a re-run resumes.
 - **Smoke costs money.** One chat turn against NEAR AI, about a tenth of a
   cent at the pinned model's prices; `--force-smoke` spends it again.
+- **A `401` in the smoke's chat row is this ordering, not an expired key.** On
+  a first boot the image's own `odile-agent.service` is already running when the
+  installer writes `/etc/odile/key.env`. The unit carries
+  `EnvironmentFile=/etc/odile/key.env`, so a gateway that exec'd before that
+  file existed keeps an environment without
+  `HERMES_CUSTOM_CLOUD_API_NEAR_AI_API_KEY` and answers
+  `Provider said: HTTP 401: Invalid or expired API key` (measured on the demo
+  tenant's first boot, t_bf6092d7: the file held the key, sha256
+  `50daee29…`; the same value with Hermes's own body answered 200 from HQ; and
+  `systemctl restart odile-agent` made the smoke pass). Before chasing NEAR,
+  ask the process, not the file:
+  ```sh
+  $ systemctl show -p MainPID --value odile-agent
+  1234
+  $ sudo tr '\0' '\n' < /proc/1234/environ | grep -c HERMES_CUSTOM_CLOUD_API_NEAR_AI_API_KEY
+  0
+  ```
+  `0` is the ordering; `1` means the running gateway has the key and the
+  credential itself should be checked (its `sha256sum`, then the same body from
+  HQ). The installer now reads that environment itself: a run that wrote the key
+  file restarts the gateway and prints
+  `restart odile-agent (new /etc/odile/key.env)`; a run that finds the running
+  process without the key — an interrupted first run left every file in place —
+  prints `restart odile-agent (the running gateway has no
+  HERMES_CUSTOM_CLOUD_API_NEAR_AI_API_KEY)`; and a converged machine prints
+  `same odile-agent active` and restarts nothing. A unit systemd still reports
+  as `activating` is restarted rather than started, because `systemctl start` is
+  a no-op on the process that is already coming up.
 - **The package step is snapshot-bound.** Every package comes from
   `snapshot.debian.org`, which is slower than the CDN: the first install pays
   a minute or two for the index and the debs. If the snapshot or a pin is
@@ -1207,7 +1238,7 @@ builder command with a transcript; everything after it is the image.
 | 5 | the signed measured UKI and the pre-sealed disk | **yes, round 8 at 10:28Z, saved 14:42:53Z and booted 14:43:54Z** — UKI `5cb31808…`, disk `c1278242…`, measurement `9f01725a…`, 4-vCPU pin, published 10:29Z; the earlier builds and the defect each exposed are in `docs/evidence/m1-tenant.md` §9–§9.8 and `docs/evidence/m1-image.md` |
 | 6 | a fresh setup token bound to `31a63bbb` | **yes** — ledger `67de1ba9…`, live until 2026-11-13T10:23Z; its plaintext is the `odile.token=` of the sealed line |
 | 7 | the owner's boot key, a passphrase, any operator key | **none** — the image's `bb.key` is a throwaway public key whose private half is shredded |
-| 8 | a signed installer a stranger can obtain (independent of the image) | **yes** — on 2026-11-11 the served release `2026.11.11-5` shipped the strict-bar installer `fde7a48f…`, its `.sig`, the published key and a skills tarball carrying `odile-recipes` (§12.6); the repository's cut is `2026.11.19-5` (`1d946c44…` installer, 1,503,889 bytes, `7031d4a0…` manifest, §12.6), t_4fcd465f's round-4 `/verify` type re-cut on the head that merges `2026.11.19-4` (ODL-579's recovery-code cut, `6d2c3161…` installer, 1,448,387 bytes, `653b3ed5…` manifest), which re-cut `2026.11.19-3` (`00a84542…` installer, 1,436,019 bytes, `49850448…` manifest) on the head that merges `2026.11.19-1` (`e4a3554b…` installer, 1,428,062 bytes, `65c56be3…` manifest; the `/verify` page's two-URL note) with the ODL-340 follow-up's one site name and seed-derived environment — `2026.11.15-4` was re-cut at the head that merges `main`'s `-3` (ODL-522's per-machine session secret, `e0cec88a…` installer, 1,357,306 bytes, `4f0e3ef9…` manifest) and carries this card's `-2` landing (the five v3.10 access sentences on ODL-505's `-8` and t_ae833f3f's `2026.11.15-1`), then re-embedded every surface; `-6` re-embeds only the support program with t_afb081be's session signal-window fix, `-9` adds t_2efbd6e3's guest export placement, `2026.11.19-1` re-embeds the `/verify` page with the verifier's two-URL note, `2026.11.19-3` is the ODL-340 follow-up's merged head, `2026.11.19-4` is ODL-579's recovery-code cut (`2026.11.19-2` was this branch's pre-review cut, superseded before any deploy), and `2026.11.19-5` is this card's round-4 re-cut on the head that merges `-4` — and the served URL serves `2026.11.15-9` (`2cdf0801…` installer, 1,424,179 bytes, manifest `4664da84…` — measured 2026-11-16T01:44Z; still `2026.11.15-9` at 2026-11-19T11:38Z, and `2026.11.19-1` at 2026-11-19T13:01Z and again at 2026-11-19T21:18Z) until a `./deploy.sh` from a `main` that carries these merges; that live cut carries the `c73dad4d…` vendor pin, and an image a build of this tree makes carries the `2026.11.19-5` pair in its `release/` directory, so the machine's `/manifest` and `/usr/local/bin/odile-install.sh` agree with each other. The live tenant's image is still `2026.11.11-8` (`4aee80c5…`, `1ed9dcad…`) until it is re-provisioned |
+| 8 | a signed installer a stranger can obtain (independent of the image) | **yes** — on 2026-11-11 the served release `2026.11.11-5` shipped the strict-bar installer `fde7a48f…`, its `.sig`, the published key and a skills tarball carrying `odile-recipes` (§12.6); the repository's cut is `2026.11.20-1` (`7cf9e2f9…` installer, 1,508,169 bytes, `e9026d7f…` manifest, §12.6; over `2026.11.19-5`, `1d946c44…`, 1,503,889 bytes), t_4fcd465f's round-4 `/verify` type re-cut on the head that merges `2026.11.19-4` (ODL-579's recovery-code cut, `6d2c3161…` installer, 1,448,387 bytes, `653b3ed5…` manifest), which re-cut `2026.11.19-3` (`00a84542…` installer, 1,436,019 bytes, `49850448…` manifest) on the head that merges `2026.11.19-1` (`e4a3554b…` installer, 1,428,062 bytes, `65c56be3…` manifest; the `/verify` page's two-URL note) with the ODL-340 follow-up's one site name and seed-derived environment — `2026.11.15-4` was re-cut at the head that merges `main`'s `-3` (ODL-522's per-machine session secret, `e0cec88a…` installer, 1,357,306 bytes, `4f0e3ef9…` manifest) and carries this card's `-2` landing (the five v3.10 access sentences on ODL-505's `-8` and t_ae833f3f's `2026.11.15-1`), then re-embedded every surface; `-6` re-embeds only the support program with t_afb081be's session signal-window fix, `-9` adds t_2efbd6e3's guest export placement, `2026.11.19-1` re-embeds the `/verify` page with the verifier's two-URL note, `2026.11.19-3` is the ODL-340 follow-up's merged head, `2026.11.19-4` is ODL-579's recovery-code cut (`2026.11.19-2` was this branch's pre-review cut, superseded before any deploy), and `2026.11.19-5` is this card's round-4 re-cut on the head that merges `-4` — and the served URL serves `2026.11.15-9` (`2cdf0801…` installer, 1,424,179 bytes, manifest `4664da84…` — measured 2026-11-16T01:44Z; still `2026.11.15-9` at 2026-11-19T11:38Z, and `2026.11.19-1` at 2026-11-19T13:01Z and again at 2026-11-19T21:18Z, and `2026.11.19-5` (`1d946c44…`, 1,503,889 bytes) at 2026-11-20T07:13Z) until a `./deploy.sh` from a `main` that carries these merges; that live cut carries the `c73dad4d…` vendor pin, and an image a build of this tree makes carries the `2026.11.20-1` pair in its `release/` directory, so the machine's `/manifest` and `/usr/local/bin/odile-install.sh` agree with each other. The live tenant's image is still `2026.11.11-8` (`4aee80c5…`, `1ed9dcad…`) until it is re-provisioned |
 
 ### 12.2 The builder's half (everything before the panel)
 
@@ -2325,6 +2356,31 @@ branch's round-3 cut also used the id `2026.11.19-4` (installer `6959f3fe…`,
 1,491,364 bytes, at 20:16Z) before `main` took that id; it was superseded by
 the merge and never deployed. §2 of `image.md` remains the `-3` bench
 measurement; a build of this tree carries the `-5` pair.
+
+**The `2026.11.20-1` cut (t_bf6092d7's key-file ordering).** The head merges
+`2026.11.19-5` (t_4fcd465f's round-4 `/verify`), so the installer carries that
+cut's tenant pages unchanged. `tools/recut_release.py` re-derived and re-signed
+the pair (`--check` prints `ok` for the installer, its release copy, the
+`backup` row and both documents), `--self-test` prints `self-test: PASS`, and
+`--verify-signature` prints `signature: OK (sha256 7cf9e2f9…)`. The installer is
+`7cf9e2f9…` (1,508,169 bytes) and the manifest `e9026d7f…` (50,044 bytes);
+against the committed `-5` document its `diff` is one line — `installer_sha256`
+— so this is a surgical re-cut and not a root rebuild.
+`release/release.json` (`714401af…`) names `2026.11.20-1` at
+`2026-11-20T07:30:00Z`. The skills artifact (`9d82653f…`, 851,945 bytes) and
+the `539e205f…` audit row are unchanged. What moved is the installer's service
+convergence: `/etc/odile/key.env` is a gateway start input
+(`gateway_start_inputs`), a unit whose inputs moved is restarted rather than
+started even when systemd reports it `activating`, and
+`ensure_systemd_services` reads the running gateway's own
+`/proc/<MainPID>/environ`, so a pass that finds every file `same` still restarts
+a gateway that never read the key (t_bf6092d7; the four states are pinned in
+`tests/test_installer_copy.py`). It is committed, not deployed: measured
+2026-11-20T07:13Z the URL serves `2026.11.19-5` (`1d946c44…`, 1,503,889
+bytes). The id ledger: `-5` is t_4fcd465f's round 4 (2026-11-19T21:20Z) and
+`2026.11.20-1` is later than every cut by `generated_at` (2026-11-20T07:30Z).
+§2 of `image.md` remains the `-3` bench measurement; a build of this tree
+carries the `2026.11.20-1` pair.
 
 
 The clock starts at the build's `uki.sh --sign` and stops when

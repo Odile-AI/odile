@@ -13958,8 +13958,14 @@ def ensure_scratch_services(layout: Layout, dry: bool) -> bool:
 
 
 def ensure_one_service(layout: Layout, unit: str, dry: bool, unit_changed: bool,
-                       *, wait: bool = True) -> bool:
-    """Enable and start/restart one unit; wait for the Webapp when asked."""
+                       *, wait: bool = True, reason: str = "") -> bool:
+    """Enable and start/restart one unit; wait for the Webapp when asked.
+
+    A unit whose start inputs moved is *restarted*, not started: on a first boot
+    `is-active` can still answer `activating` for the process the image started
+    before this installer wrote the key file, and `systemctl start` is a no-op
+    on it — the process then keeps the environment it exec'd with (t_bf6092d7).
+    """
     changed = False
     enabled = run(["systemctl", "is-enabled", unit]).stdout.strip()
     active = run(["systemctl", "is-active", unit]).stdout.strip()
@@ -13979,15 +13985,15 @@ def ensure_one_service(layout: Layout, unit: str, dry: bool, unit_changed: bool,
         changed = True
     else:
         print(f"same         {unit} enabled at boot")
-    if active != "active":
+    if unit_changed:
+        print(f"{'would restart' if dry else 'restart':<12} {unit} ({reason or 'changed'})")
+        if not dry:
+            run(["systemctl", "restart", unit], check=True)
+        changed = True
+    elif active != "active":
         print(f"{'would start' if dry else 'start':<12} {unit}")
         if not dry:
             run(["systemctl", "start", unit], check=True)
-        changed = True
-    elif unit_changed:
-        print(f"{'would restart' if dry else 'restart':<12} {unit} (changed)")
-        if not dry:
-            run(["systemctl", "restart", unit], check=True)
         changed = True
     else:
         print(f"same         {unit} active")
@@ -14002,19 +14008,101 @@ def ensure_one_service(layout: Layout, unit: str, dry: bool, unit_changed: bool,
     return changed
 
 
+def gateway_start_inputs(layout: Layout, *, key_changed: bool = False,
+                         units_changed: bool = False, config_changed: bool = False,
+                         env_changed: bool = False,
+                         skin_changed: bool = False) -> tuple[bool, str]:
+    """Whether a file the gateway reads at start moved, and which one to name.
+
+    The order is the order that matters on a first boot. ``/etc/odile/key.env``
+    is first because it is the one input the image cannot have when its own
+    ``odile-agent.service`` starts: the installer writes it later in the same
+    boot (t_bf6092d7), and the smoke's chat turn is what pays for a gateway
+    that never read it.
+    """
+    if key_changed:
+        return True, f"new {layout.key_env}"
+    if units_changed:
+        return True, "changed unit"
+    if config_changed:
+        return True, "changed config"
+    if env_changed:
+        return True, "changed .env"
+    if skin_changed:
+        return True, "changed skin"
+    return False, ""
+
+
+#: Where a running process states the environment it exec'd with. A test can
+#: point this at a fixture; the installer reads the machine's own /proc.
+PROC = Path("/proc")
+
+
+def running_gateway_pid(layout: Layout) -> int:
+    """The gateway's MainPID from systemd; 0 when the unit is not running."""
+    try:
+        result = run(["systemctl", "show", "-p", "MainPID", "--value", layout.unit_name])
+    except OSError:
+        return 0
+    try:
+        return int(result.stdout.strip() or "0")
+    except ValueError:
+        return 0
+
+
+def gateway_missing_env(layout: Layout, proc_root: Path | None = None) -> list[str]:
+    """Key names from ``key.env`` the running gateway's environment lacks.
+
+    Read from the process itself, not from the file: a gateway started before
+    the file existed is healthy, serves the gate and answers 401 to a chat. The
+    unit's ``EnvironmentFile=`` is what puts the values in that environment, so
+    the process is the only honest witness that the restart happened.
+    """
+    if not layout.key_env.is_file():
+        return []
+    names = sorted(env_values(layout.key_env.read_text(encoding="utf-8")))
+    pid = running_gateway_pid(layout)
+    if pid <= 0:
+        return []
+    proc = PROC if proc_root is None else proc_root
+    try:
+        raw = (proc / str(pid) / "environ").read_bytes()
+    except OSError:
+        return []
+    present = {chunk.split(b"=", 1)[0].decode("utf-8", "replace")
+               for chunk in raw.split(b"\0") if b"=" in chunk}
+    return [name for name in names if name not in present]
+
+
 def ensure_systemd_services(layout: Layout, dry: bool, units_changed: bool,
-                            gateway_changed: bool | None = None) -> bool:
+                            gateway_changed: bool | None = None,
+                            gateway_reason: str = "") -> bool:
     """Enable and start the units; the agent last, and whatever else failed.
 
     ``gateway_changed`` is any file the gateway reads at start (its unit, the
-    config, the .env, the skin), not only a unit-file change: a rewritten
-    ``webapp.public_url`` reaches the running process only by a restart, and a
-    machine that kept the boot's listener answered `400 Invalid Host header`
-    for five hours because an earlier optional unit aborted the run first
-    (t_d95b8c13). It defaults to ``units_changed`` for the callers that only
-    know about units.
+    config, the .env, the skin, ``/etc/odile/key.env``), not only a unit-file
+    change: a rewritten ``webapp.public_url`` reaches the running process only
+    by a restart, and a machine that kept the boot's listener answered `400
+    Invalid Host header` for five hours because an earlier optional unit aborted
+    the run first (t_d95b8c13). It defaults to ``units_changed`` for the callers
+    that only know about units. ``gateway_reason`` names the input in the
+    restart line, so a corrected first boot says *why* it restarted.
+
+    A first boot can leave the gateway *running without the key*: the image
+    enables ``odile-agent.service`` at boot and this installer writes
+    ``/etc/odile/key.env`` later in the same boot (t_bf6092d7). A later pass of
+    the installer can legitimately see every file as ``same`` — an interrupted
+    first run wrote them — and then a file-level "did anything move?" test
+    leaves the boot's process in place, key-less, and the smoke's chat turn
+    answers ``401 Invalid or expired API key``. The process's own environment is
+    the fact that decides, so it is read and a missing name forces the restart.
     """
     gateway_changed = units_changed if gateway_changed is None else gateway_changed
+    if not gateway_changed and not dry:
+        missing = gateway_missing_env(layout)
+        if missing:
+            gateway_changed = True
+            gateway_reason = f"the running gateway has no {missing[0]}"
     changed = False
     if units_changed:
         print(f"{'would reread' if dry else 'daemon-reload':<12} systemd units")
@@ -14055,7 +14143,8 @@ def ensure_systemd_services(layout: Layout, dry: bool, units_changed: bool,
             print(f"FAIL         odile-access-report did not start: {exc}")
             print("             /verify keeps the previous report; `systemctl status "
                   "odile-access-report` names the cause")
-    return ensure_one_service(layout, layout.unit_name, dry, gateway_changed, wait=True)
+    return ensure_one_service(layout, layout.unit_name, dry, gateway_changed, wait=True,
+                              reason=gateway_reason)
 
 
 # --------------------------------------------------------------------------
@@ -15906,7 +15995,8 @@ def tenant_main(args: argparse.Namespace) -> int:
     changed |= ensure_backup_source(layout, args.dry_run)
     changed |= ensure_support_program(layout, args.dry_run)
     changed |= ensure_export_program(layout, args.dry_run)
-    changed |= ensure_key_env(layout, seed, args.dry_run)
+    key_changed = ensure_key_env(layout, seed, args.dry_run)
+    changed |= key_changed
     changed |= ensure_pin_files(layout, seed, args.dry_run)
     changed |= ensure_install(layout, args.dry_run)
     changed |= ensure_webapp_build(layout, args.dry_run)
@@ -15936,9 +16026,13 @@ def tenant_main(args: argparse.Namespace) -> int:
         changed |= ensure_scratch_attest(layout, args.dry_run)
         changed |= ensure_scratch_services(layout, args.dry_run)
     else:
+        gateway_changed, gateway_reason = gateway_start_inputs(
+            layout, key_changed=key_changed, units_changed=units_changed,
+            config_changed=config_changed, env_changed=env_changed,
+            skin_changed=skin_changed)
         changed |= ensure_systemd_services(
             layout, args.dry_run, units_changed,
-            gateway_changed=units_changed or config_changed or env_changed or skin_changed)
+            gateway_changed=gateway_changed, gateway_reason=gateway_reason)
     # After the daemon reload the branch above may have done: the nightly timer
     # is enabled now, and a converged tenant prints `same` (ODL-215 follow-up).
     changed |= ensure_backup_timer(layout, args.dry_run)
