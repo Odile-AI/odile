@@ -13,6 +13,8 @@ import sys
 import tempfile
 import unittest
 import urllib.error
+import urllib.parse
+import urllib.request
 from pathlib import Path
 from unittest import mock
 
@@ -231,6 +233,179 @@ class AuditIsolatedTests(unittest.TestCase):
             self.addCleanup(patcher.stop)
 
 
+class _FakeJar:
+    """The one call `login` makes on the jar: save the session it just won."""
+
+    def __init__(self) -> None:
+        self.saved = 0
+
+    def save(self, **kwargs) -> None:  # noqa: ARG002 - the tool's flags
+        self.saved += 1
+
+
+# The dashboard the panel answers a successful login with. The logout control is
+# what says the session is in; the login form carries none. (`dashboard` alone is
+# not enough — the anonymous login page carries it in its meta keywords.)
+PANEL_DASHBOARD = """
+<main><h1>Your servers</h1>
+<a href="/logout">Log out</a>
+<a href="/manage/168020b4/">odlukitest</a>
+</main>
+"""
+
+
+class LoginTests(AuditIsolatedTests):
+    """`--login` is the one POST that carries the credential, and it is a form.
+
+    The two field names are the login form's own (`credential`, `remember_me`),
+    not a manage form's, so the fence accepts them only at the login path. The
+    live form renders exactly `csrf_token`, `credential` and `remember_me`
+    (`curl -sSL https://servury.com/login/`, measured 2026-11-20).
+    """
+
+    CREDENTIAL = "c" * 32
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.home = tempfile.TemporaryDirectory()
+        self.addCleanup(self.home.cleanup)
+        self.credential_file = Path(self.home.name) / "servury_panel_credential"
+        self.credential_file.write_text(self.CREDENTIAL + "\n", encoding="utf-8")
+        self.cookie_file = Path(self.home.name) / "servury_panel.cookies"
+        self.cookie_file.write_text("", encoding="utf-8")
+        for name, value in (("CREDENTIAL_FILE", self.credential_file),
+                            ("COOKIE_FILE", self.cookie_file)):
+            patcher = mock.patch.object(panel, name, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    @staticmethod
+    def wire_fields(opener) -> dict[str, list[str]]:
+        """The urlencoded body `post()` actually sent."""
+        return urllib.parse.parse_qs(opener.requests[0].data.decode("utf-8"))
+
+    def run_login(self, get, post) -> tuple[int, str, str, _FakeJar]:
+        out, err = io.StringIO(), io.StringIO()
+        jar = _FakeJar()
+        with mock.patch.object(panel, "get", get), \
+                mock.patch.object(panel, "post", post), \
+                contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            code = panel.login(None, jar)
+        return code, out.getvalue(), err.getvalue(), jar
+
+    def test_the_login_posts_the_two_fields_its_own_form_names(self) -> None:
+        # The defect: `post()` refused both names before this card, so --login
+        # answered "refusing unknown form field(s)" and never logged in.
+        seen: dict = {}
+
+        def fake_post(opener, url: str, fields: dict, **kwargs) -> str:  # noqa: ARG001
+            seen.update(url=url, fields=dict(fields))
+            return PANEL_DASHBOARD
+
+        code, out, err, jar = self.run_login(lambda opener, url: LOGIN_HTML, fake_post)
+
+        self.assertEqual(code, 0, err)
+        self.assertEqual(seen["url"], panel.LOGIN)
+        self.assertEqual(
+            seen["fields"],
+            {"csrf_token": panel.parse_csrf(LOGIN_HTML),
+             "credential": self.CREDENTIAL, "remember_me": "on"},
+        )
+        self.assertEqual(jar.saved, 1)
+        self.assertIn("dashboard", out, "the login has to say the dashboard answered")
+
+    def test_the_fence_lets_the_login_fields_through_at_the_login_path(self) -> None:
+        # The real `post()` (not a stub) is what the DoD's fence is: the two
+        # names must reach the wire, urlencoded, from the login path.
+        opener = _FakeOpener(PANEL_DASHBOARD)
+        with mock.patch.object(panel, "_ACCOUNT", "lkbxu6i9"):
+            text = panel.post(opener, panel.LOGIN, {
+                "csrf_token": "tok", "credential": self.CREDENTIAL, "remember_me": "on",
+            })
+
+        self.assertEqual(text, PANEL_DASHBOARD)
+        body = self.wire_fields(opener)
+        self.assertEqual(body["credential"], [self.CREDENTIAL])
+        self.assertEqual(body["remember_me"], ["on"])
+        self.assertIn("POST " + panel.LOGIN, self.audit_lines()[0])
+
+    def test_a_login_answers_the_dashboard_and_audits_no_account_yet(self) -> None:
+        # The whole way through: the real `post()` fence, a fake panel that
+        # answers the dashboard, and the audit line a login can honestly write.
+        opener = _FakeOpener(PANEL_DASHBOARD)
+        seen: list[str] = []
+
+        def fake_get(opener, url: str) -> str:  # noqa: ARG001
+            seen.append(url)
+            return LOGIN_HTML
+
+        with mock.patch.object(panel, "_ACCOUNT", None), \
+                mock.patch.object(panel, "get", fake_get), \
+                contextlib.redirect_stdout(io.StringIO()) as out:
+            code = panel.login(opener, _FakeJar())
+
+        self.assertEqual(code, 0)
+        self.assertEqual(seen, [panel.LOGIN], "no /settings/ fetch before there is a session")
+        self.assertEqual(len(opener.requests), 1)
+        body = self.wire_fields(opener)
+        self.assertEqual(body["credential"], [self.CREDENTIAL])
+        self.assertEqual(body["remember_me"], ["on"])
+        line = self.audit_lines()[0]
+        self.assertIn("POST " + panel.LOGIN, line)
+        self.assertIn("account=?", line, "a login POST has no account yet; say so")
+        self.assertIn("dashboard", out.getvalue())
+
+
+    def test_the_login_fields_are_refused_away_from_the_login_path(self) -> None:
+        # The narrow fix, not a widened allow-set: `credential` is a login name
+        # only, so a manage form carrying it is still refused.
+        with self.assertRaises(SystemExit) as caught:
+            panel.post(_FakeOpener(), panel.BASE + "/manage/a1b2c3d4/admin/",
+                       {"csrf_token": "t", "credential": self.CREDENTIAL})
+
+        self.assertIn("unknown form field", str(caught.exception))
+        self.assertIn("credential", str(caught.exception))
+
+    def test_an_unknown_field_is_still_refused_at_an_allowed_path(self) -> None:
+        # DoD: the fence keeps its meaning at the paths it already allowed.
+        with self.assertRaises(SystemExit) as caught:
+            panel.post(_FakeOpener(), panel.BASE + "/manage/a1b2c3d4/admin/",
+                       {"csrf_token": "t", "username": "me"})
+
+        self.assertIn("refusing unknown form field(s) ['username']", str(caught.exception))
+
+    def test_an_unknown_field_is_refused_at_the_login_path_too(self) -> None:
+        # The login set is a set, not a hole: a renamed login field still fails
+        # loudly instead of being posted blind.
+        with self.assertRaises(SystemExit) as caught:
+            panel.post(_FakeOpener(), panel.LOGIN, {"csrf_token": "t", "username": "me"})
+
+        self.assertIn("refusing unknown form field(s) ['username']", str(caught.exception))
+
+    def test_a_form_rendered_again_is_a_refused_login(self) -> None:
+        # The captcha gate answers the form again. That is a refusal, not a login.
+        code, out, err, jar = self.run_login(lambda opener, url: LOGIN_HTML,
+                                             lambda opener, url, fields, **kw: LOGIN_HTML)
+
+        self.assertEqual(code, 1)
+        self.assertIn("dashboard", err)
+        self.assertEqual(jar.saved, 0, "a refused login must not save the jar")
+        self.assertNotIn("logged in", out)
+
+    def test_an_existing_session_is_recognised_before_any_post(self) -> None:
+        def fake_get(opener, url: str) -> str:  # noqa: ARG001
+            return SETTINGS_HTML if url.rstrip("/").endswith("settings") else PANEL_DASHBOARD
+
+        posted: list[tuple] = []
+        code, out, err, _ = self.run_login(
+            fake_get, lambda *args, **kwargs: posted.append(args) or "<p>ok</p>")
+
+        self.assertEqual(code, 0, err)
+        self.assertEqual(posted, [], "a valid session redirects /login/; nothing to post")
+        self.assertIn("already logged in", out)
+        self.assertIn("user lkbxu6i9", out)
+
+
 class OrderRouteTests(AuditIsolatedTests):
     """Buying is an API call at the partner price, not a panel form post.
 
@@ -428,7 +603,7 @@ class _FakeOpener:
     """The one call `post` makes: `open(request, timeout=…)` as a context."""
 
     def __init__(self, body: str = "<p>ok</p>") -> None:
-        self.requests: list[object] = []
+        self.requests: list[urllib.request.Request] = []
         self.body = body
 
     def open(self, request, timeout=None):  # noqa: ARG002 - the tool's timeout
