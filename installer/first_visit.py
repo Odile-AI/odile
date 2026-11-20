@@ -136,9 +136,11 @@ DEFAULT_RELOAD = "systemctl restart odile-agent"
 # and hands it to the browser that holds the recovery code.
 DEFAULT_RECOVERY = "/etc/odile/recovery.txt"
 # The machine's own access report (ODL-473). The boot oneshot writes it 0644
-# from `verify_and_unlock.sh --mode access --out`; this service renders it at
-# /verify with the provenance line the file carries. The page is the same
-# template HQ serves (web/verify.html), rendered in its tenant state.
+# from `verify_and_unlock.sh --mode access --out`; the support bundle reads it.
+# The tenant's /verify page is not this service's: it is `verify/verify.py`
+# under `odile-verify.service` on its own loopback port (t_4fcd465f). The
+# renderer below stays for HQ's demo page (`web/verify.html`), which app.py
+# serves and the demo-host checks exercise.
 DEFAULT_VERIFY_PAGE = "/usr/local/lib/odile/verify.html"
 DEFAULT_REPORT = "/var/lib/odile/access-report.txt"
 DEFAULT_ATTEST = "/var/lib/odile/attestation.json"
@@ -1272,9 +1274,6 @@ def build_handler(service: FirstVisit):
                 code, ctype, data = icon
                 return self._send_bytes(code, data, head, ctype,
                                         cache=ICON_CACHE if code == 200 else "no-store")
-            if path in ("/verify", "/verify/"):
-                code, body = service.verify()
-                return self._send(code, body, head)
             if path in ("/first-visit/recovery", "/first-visit/recovery/"):
                 return self._recovery_page(head, query)
             if path in ("/first-visit", "/first-visit/"):

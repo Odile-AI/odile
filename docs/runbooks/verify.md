@@ -58,7 +58,7 @@ the boot report's write time, so a reboot refreshes it and the measurement
 stays the same unless the image or the command line changed. There is no timer
 and no listener on a tenant: Caddy serves the file.
 
-On a first-visit machine the per-slug Caddy block names three paths, then
+On a first-visit machine the per-slug Caddy block names these paths, then
 falls through to the Webapp:
 
 ```
@@ -72,7 +72,7 @@ handle /attestation {
 
 handle /verify {
     header Cache-Control "no-store"
-    reverse_proxy 127.0.0.1:<first-visit port>
+    reverse_proxy 127.0.0.1:<verify port>
 }
 
 handle /first-visit* {
@@ -90,29 +90,73 @@ handle {
 
 `/attestation` is the only route that serves a file from `/var/lib/odile`: it
 rewrites every request to `/attestation.json`, so the request path never
-reaches `file_server`. `/verify` and `/first-visit*` are not file routes — both
-proxy to the same first-visit service on loopback: `/verify` renders the access
-report (`/var/lib/odile/access-report.txt`) as HTML, and `/first-visit*` covers
-the form, the recovery file and the reset form. Those two handlers are spliced
-in only when that service is part of the machine
-(`/etc/odile/first-visit.json`); a classic install has `/attestation` and the
-catch-all alone, never a proxy to a dead port. Every other path falls through
-to the Webapp, so no other file under `/var/lib/odile` is reachable over HTTP.
-A missing boot report, or a status other than `ok`, serves `available: false`
-with an `error`; the verifier fails closed on it.
+reaches `file_server`. `/verify` and `/first-visit*` are not file routes — they
+proxy to two loopback programs: `/verify` is the machine's own page
+(`odile-verify.service`, `verify/verify.py`, port 8098 and the reviewed
+`templates/verify.html`), and `/first-visit*` covers the form, the recovery
+file and the reset form (`odile-first-visit.service`, port 8091). The verify
+handler is spliced in only when the program and its template are installed; the
+first-visit handler only when `/etc/odile/first-visit.json` exists. A classic
+install has `/attestation` and the catch-all alone, never a proxy to a dead
+port. Every other path falls through to the Webapp, so no other file under
+`/var/lib/odile` is reachable over HTTP. A missing boot report, or a status
+other than `ok`, serves `available: false` with an `error`; the verifier fails
+closed on it.
 
 This is the boot report, not a liveness proof. It does not measure the app
 layer.
 
-## The machine's own access report
+## The machine's own /verify page
 
-`/verify` on a tenant shows five lines read from that machine — usable user
-keys, the boot key, the seal, the sign-in hash, the operator key — under the
-provenance line `read from your machine, <UTC time>`. The page's heading is
-`The access report, from your machine` and the caption is that provenance line.
-The 10 November bench block is the fallback for a machine with no report file
-(the demo on HQ, a bench); a tenant with no file says the report has not been
-written yet rather than showing the bench as its own state.
+`/verify` is served by `verify/verify.py` under `odile-verify.service`. The
+unit runs as root because the handoff audit reads `/etc/shadow` and sshd's
+journal; it binds 127.0.0.1:8098 and Caddy is the only public listener. It
+writes nothing, holds no state and runs no timer, and every response is
+`Cache-Control: no-store` with a `default-src 'none'` CSP: no JavaScript, no
+font or image fetch, no third-party request. The page is the reviewed
+`templates/verify.html`, embedded in the signed installer with the program, and
+installed at `/usr/local/lib/odile/verify.{py,html}`.
+
+The page reads, per request: `/var/lib/odile/attestation.json`, the installer's
+`/etc/odile/boot-record.json`, `/proc/cmdline`, the SSH host key, `/etc/passwd`
+and `/etc/shadow`, `/run/bb/sealed-unlock.state`, the tenant's `.hermes/.env`
+(the scrypt hash's presence, never its value), the signed manifest pair, the
+support-grant state and `cryptsetup luksDump` of the root container (the
+container is the device `cryptsetup status root_crypt` names; the plaintext
+mapper is refused, `docs/runbooks/support.md` §"The handover"). Every row
+is tagged `checked from your laptop` or `read from the machine`; the audit and
+the support program are the machine's own reviewed programs, so the page wraps
+their verdicts instead of re-implementing them. CLAIMS §4.4's five things are
+on it: the measurement, the seal policy (`policy 0x30000; seal_id …;
+measurement …` from the report bytes and the measured command line), zero usable
+user keys (the `boot key` and `authorized keys` rows), the sign-in hash (the
+`sign-in hash` row) and no operator key.
+
+On the machine:
+
+```sh
+systemctl status odile-verify.service      # active (running), User=root
+journalctl -u odile-verify.service -n 20
+curl -s -D - http://127.0.0.1:8098/verify -o /tmp/verify.html   # 200, no-store
+python3 /usr/local/lib/odile/verify.py --root / --json | head    # the same rows
+```
+
+`--now <ISO>` pins the provenance line for a bench; production runs without it.
+On a bench or a mounted machine root, pass `--root` and `--luks-dump` (the
+program cannot read a mounted root's `/dev/mapper` name):
+
+```sh
+/usr/bin/python3 verify/verify.py --root /var/tmp/<bench>/root \
+    --luks-dump /var/tmp/<bench>/dump.txt --now 2026-11-13T12:00:00Z
+```
+
+## The access report
+
+The strict bar's report is still written at boot — the support bundle quotes it
+— but it is no longer the tenant's `/verify` page. It shows five lines read
+from the machine — usable user keys, the boot key, the seal, the sign-in hash,
+the operator key — under the provenance line
+`read from your machine, <UTC time>`.
 
 The report is a file:
 
@@ -124,7 +168,7 @@ as root, before the agent unit, and again when a sign-in is set:
 ```sh
 systemctl status odile-access-report.service     # Result=success after a run
 journalctl -u odile-access-report.service -n 20  # the wrapper's two lines and the report
-cat /var/lib/odile/access-report.txt             # exactly what /verify renders
+cat /var/lib/odile/access-report.txt             # the support bundle's report
 ```
 
 The unit runs a wrapper, `/usr/local/lib/odile/access_report.sh`. It resolves
@@ -182,7 +226,7 @@ install -d -o odile -g odile -m 0700 /home/odile/.ssh
 echo 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAINotTheBootKeyOdileBench000000000000000000 odile' \
     >> /home/odile/.ssh/authorized_keys
 systemctl restart odile-access-report.service
-# the page: usable keys  FAIL  1 authorized key(s) other than the measured throwaway
+# the page: authorized keys  FAIL  1 line(s) that are not the measured boot key
 
 # 2. No sign-in hash: remove the scrypt line the first visit wrote.
 sed -i '/^HERMES_DASHBOARD_BASIC_AUTH_PASSWORD_HASH=/d' /home/odile/.hermes/.env

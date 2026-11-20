@@ -65,6 +65,9 @@ GUEST_SMOKE=0
 SEED_FILE=""
 FIRST_VISIT_TOKEN=""
 FIRST_VISIT_PORT=${ODILE_FIRST_VISIT_PORT:-8091}
+# The machine's own /verify page (t_4fcd465f): its own loopback program, root,
+# Caddy (or the bench stand-in) is the listener.
+VERIFY_PORT=${ODILE_VERIFY_PORT:-8098}
 MANIFEST_PORT=${ODILE_MANIFEST_PORT:-8012}
 
 usage() {
@@ -637,6 +640,24 @@ if [ "$GUEST_SMOKE" = 1 ]; then
     systemctl enable odile-bench-proxy-firstvisit.socket >/dev/null
     say same "odile-bench-proxy-firstvisit.socket enabled at boot"
 
+    # The machine's own /verify page has its own loopback port (t_4fcd465f);
+    # the bench's stand-in Caddy needs a socket on the slirp address for it as
+    # well. Installed at build time; the page program is installed by step 7b.
+    for unit in odile-bench-proxy-verify.socket odile-bench-proxy-verify.service; do
+        unit_tmp=$(mktemp)
+        sed -e "s|__VERIFY_PORT__|$VERIFY_PORT|g" "$HERE/$unit" > "$unit_tmp"
+        if cmp -s "$unit_tmp" "/etc/systemd/system/$unit"; then
+            say same "/etc/systemd/system/$unit"
+            rm -f "$unit_tmp"
+        else
+            chmod 0644 "$unit_tmp"
+            mv "$unit_tmp" "/etc/systemd/system/$unit"
+            say write "/etc/systemd/system/$unit"
+        fi
+    done
+    systemctl enable odile-bench-proxy-verify.socket >/dev/null
+    say same "odile-bench-proxy-verify.socket enabled at boot"
+
     # The manifest listener binds loopback too (ODL-472); the host reads
     # /manifest through this stand-in for Caddy, exactly as it reads the
     # first-visit page. Installed at build time; the first boot starts the
@@ -677,7 +698,8 @@ install_file() {  # src dst mode label
     fi
 }
 
-if [ ! -f "$HERE/verify.html" ] || [ ! -f "$HERE/access_report.sh" ] \
+if [ ! -f "$HERE/verify.html" ] || [ ! -f "$HERE/verify.py" ] \
+        || [ ! -f "$HERE/access_report.sh" ] \
         || [ ! -f "$HERE/verify_and_unlock.sh" ]; then
     say skip "the /verify report surface (ODL-473 is not in this image)"
 else
@@ -696,8 +718,20 @@ else
         say create "system group odile-manifest (the manifest listener's traverse)"
     fi
     install_file "$HERE/verify.html" /usr/local/lib/odile/verify.html 0644
+    install_file "$HERE/verify.py" /usr/local/lib/odile/verify.py 0755
     install_file "$HERE/access_report.sh" /usr/local/lib/odile/access_report.sh 0755
     install_file "$HERE/verify_and_unlock.sh" /usr/local/lib/odile/verify_and_unlock.sh 0755
+    # The page's own loopback unit (t_4fcd465f). Root because the audit reads
+    # /etc/shadow and the journal; 127.0.0.1 only, Caddy is the listener.
+    if [ -f "$HERE/odile-verify.service" ]; then
+        unit_tmp=$(mktemp)
+        sed -e "s|__VERIFY_PORT__|$VERIFY_PORT|g" \
+            "$HERE/odile-verify.service" > "$unit_tmp"
+        install_file "$unit_tmp" /etc/systemd/system/odile-verify.service 0644
+        rm -f "$unit_tmp"
+        systemctl enable odile-verify.service >/dev/null
+        say same "odile-verify.service enabled at boot"
+    fi
     if [ -f "$HERE/attest.py" ]; then
         install_file "$HERE/attest.py" /usr/local/lib/odile/attest.py 0755
     fi
@@ -732,8 +766,8 @@ else
     if [ -d /run/systemd/system ]; then
         # The units order themselves (bench stand-in -> attestation -> report).
         systemctl start odile-bench-attest.service odile-attest-boot.service \
-            odile-access-report.service 2>/dev/null || true
-        say start "the boot report and the machine's access report"
+            odile-access-report.service odile-verify.service 2>/dev/null || true
+        say start "the boot report, the machine's access report and its /verify page"
     fi
 fi
 

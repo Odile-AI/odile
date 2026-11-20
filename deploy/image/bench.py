@@ -56,6 +56,9 @@ FIRSTBOOT_MARK = "odile-firstboot:"
 FIRSTBOOT_EXPECT = ("installed", "same", "fail-closed")
 FIRST_VISIT_NAME = "first-visit"
 FIRST_VISIT_PORT = 8091
+# t_4fcd465f: the machine's own /verify page on its own loopback port; the
+# host reaches it through the bench proxy, the same shape as first-visit.
+VERIFY_PORT = 8098
 
 # ODL-472: the signed manifest the guest serves at /manifest, read through the
 # host-forwarded port. A tampered pair must leave nothing answering.
@@ -903,6 +906,7 @@ def boot_qemu_uki(
     cpus: int,
     first_visit_port: int = 0,
     manifest_port: int = 0,
+    verify_port: int = 0,
 ) -> subprocess.Popen:
     warn_tmpfs(disk, serial, bench_serial)
     # virtio-scsi, not virtio-blk: the release initramfs and the hook address
@@ -910,6 +914,8 @@ def boot_qemu_uki(
     forwards = [f"hostfwd=tcp:127.0.0.1:{port}-:{WEBAPP_PORT}"]
     if first_visit_port:
         forwards.append(f"hostfwd=tcp:127.0.0.1:{first_visit_port}-:{FIRST_VISIT_PORT}")
+    if verify_port:
+        forwards.append(f"hostfwd=tcp:127.0.0.1:{verify_port}-:{VERIFY_PORT}")
     if manifest_port:
         forwards.append(f"hostfwd=tcp:127.0.0.1:{manifest_port}-:{MANIFEST_PORT}")
     command = [
@@ -958,7 +964,8 @@ def sealed(args: argparse.Namespace) -> int:
     started = time.monotonic()
     print(f"{PREFIX} sealed boot {uki.name} + {disk.name} under QEMU TCG/OVMF, serial {serial}", flush=True)
     process = boot_qemu_uki(disk, uki, ovmf, serial, bench_serial, args.port, args.memory,
-                            args.cpus, args.first_visit_port, args.manifest_port)
+                            args.cpus, args.first_visit_port, args.manifest_port,
+                            args.verify_port)
     firstboot: Check | None = None
     page: Check | None = None
     manifest: Check | None = None
@@ -1166,6 +1173,8 @@ def build_parser() -> argparse.ArgumentParser:
     # one console line.
     sealed_parser.add_argument("--first-visit-port", type=int, default=0,
                                help="host port forwarded to the guest's first-visit page")
+    sealed_parser.add_argument("--verify-port", type=int, default=0,
+                               help="host port forwarded to the guest's /verify page")
     sealed_parser.add_argument("--first-visit-token", default="",
                                help="the one-time token in the measured command line")
     sealed_parser.add_argument("--expect-firstboot", choices=FIRSTBOOT_EXPECT, default=None,
