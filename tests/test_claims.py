@@ -219,7 +219,7 @@ class ClaimsDeckTests(unittest.TestCase):
             "and no one at Odile holds it.",
             "After a reboot, it starts itself. The seal is the key.",
             "Your Odile sign-in is set on your machine at first visit and hashed there. "
-            "We never see it. It is the only app-layer gate: no 2FA in V0.1.",
+            "We never see it. It is the only app-layer gate: no 2FA in alpha.0.",
             "A support grant is a time-boxed door into the running machine. It ends for "
             "new logins when it expires or you revoke it.",
             "At HQ we hold your email, the record of your machine, and a boot key with "

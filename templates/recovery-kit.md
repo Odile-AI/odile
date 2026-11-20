@@ -41,7 +41,7 @@ Open the Set your sign-in link in your ready email. The same URL is printed
 at the top of this file. The link expires {{token_expiry_prose}}.
 Set the password that opens your workspace: at least 16 characters. Your
 Odile sign-in is set on your machine at first visit and hashed there. We
-never see it. It is the only app-layer gate: no 2FA in V0.1.
+never see it. It is the only app-layer gate: no 2FA in alpha.0.
 
 The link carries a single-use setup token. If the link has expired or was
 already opened, write to help@odile.fyi for a new one.

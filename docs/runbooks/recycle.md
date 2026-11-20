@@ -64,8 +64,8 @@ a tenant's disk and its measured boot image without the user:
 
 The target shape is **one UKI per release with an empty `.cmdline`**; the
 per-machine line travels in the panel's command-line field (ADR-001 §4). The
-published `f7bc0ceb…`/`90e97a0f…` UKIs carry a **baked** line, which is a
-different — and older — shape.
+published `f7bc0ceb…` (the UKI **t_c1e0f336** built) and `90e97a0f…` UKIs carry
+a **baked** line, which is a different — and older — shape.
 
 ```sh
 # from the shipped bytes: same kernel, same initramfs, same .uname/.osrel,

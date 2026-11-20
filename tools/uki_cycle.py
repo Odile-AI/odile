@@ -18,7 +18,9 @@ The tool is the wiring, not a second implementation: publishing is
 panel is `tools/servury_panel.py` (login + form fill, `--set --dry-run` first
 if you want to see the fields), and the machine is `tools/servury_cycle.py`
 (console log on, power action, poll the transcript, write it with the image
-hash in the header). What is added here is the order, the panel block the
+hash in the header, console log off). The off is the cycle's own: the host
+keeps the serial log as a plaintext file, so `--keep-console` is the only way
+to leave it armed. What is added here is the order, the panel block the
 handoff quotes, the attest check and the evidence file.
 
 The attest check has three values and names all of them:
@@ -323,6 +325,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--fresh", action="store_true", default=True,
                         help="empty the transcript before arming it (default)")
     parser.add_argument("--keep-old-transcript", dest="fresh", action="store_false")
+    parser.add_argument("--keep-console", action="store_true",
+                        help="leave the console log on after the cycle; the default "
+                             "turns it off once the transcript is saved, because the "
+                             "host keeps the log as a plaintext file")
     parser.add_argument("--dry-run", action="store_true", help="print the commands, change nothing")
     args = parser.parse_args(argv)
 
@@ -425,6 +431,8 @@ def main(argv: list[str] | None = None) -> int:
         cycle_command.append("--panel-done")
     if args.fresh:
         cycle_command.append("--fresh")
+    if args.keep_console:
+        cycle_command.append("--keep-console")
     commands.append(cycle_command)
     completed = run(cycle_command, dry_run=args.dry_run)
     if completed is None:
