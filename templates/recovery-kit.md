@@ -62,9 +62,11 @@ on the first visit. After a reset the old code stops working, and a new one
 is shown. The same code fetches your recovery file at
 {{url}}/first-visit/recovery; using it there rotates it too.
 
-Your account password is not reset on the machine. It resets at your account
+Your account password is not reset on the machine. {{^account_host}}It resets at your account
 site — the site in your invitation email. Open that site and add /forgot. That
-reset works while the machine is down; the recovery code needs the machine up.
+reset works while the machine is down; the recovery code needs the machine up.{{/account_host}}{{#account_host}}It resets at
+{{account_host}}/forgot. That reset works while the machine is down;
+the recovery code needs the machine up.{{/account_host}}
 
 The recovery file opens your backup. Download your copy on the first visit
 and keep it off the machine: it is your only copy of the backup password. It

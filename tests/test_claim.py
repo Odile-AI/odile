@@ -76,6 +76,9 @@ SLUG = "odl-7f3a2c"
 IPV4 = "203.0.113.120"
 ZONE = "odile.fyi"
 ZONE_ID = "fixture-zone-id"
+# The account site the invitation email names; the kit prints `<host>/forgot`
+# when the operator records it in the config.
+ACCOUNT_HOST = "https://test.odile.fyi"
 NOW = int(datetime(2026, 11, 9, 12, 0, tzinfo=timezone.utc).timestamp())
 MACHINE_EXPIRES = int(datetime(2026, 12, 11, 12, 0, tzinfo=timezone.utc).timestamp())
 RELEASE = "2026.11.1"
@@ -864,6 +867,29 @@ class ProvisionTests(ClaimBase):
         self.assertEqual(len(provider.machines), 1)
         # The re-adoption keeps the release the machine was first ordered under.
         self.assertEqual(self.tenant()["release"], RELEASE)
+
+    def test_the_kit_prints_the_account_site_the_config_names(self) -> None:
+        """`account_host` in the operator's config reaches the attached kit."""
+        self.write_config(account_host=ACCOUNT_HOST)
+        self.config = Config.load(self.config_path)
+        self.paid_claim()
+        result = self.provision(FixtureProvider())
+        self.assertTrue(result.ok, result.reason)
+        self.assertIsNotNone(result.kit_path)
+        kit_text = Path(result.kit_path).read_text(encoding="utf-8")
+        self.assertIn(f"{ACCOUNT_HOST}/forgot", kit_text)
+        self.assertNotIn("the site in your invitation email", kit_text)
+
+    def test_the_kit_keeps_the_invitation_sentence_without_the_config_key(self) -> None:
+        """Unset in the config: the kit reads exactly as it did before the slot."""
+        self.paid_claim()
+        result = self.provision(FixtureProvider())
+        self.assertTrue(result.ok, result.reason)
+        kit_text = Path(result.kit_path).read_text(encoding="utf-8")
+        self.assertIn(
+            "It resets at your account\nsite — the site in your invitation email. "
+            "Open that site and add /forgot.", kit_text)
+        self.assertNotIn("{{", kit_text)
 
 
 # --------------------------------------------------------------------- failure
