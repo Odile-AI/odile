@@ -200,3 +200,15 @@ forbidden-value	tools/servury_panel.py	sha256:3e5275784e44	constant	no	the opera
 forbidden-value	tools/servury_panel.py	sha256:4014bb9b4e56	constant	no	the operator tool reads this live id by default; the path is pinned, so another value there is still a finding	never
 forbidden-value	tools/servury_renew.py	sha256:3e5275784e44	constant	no	the operator tool reads this live id by default; the path is pinned, so another value there is still a finding	never
 forbidden-value	tools/servury_renew.py	sha256:4014bb9b4e56	constant	no	the operator tool reads this live id by default; the path is pinned, so another value there is still a finding	never
+
+# History-only rows for blobs the branch (and main) already published. Each is
+# one value at one path; the path is pinned, so another value there is still a
+# finding. The class is armed in CI for the first time at this head, and these
+# blobs predate it.
+forbidden-value	tools/leak_scan.py	sha256:4014bb9b4e56	constant	no	history only: the scanner's own shape comment named the dev account before ODL-911 replaced it with a placeholder; the path is pinned	never
+forbidden-value	scripts/probe-planted-key.txt	sha256:3e5275784e44	constant	no	history only: the planted probe file of the ODL-513 dry run, added and deleted in 64b5682; the path is pinned	never
+forbidden-value	scripts/probe-planted-key.txt	sha256:4014bb9b4e56	constant	no	history only: the planted probe file of the ODL-513 dry run, added and deleted in 64b5682; the path is pinned	never
+forbidden-value	docs/runbooks/recycle.md	sha256:0cca50f512f3	constant	no	history only: the retired tenant's instance id in the blob this path carried before 2026-11-20; the path is pinned	never
+forbidden-value	docs/runbooks/verify.md	sha256:0cca50f512f3	constant	no	history only: the retired tenant's instance id in the blob this path carried before 2026-11-20; the path is pinned	never
+forbidden-value	tests/test_servury_reinstall.py	sha256:0cca50f512f3	constant	no	history only: the retired tenant's instance id in the blob this path carried before 2026-11-20; the path is pinned	never
+forbidden-value	tests/test_servury_reinstall.py	sha256:95aa03e40369	constant	no	history only: a retired tenant slug in the blob this path carried before 2026-11-20; the path is pinned	never
