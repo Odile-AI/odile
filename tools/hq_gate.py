@@ -12,28 +12,29 @@ red — for everyone — in `main`.
 
 This tool closes the gap. It:
 
-1. reads the HQ-only set from HQ's own git — every file `git ls-files --others
-   --ignored --exclude-standard` names there, minus byte-code caches, sibling
-   worktrees and other noise — and drops any path the branch tracks (the
-   branch's bytes win, exactly as in a merge). HQ defaults to this
-   repository's primary checkout, resolved from `git rev-parse
-   --git-common-dir`, so a card worktree configures nothing;
+1. reads the files the overlay needs from HQ's own git: every file `git ls-files
+   --others --ignored --exclude-standard` names there, minus byte-code caches,
+   sibling worktrees and other noise, **and** `main`'s side of the merge — the
+   paths the branch left alone, taken as `main` has them. Both sets drop any
+   path the branch tracks (the branch's bytes win, exactly as in a merge). The
+   second set is ODL-941 and ODL-479: `main` gained `docs/craft/finance.md`
+   after a card's branch was cut, and later repaired a citation in
+   `docs/runbooks/recycle.md` the same branch never touched — HQ *tracks* both,
+   so the ignored list cannot name them, and the gate ran a tree the merge would
+   never produce. HQ defaults to this repository's primary checkout, resolved
+   from `git rev-parse --git-common-dir`, so a card worktree configures
+   nothing;
 2. creates a throwaway worktree at the branch's **commit** with `git worktree
    add --detach`, so an uncommitted edit cannot be what is tested;
-3. makes that tree the *merge preview*: every path the branch did not touch is
-   written as HQ's `HEAD` has it, because `merge_card` puts the branch into
-   `main` and main's copy is the one that survives. Without this a branch cut
-   before main moved reds on a file nobody touched — main gained
-   `docs/craft/finance.md` and `test_craft` named it missing in two cards that
-   never went near a playbook — and, worse, keeps main's newer documents
-   invisible to the rules that inspect them, which is the same false green this
-   tool exists to close. A path both sides changed keeps the branch's bytes;
-   `card_acceptance` owns the clean-merge question;
-4. overlays the HQ-only files on it, which is what the merged tree in `main`
-   looks like: the branch's tracked files plus the private machinery;
-5. runs every HQ-only `tests/test_*.py` module there and reports one line per
-   module — the branch's documents in front of HQ's rules;
-6. removes the worktree and the copy, so the card's own tree is never touched.
+3. overlays both sets on it, which is what the merged tree in `main` looks
+   like: the branch's tracked files plus the private machinery plus main's side
+   of the merge (bytes read from the commits, so an uncommitted edit at HQ
+   changes nothing). A path both sides changed keeps the branch's bytes, and a
+   path the branch deleted stays deleted; `card_acceptance` owns the
+   clean-merge question;
+4. runs every `tests/test_*.py` module among those files there and reports one
+   line per module — the branch's documents in front of HQ's rules;
+5. removes the worktree and the copy, so the card's own tree is never touched.
 
 Why the overlay rather than the card worktree directly: a bare copy of the
 modules into `tests/` fails 8 of 15 at import or on `docs/backlog.yaml`, because
@@ -83,6 +84,11 @@ def git(*args: str, cwd: Path) -> subprocess.CompletedProcess[str]:
                           errors="replace", env=clean_env())
 
 
+def git_bytes(*args: str, cwd: Path) -> subprocess.CompletedProcess[bytes]:
+    """`git` for a blob: no text decoding, so a binary file survives."""
+    return subprocess.run(("git", *args), cwd=str(cwd), capture_output=True, env=clean_env())
+
+
 def is_noise(path: str) -> bool:
     """A cache, a sibling worktree or an editor backup is not an HQ-only file."""
     if path.endswith(NOISE_SUFFIXES):
@@ -107,97 +113,13 @@ def main_checkout(tree: Path) -> Path:
     return common.parent if common.name == ".git" else common
 
 
-def git_bytes(*args: str, cwd: Path) -> subprocess.CompletedProcess[bytes]:
-    """`git` with byte output: a blob is not text, and `errors="replace"` corrupts one."""
-    return subprocess.run(("git", *args), cwd=str(cwd), capture_output=True, env=clean_env())
-
-
-def tree_entries(repo: Path, rev: str) -> dict[str, tuple[str, str]]:
-    """`{path: (mode, blob)}` for every blob in `rev` — a tree, not a working copy."""
-    result = git_bytes("ls-tree", "-r", "-z", "--full-tree", rev, cwd=repo)
+def tracked_files(tree: Path, revision: str = "HEAD") -> set[str]:
+    """Every path the revision's tree carries — by default the branch's `HEAD`."""
+    result = git("ls-tree", "-r", "--name-only", "-z", revision, cwd=tree)
     if result.returncode != 0:
-        raise SystemExit(f"hq-gate: cannot read {rev} in {repo}: "
-                         f"{result.stderr.decode(errors='replace').strip()[:160]}")
-    entries: dict[str, tuple[str, str]] = {}
-    for record in result.stdout.split(b"\0"):
-        if not record:
-            continue
-        meta, _, path = record.partition(b"\t")
-        fields = meta.decode("ascii", "replace").split()
-        if len(fields) == 3 and fields[1] == "blob":
-            entries[path.decode("utf-8", "surrogateescape")] = (fields[0], fields[2])
-    return entries
-
-
-def tracked_files(tree: Path) -> set[str]:
-    """Every path the tree's `HEAD` carries — the branch's own bytes."""
-    return set(tree_entries(tree, "HEAD"))
-
-
-def head_commit(repo: Path) -> str:
-    result = git("rev-parse", "HEAD", cwd=repo)
-    if result.returncode != 0:
-        raise SystemExit(f"hq-gate: cannot resolve HEAD in {repo}: {result.stderr.strip()[:160]}")
-    return result.stdout.strip()
-
-
-def merge_base(tree: Path, hq_head: str) -> str | None:
-    """The commit the branch and HQ's HEAD last shared, or None across two repositories.
-
-    A fixture HQ from another repository shares no history, and then nothing is
-    known about what either side touched: the overlay stays the HQ-only files.
-    """
-    result = git("merge-base", "HEAD", hq_head, cwd=tree)
-    return result.stdout.strip() if result.returncode == 0 and result.stdout.strip() else None
-
-
-def carried_paths(hq: dict[str, tuple[str, str]], base: dict[str, tuple[str, str]],
-                  branch: dict[str, tuple[str, str]]) -> list[str]:
-    """The paths the merge takes from HQ because the branch left them alone.
-
-    Three-way, path by path: main added it and the branch never had it → it
-    arrives; the branch still carries the base's bytes and main moved → main's
-    arrive; the branch changed it → the branch's bytes stay (and if main changed
-    it too, `card_acceptance` reports the conflict separately); the branch
-    deleted it → it stays deleted.
-    """
-    carried: list[str] = []
-    for path, entry in hq.items():
-        branch_entry = branch.get(path)
-        if branch_entry is None:
-            if path not in base:
-                carried.append(path)
-        elif branch_entry == base.get(path) and branch_entry != entry:
-            carried.append(path)
-    return sorted(carried)
-
-
-def overlay_committed(hq: Path, destination: Path, paths: list[str],
-                      entries: dict[str, tuple[str, str]]) -> list[str]:
-    """Write HQ HEAD's *committed* bytes for `paths` into the throwaway tree.
-
-    HQ's working copy is often dirty (it is where the operating record is
-    written); the merge takes the commit, so this reads the blob by id.
-    """
-    copied: list[str] = []
-    for relative in paths:
-        mode, blob = entries[relative]
-        result = git_bytes("cat-file", "blob", blob, cwd=hq)
-        if result.returncode != 0:
-            raise SystemExit(f"hq-gate: cannot read {relative} from {hq} HEAD: "
-                             f"{result.stderr.decode(errors='replace').strip()[:160]}")
-        target = destination / relative
-        target.parent.mkdir(parents=True, exist_ok=True)
-        if mode == "120000":
-            if target.exists() or target.is_symlink():
-                target.unlink()
-            os.symlink(result.stdout.decode("utf-8", "surrogateescape"), target)
-        else:
-            target.write_bytes(result.stdout)
-            if mode == "100755":
-                os.chmod(target, 0o755)
-        copied.append(relative)
-    return copied
+        raise SystemExit(f"hq-gate: cannot read {revision} in {tree}: "
+                         f"{result.stderr.strip()[:160]}")
+    return {path for path in result.stdout.split("\0") if path}
 
 
 def hq_only_files(hq: Path, tracked: set[str]) -> list[str]:
@@ -216,8 +138,100 @@ def hq_only_files(hq: Path, tracked: set[str]) -> list[str]:
     return sorted(path for path in found if not is_noise(path) and path not in tracked)
 
 
+def integration_commit(hq: Path) -> str | None:
+    """The commit `main` names in the HQ repository, or `None`.
+
+    The gate has to carry what the merge will carry: the files `main` tracks
+    that the branch's HEAD does not. The ref is read from HQ's *git*, not from
+    HQ's working tree, because a checkout can sit on another branch (during the
+    ODL-941 investigation it did) while its `main` ref is still the integration
+    branch. `origin/main` covers a clone that never made a local branch; with no
+    `main` at all — a public clone on another default branch — the overlay takes
+    nothing from it, which is what a merge there would add too.
+    """
+    for ref in ("main", "origin/main"):
+        result = git("rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}", cwd=hq)
+        if result.returncode == 0 and result.stdout.strip():
+            return result.stdout.strip()
+    return None
+
+
+def tree_entries(repo: Path, revision: str) -> dict[str, tuple[str, str]]:
+    """`{path: (mode, blob)}` for every blob in `revision` — a tree, not a working copy."""
+    result = git_bytes("ls-tree", "-r", "-z", "--full-tree", revision, cwd=repo)
+    if result.returncode != 0:
+        raise SystemExit(f"hq-gate: cannot read {revision} in {repo}: "
+                         f"{result.stderr.decode('utf-8', 'replace').strip()[:160]}")
+    entries: dict[str, tuple[str, str]] = {}
+    for record in result.stdout.split(b"\0"):
+        if not record:
+            continue
+        meta, _, path = record.partition(b"\t")
+        fields = meta.decode("ascii", "replace").split()
+        if len(fields) == 3 and fields[1] == "blob":
+            entries[path.decode("utf-8", "surrogateescape")] = (fields[0], fields[2])
+    return entries
+
+
+def merge_base(tree: Path, revision: str) -> str | None:
+    """The commit the branch and `revision` last shared, or None across two repositories.
+
+    A fixture HQ from another repository shares no history, and then nothing is
+    known about what either side touched: every path `main` has and the branch
+    lacks is carried, and a path the branch tracks keeps the branch's bytes.
+    """
+    result = git("merge-base", "HEAD", revision, cwd=tree)
+    return result.stdout.strip() if result.returncode == 0 and result.stdout.strip() else None
+
+
+def carried_paths(main: dict[str, tuple[str, str]], base: dict[str, tuple[str, str]],
+                  branch: dict[str, tuple[str, str]]) -> list[str]:
+    """The paths the merge takes from `main` because the branch left them alone.
+
+    Three-way, path by path: `main` added it and the branch never had it → it
+    arrives; the branch still carries the base's bytes and `main` moved → main's
+    arrive (the repaired `docs/runbooks/recycle.md` citation reaches every card
+    cut before the repair); the branch changed it → the branch's bytes stay (and
+    if `main` changed it too, `card_acceptance` reports the conflict
+    separately); the branch deleted it → it stays deleted, as a merge would.
+    """
+    carried: list[str] = []
+    for path, entry in main.items():
+        branch_entry = branch.get(path)
+        if branch_entry is None:
+            if path not in base:
+                carried.append(path)
+        elif branch_entry == base.get(path) and branch_entry != entry:
+            carried.append(path)
+    return sorted(carried)
+
+
+def main_side_files(hq: Path, tree: Path, revision: str | None = None) -> list[str]:
+    """Files the merge takes from `main`, sorted, noise off.
+
+    A file that exists only on `main` is in neither set the gate used to read:
+    HQ *tracks* it, so `ls-files --others --ignored` cannot name it, and the
+    branch's HEAD has not got it — ODL-941, where `main` gained
+    `docs/craft/finance.md` after the card was cut and `test_craft` failed on a
+    card that touched no craft document. A file `main` *repaired* while the
+    branch left it alone belongs here too, or the gate runs a document the merge
+    will never produce — the other half of ODL-479. A path the branch tracks is
+    dropped, so the branch's bytes still win.
+    """
+    if revision is None:
+        revision = integration_commit(hq)
+    if revision is None:
+        return []
+    shared = merge_base(tree, revision)
+    return [path for path in carried_paths(
+        tree_entries(hq, revision),
+        tree_entries(tree, shared) if shared else {},
+        tree_entries(tree, "HEAD"),
+    ) if not is_noise(path)]
+
+
 def modules_from(files: list[str]) -> list[str]:
-    """The dotted module names among the HQ-only files, in reading order."""
+    """The dotted module names among the overlaid files, in reading order."""
     return [
         path[len(TESTS_ROOT):-len(".py")].replace("/", ".")
         for path in files
@@ -247,6 +261,49 @@ def overlay(hq: Path, destination: Path, files: list[str]) -> list[str]:
             shutil.copytree(source, target, dirs_exist_ok=True, symlinks=True)
         else:
             shutil.copy2(source, target)
+        copied.append(relative)
+    return copied
+
+
+def overlay_commit(hq: Path, revision: str, destination: Path, files: list[str]) -> list[str]:
+    """Write `revision`'s bytes for `files` into the throwaway tree; return the paths.
+
+    The bytes come from the commit, not from HQ's working copy: an uncommitted
+    edit at HQ is not what the merge carries, and the file need not be in HQ's
+    checkout at all when that checkout sits on a branch without it. Git's mode
+    travels with the blob, so an executable tool stays executable.
+    """
+    if not files:
+        return []
+    listing = git("ls-tree", "-r", "-z", revision, cwd=hq)
+    if listing.returncode != 0:
+        raise SystemExit(f"hq-gate: cannot read {revision} in {hq}: "
+                         f"{listing.stderr.strip()[:160]}")
+    entries: dict[str, tuple[str, str]] = {}
+    for record in listing.stdout.split("\0"):
+        meta, _, path = record.partition("\t")
+        fields = meta.split()
+        if len(fields) == 3 and fields[1] == "blob":
+            entries[path] = (fields[0], fields[2])
+    copied: list[str] = []
+    for relative in files:
+        entry = entries.get(relative)
+        if entry is None:  # a gitlink (submodule) has no blob to copy
+            continue
+        mode, object_id = entry
+        blob = git_bytes("cat-file", "blob", object_id, cwd=hq)
+        if blob.returncode != 0:
+            raise SystemExit(f"hq-gate: cannot read {relative} at {revision}: "
+                             f"{blob.stderr.decode('utf-8', 'replace').strip()[:160]}")
+        target = destination / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        if mode == "120000":
+            if target.exists() or target.is_symlink():
+                target.unlink()
+            os.symlink(blob.stdout.decode("utf-8", "surrogateescape"), target)
+        else:
+            target.write_bytes(blob.stdout)
+            os.chmod(target, 0o755 if mode == "100755" else 0o644)
         copied.append(relative)
     return copied
 
@@ -299,7 +356,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--tree", default=os.getcwd(),
                         help="the checkout under test (default: the current directory)")
     parser.add_argument("--list", action="store_true",
-                        help="print the HQ-only files the overlay would carry, then exit")
+                        help="print the files the overlay would carry, then exit")
     parser.add_argument("--keep", action="store_true",
                         help="keep the throwaway tree and print its path (debugging)")
     args = parser.parse_args(argv)
@@ -319,31 +376,25 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     tracked = tracked_files(tree)
-    files = hq_only_files(hq, tracked)
+    revision = integration_commit(hq)
+    hq_files = hq_only_files(hq, tracked)
+    main_files = main_side_files(hq, tree, revision)
+    files = sorted(set(hq_files) | set(main_files))
     modules = modules_from(files)
-
-    hq_head = head_commit(hq)
-    hq_entries = tree_entries(hq, hq_head)
-    base_rev = merge_base(tree, hq_head)
-    base_entries = tree_entries(tree, base_rev) if base_rev else {}
-    carried = carried_paths(hq_entries, base_entries, tree_entries(tree, "HEAD"))
 
     if args.list:
         for path in files:
             print(path)
-        for path in carried:
-            print(path)
-        print(f"hq-gate: {len(modules)} HQ-only module(s), {len(files)} HQ-only file(s), "
-              f"{len(carried)} file(s) from HQ HEAD {hq_head[:7]}")
+        print(f"hq-gate: {len(modules)} HQ-only module(s), {len(files)} file(s)")
         return 0
 
     if not modules:
         print(f"hq-gate: OK — no HQ-only test module (HQ {hq}, tree {tree})")
         return 0
 
-    print(f"hq-gate: {len(modules)} HQ-only module(s) to run; overlay {len(files)} "
-          f"HQ-only file(s) and {len(carried)} file(s) the merge takes from HQ HEAD "
-          f"{hq_head[:7]} ({base_rev[:7] if base_rev else 'no common base'})")
+    print(f"hq-gate: {len(modules)} module(s) to run, {len(files)} file(s) to overlay "
+          f"from {hq} ({len(hq_files)} HQ-only, {len(main_files)} from main's side "
+          f"of the merge)")
 
     tmp_parent = Path(os.environ.get("ODILE_HQ_GATE_TMP") or DEFAULT_TMP)
     tmp_parent.mkdir(parents=True, exist_ok=True)
@@ -357,8 +408,9 @@ def main(argv: list[str] | None = None) -> int:
             print(f"FAIL  cannot build a throwaway worktree from {tree} HEAD: "
                   f"{(added.stderr or added.stdout).strip()[:200]}")
             return 2
-        overlay(hq, destination, files)
-        overlay_committed(hq, destination, carried, hq_entries)
+        overlay(hq, destination, hq_files)
+        if revision is not None:
+            overlay_commit(hq, revision, destination, main_files)
         failed, total = run_modules(destination, modules)
     finally:
         if args.keep:
@@ -371,8 +423,9 @@ def main(argv: list[str] | None = None) -> int:
         print(f"hq-gate: FAILED — {len(failed)} of {len(modules)} module(s) "
               f"({total} test(s) ran): {', '.join(failed)}")
         return 1
-    print(f"hq-gate: OK — {len(modules)} module(s), {total} test(s) ran: {tree} HEAD "
-          f"as merged with HQ HEAD {hq_head[:7]}, plus {len(files)} HQ-only file(s)")
+    print(f"hq-gate: OK — {len(modules)} module(s), {total} test(s) ran against "
+          f"{tree} HEAD plus {len(files)} overlaid file(s) ({len(main_files)} from "
+          f"main's side of the merge)")
     return 0
 
 

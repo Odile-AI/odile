@@ -13,11 +13,10 @@ These tests pin the properties the gate's answer depends on:
 
 * the branch's committed tree is what is under test — a violation that only
   exists in the commit is red, and the same tree without it is green;
-* the tree is the *merge preview*: what main gained after the branch was cut
-  arrives, main's repair of a document the branch left alone arrives, the
-  branch's own bytes win where it changed the file, and a file the branch
-  deleted is not resurrected (a branch cut before main moved used to red
-  `test_craft` on a playbook nobody had touched);
+* `main`'s side of the merge arrives: what main gained after the branch was cut
+  (ODL-941), what main repaired while the branch left it alone (ODL-479), a path
+  both sides changed keeps the branch's bytes, and a path the branch deleted is
+  not resurrected;
 * the committed bytes arrive, not HQ's working copy, which is often dirty;
 * an HQ-only path the branch also tracks keeps the branch's bytes (the overlay
   must never overwrite a tracked file);
@@ -50,6 +49,7 @@ import hq_gate  # noqa: E402
 # the branch's documents are what the gate examined.
 HQ_ONLY_MODULE = '''\
 """Fixture: runs only where the HQ-only machinery is overlaid."""
+import os
 import unittest
 from pathlib import Path
 
@@ -65,6 +65,16 @@ class OverlayTest(unittest.TestCase):
 
     def test_a_tracked_branch_file_keeps_the_branch_bytes(self):
         self.assertEqual((ROOT / "tools" / "owned.py").read_text().strip(), "BRANCH")
+
+    def test_a_file_only_main_tracks_is_overlaid(self):
+        # The branch was cut before main gained this playbook (ODL-941's shape).
+        path = ROOT / "docs" / "craft" / "finance.md"
+        self.assertTrue(path.is_file(), f"missing {path}")
+        self.assertEqual(path.read_text().strip(), "main-only")
+
+    def test_a_file_only_main_tracks_keeps_its_mode(self):
+        self.assertTrue(os.access(ROOT / "tools" / "moved.py", os.X_OK),
+                        "main's executable bit did not survive the overlay")
 '''
 
 
@@ -106,6 +116,15 @@ class FixtureCase(unittest.TestCase):
         (self.hq / "docs" / "README.md").write_text("public\n", encoding="utf-8")
         git("add", "-A", cwd=self.hq)
         git("commit", "-q", "-m", "hq", cwd=self.hq)
+        # `main` moves after the card's branch was cut — ODL-941's shape, where
+        # main had gained docs/craft/finance.md and the branch's HEAD never did.
+        (self.hq / "docs" / "craft").mkdir()
+        (self.hq / "docs" / "craft" / "finance.md").write_text("main-only\n", encoding="utf-8")
+        (self.hq / "tools").mkdir()
+        (self.hq / "tools" / "moved.py").write_text("#!/usr/bin/python3\n", encoding="utf-8")
+        (self.hq / "tools" / "moved.py").chmod(0o755)
+        git("add", "-A", cwd=self.hq)
+        git("commit", "-q", "-m", "main gains a playbook", cwd=self.hq)
         (self.hq / ".git" / "info" / "exclude").write_text(
             "docs/backlog.yaml\n"
             "tests/test_hq_only.py\n"
@@ -117,7 +136,7 @@ class FixtureCase(unittest.TestCase):
         (self.hq / "docs" / "backlog.yaml").write_text("hq-only\n", encoding="utf-8")
         (self.hq / "tests").mkdir()
         (self.hq / "tests" / "test_hq_only.py").write_text(HQ_ONLY_MODULE, encoding="utf-8")
-        (self.hq / "tools").mkdir()
+        (self.hq / "tools").mkdir(exist_ok=True)
         (self.hq / "tools" / "owned.py").write_text("HQ\n", encoding="utf-8")
         (self.hq / "tests" / "__pycache__").mkdir()
         (self.hq / "tests" / "__pycache__" / "stale.pyc").write_bytes(b"\0")
@@ -170,7 +189,7 @@ class GateRunTest(FixtureCase):
         code, output = self.run_gate()
         self.assertEqual(code, 0, output)
         self.assertRegex(output, r"pass\s+test_hq_only \(Ran \d+ tests? in ")
-        self.assertIn("Ran 3 tests", output)
+        self.assertIn("Ran 5 tests", output)
         self.assertIn("hq-gate: OK", output)
 
     def test_a_violation_only_in_the_commit_is_red(self):
@@ -218,6 +237,45 @@ class GateRunTest(FixtureCase):
         empty.mkdir()
         code, output = quiet_main(["--hq", str(self.hq), "--tree", str(empty)])
         self.assertEqual(code, 2, output)
+
+
+class MainAheadTest(FixtureCase):
+    """A branch cut before `main` moved — ODL-941, 2026-11-20.
+
+    `main` had gained `docs/craft/finance.md`; the branch's HEAD never had it.
+    HQ *tracks* the file, so the ignored-and-untracked list does not name it and
+    the gate's throwaway tree went without it: `test_craft` failed on a card
+    that had touched no craft document. The overlay has to carry `main`'s files
+    too, or the gate runs a tree the merge will never produce.
+    """
+
+    def test_a_file_only_main_tracks_is_in_the_overlay(self):
+        self.assertFalse((self.tree / "docs" / "craft" / "finance.md").exists())
+        code, output = self.run_gate("--list")
+        self.assertEqual(code, 0, output)
+        self.assertIn("docs/craft/finance.md", output.splitlines())
+
+    def test_the_ignored_and_untracked_list_cannot_carry_it(self):
+        # Why the fix exists: a tracked file is in neither set the gate read
+        # before — HQ's ignored files and the branch's HEAD.
+        tracked = hq_gate.tracked_files(self.tree)
+        self.assertNotIn("docs/craft/finance.md", hq_gate.hq_only_files(self.hq, tracked))
+
+    def test_main_bytes_come_from_the_commit_not_the_working_tree(self):
+        # HQ's checkout is a working copy; an uncommitted edit there is not what
+        # the merge carries. The fixture module asserts the committed text.
+        (self.hq / "docs" / "craft" / "finance.md").write_text("dirty\n", encoding="utf-8")
+        code, output = self.run_gate()
+        self.assertEqual(code, 0, output)
+
+    def test_no_main_branch_overlays_nothing_from_main(self):
+        # A clone whose default branch is not named main: no crash and no
+        # invented history, just the HQ-only set.
+        git("branch", "-m", "main", "trunk", cwd=self.hq)
+        code, output = self.run_gate("--list")
+        self.assertEqual(code, 0, output)
+        self.assertNotIn("docs/craft/finance.md", output.splitlines())
+        self.assertIn("docs/backlog.yaml", output.splitlines())
 
 
 PREVIEW_MODULE = '''\
@@ -302,11 +360,11 @@ class MergePreviewCase(unittest.TestCase):
         git("commit", "-q", "-m", "main moves", cwd=self.hq)
 
     def carried(self) -> list[str]:
-        hq_head = hq_gate.head_commit(self.hq)
-        common = hq_gate.merge_base(self.tree, hq_head)
+        revision = hq_gate.integration_commit(self.hq)
+        shared = hq_gate.merge_base(self.tree, revision)
         return hq_gate.carried_paths(
-            hq_gate.tree_entries(self.hq, hq_head),
-            hq_gate.tree_entries(self.tree, common),
+            hq_gate.tree_entries(self.hq, revision),
+            hq_gate.tree_entries(self.tree, shared) if shared else {},
             hq_gate.tree_entries(self.tree, "HEAD"),
         )
 
@@ -315,7 +373,7 @@ class MergePreviewCase(unittest.TestCase):
 
 
 class MergePreviewTest(MergePreviewCase):
-    def test_the_carried_set_is_main_added_and_main_untouched_paths(self):
+    def test_main_side_is_added_and_untouched_paths_only(self):
         carried = self.carried()
         # Main gained it; the branch never had it.
         self.assertIn("docs/gained.md", carried)
