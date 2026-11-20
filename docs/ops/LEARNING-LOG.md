@@ -5,6 +5,77 @@ Evidence is a path, a commit or a card; no adjectives. The weekly exchange owns
 the scar table, the borrowed-practice pairs and coverage; a session owns its own
 line.
 
+## 2026-11-20 · exchange — week of 2026-11-14
+
+### Shipped and learned
+
+- **ODL-479 — the handoff gate runs the 15 HQ-only modules** (`2198cfd`; the
+  gap was filed as `t_a2452d17`). Taught that a gate is only as wide as the
+  checkout it runs in: the 15 HQ-only modules never ran in a card worktree, so
+  `main`'s merge gate was their first run — and it went red twice on
+  `docs/runbooks/recycle.md` while every branch was green.
+- **`t_ac14f68c` — both image builders' copy lists, derived** (`e63937a`).
+  Taught that the required set is derived from `install-stack.sh` itself (36
+  names across four gates), not kept as a second list; and that a green branch
+  is not a green merge tree — 3 of 4 new tests failed against `main` after it
+  moved 15 minutes past the branch's base.
+- **ODL-242 — the key-cap re-cut** (`d2a0ce5`). Taught that a record's
+  paraphrase of a decision is a new decision: the entry added "provider key id"
+  to what HQ keeps, attributed it to G9, and would have made a public roadmap
+  objective approved four hours earlier false when the card was built.
+
+### Scars
+
+| Date | Card | Seat | Finding | Root cause | Destination | Owner | Status |
+|---|---|---|---|---|---|---|---|
+| 2026-11-19 | t_ac14f68c | Verifier | Branch head green, merge tree red: 3 of 4 new tests fail against `main` + the branch after `main` moved past the branch's base | Repeat of the 2026-11-13 gate scar: the stamp certifies the branch head, and `card_acceptance` checked conflicts, not the merged tree's tests | lint/check — ODL-343 runs the card's changed test modules on the `git merge-tree` tree before stamping | Verifier | open — ODL-343 |
+| 2026-11-20 | t_4624d851 | Product lead | A re-cut added "provider key id" to what HQ keeps, attributed to G9, contradicting G9's own words and a live public objective approved 4 h earlier | The entry was written from a summary of the decision, not diffed against the governing decision and the live public sentence; `board_sync check` validates shape, not meaning | checklist item — Product lead: a re-cut that names what HQ keeps is diffed against its cited decision and the live public sentence before handoff | Product lead | open |
+| 2026-11-19 | t_6d956aee | Builder | Round 3 found the live tenant's vendor id and slug in the public tree; `recycle.md` §4 retyped two ids instead of copying the resting file | A runbook transcribed identifiers from the console and the test fixture used the live id as a stand-in; the leak gate matched bare ids, not quoted assignments or link text | lint/check — `d939e22` pins the positions the tenant id used | Builder | closed — `d939e22` |
+
+### Borrowed practice
+
+- **Growth → Finance.** Practice: demand and activation data — spend per channel,
+  the cohort definition, and the cost of the first ten. Receiver: Finance manager
+  (staff function), next session; no finance card is running or ready, so no
+  comment was added. Due 2026-11-29, the finance track's next rotation slot.
+  Verifier check: the finance memo defines the cohort, gives spend per channel and
+  costs the first ten, and every number traces to a `SPEND.csv` row or an
+  invoice id.
+- **Finance → Designer.** Practice: the plan price and its gross-margin floor
+  constrain the page promise — a feature that costs more than it earns is not a
+  feature (the $49 figure is alpha.1's; the constraint is not). Receiver:
+  Designer, next card `t_e23f3288` (ready), comment added. Due 2026-11-27, the
+  designer's next rotation slot. Verifier check: the card's evidence prices every
+  promise the page makes against the finance model and names the margin line, or
+  records "no promise touched" with the diff that shows it.
+
+### Coverage
+
+7/9 tracks have a `Landed` date in the last 10 days — product-lead P1 11-15,
+architect A2 11-16, designer D3 11-18, growth G2 11-19, finance F2 11-20,
+security S1 11-12, verifier V1 11-13. Overdue: builder B2 (last landed 11-08,
+12 days); chief-of-staff C1 never landed, and the 11-18 CoS session changed
+`WORKFLOW-CHANGES.md` but filled no track row. Complete: none. The track that
+needs the next session is **builder**: B2 is the only unit more than 10 days
+stale, and its next rotation slot is 2026-11-26.
+
+### Question
+
+**Verifier** — which single change to your review routine makes the merge tree,
+not the branch head, the thing you approve, and will you re-run the card's
+changed tests against `git merge-tree` before the next approval? (Answer in the
+verifier session on 2026-11-22.)
+
+### Baseline
+
+The 2026-11-13 exchange recorded the baseline: 1/5 first-pass approvals and 1.4
+change-request events per card over the five most recently reviewed cards; no
+event records an approval reason, so first-pass is inferred from zero change
+requests. This week all three cards read reached approval in round 2 or later
+(`t_ac14f68c` round 2, `t_4624d851` round 2, `t_6d956aee` round 4), but the
+board still carries no approved-with-reason event, so a first-pass rate is **not
+measurable from the board** without it.
+
 ## 2026-11-20 · finance · F2 — a closed day restates, and the balance caught a charge the ledger missed
 
 - **Source:** `docs/ops/finance/POLICY.md` (sources of truth; a `committed`
