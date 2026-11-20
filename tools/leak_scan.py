@@ -80,16 +80,18 @@ A row without a reason is itself a finding, and so is a row whose reason contain
 its own value: that row matches itself, so "every row matched" would prove
 nothing.
 
-The forbid list. The default is ``leak-forbid.txt`` at the root of the tree;
-the repository publishes that copy, and HQ keeps the canonical list under
-``docs/ops/`` and names it with ``--forbid-file`` (``make leak`` resolves
-whichever exists). The list itself is the one file that carries its literals, so
-its path is skipped. A missing default is printed, so a skip is never silent; an
-explicitly named ``--forbid-file`` that does not exist is a finding and exit 2,
-because the caller asked for that list and did not get it. A hit is waived only
-by an allowlist row whose digest pins that exact value and whose path glob
-matches; that is how a permanent public fixture, or a debt row with the date of
-the card that clears it, is recorded.
+The forbid list. There is one list, ``docs/ops/leak-forbid.txt``. It lives on
+HQ (``docs/ops/`` is excluded from git) and reaches CI as the
+``LEAK_FORBID_B64`` repository secret; the repository carries no copy, so a
+clone has no list unless one is supplied at that path. The list itself is the
+one file that carries its literals, so its path is skipped — and so is the
+retired published copy at the tree root, because the commits that first added
+it are still in history. A missing default is printed, so a skip is never
+silent; an explicitly named ``--forbid-file`` that does not exist is a finding
+and exit 2, because the caller asked for that list and did not get it. A hit is
+waived only by an allowlist row whose digest pins that exact value and whose
+path glob matches; that is how a permanent public fixture, or a debt row with
+the date of the card that clears it, is recorded.
 
 ``--forbid-only`` runs that one class and skips the tree classes: it is what
 the CI history job uses, so an already-public address in an old root does not
@@ -106,7 +108,7 @@ itself begin with ``++`` (a pasted ``set -x`` transcript reaches the parser as
 Usage:
 
     tools/leak_scan.py --tree                 # tracked and untracked files
-    tools/leak_scan.py --history --forbid-only --forbid-file leak-forbid.txt
+    tools/leak_scan.py --history --forbid-only --forbid-file docs/ops/leak-forbid.txt
     tools/leak_scan.py --stdin --label commit-message < messages.txt
     tools/leak_scan.py --all --forbid-file docs/ops/leak-forbid.txt
 
@@ -139,7 +141,15 @@ MIN_ASSIGNMENT_LENGTH, MIN_ASSIGNMENT_ENTROPY = 20, 3.3
 SKIP_SUFFIXES = (".sig",)
 SKIP_DIRS = (".git", ".worktrees", ".fresh-clone", ".venv", "__pycache__", "node_modules")
 ALLOW_FILE = "leak-allow.tsv"
-DEFAULT_FORBID = "leak-forbid.txt"
+# The one list. HQ keeps it under docs/ops/ (excluded from git); CI installs
+# the same bytes from the LEAK_FORBID_B64 repository secret. A tree that has
+# neither has no deny list, and says so rather than passing silently.
+DEFAULT_FORBID = "docs/ops/leak-forbid.txt"
+# Paths that carry their own literals and are never scanned as content. The
+# second is the published root copy this repository used to ship; branches cut
+# before ODL-911's re-cut still carry it in history, and a history scan that
+# re-reported the list itself could never pass.
+FORBID_PATHS = (DEFAULT_FORBID, "leak-forbid.txt")
 
 # Addresses that are never a leak: loopback, private, link-local, CGNAT,
 # benchmarking, documentation and the public resolvers the product names.
@@ -313,7 +323,7 @@ TENANT_SLUG_ALLOW = {"odl-000000"}
 
 # A Servury account id is 8 lowercase alphanumerics, not hex: `account=…` and
 # `account_id=…` name the same resource, and the shape is a word's shape too,
-# so the value must carry a digit (`lkbxu6i9` is an id, `username` is a word).
+# so the value must carry a digit (`ab12cdzz` is an id, `username` is a word).
 ACCOUNT_ID = re.compile(
     r"(?i)\baccount(?:[_-]?id)?\b\s*[=:]\s*[\"']?([a-z0-9]{8})\b")
 
@@ -1226,8 +1236,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--root", default=".")
     parser.add_argument("--forbid-file", default=None,
                         help="file of private literals, one per line: label<TAB>regex "
-                             "(default: leak-forbid.txt at the tree root; a missing "
-                             "default is reported, a named file that is missing exits 2)")
+                             "(default: docs/ops/leak-forbid.txt; a missing default is "
+                             "reported and the class skipped, a named file that is "
+                             "missing exits 2)")
     parser.add_argument("--forbid-only", action="store_true",
                         help="run only the forbidden-value class: the deny list, not the "
                              "address/mailbox/credential classes (CI history, a push)")
@@ -1276,15 +1287,16 @@ def main(argv: list[str] | None = None) -> int:
         print(f"FINDING allow-file  --forbid-file {forbid_name}: no such file")
         return 2
     else:
-        # A checkout from before the repository carried the list. Say so, so a
-        # skip is never silent; `make leak` always names one, so this is only
-        # reached by a hand-run scanner in an old tree.
+        # No list at the documented path: either a clone (the repository does
+        # not carry one) or a tree cut before the list existed. Say so, so a
+        # skip is never silent.
         print(f"forbid list:     absent ({forbid_name}) — the forbidden-value class did not run")
     skip: set[str] = set()
-    # Two copies of the list exist at HQ: the canonical `docs/ops/leak-forbid.txt`
-    # (untracked) and the root copy the repository publishes. Both carry their
-    # own literals by definition, so both are skipped wherever they appear.
-    for name in (forbid_name, DEFAULT_FORBID):
+    # The list carries its own literals by definition. Skip it wherever it sits:
+    # the documented path, a --forbid-file somewhere else, and the retired root
+    # copy that branches cut before the re-cut still carry in history. Without
+    # the second and third the scan reports the list as a leak of itself.
+    for name in (forbid_name, *FORBID_PATHS):
         candidate = Path(name)
         if not candidate.is_absolute():
             candidate = root / candidate

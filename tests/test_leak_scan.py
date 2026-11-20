@@ -112,8 +112,9 @@ class ForbidClass(unittest.TestCase):
             cwd=self.repo, env=git_env(), check=True)
 
     def write_list(self) -> None:
-        (self.repo / "leak-forbid.txt").write_text(
-            f"# label<TAB>regex\n{LABEL}\t{LITERAL}\n", encoding="utf-8")
+        target = self.repo / "docs" / "ops" / "leak-forbid.txt"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(f"# label<TAB>regex\n{LABEL}\t{LITERAL}\n", encoding="utf-8")
 
     def test_a_named_list_that_does_not_exist_exits_2(self) -> None:
         result = self.scan("--forbid-file", "missing-forbid.txt")
@@ -193,17 +194,18 @@ class ForbidClass(unittest.TestCase):
         self.write_list()
         result = self.scan()
         self.assertEqual(result.returncode, 0, result.stdout)
-        self.assertIn(f"forbid list:     leak-forbid.txt (1 labels)", result.stdout)
+        self.assertIn("forbid list:     docs/ops/leak-forbid.txt (1 labels)", result.stdout)
 
     def test_an_absent_default_is_printed_not_silent(self) -> None:
         result = self.scan()
         self.assertEqual(result.returncode, 0, result.stdout)
-        self.assertIn("absent (leak-forbid.txt)", result.stdout)
+        self.assertIn("absent (docs/ops/leak-forbid.txt)", result.stdout)
         self.assertIn("forbidden-value class did not run", result.stdout)
 
     def test_a_malformed_list_row_is_a_finding(self) -> None:
-        (self.repo / "leak-forbid.txt").write_text(
-            f"# label<TAB>regex\n{LABEL} no-tab-here\n", encoding="utf-8")
+        target = self.repo / "docs" / "ops" / "leak-forbid.txt"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(f"# label<TAB>regex\n{LABEL} no-tab-here\n", encoding="utf-8")
         result = self.scan()
         self.assertEqual(result.returncode, 1, result.stdout)
         self.assertIn("FINDING forbid-file", result.stdout)

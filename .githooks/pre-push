@@ -4,12 +4,18 @@
 # The pre-commit hook runs `make check`, which scans the whole tree. This hook
 # covers the two surfaces a file scan cannot see: the commit messages and the
 # content of the commits about to leave the machine. It reads the same deny list
-# as `make leak` — HQ's `docs/ops/leak-forbid.txt`, or the root `leak-forbid.txt`
-# that the repository publishes — and the same allowlist, by path: a live
-# identifier the tree keeps (a tenant slug a program reads) is pinned at its own
-# path in `leak-allow.tsv`, so the commit that carries it is not a leak while
-# the same value at any other path is. The commit-message surface has no path,
-# so a message naming a literal blocks wherever it is written.
+# as `make leak` — HQ's `docs/ops/leak-forbid.txt`, the one copy; the repository
+# publishes none — and the same allowlist, by path: a live identifier the tree
+# keeps (a tenant slug a program reads) is pinned at its own path in
+# `leak-allow.tsv`, so the commit that carries it is not a leak while the same
+# value at any other path is. The commit-message surface has no path, so a
+# message naming a literal blocks wherever it is written.
+#
+# A clone carries no list (the repository does not publish one), so on a clone
+# this hook prints `forbid list absent` and lets the push through: there is
+# nothing to scan against. Supply the list at the documented path to arm it.
+# CI holds the same bytes as the `LEAK_FORBID_B64` secret and scans every blob,
+# so a literal that a clone pushed unscanned is still a red run.
 #
 # Git does not version hook installation, so enable it once per clone:
 #
@@ -29,17 +35,13 @@ cd "$(git rev-parse --show-toplevel)"
 PYTHON=${PYTHON:-/usr/bin/python3}
 SCANNER=tools/leak_scan.py
 
-FORBID=
-for candidate in docs/ops/leak-forbid.txt leak-forbid.txt; do
-    if [ -f "$candidate" ]; then
-        FORBID=$candidate
-        break
-    fi
-done
-if [ -z "$FORBID" ]; then
-    printf 'pre-push: no deny list (docs/ops/leak-forbid.txt or leak-forbid.txt)\n' >&2
-    printf 'pre-push: refusing to push a range that cannot be scanned.\n' >&2
-    exit 1
+FORBID=docs/ops/leak-forbid.txt
+if [ ! -f "$FORBID" ]; then
+    printf 'pre-push: forbid list absent: %s\n' "$FORBID" >&2
+    printf 'pre-push: the outgoing range was not scanned for private literals.\n' >&2
+    printf 'pre-push: the repository does not publish the list; supply it at that path\n' >&2
+    printf 'pre-push: to arm this hook (CI scans every blob with the same bytes).\n' >&2
+    exit 0
 fi
 if [ ! -f "$SCANNER" ]; then
     printf 'pre-push: %s is missing; refusing to push an unscanned range.\n' "$SCANNER" >&2
@@ -77,15 +79,13 @@ scan_patch() {
     "$PYTHON" "$SCANNER" --stdin-patch --label "$1" --forbid-file "$FORBID"
 }
 
-# Every diff scan skips BOTH copies of the deny list, not just the resolved
-# one. The list carries its literals by definition, so scanning it would report
-# its own rows; and at HQ the resolved name is the canonical
-# `docs/ops/leak-forbid.txt`, which would leave the published root copy
-# unscanned. That is not hypothetical: the commit that first adds the root copy
-# carries every row as an added line, so excluding only the resolved path
-# blocked the publication of the list itself (and `tools/merge_card.py`'s plain
-# `git push origin main` with it). The commit-message scan has no path to
-# exclude: a message naming a literal is a leak wherever it is written.
+# Every diff scan skips the deny list by path, wherever a copy of it sits. The
+# list carries its literals by definition, so scanning it would report its own
+# rows. Two paths: `docs/ops/leak-forbid.txt` (the one list, untracked at HQ)
+# and the retired root `leak-forbid.txt` that this branch's own history added
+# and a later commit removes — the deletion is not scanned, but the commit that
+# added it is. The commit-message scan has no path to exclude: a message naming
+# a literal is a leak wherever it is written.
 without_the_lists() {
     git "$@" -- . ":(exclude)docs/ops/leak-forbid.txt" ":(exclude)leak-forbid.txt"
 }

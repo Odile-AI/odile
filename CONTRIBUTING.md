@@ -18,12 +18,25 @@ clone (`make fresh-check`) and the change is named in the commit subject.
 
 ## The leak gates
 
-`make hooks` installs two hooks: the pre-commit gate (`make check`) and the
-pre-push gate, which scans the outgoing diff and commit messages against
-`leak-forbid.txt`, the deny list of private machine literals. A hit blocks the
-push. `git commit --no-verify` and `git push --no-verify` are the deliberate
-bypasses; CI runs the same list over the tree and over every blob, so a
-bypassed literal is a red run.
+There is one deny list of private machine literals, `docs/ops/leak-forbid.txt`.
+It is HQ-only: `docs/ops/` is excluded from git and CI installs the same bytes
+from the `LEAK_FORBID_B64` repository secret. The repository publishes no copy,
+so a clone has no list — and says so:
+
+```
+$ make leak
+leak: forbid list absent: docs/ops/leak-forbid.txt — the forbidden-value class did not run
+forbid list:     absent (docs/ops/leak-forbid.txt) — the forbidden-value class did not run
+```
+
+Put the list at that path (HQ `cp`, or `base64 -d` from the secret) to arm the
+local gates. `make hooks` installs two of them: the pre-commit gate (`make
+check`) and the pre-push gate, which scans the outgoing diff and commit messages
+against the same list and blocks on a hit. On a clone with no list the pre-push
+hook prints `forbid list absent` and lets the push through, because there is
+nothing to scan against. `git commit --no-verify` and `git push --no-verify` are
+the deliberate bypasses; CI holds the list as a secret and runs it over the tree
+and over every blob, so a bypassed literal is still a red run.
 
 Never write a real address, account id, box id, tenant slug, mailbox or
 checkout path. Use the placeholder vocabulary:

@@ -84,6 +84,7 @@ import argparse, pathlib, sys
 parser = argparse.ArgumentParser()
 parser.add_argument("--tree", action="store_true")
 parser.add_argument("--root", default=".")
+parser.add_argument("--forbid-file", default=None)
 args = parser.parse_args()
 root = pathlib.Path(args.root)
 findings = []
@@ -132,12 +133,20 @@ class PublishLintUsesTheBaseScanner(unittest.TestCase):
 
     def test_the_job_still_scans_with_the_tree_scanner(self):
         self.assertIn("tools/leak_scan.py --tree", self.block)
-        # The repository publishes the deny list at its root, so the tree's own
-        # scan always names it; a missing list is a finding (exit 2), not a
-        # silent skip. The comment in the workflow says so; the `test -f` is
-        # the same promise made by the shell.
-        self.assertIn("--forbid-file leak-forbid.txt", self.block)
-        self.assertIn("test -f leak-forbid.txt", self.block)
+        # The deny list comes from the repository secret, installed at the one
+        # documented path before either scan. The tree's own scan names it, and
+        # a run without the secret prints `forbid list absent` instead of
+        # passing as if the class had run.
+        self.assertIn("--forbid-file docs/ops/leak-forbid.txt", self.block)
+        self.assertIn("forbid list: absent", self.block)
+
+    def test_the_deny_list_comes_from_the_repository_secret(self):
+        # Neither the PR nor the base can edit the list out of this checkout:
+        # it arrives as LEAK_FORBID_B64 and is decoded to the documented path.
+        self.assertIn("secrets.LEAK_FORBID_B64", self.block)
+        self.assertIn("base64 -d > docs/ops/leak-forbid.txt", self.block)
+        self.assertNotIn('git show "$base_sha:leak-forbid.txt"', self.block)
+        self.assertNotIn("test -f leak-forbid.txt", self.block)
 
     # -- behaviour: run the step's own shell against a fixture tree ----------
     def test_the_step_fails_a_pr_that_weakens_its_own_scanner(self):
@@ -205,11 +214,15 @@ class HistoryUsesTheBaseScanner(unittest.TestCase):
         self.assertIn("/tmp/base-leak_scan.py --history", self.block)
         self.assertNotIn("python3 tools/leak_scan.py --history", self.block)
 
-    def test_it_runs_the_base_allowlist_and_the_base_list(self):
+    def test_it_runs_the_base_allowlist_and_the_secret_list(self):
         self.assertIn('git show "$base_sha:leak-allow.tsv"', self.block)
         self.assertIn("cp /tmp/base-leak-allow.tsv leak-allow.tsv", self.block)
-        self.assertIn('git show "$base_sha:leak-forbid.txt"', self.block)
-        self.assertIn("--forbid-file /tmp/base-leak-forbid.txt", self.block)
+        # The list is not a file in either checkout: it is the secret, decoded
+        # to the documented path by the step above.
+        self.assertIn("secrets.LEAK_FORBID_B64", self.block)
+        self.assertIn("base64 -d > docs/ops/leak-forbid.txt", self.block)
+        self.assertIn("--forbid-file docs/ops/leak-forbid.txt", self.block)
+        self.assertNotIn('git show "$base_sha:leak-forbid.txt"', self.block)
 
     def test_it_fetches_the_base_branch(self):
         self.assertIn("github.base_ref", self.block)
@@ -221,11 +234,12 @@ class HistoryUsesTheBaseScanner(unittest.TestCase):
         # deny list; every blob is still read.
         self.assertIn("--forbid-only", self.block)
 
-    def test_a_base_without_the_list_skips_with_a_line(self):
-        # The list and the class landed together, so a base that predates the
-        # list has nothing to run; the skip must say so, never pass silently.
-        self.assertIn('git cat-file -e "$base_sha:leak-forbid.txt"', self.block)
-        self.assertIn("absent at base", self.block)
+    def test_a_run_without_the_list_skips_with_a_line(self):
+        # No secret installed the list: the class has nothing to run against,
+        # and the skip must say so, never pass silently. The same line names
+        # the secret, so an operator knows what to set.
+        self.assertIn("[ ! -f docs/ops/leak-forbid.txt ]", self.block)
+        self.assertIn("forbid list: absent", self.block)
 
     def test_a_pr_cannot_waive_its_own_history_finding(self) -> None:
         tmp = Path(tempfile.mkdtemp(prefix="ci-history-test-"))
@@ -240,7 +254,6 @@ class HistoryUsesTheBaseScanner(unittest.TestCase):
         # job's file choice, not a stub's.
         shutil.copy2(ROOT / "tools" / "leak_scan.py", base_repo / "tools" / "leak_scan.py")
         (base_repo / "leak-allow.tsv").write_text("# no exceptions\n", encoding="utf-8")
-        (base_repo / "leak-forbid.txt").write_text(LIST_TEXT, encoding="utf-8")
         (base_repo / "README.md").write_text("clean tree\n", encoding="utf-8")
         commit_all(base_repo, "base")
         base_sha = git("rev-parse", "HEAD", cwd=base_repo).stdout.strip()
@@ -260,9 +273,14 @@ class HistoryUsesTheBaseScanner(unittest.TestCase):
         commit_all(tree, "waive my own history finding")
         self.assertEqual(git("push", "-q", "origin", "HEAD:pr", cwd=tree).returncode, 0)
 
+        # The list arrives from the secret, at the documented path (the CI
+        # step installs it before either scan).
+        (tree / "docs" / "ops").mkdir(parents=True, exist_ok=True)
+        (tree / "docs" / "ops" / "leak-forbid.txt").write_text(LIST_TEXT, encoding="utf-8")
+
         # The gate this replaces passes: the PR's own scanner, list and row.
         own = subprocess.run([sys.executable, "tools/leak_scan.py", "--history",
-                              "--forbid-file", "leak-forbid.txt", "--forbid-only"],
+                              "--forbid-file", "docs/ops/leak-forbid.txt", "--forbid-only"],
                              cwd=tree, text=True, capture_output=True)
         self.assertEqual(own.returncode, 0, own.stdout + own.stderr)
 

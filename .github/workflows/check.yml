@@ -9,7 +9,9 @@
 #   demo-check       the local demo's headless acceptance run, no network
 #   publish-lint     the publication gate over the built tree: the BASE
 #                    branch's leak_scan and allowlist ran over this tree, then
-#                    the tree's own scanner — a PR cannot widen its own gate
+#                    the tree's own scanner — a PR cannot widen its own gate;
+#                    the deny list is the LEAK_FORBID_B64 secret, so neither
+#                    the PR nor the base can edit it either
 #   history-secrets  scan every commit, not the one-commit shallow default,
 #                    and run the deny list over every blob (--forbid-only):
 #                    an address or account id in an old root is a leak even
@@ -204,11 +206,28 @@ jobs:
       # A PR that needs a new allowlist row (class, credential, reason and
       # expiry) therefore cannot grant it to itself; a maintainer lands the row
       # on main first. The second step still runs the tree's own scanner, so the
-      # pair catches both a weakened scanner and a widened allowlist. The
-      # repository carries the deny list at its root, so this step installs the
-      # base's copy and the tree's own step below requires one (`test -f`): a
-      # list that is absent is exit 2, not a skip. The job is read-only: it opens
-      # no PR and pushes nothing.
+      # pair catches both a weakened scanner and a widened allowlist.
+      #
+      # The deny list is the repository's `LEAK_FORBID_B64` secret, so neither
+      # the PR nor the base carries it in the checkout: it is installed at
+      # `docs/ops/leak-forbid.txt` (the one documented path) before either scan,
+      # and a job without the secret says so rather than passing silently. The
+      # job is read-only: it opens no PR and pushes nothing.
+      - name: Install the deny list from the repository secret
+        env:
+          LEAK_FORBID_B64: ${{ secrets.LEAK_FORBID_B64 }}
+        run: |
+          set -euo pipefail
+          if [ -z "${LEAK_FORBID_B64:-}" ]; then
+            echo "forbid list: absent (no LEAK_FORBID_B64 repository secret)"
+            echo "forbid list: the forbidden-value class is off in this run"
+            exit 0
+          fi
+          mkdir -p docs/ops
+          printf '%s' "$LEAK_FORBID_B64" | base64 -d > docs/ops/leak-forbid.txt
+          labels=$(grep -c -v -e '^#' -e '^[[:space:]]*$' docs/ops/leak-forbid.txt || true)
+          echo "forbid list: docs/ops/leak-forbid.txt from LEAK_FORBID_B64 (${labels} rows)"
+          test "$labels" -gt 0
       - name: Gate the tree with the base branch's scanner, not the PR's
         env:
           BASE_REF: ${{ github.base_ref }}
@@ -243,19 +262,26 @@ jobs:
           git show "$base_sha:leak-allow.tsv" > /tmp/base-leak-allow.tsv
           cp leak-allow.tsv /tmp/pr-leak-allow.tsv
           cp /tmp/base-leak-allow.tsv leak-allow.tsv
-          if git cat-file -e "$base_sha:leak-forbid.txt" 2>/dev/null; then
-            git show "$base_sha:leak-forbid.txt" > leak-forbid.txt
-            echo "forbid list: base copy installed"
+          # The base scanner's default is the documented path too, but name it:
+          # a flag makes a list that vanished between steps exit 2, not skip.
+          if [ -f docs/ops/leak-forbid.txt ]; then
+            /usr/bin/python3 /tmp/base-leak_scan.py --tree --root "$PWD" \
+              --forbid-file docs/ops/leak-forbid.txt
           else
-            echo "forbid list: absent at base (that class is off in this tree)"
+            echo "forbid list: absent (the forbidden-value class is off in this tree)"
+            /usr/bin/python3 /tmp/base-leak_scan.py --tree --root "$PWD"
           fi
-          /usr/bin/python3 /tmp/base-leak_scan.py --tree --root "$PWD"
           cp /tmp/pr-leak-allow.tsv leak-allow.tsv
       - name: Scan the tree with its own deny list
         run: |
           set -euo pipefail
-          test -f leak-forbid.txt
-          /usr/bin/python3 tools/leak_scan.py --tree --forbid-file leak-forbid.txt
+          if [ -f docs/ops/leak-forbid.txt ]; then
+            /usr/bin/python3 tools/leak_scan.py --tree \
+              --forbid-file docs/ops/leak-forbid.txt
+          else
+            echo "forbid list: absent (the forbidden-value class is off in this tree)"
+            /usr/bin/python3 tools/leak_scan.py --tree
+          fi
 
   history-secrets:
     name: history-secrets
@@ -303,25 +329,43 @@ jobs:
           test "$scanned" -eq "$expected"
           echo "scanned ${scanned} commits; matches git rev-list --count --all"
       # The deny list over history, run by the BASE branch's scanner with the
-      # BASE branch's allowlist and list. Same rule as publish-lint: the gate
-      # must not run the files it is gating. This step used to run the PR
-      # checkout's own scanner and allowlist, so a branch could add a literal in
-      # one commit and delete it in the next (a clean tree) and waive its own
-      # history finding with one appended allowlist row —
-      # the "a commit that is later deleted" surface in
-      # docs/ops/LEAK-CONTROL.md, which is the case this job exists for. The
-      # workspace is ephemeral and the job pushes nothing, so copying the base
-      # files over the checkout changes no published byte; the PR's allowlist is
-      # restored afterwards, through an `EXIT` trap so the red path restores it
-      # too.
+      # BASE branch's allowlist. Same rule as publish-lint: the gate must not
+      # run the files it is gating. This step used to run the PR checkout's own
+      # scanner and allowlist, so a branch could add a literal in one commit and
+      # delete it in the next (a clean tree) and waive its own history finding
+      # with one appended allowlist row — the "a commit that is later deleted"
+      # surface in docs/ops/LEAK-CONTROL.md, which is the case this job exists
+      # for. The workspace is ephemeral and the job pushes nothing, so copying
+      # the base files over the checkout changes no published byte; the PR's
+      # allowlist is restored afterwards, through an `EXIT` trap so the red path
+      # restores it too.
+      #
+      # The list itself is the repository's `LEAK_FORBID_B64` secret, installed
+      # at `docs/ops/leak-forbid.txt` by the step above: it is neither the PR's
+      # nor the base's file, so a branch can no more waiver it than it can
+      # waiver the scanner. A run without the secret prints `forbid list absent`
+      # and skips, rather than passing as if the class had run.
       #
       # The class is scoped (--forbid-only): the roots this repository replaced
       # already published addresses and home paths, and a job about the deny list
       # must not fail on a class its predecessor's history settled. Every blob in
       # rev-list --all is read, so a literal in a commit that HEAD no longer
-      # carries is still a red run. A base that predates the list has nothing to
-      # run, and the class landed together with the list, so that one base skips
-      # with a line — the same absent-list branch publish-lint takes.
+      # carries is still a red run.
+      - name: Install the deny list from the repository secret
+        env:
+          LEAK_FORBID_B64: ${{ secrets.LEAK_FORBID_B64 }}
+        run: |
+          set -euo pipefail
+          if [ -z "${LEAK_FORBID_B64:-}" ]; then
+            echo "forbid list: absent (no LEAK_FORBID_B64 repository secret)"
+            echo "forbid list: the history deny-list class is off in this run"
+            exit 0
+          fi
+          mkdir -p docs/ops
+          printf '%s' "$LEAK_FORBID_B64" | base64 -d > docs/ops/leak-forbid.txt
+          labels=$(grep -c -v -e '^#' -e '^[[:space:]]*$' docs/ops/leak-forbid.txt || true)
+          echo "forbid list: docs/ops/leak-forbid.txt from LEAK_FORBID_B64 (${labels} rows)"
+          test "$labels" -gt 0
       - name: Gate every blob with the base branch's scanner, not the PR's
         env:
           BASE_REF: ${{ github.base_ref }}
@@ -349,20 +393,19 @@ jobs:
             esac
           fi
           echo "base: ${EVENT_NAME} at $base_sha"
-          if ! git cat-file -e "$base_sha:leak-forbid.txt" 2>/dev/null; then
-            echo "forbid list: absent at base (the history deny-list class is off in this tree)"
+          if [ ! -f docs/ops/leak-forbid.txt ]; then
+            echo "forbid list: absent (the history deny-list class is off in this run)"
             exit 0
           fi
           git show "$base_sha:tools/leak_scan.py" > /tmp/base-leak_scan.py
           git show "$base_sha:leak-allow.tsv" > /tmp/base-leak-allow.tsv
-          git show "$base_sha:leak-forbid.txt" > /tmp/base-leak-forbid.txt
           cp leak-allow.tsv /tmp/pr-leak-allow.tsv
           # `set -e` aborts on the scan's non-zero exit, so the restore is a
           # trap: a plain `cp` after the scan would be skipped on the red path.
           trap 'cp /tmp/pr-leak-allow.tsv leak-allow.tsv' EXIT
           cp /tmp/base-leak-allow.tsv leak-allow.tsv
           /usr/bin/python3 /tmp/base-leak_scan.py --history \
-            --forbid-file /tmp/base-leak-forbid.txt --forbid-only
+            --forbid-file docs/ops/leak-forbid.txt --forbid-only
       # The repository is the source of truth: one root, cut once from `main`
       # `65e2764` (`24ee323`), and every commit after it is ordinary work on
       # top — a card's branch included, merged with --no-ff. On a push to main

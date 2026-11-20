@@ -16,8 +16,9 @@
 #   a slug         odl-000000 (the scanner's own stand-in)
 #   a mailbox      owner@example.com
 #
-# One key per label in the deny list (leak-forbid.txt), so a value that reaches
-# a file, a commit message or a diff is caught by the same list the gate runs.
+# One key per label in the deny list (docs/ops/leak-forbid.txt), so a value
+# that reaches a file, a commit message or a diff is caught by the same list the
+# gate runs.
 # The UKI test machine is the one key the Makefile also reads from
 # /root/.odile/servury_uki_server_id.
 SERVURY_BOX_ID=<servury-box:hq>

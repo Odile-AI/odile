@@ -157,14 +157,21 @@ secrets:
 # (`publish-lint`), because `.githooks/pre-commit` runs `check` — a leak dies
 # before it becomes a commit, which is the only point where the fix is cheap.
 #
-# The deny list is named explicitly, so the class can never be skipped: HQ's
-# canonical list is `docs/ops/leak-forbid.txt` (excluded from git), and the
-# repository publishes a byte-identical copy as `leak-forbid.txt` at its root,
-# which is what a clone and CI carry. A named list that does not exist is a
-# finding and exit 2, not a pass.
-FORBID_FILE ?= $(shell if [ -f docs/ops/leak-forbid.txt ]; then echo docs/ops/leak-forbid.txt; else echo leak-forbid.txt; fi)
+# There is one deny list, and it is HQ-only: `docs/ops/leak-forbid.txt` (the
+# directory is excluded from git), installed in CI from the `LEAK_FORBID_B64`
+# repository secret. The repository carries no copy, so a fresh clone has no
+# list: this target prints `forbid list absent` and still runs the tree classes,
+# rather than passing as if the class had run. A list named with
+# `--forbid-file` that does not exist is exit 2 — the caller asked for it.
+FORBID_FILE ?= docs/ops/leak-forbid.txt
 leak: prereqs
-	$(PYTHON) tools/leak_scan.py --tree --forbid-file "$(FORBID_FILE)"
+	@if [ -f "$(FORBID_FILE)" ]; then \
+		$(PYTHON) tools/leak_scan.py --tree --forbid-file "$(FORBID_FILE)"; \
+	else \
+		printf 'leak: forbid list absent: %s — the forbidden-value class did not run\n' "$(FORBID_FILE)"; \
+		printf 'leak: supply it at that path (HQ keeps it; CI reads the LEAK_FORBID_B64 secret)\n'; \
+		$(PYTHON) tools/leak_scan.py --tree; \
+	fi
 
 # Enable the committed hooks in this clone. Idempotent: git keeps the path in
 # local config, so run it once per clone. The pre-push hook scans the outgoing

@@ -8,10 +8,14 @@ pin the four forward gates the card adds:
 * a tracked file carrying a real HQ literal fails, and the documented
   placeholder vocabulary passes (RFC 5737/3849, the angle-bracket tokens);
 * the pre-push hook blocks a literal in the outgoing diff or a commit message,
-  and lets the same range through once it is rewritten;
+  and lets the same range through once it is rewritten — and, on a clone that
+  has no list, prints `forbid list absent` instead of passing silently;
 * history mode scoped to the deny list (`--forbid-only`) is red on a branch
   that carries a literal and green after the branch is deleted — the CI job's
   command, run for real;
+* there is one list, at `docs/ops/leak-forbid.txt` (HQ-only; CI installs the
+  same bytes from the `LEAK_FORBID_B64` secret), and the repository publishes
+  no copy;
 * `deploy/hosts.example` carries every key with a placeholder value, the live
   `deploy/hosts.local` is gitignored, and the reader refuses a real value.
 
@@ -47,15 +51,24 @@ PUBLIC_IP = ".".join(["45", "33", "32", "156"])
 # The list line is a regex: its own text has backslashes between the octets,
 # so the file does not match the pattern it carries.
 LIST_LINE = "hq-address\t" + r"23\.155\.44\.\d+" + "\n"
-# One list, two copies (HQ's canon and the published root copy are
-# byte-identical). The box-id row is a literal the row itself matches, which is
-# why a commit that publishes the list must not be scanned as content.
+# One list, at the documented path. It is HQ-only (docs/ops/ is excluded from
+# git) and CI installs the same bytes from the LEAK_FORBID_B64 secret; the
+# repository publishes no copy. The box-id row is a literal the row itself
+# matches, which is why the list is never scanned as content.
+LIST_PATH = "docs/ops/leak-forbid.txt"
 LIST_TEXT = (
-    "# One list, two copies: docs/ops/leak-forbid.txt is canonical and the\n"
-    "# repository publishes a byte-identical copy at its root.\n"
+    "# One list: docs/ops/leak-forbid.txt, HQ-only, also the CI secret.\n"
+    "# The repository publishes no copy.\n"
     "servury-box-id\t" + "1680" + "20b4" + "\n"
     + LIST_LINE
 )
+
+
+def write_list(repo: Path, text: str = LIST_TEXT) -> Path:
+    target = repo / LIST_PATH
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(text, encoding="utf-8")
+    return target
 
 # The synthetic live constant the allowlist tests pin: one value, one path.
 BOX = "1680" + "20b4"
@@ -117,7 +130,7 @@ class ForbidClass(unittest.TestCase):
         self.repo.mkdir()
         git("init", "-q", "-b", "main", cwd=self.repo)
         (self.repo / "leak-allow.tsv").write_text("# no exceptions\n", encoding="utf-8")
-        (self.repo / "leak-forbid.txt").write_text(LIST_LINE, encoding="utf-8")
+        write_list(self.repo, LIST_LINE)
         (self.repo / "keep.txt").write_text("nothing private here\n", encoding="utf-8")
 
     def tearDown(self) -> None:
@@ -145,14 +158,13 @@ class ForbidClass(unittest.TestCase):
         git("add", "placeholders.md", cwd=self.repo)
         result = scan(self.repo)
         self.assertEqual(result.returncode, 0, result.stdout)
-        self.assertIn("forbid list:     leak-forbid.txt (1 labels)", result.stdout)
+        self.assertIn(f"forbid list:     {LIST_PATH} (1 labels)", result.stdout)
 
     def test_an_allowlist_row_waives_only_the_value_it_pins(self) -> None:
         # A synthetic literal: the HQ address is also a public-ip finding, and
         # this test is about the forbid class's own allowlist check.
         literal = "dead" + "beefcafe"
-        (self.repo / "leak-forbid.txt").write_text(
-            "probe-box\t" + r"dead[0-9a-f]+" + "\n", encoding="utf-8")
+        write_list(self.repo, "probe-box\t" + r"dead[0-9a-f]+" + "\n")
         probe = self.repo / "probe.md"
         probe.write_text(f"box {literal}\n", encoding="utf-8")
         git("add", "probe.md", cwd=self.repo)
@@ -178,7 +190,7 @@ class PatchRecords(unittest.TestCase):
         self.repo = Path(self.temp.name) / "repo"
         self.repo.mkdir()
         git("init", "-q", "-b", "main", cwd=self.repo)
-        (self.repo / "leak-forbid.txt").write_text(LIST_LINE, encoding="utf-8")
+        write_list(self.repo, LIST_LINE)
         (self.repo / "keep.txt").write_text("nothing private here\n", encoding="utf-8")
         (self.repo / "live").mkdir()
         (self.repo / "live" / "host.txt").write_text(f"host {HQ_IP}\n", encoding="utf-8")
@@ -202,7 +214,7 @@ class PatchRecords(unittest.TestCase):
 
     def raw(self, body: str) -> subprocess.CompletedProcess[str]:
         return run([sys.executable, str(SCANNER), "--stdin-patch", "--label",
-                    "outgoing-diff", "--forbid-file", "leak-forbid.txt"],
+                    "outgoing-diff", "--forbid-file", LIST_PATH],
                    cwd=self.repo, input=body)
 
     def test_the_header_names_the_path_the_row_pins(self) -> None:
@@ -259,7 +271,7 @@ class HistoryPrivate(unittest.TestCase):
         self.repo.mkdir()
         git("init", "-q", "-b", "main", cwd=self.repo)
         (self.repo / "leak-allow.tsv").write_text("# no exceptions\n", encoding="utf-8")
-        (self.repo / "leak-forbid.txt").write_text(LIST_LINE, encoding="utf-8")
+        write_list(self.repo, LIST_LINE)
         (self.repo / "keep.txt").write_text("nothing private here\n", encoding="utf-8")
         commit_all(self.repo, "base")
 
@@ -268,7 +280,7 @@ class HistoryPrivate(unittest.TestCase):
 
     def history(self, *args: str) -> subprocess.CompletedProcess[str]:
         return run([sys.executable, str(SCANNER), "--history",
-                    "--forbid-file", "leak-forbid.txt", *args], cwd=self.repo)
+                    "--forbid-file", LIST_PATH, *args], cwd=self.repo)
 
     def test_a_branch_carrying_a_literal_is_red_until_it_is_deleted(self) -> None:
         git("checkout", "-q", "-b", "leaky", cwd=self.repo)
@@ -304,11 +316,11 @@ class PrePushHook(unittest.TestCase):
         seed.mkdir()
         git("init", "-q", "-b", "main", cwd=seed)
         (seed / "leak-allow.tsv").write_text("# no exceptions\n", encoding="utf-8")
-        # The HQ shape: the canonical list under docs/ops (excluded from git at
-        # HQ, so only HQ has it at the head) and no root copy yet. The hook
-        # resolves the canon here; the published copy arrives in the test.
-        (seed / "docs" / "ops").mkdir(parents=True)
-        (seed / "docs" / "ops" / "leak-forbid.txt").write_text(LIST_TEXT, encoding="utf-8")
+        # The HQ shape: the one list at docs/ops/leak-forbid.txt. HQ keeps it
+        # there untracked (docs/ops/ is excluded from git) and CI installs the
+        # same bytes from a secret; the fixture commits it so a clone has it,
+        # which is the state the hook reads either way.
+        write_list(seed)
         (seed / "keep.txt").write_text("nothing private here\n", encoding="utf-8")
         (seed / "tools").mkdir()
         shutil.copy2(SCANNER, seed / "tools" / "leak_scan.py")
@@ -363,25 +375,45 @@ class PrePushHook(unittest.TestCase):
         git("commit", "--amend", "-qm", "a clean message", cwd=self.work)
         self.assertEqual(self.push().returncode, 0)
 
-    def test_the_published_copy_can_be_added_by_its_own_commit(self) -> None:
-        # The HQ shape, which is what blocked this card's own publication: the
-        # hook resolves the canon under docs/ops, and the outgoing commit adds
-        # the published root copy — every row an added line, including the
-        # literals the rows match. Excluding only the resolved path made the
-        # list report itself, so `merge_card.py`'s plain `git push origin main`
-        # exited 5. Both paths are excluded now, so this pushes.
+    def test_the_retired_root_copy_in_history_pushes(self) -> None:
+        # This branch's own history carried a published root copy of the list,
+        # and the re-cut deletes it. The commit that ADDED it carries every row
+        # as an added line, including the literals the rows match, so a scan
+        # that did not skip that path by name would refuse the very commit that
+        # published the list — and `merge_card.py`'s plain `git push origin
+        # main` would never land the removal.
         (self.work / "leak-forbid.txt").write_text(LIST_TEXT, encoding="utf-8")
-        commit_all(self.work, "publish the deny list")
-        pushed = self.push()
-        self.assertEqual(pushed.returncode, 0, pushed.stdout + pushed.stderr)
-        # The maintenance case the list's header requires ("never edit one
-        # without the other"): the copy is already published, and an edit that
-        # names a literal in a comment is still not scanned as content.
-        with (self.work / "leak-forbid.txt").open("a", encoding="utf-8") as handle:
+        commit_all(self.work, "the old published copy")
+        added = self.push()
+        self.assertEqual(added.returncode, 0, added.stdout + added.stderr)
+        (self.work / "leak-forbid.txt").unlink()
+        commit_all(self.work, "retire the published copy")
+        removed = self.push()
+        self.assertEqual(removed.returncode, 0, removed.stdout + removed.stderr)
+
+    def test_a_root_list_beside_a_real_literal_still_blocks(self) -> None:
+        # The exclusion is the list's two paths, not the whole scan: the same
+        # commit that carries the list, with one real literal beside it, is red.
+        (self.work / "leak-forbid.txt").write_text(LIST_TEXT, encoding="utf-8")
+        (self.work / "probe.md").write_text(f"host {HQ_IP}\n", encoding="utf-8")
+        commit_all(self.work, "a list and a leak")
+        blocked = self.push()
+        self.assertNotEqual(blocked.returncode, 0, blocked.stdout + blocked.stderr)
+        self.assertIn("(hq-address)", blocked.stdout + blocked.stderr)
+        (self.work / "probe.md").unlink()
+        git("add", "-A", cwd=self.work)
+        git("commit", "--amend", "-qm", "a list and no leak", cwd=self.work)
+        self.assertEqual(self.push().returncode, 0)
+
+    def test_an_edit_to_the_documented_list_is_not_scanned_as_content(self) -> None:
+        # The list matches itself: a row's own literal is an added line in the
+        # commit that edits the list. Skipping it by path is what lets the list
+        # be maintained at all.
+        with (self.work / LIST_PATH).open("a", encoding="utf-8") as handle:
             handle.write(f"# the box id {'1680' + '20b4'} is denied by the row above\n")
         commit_all(self.work, "a comment in the deny list")
-        edited = self.push()
-        self.assertEqual(edited.returncode, 0, edited.stdout + edited.stderr)
+        pushed = self.push()
+        self.assertEqual(pushed.returncode, 0, pushed.stdout + pushed.stderr)
 
     def test_an_xtrace_line_in_the_outgoing_diff_blocks_the_push(self) -> None:
         # DoD 2 is "block on a hit", and a pasted `set -x` transcript is the
@@ -400,20 +432,6 @@ class PrePushHook(unittest.TestCase):
         (self.work / "notes.md").unlink()
         git("add", "-A", cwd=self.work)
         git("commit", "--amend", "-qm", "a clean message", cwd=self.work)
-        self.assertEqual(self.push().returncode, 0)
-
-    def test_the_published_copy_does_not_blind_the_rest_of_the_range(self) -> None:
-        # The exclusion is two paths, not the whole scan: the same commit that
-        # publishes the list, with one real literal beside it, is a red push.
-        (self.work / "leak-forbid.txt").write_text(LIST_TEXT, encoding="utf-8")
-        (self.work / "probe.md").write_text(f"host {HQ_IP}\n", encoding="utf-8")
-        commit_all(self.work, "publish the deny list")
-        blocked = self.push()
-        self.assertNotEqual(blocked.returncode, 0, blocked.stdout + blocked.stderr)
-        self.assertIn("(hq-address)", blocked.stdout + blocked.stderr)
-        (self.work / "probe.md").unlink()
-        git("add", "-A", cwd=self.work)
-        git("commit", "--amend", "-qm", "publish the deny list", cwd=self.work)
         self.assertEqual(self.push().returncode, 0)
 
     def test_a_live_value_pinned_at_its_path_pushes_and_elsewhere_blocks(self) -> None:
@@ -491,34 +509,99 @@ class HostsExample(unittest.TestCase):
             repo.mkdir()
             git("init", "-q", "-b", "main", cwd=repo)
             (repo / "leak-allow.tsv").write_text("# no exceptions\n", encoding="utf-8")
-            (repo / "leak-forbid.txt").write_text(LIST_LINE, encoding="utf-8")
+            write_list(repo, LIST_LINE)
             shutil.copy2(EXAMPLE, repo / "hosts.example")
             git("add", "-A", cwd=repo)
             result = scan(repo)
             self.assertEqual(result.returncode, 0, result.stdout)
 
 
-class ListCopies(unittest.TestCase):
-    """One list, two copies: the repository publishes it, HQ keeps the canon."""
+class HookWithoutTheList(unittest.TestCase):
+    """A clone carries no list; the hook must say so, not pass as if it ran."""
 
-    def test_the_repository_carries_the_list(self) -> None:
-        published = ROOT / "leak-forbid.txt"
-        self.assertTrue(published.is_file(), "the repository has no root leak-forbid.txt")
-        labels = [line for line in published.read_text(encoding="utf-8").splitlines()
-                  if line.strip() and not line.startswith("#")]
-        self.assertGreaterEqual(len(labels), 10, "the published list is short")
+    def test_a_clone_without_the_list_prints_the_absent_line(self) -> None:
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        base = Path(temp.name)
+        seed = base / "seed"
+        seed.mkdir()
+        git("init", "-q", "-b", "main", cwd=seed)
+        (seed / "leak-allow.tsv").write_text("# no exceptions\n", encoding="utf-8")
+        (seed / "keep.txt").write_text("nothing private here\n", encoding="utf-8")
+        (seed / "tools").mkdir()
+        shutil.copy2(SCANNER, seed / "tools" / "leak_scan.py")
+        commit_all(seed, "base without a list")
+        remote = base / "origin.git"
+        git("init", "-q", "--bare", "-b", "main", str(remote), cwd=base)
+        git("remote", "add", "origin", str(remote), cwd=seed)
+        self.assertEqual(git("push", "-q", "origin", "main", cwd=seed).returncode, 0)
+        work = base / "work"
+        git("clone", "-q", str(remote), str(work), cwd=base)
+        (work / ".githooks").mkdir()
+        shutil.copy2(HOOK, work / ".githooks" / "pre-push")
+        (work / ".githooks" / "pre-push").chmod(0o755)
+        git("config", "core.hooksPath", ".githooks", cwd=work)
 
-    def test_the_hq_canon_and_the_published_copy_agree(self) -> None:
-        canon = ROOT / "docs" / "ops" / "leak-forbid.txt"
-        if not canon.is_file():
-            self.skipTest("no HQ canon in this checkout (a clone carries only the copy)")
-        self.assertEqual(canon.read_bytes(), (ROOT / "leak-forbid.txt").read_bytes(),
-                         "docs/ops/leak-forbid.txt and leak-forbid.txt differ")
+        # A literal that the armed hook refuses (the class above proves that),
+        # plus a clean push: the hook has nothing to scan it against and says so.
+        (work / "probe.md").write_text(f"host {HQ_IP}\n", encoding="utf-8")
+        commit_all(work, "a clean message")
+        direct = run([str(work / ".githooks" / "pre-push")], cwd=work)
+        self.assertEqual(direct.returncode, 0, direct.stdout + direct.stderr)
+        self.assertIn("pre-push: forbid list absent: docs/ops/leak-forbid.txt",
+                      direct.stderr)
+        self.assertIn("was not scanned for private literals", direct.stderr)
+        self.assertNotIn("PASS", direct.stdout)
+
+
+class OneList(unittest.TestCase):
+    """One list, at docs/ops/leak-forbid.txt: HQ keeps it, CI holds the secret."""
+
+    def test_the_repository_publishes_no_copy(self) -> None:
+        tracked = git("ls-files", "--error-unmatch", "leak-forbid.txt", cwd=ROOT)
+        self.assertNotEqual(tracked.returncode, 0,
+                            "the repository still tracks a root leak-forbid.txt")
+
+    def test_every_gate_names_the_documented_path(self) -> None:
+        # One path in the scanner's default, the Makefile, the hook and CI, so
+        # there is one place to put the list and one place to rotate it.
+        for path in (SCANNER, ROOT / "Makefile", HOOK,
+                     ROOT / ".github" / "workflows" / "check.yml"):
+            self.assertIn(LIST_PATH, path.read_text(encoding="utf-8"), str(path))
 
     def test_make_leak_names_the_list(self) -> None:
         result = run(["make", "-n", "leak"], cwd=ROOT)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertIn("--forbid-file", result.stdout)
+        self.assertIn(f"--forbid-file \"{LIST_PATH}\"", result.stdout)
+
+    def test_make_leak_says_absent_on_a_tree_without_the_list(self) -> None:
+        # The re-cut's DoD 1: a clone (no list) must print `forbid list absent`
+        # and still run the tree classes — never a PASS that reads as if the
+        # forbidden-value class had run.
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        repo = Path(temp.name) / "repo"
+        repo.mkdir()
+        git("init", "-q", "-b", "main", cwd=repo)
+        (repo / "leak-allow.tsv").write_text("# no exceptions\n", encoding="utf-8")
+        (repo / "keep.txt").write_text("nothing private here\n", encoding="utf-8")
+        (repo / "tools").mkdir()
+        shutil.copy2(SCANNER, repo / "tools" / "leak_scan.py")
+        result = subprocess.run(["make", "-f", str(ROOT / "Makefile"), "leak",
+                                 f"PYTHON={sys.executable}"],
+                                cwd=repo, env=git_env(), capture_output=True,
+                                text=True, timeout=180)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn(f"leak: forbid list absent: {LIST_PATH}", result.stdout)
+        self.assertIn(f"forbid list:     absent ({LIST_PATH})", result.stdout)
+        self.assertIn("forbidden-value class did not run", result.stdout)
+
+    def test_the_hq_checkout_carries_the_list_at_that_path(self) -> None:
+        if not (ROOT / LIST_PATH).is_file():
+            self.skipTest("no HQ list in this checkout (a clone carries none)")
+        rows = [line for line in (ROOT / LIST_PATH).read_text(encoding="utf-8").splitlines()
+                if line.strip() and not line.startswith("#")]
+        self.assertGreaterEqual(len(rows), 10, "the HQ list is short")
 
     def test_make_hooks_installs_the_pre_push_hook(self) -> None:
         result = run(["make", "-n", "hooks"], cwd=ROOT)
