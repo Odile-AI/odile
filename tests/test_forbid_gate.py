@@ -603,6 +603,25 @@ class OneList(unittest.TestCase):
         self.assertIn(f"forbid list:     absent ({LIST_PATH})", result.stdout)
         self.assertIn("forbidden-value class did not run", result.stdout)
 
+        # Naming a path that does not exist is the same absent branch in the
+        # target: `make leak` is about the tree, so it passes with the line.
+        named = subprocess.run(["make", "-f", str(ROOT / "Makefile"), "leak",
+                                "FORBID_FILE=/nonexistent",
+                                f"PYTHON={sys.executable}"],
+                               cwd=repo, env=git_env(), capture_output=True,
+                               text=True, timeout=180)
+        self.assertEqual(named.returncode, 0, named.stdout + named.stderr)
+        self.assertIn("leak: forbid list absent: /nonexistent", named.stdout)
+
+        # Exit 2 is the scanner's contract: a caller that names a list the scan
+        # must have gets a finding and exit 2, never a silent skip.
+        direct = subprocess.run([sys.executable, "tools/leak_scan.py", "--tree",
+                                 "--forbid-file", "/nonexistent"],
+                                cwd=repo, env=git_env(), capture_output=True,
+                                text=True, timeout=180)
+        self.assertEqual(direct.returncode, 2, direct.stdout + direct.stderr)
+        self.assertIn("FINDING allow-file  --forbid-file /nonexistent", direct.stdout)
+
     def test_the_hq_checkout_carries_the_list_at_that_path(self) -> None:
         if not (ROOT / LIST_PATH).is_file():
             self.skipTest("no HQ list in this checkout (a clone carries none)")

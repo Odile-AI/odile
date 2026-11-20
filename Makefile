@@ -161,8 +161,12 @@ secrets:
 # directory is excluded from git), installed in CI from the `LEAK_FORBID_B64`
 # repository secret. The repository carries no copy, so a fresh clone has no
 # list: this target prints `forbid list absent` and still runs the tree classes,
-# rather than passing as if the class had run. A list named with
-# `--forbid-file` that does not exist is exit 2 — the caller asked for it.
+# rather than passing as if the class had run. That absent branch is the
+# target's, whatever path is named — `make leak FORBID_FILE=/nonexistent` also
+# prints the line and passes, because the target's job is the tree. Exit 2 is
+# the scanner's own contract, not the target's: a direct call
+# `tools/leak_scan.py --forbid-file /nonexistent` exits 2, because the caller
+# named a file the scan must have.
 FORBID_FILE ?= docs/ops/leak-forbid.txt
 leak: prereqs
 	@if [ -f "$(FORBID_FILE)" ]; then \
