@@ -51,6 +51,10 @@ def clean_env(extra: dict[str, str] | None = None) -> dict[str, str]:
         and not key.startswith("ODILE_MERGE_")
         and key != "CHECK_LOCK_WAIT"
     }
+    # The fixture repositories are hermetic: a system or global git config
+    # (`commit.gpgsign`, `core.hooksPath`) must not change what a test measures.
+    env["GIT_CONFIG_NOSYSTEM"] = "1"
+    env["GIT_CONFIG_GLOBAL"] = os.devnull
     env.update(extra or {})
     return env
 
