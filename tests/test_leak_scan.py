@@ -13,7 +13,9 @@ These tests pin the two behaviours the drill depends on: a planted forbidden
 literal fails and its removal passes, and a named list that does not exist is a
 finding and exit 2. They also pin the smaller pieces that keep the class honest:
 the list is not scanned for its own literals, an absent default is printed (never
-a silent skip), and a malformed list row is a finding.
+a silent skip), and a malformed list row is a finding. `ForbiddenPath` pins the
+same list read against a file's *name*: a tree publishes its paths as well as its
+bytes, so a file named with a literal fails even when its contents are clean.
 
 The second half pins the allowlist's own record, which is the other way a gate
 goes quiet: a `constant` row expires `never`, a `debt` row carries the date of
@@ -48,6 +50,18 @@ LITERAL = "deadbeefcafe"
 # a test that plants a leak must not itself be a leak, or the gate it tests fails.
 PROBE_IP = ".".join(["45", "33", "32", "156"])
 PROBE_IP_2 = ".".join(["45", "33", "32", "157"])
+# The bare vendor-id positions: synthetic 8-hex tokens and a synthetic name,
+# never a live id. The public build's stand-ins (`0badc0de`, `odl-fake01`) are
+# the negative control, so a stand-in stays a stand-in in the new positions too.
+PROBE_ID = "ab12" + "cd34"
+PROBE_ID_2 = "5c0f" + "fe12"
+PROBE_HOST = "probe" + "host1"
+STAND_IN_ID = "0bad" + "c0de"
+STAND_IN_HOST = "odl-" + "fake01"
+# The live dev account id and the scrub's stand-in for it, assembled from parts
+# so this file does not carry either literal in a position the gate reads.
+DEV_ID = "lkbxu" + "6i9"
+SCRUB_STAND_IN_ID = "0acc" + "0001"
 
 
 def git_env() -> dict[str, str]:
@@ -215,6 +229,177 @@ class ForbidClass(unittest.TestCase):
                     if line.startswith("FINDING forbidden-value")]
         self.assertEqual(len(findings), 1, result.stdout)
         self.assertIn("probe.txt", findings[0])
+
+
+class ForbiddenPath(unittest.TestCase):
+    """A path is a publication surface: the same list, matched against a name.
+
+    ``scan_tree`` walked ``git ls-files`` and opened each file, so it read every
+    file's *contents* and never its name: a file called
+    ``servury_reseller_key_<dev account id>.txt`` shipped with clean bytes while
+    both scanners said PASS (measured 2026-11-19, the gap card ``t_b781c1f4``
+    closed). These tests pin the class that closes it — the tree gate fails on a
+    name, a scrub stand-in in a name is not a finding, an archive member's name
+    is a name, an allowlist row waives it only under the ``forbidden-path``
+    rule, and the history scan sees a name a later commit deleted.
+    """
+
+    def setUp(self) -> None:
+        self.temp = tempfile.TemporaryDirectory()
+        self.repo = Path(self.temp.name)
+        subprocess.run(["git", "init", "-q"], cwd=self.repo, env=git_env(), check=True)
+        (self.repo / "leak-allow.tsv").write_text(
+            "# no exceptions in this fixture\n", encoding="utf-8")
+        (self.repo / "keep.txt").write_text("nothing private here\n", encoding="utf-8")
+
+    def tearDown(self) -> None:
+        self.temp.cleanup()
+
+    def scan(self, *args: str) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            [sys.executable, str(SCANNER), "--tree", *args],
+            cwd=self.repo, env=git_env(), capture_output=True, text=True, timeout=120)
+
+    def history(self, *args: str) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            [sys.executable, str(SCANNER), "--history", *args],
+            cwd=self.repo, env=git_env(), capture_output=True, text=True, timeout=120)
+
+    def commit(self, message: str = "fixture") -> None:
+        subprocess.run(["git", "add", "-A"], cwd=self.repo, env=git_env(), check=True)
+        subprocess.run(
+            ["git", "-c", "user.email=probe@example.test", "-c", "user.name=probe",
+             "commit", "-qm", message],
+            cwd=self.repo, env=git_env(), check=True)
+
+    def write_list(self) -> None:
+        (self.repo / "leak-forbid.txt").write_text(
+            f"# label<TAB>regex\n{LABEL}\t{LITERAL}\n", encoding="utf-8")
+
+    def write_allow(self, *rows: str) -> None:
+        (self.repo / "leak-allow.tsv").write_text(
+            "# fixture allowlist\n" + "".join(rows), encoding="utf-8")
+
+    @staticmethod
+    def row(value: str, rule: str) -> str:
+        digest = hashlib.sha256(value.encode("utf-8")).hexdigest()[:12]
+        return "\t".join([rule, "*", f"sha256:{digest}", "constant", "no",
+                          "a fixture path", "never"]) + "\n"
+
+    def write_tar(self, member: str, payload: bytes, name: str = "bundle.tar.gz") -> None:
+        buffer = io.BytesIO()
+        with tarfile.open(fileobj=buffer, mode="w:gz") as archive:
+            info = tarfile.TarInfo(member)
+            info.size = len(payload)
+            archive.addfile(info, io.BytesIO(payload))
+        (self.repo / name).write_bytes(buffer.getvalue())
+
+    def test_a_file_named_with_a_forbidden_literal_fails_then_passes(self) -> None:
+        self.write_list()
+        probe = self.repo / f"probe_{LITERAL}.txt"
+        probe.write_text("a plain marker file\n", encoding="utf-8")
+        failed = self.scan()
+        self.assertEqual(failed.returncode, 1, failed.stdout)
+        self.assertIn("FINDING forbidden-path", failed.stdout)
+        self.assertIn(f"probe_{LITERAL}.txt:1", failed.stdout)
+        self.assertIn(f"sha256:{hashlib.sha256(LITERAL.encode()).hexdigest()[:12]}", failed.stdout)
+        self.assertIn(f"len={len(LITERAL)}", failed.stdout)
+        self.assertIn(f"({LABEL})", failed.stdout)
+        # The bytes are clean, so the contents class must not fire: this is the
+        # name, not a second view of the same bytes.
+        self.assertNotIn("FINDING forbidden-value", failed.stdout)
+        probe.unlink()
+        passed = self.scan()
+        self.assertEqual(passed.returncode, 0, passed.stdout)
+        self.assertIn("PASS: nothing to leak", passed.stdout)
+
+    def test_a_stand_in_in_a_file_name_is_not_a_path_finding(self) -> None:
+        # The builder's scrub writes this stand-in for the dev account id; a
+        # stand-in is a stand-in in a path exactly as it is in a file's bytes.
+        self.write_list()
+        (self.repo / f"servury_reseller_key_{SCRUB_STAND_IN_ID}.txt").write_text(
+            "a plain marker file\n", encoding="utf-8")
+        result = self.scan()
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertIn("PASS: nothing to leak", result.stdout)
+
+    def test_a_forbidden_literal_in_a_directory_name_fails(self) -> None:
+        # The name is not only the leaf: a directory component is published too.
+        self.write_list()
+        (self.repo / LITERAL).mkdir()
+        (self.repo / LITERAL / "notes.txt").write_text("a plain marker file\n", encoding="utf-8")
+        result = self.scan()
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn("FINDING forbidden-path", result.stdout)
+        self.assertIn(f"{LITERAL}/notes.txt:1", result.stdout)
+
+    def test_an_archive_member_name_is_a_path(self) -> None:
+        # A member's name is published inside the archive, exactly as its bytes
+        # are; the contents rule already reads the member's data.
+        self.write_list()
+        self.write_tar(f"{LITERAL}.txt", b"a plain marker file\n")
+        result = self.scan()
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn("FINDING forbidden-path", result.stdout)
+        self.assertIn(f"bundle.tar.gz!{LITERAL}.txt:1", result.stdout)
+
+    def test_a_path_finding_is_waived_only_by_a_forbidden_path_row(self) -> None:
+        # A distinct class exists so the allowlist names the shape it waives: a
+        # `forbidden-value` row pins the same digest and still does not waive a
+        # name, and a `forbidden-path` row does.
+        self.write_list()
+        (self.repo / f"probe_{LITERAL}.txt").write_text("a plain marker file\n", encoding="utf-8")
+        self.write_allow(self.row(LITERAL, "forbidden-value"))
+        wrong = self.scan()
+        self.assertEqual(wrong.returncode, 1, wrong.stdout)
+        self.assertIn("FINDING forbidden-path", wrong.stdout)
+        self.write_allow(self.row(LITERAL, "forbidden-path"))
+        right = self.scan()
+        self.assertEqual(right.returncode, 0, right.stdout)
+        self.assertIn("allowlisted:    1", right.stdout)
+
+    def test_the_dev_account_id_in_a_file_name_fails_the_gate(self) -> None:
+        # The card's own shape: the reseller key file named with the live dev
+        # account id, contents clean. The id and the label are assembled here,
+        # so the test file itself is not a leak.
+        (self.repo / "leak-forbid.txt").write_text(
+            f"servury-dev-account\t{DEV_ID}\n", encoding="utf-8")
+        planted = f"servury_reseller_key_{DEV_ID}.txt"
+        (self.repo / planted).write_text("a plain marker file\n", encoding="utf-8")
+        result = self.scan()
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn("FINDING forbidden-path", result.stdout)
+        self.assertIn(f"{planted}:1", result.stdout)
+        self.assertIn("(servury-dev-account)", result.stdout)
+
+    def test_a_path_deleted_before_the_push_is_still_in_history(self) -> None:
+        # The tree scan at HEAD cannot see a name a later commit deleted; the
+        # history walk reads every commit's paths, which is the only layer that
+        # sees a commit that never reaches a built tree.
+        self.write_list()
+        probe = self.repo / f"probe_{LITERAL}.txt"
+        probe.write_text("a plain marker file\n", encoding="utf-8")
+        self.commit()
+        probe.unlink()
+        self.commit("delete the probe path")
+        result = self.history()
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn("FINDING forbidden-path", result.stdout)
+        self.assertIn(f"probe_{LITERAL}.txt:1", result.stdout)
+        self.assertIn("commit ", result.stdout)
+
+    def test_an_archive_member_name_deleted_before_the_push_is_still_in_history(self) -> None:
+        # The same shape one layer in: the archive path is clean, its member's
+        # name is not, and the archive itself is gone from HEAD.
+        self.write_list()
+        self.write_tar(f"{LITERAL}.txt", b"a plain marker file\n")
+        self.commit()
+        (self.repo / "bundle.tar.gz").unlink()
+        self.commit("delete the archive")
+        result = self.history()
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn("FINDING forbidden-path", result.stdout)
+        self.assertIn(f"bundle.tar.gz!{LITERAL}.txt:1", result.stdout)
 
 
 class AllowlistRecord(unittest.TestCase):
@@ -398,6 +583,93 @@ class AllowlistRecord(unittest.TestCase):
         (self.repo / "fixture.pem").write_text(pem, encoding="utf-8")
         second = self.scan()
         self.assertEqual(second.returncode, 0, second.stdout)
+
+
+class BareVendorIdPositions(unittest.TestCase):
+    """The positions a live vendor id used, and the look-alikes it does not.
+
+    A card's tree hid the tenant's instance id and slug in three shapes the
+    bare rules did not pin: an unlabelled assignment of a quoted token, a
+    `/manage/<id>/` path whose link text is the machine's name, and two ids
+    written as one whitespace-separated list on a `printf` line. `make check`
+    was green on that tree; only the publication scrub pass caught it. Each
+    test runs the real scanner against a throwaway git repository and asserts
+    the exit code, so the rule and the walk that carries it are one behaviour.
+    """
+
+    def setUp(self) -> None:
+        self.temp = tempfile.TemporaryDirectory()
+        self.repo = Path(self.temp.name)
+        subprocess.run(["git", "init", "-q"], cwd=self.repo, env=git_env(), check=True)
+        (self.repo / "leak-allow.tsv").write_text(
+            "# no exceptions in this fixture\n", encoding="utf-8")
+
+    def tearDown(self) -> None:
+        self.temp.cleanup()
+
+    def scan(self) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            [sys.executable, str(SCANNER), "--tree"],
+            cwd=self.repo, env=git_env(), capture_output=True, text=True, timeout=120)
+
+    def write(self, name: str, text: str) -> None:
+        (self.repo / name).write_text(text, encoding="utf-8")
+
+    @staticmethod
+    def reference(value: str) -> str:
+        # The finding line names the path and line, then the digest of the
+        # value; the value itself is never echoed, so the digest is the pin.
+        return "sha256:" + hashlib.sha256(value.encode("utf-8")).hexdigest()[:12]
+
+    def test_an_unlabelled_quoted_assignment_fails_then_the_stand_in_passes(self) -> None:
+        self.write("probe.py", f'OTHER = "{PROBE_ID}"\n')
+        failed = self.scan()
+        self.assertEqual(failed.returncode, 1, failed.stdout)
+        self.assertIn("FINDING vendor-resource-id", failed.stdout)
+        self.assertIn(f"probe.py:1 {self.reference(PROBE_ID)}", failed.stdout)
+        self.assertIn("bare instance id", failed.stdout)
+        self.write("probe.py", f'OTHER = "{STAND_IN_ID}"\n')
+        passed = self.scan()
+        self.assertEqual(passed.returncode, 0, passed.stdout)
+        self.assertIn("PASS: nothing to leak", passed.stdout)
+
+    def test_a_manage_path_and_its_link_text_fail_then_the_stand_ins_pass(self) -> None:
+        self.write("dashboard.html", f'<a href="/manage/{PROBE_ID}/">{PROBE_HOST}</a>\n')
+        failed = self.scan()
+        self.assertEqual(failed.returncode, 1, failed.stdout)
+        self.assertIn(f"dashboard.html:1 {self.reference(PROBE_ID)}", failed.stdout)
+        self.assertIn(f"dashboard.html:1 {self.reference(PROBE_HOST)}", failed.stdout)
+        self.assertIn("bare host name", failed.stdout)
+        self.write("dashboard.html",
+                   f'<a href="/manage/{STAND_IN_ID}/">{STAND_IN_HOST}</a>\n')
+        passed = self.scan()
+        self.assertEqual(passed.returncode, 0, passed.stdout)
+        self.assertIn("PASS: nothing to leak", passed.stdout)
+
+    def test_a_bare_whitespace_list_of_ids_fails_then_the_stand_ins_pass(self) -> None:
+        # The recycle runbook restored the fence with one `printf` line naming
+        # two machines; neither token sat in any of the labelled positions.
+        self.write("restore.sh", f"printf '%s\\n' {PROBE_ID} {PROBE_ID_2} > fence\n")
+        failed = self.scan()
+        self.assertEqual(failed.returncode, 1, failed.stdout)
+        self.assertIn(f"restore.sh:1 {self.reference(PROBE_ID)}", failed.stdout)
+        self.assertIn(f"restore.sh:1 {self.reference(PROBE_ID_2)}", failed.stdout)
+        self.write("restore.sh", f"printf '%s\\n' {STAND_IN_ID} cafebabe > fence\n")
+        passed = self.scan()
+        self.assertEqual(passed.returncode, 0, passed.stdout)
+        self.assertIn("PASS: nothing to leak", passed.stdout)
+
+    def test_the_look_alikes_are_not_bare_ids(self) -> None:
+        # The shapes an 8-hex token is far more often than a machine id.
+        self.write("probe.txt", "\n".join([
+            f"merged pre-flip at `{PROBE_ID}`",
+            f"the tint is #{PROBE_ID}",
+            f"uuid {PROBE_ID}-0000-4000-8000-000000000000",
+            f"checksum sha256:{PROBE_ID}" + "0" * 56,
+        ]) + "\n")
+        result = self.scan()
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertIn("PASS: nothing to leak", result.stdout)
 
 
 if __name__ == "__main__":

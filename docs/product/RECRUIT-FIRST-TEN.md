@@ -5,9 +5,11 @@
 <https://paulgraham.com/ds.html>, read 2026-11-19. The section names below are
 the source’s: Recruit, Fragile, Delight, Experience, Fire, Consult, Manual, Big.
 **Product:** `docs/MVP-V0.1.md` §0, the alpha.0 record (18 November 2026):
-private, invitation-based, no payments. The recommended alpha.0 envelope is five
-testers (`docs/product/ROADMAP-ALPHA0.md` §5, D2); this script is written for ten
-so alpha.1 can reuse it, and the queue stages the first three. The track row was
+private, invitation-based, no payments. The signed alpha.0 envelope (Savio,
+20 November 2026, card `t_ad1783c4`; `docs/product/ROADMAP-ALPHA0.md` §5, D2) is
+14 days and a ten-dollar inference key per tester, with no cap on the number of
+testers; this script is written for ten so alpha.1 can reuse it, and the queue
+stages the first three. The track row was
 cut on 6 November for ten paying tenants at $49; every price sentence is gone.
 **The one metric:** activation — registered, machine provisioned, first sign-in,
 one agent turn that writes a file the user asked for. A signup is an input.

@@ -251,6 +251,18 @@ def build_values(args: argparse.Namespace) -> dict[str, object]:
         if not backup_repo_url or any(char.isspace() for char in backup_repo_url):
             raise BadInput(f"--backup-repo-url must be one token, got {args.backup_repo_url!r}")
 
+    # The account site the invitation email names (`<host>/forgot` resets the
+    # account password). Optional: without it the kit keeps the sentence it
+    # shipped with, which points at the invitation email instead of at a host.
+    account_host = (getattr(args, "account_host", None) or "").strip()
+    if account_host:
+        if account_host.endswith("/"):
+            account_host = account_host[:-1]
+        if not account_host.startswith("https://") or any(
+                char.isspace() for char in account_host):
+            raise BadInput(
+                f"--account-host must be one https:// URL, got {args.account_host!r}")
+
     return {
         "slug": slug,
         "ipv4": str(address),
@@ -274,6 +286,7 @@ def build_values(args: argparse.Namespace) -> dict[str, object]:
         "seed_certificate": base64.b64encode(certificate).decode("ascii"),
         "seed_certificate_sha256": hashlib.sha256(certificate).hexdigest(),
         "backup_repo_url": backup_repo_url,
+        "account_host": account_host,
     }
 
 
@@ -305,6 +318,10 @@ def build_parser() -> argparse.ArgumentParser:
                           help="the release key's signature over the seed public key")
     render_p.add_argument("--backup-repo-url",
                           help="the tenant's restic repository URL, if known")
+    render_p.add_argument("--account-host",
+                          help="the account site the invitation email names, e.g. "
+                               "https://odile.fyi; the kit then prints "
+                               "<host>/forgot (default: point at the invitation email)")
     render_p.add_argument("--written-at", help="render timestamp, ISO 8601 UTC (tests)")
     render_p.add_argument("--out", help="write the kit here (default: stdout)")
     return parser

@@ -9292,7 +9292,7 @@ Never ask again after a skip. Never ask "are you sure?".
     (
         "odile-help",
         "skills/odile-help/SKILL.md",
-        "b726ca8c7dc43c8d2d16ca9a2ad53ef4231badf1937950214dc829a006108b5e",
+        "09c301f2843f39a2e89d772432af526143c16a203db124a2904e9b3a09bdb8cd",
         r'''---
 name: odile-help
 description: Stuck? odile.fyi/faq · run odile-diag · support by grant.
@@ -9380,11 +9380,10 @@ not open, the machine is rebuilt and you restore from your backup.
 
 ### 4. A bill or a charge
 
-> $49 a month, founding price, month-to-month. The $12 inference allowance is
-> included and hard-capped; at the cap I stop and tell you. Stripe holds the
-> card; we hold the customer id, the subscription id and whether it is paid.
-> Reply to help@odile.fyi for anything on the charge; it is read by a person,
-> and the target is an answer within 24 hours.
+> The private alpha has no price: Odile pays for the machine and the inference.
+> Stripe holds the card; we hold the customer id, the subscription id and
+> whether it is paid. Reply to help@odile.fyi for anything on the charge; it is
+> read by a person, and the target is an answer within 24 hours.
 
 Never promise a refund, a credit or a discount. Say the target is an answer
 within 24 hours and mean it.

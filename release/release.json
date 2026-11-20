@@ -1,27 +1,27 @@
 {
   "artifacts": {
     "installer": {
-      "sha256": "4d77575c888841ff0f794f613ef46a1e7321e2048782c1bae35bb15e4e12e6ee",
-      "size": 1511717,
+      "sha256": "2159bb2a3e46c908035ae3b8dd8c0dfc0f0bb8e15a76b2c93f328a74faffd229",
+      "size": 1511659,
       "url": "odile_install.py"
     },
     "skills": {
-      "sha256": "9d82653f88504fd9391fffaeb68b59d0e943651336efb7ccc1026dacba2730c8",
-      "size": 851945,
+      "sha256": "ccff7327b9f55ec2b21e4df3e3ebecd0d4cd2b894784d8655944b7b8bc4b12f7",
+      "size": 851913,
       "url": "skills.tar.gz"
     }
   },
   "boot": {
     "kernel": "6.12.115+deb13.1-amd64"
   },
-  "generated_at": "2026-11-20T00:45:00Z",
+  "generated_at": "2026-11-20T16:34:05Z",
   "manifest": {
-    "sha256": "7bf88c65b0ff79a97e2d8a6900df7fa0c43d7832b997976bdb71302c9763af43",
+    "sha256": "306b8de6c9f63fbef8764a53a4e7633dac067e1d94ebea03ed8e686f68f28b19",
     "signature_url": "manifest.json.sig",
     "url": "manifest.json"
   },
-  "notes": "ODL-474 follow-up (t_e23f3288), round 6, over 2026.11.19-5 (t_4fcd465f). The cut merges main 5587074, so a tenant's /verify page is verify/verify.py + templates/verify.html served by odile-verify.service on 127.0.0.1:8098 behind Caddy's one no-store /verify handle (main's ODL-236 follow-up), and this card's work lands on that page: its tenant block now carries the published scoped row \"No one at Odile can log in unless you grant it.\" (docs/CLAIMS.md \u00a71 Access), and a live support grant is its own `support access` row \u2014 grant id, expiry, reason, key fingerprint, the line count in authorized_keys and the keyslot count \u2014 read from odile-support status, with the second keyslot named as the grant's handover in the LUKS row. The access reporter (scripts/verify_and_unlock.sh, 332eccdf) keeps the five-check PASS with no grant and prints a `support grant OPEN` row with the same three values during a grant; its verdict is built from the failed rows, so a grant beside a failed seal reads \"OPEN \u2014 a support grant is live until \u2026 (grant <id>); 1 other check FAIL (seal): the report did not pass.\" The embedded first_visit.py is the merged file 21c84e64 (main's ODL-236 file at 00af1651, which removed the /verify route, plus this branch's 11-line access-report parser); the page pins are verify.py 70d8f469 and verify.html 543f42ea.",
+  "notes": "ODL-474 follow-up (t_e23f3288), round 7, merging main 88b5751. A tenant's /verify names a live support grant: the support access row carries the grant id, expiry, reason and key fingerprint, and the access reporter's verdict names the grant instead of a bare FAIL (\"OPEN - a support grant is live until ... (grant <id>)\"), with any failed rows still named; no grant keeps the five-check PASS. templates/verify.html and both copies of HQ's /verify page carry the published scoped row \"No one at Odile can log in unless you grant it.\" (docs/CLAIMS.md 1 Access). The embedded first_visit.py is 21c84e64 (main's ODL-236 file plus this branch's access-report parser); the page pins are verify.py 70d8f469 and verify.html 543f42ea; the reporter is scripts/verify_and_unlock.sh 332eccdf. The skills artifact is unchanged (ccff7327). The cut id 2026.11.20-2 resolves the collision of the two 2026.11.20-1 cuts (this branch's 00:45Z and main's 07:01Z).",
   "product": "odile",
-  "release": "2026.11.20-1",
+  "release": "2026.11.20-2",
   "schema": 1
 }

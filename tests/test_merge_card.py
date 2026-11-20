@@ -571,22 +571,79 @@ class NoBranchCardTests(unittest.TestCase):
         spec.loader.exec_module(module)
         return module
 
-    def test_a_card_without_a_branch_publishes_main(self) -> None:
-        module = self.load_tool()
-        setattr(module, "card_details", lambda card: {"branch_name": None, "workspace_path": None,
-                                                      "title": "a dir-workspace card"})
-        previous = os.environ.copy()
+    def publish(self) -> int:
+        """Run `merge_card --card` in-process against the fixture repository.
+
+        The card has no branch, so the tool's work is `publish_main`: one
+        `make leak` in the repository and one `git push origin main`. The
+        stand-in `make` answers the leak gate, so what the exit code and the
+        fixture's refs measure is the tool, not this suite.
+
+        `merge_card`'s own `git` helper passes no `env=`, so it inherits this
+        process — and `.githooks/pre-commit` hands a commit in a linked
+        worktree an absolute `GIT_DIR`/`GIT_INDEX_FILE` for the *outer*
+        repository. The tool therefore runs under `clean_env()`, which is what
+        a shell outside a hook has: the caller's repository must not reach it.
+        """
         self.fixture.write_make('case "$1" in\n  leak) echo "make leak: OK" ;;\nesac\nexit 0\n')
-        os.environ["PATH"] = f"{self.fixture.bin_dir}{os.pathsep}{previous['PATH']}"
-        try:
-            code = module.main(["--card", "t_000000", "--repo", str(self.fixture.repo)])
-        finally:
-            os.environ.clear()
-            os.environ.update(previous)
+        run_env = clean_env({
+            "PATH": os.pathsep.join([str(self.fixture.bin_dir), os.environ.get("PATH", "")]),
+        })
+        with mock.patch.dict(os.environ, run_env, clear=True):
+            module = self.load_tool()
+            setattr(module, "card_details", lambda card: {"branch_name": None,
+                                                          "workspace_path": None,
+                                                          "title": "a dir-workspace card"})
+            return module.main(["--card", "t_000000", "--repo", str(self.fixture.repo)])
+
+    def test_a_card_without_a_branch_publishes_main(self) -> None:
+        code = self.publish()
 
         self.assertEqual(code, 0)
         self.assertEqual(self.fixture.origin_main(), self.fixture.head(),
                          "the branch-less card's commit was not published")
+        self.assertNotEqual(self.fixture.origin_main(), self.fixture.before,
+                            "origin/main did not move: nothing was published")
+
+    def test_a_caller_pinned_git_dir_does_not_redirect_the_publish(self) -> None:
+        """The pre-commit hook's environment must not reach the tool's git calls.
+
+        `.githooks/pre-commit` runs inside a linked worktree, where git exports
+        an absolute `GIT_DIR`/`GIT_INDEX_FILE` for the *outer* repository.
+        Inherited by the in-process tool, every `git -C <fixture>` acts on that
+        repository instead: the fixture's `main` never moves and the push
+        publishes the outer `main` to the real `origin` — measured on a card
+        commit, 2026-11-20, where the hook's own suite failed on this test and
+        the push fast-forwarded real merges.
+
+        The decoy here plays the outer repository: a second repository with an
+        unpushed `main` and its own `origin`, pinned in the caller's
+        environment exactly as the hook pins it. Nothing about it may move.
+        """
+        decoy = Fixture()
+        try:
+            decoy.add_origin()
+            decoy.git("commit", "-q", "--allow-empty", "-m", "decoy: an unpushed commit")
+            decoy_main = decoy.head()
+            decoy_origin = decoy.origin_main()
+            self.assertNotEqual(decoy_main, decoy_origin, "the decoy has nothing to publish")
+            caller = {
+                "GIT_DIR": decoy.git("rev-parse", "--absolute-git-dir").stdout.strip(),
+                "GIT_INDEX_FILE": decoy.git("rev-parse", "--path-format=absolute",
+                                            "--git-path", "index").stdout.strip(),
+            }
+
+            with mock.patch.dict(os.environ, caller):
+                code = self.publish()
+
+            self.assertEqual(code, 0)
+            self.assertEqual(self.fixture.origin_main(), self.fixture.head(),
+                             "the caller's GIT_DIR redirected the publish away from the fixture")
+            self.assertEqual(decoy.head(), decoy_main, "the caller's repository's main moved")
+            self.assertEqual(decoy.origin_main(), decoy_origin,
+                             "the caller's repository's main was pushed to its origin")
+        finally:
+            decoy.cleanup()
 
 
 if __name__ == "__main__":

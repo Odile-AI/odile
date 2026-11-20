@@ -413,39 +413,52 @@ def public_key_line(text: str) -> tuple[str, str] | None:
     return line, fingerprint(blob)
 
 
-def measured_boot_key(cmdline: str, boot_key_path: str = BOOT_KEY_PATH) -> tuple[str, str, str]:
-    """`(key line, fingerprint, reason)` from the measured line or the image file.
+def measured_boot_key(cmdline: str, boot_key_path: str = BOOT_KEY_PATH,
+                      refresh: bool = True) -> tuple[str, str, str, str]:
+    """`(key line, fingerprint, reason, note)` from the measured line.
 
-    The command line is the measured source and wins; `/etc/odile/boot-key.pub`
-    is the image's own copy of the bootstrap key. When both exist they must
-    agree: a disk that carries a different key than the line that booted is a
-    mismatch, not a fact to report.
+    The command line is the measured source and wins. `/etc/odile/boot-key.pub`
+    is the image's own copy of the bootstrap key — metadata for the verify
+    surface, never the source of truth. One disk image is shared across
+    machines (one UKI per release, the per-machine line supplied at attach
+    time), so on a recycled disk the file names the key of whichever machine
+    the disk was built for while the line carries this machine's own `bb.key`.
+    The measured key wins and the file is rewritten from it, idempotently: a
+    second boot finds the bytes equal and writes nothing. `refresh=False` is
+    the read-only probe (`--check`), which must not touch the image.
+
+    A line with **no** `bb.key=` is still refused: the file is the build's
+    key, not this boot's, and nothing here measured it.
     """
     values = [word[len("bb.key="):] for word in cmdline.split()
               if word.startswith("bb.key=")]
     from_line = ""
-    reason = ""
     if len(values) > 1:
-        return "", "", "the command line carries %d bb.key= tokens" % len(values)
-    if values:
-        try:
-            from_line = base64.b64decode(values[0], validate=True).decode("utf-8")
-        except (ValueError, UnicodeDecodeError):
-            return "", "", "bb.key= is not base64 of a public key line"
+        return "", "", "the command line carries %d bb.key= tokens" % len(values), ""
+    if not values:
+        return "", "", "no bb.key= in the command line", ""
+    try:
+        from_line = base64.b64decode(values[0], validate=True).decode("utf-8")
+    except (ValueError, UnicodeDecodeError):
+        return "", "", "bb.key= is not base64 of a public key line", ""
     parsed = public_key_line(from_line)
-    if from_line and parsed is None:
-        return "", "", "the measured boot key is not one public key line"
+    if parsed is None:
+        return "", "", "the measured boot key is not one public key line", ""
     from_file = read_text(boot_key_path).strip() if os.path.isfile(boot_key_path) else ""
     parsed_file = public_key_line(from_file)
     if from_file and parsed_file is None:
-        return "", "", "%s is not one public key line" % boot_key_path
-    if parsed and parsed_file and parsed[0] != parsed_file[0]:
-        return "", "", "the measured boot key and %s disagree" % boot_key_path
-    if parsed:
-        return parsed[0], parsed[1], ""
-    if parsed_file:
-        return parsed_file[0], parsed_file[1], ""
-    return "", "", "no bb.key= in the command line and no %s" % boot_key_path
+        return "", "", "%s is not one public key line" % boot_key_path, ""
+    note = ""
+    if parsed_file and parsed[0] != parsed_file[0]:
+        note = "refreshed %s from the measured line" % boot_key_path
+        if refresh:
+            try:
+                write_atomic(boot_key_path, (parsed[0] + "\n").encode("utf-8"), 0o644)
+            except OSError as error:
+                return "", "", "could not refresh %s: %s" % (boot_key_path, error), ""
+        else:
+            note += " (read-only: not written)"
+    return parsed[0], parsed[1], "", note
 
 
 def pinned_release(pin_path: str = PIN_PATH,
@@ -479,23 +492,27 @@ def boot_record_facts(cmdline: str, *, pin_path: str = PIN_PATH,
                       boot_key_path: str = BOOT_KEY_PATH,
                       boot_record_path: str = BOOT_RECORD_PATH,
                       host_key_path: str = HOST_KEY_PATH,
-                      first_visit_path: str = FIRST_VISIT_STATE
-                      ) -> tuple[dict | None, str, str]:
-    """`(record, key fingerprint, why it is skipped)`.
+                      first_visit_path: str = FIRST_VISIT_STATE,
+                      refresh: bool = True
+                      ) -> tuple[dict | None, str, str, str]:
+    """`(record, key fingerprint, why it is skipped, note)`.
 
     A skipped record is not a failed boot: the machine serves, HQ keeps the row
     it had, and the next boot retries. That is the card's fail-closed edge — a
-    tenant that never first-boots never writes.
+    tenant that never first-boots never writes. `note` is the one fact that is
+    not in the record and still belongs on the transcript: the image's
+    `boot-key.pub` was rewritten from the measured line (t_556631d6).
     """
     line = (cmdline or "").strip()
     if not line:
-        return None, "", "no measured command line"
-    key_line, key_fingerprint, reason = measured_boot_key(line, boot_key_path)
+        return None, "", "no measured command line", ""
+    key_line, key_fingerprint, reason, note = measured_boot_key(
+        line, boot_key_path, refresh=refresh)
     if not key_line:
-        return None, "", reason
+        return None, "", reason, ""
     release, reason = pinned_release(pin_path, boot_record_path)
     if not release:
-        return None, "", reason
+        return None, "", reason, ""
     record = {
         "cmdline": line,
         "release": release,
@@ -504,7 +521,7 @@ def boot_record_facts(cmdline: str, *, pin_path: str = PIN_PATH,
     host_key = current_host_key(host_key_path)
     if host_key:
         record["host_key"] = host_key
-    return record, key_fingerprint, ""
+    return record, key_fingerprint, "", note
 
 
 def post_record(url: str, token: str, instance_id: str,
@@ -546,11 +563,13 @@ def post_record(url: str, token: str, instance_id: str,
 
 def report_record(facts: dict | None, key_fingerprint: str, reason: str, *,
                   token: str, instance_id: str, seed_url: str, log_path: str,
-                  console: bool) -> str:
+                  console: bool, note: str = "") -> str:
     """Send the record and return the one-line result for the console or log.
 
     `console` is False on a converged (`same`) boot, where the console contract
     is exactly `odile-firstboot: same`; the log still carries the record line.
+    `note` is the transcript's note (the image's boot-key.pub refreshed from
+    the measured line), never part of what HQ is sent.
     """
     if facts is None:
         line = "skipped (%s)" % reason
@@ -565,6 +584,8 @@ def report_record(facts: dict | None, key_fingerprint: str, reason: str, *,
                                      ", " + changed if changed else "")
         else:
             line = "%s (hq %s)" % (head, answer)
+    if note:
+        line = "%s · %s" % (line, note)
     if console:
         return line
     log_placements(log_path, ["record      %s" % line])
@@ -1284,10 +1305,13 @@ def main(argv: list[str] | None = None) -> int:
             # reader sees the key came first. Its own prefix keeps the
             # one-`odile-firstboot:`-line console contract.
             print("odile-hostkeys: %s %s" % (verb, detail), flush=True)
-        record, record_key, record_reason = boot_record_facts(
+        record, record_key, record_reason, record_note = boot_record_facts(
             cmdline_text, pin_path=args.pin, boot_key_path=args.boot_key,
             boot_record_path=args.boot_record, host_key_path=args.host_key,
             first_visit_path=args.first_visit_state,
+            # --check is a read-only probe: it must not rewrite the image's
+            # boot-key.pub the way the boot itself does (t_556631d6).
+            refresh=not args.check,
         )
         state = load_state(args.state)
         # ODL-472: the release's exact installer and signed manifest pair, and
@@ -1310,7 +1334,7 @@ def main(argv: list[str] | None = None) -> int:
                 return 0
             report_record(record, record_key, record_reason, token=token,
                           instance_id=instance_id, seed_url=facts["seed_url"],
-                          log_path=args.log, console=False)
+                          log_path=args.log, console=False, note=record_note)
             say("same")
             return 0
         if args.check:
@@ -1377,7 +1401,7 @@ def main(argv: list[str] | None = None) -> int:
             page = "not checked"
         record_line = report_record(record, record_key, record_reason, token=token,
                                     instance_id=instance_id, seed_url=facts["seed_url"],
-                                    log_path=args.log, console=True)
+                                    log_path=args.log, console=True, note=record_note)
         save_state(args.state, {
             "version": 1,
             "ok": True,

@@ -464,7 +464,7 @@ second way in`. The page's tenant block carries the published scoped row
 
 The report's sixth row is this card's too. The reporter
 (`scripts/verify_and_unlock.sh`, `332eccdf…`) ships inside the signed installer
-and `2026.11.20-1`: with no grant it prints the five rows and `PASS — five
+and `2026.11.20-2`: with no grant it prints the five rows and `PASS — five
 checks …` (exit 0); with a live grant it prints the same five plus
 `support grant  OPEN  grant <id>; expires …; key …; line present …` and an
 `OPEN — …` verdict (exit 1). The parsers in `app.py` and

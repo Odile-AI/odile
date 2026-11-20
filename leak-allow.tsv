@@ -44,10 +44,14 @@ home-path	*	sha256:e50425b752fd	constant	no	the tenant account the product creat
 home-path	*	sha256:e78fb33ae4ec	constant	no	a throwaway account in an install transcript, not a person	never
 public-ip	docs/security/LEAK-CONTROL-VERDICT.md	sha256:6c4a9f5f0de6	constant	no	the card's drill transcript, verbatim: the probe address the gate must reject	never
 email	docs/security/LEAK-CONTROL-VERDICT.md	sha256:8d38531c89cb	constant	no	the card's drill transcript, verbatim: the probe mailbox the gate must reject	never
-vendor-resource-id	*	sha256:3890f50e6844	constant	no	the live tenant slug; the public build replaces it with odl-fake01, and the forbid list names it as a backstop	never
-vendor-resource-id	*	sha256:eaf6312fa1f2	constant	no	the live tenant's Servury instance id; the public build replaces it with 0badc0de, and the forbid list names it	never
+vendor-resource-id	*	sha256:3890f50e6844	constant	no	the tenant's previous slug; the public build replaces it with odl-fake01, and the forbid list names it as a backstop	never
+vendor-resource-id	*	sha256:eaf6312fa1f2	constant	no	the tenant's previous Servury instance id; the public build replaces it with 0badc0de, and the forbid list names it	never
+vendor-resource-id	*	sha256:95aa03e40369	constant	no	the tenant's current slug; the public build replaces it with odl-fake01, and the forbid list names it as a backstop	never
+vendor-resource-id	*	sha256:0cca50f512f3	constant	no	the tenant's current Servury instance id; the public build replaces it with 0badc0de, and the forbid list names it	never
 vendor-resource-id	*	sha256:bbd2e45d545b	constant	no	the bench machine's instance id in two recorded reports; the public build replaces it with cafebabe	never
 vendor-resource-id	*	sha256:421fe1d07ee8	constant	no	the HQ host name in two recorded reports; the public build replaces it with hostfake	never
+vendor-resource-id	tests/test_odilectl.py	sha256:e91b57c18037	constant	no	a fixture machine id in the two-machines-with-one-name tests	never
+vendor-resource-id	tests/test_seed.py	sha256:bb177d79d4f1	constant	no	a fixture machine id in the claim-fallback rehearsal	never
 machine-identity	docs/runbooks/image-bench.md	sha256:64a777ff70aa	constant	no	the real volume's PARTUUID inside a recorded measured command line; redaction would invalidate the recorded measurement	never
 credential-assignment	tests/test_first_visit.py	sha256:87cbebfeebc0	constant	no	test fixture: a passphrase with no digit, now visible to the extended name list	never
 credential-literal	README.md	sha256:b2132046eb76	constant	yes	the published demo password in the README table; public by design, the same value as the login page row	never
@@ -83,3 +87,8 @@ high-entropy	docs/runbooks/image.md	sha256:6a3d71aa28cc	constant	no	history only
 vendor-resource-id	*	sha256:63737dacb46c	constant	no	a destroyed test tenant's instance id in the offboard drill record (ODL-218); the machine is gone and the record is its evidence	never
 vendor-resource-id	*	sha256:3e5275784e44	constant	no	the bench box id this operator's panel script and its test name; the public build replaces it with deadbeef and the forbid list names it	never
 vendor-resource-id	*	sha256:4014bb9b4e56	constant	no	the Servury dev account id in the panel script's comment; the public build replaces it with 0acc0001 and the forbid list names it	never
+vendor-resource-id	docs/ops/evidence/2026-11-20-finance/*	sha256:716084d53ac1	constant	no	the Servury dev box id in the unit-2 finance evidence's verbatim API read and the lines that cite it (README, reconcile transcript, script); the public build scrubs it to 0acc0003 and the forbid list names it	never
+home-path	docs/ops/evidence/2026-11-20-finance/*	sha256:18b74e4c8911	constant	no	the checkout path this machine ran the reconciliation from, quoted in the evidence script; the public build replaces it with <checkout>	never
+public-ip	docs/ops/evidence/2026-11-20-finance/*	sha256:9876939e2536	constant	no	the host's IPv4 in the verbatim Servury API read: odile.fyi's A record, the same published address the gate-packet row allow-lists, not a secret	never
+public-ipv6	docs/ops/evidence/2026-11-20-finance/*	sha256:555c8104f95f	constant	no	the host's provider IPv6 address in the verbatim Servury API read; the public build replaces the prefix with the documentation range	never
+public-ipv6	docs/ops/evidence/2026-11-20-finance/*	sha256:c6f39accd75f	constant	no	the provider-routed /64 subnet in the same verbatim read; the public build replaces the prefix with the documentation range	never
