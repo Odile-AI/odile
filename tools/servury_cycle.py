@@ -19,11 +19,11 @@ keep it. The off is checked rather than assumed: the switch lands seconds after
 the POST, so the way out watches the host's copy for a settle window and posts
 again if a tail from the still-booting guest arrives behind the first off.
 
-    ./tools/servury_cycle.py --server-id 31a63bbb --action restart \\
+    ./tools/servury_cycle.py --server-id 0badc0de --action restart \\
         --wait-for "bb-sealed-unlock" --serial-out docs/evidence/uki-boot.txt
 
 **The key is account-scoped.** `/root/.odile/servury_reseller_key` owns
-`31a63bbb` and `<server:hq>`; `<server:ukitest>` (the image box) belongs to
+`0badc0de` and `<server:hq>`; `<server:ukitest>` (the image box) belongs to
 `<servury-account:dev>`, which has a panel session and no reseller key — the API
 answers `Server not found` for it. So `--via auto` (the default) uses the API
 where the key answers and falls back to `tools/servury_panel.py` otherwise, and

@@ -638,6 +638,18 @@ def load_app():
 _SNP = None
 
 
+def load_installer():
+    """The signed installer as a module: its parser is the installed one."""
+    spec = importlib.util.spec_from_file_location(
+        "odile_install_odl474b", ROOT / "installer" / "odile_install.py")
+    if spec is None or spec.loader is None:
+        raise AssertionError("cannot load installer/odile_install.py")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
 def load_snp_report():
     """tools/snp_report.py as a module: the KDS and TCB helpers under test."""
     global _SNP
@@ -874,6 +886,215 @@ class AccessReportTests(unittest.TestCase):
         self.assertRegex(result.stdout, r"operator key\s+FAIL")
         self.assertIn("odile-support", result.stdout)
         self.assertIn("/home/odile/.ssh/authorized_keys", result.stdout)
+
+    # -- a live support grant is named, not a bare FAIL (t_e23f3288) -----
+    #
+    # A grant is a key in authorized_keys by design, so `usable keys` and
+    # `operator key` fail while it is open. What the page lacked was a row
+    # that says *why*: the grant id, its expiry and the key fingerprint. The
+    # state file is the witness, not the line's shape — a hand-written
+    # grant-shaped line with no live state must still fail (the two tests
+    # above pin that).
+    GRANT_ID = "7bc06cc48244"
+    GRANT_EXPIRES = "2099-01-01T00:00:00Z"
+    GRANT_KEY = ("ssh-ed25519 "
+                 "AAAAC3NzaC1lZDI1NTE5AAAAIMdWyPF1Bcwd6sFiL4KiUtmYTq2FLe95TmfBQS0fEnu2"
+                 " support@hq")
+    OTHER_KEY = "AAAAC3NzaC1lZDI1NTE5AAAAIBW0mNRc2zHqyCxjwkzfdIt+lubwOEBY/Repnbm1lqCn"
+
+    def key_fingerprint(self, blob: str) -> str:
+        return "SHA256:" + base64.b64encode(
+            hashlib.sha256(base64.b64decode(blob)).digest()).decode().rstrip("=")
+
+    def grant_line(self, *, blob: str | None = None, grant_id: str | None = None,
+                   command: str = "/usr/local/sbin/odile-support session") -> str:
+        """The one line `odile-support grant` appends to root's key file."""
+        blob = blob or self.GRANT_KEY.split()[1]
+        return ('command="%s",no-agent-forwarding,no-port-forwarding,'
+                "no-X11-forwarding,no-user-rc ssh-ed25519 %s odile-support-grant-%s"
+                % (command, blob, grant_id or self.GRANT_ID))
+
+    def grant_state(self, **fields: object) -> dict:
+        """A live grant's state file: public material only, 0644 on a tenant."""
+        blob = self.GRANT_KEY.split()[1]
+        state = {
+            "version": 1,
+            "grant_id": self.GRANT_ID,
+            "slug": "odl-bench",
+            "reason": "ODL-217 drill: grant, use, expire",
+            "created_at": "2026-11-12T21:23:43Z",
+            "expires_at": self.GRANT_EXPIRES,
+            "hours": 24.0,
+            "key_type": "ssh-ed25519",
+            "key_blob": blob,
+            "key_fingerprint": self.key_fingerprint(blob),
+            "key_comment": "support@hq",
+        }
+        state.update(fields)
+        return state
+
+    def test_a_live_grant_is_its_own_open_row(self) -> None:
+        """The two FAIL rows stay honest; a sixth row names the grant."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self.bench(
+                Path(tmp),
+                keys=(self.THROWAWAY, self.grant_line()),
+                extra_files={"var/lib/odile/support-grant.json":
+                             json.dumps(self.grant_state())},
+            )
+            result = self.report(root)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertRegex(result.stdout, r"usable keys\s+FAIL")
+        self.assertRegex(result.stdout, r"operator key\s+FAIL")
+        self.assertRegex(result.stdout, r"support grant\s+OPEN")
+        self.assertIn(self.GRANT_ID, result.stdout)
+        self.assertIn(self.GRANT_EXPIRES, result.stdout)
+        self.assertIn(self.key_fingerprint(self.GRANT_KEY.split()[1]), result.stdout)
+        self.assertIn("line present", result.stdout)
+        # The verdict is the grant, not the bare FAIL that read as a break.
+        self.assertRegex(result.stdout.splitlines()[-1], r"^  OPEN \u2014 ")
+        self.assertIn("the two key rows fail because that granted key is in", result.stdout)
+        self.assertNotIn("FAIL \u2014 the access report did not pass", result.stdout)
+
+    def test_a_live_grant_and_a_failed_seal_names_both(self) -> None:
+        """A grant explains the key rows, not the seal; the verdict says both.
+
+        The verdict used to be chosen from `grant` before `fails`, so a
+        machine that also failed attestation read as "only the grant is open",
+        and the causal sentence blamed two rows while three had failed.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self.bench(
+                Path(tmp),
+                keys=(self.THROWAWAY, self.grant_line()),
+                policy=0x30001,
+                extra_files={"var/lib/odile/support-grant.json":
+                             json.dumps(self.grant_state())},
+            )
+            result = self.report(root)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertRegex(result.stdout, r"seal\s+FAIL")
+        self.assertRegex(result.stdout, r"support grant\s+OPEN")
+        verdict = result.stdout.splitlines()[-1]
+        self.assertRegex(verdict, r"^  OPEN \u2014 a support grant is live until ")
+        self.assertIn(self.GRANT_ID, verdict)
+        self.assertIn("1 other check FAIL (seal)", verdict)
+        self.assertIn("the report did not pass", verdict)
+        self.assertNotIn("the two key rows fail", verdict)
+
+    def test_a_live_grant_and_a_planted_key_name_the_other_failure(self) -> None:
+        """`usable keys` failing for more than the grant is still reported.
+
+        The row said two foreign keys and a private half; the verdict said the
+        two key rows fail because of the grant, which the row contradicts.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            subprocess.run(
+                ["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-C", "bench-user",
+                 "-f", str(tmp_path / "user")],
+                check=True,
+            )
+            public = (tmp_path / "user.pub").read_text(encoding="utf-8").strip()
+            private = (tmp_path / "user").read_text(encoding="utf-8")
+            root = self.bench(
+                tmp_path,
+                keys=(self.THROWAWAY, self.grant_line(), public),
+                private_key=("home/odile/.ssh/id_ed25519", private),
+                extra_files={"var/lib/odile/support-grant.json":
+                             json.dumps(self.grant_state())},
+            )
+            result = self.report(root)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("2 authorized key(s) other than the measured throwaway", result.stdout)
+        self.assertIn("1 private half on the machine", result.stdout)
+        self.assertRegex(result.stdout, r"support grant\s+OPEN")
+        verdict = result.stdout.splitlines()[-1]
+        self.assertRegex(verdict, r"^  OPEN \u2014 a support grant is live until ")
+        self.assertIn(self.GRANT_ID, verdict)
+        self.assertIn("1 other check FAIL (usable keys)", verdict)
+        self.assertIn("the report did not pass", verdict)
+        self.assertNotIn("the two key rows fail", verdict)
+
+    def test_a_live_grant_after_the_boot_rewrite_is_open_and_passes_five(self) -> None:
+        """The boot rewrite deletes the line; the state keeps the grant live.
+
+        `odile-release-setup.service` rewrites authorized_keys at every boot and
+        the grant's timer restores its line within 30 s, so the report the boot
+        oneshot writes often sees a live grant with no line. Five rows PASS and
+        the grant row says the line is missing.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self.bench(
+                Path(tmp),
+                extra_files={"var/lib/odile/support-grant.json":
+                             json.dumps(self.grant_state())},
+            )
+            result = self.report(root)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        for tag in ("usable keys", "boot key", "seal", "sign-in hash", "operator key"):
+            self.assertRegex(result.stdout, r"%s\s+PASS" % tag)
+        self.assertRegex(result.stdout, r"support grant\s+OPEN")
+        self.assertIn("line missing", result.stdout)
+        self.assertRegex(result.stdout.splitlines()[-1], r"^  OPEN \u2014 ")
+
+    def test_an_expired_or_revoked_grant_state_is_not_live(self) -> None:
+        """Only a grant still in its window is named; a tombstone is not."""
+        cases = {
+            "expired": {"expires_at": "2020-01-01T00:00:00Z"},
+            "expired-tombstone": {"expires_at": "2020-01-01T00:00:00Z",
+                                  "expired_at": "2026-11-13T00:07:48Z"},
+            "revoked": {"revoked_at": "2026-11-13T00:08:08Z"},
+        }
+        for name, fields in cases.items():
+            with self.subTest(state=name), tempfile.TemporaryDirectory() as tmp:
+                root = self.bench(
+                    Path(tmp),
+                    keys=(self.THROWAWAY, self.grant_line()),
+                    extra_files={"var/lib/odile/support-grant.json":
+                                 json.dumps(self.grant_state(**fields))},
+                )
+                result = self.report(root)
+            self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+            self.assertNotIn("support grant", result.stdout)
+            self.assertRegex(result.stdout.splitlines()[-1],
+                             r"^  FAIL \u2014 the access report did not pass")
+
+    def test_a_grant_state_does_not_excuse_a_different_key(self) -> None:
+        """The state names one fingerprint; a line carrying another still fails.
+
+        A root shell can write the state file, so the row may only excuse the
+        exact line `grant` would have written for that state.
+        """
+        line = self.grant_line(blob=self.OTHER_KEY)
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self.bench(
+                Path(tmp),
+                keys=(self.THROWAWAY, line),
+                extra_files={"var/lib/odile/support-grant.json":
+                             json.dumps(self.grant_state())},
+            )
+            result = self.report(root)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertRegex(result.stdout, r"usable keys\s+FAIL")
+        self.assertIn(self.key_fingerprint(self.OTHER_KEY), result.stdout)
+        self.assertRegex(result.stdout, r"support grant\s+OPEN")
+        self.assertIn("line missing", result.stdout)
+
+    def test_a_matching_key_with_the_wrong_forced_command_is_not_the_grant(self) -> None:
+        """Same key, same marker, but a command that is not the session wrapper."""
+        line = self.grant_line(command="/bin/sh -c id")
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self.bench(
+                Path(tmp),
+                keys=(self.THROWAWAY, line),
+                extra_files={"var/lib/odile/support-grant.json":
+                             json.dumps(self.grant_state())},
+            )
+            result = self.report(root)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertRegex(result.stdout, r"operator key\s+FAIL")
+        self.assertIn("line missing", result.stdout)
 
     def test_the_boot_private_half_outside_a_dot_ssh_dir_fails(self) -> None:
         """A private key is not less dangerous because it is not under .ssh.
@@ -1273,6 +1494,86 @@ class OwnReportTests(unittest.TestCase):
         self.assertIn("usable keys    FAIL", page)
         self.assertIn("FAIL \u2014 the access report did not pass", page)
         self.assertIn("read from your machine", page)
+
+    # -- a live grant on the page (t_e23f3288) ---------------------------
+    GRANT_ROW = ("  " + "%-14s" % "support grant" + " OPEN  "
+                 "grant 7bc06cc48244; expires 2099-01-01T00:00:00Z; "
+                 "key SHA256:clN4wFkPkmjrpKbjkg6Z7N7zSB3L7w/AcHV5ysbfWAQ; line present")
+    OPEN_SUMMARY = ("OPEN \u2014 a support grant is live until 2099-01-01T00:00:00Z "
+                    "(grant 7bc06cc48244): the two key rows fail because that "
+                    "granted key is in /root/.ssh/authorized_keys.")
+
+    def grant_rows(self) -> tuple[str, ...]:
+        rows = list(self.PASS_ROWS)
+        rows[0] = ("  usable keys    FAIL  1 authorized key(s) other than the "
+                   "measured throwaway in /root/.ssh/authorized_keys: "
+                   "SHA256:clN4wFkPkmjrpKbjkg6Z7N7zSB3L7w/AcHV5ysbfWAQ "
+                   "\u2014 the support grant 7bc06cc48244 (expires "
+                   "2099-01-01T00:00:00Z)")
+        rows[4] = ("  operator key   FAIL  authorized_keys carries "
+                   "command=\"/usr/local/sbin/odile-support session\" "
+                   "odile-support-grant-7bc06cc48244 \u2014 the support grant "
+                   "7bc06cc48244, expires 2099-01-01T00:00:00Z")
+        return tuple(rows) + (self.GRANT_ROW,)
+
+    def test_a_live_grant_report_reaches_the_page(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = self.write_report(Path(tmp), rows=self.grant_rows(),
+                                     summary=self.OPEN_SUMMARY)
+            page = self.app_page("tenant", path)
+        block = re.search(r'<pre class="report-pre"><code>(.*?)</code></pre>', page, re.S)
+        self.assertIsNotNone(block, "the grant report is not shown as this machine's")
+        quoted = html.unescape(block.group(1))
+        self.assertRegex(quoted, r"support grant\s+OPEN")
+        self.assertIn("7bc06cc48244", quoted)
+        self.assertIn("2099-01-01T00:00:00Z", quoted)
+        self.assertIn("OPEN \u2014 a support grant is live", quoted)
+        self.assertNotIn("not in the shape the reporter writes", page)
+
+    def test_a_grant_row_without_an_open_verdict_is_not_the_reporter_shape(self) -> None:
+        """The row and the verdict move together; half of one is a bad file."""
+        for name, rows, summary in (
+            ("row-with-fail", self.grant_rows(), self.FAIL_SUMMARY),
+            ("open-without-row", self.PASS_ROWS, self.OPEN_SUMMARY),
+        ):
+            with self.subTest(shape=name), tempfile.TemporaryDirectory() as tmp:
+                path = self.write_report(Path(tmp), rows=tuple(rows), summary=summary)
+                page = self.app_page("tenant", path)
+            self.assertNotIn("support grant", page)
+            self.assertIn("not in the shape the reporter writes", page)
+
+    def test_the_three_parsers_agree_on_a_grant_report(self) -> None:
+        """app.py, first_visit.py and the installer's embedded copy read alike.
+
+        The installer ships `first_visit.py` as an embedded string, so the copy
+        under test is the one a tenant gets, not a checkout file beside it.
+        """
+        sys.path.insert(0, str(ROOT / "installer"))
+        import first_visit  # noqa: E402
+        installer = load_installer()
+        with tempfile.TemporaryDirectory() as tmp:
+            path = self.write_report(Path(tmp), rows=self.grant_rows(),
+                                     summary=self.OPEN_SUMMARY)
+            shipped = Path(tmp) / "shipped_first_visit.py"
+            shipped.write_text(installer.FIRST_VISIT_SOURCE, encoding="utf-8")
+            spec = importlib.util.spec_from_file_location("first_visit_shipped", shipped)
+            embedded = importlib.util.module_from_spec(spec)
+            sys.modules[spec.name] = embedded
+            spec.loader.exec_module(embedded)
+            app = load_app()
+            saved = app.ACCESS_REPORT_PATH
+            app.ACCESS_REPORT_PATH = str(path)
+            try:
+                from_app = app.access_report()
+            finally:
+                app.ACCESS_REPORT_PATH = saved
+            answers = [from_app, first_visit.access_report(path),
+                       embedded.access_report(path)]
+        for answer in answers[1:]:
+            self.assertEqual(answer, answers[0],
+                             "a parser disagrees with app.py on the grant report")
+        self.assertEqual(answers[0]["state"], "ok")
+        self.assertRegex(answers[0]["text"], r"support grant\s+OPEN")
 
     def test_without_a_file_the_demo_keeps_the_bench_and_the_tenant_says_so(self) -> None:
         demo = self.app_page("demo", None)
@@ -2100,7 +2401,7 @@ Digests:
     def grant_document(self) -> dict:
         return {
             "grant_id": "9947606342d1",
-            "slug": "odl-7971a8",
+            "slug": "odl-fake01",
             "reason": "drill",
             "created_at": "2026-11-13T09:00:00Z",
             "expires_at": "2026-11-14T09:00:00Z",

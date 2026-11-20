@@ -31,10 +31,10 @@ GIT ?= git
 PRUNE = \( -path ./.git -o -path ./.worktrees -o -path ./.venv -o -path ./.fresh-clone \) -prune
 ifeq ($(shell $(GIT) rev-parse --is-inside-work-tree 2>/dev/null),true)
 PY_FILES = $(shell $(GIT) ls-files -- '*.py')
-SH_FILES = $(shell { $(GIT) ls-files -- '*.sh'; $(GIT) ls-files -- .githooks/pre-commit; } | sort -u)
+SH_FILES = $(shell { $(GIT) ls-files -- '*.sh'; $(GIT) ls-files -- .githooks/pre-commit .githooks/pre-push; } | sort -u)
 else
 PY_FILES = $(shell find . $(PRUNE) -o -name '*.py' -print | sort)
-SH_FILES = $(shell find . $(PRUNE) -o \( -name '*.sh' -o -path './.githooks/pre-commit' \) -print | sort)
+SH_FILES = $(shell find . $(PRUNE) -o \( -name '*.sh' -o -path './.githooks/pre-commit' -o -path './.githooks/pre-push' \) -print | sort)
 endif
 
 .PHONY: check check-hq check-inner acceptance prereqs test test-unit self-test compile lint claims brand roadmap secrets leak hooks fresh-check deploy-dry \
@@ -156,18 +156,37 @@ secrets:
 # assignment or private literal in the tree. It runs in `check` as well as in CI
 # (`publish-lint`), because `.githooks/pre-commit` runs `check` — a leak dies
 # before it becomes a commit, which is the only point where the fix is cheap.
-# `leak-forbid.txt` at the root of the checkout adds the private literals (the
-# vendor account and box ids); the scanner reports every copy of a listed one.
+#
+# There is one deny list, and it is HQ-only: `docs/ops/leak-forbid.txt` (the
+# directory is excluded from git), installed in CI from the `LEAK_FORBID_B64`
+# repository secret. The repository carries no copy, so a fresh clone has no
+# list: this target prints `forbid list absent` and still runs the tree classes,
+# rather than passing as if the class had run. That absent branch is the
+# target's, whatever path is named — `make leak FORBID_FILE=/nonexistent` also
+# prints the line and passes, because the target's job is the tree. Exit 2 is
+# the scanner's own contract, not the target's: a direct call
+# `tools/leak_scan.py --forbid-file /nonexistent` exits 2, because the caller
+# named a file the scan must have.
+FORBID_FILE ?= docs/ops/leak-forbid.txt
 leak: prereqs
-	$(PYTHON) tools/leak_scan.py --tree
+	@if [ -f "$(FORBID_FILE)" ]; then \
+		$(PYTHON) tools/leak_scan.py --tree --forbid-file "$(FORBID_FILE)"; \
+	else \
+		printf 'leak: forbid list absent: %s — the forbidden-value and forbidden-path classes did not run\n' "$(FORBID_FILE)"; \
+		printf 'leak: supply it at that path (HQ keeps it; CI reads the LEAK_FORBID_B64 secret)\n'; \
+		$(PYTHON) tools/leak_scan.py --tree; \
+	fi
 
-# Enable the committed pre-commit hook in this clone. Idempotent: git keeps the
-# path in local config, so run it once per clone.
+# Enable the committed hooks in this clone. Idempotent: git keeps the path in
+# local config, so run it once per clone. The pre-push hook scans the outgoing
+# diff and commit messages against the same deny list; `git push --no-verify`
+# is the deliberate bypass.
 hooks:
 	@git rev-parse --git-dir >/dev/null 2>&1 || { echo "make hooks: run inside a git checkout" >&2; exit 1; }
 	@git config core.hooksPath .githooks
-	@chmod +x .githooks/pre-commit
-	@echo "make hooks: pre-commit gate enabled; bypass with: git commit --no-verify"
+	@chmod +x .githooks/pre-commit .githooks/pre-push
+	@echo "make hooks: pre-commit gate and pre-push leak scan enabled"
+	@echo "make hooks: bypass with: git commit --no-verify / git push --no-verify"
 
 # Clone HEAD into a throwaway checkout and run the gate there. This is the
 # "works on a fresh machine" proof; commit first, because a clone sees commits,

@@ -1240,7 +1240,7 @@ def self_test() -> int:
     real_a = a_records
     real_aaaa = aaaa_records
     try:
-        ptr_name = lambda ip: "oqwaclzm.local"  # noqa: E731
+        ptr_name = lambda ip: "hostfake.local"  # noqa: E731
         a_records = lambda name: ["203.0.113.139"]  # noqa: E731
         aaaa_records = lambda name: []  # noqa: E731
         check("placeholder PTR fails", check_fcrdns("203.0.113.139", DOMAIN)[0], False)

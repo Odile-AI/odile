@@ -1,7 +1,7 @@
 #!/usr/bin/python3
 """Apply the public demo surface on Odile's tenant machine — ODL-503.
 
-This program runs **as root on the tenant** (odl-7971a8). The HQ-side deploy
+This program runs **as root on the tenant** (odl-fake01). The HQ-side deploy
 (`deploy/demo-host/deploy_demo_public.py`) uploads it and these files
 
     /usr/local/lib/odile-demo-public/apply_demo_public.py    this program
@@ -520,7 +520,7 @@ def verify_state() -> dict:
         "demo_command_after_machine": bool(
             section is not None and machine_section is not None
             and section.start() > machine_section.end()),
-        "customer_lede": "No one at Odile can log in to a tenant machine." in block,
+        "customer_lede": "No one at Odile can log in unless you grant it." in block,
         "rollback": VERIFY_BACKUP.is_file(),
     }
 
@@ -1917,7 +1917,7 @@ def self_test() -> int:
           and "--expect" in command,
           "the demo command carries the --expect line and one live measurement slot")
     release = ("<!--tenant-->\n"
-               '<p class="lede">No one at Odile can log in to a tenant machine.</p>\n'
+               '<p class="lede">No one at Odile can log in unless you grant it.</p>\n'
                "<!--/tenant-->\n"
                '<section id="machine" aria-labelledby="machine-h">\n'
                '<h2 id="machine-h">From the machine</h2>\n'

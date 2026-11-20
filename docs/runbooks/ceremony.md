@@ -293,7 +293,7 @@ tenant, re-run the external audit on the release bundle and add its entry:
 
 ## What was measured, and on what
 
-The first tenant is `odl-7971a8`, `203.0.113.87`, on Servury release
+The first tenant is `odl-fake01`, `203.0.113.87`, on Servury release
 `2026.11.2` as of the 2026-11-10 reinstall. The pre-strict machine carries the
 owner's public key `SHA256:zaZC3CG0yGBGyTbJ8NR8JnL8pzL2Xao1vR2cgYQFkC0` and the
 initramfs host key `SHA256:fFic3fm3N0kx5c8MC4SaJugl7pRusjaR70Gdr/G2WgM`; the

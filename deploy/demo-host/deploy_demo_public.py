@@ -155,7 +155,7 @@ CREDIT_COMMENT = ("<!-- Icon: Lucas Cranach the Elder, Saints Christina and Otti
 #: The demo machine's /verify lede. One committed file: the apply uploads and
 #: injects it, and this program asserts the served page opens with it.
 VERIFY_LEDE = HERE / "verify-lede.html"
-CUSTOMER_SENTENCE = "No one at Odile can log in to a tenant machine."
+CUSTOMER_SENTENCE = "No one at Odile can log in unless you grant it."
 SECURITY_HEADERS = ("strict-transport-security:", "x-robots-tag:")
 MEASUREMENT = re.compile(r"\b([0-9a-f]{96})\b")
 #: The demo command section's own markers; `apply_demo_public.py` inserts the
