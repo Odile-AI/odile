@@ -7,7 +7,7 @@ operator key and never sees the sign-in password.
 The tenant install is one extraction: the scrypt hash, the `.env` allowlist, the
 managed-block config merge, the atomic writes, the Hermes install, the Webapp
 build and the service handling live in the installer. The demo tenant
-(`odl-7971a8`) runs this same signed installer, so the demo and a customer
+(`odl-fake01`) runs this same signed installer, so the demo and a customer
 tenant cannot drift in the parts that matter.
 
 What the installer cannot prove is the machine's own legs — the measured command
@@ -1205,12 +1205,12 @@ builder command with a transcript; everything after it is the image.
 
 | # | Precondition | State on 2026-11-11 |
 |---|---|---|
-| 1 | the machine is the test tenant, active to 2026-12-10 | yes — `31a63bbb` / `odl-7971a8` / `203.0.113.87`, plan 113, SEV-SNP, measured boot, FDE requested |
+| 1 | the machine is the test tenant, active to 2026-12-10 | yes — `0badc0de` / `odl-fake01` / `203.0.113.87`, plan 113, SEV-SNP, measured boot, FDE requested |
 | 2 | a live seed service behind `POST https://odile.fyi/seed` | yes — unit `odile-seed` active; `GET /seed` → 405 |
-| 3 | an A record `<slug>.odile.fyi` | yes — `odl-7971a8.odile.fyi → 203.0.113.87`, DNS-only |
+| 3 | an A record `<slug>.odile.fyi` | yes — `odl-fake01.odile.fyi → 203.0.113.87`, DNS-only |
 | 4 | the spine is at `first_boot`, no ceremony state | yes — `tenant_state.first_boot`; `waiting_for_ceremony`, `installing` and `active` are retired (ODL-460) |
 | 5 | the signed measured UKI and the pre-sealed disk | **yes, round 8 at 10:28Z, saved 14:42:53Z and booted 14:43:54Z** — UKI `5cb31808…`, disk `c1278242…`, measurement `9f01725a…`, 4-vCPU pin, published 10:29Z; the earlier builds and the defect each exposed are in `docs/evidence/m1-tenant.md` §9–§9.8 and `docs/evidence/m1-image.md` |
-| 6 | a fresh setup token bound to `31a63bbb` | **yes** — ledger `67de1ba9…`, live until 2026-11-13T10:23Z; its plaintext is the `odile.token=` of the sealed line |
+| 6 | a fresh setup token bound to `0badc0de` | **yes** — ledger `67de1ba9…`, live until 2026-11-13T10:23Z; its plaintext is the `odile.token=` of the sealed line |
 | 7 | the owner's boot key, a passphrase, any operator key | **none** — the image's `bb.key` is a throwaway public key whose private half is shredded |
 | 8 | a signed installer a stranger can obtain (independent of the image) | **yes** — on 2026-11-11 the served release `2026.11.11-5` shipped the strict-bar installer `fde7a48f…`, its `.sig`, the published key and a skills tarball carrying `odile-recipes` (§12.6); the repository's cut is `2026.11.20-2` (`2159bb2a…` installer, 1,511,659 bytes, `306b8de6…` manifest, §12.6), this card's round-7 re-cut on the head that merges `main`'s `88b5751`, whose own head re-cut `2026.11.20-1` (`d48f73aa…` installer, 1,503,831 bytes, `1aca6446…` manifest — t_080f8a83's installed-help re-cut) on the head that merges `2026.11.19-5` (`1d946c44…` installer, 1,503,889 bytes, `7031d4a0…` manifest), t_4fcd465f's round-4 `/verify` type re-cut on the head that merges `2026.11.19-4` (ODL-579's recovery-code cut, `6d2c3161…` installer, 1,448,387 bytes, `653b3ed5…` manifest), which re-cut `2026.11.19-3` (`00a84542…` installer, 1,436,019 bytes, `49850448…` manifest) on the head that merges `2026.11.19-1` (`e4a3554b…` installer, 1,428,062 bytes, `65c56be3…` manifest; the `/verify` page's two-URL note) with the ODL-340 follow-up's one site name and seed-derived environment — `2026.11.15-4` was re-cut at the head that merges `main`'s `-3` (ODL-522's per-machine session secret, `e0cec88a…` installer, 1,357,306 bytes, `4f0e3ef9…` manifest) and carries this card's `-2` landing (the five v3.10 access sentences on ODL-505's `-8` and t_ae833f3f's `2026.11.15-1`), then re-embedded every surface; `-6` re-embeds only the support program with t_afb081be's session signal-window fix, `-9` adds t_2efbd6e3's guest export placement, `2026.11.19-1` re-embeds the `/verify` page with the verifier's two-URL note, `2026.11.19-3` is the ODL-340 follow-up's merged head, `2026.11.19-4` is ODL-579's recovery-code cut (`2026.11.19-2` was this branch's pre-review cut, superseded before any deploy), and `2026.11.19-5` is this card's round-4 re-cut on the head that merges `-4` — and the served URL serves `2026.11.15-9` (`2cdf0801…` installer, 1,424,179 bytes, manifest `4664da84…` — measured 2026-11-16T01:44Z; still `2026.11.15-9` at 2026-11-19T11:38Z, and `2026.11.19-1` at 2026-11-19T13:01Z, again at 2026-11-19T21:18Z, still at 2026-11-20T06:56Z, and `2026.11.19-5` at 2026-11-20T16:36Z) until a `./deploy.sh` from a `main` that carries these merges; that live cut carries the `c73dad4d…` vendor pin, and an image a build of this tree makes carries the `2026.11.20-2` pair in its `release/` directory, so the machine's `/manifest` and `/usr/local/bin/odile-install.sh` agree with each other. The live tenant's image is still `2026.11.11-8` (`4aee80c5…`, `1ed9dcad…`) until it is re-provisioned |
 
@@ -1218,7 +1218,7 @@ builder command with a transcript; everything after it is the image.
 
 ```sh
 # 1. a fresh token, bound to the Servury server_id the image's line will carry
-/usr/bin/python3 /opt/odile/seed/seed.py token rotate --tenant odl-7971a8 --instance 31a63bbb
+/usr/bin/python3 /opt/odile/seed/seed.py token rotate --tenant odl-fake01 --instance 0badc0de
 
 # 1b. the per-tenant measured line. It must carry every field Servury's own
 #     release line carries: the release installer's boot check requires exactly
@@ -1227,7 +1227,7 @@ builder command with a transcript; everything after it is the image.
 #     this machine, a throwaway public key, a fresh random seal id, the token
 #     from step 1. The panel's command line stays empty (the UKI carries this).
 cat > "$OUT/boot/cmdline" <<'EOF'
-root=/dev/mapper/root_crypt ro console=tty0 console=ttyS0,115200 consoleblank=0 systemd.show_status=1 ip=203.0.113.87::203.0.113.1:255.255.255.0:odl-7971a8:ens18:off bb.release=2026.11.2 bb.host=odl-7971a8 bb.iid=31a63bbb bb.ip4=203.0.113.87/24 bb.gw4=203.0.113.1 bb.ip6=2001:0db8:0:263::1/64 bb.gw6=2001:0db8::1 bb.dns=1.1.1.1,9.9.9.9,2606:4700:4700::1111,2620:fe::fe bb.key=<base64 of the throwaway public key> seal_id=<16 hex> odile.token=<token from step 1> odile.seed_url=https://odile.fyi/seed
+root=/dev/mapper/root_crypt ro console=tty0 console=ttyS0,115200 consoleblank=0 systemd.show_status=1 ip=203.0.113.87::203.0.113.1:255.255.255.0:odl-fake01:ens18:off bb.release=2026.11.2 bb.host=odl-fake01 bb.iid=0badc0de bb.ip4=203.0.113.87/24 bb.gw4=203.0.113.1 bb.ip6=2001:0db8:0:263::1/64 bb.gw6=2001:0db8::1 bb.dns=1.1.1.1,9.9.9.9,2606:4700:4700::1111,2620:fe::fe bb.key=<base64 of the throwaway public key> seal_id=<16 hex> odile.token=<token from step 1> odile.seed_url=https://odile.fyi/seed
 EOF
 # `sealed-image.sh --cmdline-file` refuses a line without exactly one
 # bb.ip4=, so the defect the tenant found cannot ship again.
@@ -1269,12 +1269,12 @@ first production build exposed and the fix.
 the two hashes together**. Publish the pair from the same build that produced
 the pin; never mix a hash from one build with a file from another.
 
-The line in `boot/cmdline` carries `bb.iid=31a63bbb`, `bb.host=odl-7971a8`,
+The line in `boot/cmdline` carries `bb.iid=0badc0de`, `bb.host=odl-fake01`,
 the network parameters of the provider record, a throwaway `bb.key`, a random
 `seal_id`, the fresh `odile.token` and `odile.seed_url=https://odile.fyi/seed`.
 It is the only per-tenant input of the sealed design. Never reuse the stock
 guest UUID `01494715…` for `bb.iid`: the seed token is bound to the API
-`server_id` (`31a63bbb`), and a first-boot POST with any other id is refused
+`server_id` (`0badc0de`), and a first-boot POST with any other id is refused
 `403 wrong_instance` (measured in ODL-456).
 
 ### 12.3 The panel step (the one human action)
@@ -1315,7 +1315,7 @@ machine still reachable (`deploy/image/FIRSTBOOT.md` §2).
 
 **The trusted public host, and the two ends the 13 November boot paid for —
 measured
-2026-11-13 on `odl-7971a8` (t_d95b8c13).** The re-flashed machine's first boot
+2026-11-13 on `odl-fake01` (t_d95b8c13).** The re-flashed machine's first boot
 ended `=== rc=1`: `systemctl start odile-access-report` failed, the installer
 aborted inside `ensure_systemd_services` before its agent restart, and the
 Webapp kept the listener the boot had started with, so every public Host
@@ -1378,7 +1378,7 @@ Measured from the serial console and the tenant's own log
 `deploy/demo-host/tenant_console.py`):
 
 ```
-=== odile-release-setup 2026-11-13T01:13:53Z · odl-7971a8 · instance 31a63bbb
+=== odile-release-setup 2026-11-13T01:13:53Z · odl-fake01 · instance 0badc0de
 ...
 same         odile-access-report enabled at boot
 start        odile-access-report
@@ -1407,7 +1407,7 @@ write        /home/tenant/.hermes/config.yaml (6 managed blocks; keys Hermes add
 restart      odile-agent (changed)
 elapsed      0m 13s
 tenant: provisioned
-{"changed": true, "elapsed_s": 13, "installer_sha256": "2bbc70c7…", "mode": "tenant", "ok": true, "slug": "odl-7971a8"}
+{"changed": true, "elapsed_s": 13, "installer_sha256": "2bbc70c7…", "mode": "tenant", "ok": true, "slug": "odl-fake01"}
 === rc=0
 ```
 
@@ -1416,7 +1416,7 @@ and the machine's config now carries both names (`grep -A3 '^dashboard:'` and
 HQ immediately after: `GET https://demo.odile.fyi/login?next=%2F` 200,
 `GET /verify` 200, `GET /api/health` 200, `POST /auth/password-login` 200 with
 four `__Host-` cookies (`{"ok":true,"next":"/"}`). The machine's own name
-`odl-7971a8.odile.fyi` still answers 400 by design (`demo-public.md` §Host
+`odl-fake01.odile.fyi` still answers 400 by design (`demo-public.md` §Host
 check): `webapp.public_url` is the demo host.
 
 **The live machine's Hermes is not the pin.** The recovery run printed the
@@ -1446,12 +1446,12 @@ $ date -u +%FT%TZ; sha256sum /usr/local/lib/odile-image/odile-release-setup.sh; 
 036ac2b87ebace27bce2a41ba88b5b0ffb7ffdd8cd3480dd57eacf21ffdf9c81  /usr/local/lib/odile-image/odile-release-setup.sh
 8438 2026-11-15 20:15:54.184000000 +0000
 ExecStart=/usr/local/lib/odile-image/odile-release-setup.sh
-ran 2026-11-15T20:12:42Z · odl-7971a8 · instance 31a63bbb · rc=0
+ran 2026-11-15T20:12:42Z · odl-fake01 · instance 0badc0de · rc=0
 155:        --public-url "https://$HOST.odile.fyi" --json 2>&1
 ```
 
 So a *forced* re-run today would pass `main`'s slug URL and no recovery
-confirmation, and would rewrite both config blocks to `odl-7971a8.odile.fyi`
+confirmation, and would rewrite both config blocks to `odl-fake01.odile.fyi`
 (400 on the demo host). The next boot is a no-op instead, because
 `/var/lib/odile/release-setup.done` carries the recovery's own record. The
 fixed boot half reaches the machine with the first deploy from a `main` that

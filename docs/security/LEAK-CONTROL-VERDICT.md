@@ -39,7 +39,7 @@ which the gate passes clean:
 | **Hardware identity** | full SEV-SNP reports in `tests/fixtures/verify/*.json`; the chip id is report offset `0x1A0` | a silicon id is the strongest machine fingerprint there is; three fixtures carry the **HQ** chip id `967acf92…`, and one carries the tenant's `3fa18b1e…` | `raw[0x1A0:0x1E0].hex()` on the decoded `report_b64` → `967acf92…`; `/var/lib/odile/attestation.json` on this host carries the same prefix |
 | | `tests/fixtures/verify/tenant-vcek.der` (deleted by `t_3cd62ef9`) | VCEK serial + HWID extension are the same chip in DER; the scanner at this head read only printable runs | `leak_scan.scan_bytes(open(...,'rb').read())` → `[]` at that head; the scanner now decodes DER and PEM certificates and reports a serial only when the AMD HWID extension is present |
 | | `docs/runbooks/image-bench.md:387` PARTUUID | a real volume's id | gate `[]`; `partuuid` is on the self-blinding suppression list |
-| **Vendor resource ids** | `31a63bbb` (server) in 17 files, `oqwaclzm` (host) 5, `odl-7971a8` (tenant slug) 25, `24b35c62` 2 | the research record itself says GitHub-only scanning fails on "our vendor ids"; the forbid list names only the retired box | `grep -rEl` over the tree; gate PASS |
+| **Vendor resource ids** | `0badc0de` (server) in 17 files, `hostfake` (host) 5, `odl-fake01` (tenant slug) 25, `cafebabe` 2 | the research record itself says GitHub-only scanning fails on "our vendor ids"; the forbid list names only the retired box | `grep -rEl` over the tree; gate PASS |
 | **DNS resource ids** | `tests/test_dns.py:32` `ZONE_ID = "39068d33…"` | a Cloudflare zone id names the account's zone; the `cloudflare` token rule wants 37 hex, zone ids are 32 | gate `[]`; P19 |
 | **SSH host-key fingerprints** | `support.md:203,205,470,588,716`, `install.md:923,951,1253,1325`, `image.md:730`, `web/verify.html:172-173` | a host-key fingerprint identifies a machine | gate `[]` — every line matching `sha(256\|512)` suppresses high-entropy, so the `SHA256:` class blinds itself; P04 |
 | **`/root/…` paths** | `docs/runbooks/deploy.md:69` carried the operator's checkout path until this commit | `ROOT_PATH` is **compiled at `tools/leak_scan.py:145` and never applied** — the docstring's "`/root/…` or `/home/<name>/…`" is half-implemented | the forbid list's `checkout-path` found it in one run (`FINDING forbidden-value docs/runbooks/deploy.md:69`); the gate itself never did |
@@ -89,7 +89,7 @@ test needs, and two for the drill transcript below.
 | # | Rule · path | Value actually pinned | Verdict |
 |---|---|---|---|
 | 1 | public-ip · `scripts/send_test.py` | five copies of an APNIC-allocated address (not TEST-NET-3) | **disagree: reason was false.** It is not a documentation address and not a recipient — it is an SPF `ip4:` token and a DNS A-record fixture inside `--self-test`. Reason amended here; the real fix is to use a TEST-NET-3 value and delete the row (F1). |
-| 2 | credential-assignment · `deploy/demo-host/login.html` | the published demo password | **agree** — and the reason is now the measured one. With it the Webapp shell runs as `tenant` (uid 1000), `sudo -n id -un` returns **root**, and `/home/tenant/.hermes/.env` (0600 `tenant`) carries a live Near AI key. The demo host is **not** the retired HQ copy; it is the tenant VM `odl-7971a8` (see §6). Copies: `README.md:16` (a table, invisible to every class) and `deploy/demo-host/apply_demo_public.py:1645,1648`, plus this page's `var DEMO_PASSWORD`. |
+| 2 | credential-assignment · `deploy/demo-host/login.html` | the published demo password | **agree** — and the reason is now the measured one. With it the Webapp shell runs as `tenant` (uid 1000), `sudo -n id -un` returns **root**, and `/home/tenant/.hermes/.env` (0600 `tenant`) carries a live Near AI key. The demo host is **not** the retired HQ copy; it is the tenant VM `odl-fake01` (see §6). Copies: `README.md:16` (a table, invisible to every class) and `deploy/demo-host/apply_demo_public.py:1645,1648`, plus this page's `var DEMO_PASSWORD`. |
 | 3 | credential-assignment · `deploy/image/tenant-image.pin` | the one-time seed setup token | **agree** — reason true as of 2026-11-14T14:54:27Z. Live probe `POST https://odile.fyi/seed` with the pin's token and `bb.iid` → **HTTP 410 `{"error":"token already used","reason":"used"}`**; the pin's `loose_measurement` is `sev-snp-measure … --append "$CMDLINE"` (`deploy/image/uki.sh:116-118`), so the token cannot be scrubbed without re-cutting the measured cmdline. |
 | 4 | credential-assignment · `tests/test_first_visit.py` | `a-different-long-password-0002` | **disagree: reason inverted.** The reset **accepts and stores** it (`test_the_reset_works_and_rotates_the_code` asserts `verify_password(NEW_PASSWORD, stored_hash)` true). Reason amended. |
 | 5 | credential-assignment · same | base64 of `secret-placeholder` | **agree.** Decodes exactly; a fixture session secret. |
@@ -345,7 +345,7 @@ history PASS, 311 files / 339 blobs.
 ## 6. What still leaks — the sentence
 
 **The public tree publishes the demo password that gives any stranger a root
-capable shell on Odile's tenant machine `odl-7971a8` and reads that tenant's live
+capable shell on Odile's tenant machine `odl-fake01` and reads that tenant's live
 Near AI key; a spent seed setup token, the tenant slug, the vendor server, host
 and account ids, the tenant's silicon chip id with its VCEK serial and the HQ
 chip id in three fixtures, a real disk's PARTUUID, a Cloudflare zone id, several
@@ -389,8 +389,8 @@ $ systemctl list-timers --all | grep -iE 'reset|nightly' || echo no-reset-timer
 no-reset-timer
 $ cat /proc/cmdline | tr ' ' '\n' | grep -E '^bb\.'
 bb.release=2026.11.2
-bb.host=odl-7971a8
-bb.iid=31a63bbb
+bb.host=odl-fake01
+bb.iid=0badc0de
 bb.ip4=<the live tenant address>/24
 bb.ip6=<the vendor /64>:1/64
 ```
@@ -413,7 +413,7 @@ already re-cut and correct.
    *Block; new card.*
 2. **Turn the forbid class on and make it fail closed**: ship `leak-forbid.txt`
    in the tree, exit 2 on a named-but-missing file, and add the ids actually in
-   use (`31a63bbb`, `oqwaclzm`, `odl-7971a8`, `24b35c62`). *F1.*
+   use (`0badc0de`, `hostfake`, `odl-fake01`, `cafebabe`). *F1.*
 3. **Add the missing classes** in §1's order, machine identity first and
    `/root/…` immediately — it is compiled and never used. *F3.*
 4. **Fix the platform verify block** and add a tag ruleset, required signatures,
@@ -468,11 +468,11 @@ synthetic KDS chain. It trades test fidelity against publishing a silicon id.
 
 | Item | Status here |
 |---|---|
-| Must 1 — row 2's blast radius was the retired HQ copy | **fixed.** Reason, §6 and §8 re-cut with the tenant facts measured above; the demo host is `odl-7971a8`, the shell is `tenant`, `sudo` reaches root, the live Near AI key is readable, the meter is removed, there is no filter and no reset. The two stale public sentences are named in §6. |
+| Must 1 — row 2's blast radius was the retired HQ copy | **fixed.** Reason, §6 and §8 re-cut with the tenant facts measured above; the demo host is `odl-fake01`, the shell is `tenant`, `sudo` reaches root, the live Near AI key is readable, the meter is removed, there is no filter and no reset. The two stale public sentences are named in §6. |
 | Round-2 must — the fork-PR row read a 404 as "no control" | **fixed.** `…/actions/permissions/fork-pr` is not a route (404); `…/fork-pr-contributor-approval` answers `{"approval_policy":"first_time_contributors"}`. The control is on at its weakest setting; the count is **eight**, not nine. A platform row is only as good as the endpoint it was read from. |
 | Must 2 — no acceptance stamp | run after this commit; the stamp names this head. The card's body names two private `docs/ops/` files, so the stamp is taken from a worktree that carries them untracked-and-excluded; the public tree cannot carry them. |
 | Nit 1 — `4869bbe`/`75a21aa` row history | corrected: `93a73a7` created 22; `75a21aa` removed the four debt rows; this card adds three (19–21). |
-| Nit 2 — `31a63bbb` in 16 files | corrected: 15 at `87a0f75`; **19** here, **17** excluding this page and the allowlist. |
+| Nit 2 — `0badc0de` in 16 files | corrected: 15 at `87a0f75`; **19** here, **17** excluding this page and the allowlist. |
 | Nit 3 — the sslip value is not in the built tree | corrected: it is a probe (P02), not a tree value. |
 | Nit 4 — 9 not 8 `*` rows; the sentence lives in the scanner | corrected: 9 of 21 here (rows 7, 11–18); the header's claim is the contradiction. |
 | Nit 5 — the password has four copies | corrected: **three files** now (`README.md`, `login.html`, `apply_demo_public.py` ×2); `web/judge.html`, `DEMO-THREAT-NOTE.md` and `tests/test_flow.py` copies are gone. |

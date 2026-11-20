@@ -2221,7 +2221,7 @@ Digests:
     def grant_document(self) -> dict:
         return {
             "grant_id": "9947606342d1",
-            "slug": "odl-7971a8",
+            "slug": "odl-fake01",
             "reason": "drill",
             "created_at": "2026-11-13T09:00:00Z",
             "expires_at": "2026-11-14T09:00:00Z",

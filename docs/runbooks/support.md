@@ -49,7 +49,7 @@ sudo w                                                   # no support session
 curl -sS https://<slug>.odile.fyi/verify | grep "operator key"
 ```
 
-`<slug>` is the machine's own name (`odl-7971a8` in the drill), and that page
+`<slug>` is the machine's own name (`odl-fake01` in the drill), and that page
 is fed by `/var/lib/odile/access-report.txt`; its `operator key` row reads
 `PASS none (authorized_keys: 1 line(s), the measured throwaway)`. The page at
 `https://odile.fyi/verify` is not that page: HQ answers **302** to
@@ -223,7 +223,7 @@ answer.
 
 ```
 grant live
-  tenant:     odl-7971a8
+  tenant:     odl-fake01
   reason:     disk full after an update
   expires:    2026-11-13T17:00:00Z (24h 0m left)
   key:        SHA256:… (odile-support-grant-<id>)
@@ -477,7 +477,7 @@ copy of the machine's own audit (`docs/runbooks/install.md` §12.6).
 
 ## 8. The drill (2026-11-12, re-run 2026-11-13)
 
-**Machine:** the M1 tenant `odl-7971a8` (`203.0.113.87`, Debian 13, SEV-SNP,
+**Machine:** the M1 tenant `odl-fake01` (`203.0.113.87`, Debian 13, SEV-SNP,
 the ODL-332 image), driven through its own Webapp terminal as the `tenant` user
 with NOPASSWD sudo, from this workstation. The tenant's `/verify` still reports
 the ODL-332 pin: seal id `53ac131dda13e47a`, measurement `9f01725a…f137`.
@@ -551,7 +551,7 @@ $ sudo odile-support grant --hours 0.02 --reason 'ODL-217 drill: grant, use, exp
 systemctl daemon-reload: ok
 systemctl enable --now odile-support-expire.timer: ok
 grant live
-  tenant:     odl-7971a8
+  tenant:     odl-fake01
   reason:     ODL-217 drill: grant, use, expire
   expires:    2026-11-13T00:07:19Z (1m left)
   key:        SHA256:clN4wFkPkmjrpKbjkg6Z7N7zSB3L7w/AcHV5ysbfWAQ (odile-support-grant-9947606342d1)
@@ -759,7 +759,7 @@ The live values were the tenant's own: a 35-character meter key (`sk-` + 32
 hex), an 86-character scrypt sign-in hash, a 32-character backup password, a
 35-character NEAR key, and a two-line workspace file. The workspace's lines are
 `odile-smoke-ok` and `tenant`; the second is also the bundle header's own word
-(`tenant: odl-7971a8`), so the check names the distinctive `odile-smoke-ok`
+(`tenant: odl-fake01`), so the check names the distinctive `odile-smoke-ok`
 line — the generic word is not evidence either way. None of these values is in
 the bundle; the planted ones are replaced by `PASSWORD=[redacted]`,
 `NEAR_API_KEY=[redacted]`, `Authorization: [redacted]` and
