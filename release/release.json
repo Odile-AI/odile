@@ -1,8 +1,8 @@
 {
   "artifacts": {
     "installer": {
-      "sha256": "2159bb2a3e46c908035ae3b8dd8c0dfc0f0bb8e15a76b2c93f328a74faffd229",
-      "size": 1511659,
+      "sha256": "d869402ead2adf269a4ac8f2ceab711366109962c2b1ec2b5a07e6e5ba21c01f",
+      "size": 1512539,
       "url": "odile_install.py"
     },
     "skills": {
@@ -14,14 +14,14 @@
   "boot": {
     "kernel": "6.12.115+deb13.1-amd64"
   },
-  "generated_at": "2026-11-20T16:34:05Z",
+  "generated_at": "2026-11-20T20:12:55Z",
   "manifest": {
-    "sha256": "306b8de6c9f63fbef8764a53a4e7633dac067e1d94ebea03ed8e686f68f28b19",
+    "sha256": "364341fdc30915c59731c038b5b243f492123c72642ff48de088a65aa676cfcd",
     "signature_url": "manifest.json.sig",
     "url": "manifest.json"
   },
-  "notes": "ODL-474 follow-up (t_e23f3288), round 7, merging main 88b5751. A tenant's /verify names a live support grant: the support access row carries the grant id, expiry, reason and key fingerprint, and the access reporter's verdict names the grant instead of a bare FAIL (\"OPEN - a support grant is live until ... (grant <id>)\"), with any failed rows still named; no grant keeps the five-check PASS. templates/verify.html and both copies of HQ's /verify page carry the published scoped row \"No one at Odile can log in unless you grant it.\" (docs/CLAIMS.md 1 Access). The embedded first_visit.py is 21c84e64 (main's ODL-236 file plus this branch's access-report parser); the page pins are verify.py 70d8f469 and verify.html 543f42ea; the reporter is scripts/verify_and_unlock.sh 332eccdf. The skills artifact is unchanged (ccff7327). The cut id 2026.11.20-2 resolves the collision of the two 2026.11.20-1 cuts (this branch's 00:45Z and main's 07:01Z).",
+  "notes": "ODL-579 follow-up (t_eaa22faa), round 3: merges main 4d75a02, whose own 2026.11.20-2 (t_e23f3288 round 7, 2159bb2a) re-cut the /verify grant verdict. This cut adds the skip link BRAND.md's Keyboard row requires to both embedded pages: web/first-visit.html and templates/verify.html now open with <a class=\"skip\" href=\"#main\"> before <main id=\"main\">, hidden at left:-9999px until :focus-visible, then the 2 px ink ring at 3 px. The pages keep their one h1 and their landmark set. The embedded first_visit.py is 21c84e64 and the page pin is 6758b591; the /verify program is 70d8f469, its template 548bc270, the wrapper 332eccdf and the handoff audit 539e205f. The skills artifact is unchanged (ccff7327). The cut id 2026.11.20-3 is later than main's 2026.11.20-2 by generated_at.",
   "product": "odile",
-  "release": "2026.11.20-2",
+  "release": "2026.11.20-3",
   "schema": 1
 }
