@@ -252,17 +252,24 @@ class SupportAnswers(unittest.TestCase):
         # held allowance sentence are not repeated while the alpha is free. The
         # answer still says who holds the billing record and how a person reads
         # the question, so a "why was I charged?" mail is answered, not bounced.
+        # The installed help is a voice surface too (t_080f8a83): the skill the
+        # tenant reads at `/odile-help` carries the same answer, and its bytes
+        # travel inside the signed installer, so a stale line here reaches the
+        # user in chat.
         faq = FAQ.read_text(encoding="utf-8")
         reply = quoted(section(faq, 4))
         email = EMAIL.read_text(encoding="utf-8")
-        self.assertIn("has no price", reply)
-        self.assertIn("has no price", email)
+        skill = SKILL.read_text(encoding="utf-8")
         for text, label in ((reply, "docs/FAQ.md moment 4"),
-                            (email, "templates/emails/support.md")):
+                            (email, "templates/emails/support.md"),
+                            (skill, "skills/odile-help/SKILL.md")):
+            self.assertIn("has no price", text, label)
             for gone in ("$49", "$12", "founding price", "month-to-month"):
                 self.assertNotIn(gone, text, f"{label} still quotes {gone!r}")
             self.assertIn("Stripe holds the card", text, label)
             self.assertIn("within 24 hours", text, label)
+        # The refusal to invent money terms stays under the moment.
+        self.assertIn("Never promise a refund", skill)
 
     def test_the_five_moments_are_all_answered(self):
         text = FAQ.read_text(encoding="utf-8")
