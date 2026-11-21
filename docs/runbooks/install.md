@@ -834,14 +834,21 @@ reads `same`; a package at another version is converged with
 `--allow-downgrades`, because a tenant's manifest must record the pins, not the
 image's drift.
 
-The installer's own record of the table (the pins and snapshot are unchanged
-since the reviewed ODL-214 head; `installer_sha256` and `backup_sha256` move
-with the files they name — `sha256sum` prints the current files' hashes, and
-`--manifest` agrees with them):
+The installer's own record of the table. The pins and snapshot are unchanged
+since the reviewed ODL-214 head. `installer_sha256` is computed from
+`INSTALLER_PATH` (`__file__`), so `--manifest` always agrees with `sha256sum`
+on the installer you ran — and it moves on every re-sign, so the excerpt below
+is measured at `main`'s `d11354a` (2026-11-21; installer 1,512,539 bytes) and
+must be re-cut whenever `installer/odile_install.py` is re-signed.
+`backup_sha256` is the pin embedded for `scripts/backup.py`; at this head the
+two agree:
 
 ```sh
+$ sha256sum installer/odile_install.py scripts/backup.py
+e58f31afe209a16e54d09469c19e89d202e556a0990236eef7a974e1c9a413dc  installer/odile_install.py
+d9c4278a0660650e7edc6b50847d96cdbb71ca7709c52402257e94a291a98955  scripts/backup.py
 $ ./installer/odile_install.py --manifest
-  "installer_sha256": "0c53a722240020464f7761940ef36158d61c2deb3bb92d05bf75fb22439e1983",
+  "installer_sha256": "e58f31afe209a16e54d09469c19e89d202e556a0990236eef7a974e1c9a413dc",
   "backup_sha256": "d9c4278a0660650e7edc6b50847d96cdbb71ca7709c52402257e94a291a98955",
   "os_snapshot": "20261108T144109Z",
   "os_snapshot_url": "https://snapshot.debian.org/archive/debian/20261108T144109Z",
