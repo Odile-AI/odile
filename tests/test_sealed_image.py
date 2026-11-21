@@ -4124,5 +4124,78 @@ class RecoverySeedTests(unittest.TestCase):
         self.assertIn("recovery-seed.py", image)
 
 
+class BuildMirrorTests(unittest.TestCase):
+    """t_84e94f4b: the disk is debootstrapped from the installer's snapshot.
+
+    The first boot's release installer installs nine OS packages from
+    `snapshot.debian.org/archive/debian/<OS_SNAPSHOT>` and refuses a different
+    version rather than fall back. The disk must therefore carry exactly that
+    set: built from `deb.debian.org`, which takes a point release every few
+    weeks, the disk carried curl 8.14.1-2+deb13u7 and openssl 3.5.9-1+deb13u1
+    against the pins +deb13u5 and 3.5.7-1~deb13u2, and the fresh boot ended
+    `=== rc=1` at "the pinned OS packages are not in the snapshot" (measured
+    2026-11-21, t_30da4de3; the same tree built from the snapshot converged).
+
+    The default mirror is read out of `installer/odile_install.py`, not
+    repeated in the script, so a bump of OS_SNAPSHOT moves the build with it.
+    """
+
+    SCRIPT = IMAGE / "sealed-image.sh"
+    INSTALLER = ROOT / "installer" / "odile_install.py"
+
+    @staticmethod
+    def pinned(text: str) -> str:
+        match = re.search(r'^OS_SNAPSHOT = "([0-9A-Za-z]+)"$', text, re.M)
+        assert match is not None, "installer/odile_install.py has no OS_SNAPSHOT"
+        return match.group(1)
+
+    def dry_run(self, script: pathlib.Path, *args: str) -> subprocess.CompletedProcess:
+        with tempfile.TemporaryDirectory() as tmp:
+            return subprocess.run(
+                ["bash", str(script), "--dry-run", "--out", str(pathlib.Path(tmp) / "out"), *args],
+                capture_output=True, text=True, timeout=60,
+            )
+
+    def test_the_default_mirror_is_the_pinned_snapshot(self) -> None:
+        snapshot = self.pinned(self.INSTALLER.read_text(encoding="utf-8"))
+        result = self.dry_run(self.SCRIPT)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn(f"https://snapshot.debian.org/archive/debian/{snapshot}", result.stdout)
+        self.assertNotIn("deb.debian.org", result.stdout)
+
+    def test_a_bump_of_the_pin_moves_the_build_mirror(self) -> None:
+        """One date, not two: the mirror follows the installer's OS_SNAPSHOT."""
+        with tempfile.TemporaryDirectory() as tmp:
+            tree = pathlib.Path(tmp)
+            (tree / "deploy" / "image").mkdir(parents=True)
+            (tree / "installer").mkdir()
+            script = tree / "deploy" / "image" / "sealed-image.sh"
+            shutil.copy2(self.SCRIPT, script)
+            text = self.INSTALLER.read_text(encoding="utf-8")
+            moved = "20991231T235959Z"
+            text, count = re.subn(r'^OS_SNAPSHOT = "[^"]+"$',
+                                  f'OS_SNAPSHOT = "{moved}"', text, count=1, flags=re.M)
+            self.assertEqual(count, 1)
+            (tree / "installer" / "odile_install.py").write_text(text, encoding="utf-8")
+            result = self.dry_run(script)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn(f"https://snapshot.debian.org/archive/debian/{moved}", result.stdout)
+        self.assertNotIn(self.pinned(self.INSTALLER.read_text(encoding="utf-8")), result.stdout)
+
+    def test_an_explicit_mirror_still_overrides(self) -> None:
+        result = self.dry_run(self.SCRIPT, "--mirror", "http://mirror.example.invalid/debian")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("http://mirror.example.invalid/debian", result.stdout)
+        self.assertIn("not the release installer's snapshot", result.stdout)
+
+    def test_the_help_states_the_rule_and_prints_the_date(self) -> None:
+        result = subprocess.run(["bash", str(self.SCRIPT), "--help"],
+                                capture_output=True, text=True, timeout=60)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("snapshot.debian.org", result.stdout)
+        self.assertIn(self.pinned(self.INSTALLER.read_text(encoding="utf-8")), result.stdout)
+        self.assertIn("deb.debian.org", result.stdout)
+
+
 if __name__ == "__main__":
     unittest.main()

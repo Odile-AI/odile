@@ -65,6 +65,19 @@ that has never built an initramfs also needs the packages Servury's
 `mkchroot.sh` installs. The script checks for `mkinitramfs` and stops with a
 named error if it is missing.
 
+**The mirror is not a free choice.** `sealed-image.sh` debootstraps the tenant
+root from the Debian snapshot the release installer pins —
+`https://snapshot.debian.org/archive/debian/<OS_SNAPSHOT>`, the date in
+`installer/odile_install.py` — and that is its default `--mirror`. Do not build
+a tenant disk from `deb.debian.org`: it moves with every point release, while
+the first boot's release installer installs the nine `OS_PACKAGE_PINS` from the
+snapshot and refuses any other version. A disk from the moved archive therefore
+ends the first boot at `=== rc=1` (measured 2026-11-21, t_30da4de3; §5 has the
+failure and the converging rebuild). The two dates are one date: the script
+reads `OS_SNAPSHOT` out of the installer, so bumping the pin moves the build
+mirror with it, and `--mirror` exists only for a deliberate override — the run
+prints a warning line when the mirror is not the pinned snapshot.
+
 `--dry-run` needs no source tree: it prints the plan — with a `missing` line
 naming the source when it is absent — and exits 0 on a host that has never had
 `blackbox-images`. The **build** needs it: without the tree the script exits 2
@@ -103,6 +116,12 @@ sudo ./deploy/image/sealed-image.sh --out deploy/image/out-sealed \
 
 make check
 ```
+
+The disk command passes no `--mirror`: its default is the snapshot the release
+installer pins (§2), the only archive whose packages match `OS_PACKAGE_PINS`.
+The plan says which mirror it will use without building anything —
+`./deploy/image/sealed-image.sh --dry-run` prints a `mirror` line, and `--help`
+prints the resolved default.
 
 Every state-changing step refuses to overwrite an existing artefact without
 `--force` (the initrd and the disk) and has a `--dry-run`; the disk build is
@@ -196,6 +215,59 @@ and `/sys` are `--rbind` copies, so they carry their own children
 `sealed-image.sh` builds one disk with three partitions, numbered so the
 hook's defaults are the paths the boot uses: `sda2` is the ext4 boot
 partition and `sda3` the LUKS container, exactly as on a Blackbox.
+
+**The root is debootstrapped from the pinned snapshot, and the first boot
+proves the set matches.** `debootstrap` fills `sda3` from
+`https://snapshot.debian.org/archive/debian/<OS_SNAPSHOT>` — the date
+`installer/odile_install.py` pins — and the release installer then installs its
+nine `OS_PACKAGE_PINS` from that same snapshot, refusing any other version
+rather than falling back. A disk built from `deb.debian.org` carries whatever
+the live archive held that day; when the archive takes a point release between
+builds, the two sets diverge and the first boot ends at the OS pins. Measured
+2026-11-21 on the same `2026.11.21-2` tree (t_30da4de3), whose default mirror
+was still `deb.debian.org`:
+
+```
+install      OS packages (9 pinned to Debian 13 trixie, snapshot 20261108T144109Z)
+             converging curl 8.14.1-2+deb13u7 -> 8.14.1-2+deb13u5
+             converging openssl 3.5.9-1+deb13u1 -> 3.5.7-1~deb13u2
+error: the pinned OS packages are not in the snapshot 20261108T144109Z:
+       ... E: Unable to correct problems, you have held broken packages.
+       refusing to fall back to the latest version
+=== rc=1
+```
+
+The same build from the snapshot converges, and that is now the default — no
+flag is needed:
+
+```sh
+sudo ./deploy/image/sealed-image.sh --out … --production --cmdline-file … --force
+```
+
+The run names the archive it will use before it debootstraps; `--mirror URL`
+overrides the default and prints the not-the-snapshot warning:
+
+```
+mirror       https://snapshot.debian.org/archive/debian/20261108T144109Z (the release installer's snapshot)
+```
+
+The disk then reads curl `8.14.1-2+deb13u5`, libcurl4t64 `8.14.1-2+deb13u5`,
+openssl `3.5.7-1~deb13u2`, libssl3t64 `3.5.7-1~deb13u2` and git
+`1:2.47.3-0+deb13u1`, and the installer's package step prints
+`same OS packages (9 pinned to Debian 13 trixie, snapshot 20261108T144109Z)`.
+Read it back from a built disk before publishing — mount `sda2`, open `sda3`
+with `/odile/luks-bootstrap.key` (the production image's first-boot key), mount
+the mapper at `$ROOT`, and query inside it:
+
+```sh
+$ sudo chroot "$ROOT" dpkg-query -W -f='${Package} ${Version}\n' \
+    curl libcurl4t64 openssl libssl3t64 git
+curl 8.14.1-2+deb13u5
+libcurl4t64 8.14.1-2+deb13u5
+openssl 3.5.7-1~deb13u2
+libssl3t64 3.5.7-1~deb13u2
+git 1:2.47.3-0+deb13u1
+```
 
 1. **The boot key is throwaway.** An Ed25519 keypair is generated; the
    public half is base64-encoded into `bb.key=` on the measured command line
