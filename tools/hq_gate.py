@@ -42,8 +42,14 @@ This tool closes the gap. It:
    deleted; and a path `main` deleted while the branch left it at the base bytes
    is removed from the preview, so the gate cannot run — or red on — a document
    the merge will never produce (the ODL-941 shape in the deletion direction).
-   The overlay is also *staged*, so a rule that asks git what the tree tracks
-   (`git ls-files`) reads the merge's index rather than the branch's.
+   Unless HQ's own checkout still carries that path: the private machinery is
+   *ignored*, so `main` `7ce0f2b` deleted `docs/craft/*.md` from the tree while
+   HQ's disk kept them, and the preview must keep HQ's bytes too — the merge
+   deletes the tree file, HQ's ignore rules put a working copy back — and drop
+   only the index entry, so `git ls-files` answers what HQ's checkout does. A
+   path HQ no longer has keeps the deletion. The overlay is also *staged*, so a
+   rule that asks git what the tree tracks (`git ls-files`) reads the merge's
+   index rather than the branch's.
    `card_acceptance` owns the clean-merge question;
 4. runs every `tests/test_*.py` module among those files there and reports one
    line per module — the branch's documents in front of HQ's rules;
@@ -135,45 +141,84 @@ def tracked_files(tree: Path, revision: str = "HEAD") -> set[str]:
     return {path for path in result.stdout.split("\0") if path}
 
 
-def hq_only_files(hq: Path, tracked: set[str]) -> list[str]:
-    """Files HQ's git ignores and the branch does not track, sorted, noise off.
+def ignored_files(hq: Path) -> list[str]:
+    """Every file HQ's git ignores, sorted, noise off — the private machinery.
 
     `--ignored --exclude-standard`: the private machinery is *excluded* at HQ
     (`.git/info/exclude` and `.gitignore`), so `ls-files --others` alone finds
-    none of it. A path the branch tracks is dropped even when HQ ignores a file
-    at the same name — a merge would keep the branch's.
+    none of it. This is the unfiltered set; `hq_only_files` drops the paths the
+    branch tracks.
     """
     result = git("ls-files", "--others", "--ignored", "--exclude-standard", "-z", cwd=hq)
     if result.returncode != 0:
         raise SystemExit(f"hq-gate: cannot list the HQ-only files in {hq}: "
                          f"{result.stderr.strip()[:160]}")
     found = [path for path in result.stdout.split("\0") if path]
-    return sorted(path for path in found if not is_noise(path) and path not in tracked)
+    return sorted(path for path in found if not is_noise(path))
 
 
-def staged_files(hq: Path, tracked: set[str], carried: set[str] | None = None) -> list[str]:
-    """Files staged at HQ and absent from its HEAD — the seat's uncommitted batch.
+def hq_only_files(hq: Path, tracked: set[str]) -> list[str]:
+    """Files HQ's git ignores and the branch does not track, sorted, noise off.
+
+    A path the branch tracks is dropped even when HQ ignores a file at the same
+    name — a merge would keep the branch's. The exception is a path `main`
+    deleted while the branch left it: the merge deletes it, but HQ's checkout
+    keeps the ignored bytes, and `hq_retained_files` names that set.
+    """
+    return [path for path in ignored_files(hq) if path not in tracked]
+
+
+def staged_added_files(hq: Path) -> list[str]:
+    """Every path staged at HQ and absent from its HEAD, sorted, noise off.
 
     `git diff --cached --diff-filter=A` names a path added to HQ's index that
     HQ's HEAD does not carry: `git add`ed but not committed. It is in neither
     set the gate read before — `ls-files --others` skips an index path, and
-    `main` has no such path to give bytes from — so an HQ-only rule that reads
-    it (a seat stages a new `docs/craft/<seat>.md` and `test_craft`'s `SEATS`
-    already names it) reded on a tree with the rule and no playbook. Measured
-    2026-11-21: every card's `make check-hq` failed for the hours the file sat
-    staged, and the card-merge tool refused every merge in the same window.
-
-    Filtered like the other two sets: noise is dropped, a path the branch tracks
-    keeps the branch's bytes, and a path the merge takes from `main`
-    (`carried`) keeps main's — a commit, not an index entry, is what merges.
+    `main` has no such path to give bytes from.
     """
     result = git("diff", "--cached", "--name-only", "--diff-filter=A", "-z", cwd=hq)
     if result.returncode != 0:
         raise SystemExit(f"hq-gate: cannot list the staged files in {hq}: "
                          f"{result.stderr.strip()[:160]}")
     found = [path for path in result.stdout.split("\0") if path]
+    return sorted(path for path in found if not is_noise(path))
+
+
+def staged_files(hq: Path, tracked: set[str], carried: set[str] | None = None) -> list[str]:
+    """Files staged at HQ, filtered like the other overlay sources.
+
+    A staged path is the seat's uncommitted batch: an HQ-only rule that reads it
+    (a seat stages a new `docs/craft/<seat>.md` and `test_craft`'s `SEATS`
+    already names it) reded on a tree with the rule and no playbook. Measured
+    2026-11-21: every card's `make check-hq` failed for the hours the file sat
+    staged, and the card-merge tool refused every merge in the same window.
+
+    Noise is dropped, a path the branch tracks keeps the branch's bytes, and a
+    path the merge takes from `main` (`carried`) keeps main's — a commit, not an
+    index entry, is what merges.
+    """
     skip = set(tracked) | set(carried or ())
-    return sorted(path for path in found if not is_noise(path) and path not in skip)
+    return [path for path in staged_added_files(hq) if path not in skip]
+
+
+def hq_retained_files(deleted: list[str], ignored: list[str],
+                      staged: list[str]) -> tuple[list[str], list[str]]:
+    """The paths `main` deleted that HQ still carries — (on disk, in its index).
+
+    `deleted_paths` names a path `main` removed while the branch left the base
+    bytes, and the preview must usually remove it (the ODL-941 shape in the
+    deletion direction). At HQ the path can survive anyway: the private
+    machinery is *ignored*, so when `main` `7ce0f2b` deleted `docs/craft/*.md`
+    (2026-11-21) the files stayed on HQ's disk and every rule that reads them
+    ran green there while the preview removed them and reded `test_craft` on a
+    card that touched none of them. A path HQ still carries — ignored on disk,
+    or staged in its index — is what HQ's own checkout has after the merge, so
+    the preview keeps HQ's bytes and main's deletion loses to them.
+    """
+    deleted_set = set(deleted)
+    kept_ignored = [path for path in ignored if path in deleted_set]
+    kept_staged = [path for path in staged if path in deleted_set]
+    return kept_ignored, kept_staged
 
 
 def integration_commit(hq: Path) -> str | None:
@@ -398,6 +443,20 @@ def remove_paths(destination: Path, files: list[str]) -> list[str]:
     return removed
 
 
+def unstage_paths(destination: Path, files: list[str]) -> None:
+    """Drop `files` from the preview's index, leaving their bytes on disk.
+
+    HQ's checkout after the merge has no index entry for a path `main` deleted:
+    the file survives only because it is ignored (or because a seat staged it on
+    top of the deletion). The preview has to answer the same way, or a rule that
+    reads `git ls-files` sees a tracked file HQ calls untracked.
+    `--force-remove` is index-only — unlike `remove_paths` it keeps the bytes.
+    """
+    if not files:
+        return
+    git("update-index", "--force-remove", "--", *files, cwd=destination)
+
+
 def main_side_files(hq: Path, tree: Path, revision: str | None = None) -> list[str]:
     """Files the merge takes from `main`, sorted, noise off.
 
@@ -606,11 +665,21 @@ def main(argv: list[str] | None = None) -> int:
 
     tracked = tracked_files(tree)
     revision = integration_commit(hq)
+    ignored = ignored_files(hq)
+    staged_at_hq = staged_added_files(hq)
     hq_files = hq_only_files(hq, tracked)
     main_files = main_side_files(hq, tree, revision)
     staged = staged_files(hq, tracked, carried=set(main_files))
-    main_deleted = main_deleted_files(hq, tree, revision)
-    files = sorted(set(hq_files) | set(main_files) | set(staged))
+    deleted = main_deleted_files(hq, tree, revision)
+    # A path main deleted that HQ still carries (ignored on disk, or staged in
+    # its index) exists at HQ after the merge: keep HQ's bytes, and remove only
+    # what HQ no longer has. Measured 2026-11-21: main deleted the private
+    # machinery from the tree while HQ kept it, and every stale card reded
+    # `test_craft` on a playbook it never touched.
+    kept_ignored, kept_staged = hq_retained_files(deleted, ignored, staged_at_hq)
+    kept = set(kept_ignored) | set(kept_staged)
+    main_deleted = [path for path in deleted if path not in kept]
+    files = sorted(set(hq_files) | set(main_files) | set(staged) | kept)
     modules = modules_from(files)
 
     # A path both sides changed is not either side's file: a merge applies
@@ -635,7 +704,7 @@ def main(argv: list[str] | None = None) -> int:
             print(f"-{path}")
         print(f"hq-gate: {len(modules)} HQ-only module(s), {len(files)} file(s) "
               f"({len(staged)} staged at HQ), {len(changed)} both sides changed, "
-              f"{len(main_deleted)} deleted by main")
+              f"{len(main_deleted)} deleted by main, {len(kept)} kept from HQ")
         return 0
 
     if not modules:
@@ -646,7 +715,7 @@ def main(argv: list[str] | None = None) -> int:
           f"from {hq} ({len(hq_files)} HQ-only, {len(main_files)} from main's side "
           f"of the merge, {len(staged)} staged at HQ); {len(changed)} path(s) both "
           f"sides changed; {len(main_deleted)} path(s) main deleted removed from "
-          f"the preview")
+          f"the preview, {len(kept)} kept from HQ")
 
     tmp_parent = Path(os.environ.get("ODILE_HQ_GATE_TMP") or DEFAULT_TMP)
     tmp_parent.mkdir(parents=True, exist_ok=True)
@@ -674,7 +743,13 @@ def main(argv: list[str] | None = None) -> int:
         if changed:
             print(f"hq-gate: {len(merged)} path(s) both sides changed merged as a "
                   f"merge would, {len(conflicted)} kept the branch's bytes")
+        # A path main deleted but HQ still carries: HQ's bytes (its working
+        # copy, or its index for a staged batch), then out of the index so the
+        # preview tracks what HQ's checkout tracks — nothing.
+        overlay(hq, destination, kept_ignored)
+        overlay_index(hq, destination, kept_staged)
         remove_paths(destination, main_deleted)
+        unstage_paths(destination, sorted(kept))
         # The index too, not just the working tree: a rule that asks git what
         # the tree tracks must read the merge's answer.
         stage_overlay(destination, sorted(set(main_files) | set(merged) | set(main_deleted)))
