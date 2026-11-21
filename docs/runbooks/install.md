@@ -838,8 +838,9 @@ The installer's own record of the table. The pins and snapshot are unchanged
 since the reviewed ODL-214 head. `installer_sha256` is computed from
 `INSTALLER_PATH` (`__file__`), so `--manifest` always agrees with `sha256sum`
 on the installer you ran — and it moves on every re-sign, so the excerpt below
-is measured at `main`'s `d11354a` (2026-11-21; installer 1,512,539 bytes) and
-must be re-cut whenever `installer/odile_install.py` is re-signed.
+is measured at `main`'s `ab3930e` (the `2026.11.20-4` installer, 1,512,539
+bytes; hashed 2026-11-21) and must be re-cut whenever
+`installer/odile_install.py` is re-signed.
 `backup_sha256` is the pin embedded for `scripts/backup.py`; at this head the
 two agree:
 
