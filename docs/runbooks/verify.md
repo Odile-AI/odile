@@ -329,7 +329,7 @@ tenant release (`2026.11.2`, from the served document) selects its entry in
 
 ```sh
 curl -fsSLO https://odile.fyi/odile-verify.tar.gz
-echo '815dbc26c8a584d0271620445009d8242466223d0ad8d6ff71ed21fd95208d4c  odile-verify.tar.gz' | sha256sum -c -
+echo '99395155ae1d08e67f81e3a64096c918300992700d8fe8ccd3f8b16762073bde  odile-verify.tar.gz' | sha256sum -c -
 tar xzf odile-verify.tar.gz
 cd odile-verify && ./odile-verify --expect <measurement from your ready email> https://<slug>.odile.fyi
 ```
@@ -367,15 +367,17 @@ sha256sum RELEASE.json        # 0e5ca12f…e98f0 = the pin's release_json_sha256
 sha256sum -c SHA256SUMS       # OVMF.amdsev.fd, vmlinuz, initrd.img, RELEASE.json: OK
 ```
 
-The entry carries `vcpu_counts` `[4, 6]` — the plan sizes it was measured at.
+The entry carries `vcpu_counts` `[2, 4, 6]` — the plan sizes it was measured at.
 The 6-vCPU HQ host that served the demo booted the loose artifacts above and
 measured `e99728ef…3fbc`; the 4-vCPU tenant boots a signed UKI built from this
-release (`odile-tenant.efi` `5cb31808…` + the same `OVMF.amdsev.fd`) and measures
-`9f01725a…f137`. The entry's artifact hashes describe the loose release, so a
-tenant's number is checked with `--expect`, not against those hashes;
-§2026.11.2 carries both measurements. The 2026.11.1 entry stays — rotation is
-additive, and a tenant still on it must keep verifying. `provision_release` is
-the release a new order should boot (ODL-398); this verifier never reads it.
+release (`odile-tenant.efi` `5cb31808…` + the same `OVMF.amdsev.fd`) and
+measures `9f01725a…f137`; the 2-vCPU Blackbox Core that now serves the demo
+boots a UKI built from the same pair (`47be81ca…`) and measures `83bd3fce…`.
+The entry's artifact hashes describe the loose release, so a tenant's number is
+checked with `--expect`, not against those hashes; §2026.11.2 carries each
+plan's measurement. The 2026.11.1 entry stays — rotation is additive, and a
+tenant still on it must keep verifying. `provision_release` is the release a new
+order should boot (ODL-398); this verifier never reads it.
 
 ## What it does not prove
 
@@ -486,7 +488,7 @@ new `releases` map is keyed by release id. A v1 verifier still reads the file.
         "vcpu_type": "EPYC-v4", "guest_features": "0x1",
         "policy": "0x30000", "vmm": "QEMU"
       },
-      "vcpu_counts": [4, 6],
+      "vcpu_counts": [2, 4, 6],
       "inputs": {
         "kernel_version": "6.12.115+deb13.1-amd64",
         "kernel_package_sha256": "6aa1…3b2a",
@@ -503,9 +505,10 @@ new `releases` map is keyed by release id. A v1 verifier still reads the file.
 The release entry says *which bytes and which parameters*; it deliberately
 carries no measurement, because the number is a function of the machine's
 command line. `vcpu_counts` lists only the plan sizes that were actually
-measured: 2026.11.1 carries `[4]`; 2026.11.2 carries `[4, 6]` for the tenant's
-4-vCPU Plus and the 6-vCPU plan the HQ host ran. `provision_release` is the
-release a new order should boot (ODL-398 reads it); the verifier never uses it.
+measured: 2026.11.1 carries `[4]`; 2026.11.2 carries `[2, 4, 6]` for the
+2-vCPU Core that serves the demo, the tenant's 4-vCPU Plus and the 6-vCPU plan
+the HQ host ran. `provision_release` is the release a new order should boot
+(ODL-398 reads it); the verifier never uses it.
 
 `commit` is the `main` HEAD the demo record was generated from; the pin lands
 in the next commit, because a commit cannot contain its own hash. The card's
@@ -699,16 +702,38 @@ Three pitfalls, all observed on this box on 7 and 10 November 2026:
   SHA256SUMS` → `OVMF.amdsev.fd: OK`, `vmlinuz: OK`, `initrd.img: OK`,
   `RELEASE.json: OK` (4/4). `RELEASE.json` itself hashes to
   `0e5ca12f…e98f0`, the pin entry's `release_json_sha256`.
-- `vcpu_counts` `[4, 6]`: the 4-vCPU tenant's signed UKI
+- `vcpu_counts` `[2, 4, 6]`: the 4-vCPU tenant's signed UKI
   (`odile-tenant.efi` `5cb31808…` + `OVMF.amdsev.fd` `8731846c…`, 4 vCPU,
   `EPYC-v4`, guest features `0x1`) measures `9f01725a…f137`; the 6-vCPU HQ
-  host's loose release measured `e99728ef…3fbc`. Both were measured against
-  these artifacts.
+  host's loose release measured `e99728ef…3fbc`; the 2-vCPU plan is the
+  subsection below. All were measured against these artifacts.
 - Policy `0x30000`; committed TCB SNP SPL `29` on the demo and `28` on the
   tenant, both above AMD-SB-3020's `27`; the tenant's reported (hypervisor-set)
   SNP SPL is `23`, which is why the floor is checked on `committed_tcb`.
 - ARK fingerprint `69:d0:63:b4:…:9a:54:0b:cd`; the tenant's VCEK was fetched
   from AMD's KDS for chip `3fa18b…` and TCB `bl=4 tee=0 snp=23 ucode=213`.
+
+### The 2-vCPU plan (20 November 2026)
+
+The demo moved to a Blackbox Core (2 vCPU, server `4b0f450a`), and its boot
+image was rebuilt for that plan: UKI sha256
+`47be81ca41c24a9f49a6f8e462fd0add6383f956d37dc1add2c114478d235717`, built from
+the 2026.11.2 `.linux`/`.initrd` with `--vcpus 2`. The count is an input to the
+SNP measurement, so this is a third measured plan, not a wider list:
+
+```sh
+$ sev-snp-measure --mode snp --ovmf OVMF.amdsev.fd \
+    --kernel /srv/odile-releases/uki/47be81ca41c24a9f.efi \
+    --vcpus 2 --vcpu-type EPYC-v4 --guest-features 0x1
+83bd3fce9e3d924d00bf1e515491b946aa2d5edbf415519280379b880d0bf5fa129cd5bd84470feda1c2a6d68cbce071
+```
+
+`OVMF.amdsev.fd` is the release's `8731846c…958b`. The live
+`https://demo.odile.fyi/attestation` reports `release` `2026.11.2`, `vcpus` `2`
+and that same measurement, and `./odile-verify https://demo.odile.fyi --expect
+83bd3fce…` passes the `release` row at `vcpu_counts [2, 4, 6]`. The UKI carries
+its own command line, so `sev-snp-measure` is run without `--append`; a
+`--append` of the served command line measures a different (wrong) number.
 
 ### The audit behind the pin (13 November 2026)
 

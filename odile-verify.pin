@@ -50,6 +50,7 @@
         "vmm": "QEMU"
       },
       "vcpu_counts": [
+        2,
         4,
         6
       ],
