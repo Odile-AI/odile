@@ -742,5 +742,136 @@ class StagedAtHqCase(FixtureCase):
         self.assertIn("test_a_playbook_staged_at_hq_is_in_the_preview", output)
 
 
+KEPT_MODULE = '''\
+"""Fixture: main deleted paths HQ still carries — on disk or in its index."""
+import subprocess
+import unittest
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+
+
+def tracked(path: str) -> str:
+    return subprocess.run(("git", "ls-files", "--", path), cwd=str(ROOT),
+                          capture_output=True, text=True).stdout.strip()
+
+
+class HqKeptTest(unittest.TestCase):
+    def test_a_path_main_deleted_that_hq_ignores_keeps_hq_bytes(self):
+        # HQ's disk holds the playbook under .git/info/exclude; the branch's
+        # base bytes are not what HQ's own checkout runs against.
+        self.assertEqual((ROOT / "docs" / "README.md").read_text().strip(), "HQ-PLAYBOOK")
+
+    def test_a_path_main_deleted_that_hq_staged_keeps_the_index_bytes(self):
+        # `git add`ed at HQ and absent from HQ's HEAD: the index is the seat's
+        # bytes, and HQ's working copy has them.
+        self.assertEqual((ROOT / "docs" / "staged.md").read_text().strip(), "HQ-STAGED")
+
+    def test_a_path_the_overlay_does_not_carry_is_still_removed(self):
+        self.assertFalse((ROOT / "docs" / "old.md").exists())
+
+    def test_the_kept_paths_are_untracked_like_hq(self):
+        # A merge deletes them from the index; HQ keeps them only because they
+        # are ignored (or staged). `git ls-files` must answer HQ's shape.
+        self.assertEqual(tracked("docs/README.md"), "")
+        self.assertEqual(tracked("docs/staged.md"), "")
+
+    def test_the_branch_document_is_here(self):
+        self.assertEqual((ROOT / "docs" / "branch.md").read_text().strip(), "GOOD")
+'''
+
+
+class MainDeletesHqKeepsCase(unittest.TestCase):
+    """`main` deleted paths HQ still carries — measured 2026-11-21.
+
+    `main` `7ce0f2b` deleted the private machinery (`docs/craft/*.md`,
+    `docs/ops/LEARNING-LOG.md`, …) from the public tree while HQ kept the same
+    paths on disk under `.git/info/exclude`. A card cut before that commit still
+    tracks them, so `deleted_paths` named them and the preview removed them:
+    `test_craft` then failed on `docs/craft/security.md` for a card that touched
+    no craft document, while the HQ checkout ran the same test green because
+    HQ's disk has the playbook. A path `main` deleted but HQ still carries
+    exists at HQ after the merge, so the preview keeps HQ's bytes and removes
+    only what HQ no longer has.
+    """
+
+    def setUp(self) -> None:
+        base = Path(tempfile.mkdtemp(prefix="hq-gate-kept-"))
+        self.addCleanup(shutil.rmtree, base, ignore_errors=True)
+        self.base = base
+        self.hq = base / "hq"
+        self.tree = base / "tree"
+        self.hq.mkdir()
+        git("init", "-q", "-b", "main", cwd=self.hq)
+        git("config", "user.email", "fixture@example.com", cwd=self.hq)
+        git("config", "user.name", "fixture", cwd=self.hq)
+        (self.hq / "docs").mkdir()
+        (self.hq / "docs" / "README.md").write_text("PUBLIC\n", encoding="utf-8")
+        (self.hq / "docs" / "staged.md").write_text("PUBLIC-STAGED\n", encoding="utf-8")
+        (self.hq / "docs" / "old.md").write_text("OLD\n", encoding="utf-8")
+        git("add", "-A", cwd=self.hq)
+        git("commit", "-q", "-m", "hq base", cwd=self.hq)
+        (self.hq / ".git" / "info" / "exclude").write_text(
+            "docs/README.md\n"
+            "tests/test_hq_only.py\n",
+            encoding="utf-8",
+        )
+        (self.hq / "tests").mkdir()
+        (self.hq / "tests" / "test_hq_only.py").write_text(KEPT_MODULE, encoding="utf-8")
+        # The card is cut here, then `main` deletes every document.
+        git("worktree", "add", "-q", "-b", "card", str(self.tree), cwd=self.hq)
+        (self.tree / "docs").mkdir(exist_ok=True)
+        (self.tree / "docs" / "branch.md").write_text("GOOD\n", encoding="utf-8")
+        git("add", "-A", cwd=self.tree)
+        git("commit", "-q", "-m", "the card", cwd=self.tree)
+        (self.hq / "docs" / "README.md").unlink()
+        (self.hq / "docs" / "staged.md").unlink()
+        (self.hq / "docs" / "old.md").unlink()
+        git("commit", "-q", "-am", "main deletes the private machinery", cwd=self.hq)
+        # HQ's own checkout after the merge: README.md stays on disk (ignored),
+        # staged.md is the seat's staged batch, old.md is gone.
+        (self.hq / "docs" / "README.md").write_text("HQ-PLAYBOOK\n", encoding="utf-8")
+        (self.hq / "docs" / "staged.md").write_text("HQ-STAGED\n", encoding="utf-8")
+        git("add", "-f", "docs/staged.md", cwd=self.hq)
+
+    def run_gate(self, *args: str) -> tuple[int, str]:
+        return quiet_main(["--hq", str(self.hq), "--tree", str(self.tree), *args])
+
+
+class MainDeletesHqKeepsTest(MainDeletesHqKeepsCase):
+    def test_the_hq_only_module_sees_hq_bytes_and_the_removal(self):
+        code, output = self.run_gate()
+        self.assertEqual(code, 0, output)
+        self.assertIn("Ran 5 tests", output)
+        self.assertIn("hq-gate: OK", output)
+
+    def test_list_names_the_kept_paths_and_the_removal(self):
+        code, output = self.run_gate("--list")
+        self.assertEqual(code, 0, output)
+        listed = output.splitlines()
+        # Both kept paths are overlaid from HQ, so main's deletion cannot win.
+        self.assertIn("docs/README.md", listed)
+        self.assertIn("docs/staged.md", listed)
+        self.assertNotIn("-docs/README.md", listed)
+        self.assertNotIn("-docs/staged.md", listed)
+        # A path HQ does not carry keeps the ODL-941 deletion semantics.
+        self.assertIn("-docs/old.md", listed)
+        self.assertIn("1 deleted by main", output)
+        self.assertIn("2 kept from HQ", output)
+
+    def test_the_retention_is_what_turns_the_gate_green(self):
+        # Pin the shipped defect: with the retention removed, the preview
+        # deletes what main deleted and the fixture's first assertion reds.
+        original = hq_gate.hq_retained_files
+        hq_gate.hq_retained_files = lambda *args, **kwargs: ([], [])  # type: ignore[assignment]
+        try:
+            code, output = self.run_gate()
+        finally:
+            hq_gate.hq_retained_files = original  # type: ignore[assignment]
+        self.assertEqual(code, 1, output)
+        self.assertIn("FAIL  test_hq_only", output)
+        self.assertIn("hq-gate: FAILED", output)
+
+
 if __name__ == "__main__":
     unittest.main()
