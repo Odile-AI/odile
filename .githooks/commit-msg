@@ -70,10 +70,27 @@ fi
 
 # Git hands the hook the whole message file. With `-v` (or
 # `commit.verbose=true`) that file also carries the staged diff, appended after
-# the scissors line, and that diff is not part of the message. Cut the file at
-# the scissors marker and scan everything above it. The tree surfaces are the
+# git's own scissors line, and that diff is not part of the message. Cut the
+# file at that line and scan everything above it. The tree surfaces are the
 # pre-push hook's job, and it scans them per path, so a value waived at its own
 # path is not a message literal.
+#
+# A scissors line is `<comment prefix> <marker>` and nothing else. The prefix
+# is whatever `core.commentChar` / `core.commentString` is configured to: one
+# punctuation character by default, but git also accepts a string (`//`) and a
+# single alphanumeric character (`A`, `1`, `d`), and builds its own `-v`
+# template and scissors line from that prefix. A message that merely quotes the
+# marker text (`see ---- >8 ----`), or even types the comment-prefixed line
+# itself, is not git's appended part and is scanned in full: its lines land in
+# the commit object, so a literal after the quote must be refused here or the
+# push later wedges at the pre-push scan. The marker is git's only when the
+# lines below it are blank or carry the same prefix (git writes its `Do not
+# modify...` / `Everything below...` comment lines there) and the first line
+# that breaks that run begins `diff --git `. That test is made before the
+# prefix test, because an alphanumeric comment character makes `diff --git`
+# itself look like a comment line. The prefix is read off the candidate line
+# itself, so `core.commentChar` (including `auto`) needs no separate lookup,
+# and `git stripspace` still sees the lines above the cut.
 #
 # Everything above the marker is scanned, comment lines included. `-m` and `-F`
 # clean the message with `cleanup=whitespace`, which *keeps* a line beginning
@@ -84,13 +101,32 @@ fi
 # default editor cleanup would drop the line. Scanning more than git records is
 # safe; scanning less is the bug this hook exists to prevent.
 #
-# The scissors marker is matched whatever comment character git used
-# (`core.commentChar`), because the marker text itself is fixed. `git
-# stripspace` normalises whitespace and is deliberately *not* given
+# `git stripspace` normalises whitespace and is deliberately *not* given
 # `--strip-comments`: that would drop the `-m`/`-F` lines git keeps.
 BODY=$(
-    sed '/------------------------ >8 ------------------------$/,$d' "$MESSAGE" \
-        | git stripspace
+    awk '
+        { line[NR] = $0 }
+        END {
+            marker = "------------------------ >8 ------------------------"
+            cut = 0
+            for (i = 1; i <= NR; i++) {
+                if (line[i] !~ /[^[:space:]] ------------------------ >8 ------------------------$/)
+                    continue
+                prefix = substr(line[i], 1, length(line[i]) - length(marker) - 1)
+                for (j = i + 1; j <= NR; j++) {
+                    if (line[j] ~ /^diff --git /) { cut = i; break }
+                    if (line[j] ~ /^[[:space:]]*$/) continue
+                    if (index(line[j], prefix) == 1) continue
+                    break
+                }
+            }
+            for (i = 1; i <= NR; i++) {
+                if (cut > 0 && i >= cut)
+                    break
+                print line[i]
+            }
+        }
+    ' "$MESSAGE" | git stripspace
 )
 
 # The scanner prints its report on stdout; on a finding it goes to stderr so

@@ -89,6 +89,10 @@ PIN_BYTES = PIN.read_bytes()
 VERIFY_MD = ROOT / "docs" / "runbooks" / "verify.md"
 RECUT_MD = ROOT / "docs" / "product" / "CLAIMS-RECUT-STRICT.md"
 VERDICT_MD = ROOT / "docs" / "security" / "CLAIMS-VERDICT-strict.md"
+# The deck itself. Its §4.4 block is the one a judge copies into a terminal,
+# so it is bound to the bundle like the three homes above: a pin change that
+# moves the tested three must move the deck's hash line in the same commit.
+CLAIMS_MD = ROOT / "docs" / "CLAIMS.md"
 
 NOT_LIVENESS = "the boot report, not a liveness proof"
 RELEASE = "2026.11.1"
@@ -2035,10 +2039,21 @@ class BundleTests(unittest.TestCase):
                          "the gzip header must not carry a build clock")
 
     def test_the_published_hash_is_the_bundle_in_this_tree(self) -> None:
+        """Every home of the hash names the bundle this tree builds.
+
+        `docs/CLAIMS.md` §4.4 is the block a judge copies: while it was
+        outside this set, a pin change (the 2-vCPU plan on `t_a37c001d`) moved
+        this test's three files and left the deck naming the old tarball
+        (`t_b0cc9015` fixed that by hand). The deck joins the set directly
+        rather than being compared against CLAIMS-RECUT-STRICT's copy, because
+        this test reads the pin: only the digest form can be red on a tree
+        whose pin differs from what the deck names, and a copy comparison
+        stays green there.
+        """
         app = load_app()
         app._bundle = None
         digest = hashlib.sha256(app.verifier_bundle()).hexdigest()
-        for path in (VERIFY_MD, RECUT_MD, VERDICT_MD):
+        for path in (VERIFY_MD, RECUT_MD, VERDICT_MD, CLAIMS_MD):
             self.assertIn(digest, path.read_text(encoding="utf-8"),
                           "%s does not name the bundle this tree builds" % path)
 

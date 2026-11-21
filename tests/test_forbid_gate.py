@@ -14,8 +14,13 @@ pin the four forward gates the card adds:
   object exists, accepts a clean one and passes on a clone with no list; a
   `commit-message` allowlist row waives the value it pins and no other; a
   `git commit -v` message is scanned without the appended diff below its
-  scissors line, and a `#`-leading line of an `-m`/`-F` message — which git
-  records — is scanned, so a literal on it is refused at write time;
+  scissors line for every comment prefix git accepts (`#`, `;`, `//`, a single
+  alphanumeric `core.commentChar`), and a message that merely quotes the
+  scissors marker — even the comment-prefixed line itself — is scanned past it,
+  because only git's own scissors line, with the diff below it, is the
+  boundary; a `#`-leading line of
+  an `-m`/`-F` message — which git records — is scanned, so a literal on it is
+  refused at write time;
 * history mode scoped to the deny list (`--forbid-only`) is red on a branch
   that carries a literal and green after the branch is deleted — the CI job's
   command, run for real;
@@ -710,6 +715,59 @@ class CommitMsgHook(unittest.TestCase):
         self.assertIn("------------------------ >8 ------------------------", seen)
         self.assertIn(BOX, seen, "the fixture did not reproduce git's -v message file")
 
+    def test_a_verbose_commit_cuts_at_a_non_default_comment_prefix(self) -> None:
+        # Git's comment prefix is a configurable *string*, not one punctuation
+        # character: `core.commentString='//'` and `core.commentChar=A` are
+        # documented, and git builds its `-v` template — scissors line
+        # included — from that prefix. A cut that only recognises one
+        # non-alphanumeric character leaves `cut` at 0, so the appended diff
+        # is scanned as message text and refuses a value that is waived at its
+        # own tree path. The default-prefix test above cannot see that.
+        live = self.repo / "live"
+        live.mkdir()
+        (live / "box.txt").write_text(f"box {BOX}\n", encoding="utf-8")
+        (self.repo / "leak-allow.tsv").write_text(
+            "# rule\tpath\tsha256\tclass\tcredential\treason\texpires\n"
+            f"forbidden-value\tlive/box.txt\t{digest(BOX)}\tconstant\tno\t"
+            "the frozen fixture names this box\tnever\n", encoding="utf-8")
+        editor = Path(self.temp.name) / "editor.sh"
+        editor.write_text(
+            "#!/bin/sh\n"
+            "cp \"$1\" \"$1.verbose\"\n"
+            "printf 'a clean verbose message\\n' | cat - \"$1\" > \"$1.tmp\"\n"
+            "mv \"$1.tmp\" \"$1\"\n", encoding="utf-8")
+        editor.chmod(0o755)
+        prefixes = (
+            ("core.commentString", "//"),
+            ("core.commentChar", "A"),
+            ("core.commentChar", "d"),
+            ("core.commentChar", ";"),
+        )
+        for revision, (key, prefix) in enumerate(prefixes):
+            with self.subTest(prefix=prefix):
+                git("config", "--unset-all", "core.commentString", cwd=self.repo)
+                git("config", "--unset-all", "core.commentChar", cwd=self.repo)
+                git("config", key, prefix, cwd=self.repo)
+                (live / "box.txt").write_text(f"box {BOX} revision {revision}\n",
+                                              encoding="utf-8")
+                git("add", "-A", cwd=self.repo)
+                verbose = git("-c", "user.email=probe@example.test",
+                              "-c", "user.name=probe",
+                              "-c", "commit.gpgsign=false",
+                              "-c", f"core.editor={editor}",
+                              "commit", "-v", cwd=self.repo)
+                self.assertEqual(verbose.returncode, 0,
+                                 f"prefix {prefix!r}: " + verbose.stdout + verbose.stderr)
+                self.assertEqual(
+                    git("log", "-1", "--format=%s", cwd=self.repo).stdout.strip(),
+                    "a clean verbose message")
+                seen = (self.repo / ".git" / "COMMIT_EDITMSG.verbose").read_text(
+                    encoding="utf-8")
+                self.assertIn(f"{prefix} ------------------------ >8 "
+                              "------------------------", seen)
+                self.assertIn(BOX, seen,
+                              "the fixture did not reproduce git's -v message file")
+
     def test_a_comment_leading_line_of_a_dash_m_message_is_scanned(self) -> None:
         # `git commit -m` and `git commit -F` use cleanup=whitespace, which
         # keeps a line beginning with the comment character: it lands in the
@@ -740,6 +798,46 @@ class CommitMsgHook(unittest.TestCase):
         self.assertEqual(clean.returncode, 0, clean.stdout + clean.stderr)
         body = git("log", "-1", "--format=%B", cwd=self.repo).stdout
         self.assertIn("# a comment line without a literal", body)
+
+    def test_a_message_quoting_the_scissors_marker_is_scanned_past_it(self) -> None:
+        # A body line that merely *ends* with the scissors text is not git's
+        # scissors line: git appends a `-v` diff only after its own
+        # `<commentChar> <marker>` line, and that appended diff is the only
+        # thing the cut may drop. A message quoting the marker is scanned
+        # whole, so a literal after the quote is refused here — otherwise it
+        # is accepted at write time and wedges the push at the pre-push scan.
+        marker = "------------------------ >8 ------------------------"
+        blocked = self.commit(f"docs: describe the hook\nsee {marker}\nthe box was {BOX}")
+        self.assertNotEqual(blocked.returncode, 0, blocked.stdout + blocked.stderr)
+        self.assertIn("FINDING forbidden-value", blocked.stderr)
+        self.assertIn("commit-message:3", blocked.stderr)
+        self.assertIn("the commit did not happen", blocked.stderr)
+        self.assertNotEqual(
+            git("rev-parse", "--verify", "HEAD", cwd=self.repo).returncode, 0,
+            "a refused message left a commit behind")
+
+    def test_a_body_line_that_is_the_scissors_line_is_scanned_after_it(self) -> None:
+        # The harder shape: the body line *is* git's scissors text (comment
+        # character included) and the literal follows it, but no `-v` diff
+        # does — so nothing about this file is git's appended part.
+        marker = "------------------------ >8 ------------------------"
+        blocked = self.commit(f"docs: describe the hook\n# {marker}\nthe box was {BOX}")
+        self.assertNotEqual(blocked.returncode, 0, blocked.stdout + blocked.stderr)
+        self.assertIn("FINDING forbidden-value", blocked.stderr)
+        self.assertIn("commit-message:3", blocked.stderr)
+        self.assertNotEqual(
+            git("rev-parse", "--verify", "HEAD", cwd=self.repo).returncode, 0,
+            "a refused message left a commit behind")
+
+    def test_a_clean_message_quoting_the_scissors_marker_commits(self) -> None:
+        # The cut is narrow, not a ban on the text: a message that quotes the
+        # marker and carries no literal commits, and every line survives.
+        marker = "------------------------ >8 ------------------------"
+        clean = self.commit(f"docs: describe the hook\nsee {marker}\nthe appended diff is not the message")
+        self.assertEqual(clean.returncode, 0, clean.stdout + clean.stderr)
+        body = git("log", "-1", "--format=%B", cwd=self.repo).stdout
+        self.assertIn(f"see {marker}", body)
+        self.assertIn("the appended diff is not the message", body)
 
     def test_the_hook_passes_when_the_list_is_absent(self) -> None:
         # A public clone carries no list: same rule as the pre-push hook, the
