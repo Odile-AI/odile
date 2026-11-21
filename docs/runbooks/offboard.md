@@ -360,6 +360,16 @@ a dated step, not a memory:
 - Before the date, nothing touches it. `destroy` never deletes the repository —
   it only prints the date and the path.
 
+**Interim (R2) tenants — ODL-935, not shipped at this head.** On an interim
+tenant the repository is a bucket, `odile-t-<slug>`, and `odilectl/purge.py` has
+no `s3:` path today: the designed step empties the bucket (or the old
+`repo-<4 hex>` prefix) through the tenant's own token and records
+`bucket_emptied_at` on the row, then Savio deletes the empty bucket in the
+Cloudflare dashboard — an Object Read & Write token cannot delete a bucket. The
+30-day promise is unchanged; the bucket half is **ODL-935**'s (ADR-004 §8's exit
+row), and until it lands the dashboard's **Empty Bucket** is the interim
+tenant's only path.
+
 ### The command — `odilectl purge <slug>`
 
 **t_9d6fb595** is the command: `odilectl purge`, a control-plane verb beside
