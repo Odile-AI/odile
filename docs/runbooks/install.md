@@ -2492,11 +2492,12 @@ the `-3` bench measurement; a build of this tree carries the `-4` pair.
 
 **The `2026.11.21-1` cut (t_9574a1c8: the installed help is selected for a
 money question).** This branch is cut on `main`'s `ab3930e` — whose `-4` is
-t_e3540242's dry-run-fixture cut above — and rebased onto `91f09f5`, its last
-green gate. Round 2 named a cost and a bill in the selector; a fresh-root ask
-"how much is the subscription?" still answered with the Nous Portal tiers and
-four `$` figures, because neither selector named a subscription and the bundled
-`hermes-agent` skill won the word. This round's `installer/embed_tenant.py`
+t_e3540242's dry-run-fixture cut above — and rebased onto `9ea1371`, its
+merge-base with `main`. Round 2 named a cost and a bill in the selector; a
+fresh-root ask "how much is the subscription?" still answered with the Nous
+Portal tiers and four `$` figures, because neither selector named a subscription
+and the bundled `hermes-agent` skill won the word. This round's
+`installer/embed_tenant.py`
 re-embeds `skills/odile-help/SKILL.md` at `ace83094…` (6,278 bytes), so the
 installer moves from `e58f31af…` (1,512,539 bytes) to `86e87a86…` (1,512,746
 bytes). No figure is re-quoted and `docs/CLAIMS.md` gains no row — a
@@ -2528,12 +2529,25 @@ bytes) and `release/release.json` (`705f9e6b…`, 799 bytes) names
 `2026.11.21-1` at `2026-11-21T11:13:47Z`. On the first root the installed help
 answered all three unprimed asks — "what does Odile cost per month?", "why was
 I charged on my card?", "how much is the subscription?" — one session each, in
-the tenant's own chat (standing rules loaded), with the moment's words: no `$`,
-no figure, no connector punt. The same three asks under the installer's smoke
-flags (`--ignore-rules`, one session each) also carried no figure and no punt,
-with one paragraph of the model's own after the second answer ("This machine is
-up and answering…") and the first-run greeting after the third, so those tails
-are the model's, not the skill's. `--self-test` prints `self-test: PASS` on
+the tenant's own chat (the full-toolset prompt, `c6b616ae…`, 13,544 characters,
+whose skill index carries `odile-help: Odile price, bill, subscription?`), with
+the moment's words: no `$`, no figure, no connector punt; one answer then
+carried a paragraph of the model's own ("This machine is up and answering…")
+and another the first-run greeting, so those tails are the model's, not the
+skill's. That chat is the surface this change carries. The smoke-flag mode is
+not: its `-t terminal` prompt (`c37642fe…`, 8,643 characters) carries no skills
+index, so the frontmatter description cannot be read there and `odile-help` is
+never selected. Measured on a fresh root at this head, one session each: "what
+does Odile cost per month?" quoted the FAQ's retired `$49` figure, the
+`$33.66` per-tenant cost and the `$12`/`$10` allowances; "why was I charged on
+my card?" punted to a missing bank/email connection; "how much is the
+subscription?" returned the bundled `hermes-agent` skill's Nous Portal tiers
+(`$0`, `$20`, `$100`, `$200`). An earlier run on the cut's own root returned
+the moment's words 3/3, so the mode is not a stable surface for the selector.
+No `AGENTS.md` router line is added for it: it would re-embed and re-sign the
+installer to make a diagnostic prompt carry a selector, so this round is
+documentation only and none of the four release bytes above moves.
+`--self-test` prints `self-test: PASS` on
 both the checkout's installer and `release/odile_install.py`;
 `--verify-signature` prints `signature: OK (sha256 86e87a86…)` on both; a
 one-byte edit prints `signature: BAD (sha256 8d3eb381…)` and exits 3; and
