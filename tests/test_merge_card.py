@@ -29,8 +29,10 @@ this suite, and no file the build publishes may mention the tool.
 from __future__ import annotations
 
 import ast
+import contextlib
 import fnmatch
 import importlib.util
+import io
 import os
 import shutil
 import signal
@@ -739,6 +741,126 @@ class NoBranchCardTests(unittest.TestCase):
                              "the caller's repository's main was pushed to its origin")
         finally:
             decoy.cleanup()
+
+
+@unittest.skipUnless(TOOL, TOOL_MISSING)
+class CardBranchLookupTests(unittest.TestCase):
+    """A card row with no `branch_name` still has a branch to merge.
+
+    t_02b63d38 (2026-11-21) ran in a Kanban `scratch` workspace: the board
+    row's `branch_name` is NULL while the work sits on `odl/t_02b63d38`, pushed
+    to origin. `merge_card --card` took the branch-less path, published `main`
+    (which had not moved) and exited 0, printing only the push tail — the
+    reviewer saw nothing merged and spent 30-40 minutes resolving the branch by
+    hand before running `--branch`.
+
+    The tool now looks for the branch the card actually has: the HEAD of the
+    worktree the card's row names, then an `odl/<task>` / `wt/<task>` ref in
+    this repository. Only a card with none of those publishes, and it says so
+    and names `--branch <name>` — a bare push tail is the failure being fixed.
+    """
+
+    TASK = "t_000001"
+
+    def setUp(self) -> None:
+        self.fixture = Fixture()
+        self.fixture.add_origin()
+        # One stand-in for both steps: a green merge calls `make check`, then
+        # the publication gate calls `make leak`.
+        self.fixture.write_make(
+            'case "$1" in\n'
+            '  check) echo "make check: OK" ;;\n'
+            '  leak) echo "make leak: OK" ;;\n'
+            "esac\n"
+            "exit 0\n"
+        )
+
+    def tearDown(self) -> None:
+        self.fixture.cleanup()
+
+    def card(self, branch: str | None, workspace: str | None) -> tuple[int, str]:
+        """`merge_card --card`, with the board's row for this card faked.
+
+        The row is what the board answers for the two shapes measured here: a
+        `scratch` workspace whose `branch_name` is NULL, and the same card's
+        `workspace_path` — either the scratch directory (not a checkout) or the
+        card's own worktree.
+        """
+        env = clean_env({
+            "PATH": os.pathsep.join([str(self.fixture.bin_dir), os.environ.get("PATH", "")]),
+        })
+        out = io.StringIO()
+        with mock.patch.dict(os.environ, env, clear=True), contextlib.redirect_stdout(out):
+            module = load_tool()
+            setattr(module, "card_details", lambda card: {
+                "branch_name": branch,
+                "workspace_path": workspace,
+                "title": "a scratch-workspace card",
+            })
+            code = module.main(["--card", self.TASK, "--repo", str(self.fixture.repo)])
+        return code, out.getvalue()
+
+    def test_a_scratch_card_merges_the_odl_branch_in_the_repository(self) -> None:
+        """The incident itself: NULL `branch_name`, and `odl/<task>` exists."""
+        branch = f"odl/{self.TASK}"
+        self.fixture.git("branch", branch, self.fixture.BRANCH)
+        tip = self.fixture.git("rev-parse", branch).stdout.strip()
+        scratch = self.fixture.tmp / "kanban-workspace"  # the scratch dir, no .git
+        scratch.mkdir()
+
+        code, out = self.card(branch=None, workspace=str(scratch))
+
+        self.assertEqual(code, 0, out)
+        self.assertEqual(
+            self.fixture.parents_of_main(),
+            [self.fixture.head(), self.fixture.before, tip],
+            "main carries no merge of the card's own branch:\n" + out,
+        )
+        self.assertEqual(self.fixture.origin_main(), self.fixture.head(),
+                         "the merge landed on main but was not published")
+        self.assertIn("no recorded branch", out,
+                      "the tool did not report that the row has no branch")
+        self.assertIn(f"using {branch}", out, "the tool did not name the branch it merged")
+
+    def test_a_scratch_card_merges_the_branch_its_worktree_has_checked_out(self) -> None:
+        """A `wt/` worktree branch is a card branch too; the row still says NULL."""
+        branch = f"wt/{self.TASK}"
+        self.fixture.git("branch", branch, self.fixture.BRANCH)
+        tip = self.fixture.git("rev-parse", branch).stdout.strip()
+        worktree = self.fixture.tmp / "card-worktree"
+        self.fixture.git("worktree", "add", "-q", str(worktree), branch)
+        self.assertEqual(
+            self.fixture.git("symbolic-ref", "--short", "HEAD", cwd=worktree).stdout.strip(),
+            branch,
+            "the fixture worktree is not on the card's branch",
+        )
+
+        code, out = self.card(branch=None, workspace=str(worktree))
+
+        self.assertEqual(code, 0, out)
+        self.assertEqual(
+            self.fixture.parents_of_main(),
+            [self.fixture.head(), self.fixture.before, tip],
+            "main carries no merge of the branch the card's worktree has:\n" + out,
+        )
+        self.assertIn("no recorded branch", out)
+        self.assertIn(f"using {branch}", out)
+
+    def test_a_card_with_no_branch_anywhere_publishes_and_names_the_remedy(self) -> None:
+        """A `dir`-workspace card is still published — and it now says why."""
+        self.fixture.git("commit", "-q", "--allow-empty", "-m", "card: a direct commit")
+        before = self.fixture.head()
+
+        code, out = self.card(branch=None, workspace=str(self.fixture.tmp / "gone-workspace"))
+
+        self.assertEqual(code, 0, out)
+        self.assertEqual(self.fixture.origin_main(), before,
+                         "the branch-less card's commit was not published")
+        self.assertEqual(len(self.fixture.parents_of_main()), 2,
+                         "a card with no branch must not merge anything:\n" + out)
+        self.assertIn("no recorded branch", out,
+                      "publishing printed only the push tail — the trap this card fixes")
+        self.assertIn("--branch", out, "the line must name the remedy: --branch <name>")
 
 
 @unittest.skipUnless(TOOL, TOOL_MISSING)
