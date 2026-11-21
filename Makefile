@@ -21,20 +21,19 @@ SLUG ?= odlukitest
 # The gate's file lists come from the index, not from a walk of the working
 # tree: `git ls-files` is the repository, so an untracked private evidence
 # script (the shared checkout keeps the operating record under `docs/ops/`
-# untracked) cannot fail the gate every merge runs (ODL-338). The pre-commit
-# hook is shell without the `.sh` suffix, so `.githooks/pre-commit` is named
-# explicitly; every hook that does carry the suffix is already in the list. A
-# tree with no git — the built public tree — keeps the walk, pruned of VCS,
-# virtualenvs and the disposable fresh-clone checkout, so it still lints every
-# script and compiles every module it ships.
+# untracked) cannot fail the gate every merge runs (ODL-338). The hooks carry no
+# `.sh` suffix, so each is named explicitly; every script that does carry the
+# suffix is already in the list. A tree with no git — the built public tree —
+# keeps the walk, pruned of VCS, virtualenvs and the disposable fresh-clone
+# checkout, so it still lints every script and compiles every module it ships.
 GIT ?= git
 PRUNE = \( -path ./.git -o -path ./.worktrees -o -path ./.venv -o -path ./.fresh-clone \) -prune
 ifeq ($(shell $(GIT) rev-parse --is-inside-work-tree 2>/dev/null),true)
 PY_FILES = $(shell $(GIT) ls-files -- '*.py')
-SH_FILES = $(shell { $(GIT) ls-files -- '*.sh'; $(GIT) ls-files -- .githooks/pre-commit .githooks/pre-push; } | sort -u)
+SH_FILES = $(shell { $(GIT) ls-files -- '*.sh'; $(GIT) ls-files -- .githooks/pre-commit .githooks/commit-msg .githooks/pre-push; } | sort -u)
 else
 PY_FILES = $(shell find . $(PRUNE) -o -name '*.py' -print | sort)
-SH_FILES = $(shell find . $(PRUNE) -o \( -name '*.sh' -o -path './.githooks/pre-commit' -o -path './.githooks/pre-push' \) -print | sort)
+SH_FILES = $(shell find . $(PRUNE) -o \( -name '*.sh' -o -path './.githooks/pre-commit' -o -path './.githooks/commit-msg' -o -path './.githooks/pre-push' \) -print | sort)
 endif
 
 .PHONY: check check-hq check-inner acceptance prereqs test test-unit self-test compile lint claims brand roadmap secrets leak hooks fresh-check deploy-dry \
@@ -181,14 +180,15 @@ leak: prereqs
 	fi
 
 # Enable the committed hooks in this clone. Idempotent: git keeps the path in
-# local config, so run it once per clone. The pre-push hook scans the outgoing
-# diff and commit messages against the same deny list; `git push --no-verify`
-# is the deliberate bypass.
+# local config, so run it once per clone. The commit-msg hook scans the message
+# before the commit object exists; the pre-push hook scans the outgoing diff and
+# commit messages against the same deny list. `git commit --no-verify` and
+# `git push --no-verify` are the deliberate bypasses.
 hooks:
 	@git rev-parse --git-dir >/dev/null 2>&1 || { echo "make hooks: run inside a git checkout" >&2; exit 1; }
 	@git config core.hooksPath .githooks
-	@chmod +x .githooks/pre-commit .githooks/pre-push
-	@echo "make hooks: pre-commit gate and pre-push leak scan enabled"
+	@chmod +x .githooks/commit-msg .githooks/pre-commit .githooks/pre-push
+	@echo "make hooks: commit-msg, pre-commit and pre-push leak gates enabled"
 	@echo "make hooks: bypass with: git commit --no-verify / git push --no-verify"
 
 # Clone HEAD into a throwaway checkout and run the gate there. This is the

@@ -181,7 +181,8 @@ class ThisCheckoutTest(unittest.TestCase):
     def test_the_checkouts_lint_plan_is_its_index(self) -> None:
         self.assertEqual(sorted(self.plan("lint", "shellcheck")),
                          sorted(self.tracked("*.sh")
-                                + [".githooks/pre-commit", ".githooks/pre-push"]))
+                                + [".githooks/commit-msg", ".githooks/pre-commit",
+                                   ".githooks/pre-push"]))
 
     def test_the_checkouts_compile_plan_is_its_index(self) -> None:
         self.assertEqual(sorted(self.plan("compile",
