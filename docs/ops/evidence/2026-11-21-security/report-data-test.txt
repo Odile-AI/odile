@@ -1,0 +1,13 @@
+report    1184 bytes, version 5, VMPL 0x0
+measure   e99728efbbf23ae517bde68b7667448aa98ed8905e48cddae037ff1742cd10f3116f98b3ece36aad2e4c8b9e72643fbc (the launch digest; computed at launch, not per request)
+policy    policy 0x30000: SMT allowed, DEBUG clear (no debug decrypt), MIGRATE_MA clear (no migration agent), SINGLE_SOCKET not required; ABI floor 0.0
+platform  platform_info 0x5: SMT on, ECC_EN set
+flags     flags 0x0: signed by VCEK (AMD's per-chip key); chip id unmasked; author key absent
+report_id 186313cb16ecafd6d57526e47f0321e49b32025ee6bec89758fe321a9556d1d0 (per guest; the same value in both fetches)
+
+CHECK 1  PASS  REPORT_DATA is the 64 bytes this caller sent: the report answers this request
+CHECK 2  PASS  two fetches differ only in REPORT_DATA (and the signature over it); REPORT_ID 186313cb16ecafd6 persists across both
+CHECK 3  PASS  the served report (https://odile.fyi/attestation, fetched_at 2026-11-21T06:35:04Z) carries HQ's label odile:ef490a0c57243b4f..., chosen by the machine at fetch time, not by this visitor: a copy of it verifies identically a week later
+CHECK 4  PASS  one flipped bit makes the same test say: REPORT_DATA is 6e64696c652d7465..., a value this caller did not send: it binds no request
+
+VERDICT  REPORT_DATA is the only field a requester chooses; the served report was fetched by HQ on its own clock, so it proves the machine's boot, not that this visitor's request produced it

@@ -221,16 +221,20 @@ LOGIN_MARKERS = (
     'aria-label="Sign in"',
 )
 
-# The same seed app.py's /judge deep-links: the id is a constant, computed from
-# the retired HQ demo's profile and principal so the front door never changes.
+# The seeded row's identity: the id is a constant, computed from the profile and
+# principal the row was minted with on the retired HQ demo, so that id never
+# changes. Nothing at HQ reads it any more — /judge is a 301 to the demo's login
+# page — the tenant's row is what carries it.
 # The row written here belongs to *this* machine's principal (uid:1000), which
 # is what the tenant's Webapp lists and resumes.
 SESSION_SEED = "odile-demo:start-here:v1"
 REQUEST_ID = str(uuid.uuid5(uuid.NAMESPACE_URL, SESSION_SEED))
 #: The seeded session's identity is frozen: the id is a hash over the profile
-#: and principal the row was minted with on the retired HQ demo, and app.py's
-#: /judge deep link carries the same id. The retired account name is spelled in
-#: two pieces so it does not reappear in the tree; the string must never change.
+#: and principal the row was minted with on the retired HQ demo, so it is the
+#: identity the tenant's seeded row carries. It stays fixed because the row was
+#: minted with it, not because any HQ page deep-links it. The retired account
+#: name is spelled in two pieces so it does not reappear in the tree; the string
+#: must never change.
 SEED_PROFILE_ID = "/home/odile" "demo/.hermes"
 SEED_PRINCIPAL_ID = "uid:1001"
 SESSION_ID = "local-" + hashlib.sha256(
@@ -1121,9 +1125,9 @@ def clear_seed_tombstone(con: sqlite3.Connection) -> bool:
 
     A judge's delete writes ``gateway.retired_session.v1.<id>`` and the
     gateway refuses a turn on a row with that marker (`not_found`, measured
-    2026-11-14). Writing the seed back under its constant id — the one
-    ``/judge`` deep-links — must lift it, or the demo's front door lands in a
-    session that cannot answer.
+    2026-11-14). Writing the seed back under its frozen id — the identity the
+    tenant's seeded row carries — must lift it, or the demo's front door lands
+    in a session that cannot answer.
     """
     key = RETIRED_PREFIX + SESSION_ID
     row = con.execute("SELECT 1 FROM state_meta WHERE key = ?", (key,)).fetchone()
@@ -1200,13 +1204,14 @@ def rendered_receipt(stamp: float) -> dict:
     # one, but the policy's working directory must be this machine's, or the
     # session resumes into a path that does not exist here.
     receipt_doc = json.loads(rendered)
-    # The session id is the HQ demo's constant (the one app.py's /judge deep
-    # links), but this receipt is minted by *this* machine's profile: the
-    # tenant's revision of gateway/session_local_recovery.owned_receipt refuses
-    # a receipt whose profile_id is another home (profile_mismatch). A
-    # `legacy_session_id` binds the receipt by its route instead of re-hashing
-    # the identity, which is exactly the legacy-adopted shape the same function
-    # documents — so the echoed id, the route and the row stay the HQ constant.
+    # The session id is the identity the tenant's seeded row carries — frozen
+    # when the row was minted with it, not by any HQ reader — but this receipt
+    # is minted by *this* machine's profile: the tenant's revision of
+    # gateway/session_local_recovery.owned_receipt refuses a receipt whose
+    # profile_id is another home (profile_mismatch). A `legacy_session_id` binds
+    # the receipt by its route instead of re-hashing the identity, which is
+    # exactly the legacy-adopted shape the same function documents — so the
+    # echoed id, the route and the row stay the seeded row's identity.
     receipt_doc["legacy_session_id"] = SESSION_ID
     policy = receipt_doc["policy"]
     policy["cwd"] = str(WORKSPACE)

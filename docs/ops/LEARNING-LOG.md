@@ -5,6 +5,40 @@ Evidence is a path, a commit or a card; no adjectives. The weekly exchange owns
 the scar table, the borrowed-practice pairs and coverage; a session owns its own
 line.
 
+## 2026-11-21 · security · S2 — REPORT_DATA is the only field the caller chooses
+
+- **Source:** AMD, *SEV Secure Nested Paging Firmware ABI Specification*, pub.
+  56860 rev. 1.58 (May 2025), §7.3 and §4.3, Tables 9 and 22–24 —
+  <https://www.amd.com/content/dam/amd/en/documents/developer/56860.pdf>: the
+  64 bytes at 0x50 are guest-provided and the firmware “does not interpret this
+  data”; MEASUREMENT is “the measurement calculated at launch”; REPORT_ID
+  “persists with the guest instance throughout its lifetime”; the policy is the
+  guest owner’s at launch and cannot change for the guest’s life; bit 17 of the
+  policy is “Reserved. Must be one.”
+- **Exercise:** decoded the live v5 report (`e99728ef…fbc`, policy `0x30000`,
+  platform_info `0x5`, flags `0x0`, VMPL 0) and verified it end-to-end with
+  `tools/snp_report.py` — VCEK fetched from AMD’s KDS, chain to the pinned ARK
+  `69:d0:63:b4…`, CPU binding, signature, policy, TCB and header all PASS
+  (`verify-live-report.txt`). Then `report_data_test.py`: two fetches with our
+  own 64-byte nonces carry them back; the two reports differ only inside
+  `0x50–0x90` and in the signature over it; `/attestation`, refreshed by
+  `odile-attest-refresh.timer` (`OnCalendar=*:0/5`), carries `odile:<24 random
+  bytes>` chosen by `attest.py`, and its `fetched_at` is outside the signed
+  `report_b64`; one flipped bit makes the check say “a value this caller did
+  not send.”
+- **Lesson:** 1) A report binds a request only through REPORT_DATA: a report
+  the machine labels on its own timer is fresh to the machine and replayable to
+  the visitor, and an unsigned `fetched_at` is metadata, not proof. 2) A parsed
+  field nobody asserts is not verified: `snp_report.py:135` stores REPORT_DATA
+  and never prints or checks it, so the one field that decides freshness is
+  invisible in the verifier’s own output.
+- **Evidence:** `docs/ops/evidence/2026-11-21-security/README.md`,
+  `report_data_test.py`, `report-data-test.txt`, `verify-live-report.txt`,
+  `served-document.txt`, `make-check.txt`; `docs/craft/security.md` —
+  principle 18, one replaced checklist row, one anti-pattern, one Source.
+- **Next:** S3 — SLSA Build L2: compare Odile’s release provenance and name
+  the missing artifact or signature step.
+
 ## 2026-11-20 · exchange — week of 2026-11-14
 
 ### Shipped and learned

@@ -1,0 +1,6 @@
+# Read 2026-11-21; 64-byte values elided to first/last 8 hex (machine identity).
+fetched_at 2026-11-21T07:15:06Z | note: 48-byte SHA-384 launch digest. Verify the full report with s
+json keys: ['available', 'cmdline', 'fetched_at', 'guest', 'measurement', 'note', 'release', 'report_b64', 'report_size', 'report_version', 'vcpus']
+report bytes 1184 | signed coverage 0x00-0x29F only
+report_data 6f64696c653acfb2…0000000000000000
+fetched_at is inside report_b64: False

@@ -140,7 +140,7 @@ Staff, not a ninth authority.
 | # | Unit | Primary source | Exercise on Odile | Landed |
 |---|---|---|---|---|
 | S1 | Foundation — ASVS, mapped | OWASP ASVS — https://owasp.org/www-project-application-security-verification-standard/ | Map the current surface to ASVS L2; find one gap with a reproduction command. | 2026-11-12 · docs/security/ASVS-L2-MAP.md · A 405 branch that answers before reading the body poisons Caddy's pooled upstream connection; the next visitor got 501 `Unsupported method ('abcGET')`. |
-| S2 | Primary — the attestation report itself | AMD SEV-SNP — https://www.amd.com/en/developer/sev.html | Read the report fields and policy bits; write a plain-language test for one field and run it. | — |
+| S2 | Primary — the attestation report itself | AMD SEV-SNP — https://www.amd.com/en/developer/sev.html | Read the report fields and policy bits; write a plain-language test for one field and run it. | 2026-11-21 · docs/ops/evidence/2026-11-21-security/report-data-test.txt · REPORT_DATA is the only requester-chosen field: the served report carries HQ's five-minute label, so it proves a boot, not a session. |
 | S3 | Teardown — what build provenance looks like | SLSA — https://slsa.dev/ | Compare Odile’s release provenance to SLSA Build L2; name the missing artifact or signature step. | — |
 | S4 | Failure study — SEVered | “SEVered: Subverting AMD’s Virtual Machine Encryption” — https://arxiv.org/abs/1805.09604 | Extract the verification step Odile lacks; check that the threat model names the host. | — |
 | S5 | Application — the handoff audit | Security playbook checklist | Re-run the handoff audit on the current test tenant, or on the M1 runbook if no tenant exists; write one residual risk with an owner and a date. | — |
