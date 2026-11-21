@@ -151,6 +151,38 @@ def wait_health(port: int, proc, seconds: float = 10.0) -> None:
     raise RuntimeError("seed service did not start:\n" + out.decode("utf-8", "replace"))
 
 
+class TokenVerbSurface(unittest.TestCase):
+    """The `token` verb set, pinned because a record named a verb that is not one.
+
+    SPIKE-servury-reinstall §5 said `token issue`/`rotate`/`bind` mint and print
+    a token; corrected 2026-11-21, `bind` is a module function
+    (`seed/seed.py:862`) and these three are the parser's whole verb set. A
+    `token bind` added later fails here, and the commit that adds it retires
+    §5's correction (`docs/product/SPIKE-servury-reinstall.md`) in the same
+    change — the record is dated, so it keeps the sentence that was wrong.
+    """
+
+    @staticmethod
+    def run_seed(*args):
+        return subprocess.run(
+            [sys.executable, SEED, *args], capture_output=True, text=True, timeout=30
+        )
+
+    def test_bind_is_not_a_token_verb(self):
+        result = self.run_seed("token", "bind", "--tenant", "odl-alpha")
+        self.assertEqual(result.returncode, 2, result.stderr)
+        self.assertIn("invalid choice", result.stderr)
+        self.assertIn("'bind'", result.stderr)
+        # argparse prints the choices it would have accepted: the whole set.
+        self.assertIn("{issue,rotate,list}", result.stderr)
+
+    def test_the_three_token_verbs_parse(self):
+        for verb in ("issue", "rotate", "list"):
+            with self.subTest(verb=verb):
+                result = self.run_seed("token", verb, "--help")
+                self.assertEqual(result.returncode, 0, result.stderr)
+
+
 class SeedService(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -1152,7 +1184,7 @@ class RecordedProvision:
     """
 
     def __init__(self, db_path: str, slug: str, server_id: str,
-                 ipv4: str = "203.0.113.120"):
+                 ipv4: str = "203.0.113.120", *, listed: bool = False):
         self.db_path = db_path
         self.slug = slug
         self.server_id = server_id
@@ -1160,17 +1192,42 @@ class RecordedProvision:
         self.calls: list[str] = []
         self.poll_ledger: list[tuple] = []
         self.create_body: dict = {}
+        # `?action=servers` lists the machine the account holds. Before the
+        # order there is none; once `create` answered (or a previous run did),
+        # the real list carries it — the live capture in
+        # docs/runbooks/provision.md §1 read `total 2` — so a second provision
+        # reuses it instead of ordering again.
+        self.listed = listed
+
+    def _machine(self) -> dict:
+        return {
+            "id": self.server_id,
+            "hostname": self.slug,
+            "plan_id": 113,
+            "plan": "Blackbox Plus",
+            "status": "active",
+            "ipv4_address": self.ipv4,
+            "ipv6_address": "2001:0db8:0:2a::1",
+            "powered_on": True,
+            "snp_enabled": True,
+            "fde_requested": True,
+            "measured_boot": True,
+            "expiration_date": MACHINE_EXPIRES,
+            "expired": False,
+        }
 
     def __call__(self, method: str, url: str, headers: dict, body: bytes | None):
         query = urllib.parse.parse_qs(urllib.parse.urlsplit(url).query)
         action = query.get("action", [None])[0]
         self.calls.append(action or "")
         if action == "servers":
+            servers = [self._machine()] if self.listed else []
             return 200, json.dumps(
-                {"success": True, "data": {"servers": [], "total": 0}}
+                {"success": True, "data": {"servers": servers, "total": len(servers)}}
             ).encode()
         if action == "create":
             self.create_body = json.loads(body or b"{}")
+            self.listed = True
             return 200, json.dumps({"success": True, "data": {
                 "message": "Order accepted. The machine is built in the background ...",
                 "server_id": self.server_id,
@@ -1188,21 +1245,7 @@ class RecordedProvision:
                     " WHERE instance_id = ?", (self.server_id,)).fetchone() or ()))
             finally:
                 con.close()
-            return 200, json.dumps({"success": True, "data": {"server": {
-                "id": self.server_id,
-                "hostname": self.slug,
-                "plan_id": 113,
-                "plan": "Blackbox Plus",
-                "status": "active",
-                "ipv4_address": self.ipv4,
-                "ipv6_address": "2001:0db8:0:2a::1",
-                "powered_on": True,
-                "snp_enabled": True,
-                "fde_requested": True,
-                "measured_boot": True,
-                "expiration_date": MACHINE_EXPIRES,
-                "expired": False,
-            }}}).encode()
+            return 200, json.dumps({"success": True, "data": {"server": self._machine()}}).encode()
         raise AssertionError("no recorded response for %s action=%r" % (method, action))
 
 
@@ -1383,8 +1426,8 @@ class ProvisionBinding(unittest.TestCase):
         finally:
             con.close()
 
-    def provision(self) -> tuple[int, str, str, RecordedProvision]:
-        transport = RecordedProvision(self.db, self.slug, self.server_id)
+    def provision(self, *, listed: bool = False) -> tuple[int, str, str, RecordedProvision]:
+        transport = RecordedProvision(self.db, self.slug, self.server_id, listed=listed)
         code, out, err = run_odilectl(
             ["provision", self.slug, "--key", self.key_file, "--pin", self.pin,
              "--interval", "0", "--apply", "--json"],
@@ -1430,8 +1473,10 @@ class ProvisionBinding(unittest.TestCase):
             REBUILD_PASSWORD)
 
         # A later provision without the file clears the entry: a token never
-        # carries the previous attempt's secret.
-        code, out, err, _transport = self.provision()
+        # carries the previous attempt's secret. The provider lists the machine
+        # the first run ordered, so this run records it rather than ordering a
+        # second one (a live row takes no new machine; see provision's guard).
+        code, out, err, _transport = self.provision(listed=True)
         self.assertEqual(code, 0, err)
         document = json.loads(Path(self.seed_rebuilds).read_text(encoding="utf-8"))
         self.assertNotIn(self.slug, document)
@@ -1687,7 +1732,7 @@ def transcript() -> None:
 
         print("== 1. a provision run binds the token to the create id, before the poll ==")
         slug = "odl-7f3a2c"
-        server_id = "31a63bbb"
+        server_id = "0badc0de"
         con.execute(
             "INSERT INTO tenants (slug, email, created_at) VALUES (?, ?, ?)",
             (slug, "ada@example.com", iso(now())),

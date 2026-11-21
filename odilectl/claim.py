@@ -886,12 +886,16 @@ def render_recovery_kit(
     vcpus: int,
     backup_repo_url: str | None,
     written_at: str,
+    account_host: str | None = None,
 ) -> str:
     """Render the recovery kit from the values this run minted.
 
     The kit is the machine's facts and the first-visit link; the setup token
     travels only inside that URL, never as a bare value (the strict-bar ready
-    email does the same).
+    email does the same). ``account_host`` is the account site the invitation
+    email names (the operator's ``account_host`` config key): when it is set the
+    account-reset sentence prints ``<host>/forgot``; when it is absent the kit
+    keeps the sentence that points at the invitation email instead.
     """
     module = _kit_module()
     args = argparse.Namespace(
@@ -907,6 +911,7 @@ def render_recovery_kit(
         signing_key=str(module.SIGNING_KEY),
         backup_repo_url=backup_repo_url,
         written_at=written_at,
+        account_host=account_host,
     )
     template = module.TEMPLATE.read_text(encoding="utf-8")
     return module.render(template, module.build_values(args))
@@ -1195,6 +1200,9 @@ def provision_tenant(
             vcpus=_vcpus(config),
             backup_repo_url=_backup_repo(config, slug),
             written_at=iso(datetime.fromtimestamp(moment, timezone.utc)),
+            # The account site the invitation email names, when the operator has
+            # recorded it; unset keeps the kit's invitation-email sentence.
+            account_host=config.get("account_host"),
         )
         body = ready_body(url=url, measurement=measurement,
                           first_visit_url=first_visit_url)

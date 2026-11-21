@@ -33,7 +33,12 @@ The attest check has three values and names all of them:
 
 PASS means every value that exists is the expected one. A run where no
 measurement could be read FAILS: "the transcript never matched" is a result,
-not a warning.
+not a warning. A machine whose release setup has already converged prints no
+measurement (the installer never ran, and `odile-release-setup` says so), so
+the cycle accepts that line as the stage under test and the boot is judged on
+the live `/attestation` — the machine's own boot report. `ODILE_ATTEST_URL`
+overrides the default `https://<slug>.odile.fyi/attestation`, for a bench whose
+name has no certificate yet.
 
 Exit codes: 0 ok (publish-only, or a cycle whose attest check passed);
 1 a panel, cycle or attest failure; 2 bad input.
@@ -84,10 +89,26 @@ PANEL_SHA = re.compile(r"^SHA-256\s+([0-9a-f]{64})\s*$", re.MULTILINE)
 USING = re.compile(r"using the (panel|API)\b")
 BOOT_MEASUREMENT = re.compile(r"\bmeasurement\s+([0-9a-f]{96})\b")
 HEX96 = re.compile(r"^[0-9a-f]{96}$")
-# The stage under test is "the unlock ran", but the number to compare only
-# appears when release-setup reads /run/blackbox/attest.json a minute later.
-# Waiting for both is what keeps the transcript from being captured too early.
-MEASUREMENT_LINE = r"odile-release-setup.*measurement\s+[0-9a-f]{96}"
+# The stage under test is "release setup ran", and it prints two shapes. On a
+# first boot the installer prints the boot's measurement, a minute in. On a
+# machine whose setup has already converged it prints its own converged line and
+# **no measurement at all** (`odile-release-setup: already converged — ran
+# 2026-11-19T17:09:23Z · …`, measured on the bench 168020b4). Waiting only for
+# the measurement made every cycle on a converged machine burn its timeout for a
+# line that can never come; both forms are one alternation because the cycle
+# requires every --wait-for pattern it is given. (`already ran (…` is the
+# backfill branch, a machine whose marker was written from its own log.)
+MEASUREMENT_LINE = (
+    r"odile-release-setup.*measurement\s+[0-9a-f]{96}"
+    r"|odile-release-setup: already (?:converged — ran|ran \()"
+)
+# The kernel prints the command line it received, once. The empty-`.cmdline` UKI
+# (ADR-001 §4) gets its per-machine line from the panel as QEMU's append, and
+# the launch measurement covers that append — so `sev-snp-measure` without
+# `--append` computes a different number from the one the machine reports
+# (measured 2026-11-20 on the bench 168020b4: 112bbed0… without the line,
+# b22cd431… with it, which is the boot record's own value).
+COMMAND_LINE = re.compile(r"^\[\s*[0-9.]+\] (?:Kernel )?[Cc]ommand line: (.*)$", re.MULTILINE)
 
 
 def utc_stamp(moment: datetime | None = None) -> str:
@@ -152,6 +173,21 @@ def measurement_from_attestation(document: dict) -> str | None:
     return value if isinstance(value, str) and HEX96.match(value) else None
 
 
+def command_line_from_transcript(text: str) -> str | None:
+    """The command line the boot printed, or None when it printed none.
+
+    A boot of the empty-`.cmdline` UKI receives the per-machine line from the
+    panel as QEMU's append, and the launch measurement covers it — so the
+    expected value has to be computed over the same line. The kernel prints it
+    as `[    0.000000] Command line: …`, which is the append the hypervisor was
+    given; a baked-`.cmdline` UKI prints its own line instead, and the
+    recomputation over that line simply will not match (the caller only uses a
+    recomputed value that does).
+    """
+    found = COMMAND_LINE.findall(text or "")
+    return found[0].strip() if found and found[0].strip() else None
+
+
 def attest(expected: str | None, boot: str | None, live: str | None) -> tuple[bool, str]:
     """Compare the measurements; PASS only when every value that exists agrees.
 
@@ -196,11 +232,16 @@ def expected_measurement(
     vcpu_type: str,
     guest_features: str,
     ovmf_sha256: str = OVMF_SHA256,
+    append: str = "",
 ) -> tuple[str | None, str]:
     """(measurement, command-or-reason) for the published UKI.
 
     None means it could not be computed; the second value says why, so the
     evidence file records a missing tool instead of a silent blank.
+
+    `append` is QEMU's command line to the guest, which the launch measurement
+    covers. The empty-`.cmdline` shape of ADR-001 §4 has one (the panel line)
+    and its number only matches with it; a baked-`.cmdline` UKI has none.
     """
     tool = os.environ.get("ODILE_SEV_SNP_MEASURE", "sev-snp-measure")
     if ovmf is None:
@@ -210,6 +251,7 @@ def expected_measurement(
         return None, f"OVMF {ovmf} is {digest[:16]}… not the published {ovmf_sha256[:16]}…"
     command = [
         tool, "--mode", "snp", "--ovmf", str(ovmf), "--kernel", str(uki),
+        *(["--append", append] if append else []),
         "--vcpus", str(vcpus), "--vcpu-type", vcpu_type,
         "--guest-features", guest_features,
     ]
@@ -272,7 +314,9 @@ def render_evidence(
         f"- image SHA-256: `{digest}`\n"
         f"- local build: `{uki}`\n"
         f"- boot transcript: `{transcript}`\n"
-        f"- expected measurement: `{expected or expected_note}`\n"
+        f"- expected measurement: `{expected or expected_note}`"
+        + (f" — {expected_note}" if expected else "")
+        + "\n"
         f"- boot measurement: `{boot or '(none printed)'}`\n"
         f"- live /attestation: `{live or live_note}`\n"
         f"- attest: **{verdict}** — {detail}\n\n"
@@ -308,7 +352,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--timeout", type=float, default=900.0)
     parser.add_argument("--interval", type=float, default=10.0)
     parser.add_argument("--attest-url", default=None,
-                        help="default https://<slug>.odile.fyi/attestation; --no-attest-url skips it")
+                        help="default https://<slug>.odile.fyi/attestation, or "
+                             "$ODILE_ATTEST_URL when that is set; --no-attest-url skips it")
     parser.add_argument("--no-attest-url", action="store_true")
     parser.add_argument("--expected-measurement", default=None,
                         help="96-hex measurement to compare against (skips sev-snp-measure)")
@@ -457,6 +502,22 @@ def main(argv: list[str] | None = None) -> int:
     boot_text = transcript.read_text(encoding="utf-8", errors="replace") if transcript.is_file() else ""
     boot = measurement_from_transcript(boot_text)
 
+    # The live document first: on a converged machine it is the only
+    # measurement there is (the installer never ran, so the transcript has
+    # none), and the expected value below may need the boot's own command line.
+    live: str | None = None
+    live_note = "skipped (--no-attest-url)"
+    attest_url = (args.attest_url
+                  or os.environ.get("ODILE_ATTEST_URL")
+                  or f"https://{args.slug}.odile.fyi/attestation")
+    if not args.no_attest_url:
+        document, error = fetch_json(attest_url)
+        if document is None:
+            live_note = f"{attest_url} unreachable: {error}"
+        else:
+            live = measurement_from_attestation(document)
+            live_note = "served" if live else f"{attest_url} carried no measurement"
+
     if args.expected_measurement:
         expected, expected_note = args.expected_measurement, "given by --expected-measurement"
     else:
@@ -466,28 +527,33 @@ def main(argv: list[str] | None = None) -> int:
             guest_features=args.guest_features, ovmf_sha256=args.ovmf_sha256)
         if expected:
             expected_note = "sev-snp-measure over the published UKI"
-
-    live: str | None = None
-    live_note = "skipped (--no-attest-url)"
-    attest_url = args.attest_url or f"https://{args.slug}.odile.fyi/attestation"
-    if not args.no_attest_url:
-        document, error = fetch_json(attest_url)
-        if document is None:
-            live_note = f"{attest_url} unreachable: {error}"
-        else:
-            live = measurement_from_attestation(document)
-            live_note = "served" if live else f"{attest_url} carried no measurement"
+        # The empty-`.cmdline` shape booted with the panel's line measures with
+        # that append; without it the computed value is a different number. The
+        # line is in the transcript, so recompute over what booted — and keep the
+        # recomputation only when an observed value agrees with it.
+        if expected and (boot or live) and expected not in (boot, live):
+            command = command_line_from_transcript(boot_text)
+            alternative = None
+            if command:
+                alternative, _ = expected_measurement(
+                    uki, ovmf, vcpus=args.vcpus, vcpu_type=args.vcpu_type,
+                    guest_features=args.guest_features, ovmf_sha256=args.ovmf_sha256,
+                    append=command)
+            if alternative and alternative in (boot, live):
+                expected = alternative
+                expected_note = ("sev-snp-measure over the published UKI with the "
+                                 "boot's own command line as --append")
 
     passed, detail = attest(expected, boot, live)
     if completed.returncode != 0:
         passed = False
-        detail = f"the transcript never matched {args.wait_for!r} and the measurement line; {detail}"
+        detail = f"the transcript never matched {args.wait_for!r} and the measurement (or converged) line; {detail}"
 
     evidence = render_evidence(
         card=args.card, stamp=stamp, server_id=args.server_id, uki=uki, url=url,
         digest=digest, transcript=transcript, boot=boot, expected=expected,
         expected_note=expected_note, live=live, live_note=live_note, passed=passed,
-        detail=detail, action=args.action, wait_for=f"{args.wait_for} + measurement",
+        detail=detail, action=args.action, wait_for=f"{args.wait_for} + measurement-or-converged",
         panel=panel_note, commands=commands)
     evidence_path = evidence_dir / f"cycle-{digest[:16]}-{stamp}.md"
     evidence_dir.mkdir(parents=True, exist_ok=True)

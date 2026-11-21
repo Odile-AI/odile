@@ -31,7 +31,7 @@ because it is the user's data; that is the point of leaving with it.
 
 ### What is in it, and what is not
 
-The live tenant `odl-7971a8` measured on 2026-11-13: home 4.1 GB, root disk
+The live tenant `odl-fake01` measured on 2026-11-13: home 4.1 GB, root disk
 7.3 GB with **883 MB free**. The whole home cannot be exported in place, so the
 program takes the **data** and leaves the **runtime**:
 
@@ -70,7 +70,7 @@ ok   the placed odile-export is byte-identical to `odilectl export <slug> --scri
 
 The copy placed on the live tenant for the drill is
 `f128a3c95bf25e9290fb607b8f5cd4df00403618bab890ae2ead950fad060f49`, equal to the
-checkout's `odilectl export odl-7971a8 --script | sha256sum` at the time. The
+checkout's `odilectl export odl-fake01 --script | sha256sum` at the time. The
 checkout now prints
 `c635c4323ef404b4532e1cbb95bd9a80f1e69357b88c4e11fc598c6493132dae`: the review
 added two fixes to the program — the staging tar is a file, not a pipe (so a
@@ -116,7 +116,7 @@ copy's; the data it carries is the same.
 The first argument is the bundle's name (`name=${1:-$(hostname)}`), so `-h` and
 `--help` are not special: `odile-export --help` writes a bundle named
 `odile-export---help-<stamp>.tar.gz` rather than printing usage. Pass a name
-only: `odile-export odl-7971a8`.
+only: `odile-export odl-fake01`.
 
 
 The first drill run failed because the staging directory landed in `TMPDIR`
@@ -127,8 +127,8 @@ the one quoted here.
 ### The run, as the user sees it
 
 ```
-$ odile-export odl-7971a8
-wrote /home/tenant/odile-export-odl-7971a8-20261113T032107Z.tar.gz
+$ odile-export odl-fake01
+wrote /home/tenant/odile-export-odl-fake01-20261113T032107Z.tar.gz
 bytes 1429556
 sha256 478890ecf75a5227275a28204a48197ab4d984c27c24a7524fb604fa49700988
 members AGENTS.md documents workspace .hermes
@@ -141,7 +141,7 @@ download is `GET /api/fs/download?path=…`, and the drill measured the round
 trip rather than trusting the page:
 
 ```
-GET /api/fs/download?path=%2Fhome%2Ftenant%2Fodile-export-odl-7971a8-20261113T032107Z.tar.gz
+GET /api/fs/download?path=%2Fhome%2Ftenant%2Fodile-export-odl-fake01-20261113T032107Z.tar.gz
 status=200 bytes=1429556
 sha256=478890ecf75a5227275a28204a48197ab4d984c27c24a7524fb604fa49700988
 guest_said=478890ecf75a5227275a28204a48197ab4d984c27c24a7524fb604fa49700988
@@ -157,9 +157,9 @@ one they saved.
 copy, and the same function `destroy --export` refuses without:
 
 ```
-$ /usr/bin/python3 -m odilectl export odl-7971a8 --verify /var/tmp/odile-218-run/odile-export-odl-7971a8-20261113T032107Z.tar.gz
-export: odl-7971a8
-  bundle:    /var/tmp/odile-218-run/odile-export-odl-7971a8-20261113T032107Z.tar.gz
+$ /usr/bin/python3 -m odilectl export odl-fake01 --verify /var/tmp/odile-218-run/odile-export-odl-fake01-20261113T032107Z.tar.gz
+export: odl-fake01
+  bundle:    /var/tmp/odile-218-run/odile-export-odl-fake01-20261113T032107Z.tar.gz
   size:      1429556 bytes in 702 entries
   sha256:    478890ecf75a5227275a28204a48197ab4d984c27c24a7524fb604fa49700988
   top:       .hermes, AGENTS.md, documents, workspace
@@ -226,15 +226,15 @@ not a gzipped tar is exit 2; nothing in the path reads the provider or the zone.
 The dry run on the live tenant, 2026-11-13T03:32Z, with the bundle above:
 
 ```
-$ odilectl destroy odl-7971a8 --export odile-export-odl-7971a8-20261113T032107Z.tar.gz --dry-run
+$ odilectl destroy odl-fake01 --export odile-export-odl-fake01-20261113T032107Z.tar.gz --dry-run
 destroy: dry run (pass --apply to execute)
-  1. export.verify: file="odile-export-odl-7971a8-20261113T032107Z.tar.gz", sha256="478890ecf75a…", bytes=1429556, entries=702, members="ok"
-  2. support.check: url="https://odl-7971a8.odile.fyi/verify", result="none", line="operator key PASS none (authorized_keys: 1 line(s), the measured throwaway)"
-  3. dns.delete: zone="odile.fyi", name="odl-7971a8.odile.fyi", type="A", record_id="fixture-record-id-1", result="present"
-  4. provider.terminate: hostname="odl-7971a8", server_id="31a63bbb", ipv4="203.0.113.87"
-  5. provider.absent: server_id="31a63bbb", until="not listed by ?action=servers", timeout_seconds=120.0
-  6. state.destroy: slug="odl-7971a8", from="ready", detail="bundle, grant, DNS, machine and retention"
-  7. backup.retain: repo="sftp://***@203.0.113.139:2222/tenants/odl-7971a8", snapshot="828e8fab…", status="reported", keep_until="2026-12-13T03:32:59Z", days=30, then="delete the repository on the backup box"
+  1. export.verify: file="odile-export-odl-fake01-20261113T032107Z.tar.gz", sha256="478890ecf75a…", bytes=1429556, entries=702, members="ok"
+  2. support.check: url="https://odl-fake01.odile.fyi/verify", result="none", line="operator key PASS none (authorized_keys: 1 line(s), the measured throwaway)"
+  3. dns.delete: zone="odile.fyi", name="odl-fake01.odile.fyi", type="A", record_id="fixture-record-id-1", result="present"
+  4. provider.terminate: hostname="odl-fake01", server_id="0badc0de", ipv4="203.0.113.87"
+  5. provider.absent: server_id="0badc0de", until="not listed by ?action=servers", timeout_seconds=120.0
+  6. state.destroy: slug="odl-fake01", from="ready", detail="bundle, grant, DNS, machine and retention"
+  7. backup.retain: repo="sftp://***@203.0.113.139:2222/tenants/odl-fake01", snapshot="828e8fab…", status="reported", keep_until="2026-12-13T03:32:59Z", days=30, then="delete the repository on the backup box"
 ```
 
 Read it as a contract: the bundle is checked first, the grant before the
@@ -264,7 +264,7 @@ live grant still shows the plan.
 
 ## 3. The destroy — measured on two scratch tenants
 
-The live tenant `odl-7971a8` is Savio's own agent and its destroy + rebuild is
+The live tenant `odl-fake01` is Savio's own agent and its destroy + rebuild is
 **t_8d50106b** (the $18.99 order and the panel's disk image are his: see §5). The
 destroy path itself was measured end to end on two scratch tenants ordered for
 this card, on the host account, at $2.15 each:
@@ -278,7 +278,7 @@ this card, on the host account, at $2.15 each:
 | destroy | `destroyed: true`, `absent_at 2026-11-13T03:28:51Z`, DNS `deleted`, `keep_until 2026-12-13T03:28:40Z` | `destroyed: true`, `absent_at 03:31:50Z`, DNS `deleted`, `keep_until 2026-12-13T03:31:39Z` |
 | provider after | `?action=server&id=0b3234a2` → **HTTP 404** `{"success":false,"error":"Server not found."}` | `?action=server&id=fbf0f1f0` → **HTTP 404**, the same body |
 | zone after | `GET dns_records?type=A&name=odl-218a1b.odile.fyi` → `success true, result_count 0` | the same for `odl-218c1d` |
-| account after | `?action=servers` → `total 2` (`odl-7971a8`, `oqwaclzm` — the live tenant and HQ) | same |
+| account after | `?action=servers` → `total 2` (`odl-fake01`, `hostfake` — the live tenant and HQ) | same |
 
 The two 404s and the zone GETs were re-read on 2026-11-13T05:45Z and are the
 raw transcripts in `evidence/provider-after.txt` and `evidence/dns-after.txt`
@@ -359,6 +359,16 @@ a dated step, not a memory:
   `2026-12-13T03:22:13Z` — the date is 30 days from the run that made it).
 - Before the date, nothing touches it. `destroy` never deletes the repository —
   it only prints the date and the path.
+
+**Interim (R2) tenants — ODL-935, not shipped at this head.** On an interim
+tenant the repository is a bucket, `odile-t-<slug>`, and `odilectl/purge.py` has
+no `s3:` path today: the designed step empties the bucket (or the old
+`repo-<4 hex>` prefix) through the tenant's own token and records
+`bucket_emptied_at` on the row, then Savio deletes the empty bucket in the
+Cloudflare dashboard — an Object Read & Write token cannot delete a bucket. The
+30-day promise is unchanged; the bucket half is **ODL-935**'s (ADR-004 §8's exit
+row), and until it lands the dashboard's **Empty Bucket** is the interim
+tenant's only path.
 
 ### The command — `odilectl purge <slug>`
 
@@ -542,7 +552,7 @@ the panel's Blackbox Core (the Netherlands; $9.49 per 31 days, billed $2.15
 for the drill's 7 days), invoice `e0e6fbce` (§3). The live rebuild orders the
 live config's default, **plan 113 / 31 days**: `/root/.odile/config.yaml`
 carries `default_plan_id: 113` and `default_days: 31`, and the live tenant
-itself is on plan 113 (`?action=server&id=31a63bbb` → `plan_id: 113`, Blackbox
+itself is on plan 113 (`?action=server&id=0badc0de` → `plan_id: 113`, Blackbox
 Plus, Canada, $18.99 reseller / $19.99 retail per 31 days, active to
 2026-12-10; `evidence/plans.txt`). Plan 121 is also Blackbox Plus at $18.99
 per 31 days, but in the Netherlands — it is not what the live config orders.
@@ -555,6 +565,15 @@ exited 2 at the time, and **t_1520be38** registered `dns` in `cli.MODULES`).
 The command was replayed on 2026-11-13T08:03Z (dry run → applied, record
 `83269c0c…` → one A record read back → deleted → `result_count 0`;
 `evidence/dns-create.txt`, §7).
+
+**A machine that vanished is not a destroy.** Where the tenant is still live
+(`ready`, `suspended`, …) and the provider no longer lists its machine,
+`reconcile --apply` is the command that marks it `destroyed`; `provision` on
+that live row is refused **before** the order and names the remedy, because a
+live row has no edge back to `provisioning` and an order recorded there would be
+a paid machine no row names (`docs/runbooks/provision.md` §9, ADR-007 §5). Run
+it first — the finding names this same-slug rebuild — then the five steps below.
+Both paths meet at the same `claimed -> provisioning -> first_boot`.
 
 The old behaviour was the fork this card closed. On 2026-11-13, a destroyed
 slug refused in `_record` **after** the order had been placed and billed:
@@ -579,9 +598,9 @@ it. The re-provision is now:
    module entry point `python3 -m odilectl.dns` before **t_1520be38**
    registered `dns` in `cli.MODULES`; `evidence/dns-create.txt`, §7).
 3. The **signed image** pair in the panel (below). The order is
-   **boot image, then disk image**; the disk write is panel-only and the pair
-   measured 6 s and 77 s (`18:50:35Z` → `18:51:52Z`, §6 of the spike,
-   `docs/product/SPIKE-servury-reinstall.md`). Arm
+   **boot image, then disk image**; the disk write is panel-only. The pair
+   measured 6 s (the boot attach) and 77 s (the disk write, `18:50:35Z` → `18:51:52Z`,
+   §6 of the spike, `docs/product/SPIKE-servury-reinstall.md`). Arm
    the seed row before the disk write — the first boot exchanges the token the
    image bakes, and an unarmed row fails closed (below; the spike's §5 #3).
 4. First boot → first visit → the sign-in and the recovery file
@@ -653,19 +672,23 @@ an expiry after the boot. A token the ledger had no row for answered
 spike's §5 #3, `docs/runbooks/seed.md`'s `404 unknown_token` row) — **not**
 §6a's `410 used`, so §6a's un-end recipe is a no-op here: its `UPDATE … WHERE
 token_hash = …` matches nothing on an absent row. A row a previous boot spent
-is §6a's case. No seed CLI verb adopts a plaintext
-(`token issue`/`rotate`/`bind` mint a random one and print it once), so arming
+is §6a's case. No seed CLI verb adopts a plaintext (`token issue` and
+`token rotate` mint a random one and print it once; `odilectl provision` binds
+one through `seed.bind`), so arming
 is either that hash inserted by hand in the same shape or, the path the spike
 calls the one that scales, a line built around a fresh per-machine token
 (`token issue --tenant <slug> --instance <id>`, on a UKI whose `.cmdline` is
 empty — recommended in the spike's §6 and recorded as unmeasured in its §10).
 
-The fence and the one-command sequence for the three writes are
-**t_6d956aee**; until it lands, the disk write is a human step.
+The fence and the one-command sequence for the three writes landed as
+**t_6d956aee** (merged `1665cca`) in `tools/servury_panel.py --recycle`
+(`docs/runbooks/recycle.md`). The disk write is still a human panel step for
+the live tenant: that account's panel login is not on this box (§5, *The signed
+image is the panel's, not the API's*).
 
 ### The live tenant
 
-`odl-7971a8` is Savio's own agent and was **left running**: destroying it costs
+`odl-fake01` is Savio's own agent and was **left running**: destroying it costs
 nothing but rebuilding it needs a **plan 113 / 31-day** order (**$18.99**) and
 the panel's two images, which is a human action. **t_8d50106b** asks for that
 one decision (A: destroy and rebuild now, recommended for the M2 exit criterion;
@@ -680,7 +703,7 @@ tenant is §2 — complete, with the record id, the server id and the backup dat
 |---|---|---|
 | ~~a destroyed slug cannot come back~~ **resolved** | ADR-007: `destroyed -> claimed`, the named `reopen()`, and `provision` reopens before the order, points the web row and the state row at the new machine and reaches `first_boot` (so its boot record lands); the slug, the URL and the `tenants/<slug>` repository keep their names | **t_ce52bb8d** |
 | the live tenant's destroy + rebuild | $18.99 and the panel's disk image — a real-world action | **t_8d50106b** |
-| the live tenant's Webapp refuses `/login` (`400 Invalid Host header`) | measured 2026-11-13T05:33Z after a boot-time release install; that boot's release setup ended `rc=1` at `odile-access-report` and the 10:29Z retry ended `rc=4` at the recovery confirmation. It was installer/release work, not the offboard path: the agent is restarted whenever a file the gateway reads at start changed (so a rewritten `webapp.public_url` goes live), a failed access report no longer aborts that restart, and the boot half passes `--i-have-copied-it`. **Recovered on the live tenant 2026-11-15T20:12Z**: `=== rc=0`, `/login?next=%2F` 200, `POST /auth/password-login` 200 with four `__Host-` cookies, `/verify` 200. The machine's own name `odl-7971a8.odile.fyi` still answers 400 by design (`demo-public.md` §Host check) | **t_d95b8c13** fixed and recovered 2026-11-15 |
+| the live tenant's Webapp refuses `/login` (`400 Invalid Host header`) | measured 2026-11-13T05:33Z after a boot-time release install; that boot's release setup ended `rc=1` at `odile-access-report` and the 10:29Z retry ended `rc=4` at the recovery confirmation. It was installer/release work, not the offboard path: the agent is restarted whenever a file the gateway reads at start changed (so a rewritten `webapp.public_url` goes live), a failed access report no longer aborts that restart, and the boot half passes `--i-have-copied-it`. **Recovered on the live tenant 2026-11-15T20:12Z**: `=== rc=0`, `/login?next=%2F` 200, `POST /auth/password-login` 200 with four `__Host-` cookies, `/verify` 200. The machine's own name `odl-fake01.odile.fyi` still answers 400 by design (`demo-public.md` §Host check) | **t_d95b8c13** fixed and recovered 2026-11-15 |
 | the purge on the real box | the command is `odilectl purge` (**t_9d6fb595**, §4), drilled on a scratch repository and a copy of the state store; the off-site box, and how its chroot meets HQ's state store, are the purchase's | **t_8eb17a54** |
 
 ---
@@ -712,12 +735,12 @@ remains only for scripts that already call it.
 |---|---|
 | `evidence/export.txt` | **attached**: the whole export drill: the tenant as the user sees it, the placed program's two sha256s, the three printed lines, the download round trip, the removal |
 | `evidence/verify.txt` | **attached**: the `export --verify` run at the head of this branch, byte for byte — 1,970 bytes, 702 entries, the first-40 listing and the verdict; §1 quotes it whole |
-| `evidence/plans.txt` | **attached**: `?action=plans` rows 113 / 120 / 121 and `?action=server&id=31a63bbb` (`plan_id: 113`), read 2026-11-13T06:39Z — the plan facts behind §5 |
+| `evidence/plans.txt` | **attached**: `?action=plans` rows 113 / 120 / 121 and `?action=server&id=0badc0de` (`plan_id: 113`), read 2026-11-13T06:39Z — the plan facts behind §5 |
 | `evidence/provider-after.txt` | **attached**: the card's required 404 — `?action=server&id=0b3234a2` and `?action=server&id=fbf0f1f0` both HTTP 404 `{"success":false,"error":"Server not found."}` — and `?action=servers` `total 2`, read 2026-11-13T05:45Z |
-| `evidence/dns-after.txt` | **attached**: the zone's `GET dns_records?type=A&name=…` — `result_count 0` for `odl-218a1b.odile.fyi` and `odl-218c1d.odile.fyi`, `result_count 1` for the live `odl-7971a8.odile.fyi` (control), same run |
+| `evidence/dns-after.txt` | **attached**: the zone's `GET dns_records?type=A&name=…` — `result_count 0` for `odl-218a1b.odile.fyi` and `odl-218c1d.odile.fyi`, `result_count 1` for the live `odl-fake01.odile.fyi` (control), same run |
 | `evidence/dns-create.txt` | **attached**: §5's way-back DNS command replayed 2026-11-13T08:03Z with drill 1's own slug and address — dry run (exit 0), apply (exit 0, record `83269c0c…`), an independent zone read (`result_count 1`, DNS-only, TTL 120), delete (exit 0), a second read (`result_count 0`); plus the `odilectl dns …` form it replaces, exiting 2 `invalid choice: 'dns'` |
 | `evidence/program-current.txt` | **attached**: the checkout's `EXPORT_PROGRAM` printed by `--script` (`c635c432…`) and run on a fixture home; the bundle's members and `export --verify` verdict |
-| `odile-export-odl-7971a8-20261113T032107Z.tar.gz` | the bundle, 1,429,556 bytes, sha256 `478890ec…` (the user's copy) |
+| `odile-export-odl-fake01-20261113T032107Z.tar.gz` | the bundle, 1,429,556 bytes, sha256 `478890ec…` (the user's copy) |
 | `dry-run-live.txt` (03:32:59Z), `dry-run-live.json` (03:22:13Z) | §2, the plan against the live tenant — two separate runs; the text one is quoted, the JSON one carries the same seven steps with its own `keep_until` clock |
 | `provision-a.json`, `destroy-a.json` | drill 1: the order, the destroy's JSON |
 | `provision-b.json`, `destroy-b.json` | drill 2 (the re-provision): the order, the destroy's JSON |

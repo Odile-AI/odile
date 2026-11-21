@@ -7,7 +7,9 @@ inventory) and `ADR-006` (the account password), so this decision — drafted
 while `main` still ended at 003 — was renumbered before merge. Implemented on
 this branch: `odilectl/state.py`, `odilectl/provision.py`,
 `tests/test_state.py`, `tests/test_odilectl.py`, `docs/runbooks/backup.md` §9,
-`docs/runbooks/offboard.md` §5 and `docs/runbooks/provision.md` §9.
+`docs/runbooks/offboard.md` §5 and `docs/runbooks/provision.md` §9. Follow-up
+`t_11150272` added the live-row refusal (§4.5, §5): the same order/record
+promise, for a `ready`/`suspended` row whose machine is gone.
 **Answers:** ODL-218 follow-up — "which way does a tenant come back after a
 destroy, and what happens to its URL?"
 **Short answer:** an edge back. `destroyed -> claimed` is in `TRANSITIONS`, and
@@ -81,6 +83,13 @@ The path is not only offboard:
   `destroyed`; the crash victim's rebuild then hits the same wall.
 - `provision --apply` on a destroyed slug orders and bills the machine before
   it discovers the row cannot record it — a machine no row names.
+- `provision --apply` on a **live** (`ready`) row whose machine the provider no
+  longer lists has the same shape: measured 2026-11-18, it created
+  `abc12345`, and `_record_machine` recorded it on neither row — the spine kept
+  `ready` naming `srv-old-0001`, the web row stayed `active` on it, and the
+  report said `recorded: false, web_row: "skipped"`. The order was paid and the
+  first boot could never be recorded. That is the refusal of §4.5 and §5
+  (follow-up `t_11150272`).
 - The offboard drill rebuilt under a **new slug**, so the URL changed, the
   recovery file's name changed and `backup-repo.txt` named a new repository.
   The drill's own runbook records that compromise.
@@ -140,9 +149,15 @@ the fact.
    is not touched — `seed.bind` wrote the new token's hash before this write. A
    row that already names the machine is not rewritten, so a second run cannot
    move an `active` row backwards; and the write happens only once the state
-   row names the machine, so the web row never runs ahead of the spine (a live
-   `ready`/`suspended` row with no `provisioning` edge keeps the web row it
-   had). The spine then takes `provisioning ->
+   row names the machine, so the web row never runs ahead of the spine. A
+   **live** row (`ready`, `suspended`, `waiting_for_owner`, or one still at
+   `provisioning`/`first_boot`/`first_visit`) has no edge back to
+   `provisioning`, so it never takes a new machine: `provision` orders only when
+   the row names no machine, and a live row whose machine the provider no longer
+   lists is refused *before* `provider.create`, with a message naming
+   `odilectl reconcile <slug> --apply` (`_refuse_an_unrecordable_order`; §5).
+   A reused provider row that is the row's own machine is still recorded, with
+   no order. The spine then takes `provisioning ->
    first_boot` (`await_boot`, the edge the claim path already takes after an
    order), which is the one state `record_boot` accepts a first boot from.
 6. **`reconcile --apply`** still marks a missing machine `destroyed`; its
@@ -165,6 +180,20 @@ the fact.
   `provider.create` fails, the row is `claimed` and the next run retries; if
   `_record` fails after an order, the existing `provider.list` reuse path finds
   the machine by hostname and records it rather than ordering a second one.
+- **A live row whose machine is gone.** Before the follow-up, `provision` on a
+  `ready` row ordered first and recorded nothing: `_record_machine` skipped the
+  web row because the new id was not the row's, the spine kept the dead
+  `server_id`, and the report said `recorded: false, web_row: "skipped"` — one
+  paid machine no row named (§2, measured 2026-11-18). The run is now refused
+  before `provider.create`; the message names the two-step path (`reconcile
+  --apply` marks the row `destroyed` and its finding names this rebuild;
+  `provision` reopens it and reuses or orders), and the record step has no
+  silent skip left: a row that does not name the machine after an order is an
+  error. The same rule covers the reverse drift — a live row naming `srv-old`
+  while the provider lists `srv-new` for the slug — because that run would have
+  "reused" `srv-new` and recorded it on neither row. `reconcile` reports the
+  pair (`missing_vm` and `unknown_vm`); after the reopen, `provision` finds
+  `srv-new` by hostname, records it, and orders nothing.
 - **Two machines, one name.** `provision` refuses two provider rows with the
   same hostname; a reused active/pending row is recorded, not re-ordered.
 - **Double charge on a retry.** `provider.list` first; `create` only when the
@@ -206,13 +235,16 @@ the fact.
 **Two-way in code.** Removing the tuple and the named move restores the old
 terminality in one commit; the data added by a reopen is an ordinary
 `destroyed -> claimed` event pair that the existing schema already accepts (no
-migration, `STATE_SCHEMA_VERSION` stays 3).
+migration, `STATE_SCHEMA_VERSION` stays 3). The follow-up's live-row guard is
+the smaller door: delete `_refuse_an_unrecordable_order` and the old
+order-then-skip shape returns, with the paid orphan it brings. It changes no
+schema, adds no edge and writes no data.
 
 **One-way in product identity.** "The slug is yours for the life of the
 tenant" is already published in `docs/CLAIMS.md` §1. This ADR makes the code
 honour it; choosing the other way would have required weakening that sentence.
 The point after which the decision stops being cheap is the **first live
-same-slug rebuild** (`t_8d50106b`'s destroy-and-rebuild of `odl-7971a8`):
+same-slug rebuild** (`t_8d50106b`'s destroy-and-rebuild of `odl-fake01`):
 after that, the tenant's history contains the edge and a second rebuild needs
 it back.
 
@@ -271,3 +303,22 @@ method boundary: a direct `claim()` on a destroyed row raises
 row stays `destroyed`.
 
 The new edge is not decorative: remove it and both schemas' tests go red.
+
+**The live-row refusal (follow-up `t_11150272`).**
+`test_provision_refuses_a_live_row_whose_machine_is_gone` is the card's
+fixture — a `ready` tenant naming `srv-old-0001`, an empty provider list, both
+schemas — and asserts exit 4, an error naming `odilectl reconcile <slug>
+--apply`, exactly one provider call (`servers`), and both rows and the event log
+unchanged. `test_provision_refuses_a_live_row_that_names_another_machine` pins
+the reverse drift; `test_reconcile_then_provision_records_a_live_rows_replacement`
+runs the remedy end-to-end (`reconcile --apply` marks the row `destroyed`, then
+the reopen, the order, `first_boot` and a web row at `state='provisioned'`
+naming `abc12345`); `test_provision_dry_run_lists_the_guard_before_create` pins
+the plan's `state.guard` between the list and the paid call. Against `main`'s
+`provision.py` the two refusal tests fail (`0 != 4`: the old run ordered and
+exited 0) and the dry-run test errors on the missing `state.guard`; the remedy
+test passes on both, because it pins the reopen path, not the guard. The
+hermetic `--apply` transcript (recorded transport, no provider call, no money)
+is in the card's evidence: `provider calls: ['servers']`, the spine and the web
+row still naming `srv-old-0001`, and the event log at
+`invited -> claimed -> provisioning -> first_boot -> first_visit -> ready`.

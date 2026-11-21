@@ -133,8 +133,11 @@ and place, now in §1a —
 its proof (ODL-242, `t_8ec06788`) has not run, and the allowance's return to the
 two pages waits on Savio's re-cut of the machine-and-price details. Do not quote
 an allowance until it returns; the installed help (`skills/odile-help/SKILL.md`)
-still carries it, with the v5 price line, and is re-cut with Savio's number —
-that cut is an installer re-embed and a re-sign.
+carried it, with the v5 price line, and its re-cut landed as `t_080f8a83`
+(`a20566d`, merged at `6f4936b` — an installer re-embed and a re-sign), so its
+bill answer now states alpha.0's no price. The served installer
+(`odile.fyi/odile_install.py`) is still the pre-re-cut build until `t_a5cd44ba`
+deploys from a clean `main`.
 
 Do not promise a refund, a credit or a discount. Refunds are Savio's; forward
 the message and say the target is an answer within 24 hours.

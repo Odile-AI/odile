@@ -38,6 +38,7 @@ if str(ROOT) not in sys.path:
 
 from odilectl import health, state  # noqa: E402
 from status import status as status_page  # noqa: E402
+from tests.test_web_pages import REGION, focus_order, main_id  # noqa: E402
 
 # 08:00 UTC on 8 November 2026.  A fixed clock makes every assertion
 # explainable: the window ends here and starts 30 days earlier.
@@ -544,6 +545,45 @@ class StatusTestCase(unittest.TestCase):
         self.assertNotIn("<script", body.lower())
         self.assertNotIn("javascript:", body.lower())
         self.assertNotRegex(body.lower(), r"(?:src|href)=[\"']https?://")
+
+    def test_the_page_opens_with_the_skip_link_and_keeps_its_landmarks(self) -> None:
+        """The rendered page, not the template: the first Tab stop is the link.
+
+        The page names three regions (`uptime`, `method`, `incidents`), so the
+        Keyboard row applies. The rule's declarations are read one by one — the
+        sheet's 2 px `--ink` at 3 px, revealed on a keyboard focus only — and
+        the phone inset is read inside the 560 px block it belongs to.
+        """
+        body, _ = self.page()
+        target = main_id(body)
+        self.assertIsNotNone(target, "the page's <main> carries no id")
+        stops = focus_order(body)
+        self.assertTrue(stops, "the page has no focusable element")
+        self.assertEqual(stops[0]["tag"], "a",
+                         "the first tab stop is <%s>, not the skip link" % stops[0]["tag"])
+        self.assertEqual(stops[0]["attributes"].get("href"), "#" + str(target),
+                         "the skip link points at %r, not the page's main"
+                         % stops[0]["attributes"].get("href"))
+        self.assertEqual(len(re.findall(r"<h1\b", body)), 1)
+        self.assertEqual(len(re.findall(r"<main\b", body)), 1)
+        self.assertEqual(len(re.findall(r"<header\b", body)), 1)
+        self.assertEqual(REGION.findall(body), ["uptime", "method", "incidents"])
+
+        rules = self.sheet()
+        self.assertIn(".skip{position:absolute;left:-9999px;top:0}",
+                      PAGE_TEMPLATE.read_text(encoding="utf-8"),
+                      "the skip link is not the sheet's off-screen element")
+        declarations = _rule(rules, ".skip:focus-visible")
+        self.assertEqual(declarations.get("outline"), "2px solid var(--ink)",
+                         "the focus ring is not the sheet's 2 px --ink")
+        self.assertEqual(declarations.get("outline-offset"), "3px",
+                         "the focus ring is not at the sheet's 3 px offset")
+        self.assertEqual(declarations.get("min-height"), "44px",
+                         "the link is under the target floor")
+        self.assertEqual(_rule(rules, ".skip:focus-visible", media=PHONE).get("left"),
+                         "18px", "the link does not follow main's 18 px inset at 390")
+        self.assertNotIn(".skip:focus{", PAGE_TEMPLATE.read_text(encoding="utf-8"),
+                         "the link shows on a mouse focus too; the sheet says :focus-visible")
 
     # --------------------------------------------------------- the stylesheet
 

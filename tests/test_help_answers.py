@@ -20,10 +20,15 @@ the round trip and the transcript are in `docs/evidence/odl-238/`.
 """
 
 import re
+import sys
 import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from tests.test_web_pages import focus_order, main_id  # noqa: E402
 FAQ = ROOT / "docs" / "FAQ.md"
 DECK = ROOT / "docs" / "CLAIMS.md"
 DECIDED = ROOT / "docs" / "product" / "CLAIMS-RECUT-STRICT.md"
@@ -252,17 +257,24 @@ class SupportAnswers(unittest.TestCase):
         # held allowance sentence are not repeated while the alpha is free. The
         # answer still says who holds the billing record and how a person reads
         # the question, so a "why was I charged?" mail is answered, not bounced.
+        # The installed help is a voice surface too (t_080f8a83): the skill the
+        # tenant reads at `/odile-help` carries the same answer, and its bytes
+        # travel inside the signed installer, so a stale line here reaches the
+        # user in chat.
         faq = FAQ.read_text(encoding="utf-8")
         reply = quoted(section(faq, 4))
         email = EMAIL.read_text(encoding="utf-8")
-        self.assertIn("has no price", reply)
-        self.assertIn("has no price", email)
+        skill = SKILL.read_text(encoding="utf-8")
         for text, label in ((reply, "docs/FAQ.md moment 4"),
-                            (email, "templates/emails/support.md")):
+                            (email, "templates/emails/support.md"),
+                            (skill, "skills/odile-help/SKILL.md")):
+            self.assertIn("has no price", text, label)
             for gone in ("$49", "$12", "founding price", "month-to-month"):
                 self.assertNotIn(gone, text, f"{label} still quotes {gone!r}")
             self.assertIn("Stripe holds the card", text, label)
             self.assertIn("within 24 hours", text, label)
+        # The refusal to invent money terms stays under the moment.
+        self.assertIn("Never promise a refund", skill)
 
     def test_the_five_moments_are_all_answered(self):
         text = FAQ.read_text(encoding="utf-8")
@@ -287,6 +299,24 @@ class SupportAnswers(unittest.TestCase):
         # collides with a core command is skipped by agent/skill_commands.py.
         skill = SKILL.read_text(encoding="utf-8")
         self.assertNotIn("name: help\n", skill)
+
+    def test_the_page_opens_with_the_skip_link_to_its_main(self):
+        """BRAND.md's Keyboard row, read from the order, not from a class.
+
+        The page names seven regions, so a skip link is the first focusable
+        element; its href is the page's own main. test_web_pages reads the
+        rule's declarations and pins the landmark set.
+        """
+        document = PAGE.read_text(encoding="utf-8")
+        target = main_id(document)
+        self.assertIsNotNone(target, "the page's <main> carries no id")
+        stops = focus_order(document)
+        self.assertTrue(stops, "the page has no focusable element")
+        self.assertEqual(stops[0]["tag"], "a",
+                         "the first tab stop is <%s>, not the skip link" % stops[0]["tag"])
+        self.assertEqual(stops[0]["attributes"].get("href"), "#" + str(target),
+                         "the skip link points at %r, not the page's main"
+                         % stops[0]["attributes"].get("href"))
 
 
 if __name__ == "__main__":

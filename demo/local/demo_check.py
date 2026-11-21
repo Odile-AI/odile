@@ -46,6 +46,14 @@ HEARTBEAT_BLOCK_RE = re.compile(r'<pre class="hb" id="heartbeat">(.*?)</pre>', r
 STARTUP_TIMEOUT = 15
 READY_TIMEOUT = 10
 HEARTBEAT_DEADLINE = 65.0
+# How long `stop()` lets the child act on SIGINT. The child's own teardown is
+# bounded: it polls serve_forever every 0.2 s and joins the heartbeat thread
+# with a 2 s timeout. A stop that runs longer means the child never acted on the
+# signal, not that the host was busy, so the window is kept short: the module
+# starts and stops a server per test, and a window that silently expired cost
+# the suite that window once per test (10 s x 19 = +190 s, measured 2026-11-20).
+STOP_TIMEOUT = 5.0
+KILL_TIMEOUT = 5.0
 CHECKS = []
 
 
@@ -68,6 +76,7 @@ class DemoProcess:
         env.pop(PASSWORD_ENV, None)
         env[STATE_ENV] = str(state_dir)
         self.lines: list[str] = []
+        self.stops: list[float] = []
         self._done = threading.Event()
         command = [
             sys.executable,
@@ -145,13 +154,28 @@ class DemoProcess:
         return "\n".join(self.lines)
 
     def stop(self) -> tuple[int, str]:
+        """Send SIGINT and return (exit code, everything the child printed).
+
+        How long each call waited for the child to exit is kept in
+        `self.stops`, so a caller can tell a clean stop (measured under 0.4 s)
+        from a child that ignored the signal until the window closed. A kill is
+        announced, never silent: the -9 this window used to hide is what the
+        full-suite gate failed on.
+        """
+        started = time.monotonic()
         if self.proc.poll() is None:
             self.proc.send_signal(signal.SIGINT)
         try:
-            code = self.proc.wait(timeout=10)
+            code = self.proc.wait(timeout=STOP_TIMEOUT)
         except subprocess.TimeoutExpired:
+            print(
+                f"demo-check: the server did not exit on SIGINT within "
+                f"{STOP_TIMEOUT:g}s; killing it",
+                file=sys.stderr,
+            )
             self.proc.kill()
-            code = self.proc.wait(timeout=5)
+            code = self.proc.wait(timeout=KILL_TIMEOUT)
+        self.stops.append(time.monotonic() - started)
         self._done.wait(timeout=5)
         if self.proc.stdout is not None:
             self.proc.stdout.close()
@@ -195,6 +219,7 @@ def heartbeat_lines(page: str) -> list[str]:
 
 def run() -> int:
     started = time.monotonic()
+    durations: list[float] = []
     print("demo-check: local demo, headless")
     with tempfile.TemporaryDirectory(prefix="odile-demo-check-") as tmp:
         state = Path(tmp) / "state"
@@ -309,7 +334,16 @@ def run() -> int:
                 restarted.stop()
             elif restarted is None and server.proc.poll() is None:
                 server.stop()
+            durations = list(server.stops)
+            if restarted is not None:
+                durations += restarted.stops
     elapsed = time.monotonic() - started
+    # One line a stranger can compare against a green run: a clean stop is a
+    # fraction of a second, a window that expired is the whole STOP_TIMEOUT.
+    print(
+        "demo-check: stop() took "
+        + (", ".join(f"{value:.2f}s" for value in durations) or "no stop")
+    )
     print(f"demo-check: PASS {len(CHECKS)} checks in {elapsed:.1f}s")
     return 0
 

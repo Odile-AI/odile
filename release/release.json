@@ -1,27 +1,27 @@
 {
   "artifacts": {
     "installer": {
-      "sha256": "7cf9e2f9675929925a3d0d94c700922e92c783351c41a8dbf05327d039e2ee46",
-      "size": 1508169,
+      "sha256": "07882010065f76f84a517aee9777ccadea1ead455ce162006ef2291388651967",
+      "size": 1516819,
       "url": "odile_install.py"
     },
     "skills": {
-      "sha256": "9d82653f88504fd9391fffaeb68b59d0e943651336efb7ccc1026dacba2730c8",
-      "size": 851945,
+      "sha256": "ccff7327b9f55ec2b21e4df3e3ebecd0d4cd2b894784d8655944b7b8bc4b12f7",
+      "size": 851913,
       "url": "skills.tar.gz"
     }
   },
   "boot": {
     "kernel": "6.12.115+deb13.1-amd64"
   },
-  "generated_at": "2026-11-20T07:30:00Z",
+  "generated_at": "2026-11-21T06:33:14Z",
   "manifest": {
-    "sha256": "e9026d7f265ad1c292e10317d44ea543f23cff4fdbf1c6652ec5123df5656741",
+    "sha256": "70a8025c07a4c56b2c924fc0dd6774ed0ec5cf532f0692688493e13c80225ad9",
     "signature_url": "manifest.json.sig",
     "url": "manifest.json"
   },
-  "notes": "t_bf6092d7 (the installer's smoke chat tested a gateway that started before the key file existed), over 2026.11.19-5. Measured on the demo tenant's first boot: the image enables odile-agent.service at boot, the release installer writes /etc/odile/key.env later in the same boot, and the smoke's chat turn answered \"Provider said: HTTP 401: Invalid or expired API key\" for a key that answered 200 from HQ; `systemctl restart odile-agent` fixed it. The installer now treats /etc/odile/key.env as a gateway start input (gateway_start_inputs), restarts odile-agent when the file moved, prints which input moved, and asks the running process itself \u2014 /proc/<MainPID>/environ read from `systemctl show -p MainPID` \u2014 so a pass that finds every file `same` still restarts a gateway that never read the key. A unit systemd reports as `activating` is restarted rather than started, since `systemctl start` is a no-op on the process already coming up. tests/test_installer_copy.py pins the four states. The embedded skills, the audit row and the tenant pages are unchanged from 2026.11.19-5.",
+  "notes": "t_bf6092d7 (the installer's smoke chat tested a gateway that started before the key file existed), over 2026.11.20-4. Measured on the demo tenant's first boot: the image enables odile-agent.service at boot, the release installer writes /etc/odile/key.env later in the same boot, and the smoke's chat turn answered \"Provider said: HTTP 401: Invalid or expired API key\" for a key that answered 200 from HQ; `systemctl restart odile-agent` fixed it. The installer now treats /etc/odile/key.env as a gateway start input (gateway_start_inputs), restarts odile-agent when the file moved, prints which input moved, and asks the running process itself \u2014 /proc/<MainPID>/environ read from `systemctl show -p MainPID` \u2014 so a pass that finds every file `same` still restarts a gateway that never read the key. A unit systemd reports as `activating` is restarted rather than started, since `systemctl start` is a no-op on the process already coming up. tests/test_installer_copy.py pins the four states. The embedded skills, the audit row, the backup row and the tenant pages are unchanged from 2026.11.20-4; only installer_sha256, manifest.sha256, generated_at and this note move.",
   "product": "odile",
-  "release": "2026.11.20-1",
+  "release": "2026.11.20-5",
   "schema": 1
 }

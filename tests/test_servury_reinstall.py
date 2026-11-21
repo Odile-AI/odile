@@ -22,9 +22,11 @@ from __future__ import annotations
 
 import contextlib
 import io
+import json
 import sys
 import tempfile
 import unittest
+import urllib.error
 from pathlib import Path
 from unittest import mock
 
@@ -586,6 +588,13 @@ class ImagePairTests(unittest.TestCase):
 class RecycleTests(FencedCase):
     """The composite: console, reinstall, boot image, disk image — in that order."""
 
+    def setUp(self) -> None:
+        super().setUp()
+        # The boot-image read-back after the disk write needs the account's API
+        # key; a fixture keeps the tests off /root/.odile.
+        self.api_key = Path(self.dir.name) / "servury_reseller_key_lkbxu6i9"
+        self.api_key.write_text("k" * 64 + "\n", encoding="utf-8")
+
     def recycle_argv(self, *extra: str) -> list[str]:
         line = Path(self.dir.name) / "cmdline.txt"
         line.write_text("root=/dev/mapper/root_crypt ro console=ttyS0,115200", encoding="utf-8")
@@ -596,6 +605,7 @@ class RecycleTests(FencedCase):
             "--boot-url", BOOT_URL, "--boot-sha256", BOOT_SHA,
             "--cmdline-file", str(line),
             "--disk-url", DISK_URL, "--disk-sha256", DISK_SHA, "--format", "raw",
+            "--key-file", str(self.api_key),
             *extra,
         ]
 
@@ -615,6 +625,7 @@ class RecycleTests(FencedCase):
                 mock.patch.object(panel, "write_reinstall", step("reinstall")), \
                 mock.patch.object(panel, "write_boot_image", step("boot")), \
                 mock.patch.object(panel, "write_disk", step("disk")), \
+                mock.patch.object(panel, "ensure_boot_image", step("readback")), \
                 contextlib.redirect_stdout(out):
             code = panel.main(argv)
         return code, calls, out.getvalue()
@@ -625,12 +636,14 @@ class RecycleTests(FencedCase):
         self.assertEqual(code, 0)
         self.assertEqual(calls, ["console", "reinstall", "boot", "disk"])
         self.assertIn("dry run", out)
+        self.assertIn("would read ?action=boot-image back", out)
 
     def test_the_apply_order_is_console_reinstall_boot_disk(self) -> None:
+        # The read-back is the fifth step, after the disk write and not before it.
         code, calls, _ = self.run_recycle(self.recycle_argv("--apply", "--confirm"))
 
         self.assertEqual(code, 0)
-        self.assertEqual(calls, ["console", "reinstall", "boot", "disk"])
+        self.assertEqual(calls, ["console", "reinstall", "boot", "disk", "readback"])
 
     def test_a_widened_allow_list_refuses_before_the_console_write(self) -> None:
         # Round-1 review: the console arm was the composite's first write and
@@ -696,6 +709,7 @@ class RecycleTests(FencedCase):
         with mock.patch.object(panel, "console", lambda *a, **k: 0), \
                 mock.patch.object(panel, "write_reinstall", lambda *a, **k: 0), \
                 mock.patch.object(panel, "write_disk", lambda *a, **k: 0), \
+                mock.patch.object(panel, "ensure_boot_image", lambda *a, **k: 0), \
                 mock.patch.object(panel, "write_boot_image", fake_boot):
             code = panel.main(self.recycle_argv("--apply", "--confirm"))
 
@@ -703,6 +717,342 @@ class RecycleTests(FencedCase):
         self.assertEqual(seen["cmdline"], "root=/dev/mapper/root_crypt ro console=ttyS0,115200")
         self.assertEqual(seen["sha"], BOOT_SHA)
         self.assertTrue(seen["apply"])
+
+    def test_the_line_is_refused_from_argv(self) -> None:
+        # The line carries the per-machine seed token, and argv is world-readable
+        # in `ps` (the tool's own `ssh_keys_from` docstring). `--recycle` takes
+        # it from --cmdline-file only, and the refusal lands before the fence,
+        # the console arm or any POST.
+        argv = self.recycle_argv("--apply", "--confirm")
+        index = argv.index("--cmdline-file")
+        del argv[index:index + 2]
+        argv += ["--cmdline", "SECRET-ON-ARGV-LINE"]
+        posts: list = []
+        code, _, err = self.run_tool(argv, posts=posts)
+
+        self.assertEqual(code, 2)
+        self.assertIn("--cmdline-file", err)
+        self.assertIn("argv is world-readable", err)
+        self.assertEqual(posts, [])
+        self.assertEqual(self.lines(), [], "a refused line is not an attempt")
+
+    def test_both_line_flags_are_still_refused(self) -> None:
+        code, _, err = self.run_tool(self.recycle_argv("--cmdline", "x"))
+
+        self.assertEqual(code, 2)
+        self.assertIn("not both", err)
+
+    def test_an_empty_key_file_refuses_before_the_console_write(self) -> None:
+        # The read-back runs after the disk write, so an empty key discovered
+        # there would spend the erase and the reinstall first. The pre-flight
+        # reads the file, not only its name.
+        self.api_key.write_text("\n", encoding="utf-8")
+        posts: list = []
+        code, _, err = self.run_tool(self.recycle_argv("--apply", "--confirm"), posts=posts)
+
+        self.assertEqual(code, 2)
+        self.assertIn("empty", err)
+        self.assertIn("read-back", err)
+        self.assertEqual(posts, [])
+        self.assertEqual(self.lines(), [], "a refused key is not an attempt")
+
+
+# The line the recycle passes to the attach; the same string the file holds.
+CMDLINE = "root=/dev/mapper/root_crypt ro console=ttyS0,115200"
+# `GET ?action=boot-image&id=…` answered this after the disk write completed on
+# 2026-11-20T10:36:14Z (t_556631d6's evidence, recycle.txt): the field the
+# attach had just set was gone and the machine had started the vendor release.
+LOST = {"next_start": "release", "release": "2026.11.2", "image": None,
+        "download": {"state": "none"}}
+
+
+def boot_state(url: str = BOOT_URL, sha256: str = BOOT_SHA, cmdline: str = CMDLINE,
+               next_start: str = "custom") -> dict:
+    """A `boot_image` payload shaped like the live GET (measured 2026-11-20)."""
+    image = None if next_start != "custom" else {
+        "url": url, "sha256": sha256, "size": 120480216, "type": "pe",
+        "initrd_url": None, "initrd_sha256": None, "initrd_size": None,
+        "cmdline": cmdline,
+    }
+    return {"next_start": next_start, "release": "2026.11.2", "image": image,
+            "download": {"state": "ready" if image else "none"}}
+
+
+class _FakeHttpResponse:
+    def __init__(self, body: str) -> None:
+        self._body = body.encode("utf-8")
+
+    def read(self) -> bytes:
+        return self._body
+
+    def __enter__(self) -> "_FakeHttpResponse":
+        return self
+
+    def __exit__(self, *exc) -> bool:  # noqa: ANN002 - context manager protocol
+        return False
+
+
+class BootImageStateTests(unittest.TestCase):
+    """The read-back's two halves: the vendor's completion fact and the pair.
+
+    The disk write returns before the image is written, so a read straight after
+    the POST is a pre-write read that says nothing. The panel's own `Written`
+    stamp in the Disk section is the completion record (the SPIKE measured it at
+    18:51:52Z for a write submitted at 18:50:35Z), and `?action=boot-image` is
+    the state that says what the next start is.
+    """
+
+    def setUp(self) -> None:
+        self.dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.dir.cleanup)
+        self.key = Path(self.dir.name) / "servury_reseller_key_lkbxu6i9"
+        self.key.write_text("k" * 64 + "\n", encoding="utf-8")
+
+    def test_the_vendors_written_stamp_is_read(self) -> None:
+        self.assertEqual(panel.disk_written_at(ADMIN_HTML), "2026-11-19T13:18:08Z")
+
+    def test_a_page_without_a_disk_stamp_is_empty(self) -> None:
+        self.assertEqual(panel.disk_written_at(ADMIN_EMPTY), "")
+        self.assertEqual(panel.disk_written_at(""), "")
+
+    def test_a_matching_state_is_no_reason_to_write(self) -> None:
+        self.assertIsNone(panel.boot_image_matches(boot_state(), BOOT_URL, BOOT_SHA, CMDLINE))
+
+    def test_the_release_is_a_reason(self) -> None:
+        why = panel.boot_image_matches(LOST, BOOT_URL, BOOT_SHA, CMDLINE)
+
+        self.assertIsNotNone(why)
+        self.assertIn("release", why)
+
+    def test_another_sha_is_a_reason(self) -> None:
+        why = panel.boot_image_matches(boot_state(), BOOT_URL, "ab" * 32, CMDLINE)
+
+        self.assertIsNotNone(why)
+        self.assertIn("abababab", why)
+
+    def test_another_line_is_a_reason(self) -> None:
+        why = panel.boot_image_matches(boot_state(cmdline="console=ttyS0"), BOOT_URL,
+                                       BOOT_SHA, CMDLINE)
+
+        self.assertIsNotNone(why)
+        self.assertIn("line", why)
+
+    def test_a_null_image_is_a_reason_not_a_crash(self) -> None:
+        state = {"next_start": "custom", "image": None}
+
+        self.assertIsNotNone(panel.boot_image_matches(state, BOOT_URL, BOOT_SHA, CMDLINE))
+        self.assertIsNotNone(panel.boot_image_matches({}, BOOT_URL, BOOT_SHA, CMDLINE))
+
+    def test_the_api_payload_is_read_with_the_key_from_the_file(self) -> None:
+        seen: dict = {}
+
+        def fake_urlopen(request, timeout=None):  # noqa: ARG001 - the tool's timeout
+            seen["url"] = request.full_url
+            seen["headers"] = {name.lower(): value for name, value in request.header_items()}
+            return _FakeHttpResponse(
+                '{"success":true,"data":{"boot_image":' + json.dumps(LOST) + "}}")
+
+        with mock.patch("urllib.request.urlopen", fake_urlopen):
+            state = panel.read_boot_image(self.key, SERVER)
+
+        self.assertEqual(state, LOST)
+        self.assertIn("action=boot-image", seen["url"])
+        self.assertIn("id=" + SERVER, seen["url"])
+        self.assertEqual(seen["headers"]["x-reseller-key"], "k" * 64)
+
+    def test_the_api_s_own_sentence_is_the_error(self) -> None:
+        def fake_urlopen(request, timeout=None):  # noqa: ARG001
+            return _FakeHttpResponse('{"success":false,"error":"Server not found"}')
+
+        with mock.patch("urllib.request.urlopen", fake_urlopen):
+            with self.assertRaises(RuntimeError) as caught:
+                panel.read_boot_image(self.key, SERVER)
+
+        self.assertIn("Server not found", str(caught.exception))
+
+    def test_a_page_instead_of_json_is_a_sentence(self) -> None:
+        # An expired session serves the login page, not the API's JSON. That is
+        # a ValueError from json.load; the caller must read a sentence, not a
+        # traceback, because this read happens after the disk write.
+        def fake_urlopen(request, timeout=None):  # noqa: ARG001
+            return _FakeHttpResponse("<html>sign in</html>")
+
+        with mock.patch("urllib.request.urlopen", fake_urlopen):
+            with self.assertRaises(RuntimeError) as caught:
+                panel.read_boot_image(self.key, SERVER)
+
+        self.assertIn("no JSON", str(caught.exception))
+
+
+class ReadBackTests(FencedCase):
+    """The composite does not trust its own attach print.
+
+    Measured twice on 2026-11-20 (t_556631d6, evidence on t_6d956aee): the
+    attach printed success at 10:34:30Z, the disk write completed at 10:36:14Z,
+    and `?action=boot-image` then said `next_start: release`, `image: null` —
+    the machine was sitting at the vendor release's unlock prompt. The composite
+    therefore waits for the write's own `Written` stamp, reads the state back,
+    and re-attaches the same URL, SHA-256 and line when the field is gone.
+    """
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.key = Path(self.dir.name) / "servury_reseller_key_lkbxu6i9"
+        self.key.write_text("k" * 64 + "\n", encoding="utf-8")
+        self.line_file = Path(self.dir.name) / "cmdline.txt"
+        self.line_file.write_text(CMDLINE + "\n", encoding="utf-8")
+
+    def recycle_argv(self, *extra: str) -> list[str]:
+        return [
+            "--recycle", "--server", SERVER, "--os", "debian13",
+            "--want-snp", "--want-fde", "--want-measured",
+            "--ssh-key-file", str(self.key_file),
+            "--boot-url", BOOT_URL, "--boot-sha256", BOOT_SHA,
+            "--cmdline-file", str(self.line_file),
+            "--disk-url", DISK_URL, "--disk-sha256", DISK_SHA, "--format", "raw",
+            "--key-file", str(self.key),
+            *extra,
+        ]
+
+    def run_readback(self, argv: list[str], states: list[dict], *,
+                     written: str | None = "2026-11-20T10:36:14Z"
+                     ) -> tuple[int, list, str, str]:
+        calls: list[tuple] = []
+        queue = list(states)
+
+        def step(name: str):
+            def fake(*args, **kwargs):
+                calls.append((name, args, kwargs))
+                return 0
+            return fake
+
+        def fake_written(opener, server, since, **kwargs):  # noqa: ARG001
+            calls.append(("wait", (server, since), kwargs))
+            return written
+
+        def fake_read(key_file, server, **kwargs):
+            calls.append(("read", (key_file, server), kwargs))
+            return queue.pop(0)
+
+        out, err = io.StringIO(), io.StringIO()
+        with mock.patch.object(panel, "console", step("console")), \
+                mock.patch.object(panel, "write_reinstall", step("reinstall")), \
+                mock.patch.object(panel, "write_boot_image", step("boot")), \
+                mock.patch.object(panel, "write_disk", step("disk")), \
+                mock.patch.object(panel, "power", step("power")), \
+                mock.patch.object(panel, "wait_disk_written", fake_written), \
+                mock.patch.object(panel, "read_boot_image", fake_read), \
+                contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            code = panel.main(argv)
+        return code, calls, out.getvalue(), err.getvalue()
+
+    @staticmethod
+    def names(calls: list[tuple]) -> list[str]:
+        return [name for name, *_ in calls]
+
+    def test_the_pair_present_after_the_write_is_not_rewritten(self) -> None:
+        code, calls, out, err = self.run_readback(
+            self.recycle_argv("--apply", "--confirm"), [boot_state()])
+
+        self.assertEqual(code, 0, err)
+        self.assertEqual(self.names(calls),
+                         ["console", "reinstall", "boot", "disk", "wait", "read"])
+        self.assertIn("no re-attach", out)
+
+    def test_a_lost_field_is_reattached_once_with_the_same_pair_and_line(self) -> None:
+        code, calls, out, err = self.run_readback(
+            self.recycle_argv("--apply", "--confirm"), [LOST, boot_state()])
+
+        self.assertEqual(code, 0, err)
+        self.assertEqual(self.names(calls),
+                         ["console", "reinstall", "boot", "disk", "wait", "read",
+                          "boot", "read", "power"])
+        reattach = calls[6]
+        self.assertEqual(reattach[1][1:5], (SERVER, BOOT_URL, BOOT_SHA, CMDLINE),
+                         "the re-attach carries the same pair and the line from the file")
+        self.assertTrue(reattach[2].get("apply"))
+        self.assertEqual(calls[8][1][:3], (mock.ANY, SERVER, "restart"),
+                         "a lost field costs a plain restart, not a second disk write")
+        self.assertIn("cleared the boot-image field", out)
+
+    def test_a_reattach_that_does_not_stick_fails(self) -> None:
+        code, calls, out, err = self.run_readback(
+            self.recycle_argv("--apply", "--confirm"), [LOST, LOST])
+
+        self.assertEqual(code, 1)
+        self.assertIn("did not stick", err)
+        self.assertNotIn("power", self.names(calls),
+                         "a field that is still gone is not a machine to restart")
+        self.assertNotIn("recycle complete", out)
+
+    def test_the_disk_write_completion_is_waited_for(self) -> None:
+        # The POST returns before the image is written; a read straight after it
+        # is a pre-write read. No `Written` stamp in `--wait` seconds fails the
+        # run rather than calling a pre-write state "survived".
+        code, calls, out, err = self.run_readback(
+            self.recycle_argv("--apply", "--confirm"), [boot_state()], written=None)
+
+        self.assertEqual(code, 1)
+        self.assertIn("Written", err)
+        self.assertNotIn("read", self.names(calls))
+
+    def test_the_readback_runs_after_the_disk_write_and_before_the_last_line(self) -> None:
+        code, calls, out, _ = self.run_readback(
+            self.recycle_argv("--apply", "--confirm"), [boot_state()])
+
+        self.assertEqual(code, 0)
+        self.assertEqual(self.names(calls)[-3:], ["disk", "wait", "read"])
+        self.assertIn("recycle complete", out.strip().splitlines()[-1])
+
+    def test_a_missing_key_file_refuses_before_the_console_write(self) -> None:
+        # The read-back is part of the composite, so a run that cannot read it
+        # must refuse before it erases anything — not after the disk write.
+        argv = self.recycle_argv("--apply", "--confirm")
+        argv[argv.index("--key-file") + 1] = str(Path(self.dir.name) / "absent")
+        code, calls, out, err = self.run_readback(argv, [])
+
+        self.assertEqual(code, 2)
+        self.assertIn("read-back", err)
+        self.assertEqual(calls, [])
+        self.assertEqual(self.lines(), [], "a refused run posts nothing and logs nothing")
+
+    def test_a_dry_run_plans_the_readback_and_needs_no_key(self) -> None:
+        argv = self.recycle_argv()
+        argv[argv.index("--key-file") + 1] = str(Path(self.dir.name) / "absent")
+        code, calls, out, err = self.run_readback(argv, [])
+
+        self.assertEqual(code, 0, err)
+        self.assertEqual(self.names(calls), ["console", "reinstall", "boot", "disk"])
+        self.assertIn("read ?action=boot-image back", out)
+
+    def test_a_read_error_after_the_write_is_a_sentence_not_a_traceback(self) -> None:
+        # The read-back runs after the disk write, so a panel/API hiccup must
+        # end the run with a sentence and exit 1, not a JSONDecodeError.
+        err = io.StringIO()
+        with mock.patch.object(panel, "wait_disk_written",
+                               return_value="2026-11-20T10:36:14Z"), \
+                mock.patch.object(panel, "read_boot_image",
+                                  side_effect=json.JSONDecodeError("Expecting value",
+                                                                   "<html>", 0)), \
+                contextlib.redirect_stdout(io.StringIO()), \
+                contextlib.redirect_stderr(err):
+            code = panel.ensure_boot_image(None, SERVER, BOOT_URL, BOOT_SHA, CMDLINE,
+                                           self.key, wait=1, interval=0)
+
+        self.assertEqual(code, 1)
+        self.assertIn("read-back failed", err.getvalue())
+
+    def test_a_page_error_while_waiting_is_a_sentence_not_a_traceback(self) -> None:
+        err = io.StringIO()
+        with mock.patch.object(panel, "wait_disk_written",
+                               side_effect=urllib.error.URLError("timed out")), \
+                contextlib.redirect_stdout(io.StringIO()), \
+                contextlib.redirect_stderr(err):
+            code = panel.ensure_boot_image(None, SERVER, BOOT_URL, BOOT_SHA, CMDLINE,
+                                           self.key, wait=1, interval=0)
+
+        self.assertEqual(code, 1)
+        self.assertIn("Written", err.getvalue())
 
 
 if __name__ == "__main__":

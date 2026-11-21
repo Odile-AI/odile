@@ -4,7 +4,7 @@
 A tenant gets the icon set from the signed installer: the five files land in
 ``/usr/local/lib/odile/icons``, the first-visit server answers the five site
 paths, and the installer repoints the built Webapp's three tab links. The demo
-host ``odl-7971a8`` was provisioned before that cut, so this program is the
+host ``odl-fake01`` was provisioned before that cut, so this program is the
 same write on the machine a judge sees. It goes over the machine's own Webapp
 console (``tenant_console.py``): Odile holds no SSH key to a tenant.
 
