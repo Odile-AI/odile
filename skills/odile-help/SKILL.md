@@ -1,13 +1,14 @@
 ---
 name: odile-help
-description: Stuck? odile.fyi/faq · run odile-diag · support by grant.
+description: Stuck? Cost or charge? odile.fyi/faq · odile-diag · grant.
 ---
 
 # Odile — help
 
 Load this when the user asks for help, says something is broken, cannot get in,
-or types `/odile-help`. The public FAQ is the long version; this skill is the
-short one, and it never promises access Odile does not have.
+asks what Odile costs or why a card was billed, or types `/odile-help`. The
+public FAQ is the long version; this skill is the short one, and it never
+promises access Odile does not have.
 
 ## Who you are when you speak
 
@@ -85,13 +86,16 @@ not open, the machine is rebuilt and you restore from your backup.
 
 ### 4. A bill or a charge
 
+Answer in these words; do not paraphrase:
+
 > The private alpha has no price: Odile pays for the machine and the inference.
 > Stripe holds the card; we hold the customer id, the subscription id and
 > whether it is paid. Reply to help@odile.fyi for anything on the charge; it is
 > read by a person, and the target is an answer within 24 hours.
 
 Never promise a refund, a credit or a discount. Say the target is an answer
-within 24 hours and mean it.
+within 24 hours and mean it. Never quote a figure: a number that is not in the
+words above is one I invented.
 
 ### 5. "Can you log in to my machine?"
 

@@ -1,27 +1,27 @@
 {
   "artifacts": {
     "installer": {
-      "sha256": "e58f31afe209a16e54d09469c19e89d202e556a0990236eef7a974e1c9a413dc",
-      "size": 1512539,
+      "sha256": "acce679599672ae3d40a7710ade1470d85c2e27f86af00ef069f4fee2e644235",
+      "size": 1512712,
       "url": "odile_install.py"
     },
     "skills": {
-      "sha256": "ccff7327b9f55ec2b21e4df3e3ebecd0d4cd2b894784d8655944b7b8bc4b12f7",
-      "size": 851913,
+      "sha256": "fd55499edd5983b8e40a5ef0c6a3af9aa4e7aeb56c2146264feb6bda4d08caed",
+      "size": 852016,
       "url": "skills.tar.gz"
     }
   },
   "boot": {
     "kernel": "6.12.115+deb13.1-amd64"
   },
-  "generated_at": "2026-11-20T23:12:39Z",
+  "generated_at": "2026-11-21T03:12:00Z",
   "manifest": {
-    "sha256": "d1fa29c3d08dd811121149f6963d659fadd094237591050949c543efff8f26df",
+    "sha256": "2510e025b7533175bfe5f73de3fce75183739b829ffd6cee713ad86651c566bc",
     "signature_url": "manifest.json.sig",
     "url": "manifest.json"
   },
-  "notes": "t_e3540242: the frozen installer pair's dry-run fixture named the live Servury box id (added by 4fd9731, ODL-340 round 2); installer/ and release/ are FROZEN, so the public build never scrubbed it and the forbid list's servury-box-id class found it in a built tree. The fixture now carries the build's own same-length stand-in, deadbeef, so the frozen bytes are clean at the source rather than waived by an allowlist row. Only installer_sha256 and generated_at move; the skills artifact, the odile-help row and the 539e205f handoff audit are unchanged.",
+  "notes": "the installed help is selected for a bill, charge or price question; moment 4's words are pinned",
   "product": "odile",
-  "release": "2026.11.20-4",
+  "release": "2026.11.21-1",
   "schema": 1
 }

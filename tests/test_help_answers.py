@@ -276,6 +276,46 @@ class SupportAnswers(unittest.TestCase):
         # The refusal to invent money terms stays under the moment.
         self.assertIn("Never promise a refund", skill)
 
+    def test_the_help_is_selected_for_a_bill_question(self):
+        # t_9574a1c8: the skill answers only when the model selects it, and
+        # both places that say when to load it left money out. On a fresh sim
+        # tenant an unprimed "what does Odile cost per month?" invented a
+        # $12/month allowance (no installed surface carries a figure) and an
+        # unprimed "why was I charged on my card?" offered to connect Gmail.
+        # The frontmatter description is the row the system-prompt skill index
+        # shows; the load line is what the model reads once it opens the file.
+        text = SKILL.read_text(encoding="utf-8")
+        found = re.search(r"^description: (.+)$", text, re.M)
+        assert found is not None, "the skill has no frontmatter description"
+        description = found.group(1)
+        load = text[text.index("# Odile — help"): text.index("## Who you are when you speak")]
+        for label, span in (("the frontmatter description", description),
+                            ("the load line", load)):
+            lowered = span.lower()
+            self.assertTrue(
+                any(word in lowered for word in ("bill", "charge", "price")),
+                f"{label} names no bill/charge/price question")
+        # The index clips a description past 60 characters
+        # (agent/skill_utils.py in Hermes), so the trigger words have to fit
+        # inside the 60 the model actually sees.
+        self.assertLessEqual(len(description), 60,
+                             "the skill index clips the description; the trigger words would be cut")
+
+    def test_the_bill_moment_is_pinned_and_keeps_the_held_ids(self):
+        # The Designer's nit on t_080f8a83: the moment is a copy, and the
+        # first paraphrase dropped "we hold the customer id, the subscription
+        # id and whether it is paid". The instruction above the blockquote is
+        # what keeps a paraphrase from replacing it.
+        text = SKILL.read_text(encoding="utf-8")
+        start = text.index("### 4. ")
+        body = text[start: text.index("### 5. ", start)]
+        self.assertIn("answer in these words", body.lower(),
+                      "moment 4 is not pinned to its committed words")
+        self.assertIn(
+            "we hold the customer id, the subscription id and whether it is paid",
+            plain(body).lower(),
+            "moment 4's pinned words lost the ids Odile holds")
+
     def test_the_five_moments_are_all_answered(self):
         text = FAQ.read_text(encoding="utf-8")
         for number in range(1, 6):
