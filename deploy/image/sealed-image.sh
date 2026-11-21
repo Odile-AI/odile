@@ -52,7 +52,25 @@ REPO=$(cd "$HERE/../.." && pwd)
 OUT=$HERE/out-sealed
 SIZE=8G
 SUITE=trixie
-MIRROR=http://deb.debian.org/debian
+# The disk's packages and the release installer's OS_PACKAGE_PINS are one set:
+# the first boot installs the nine pins from
+# https://snapshot.debian.org/archive/debian/<OS_SNAPSHOT> and, given any other
+# version, says "refusing to fall back" and ends === rc=1. deb.debian.org moves
+# with every point release, so a disk built from it carries newer curl/openssl
+# than the pins (measured 2026-11-21, t_30da4de3: curl 8.14.1-2+deb13u7 and
+# openssl 3.5.9-1+deb13u1 against pins +deb13u5 and 3.5.7-1~deb13u2; the
+# downgrade could not be solved). The default mirror is therefore that snapshot,
+# and its date is read from the installer rather than repeated here: a bump of
+# OS_SNAPSHOT moves the build with it. --mirror overrides it deliberately.
+release_snapshot() {
+    local date
+    date=$(sed -n 's/^OS_SNAPSHOT = "\([0-9]\{8\}T[0-9]\{6\}Z\)"$/\1/p' \
+        "$REPO/installer/odile_install.py" 2>/dev/null | head -n 1)
+    [ -n "$date" ] || return 1
+    printf 'https://snapshot.debian.org/archive/debian/%s\n' "$date"
+}
+DEFAULT_MIRROR=$(release_snapshot) || DEFAULT_MIRROR=""
+MIRROR=""
 PASSWORD=${ODILE_BENCH_PASSWORD:-odile-bench-not-a-secret}
 SEAL_ID=${ODILE_SEAL_ID:-odl454-bench-v1}
 GUEST_NAME=${ODILE_GUEST_NAME:-odile-bench}
@@ -93,7 +111,10 @@ usage: sealed-image.sh [--out DIR] [--size SIZE] [--suite SUITE] [--mirror URL]
   --out DIR       output directory (default: deploy/image/out-sealed)
   --size SIZE     raw image size (default: 8G)
   --suite SUITE   Debian suite (default: trixie)
-  --mirror URL    Debian mirror (default: http://deb.debian.org/debian)
+  --mirror URL    Debian mirror (default: the release installer's Debian
+                  snapshot, https://snapshot.debian.org/archive/debian/
+                  <OS_SNAPSHOT>; deb.debian.org moves with each point release
+                  and a disk built from it fails the first boot's OS pins)
   --rootfs DIR    chroot build tree, outside the repo (default:
                   /var/tmp/odile-sealed-rootfs, $ODILE_SEALED_ROOTFS)
   --password PW   bench Webapp password baked as a scrypt hash
@@ -115,9 +136,22 @@ usage: sealed-image.sh [--out DIR] [--size SIZE] [--suite SUITE] [--mirror URL]
   --force         overwrite an existing raw image and build tree
   --dry-run       print the plan and change nothing
 EOF
+    printf '\n  the default mirror now: %s\n' \
+        "${DEFAULT_MIRROR:-<unreadable: no OS_SNAPSHOT in $REPO/installer/odile_install.py>}"
 }
 
 say() { printf '%-12s %s\n' "$1" "$2"; }
+
+# The mirror decides which package versions the disk carries at first boot, so
+# the run names it. An override is allowed, but the warning is said out loud:
+# the first boot's OS pins are the pinned snapshot's, not the live archive's.
+say_mirror() {
+    if [ "$MIRROR" = "$DEFAULT_MIRROR" ]; then
+        say mirror "$MIRROR (the release installer's snapshot)"
+    else
+        say mirror "$MIRROR (not the release installer's snapshot; the first boot's OS pins may fail)"
+    fi
+}
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -138,6 +172,14 @@ while [ $# -gt 0 ]; do
         *) echo "sealed-image: unknown argument: $1" >&2; usage >&2; exit 2 ;;
     esac
 done
+
+if [ -z "$MIRROR" ]; then
+    [ -n "$DEFAULT_MIRROR" ] || {
+        echo "sealed-image: no OS_SNAPSHOT in $REPO/installer/odile_install.py; pass --mirror URL" >&2
+        exit 2
+    }
+    MIRROR=$DEFAULT_MIRROR
+fi
 
 RAW=$OUT/odile-tenant-sealed.raw
 BOOT=$OUT/boot
@@ -187,8 +229,9 @@ if [ "$DRY_RUN" = 1 ]; then
     else
         say would "generate a throwaway Ed25519 key, shred its private half, put only the public key in boot/cmdline"
     fi
+    say_mirror
     say would "truncate $SIZE $RAW and write GPT: bios-boot, 512 MiB ext4 boot, LUKS2 root"
-    say would "cryptsetup luksFormat the root with a random 64-byte V, then debootstrap $SUITE into it"
+    say would "cryptsetup luksFormat the root with a random 64-byte V, then debootstrap $SUITE from that mirror"
     say would "run install-stack.sh twice under chroot ($([ "$GUEST_SMOKE" = 1 ] && echo 'with guest smoke' || echo 'no guest smoke'))"
     if [ "$PRODUCTION" = 1 ]; then
         say would "serial console: ttyS0 login: prompt (production: no autologin)"
@@ -464,6 +507,7 @@ KEYRING=()
 if [ -f /usr/share/keyrings/debian-archive-keyring.gpg ]; then
     KEYRING=(--keyring=/usr/share/keyrings/debian-archive-keyring.gpg)
 fi
+say_mirror
 say debootstrap "$SUITE ($INCLUDE)"
 debootstrap --variant=minbase --arch=amd64 --components=main \
     "${KEYRING[@]}" --include="$INCLUDE" "$SUITE" "$MNT" "$MIRROR"
