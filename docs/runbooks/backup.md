@@ -43,6 +43,16 @@ All guest commands run as root on the tenant. The operator has no SSH: the
 drill drove the machine through its own Webapp (the tenant's sign-in) and its
 own Hermes cron, which is the same path the user has.
 
+**Vintage of the R2 code paths (20 November 2026).** The destination, the
+bucket layout and the R2 rows in §1 and §3.1 are the interim **design**
+(ADR-004 §8); the code that operates them is **not shipped at this head**. The
+`s3:` branch of `scripts/backup.py`, the guest's `/etc/odile/backup-s3.env` and
+the cap check are **ODL-933**; the `odilectl backup-usage` readback and its
+8.0/9.0 GB alert are **ODL-934**; the bucket-emptying half of `odilectl purge`
+is **ODL-935**; the provisioning that records the bucket and the tokens is
+**ODL-924**, still blocked on Savio's minting. Read every R2 sentence below as
+those cards' design until they land; the SFTP material stays the v5 record.
+
 ---
 
 ## 1. The trust boundary, in one table
@@ -54,7 +64,7 @@ own Hermes cron, which is the same path the user has.
 | Repository URL | `/etc/odile/backup-repo.txt` (from the seed, 0644) and the tenant row | everyone; it is an address, not a secret |
 | Repository contents | the SFTP box (v5) / the tenant's R2 bucket `odile-t-<slug>` (interim), restic ciphertext | anyone can copy the bytes; only the password decrypts them |
 | SFTP transport key | `/etc/odile/backup-ssh/id_ed25519` (0600, generated on the guest); public half registered on the backup box | root on the guest; the backup box sees the public half |
-| R2 transport token (interim) | `/etc/odile/backup-s3.env` (0600 root): endpoint, bucket, `AWS_DEFAULT_REGION=auto`, cap and the **Object Read & Write** token scoped to `odile-t-<slug>`; the read-only twin is in the user's recovery file | root on the guest; Cloudflare; HQ holds a copy only to re-seed a rebuild |
+| R2 transport token (interim — ODL-933; not shipped) | `/etc/odile/backup-s3.env` (0600 root): endpoint, bucket, `AWS_DEFAULT_REGION=auto`, cap and the **Object Read & Write** token scoped to `odile-t-<slug>`; the read-only twin is in the user's recovery file | root on the guest; Cloudflare; HQ holds a copy only to re-seed a rebuild |
 | Last status, size, snapshot id | `/var/lib/odile/backup.json` on the guest; the signed heartbeat carries the same fields to HQ | the user, HQ (the fields only) |
 | File names, file contents | inside the encrypted repository | nobody without the password |
 
@@ -72,7 +82,8 @@ repository), deletes `/srv/odile-backup/tenants/<slug>` and the guest's
 paths are v5 (the SFTP stand-in): on an interim tenant the same command is
 designed to empty `odile-t-<slug>` through the tenant's own token, and the empty
 bucket is then deleted in the Cloudflare dashboard — §3.1, and ADR-004 §8's exit
-row gives that change to `t_9d6fb595`.** The command reads no file name,
+row gives that change to **ODL-935**, not shipped at this head; `t_9d6fb595` is
+the shipped v5 command and has no bucket path.** The command reads no file name,
 decrypts nothing, and prints no password.
 
 **HQ cannot read the repository.** Measured 2026-11-12T23:24Z on the host that
@@ -116,8 +127,8 @@ prints it against the SFTP stand-in — `--repo sftp://…` with `--key` and
 `--known-hosts`. On an interim tenant the same program is designed to run
 against the R2 repository (§3.1): an `s3:` URL from the seed, the bucket token
 in `/etc/odile/backup-s3.env`, and no `--key` or `--known-hosts`. That `s3:`
-branch is ADR-004 §8's `backup.py` + installer card and **is not shipped at
-this head**; until it lands, a tenant's unit is the SFTP form below.
+branch is ADR-004 §8's `backup.py` + installer card, **ODL-933**, and **is not
+shipped at this head**; until it lands, a tenant's unit is the SFTP form below.
 
 ```
 /usr/local/lib/odile/backup.py run
@@ -456,7 +467,8 @@ password against an existing repository is refused by name, never re-initialised
 
 ### 3.1 The interim destination — Cloudflare R2, 19 November 2026
 
-The live destination until B2 is restored. A tenant repository is an R2 bucket,
+The interim destination until B2 is restored — designed, not yet provisioned
+(**ODL-924**). A tenant repository is an R2 bucket,
 **one bucket per tenant**, and the URL is the provider's, not ours:
 
 ```
@@ -477,7 +489,9 @@ dashboard step in that branch.
   dashboard** (there is no account-wide R2 credential at HQ): **Object Read &
   Write** for the guest, **Object Read only** for the user's recovery file. The
   guest's pair, the endpoint, the bucket and `AWS_DEFAULT_REGION=auto` live in
-  `/etc/odile/backup-s3.env` (0600 root); the same pair is kept on HQ at
+  `/etc/odile/backup-s3.env` (0600 root; written by **ODL-933**'s installer from
+  the seed **ODL-924** builds — neither is shipped at this head); the same pair
+  is kept on HQ at
   `/root/.odile/r2/odile-t-<slug>.env` (0600) only so a rebuild can
   re-deliver it. Neither token can create or delete a bucket.
 - **Cap:** **2.0 GB per repository, at most three buckets in total (the demo
@@ -487,20 +501,25 @@ dashboard step in that branch.
   when the repository after prune exceeds it; a run that starts over cap does not
   upload. `odilectl backup-usage` lists all four buckets daily and alerts at
   **8.0 GB (warn) / 9.0 GB (critical)**. The **fourth bucket — the second
-  paying tenant — waits for B2.**
+  paying tenant — waits for B2.** The cap check in `backup.py` is **ODL-933**'s
+  and the daily readback **ODL-934**'s; neither is shipped at this head.
 - **Verification after minting:** `HeadBucket` on `odile-t-<slug>` must answer,
   and `HeadBucket` on `hermes-hq-backup` with the tenant token must **not** be
   200. Record both codes in the handoff — that is the proof the token is scoped.
-- **Purge:** an Object Read & Write token can empty its bucket but **cannot
-  delete the bucket**. At `keep_until`, `odilectl purge` empties
-  `odile-t-<slug>` through the tenant token and records `bucket_emptied_at` (the
-  dashboard's **Empty Bucket** is the fallback if the token is gone); the empty
-  bucket is deleted in the Cloudflare dashboard. The 30-day promise and the
+- **Purge (ODL-935; not shipped at this head):** an Object Read & Write token
+  can empty its bucket but **cannot delete the bucket**. At `keep_until`,
+  `odilectl purge` empties `odile-t-<slug>` through the tenant token and records
+  `bucket_emptied_at` — ODL-935's bucket path; not shipped at this head, so the
+  dashboard's **Empty Bucket** is the fallback. The empty bucket
+  is deleted in the Cloudflare dashboard. The 30-day promise and the
   deletion are unchanged; only the last click is manual.
 
-The first `init` is §3's second half removed: no SSH key, no `known_hosts`, no
-human on the provider's side. With `/etc/odile/backup-s3.env` in place (0600
-root), the guest runs
+**Init — ODL-933; not shipped at this head.** No code loads
+`/etc/odile/backup-s3.env` today — `git grep -n 'backup-s3' -- '*.py' '*.sh' '*.service'` matches nothing — and `scripts/backup.py`'s `_environment()` sets
+`RESTIC_*` only, so the command below has no AWS credentials until ODL-933
+lands. The first `init` is §3's second half removed: no SSH key, no
+`known_hosts`, no human on the provider's side. With `/etc/odile/backup-s3.env`
+in place (0600 root), the guest runs
 
 ```sh
 backup.py init --repo 's3:https://<account_id>.r2.cloudflarestorage.com/odile-t-<slug>/repo'
@@ -849,7 +868,8 @@ sentence is quoted (ODL-474 lands it).
 - **Exit:** the encrypted repository is kept 30 days after cancellation, then
   deleted. The user can download it with the password before then; Odile can
   delete it, not read it. The deletion is `odilectl purge <slug>`
-  (`docs/runbooks/offboard.md` §4, **t_9d6fb595**).
+  (`docs/runbooks/offboard.md` §4, **t_9d6fb595**). On an interim tenant the
+  bucket half is **ODL-935**'s and is not shipped at this head (§3.1).
 
 ---
 
@@ -930,9 +950,11 @@ sentence is quoted (ODL-474 lands it).
   it, and past it runs `restic snapshots`, deletes the box's directory and
   drops the guest's key line; a second run says `already purged`
   (`docs/runbooks/offboard.md` §4). The off-site box it will run against is
-  **t_8eb17a54**'s; the drill's chroot is on HQ.
+  **t_8eb17a54**'s; the drill's chroot is on HQ. On an interim tenant the
+  bucket-emptying half is **ODL-935**'s and is not shipped at this head (§3.1).
 
 The follow-ups are board cards, not prose: **t_fec9f699** (rebuild keeps
 the repository), **t_19148cba** (installer places the program and the units,
 heartbeat reachable — this card), **t_8eb17a54** (Savio buys the box and
-sets DNS) and **t_9d6fb595** (the 30-day purge, §9).
+sets DNS), **t_9d6fb595** (the v5 30-day purge, §9) and **ODL-935** (the
+interim bucket half, §3.1).
