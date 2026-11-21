@@ -1,26 +1,26 @@
 {
   "artifacts": {
     "installer": {
-      "sha256": "acce679599672ae3d40a7710ade1470d85c2e27f86af00ef069f4fee2e644235",
-      "size": 1512712,
+      "sha256": "86e87a86a46cd4a713221e4c03f44312f0642d5b5c677e6e3bfaafe8d9dd9cf4",
+      "size": 1512746,
       "url": "odile_install.py"
     },
     "skills": {
-      "sha256": "fd55499edd5983b8e40a5ef0c6a3af9aa4e7aeb56c2146264feb6bda4d08caed",
-      "size": 852016,
+      "sha256": "a813f1de6107812182f2cf7ea7ec5e0504d8e220c22e58102deaa02055a41d53",
+      "size": 852004,
       "url": "skills.tar.gz"
     }
   },
   "boot": {
     "kernel": "6.12.115+deb13.1-amd64"
   },
-  "generated_at": "2026-11-21T03:12:00Z",
+  "generated_at": "2026-11-21T11:13:47Z",
   "manifest": {
-    "sha256": "2510e025b7533175bfe5f73de3fce75183739b829ffd6cee713ad86651c566bc",
+    "sha256": "95aca3ac66c674ce251ba597a23a3be4be6eefde4a8067ab697715889172a8ba",
     "signature_url": "manifest.json.sig",
     "url": "manifest.json"
   },
-  "notes": "the installed help is selected for a bill, charge or price question; moment 4's words are pinned",
+  "notes": "the installed help is selected for a cost, bill or subscription question; moment 4's words are pinned",
   "product": "odile",
   "release": "2026.11.21-1",
   "schema": 1

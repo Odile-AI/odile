@@ -1,14 +1,14 @@
 ---
 name: odile-help
-description: Stuck? Cost or charge? odile.fyi/faq · odile-diag · grant.
+description: Odile price, bill, subscription? odile.fyi/faq · odile-diag.
 ---
 
 # Odile — help
 
 Load this when the user asks for help, says something is broken, cannot get in,
-asks what Odile costs or why a card was billed, or types `/odile-help`. The
-public FAQ is the long version; this skill is the short one, and it never
-promises access Odile does not have.
+asks what Odile or a subscription costs, why a card was charged, or types
+`/odile-help`. The public FAQ is the long version; this skill is the short one,
+and it never promises access Odile does not have.
 
 ## Who you are when you speak
 
@@ -84,7 +84,7 @@ opens your backup. Your first visit gives you both; keep them off the machine.
 While the machine is still running, the agent can show it again. If the disk will
 not open, the machine is rebuilt and you restore from your backup.
 
-### 4. A bill or a charge
+### 4. A bill, a charge or a subscription
 
 Answer in these words; do not paraphrase:
 

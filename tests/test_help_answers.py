@@ -293,8 +293,14 @@ class SupportAnswers(unittest.TestCase):
                             ("the load line", load)):
             lowered = span.lower()
             self.assertTrue(
-                any(word in lowered for word in ("bill", "charge", "price")),
+                any(word in lowered for word in ("bill", "charge", "price", "cost")),
                 f"{label} names no bill/charge/price question")
+            # The round-3 probe: a tenant asked "how much is the subscription?"
+            # and the bundled Hermes skill won the word, so the answer quoted
+            # the Nous Portal tiers. Naming a subscription in both selectors is
+            # what puts odile-help in front of that word.
+            self.assertIn("subscription", lowered,
+                          f"{label} names no subscription question")
         # The index clips a description past 60 characters
         # (agent/skill_utils.py in Hermes), so the trigger words have to fit
         # inside the 60 the model actually sees.
