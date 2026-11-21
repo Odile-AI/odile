@@ -151,6 +151,38 @@ def wait_health(port: int, proc, seconds: float = 10.0) -> None:
     raise RuntimeError("seed service did not start:\n" + out.decode("utf-8", "replace"))
 
 
+class TokenVerbSurface(unittest.TestCase):
+    """The `token` verb set, pinned because a record named a verb that is not one.
+
+    SPIKE-servury-reinstall §5 said `token issue`/`rotate`/`bind` mint and print
+    a token; corrected 2026-11-21, `bind` is a module function
+    (`seed/seed.py:862`) and these three are the parser's whole verb set. A
+    `token bind` added later fails here, and the commit that adds it retires
+    §5's correction (`docs/product/SPIKE-servury-reinstall.md`) in the same
+    change — the record is dated, so it keeps the sentence that was wrong.
+    """
+
+    @staticmethod
+    def run_seed(*args):
+        return subprocess.run(
+            [sys.executable, SEED, *args], capture_output=True, text=True, timeout=30
+        )
+
+    def test_bind_is_not_a_token_verb(self):
+        result = self.run_seed("token", "bind", "--tenant", "odl-alpha")
+        self.assertEqual(result.returncode, 2, result.stderr)
+        self.assertIn("invalid choice", result.stderr)
+        self.assertIn("'bind'", result.stderr)
+        # argparse prints the choices it would have accepted: the whole set.
+        self.assertIn("{issue,rotate,list}", result.stderr)
+
+    def test_the_three_token_verbs_parse(self):
+        for verb in ("issue", "rotate", "list"):
+            with self.subTest(verb=verb):
+                result = self.run_seed("token", verb, "--help")
+                self.assertEqual(result.returncode, 0, result.stderr)
+
+
 class SeedService(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
