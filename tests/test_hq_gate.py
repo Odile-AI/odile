@@ -23,6 +23,11 @@ These tests pin the properties the gate's answer depends on:
 * the committed bytes arrive, not HQ's working copy, which is often dirty;
 * an HQ-only path the branch also tracks keeps the branch's bytes (the overlay
   must never overwrite a tracked file);
+* a file staged at HQ and never committed — `git add`ed, absent from HQ's HEAD
+  and from `main` — arrives in the preview from HQ's *index* (bytes and mode),
+  so a seat's staged upskill batch no longer reds another card's gate (measured
+  2026-11-21: a staged `docs/craft/security.md` reded `test_craft` on every
+  card for hours, on the branch and on `main`);
 * the overlay really is there: a module that only exists at HQ runs at all;
 * no HQ checkout means "skipped", not "failed", so a public clone still passes;
 * the throwaway worktree does not survive the run.
@@ -632,6 +637,109 @@ class BothChangedTest(BothChangedCase):
         self.assertEqual(code, 0, output)
         self.assertIn("~docs/plan.md", output.splitlines())
         self.assertIn("2 both sides changed", output)
+
+
+STAGED_MODULE = '''\
+"""Fixture: a playbook staged at HQ and never committed — the red window."""
+import os
+import unittest
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+
+
+class StagedAtHqTest(unittest.TestCase):
+    def test_a_playbook_staged_at_hq_is_in_the_preview(self):
+        # `git add`ed at HQ and never committed: `ls-files --others` skips an
+        # index path and `main` has not got it, so the preview carried a rule
+        # (`tests/test_craft.py`) without the playbook it reads.
+        path = ROOT / "docs" / "craft" / "security.md"
+        self.assertTrue(path.is_file(), f"missing {path}")
+        self.assertEqual(path.read_text().strip(), "STAGED")
+
+    def test_a_staged_tool_keeps_its_mode(self):
+        self.assertTrue(os.access(ROOT / "tools" / "staged.py", os.X_OK),
+                        "the index's executable bit did not survive the overlay")
+
+    def test_the_branchs_own_document_is_untouched(self):
+        # A path the branch tracks is the branch's, even when HQ stages one at
+        # the same name: a merge keeps the branch's bytes.
+        self.assertEqual((ROOT / "docs" / "branch.md").read_text().strip(), "GOOD")
+'''
+
+
+class StagedAtHqCase(FixtureCase):
+    """A seat stages an upskill batch at HQ and runs its own gate before committing.
+
+    Measured 2026-11-21: `docs/craft/security.md` sat `AM` in the HQ checkout
+    (staged 06:57Z, uncommitted) while `tests/test_craft.py` — HQ-only, already
+    naming `security` — was overlaid. Every card's `make check-hq` then reded on
+    a file it never touched, on the branch and on `main`, and the card-merge
+    tool refused every merge for the same window. A staged path is in neither
+    set the gate read: `git ls-files --others` skips it (it is in the index) and
+    `main` does not carry it yet.
+    """
+
+    STAGED = "docs/craft/security.md"
+
+    def setUp(self) -> None:
+        super().setUp()
+        # `docs/craft/` is excluded at HQ on this host, so staging takes -f.
+        exclude = self.hq / ".git" / "info" / "exclude"
+        exclude.write_text(exclude.read_text() + "docs/craft/\n", encoding="utf-8")
+        (self.hq / "docs" / "craft").mkdir(exist_ok=True)
+        (self.hq / "docs" / "craft" / "security.md").write_text("STAGED\n", encoding="utf-8")
+        (self.hq / "tools" / "staged.py").write_text("#!/usr/bin/python3\n", encoding="utf-8")
+        (self.hq / "tools" / "staged.py").chmod(0o755)
+        (self.hq / "docs" / "branch.md").write_text("HQ-STAGED\n", encoding="utf-8")
+        (self.hq / "tests" / "__pycache__" / "staged.pyc").write_bytes(b"\0")
+        git("add", "-f", self.STAGED, "tools/staged.py", "docs/branch.md",
+            "tests/__pycache__/staged.pyc", cwd=self.hq)
+        (self.hq / "tests" / "test_hq_only.py").write_text(STAGED_MODULE, encoding="utf-8")
+
+    def test_the_staged_path_is_not_in_the_ignored_and_untracked_set(self):
+        # Why the third source exists: the set the gate read before cannot name
+        # an index path, and `main` has no such path to take bytes from.
+        tracked = hq_gate.tracked_files(self.tree)
+        self.assertNotIn(self.STAGED, hq_gate.hq_only_files(self.hq, tracked))
+
+    def test_a_staged_path_is_in_the_overlay_list(self):
+        code, output = self.run_gate("--list")
+        self.assertEqual(code, 0, output)
+        listed = output.splitlines()
+        self.assertIn(self.STAGED, listed)
+        self.assertIn("tools/staged.py", listed)
+        # Filtered like the other two sets: a path the branch tracks keeps the
+        # branch's bytes, and a byte-code cache is not a merge decision.
+        self.assertNotIn("docs/branch.md", listed)
+        self.assertFalse([path for path in listed if "__pycache__" in path], listed)
+
+    def test_the_preview_carries_the_staged_file(self):
+        code, output = self.run_gate()
+        self.assertEqual(code, 0, output)
+        self.assertIn("hq-gate: OK", output)
+        self.assertIn("Ran 3 tests", output)
+
+    def test_the_same_file_untracked_and_ignored_still_works(self):
+        # The seat has not staged it yet, or has unstaged it: HQ's ignored list
+        # named it all along, so the answer must not change.
+        git("rm", "--cached", "--", self.STAGED, cwd=self.hq)
+        self.assertEqual((self.hq / self.STAGED).read_text(encoding="utf-8"), "STAGED\n")
+        code, output = self.run_gate()
+        self.assertEqual(code, 0, output)
+        self.assertIn("Ran 3 tests", output)
+
+    def test_the_third_source_is_what_turns_the_gate_green(self):
+        # Pin the shipped defect: with the staged set empty the preview carries
+        # the rule and not the playbook, and the rule reds — the exact window.
+        original = hq_gate.staged_files
+        hq_gate.staged_files = lambda *args, **kwargs: []  # type: ignore[assignment]
+        try:
+            code, output = self.run_gate()
+        finally:
+            hq_gate.staged_files = original  # type: ignore[assignment]
+        self.assertEqual(code, 1, output)
+        self.assertIn("test_a_playbook_staged_at_hq_is_in_the_preview", output)
 
 
 if __name__ == "__main__":

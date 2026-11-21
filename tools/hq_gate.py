@@ -21,15 +21,22 @@ This tool closes the gap. It:
    after a card's branch was cut, and later repaired a citation in
    `docs/runbooks/recycle.md` the same branch never touched — HQ *tracks* both,
    so the ignored list cannot name them, and the gate ran a tree the merge would
-   never produce. HQ defaults to this repository's primary checkout, resolved
+   never produce. A third set is a seat's staged batch: a path `git add`ed at HQ
+   and not committed yet is in neither of the others (the index is not "others",
+   and `main` has not got it), so it is read from HQ's index (`git cat-file blob
+   :<path>`, with the index's mode). Measured 2026-11-21: a staged
+   `docs/craft/security.md` reded `test_craft` on every card for hours, on the
+   branch and on `main`, because the preview carried the rule and not the
+   playbook. HQ defaults to this repository's primary checkout, resolved
    from `git rev-parse --git-common-dir`, so a card worktree configures
    nothing;
 2. creates a throwaway worktree at the branch's **commit** with `git worktree
    add --detach`, so an uncommitted edit cannot be what is tested;
-3. overlays both sets on it, which is what the merged tree in `main` looks
+3. overlays the sets on it, which is what the merged tree in `main` looks
    like: the branch's tracked files plus the private machinery plus main's side
    of the merge (bytes read from the commits, so an uncommitted edit at HQ
-   changes nothing). A path the branch left alone takes `main`'s bytes; a path
+   changes nothing), plus the seat's staged batch read from HQ's index. A path
+   the branch left alone takes `main`'s bytes; a path
    both sides changed gets the merge's own text (`git merge-file`, three-way),
    and a real conflict keeps the branch's bytes; a path the branch deleted stays
    deleted; and a path `main` deleted while the branch left it at the base bytes
@@ -142,6 +149,31 @@ def hq_only_files(hq: Path, tracked: set[str]) -> list[str]:
                          f"{result.stderr.strip()[:160]}")
     found = [path for path in result.stdout.split("\0") if path]
     return sorted(path for path in found if not is_noise(path) and path not in tracked)
+
+
+def staged_files(hq: Path, tracked: set[str], carried: set[str] | None = None) -> list[str]:
+    """Files staged at HQ and absent from its HEAD — the seat's uncommitted batch.
+
+    `git diff --cached --diff-filter=A` names a path added to HQ's index that
+    HQ's HEAD does not carry: `git add`ed but not committed. It is in neither
+    set the gate read before — `ls-files --others` skips an index path, and
+    `main` has no such path to give bytes from — so an HQ-only rule that reads
+    it (a seat stages a new `docs/craft/<seat>.md` and `test_craft`'s `SEATS`
+    already names it) reded on a tree with the rule and no playbook. Measured
+    2026-11-21: every card's `make check-hq` failed for the hours the file sat
+    staged, and the card-merge tool refused every merge in the same window.
+
+    Filtered like the other two sets: noise is dropped, a path the branch tracks
+    keeps the branch's bytes, and a path the merge takes from `main`
+    (`carried`) keeps main's — a commit, not an index entry, is what merges.
+    """
+    result = git("diff", "--cached", "--name-only", "--diff-filter=A", "-z", cwd=hq)
+    if result.returncode != 0:
+        raise SystemExit(f"hq-gate: cannot list the staged files in {hq}: "
+                         f"{result.stderr.strip()[:160]}")
+    found = [path for path in result.stdout.split("\0") if path]
+    skip = set(tracked) | set(carried or ())
+    return sorted(path for path in found if not is_noise(path) and path not in skip)
 
 
 def integration_commit(hq: Path) -> str | None:
@@ -425,26 +457,14 @@ def overlay(hq: Path, destination: Path, files: list[str]) -> list[str]:
     return copied
 
 
-def overlay_commit(hq: Path, revision: str, destination: Path, files: list[str]) -> list[str]:
-    """Write `revision`'s bytes for `files` into the throwaway tree; return the paths.
+def write_blobs(hq: Path, destination: Path, entries: dict[str, tuple[str, str]],
+                files: list[str], source: str) -> list[str]:
+    """Write `entries`' bytes for `files` into the throwaway tree; return the paths.
 
-    The bytes come from the commit, not from HQ's working copy: an uncommitted
-    edit at HQ is not what the merge carries, and the file need not be in HQ's
-    checkout at all when that checkout sits on a branch without it. Git's mode
-    travels with the blob, so an executable tool stays executable.
+    `entries` is `{path: (mode, blob)}` from a tree (`tree_entries`) or from the
+    index (`index_entries`). Git's mode travels with the blob, so an executable
+    tool stays executable and a symlink stays a symlink.
     """
-    if not files:
-        return []
-    listing = git("ls-tree", "-r", "-z", revision, cwd=hq)
-    if listing.returncode != 0:
-        raise SystemExit(f"hq-gate: cannot read {revision} in {hq}: "
-                         f"{listing.stderr.strip()[:160]}")
-    entries: dict[str, tuple[str, str]] = {}
-    for record in listing.stdout.split("\0"):
-        meta, _, path = record.partition("\t")
-        fields = meta.split()
-        if len(fields) == 3 and fields[1] == "blob":
-            entries[path] = (fields[0], fields[2])
     copied: list[str] = []
     for relative in files:
         entry = entries.get(relative)
@@ -453,7 +473,7 @@ def overlay_commit(hq: Path, revision: str, destination: Path, files: list[str])
         mode, object_id = entry
         blob = git_bytes("cat-file", "blob", object_id, cwd=hq)
         if blob.returncode != 0:
-            raise SystemExit(f"hq-gate: cannot read {relative} at {revision}: "
+            raise SystemExit(f"hq-gate: cannot read {relative} at {source}: "
                              f"{blob.stderr.decode('utf-8', 'replace').strip()[:160]}")
         target = destination / relative
         target.parent.mkdir(parents=True, exist_ok=True)
@@ -466,6 +486,55 @@ def overlay_commit(hq: Path, revision: str, destination: Path, files: list[str])
             os.chmod(target, 0o755 if mode == "100755" else 0o644)
         copied.append(relative)
     return copied
+
+
+def index_entries(hq: Path, files: list[str]) -> dict[str, tuple[str, str]]:
+    """`{path: (mode, blob)}` for `files` as HQ's *index* holds them.
+
+    HQ's index, not its working copy: a staged file's bytes are the ones the
+    seat wrote and `git add`ed, and an unstaged edit in the same file is not.
+    """
+    if not files:
+        return {}
+    result = git("ls-files", "--stage", "-z", "--", *files, cwd=hq)
+    if result.returncode != 0:
+        raise SystemExit(f"hq-gate: cannot read HQ's index in {hq}: "
+                         f"{result.stderr.strip()[:160]}")
+    entries: dict[str, tuple[str, str]] = {}
+    for record in result.stdout.split("\0"):
+        if not record:
+            continue
+        meta, _, path = record.partition("\t")
+        fields = meta.split()
+        # stage 0 is the resolved entry; an unmerged path has 1-3 and no
+        # single answer, so it keeps whatever the other sets say (a merge would
+        # not take an unmerged index entry either).
+        if len(fields) == 3 and fields[2] == "0" and path in files:
+            entries[path] = (fields[0], fields[1])
+    return entries
+
+
+def overlay_index(hq: Path, destination: Path, files: list[str]) -> list[str]:
+    """Write the bytes of `files` from HQ's index into the throwaway tree.
+
+    The staged set: a path a seat `git add`ed at HQ and has not committed. The
+    preview keeps it untracked, exactly as the HQ-only machinery, because no
+    commit carries it — the merge will add it when the seat commits.
+    """
+    return write_blobs(hq, destination, index_entries(hq, files), files, "HQ's index")
+
+
+def overlay_commit(hq: Path, revision: str, destination: Path, files: list[str]) -> list[str]:
+    """Write `revision`'s bytes for `files` into the throwaway tree; return the paths.
+
+    The bytes come from the commit, not from HQ's working copy: an uncommitted
+    edit at HQ is not what the merge carries, and the file need not be in HQ's
+    checkout at all when that checkout sits on a branch without it. Git's mode
+    travels with the blob, so an executable tool stays executable.
+    """
+    if not files:
+        return []
+    return write_blobs(hq, destination, tree_entries(hq, revision), files, revision)
 
 
 def child_env() -> dict[str, str]:
@@ -539,8 +608,9 @@ def main(argv: list[str] | None = None) -> int:
     revision = integration_commit(hq)
     hq_files = hq_only_files(hq, tracked)
     main_files = main_side_files(hq, tree, revision)
+    staged = staged_files(hq, tracked, carried=set(main_files))
     main_deleted = main_deleted_files(hq, tree, revision)
-    files = sorted(set(hq_files) | set(main_files))
+    files = sorted(set(hq_files) | set(main_files) | set(staged))
     modules = modules_from(files)
 
     # A path both sides changed is not either side's file: a merge applies
@@ -563,8 +633,9 @@ def main(argv: list[str] | None = None) -> int:
             print(f"~{path}")
         for path in main_deleted:
             print(f"-{path}")
-        print(f"hq-gate: {len(modules)} HQ-only module(s), {len(files)} file(s), "
-              f"{len(changed)} both sides changed, {len(main_deleted)} deleted by main")
+        print(f"hq-gate: {len(modules)} HQ-only module(s), {len(files)} file(s) "
+              f"({len(staged)} staged at HQ), {len(changed)} both sides changed, "
+              f"{len(main_deleted)} deleted by main")
         return 0
 
     if not modules:
@@ -573,8 +644,9 @@ def main(argv: list[str] | None = None) -> int:
 
     print(f"hq-gate: {len(modules)} module(s) to run, {len(files)} file(s) to overlay "
           f"from {hq} ({len(hq_files)} HQ-only, {len(main_files)} from main's side "
-          f"of the merge); {len(changed)} path(s) both sides changed; "
-          f"{len(main_deleted)} path(s) main deleted removed from the preview")
+          f"of the merge, {len(staged)} staged at HQ); {len(changed)} path(s) both "
+          f"sides changed; {len(main_deleted)} path(s) main deleted removed from "
+          f"the preview")
 
     tmp_parent = Path(os.environ.get("ODILE_HQ_GATE_TMP") or DEFAULT_TMP)
     tmp_parent.mkdir(parents=True, exist_ok=True)
@@ -591,6 +663,9 @@ def main(argv: list[str] | None = None) -> int:
         overlay(hq, destination, hq_files)
         if revision is not None:
             overlay_commit(hq, revision, destination, main_files)
+        # The seat's staged batch: bytes from HQ's index, so a rule that reads a
+        # playbook still staged no longer reds on the rule alone.
+        overlay_index(hq, destination, staged)
         # The merge's own text for a path both sides changed, then the
         # deletions: a path main removed wins over anything an overlay put
         # there, exactly as the merge's `ours`/`theirs` resolution would.
