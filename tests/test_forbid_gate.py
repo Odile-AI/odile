@@ -480,7 +480,7 @@ class PrePushHook(unittest.TestCase):
         # and the re-cut deletes it. The commit that ADDED it carries every row
         # as an added line, including the literals the rows match, so a scan
         # that did not skip that path by name would refuse the very commit that
-        # published the list — and `merge_card.py`'s plain `git push origin
+        # published the list — and the merge tool's plain `git push origin
         # main` would never land the removal.
         (self.work / "leak-forbid.txt").write_text(LIST_TEXT, encoding="utf-8")
         commit_all(self.work, "the old published copy")

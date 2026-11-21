@@ -18,12 +18,18 @@ with no wrapper between the caller and the tool: the suite's `clean_env()` used
 to hide whether the tool scrubbed anything at all, so deleting
 `env=caller_env()` from the tool left this suite green (t_ab1f19e3, 2026-11-20).
 
-`tools/merge_card.py` is HQ-only machinery — it is excluded from the public
-tree — so the suite skips where the tool is absent (a fresh clone).
+`tools/merge_card.py` is HQ-only machinery and this suite is dropped from the
+public build with it (`tools/build_public_tree.py`), because a published file
+must not name a tool a reader cannot see. The skip below still covers a
+hand-built tree that carries `tests/` without the tool. `PublicTreeTests` is
+the fence for both halves: the build's exclusion list must name the tool and
+this suite, and no file the build publishes may mention the tool.
 """
 
 from __future__ import annotations
 
+import ast
+import fnmatch
 import importlib.util
 import os
 import shutil
@@ -64,9 +70,9 @@ def clean_env(extra: dict[str, str] | None = None) -> dict[str, str]:
     return env
 
 
-def merge_tool() -> Path | None:
-    """The tool in this tree, or in the checkout a linked worktree shares."""
-    direct = ROOT / "tools" / "merge_card.py"
+def shared_file(*parts: str) -> Path | None:
+    """A file in this tree, or in the checkout a linked worktree shares."""
+    direct = ROOT.joinpath(*parts)
     if direct.is_file():
         return direct
     try:
@@ -80,8 +86,13 @@ def merge_tool() -> Path | None:
         return None
     if probe.returncode != 0:
         return None
-    candidate = Path(probe.stdout.strip()).parent / "tools" / "merge_card.py"
+    candidate = Path(probe.stdout.strip()).parent.joinpath(*parts)
     return candidate if candidate.is_file() else None
+
+
+def merge_tool() -> Path | None:
+    """The tool in this tree, or in the checkout a linked worktree shares."""
+    return shared_file("tools", "merge_card.py")
 
 
 TOOL = merge_tool()
@@ -832,6 +843,111 @@ class CallerEnvTests(unittest.TestCase):
                              "the tool's commit did not land in the fixture repository")
         finally:
             fixture.cleanup()
+
+
+#: The private publish tool: it builds the public tree from an explicit INCLUDE
+#: minus an EXCLUDE and is itself excluded, so it exists only at HQ (and in the
+#: main worktree the merge gate runs from).
+PUBLIC_TREE_BUILDER = ("tools", "build_public_tree.py")
+BUILDER = shared_file(*PUBLIC_TREE_BUILDER)
+
+
+def public_build_lists() -> tuple[list[str], list[str]] | None:
+    """The builder's `INCLUDE` and `EXCLUDE`, read with `ast`, or `None`.
+
+    Parsed rather than imported: the builder is a script, and a shipped test
+    should not depend on its module surface (`tests/test_no_retired_demo_code.py`
+    reads the exclusion list the same way). `None` where the builder is absent —
+    a published tree — and the fence below then skips.
+    """
+    if BUILDER is None:
+        return None
+    try:
+        tree = ast.parse(BUILDER.read_text(encoding="utf-8"))
+    except (OSError, SyntaxError, UnicodeDecodeError):
+        return None
+    found: dict[str, list[str]] = {}
+    for node in tree.body:
+        if not isinstance(node, ast.Assign) or len(node.targets) != 1:
+            continue
+        target = node.targets[0]
+        if isinstance(target, ast.Name) and target.id in ("INCLUDE", "EXCLUDE"):
+            try:
+                value = ast.literal_eval(node.value)
+            except ValueError:
+                continue
+            if isinstance(value, list):
+                found[target.id] = [str(item) for item in value]
+    if set(found) != {"INCLUDE", "EXCLUDE"}:
+        return None
+    return found["INCLUDE"], found["EXCLUDE"]
+
+
+def is_published(rel: str, include: list[str], exclude: list[str]) -> bool:
+    """True when the build copies `rel`: under an INCLUDE root, not excluded.
+
+    Mirrors the builder: `copy_tree` takes a directory's whole subtree, and
+    `matches` is `fnmatch`, whose `*` crosses `/`, so a directory glob covers
+    its subtree too.
+    """
+    covered = any(rel == root or rel.startswith(root.rstrip("/") + "/") for root in include)
+    return covered and not any(fnmatch.fnmatch(rel, glob) for glob in exclude)
+
+
+def index_files() -> list[str]:
+    """Every path this branch's index carries — what a build from it copies."""
+    proc = subprocess.run(
+        ["git", "-C", str(ROOT), "ls-files", "-z"],
+        capture_output=True,
+        text=True,
+        env=clean_env(),
+    )
+    if proc.returncode != 0:
+        return []
+    return [rel for rel in proc.stdout.split("\0") if rel]
+
+
+@unittest.skipUnless(BUILDER, "the private public-tree builder is not in this tree")
+class PublicTreeTests(unittest.TestCase):
+    """The tool is HQ-only, and no file the build publishes may name it.
+
+    Measured at `main` `97dd803` (2026-11-21): the build copied
+    `tests/test_merge_card.py` — 18 skips in the built tree, which is the only
+    thing a reader gets from it — and a comment in `tests/test_forbid_gate.py`
+    named the tool, so the published tree carried a name for a file it does not
+    carry. Both are fixed in the builder's exclusion list and in that comment;
+    this fence reddens if a later card drops either entry or publishes another
+    file that mentions the tool (t_d648048d).
+    """
+
+    def test_the_build_drops_the_tool_and_the_suite_that_tests_it(self) -> None:
+        lists = public_build_lists()
+        self.assertIsNotNone(lists, "the builder's INCLUDE/EXCLUDE could not be read")
+        assert lists is not None
+        include, exclude = lists
+        for rel in ("tools/merge_card.py", "tests/test_merge_card.py"):
+            with self.subTest(path=rel):
+                self.assertIn(rel, exclude, f"{rel} is HQ-only but the public build copies it")
+                self.assertFalse(is_published(rel, include, exclude),
+                                 f"{rel} survives the public build's exclusion list")
+
+    def test_no_published_file_names_the_tool(self) -> None:
+        """A reader of the public tree must not meet a name it cannot open."""
+        lists = public_build_lists()
+        assert lists is not None
+        include, exclude = lists
+        named = []
+        for rel in index_files():
+            if not is_published(rel, include, exclude):
+                continue
+            try:
+                if b"merge_card" in (ROOT / rel).read_bytes():
+                    named.append(rel)
+            except OSError:
+                continue
+        self.assertEqual(named, [],
+                         "a published file names the HQ-only tool merge_card.py: "
+                         "reword it, or add the file to the builder's EXCLUDE")
 
 
 if __name__ == "__main__":
