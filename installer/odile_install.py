@@ -11105,7 +11105,8 @@ VERIFY_UNIT_TEMPLATE = """\
 # /run/bb/sealed-unlock.state, the signed manifest and the tenant .env, and it
 # wraps `odile-audit --json` and `odile-support status --json`. The audit reads
 # /etc/shadow and sshd's journal, so the unit runs as root; it binds loopback
-# only and Caddy is the public listener at /verify. It writes nothing.
+# only and Caddy is the public listener at /verify. It writes nothing of its
+# own; the one writable path below is cryptsetup's.
 [Unit]
 Description=Odile verify — the machine's own /verify page
 After=network-online.target
@@ -11121,6 +11122,13 @@ NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=read-only
+# `cryptsetup luksDump` takes its read lock in /run/cryptsetup, and
+# ProtectSystem=strict mounts /run read-only: without this line the LUKS row
+# reads FAIL on a machine whose header is perfectly readable (t_d55b0e47).
+# `/run` rather than `/run/cryptsetup`: systemd refuses to start a unit whose
+# ReadWritePaths= path is missing, and a machine with no LUKS container has no
+# /run/cryptsetup at boot.
+ReadWritePaths=/run
 
 [Install]
 WantedBy=multi-user.target
@@ -15259,6 +15267,15 @@ def self_test() -> int:
                  and "ProtectHome=read-only" in verify_unit
                  and "WantedBy=multi-user.target" in verify_unit
                  and "0.0.0.0" not in verify_unit)
+        # ProtectSystem=strict mounts /run read-only, and `cryptsetup luksDump`
+        # takes its read lock in /run/cryptsetup: without the writable path the
+        # page's LUKS row read FAIL on a machine whose header was readable
+        # (t_d55b0e47). `/run`, not `/run/cryptsetup`, because a missing
+        # ReadWritePaths= path fails the unit and a machine with no LUKS has
+        # none at boot.
+        check.ok("the /verify unit's sandbox lets cryptsetup take its lock in /run",
+                 "ReadWritePaths=/run" in verify_unit
+                 and "ReadWritePaths=/run/cryptsetup" not in verify_unit)
         wrapper_path = root / "access_report.sh"
         wrapper_path.write_text(ACCESS_REPORT_SCRIPT, encoding="utf-8")
         wrapper_path.chmod(0o755)

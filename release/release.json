@@ -1,8 +1,8 @@
 {
   "artifacts": {
     "installer": {
-      "sha256": "934fe8f69d4dffb796a058182c4f49ff45b99ee94fef6fa1d29d44f01b3e451a",
-      "size": 1525933,
+      "sha256": "9b5852090349a5ef7fd93f38c4419fe19a2ca96bb4a25abea28b46cde9379f2e",
+      "size": 1527037,
       "url": "odile_install.py"
     },
     "skills": {
@@ -14,14 +14,14 @@
   "boot": {
     "kernel": "6.12.115+deb13.1-amd64"
   },
-  "generated_at": "2026-11-21T22:10:00Z",
+  "generated_at": "2026-11-21T23:25:00Z",
   "manifest": {
-    "sha256": "36fcbdc170aa92e19489f632bf4b35f72c1a77ee4ac90ceb7316a474a3abe9d7",
+    "sha256": "3912ce1b05acb052528dee140532d0634d33a8049cd9fa6ee7a39340de27f45f",
     "signature_url": "manifest.json.sig",
     "url": "manifest.json"
   },
-  "notes": "t_87943990: the handoff audit enumerates the boot-key candidates with find(1) and reads their first 48 bytes with head(1), and the /verify page starts the audit before it reads its other sources, so the page answers in about 2 s instead of 6.8 s (the boot-key scan is 1.8 s of it). What the row proves is unchanged: same roots, same size window, same name exclusions, same first-48-bytes marker, same ssh-keygen check, and the Python walk remains the fallback when find cannot answer; WALK_TIMEOUT now bounds the read and kills the process group, and the dead _private_candidates helper is gone. Over 2026.11.21-2 (t_bf6092d7's gateway start-input cut): installer_sha256, audit_sha256, manifest.sha256, generated_at and this note move; the release manifest's audit row is re-derived from the installer the cut ships (tools/recut_release.py derives and checks it), so the signed document names the audit program a stranger runs. The served URL still serves 2026.11.19-5 until a deploy from a main that carries this cut.",
+  "notes": "t_d55b0e47 (the /verify unit's sandbox keeps cryptsetup's lock writable), over 2026.11.21-4 (t_87943990's boot-key walk cut, which also drives the page's cost). The tenant /verify page's LUKS row read FAIL on every machine that runs the unit the image and the installer write: verify.py runs `cryptsetup status root_crypt` and then `cryptsetup luksDump <device>`, cryptsetup takes its read lock in /run/cryptsetup, and the unit's ProtectSystem=strict mounts /run read-only. Both copies -- deploy/image/odile-verify.service and the installer's VERIFY_UNIT_TEMPLATE -- now carry ReadWritePaths=/run beside ProtectSystem=strict, and --self-test asserts it. `/run`, not `/run/cryptsetup`: a ReadWritePaths= path missing at start fails the unit, and a machine with no LUKS container has no /run/cryptsetup at boot. Measured on the demo host on 2026-11-21: under the unit's own four properties (NoNewPrivileges, PrivateTmp, ProtectSystem=strict, ProtectHome=read-only) `systemd-run ... cryptsetup luksDump /dev/sda3` exited 5 with 'Failed to acquire read lock on device /dev/sda3.' and 'Device /dev/sda3 is not a valid LUKS device.'; under the same four plus ReadWritePaths=/run it printed the header and exited 0, and after the installer's own unit was installed the page read LUKS PASS 'one keyslot (slot 2), no token'. The embedded skills, the odile-help row, the audit row, the backup row and the tenant pages are 2026.11.21-4's; only installer_sha256, manifest.sha256, generated_at and this note move.",
   "product": "odile",
-  "release": "2026.11.21-4",
+  "release": "2026.11.21-5",
   "schema": 1
 }
