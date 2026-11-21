@@ -9308,17 +9308,18 @@ Never ask again after a skip. Never ask "are you sure?".
     (
         "odile-help",
         "skills/odile-help/SKILL.md",
-        "09c301f2843f39a2e89d772432af526143c16a203db124a2904e9b3a09bdb8cd",
+        "ace83094cd8bff6eea9170ec1bbf714b0f36b72f278c2b550a80cd2d8fd90f16",
         r'''---
 name: odile-help
-description: Stuck? odile.fyi/faq · run odile-diag · support by grant.
+description: Odile price, bill, subscription? odile.fyi/faq · odile-diag.
 ---
 
 # Odile — help
 
 Load this when the user asks for help, says something is broken, cannot get in,
-or types `/odile-help`. The public FAQ is the long version; this skill is the
-short one, and it never promises access Odile does not have.
+asks what Odile or a subscription costs, why a card was charged, or types
+`/odile-help`. The public FAQ is the long version; this skill is the short one,
+and it never promises access Odile does not have.
 
 ## Who you are when you speak
 
@@ -9394,7 +9395,9 @@ opens your backup. Your first visit gives you both; keep them off the machine.
 While the machine is still running, the agent can show it again. If the disk will
 not open, the machine is rebuilt and you restore from your backup.
 
-### 4. A bill or a charge
+### 4. A bill, a charge or a subscription
+
+Answer in these words; do not paraphrase:
 
 > The private alpha has no price: Odile pays for the machine and the inference.
 > Stripe holds the card; we hold the customer id, the subscription id and
@@ -9402,7 +9405,8 @@ not open, the machine is rebuilt and you restore from your backup.
 > read by a person, and the target is an answer within 24 hours.
 
 Never promise a refund, a credit or a discount. Say the target is an answer
-within 24 hours and mean it.
+within 24 hours and mean it. Never quote a figure: a number that is not in the
+words above is one I invented.
 
 ### 5. "Can you log in to my machine?"
 
