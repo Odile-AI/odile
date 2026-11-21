@@ -67,9 +67,21 @@ check-inner: prereqs secrets leak test self-test compile lint claims brand roadm
 # `check-hq` too: `check` in a card worktree sees only the tracked modules, and
 # the HQ-only ones ran first at the merge gate, in main, where they twice went
 # red for a card whose own gate was green.
+#
+# Both tools below are private machinery at HQ (`.git/info/exclude`), so a card
+# worktree carries no copy and a relative path dies there. Resolve each the way
+# `tools/hq_gate.py` does: the tree's own file when it carries one, else the
+# checkout a linked worktree shares — the parent of `git rev-parse
+# --git-common-dir`. The resolved path is outside the card's checkout, so the
+# gate still leaves `git status` clean.
+HQ_COMMON := $(shell $(GIT) rev-parse --path-format=absolute --git-common-dir 2>/dev/null)
+HQ_CHECKOUT := $(patsubst %/.git,%,$(HQ_COMMON))
+acceptance_tool = $(if $(wildcard $(1)),$(1),$(if $(wildcard $(HQ_CHECKOUT)/$(1)),$(HQ_CHECKOUT)/$(1),$(1)))
+BOARD_SYNC := $(call acceptance_tool,tools/board_sync.py)
+CARD_ACCEPTANCE := $(call acceptance_tool,tools/card_acceptance.py)
 acceptance: check check-hq
-	@$(PYTHON) tools/board_sync.py check
-	@if [ -n "$(CARD)" ]; then $(PYTHON) tools/card_acceptance.py --card "$(CARD)"; fi
+	@$(PYTHON) "$(BOARD_SYNC)" check
+	@if [ -n "$(CARD)" ]; then $(PYTHON) "$(CARD_ACCEPTANCE)" --card "$(CARD)"; fi
 	@echo "make acceptance: OK $(CARD)"
 
 # The HQ half of the suite (ODL-479). A card worktree is a fresh checkout, so
