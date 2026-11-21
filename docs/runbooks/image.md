@@ -521,7 +521,7 @@ provision time:
    file pins (ODL-340 follow-up, §12.4 of `install.md`).
    Measured on the bench, 2026-11-19: a `--production` disk built from the
    `release/` of the `2026.11.19-3` cut (installer `00a84542…`, manifest
-   `49850448…`; the tree now cuts `2026.11.20-4`, §12.6 of `install.md`) with
+   `49850448…`; the tree now cuts `2026.11.21-2`, §12.6 of `install.md`) with
    the line above was written over the disposable tenant
    by the panel and booted. The installer logged `site
    odl-340a1e.test.odile.fyi (heartbeat https://test.odile.fyi/heartbeat)`, and

@@ -238,6 +238,114 @@ class OptionalUnitToleranceTest(TempRoot):
         self.assertIn(["systemctl", "restart", "odile-agent"], self.calls)
 
 
+class GatewayKeyOrderTest(TempRoot):
+    """A key file the gateway never read is a restart, not an expired key.
+
+    Measured on the demo tenant's first boot (t_bf6092d7): ``odile-agent`` is
+    enabled in the image and starts at boot, the release installer writes
+    ``/etc/odile/key.env`` later in the same boot, and the smoke's chat turn
+    answered ``Provider said: HTTP 401: Invalid or expired API key``. Restarting
+    the unit by hand fixed it. So the key file is a gateway start input like the
+    unit, the config and the ``.env`` — and a first boot can leave the unit
+    ``activating``, where the old code ran ``systemctl start`` (a no-op on the
+    process already running) instead of ``restart``.
+
+    The run's fake ``systemctl`` never starts a process: it reports the state
+    the boot left behind (active, a main PID, that PID's environment), which is
+    what decides whether the installer converged.
+    """
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.mod = load_module(INSTALLER, "odile_install_copy_key_order")
+        self.layout = tenant_layout_for(self.mod, self.tmp / "root")
+        self.layout.unit_target.parent.mkdir(parents=True, exist_ok=True)
+        self.layout.unit_target.write_text("unit\n", encoding="utf-8")
+        self.proc = self.tmp / "proc"
+        (self.proc / "4242").mkdir(parents=True)
+        self.calls: list[list[str]] = []
+        self.state = {"active": "active", "pid": "4242"}
+        self.key_present_at_restart: list[bool] = []
+
+    def fake_run(self, argv, *_, check=False, **__):
+        self.calls.append(list(argv))
+        if argv[:2] == ["systemctl", "restart"]:
+            self.key_present_at_restart.append(self.layout.key_env.is_file())
+            # A restart is the unit's next exec: the fake reads the file the
+            # real systemd would read through EnvironmentFile=.
+            if self.layout.key_env.is_file():
+                self.write_gateway_environ(self.mod.env_values(
+                    self.layout.key_env.read_text(encoding="utf-8")))
+        stdout = ""
+        if argv[:2] == ["systemctl", "is-enabled"]:
+            stdout = "enabled\n"
+        elif argv[:2] == ["systemctl", "is-active"]:
+            stdout = f"{self.state['active']}\n"
+        elif argv[:2] == ["systemctl", "show"]:
+            stdout = f"{self.state['pid']}\n"
+        return subprocess.CompletedProcess(argv, 0, stdout=stdout, stderr="")
+
+    def write_gateway_environ(self, values: dict[str, str]) -> None:
+        """What the gateway's process holds at exec, as /proc/<pid>/environ."""
+        body = b"".join(f"{name}={value}\0".encode("utf-8") for name, value in values.items())
+        (self.proc / self.state["pid"] / "environ").write_bytes(body)
+
+    def write_key(self) -> bool:
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            return self.mod.ensure_key_env(
+                self.layout, {"near_api_key": "near-fixture-" + "k" * 32}, False)
+
+    def converge(self, *, units_changed: bool = False, **kwargs):
+        out = io.StringIO()
+        with mock.patch.object(self.mod, "run", self.fake_run), \
+                mock.patch.object(self.mod, "wait_for_webapp", lambda *a, **k: True), \
+                mock.patch.object(self.mod, "PROC", self.proc), \
+                contextlib.redirect_stdout(out):
+            changed = self.mod.ensure_systemd_services(
+                self.layout, False, units_changed, **kwargs)
+        return changed, out.getvalue()
+
+    def test_the_key_write_is_what_restarts_the_gateway(self) -> None:
+        # The running gateway is the boot's own: it started before the file.
+        self.write_gateway_environ({"HOME": "/home/tenant"})
+        self.assertTrue(self.write_key())
+        moved, reason = self.mod.gateway_start_inputs(self.layout, key_changed=True)
+        self.assertTrue(moved)
+        self.assertIn(str(self.layout.key_env), reason)
+        changed, text = self.converge(gateway_changed=moved, gateway_reason=reason)
+        self.assertIn(["systemctl", "restart", "odile-agent"], self.calls)
+        self.assertIn(str(self.layout.key_env), text)
+        self.assertEqual(self.key_present_at_restart, [True])
+        self.assertTrue(changed)
+
+    def test_a_gateway_running_without_the_key_is_restarted_even_when_nothing_moved(
+            self) -> None:
+        self.assertTrue(self.write_key())          # the file is right …
+        self.write_gateway_environ({"HOME": "/home/tenant"})   # … the process is not
+        changed, text = self.converge(gateway_changed=False)
+        self.assertIn(["systemctl", "restart", "odile-agent"], self.calls)
+        self.assertIn("HERMES_CUSTOM_CLOUD_API_NEAR_AI_API_KEY", text)
+        self.assertTrue(changed)
+
+    def test_a_starting_unit_with_a_changed_input_is_restarted_not_started(self) -> None:
+        self.state["active"] = "activating"
+        self.write_gateway_environ({"HOME": "/home/tenant"})
+        self.converge(units_changed=True)
+        self.assertIn(["systemctl", "restart", "odile-agent"], self.calls)
+        self.assertNotIn(["systemctl", "start", "odile-agent"], self.calls)
+
+    def test_a_converged_gateway_holding_the_key_is_left_alone(self) -> None:
+        self.assertTrue(self.write_key())
+        self.write_gateway_environ(self.mod.env_values(
+            self.layout.key_env.read_text(encoding="utf-8")))
+        changed, text = self.converge(gateway_changed=False)
+        self.assertFalse(changed)
+        self.assertNotIn(["systemctl", "restart", "odile-agent"], self.calls)
+        self.assertNotIn(["systemctl", "start", "odile-agent"], self.calls)
+        self.assertIn("same         odile-agent active", text)
+
+
 class ReleaseSetupInvocationTest(TempRoot):
     """The boot install converges and keeps the machine's public host."""
 

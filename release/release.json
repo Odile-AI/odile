@@ -1,8 +1,8 @@
 {
   "artifacts": {
     "installer": {
-      "sha256": "86e87a86a46cd4a713221e4c03f44312f0642d5b5c677e6e3bfaafe8d9dd9cf4",
-      "size": 1512746,
+      "sha256": "1536ea2f3db93855798f940eb0de4c272236fcb66a3124c42e5325822e71f943",
+      "size": 1517026,
       "url": "odile_install.py"
     },
     "skills": {
@@ -14,14 +14,14 @@
   "boot": {
     "kernel": "6.12.115+deb13.1-amd64"
   },
-  "generated_at": "2026-11-21T11:13:47Z",
+  "generated_at": "2026-11-21T16:45:00Z",
   "manifest": {
-    "sha256": "95aca3ac66c674ce251ba597a23a3be4be6eefde4a8067ab697715889172a8ba",
+    "sha256": "2f227d34e8ed6acf3ee573c40d3da0b36f96ff84bddddb7f3956185d10c23c68",
     "signature_url": "manifest.json.sig",
     "url": "manifest.json"
   },
-  "notes": "the installed help is selected for a cost, bill or subscription question; moment 4's words are pinned",
+  "notes": "t_bf6092d7 (the installer's smoke chat tested a gateway that started before the key file existed), over 2026.11.21-1 (t_9574a1c8's installed-help re-cut), on the head that merges main's 617208e. Measured on the demo tenant's first boot: the image enables odile-agent.service at boot, the release installer writes /etc/odile/key.env later in the same boot, and the smoke's chat turn answered \"Provider said: HTTP 401: Invalid or expired API key\" for a key that answered 200 from HQ; `systemctl restart odile-agent` fixed it. The installer now treats /etc/odile/key.env as a gateway start input (gateway_start_inputs), restarts odile-agent when the file moved, prints which input moved, and asks the running process itself \u2014 /proc/<MainPID>/environ read from `systemctl show -p MainPID` \u2014 so a pass that finds every file `same` still restarts a gateway that never read the key. A unit systemd reports as `activating` is restarted rather than started, since `systemctl start` is a no-op on the process already coming up. tests/test_installer_copy.py pins the four states. The embedded skills (including 617208e's odile-help routing), the audit row, the backup row and the tenant pages are unchanged from 2026.11.21-1; only installer_sha256, manifest.sha256, generated_at and this note move.",
   "product": "odile",
-  "release": "2026.11.21-1",
+  "release": "2026.11.21-2",
   "schema": 1
 }
