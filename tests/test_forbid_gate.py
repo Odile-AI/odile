@@ -23,7 +23,10 @@ The probe values are assembled from parts, so this file is clean under the gate
 it exercises. Every test runs the real scanner and the real hook against a
 throwaway git repository; the fixture environment is scrubbed of `GIT_*` (the
 pre-commit hook exports `GIT_DIR`, and an inherited one commits into the outer
-worktree — the ODL-101 incident).
+worktree — the ODL-101 incident). The tests that ask git about *this* checkout
+(`ReadsTheCheckout`) keep that scrub and add `-c safe.directory` for this tree
+alone: CI writes the checkout as its own user and runs the gate as root, so an
+untrusted read answers 128, and 128 is a skip that names it — never a pass.
 """
 
 from __future__ import annotations
@@ -36,6 +39,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parent.parent
 SCANNER = ROOT / "tools" / "leak_scan.py"
@@ -119,6 +123,95 @@ def commit_all(repo: Path, message: str = "fixture") -> None:
 
 def scan(repo: Path, *args: str) -> subprocess.CompletedProcess[str]:
     return run([sys.executable, str(SCANNER), "--tree", *args], cwd=repo)
+
+
+# A question about ROOT is not a fixture. `git_env()` scrubs the whole `GIT_*`
+# namespace (ODL-101: an inherited `GIT_DIR` committed into the outer worktree)
+# and blanks global and system config, which is right for a throwaway repository
+# and wrong here: it also drops the `safe.directory` trust CI records in global
+# config. So these queries keep the hermetic config and carry the trust on the
+# command line, for this checkout and no other.
+def checkout_git(*args: str) -> subprocess.CompletedProcess[str]:
+    """Ask git about the checkout at ROOT the way this host's git sees it.
+
+    The runner writes the checkout as its own user and runs the gate as root, so
+    an untrusted read is `fatal: detected dubious ownership` with rc 128 — the
+    red every push to main from 79980eb carried. `-c safe.directory` is the one
+    scope that both reaches the query and leaves the host config out; git 2.53
+    honours it, and `TheCheckoutQuery` measures that it still does.
+    """
+    return run(["git", "-c", f"safe.directory={ROOT}", *args], cwd=ROOT)
+
+
+def one_line(text: str) -> str:
+    """git's fatal line on one line, so a skip reason survives a log."""
+    return " ".join(text.split())
+
+
+def unreadable_reason(result: subprocess.CompletedProcess[str]) -> str:
+    detail = one_line(result.stderr) or one_line(result.stdout) or "no output"
+    return f"git cannot read the checkout at {ROOT} (rc {result.returncode}): {detail}"
+
+
+def ignore_verdict(result: subprocess.CompletedProcess[str], message: str) -> tuple[str, str]:
+    """What `git check-ignore -q` answered: ("ok"|"fail"|"skip", text).
+
+    0 is "ignored" and 1 is "not ignored" — the checkout's answers. Above 1 is
+    git itself failing, which is not an answer and must not be asserted as one.
+    """
+    if result.returncode == 0:
+        return "ok", ""
+    if result.returncode == 1:
+        return "fail", message
+    return "skip", unreadable_reason(result)
+
+
+def tracked_verdict(result: subprocess.CompletedProcess[str], message: str) -> tuple[str, str]:
+    """What `git ls-files --error-unmatch` answered.
+
+    `--error-unmatch` answers 1 for "no tracked path matches" — the passing
+    answer for a list the repository must not publish — and 0 when the path is
+    tracked. 128 is git failing, which used to pass here as if it were 1.
+    """
+    if result.returncode == 1:
+        return "ok", ""
+    if result.returncode == 0:
+        return "fail", message
+    return "skip", unreadable_reason(result)
+
+
+class ReadsTheCheckout(unittest.TestCase):
+    """The questions about ROOT itself, answered honestly.
+
+    A `git` that cannot read the checkout (128) is a skip that names the fatal
+    line and prints it even without `-v`, so the CI log carries the reason; 0
+    and 1 are the checkout's answers and are asserted.
+    """
+
+    def assert_gitignored(self, path: str, message: str) -> None:
+        self._require_readable_checkout()
+        self._apply(ignore_verdict(checkout_git("check-ignore", "-q", path), message))
+
+    def assert_untracked(self, path: str, message: str) -> None:
+        self._require_readable_checkout()
+        self._apply(tracked_verdict(
+            checkout_git("ls-files", "--error-unmatch", path), message))
+
+    def _require_readable_checkout(self) -> None:
+        probe = checkout_git("rev-parse", "--is-inside-work-tree")
+        if probe.returncode != 0 or probe.stdout.strip() != "true":
+            self._skip(unreadable_reason(probe))
+
+    def _apply(self, verdict: tuple[str, str]) -> None:
+        kind, text = verdict
+        if kind == "fail":
+            self.fail(text)
+        if kind == "skip":
+            self._skip(text)
+
+    def _skip(self, reason: str) -> None:
+        print(f"test_forbid_gate: skip: {reason}", flush=True)
+        self.skipTest(reason)
 
 
 class ForbidClass(unittest.TestCase):
@@ -475,7 +568,7 @@ class PrePushHook(unittest.TestCase):
         self.assertEqual(self.push().returncode, 0)
 
 
-class HostsExample(unittest.TestCase):
+class HostsExample(ReadsTheCheckout):
     """The `.env.example` equivalent: every key, every value a placeholder."""
 
     def test_every_key_is_present_and_a_placeholder(self) -> None:
@@ -500,8 +593,7 @@ class HostsExample(unittest.TestCase):
         self.assertIn("SERVER_ID", str(caught.exception))
 
     def test_the_live_file_is_gitignored(self) -> None:
-        ignored = git("check-ignore", "-q", "deploy/hosts.local", cwd=ROOT)
-        self.assertEqual(ignored.returncode, 0, "deploy/hosts.local is not gitignored")
+        self.assert_gitignored("deploy/hosts.local", "deploy/hosts.local is not gitignored")
 
     def test_every_template_value_passes_the_scanner(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
@@ -554,20 +646,18 @@ class HookWithoutTheList(unittest.TestCase):
         self.assertNotIn("PASS", direct.stdout)
 
 
-class OneList(unittest.TestCase):
+class OneList(ReadsTheCheckout):
     """One list, at docs/ops/leak-forbid.txt: HQ keeps it, CI holds the secret."""
 
     def test_the_repository_publishes_no_copy(self) -> None:
-        tracked = git("ls-files", "--error-unmatch", "leak-forbid.txt", cwd=ROOT)
-        self.assertNotEqual(tracked.returncode, 0,
-                            "the repository still tracks a root leak-forbid.txt")
+        self.assert_untracked("leak-forbid.txt",
+                              "the repository still tracks a root leak-forbid.txt")
 
     def test_the_list_cannot_be_committed_from_a_clone(self) -> None:
         # A clone has no .git/info/exclude entry from HQ, so an installed list
         # would ride into a commit on `git add -A` and the 11 literals would be
         # published. The tracked .gitignore is what stops it.
-        ignored = git("check-ignore", "-q", LIST_PATH, cwd=ROOT)
-        self.assertEqual(ignored.returncode, 0, f"{LIST_PATH} is not gitignored")
+        self.assert_gitignored(LIST_PATH, f"{LIST_PATH} is not gitignored")
 
     def test_every_gate_names_the_documented_path(self) -> None:
         # One path in the scanner's default, the Makefile, the hook and CI, so
@@ -633,6 +723,100 @@ class OneList(unittest.TestCase):
         result = run(["make", "-n", "hooks"], cwd=ROOT)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn(".githooks/pre-push", result.stdout)
+
+
+class GitCouldNotAnswer(unittest.TestCase):
+    """128 is git failing against the checkout, never the checkout's answer.
+
+    The three tests below ask git about ROOT itself. Read as a boolean, a 128
+    became `AssertionError: 128 != 0` on every push to main from 79980eb — the
+    runner writes the checkout as its own user and runs the gate as root, so git
+    answers `fatal: detected dubious ownership` unless the trust CI records in
+    global config reaches the query, and `git_env()` blanks that config. Worse,
+    `test_the_repository_publishes_no_copy` read the same 128 as "the root copy
+    is untracked" and *passed* on it. So: 0/1 are answers, above 1 is a fault,
+    and a fault is a skip that names it — never a pass.
+    """
+
+    FATAL = ("fatal: detected dubious ownership in repository at "
+             f"'{ROOT}'\nTo add an exception for this directory, call:\n\n"
+             f"\tgit config --global --add safe.directory {ROOT}\n")
+
+    @staticmethod
+    def answer(returncode: int, stderr: str = "") -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(["git"], returncode, "", stderr)
+
+    def test_check_ignore_zero_is_the_ignored_answer(self) -> None:
+        self.assertEqual(ignore_verdict(self.answer(0), "m"), ("ok", ""))
+
+    def test_check_ignore_one_fails_with_the_existing_message(self) -> None:
+        message = f"{LIST_PATH} is not gitignored"
+        self.assertEqual(ignore_verdict(self.answer(1), message), ("fail", message))
+
+    def test_check_ignore_128_is_a_skip_that_names_the_fatal_line(self) -> None:
+        kind, reason = ignore_verdict(self.answer(128, self.FATAL), "m")
+        self.assertEqual(kind, "skip")
+        self.assertIn("rc 128", reason)
+        self.assertIn("dubious ownership", reason)
+
+    def test_ls_files_one_is_the_untracked_answer(self) -> None:
+        self.assertEqual(tracked_verdict(self.answer(1), "m"), ("ok", ""))
+
+    def test_ls_files_zero_fails_because_the_path_is_tracked(self) -> None:
+        message = "the repository still tracks a root leak-forbid.txt"
+        self.assertEqual(tracked_verdict(self.answer(0), message), ("fail", message))
+
+    def test_ls_files_128_cannot_pass_as_untracked(self) -> None:
+        kind, reason = tracked_verdict(self.answer(128, self.FATAL), "m")
+        self.assertEqual(kind, "skip")
+        self.assertIn("dubious ownership", reason)
+
+
+class TheCheckoutQuery(unittest.TestCase):
+    """A question about ROOT carries its trust and keeps the host config out."""
+
+    def test_the_query_trusts_this_checkout_and_stays_hermetic(self) -> None:
+        with mock.patch("subprocess.run") as spawn:
+            spawn.return_value = subprocess.CompletedProcess(["git"], 0, "true\n", "")
+            checkout_git("check-ignore", "-q", LIST_PATH)
+        command, kwargs = spawn.call_args[0][0], spawn.call_args[1]
+        self.assertEqual(command, ["git", "-c", f"safe.directory={ROOT}",
+                                   "check-ignore", "-q", LIST_PATH])
+        self.assertEqual(kwargs["cwd"], ROOT)
+        # The hermetic config stays: a host `~/.gitconfig` carrying
+        # `core.excludesFile` could otherwise answer "ignored" for a tree whose
+        # .gitignore lost the line, and the gate would pass on a host file.
+        self.assertEqual(kwargs["env"]["GIT_CONFIG_GLOBAL"], os.devnull)
+        self.assertEqual(kwargs["env"]["GIT_CONFIG_NOSYSTEM"], "1")
+
+    def test_this_git_honours_the_command_line_trust_on_a_foreign_owned_checkout(self) -> None:
+        # The premise of `checkout_git`: git 2.53 honours `-c safe.directory`,
+        # so the runner's checkout (written by github-actions, read by root) is
+        # readable without also reading a host config. If a future git drops
+        # that, this goes red instead of CI silently skipping.
+        if os.geteuid() != 0:
+            self.skipTest("needs root to hand a fixture to another uid")
+        with tempfile.TemporaryDirectory() as temp:
+            repo = Path(temp) / "repo"
+            repo.mkdir()
+            git("init", "-q", "-b", "main", cwd=repo)
+            (repo / ".gitignore").write_text("secret.local\n", encoding="utf-8")
+            (repo / "keep.txt").write_text("nothing private\n", encoding="utf-8")
+            chowned = subprocess.run(["chown", "-R", "65534:65534", str(repo)],
+                                     capture_output=True, text=True)
+            self.assertEqual(chowned.returncode, 0, chowned.stderr)
+
+            untrusted = subprocess.run(
+                ["git", "-C", str(repo), "check-ignore", "-q", "secret.local"],
+                env=git_env(), capture_output=True, text=True)
+            self.assertEqual(untrusted.returncode, 128, untrusted.stderr)
+            self.assertIn("dubious ownership", untrusted.stderr)
+
+            trusted = subprocess.run(
+                ["git", "-c", f"safe.directory={repo}", "-C", str(repo),
+                 "check-ignore", "-q", "secret.local"],
+                env=git_env(), capture_output=True, text=True)
+            self.assertEqual(trusted.returncode, 0, trusted.stderr)
 
 
 if __name__ == "__main__":
