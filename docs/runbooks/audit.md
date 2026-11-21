@@ -146,9 +146,9 @@ like the `/verify` surface. Two records name it:
 ```sh
 # the installer's own manifest record
 $ ./installer/odile_install.py --manifest | grep audit_sha256
-  "audit_sha256": "539e205f7d26e1c0757a4cdabbcae444c98df10f6e68eff92b4c147604cf4e4e",
+  "audit_sha256": "fd66f284b1c9f4606a2ff0fadcbe60d29a642df170083f6aa7a13394a3ee9127",
 $ sha256sum scripts/audit.py
-539e205f7d26e1c0757a4cdabbcae444c98df10f6e68eff92b4c147604cf4e4e  scripts/audit.py
+fd66f284b1c9f4606a2ff0fadcbe60d29a642df170083f6aa7a13394a3ee9127  scripts/audit.py
 ```
 
 On the machine, the signed manifest at `/etc/odile/manifest.json` (served at

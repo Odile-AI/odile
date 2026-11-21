@@ -65,6 +65,7 @@ import re
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -611,7 +612,20 @@ def from_audit(source: Source, name: str, page_name: str,
 
 def collect(machine: Machine) -> Machine:
     """Every row the page shows, built from the machine and its programs."""
-    audit = machine.audit()
+    # The handoff audit walks the machine's persistent state: 1.7 s on the demo
+    # tenant even after t_87943990 made the walk a find(1) one. The sources
+    # beside it are a handful of file and program reads, so the audit runs while
+    # they are gathered and the page waits for it, not for it plus them.
+    audit_source = {}
+
+    def read_audit():
+        try:
+            audit_source["source"] = machine.audit()
+        except Exception as error:  # noqa: BLE001 - re-raised on this thread
+            audit_source["error"] = error
+
+    auditor = threading.Thread(target=read_audit, daemon=True)
+    auditor.start()
     support = machine.support()
     document, report, report_error = machine.attestation()
     record = machine.boot_record()
@@ -622,6 +636,10 @@ def collect(machine: Machine) -> Machine:
     agent = machine.guest_agent()
     manifest_state, manifest_detail, signing_fingerprint = machine.manifest()
     stamp_text = iso(machine.now)
+    auditor.join()
+    if "error" in audit_source:
+        raise audit_source["error"]
+    audit = audit_source["source"]
 
     release = None
     vcpus = None

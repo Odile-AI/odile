@@ -35,6 +35,7 @@ import tempfile
 import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parent.parent
 SCRIPT = ROOT / "scripts" / "audit.py"
@@ -271,6 +272,144 @@ class PrivateHalfTest(unittest.TestCase):
         target.write_bytes(b"-----BEGIN " + b"PRIVATE KEY-----\n" + b"x" * 200
                            + b"\n-----END " + b"PRIVATE KEY-----\n")
         self.assertEqual(fixture.failed(), [])
+
+
+class WalkCostTest(unittest.TestCase):
+    """The boot-key row's walk is find(1)'s, not Python's (t_87943990)."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory(prefix="odile-audit-test-")
+        self.addCleanup(self._tmp.cleanup)
+
+    def keypair(self, name: str = "id_ed25519") -> tuple[Path, str]:
+        directory = Path(self._tmp.name) / "keys"
+        directory.mkdir(exist_ok=True)
+        private = directory / name
+        done = subprocess.run(["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-f", str(private)],
+                              capture_output=True, text=True, timeout=60)
+        self.assertEqual(done.returncode, 0, done.stderr)
+        public = (directory / (name + ".pub")).read_text(encoding="utf-8").strip()
+        return private, public
+
+    def boot_key_fixture(self, public: str) -> Fixture:
+        """A fixture whose measured boot key is ``public`` everywhere it reads."""
+        fixture = Fixture(self._tmp.name)
+        parsed = audit.parse_public_key(public)
+        self.assertIsNotNone(parsed)
+        cmdline = fixture.commands["cmdline"]
+        token = base64.b64encode(public.encode()).decode()
+        cmdline.write_text(re.sub(r"bb\.key=\S+", "bb.key=" + token, cmdline.read_text()),
+                           encoding="utf-8")
+        for home in ("root", "home/tenant"):
+            (fixture.root / home / ".ssh" / "authorized_keys").write_text(
+                public + "\n", encoding="utf-8")
+        fixture.commands["auth"].write_text(
+            "Accepted publickey for tenant from 203.0.113.9 port 51514 ssh2: ED25519 %s\n"
+            % audit.fingerprint(parsed[1]), encoding="utf-8")
+        return fixture
+
+    def test_find_enumerates_and_head_reads_the_candidates(self):
+        """os.scandir is never reached and no regular file's head is read in
+        Python -- head(1) reads them, one batch per process -- while the
+        planted key is still found. On the demo tenant the Python walk was
+        6.3 s of the /verify page's 6.8 s (151,548 candidates, 170k of them
+        under one home)."""
+        private, public = self.keypair()
+        fixture = self.boot_key_fixture(public)
+        target = fixture.root / "home" / "tenant" / ".hermes" / "cache" / "x" / "id_ed25519"
+        target.parent.mkdir(parents=True)
+        target.write_bytes(private.read_bytes())
+        os.chmod(target, 0o600)
+        python_heads = []
+        real_head = audit._head
+        real_scandir = os.scandir
+        private = tuple(str(fixture.root / part)
+                        for part in ("root", "home", "etc/odile", "var/lib/odile"))
+
+        def guarded_scandir(path="."):
+            if str(path).startswith(private):
+                raise AssertionError("the Python walk ran")
+            return real_scandir(path)
+
+        with mock.patch.object(audit.os, "scandir", side_effect=guarded_scandir), \
+                mock.patch.object(audit, "_head",
+                                  side_effect=lambda path: python_heads.append(path) or real_head(path)):
+            failed = fixture.failed()
+        self.assertEqual(failed, ["boot key"])
+        self.assertEqual(python_heads, [], "a regular file's head was read in Python")
+
+    def test_the_python_walk_answers_when_find_cannot(self):
+        """The fallback is the old walk, and it reaches the same verdict."""
+        private, public = self.keypair()
+        fixture = self.boot_key_fixture(public)
+        target = fixture.root / "home" / "tenant" / "boot-key"
+        target.write_bytes(private.read_bytes())
+        os.chmod(target, 0o600)
+        with mock.patch.object(audit, "_scan_candidates", return_value=None):
+            self.assertEqual(fixture.failed(), ["boot key"])
+
+    def test_a_symlink_to_the_private_half_is_still_the_private_half(self):
+        private, public = self.keypair()
+        fixture = self.boot_key_fixture(public)
+        elsewhere = fixture.root / "outside" / "key"
+        elsewhere.parent.mkdir()
+        elsewhere.write_bytes(private.read_bytes())
+        os.chmod(elsewhere, 0o600)
+        os.symlink(elsewhere, fixture.root / "home" / "tenant" / "linked-key")
+        self.assertEqual(fixture.failed(), ["boot key"])
+
+    def test_a_hung_find_cannot_hold_the_read(self):
+        """WALK_TIMEOUT bounds the read, not only ``wait()`` (t_87943990).
+
+        The first cut timed out ``wait()`` after ``stdout.read()`` had already
+        returned, so a ``find`` hung on an unresponsive mount still held the
+        page. The timeout now covers ``communicate`` and kills the group.
+        """
+        class Hung:
+            pid = 4242
+
+            def communicate(self, timeout: float = 0.0):
+                raise subprocess.TimeoutExpired("find", timeout)
+
+            def kill(self):
+                raise AssertionError("only the group kill should run")
+
+        killed = []
+        with mock.patch.object(audit, "_fast_path_tools", return_value=True), \
+                mock.patch.object(audit.subprocess, "Popen", return_value=Hung()), \
+                mock.patch.object(audit, "_kill_group", side_effect=killed.append):
+            self.assertIsNone(audit._scan_candidates([Path(self._tmp.name)]))
+        self.assertEqual(len(killed), 1, "a hung find was not killed")
+
+    def test_the_size_window_is_200_to_65536_bytes(self):
+        private, public = self.keypair()
+        fixture = self.boot_key_fixture(public)
+        body = private.read_bytes()
+        below = fixture.root / "root" / "below"
+        below.write_bytes((body + b"x" * 199)[:199])
+        os.chmod(below, 0o600)
+        (fixture.root / "root" / "below.pub").write_text(public + "\n", encoding="utf-8")
+        self.assertEqual(fixture.failed(), [], "a 199-byte file is outside the window")
+        below.unlink()
+        (fixture.root / "root" / "below.pub").unlink()
+        inside = fixture.root / "root" / "at-least"
+        inside.write_bytes((body + b"x" * 200)[:200])
+        os.chmod(inside, 0o600)
+        (fixture.root / "root" / "at-least.pub").write_text(public + "\n", encoding="utf-8")
+        self.assertEqual(fixture.failed(), ["boot key"], "a 200-byte file is inside the window")
+
+    def test_a_pub_sibling_is_not_a_candidate_but_a_copy_is(self):
+        private, public = self.keypair()
+        fixture = self.boot_key_fixture(public)
+        for name in ("id_ed25519.pub", "authorized_keys.bak", "known_hosts.old"):
+            target = fixture.root / "root" / name
+            target.write_bytes(private.read_bytes())
+            os.chmod(target, 0o600)
+        self.assertEqual(fixture.failed(), [])
+        copy = fixture.root / "root" / "id_ed25519"
+        copy.write_bytes(private.read_bytes())
+        os.chmod(copy, 0o600)
+        self.assertEqual(fixture.failed(), ["boot key"])
 
 
 class CmdlineTest(unittest.TestCase):

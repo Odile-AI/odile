@@ -50,9 +50,12 @@ import hashlib
 import json
 import os
 import re
+import shlex
 import shutil
+import signal
 import subprocess
 import sys
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -357,37 +360,211 @@ def check_boot_key(machine: Machine) -> Result:
 # sits (`/root/boot-key` included), not only beside a `.pub` under `*/.ssh`.
 PRIVATE_ROOTS = ("/root", "/home", "/etc/odile", "/var/lib/odile")
 
+#: A private key is a few hundred bytes to a few kilobytes. The window skips
+#: the tree's libraries and logs without opening them, so only a file that fits
+#: has its first bytes read. Mirrors the strict bar's scan in
+#: ``scripts/verify_and_unlock.sh``.
+KEY_MIN_BYTES = 200
+KEY_MAX_BYTES = 65536
 
-def _private_candidates(directory: Path):
-    """Every file under ``directory`` that could hold a private key.
+#: Files per ``head`` process. One process reads the 48-byte head of every
+#: candidate in its batch, so the per-file cost is a C open/read and not a
+#: Python one: measured on the demo tenant 2026-11-21, find enumerated 151,548
+#: candidates (828 MB of files, 170,254 under one home) in 1.16 s and their
+#: heads read in 1.57 s, against 3.60 s for the same files opened in Python.
+#: That walk was 6.3 s of the `/verify` page's 6.8 s (t_87943990).
+HEAD_BATCH = 2000
 
-    A private key is a few hundred bytes to a few kilobytes: the size window
-    skips the tree's libraries and logs without opening them, and only a file
-    that fits has its first bytes read. Mirrors the strict bar's scan in
-    ``scripts/verify_and_unlock.sh``.
+#: ``find`` and ``head`` give up after this long, read included. A timeout
+#: kills the whole process group and falls back to the Python walk, which is
+#: slower but reads the same tree.
+WALK_TIMEOUT = 120
+
+
+#: Symlink records carry this prefix into the tee'd stream. ``head`` is handed
+#: every record and fails to open this one (it names no file), so a symlink
+#: costs it nothing; the Python side strips the prefix and follows the link
+#: itself, on its target, exactly as the walk below does.
+LINK_PREFIX = "/odile-symlink"
+
+#: The strict bar's marker: a candidate is a private key only when these
+#: appear in its first 48 bytes.
+KEY_MARKER = b"PRIVATE KEY"
+
+
+def _scan_candidates(roots):
+    """(files, heads, links) for the candidates under ``roots``, or None.
+
+    ``find``'s stream goes two ways at once: ``tee`` copies it into a pipe this
+    process reads (the records, in order) and into ``xargs``, which hands a
+    batch of paths to one ``head -q -c 48``. The 48-byte read is a C one, and it
+    overlaps ``find``'s walk instead of following it: measured on the demo
+    tenant 2026-11-21, 151,548 candidates and their heads in 1.7 s against 3.6 s
+    for the same files opened in Python. ``heads`` holds exactly 48 bytes per
+    regular file, in the order of ``files``. Only a regular file's path is a
+    path head can open. A stream that does not line up is not trusted, and
+    ``None`` sends the caller to the walk below.
     """
-    stack = [directory]
-    while stack:
-        current = stack.pop()
+    if not roots:
+        return [], b"", []
+    if not _fast_path_tools():
+        return None
+    read_end, write_end = os.pipe()
+    fd_directory = "/dev/fd" if os.path.isdir("/dev/fd") else "/proc/self/fd"
+    command = ["find", *[str(root) for root in roots],
+               "!", "-name", "*.pub", "!", "-name", "authorized_keys*",
+               "!", "-name", "known_hosts*",
+               "(", "(", "-type", "f",
+               "-size", "+%dc" % (KEY_MIN_BYTES - 1),
+               "-size", "-%dc" % (KEY_MAX_BYTES + 1),
+               "-printf", "%p\\0", ")",
+               "-o", "(", "-type", "l", "-printf", LINK_PREFIX + "%p\\0", ")", ")"]
+    script = ("%s | tee %s/%d | xargs -0 -n %d head -q -c 48 --"
+              % (" ".join(shlex.quote(part) for part in command),
+                 fd_directory, write_end, HEAD_BATCH))
+    try:
+        process = subprocess.Popen(["sh", "-c", script], stdout=subprocess.PIPE,
+                                   stderr=subprocess.DEVNULL, pass_fds=(write_end,),
+                                   start_new_session=True)
+    except OSError:
+        os.close(read_end)
+        os.close(write_end)
+        return None
+    os.close(write_end)
+    files = []
+    links = []
+    prefix = LINK_PREFIX.encode()
+
+    def read_paths():
+        """Drain find's list: regular files and prefixed symlinks, in order."""
+        pending = b""
+        with os.fdopen(read_end, "rb") as handle:
+            while True:
+                chunk = handle.read(1 << 20)
+                if not chunk:
+                    break
+                pending += chunk
+                parts = pending.split(b"\x00")
+                pending = parts.pop()
+                for entry in parts:
+                    if entry.startswith(prefix):
+                        links.append(entry[len(prefix):])
+                    elif entry:
+                        files.append(entry)
+
+    walker = threading.Thread(target=read_paths, daemon=True)
+    walker.start()
+    try:
+        # The read sits inside the bound: a `find` hung on an unresponsive mount
+        # would otherwise hold the page for ever, which is what the old comment
+        # claimed the timeout did.
+        heads, _ = process.communicate(timeout=WALK_TIMEOUT)
+    except (OSError, subprocess.TimeoutExpired):
+        _kill_group(process)
+        walker.join(timeout=30)
+        return None
+    walker.join(timeout=WALK_TIMEOUT)
+    if len(heads) != 48 * len(files):
+        return None
+    return files, heads, links
+
+
+def _kill_group(process) -> None:
+    """Kill the sh/find/tee/xargs/head group the walk started."""
+    try:
+        os.killpg(os.getpgid(process.pid), signal.SIGKILL)
+    except OSError:
         try:
-            entries = list(os.scandir(current))
+            process.kill()
         except OSError:
-            continue
-        for entry in entries:
+            pass
+
+
+def _walk_candidates(roots):
+    """The Python walk: the same candidates and heads, one scandir at a time."""
+    for root in roots:
+        stack = [root]
+        while stack:
+            current = stack.pop()
             try:
-                if entry.is_dir(follow_symlinks=False):
-                    stack.append(Path(entry.path))
-                    continue
-                if not entry.is_file():
-                    continue
-                if entry.name.endswith(".pub") or entry.name.startswith(
-                        ("authorized_keys", "known_hosts")):
-                    continue
-                if not 200 <= entry.stat().st_size <= 65536:
-                    continue
+                entries = list(os.scandir(current))
             except OSError:
                 continue
-            yield Path(entry.path)
+            for entry in entries:
+                try:
+                    if entry.is_dir(follow_symlinks=False):
+                        stack.append(Path(entry.path))
+                        continue
+                    if not entry.is_file():
+                        continue
+                    if entry.name.endswith(".pub") or entry.name.startswith(
+                            ("authorized_keys", "known_hosts")):
+                        continue
+                    if not KEY_MIN_BYTES <= entry.stat().st_size <= KEY_MAX_BYTES:
+                        continue
+                except OSError:
+                    continue
+                path = Path(entry.path)
+                yield path, _head(path)
+
+
+def _fast_path_tools():
+    """True when find, tee, xargs, head and a /dev/fd name can carry the walk."""
+    if shutil.which("find") is None or not _find_printf():
+        return False
+    if any(shutil.which(tool) is None for tool in ("tee", "xargs", "head", "sh")):
+        return False
+    return os.path.isdir("/dev/fd") or os.path.isdir("/proc/self/fd")
+
+
+def _find_printf():
+    """True when find(1) understands GNU's ``-printf``.
+
+    Busybox's find does not; its empty answer would otherwise look like a tree
+    with no candidates, which is a PASS nobody proved.
+    """
+    try:
+        done = subprocess.run(["find", "/", "-maxdepth", "0", "-printf", "x"],
+                              capture_output=True, timeout=30)
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return done.returncode == 0 and done.stdout == b"x"
+
+
+def _link_candidates(paths):
+    """The symlinks among ``paths`` whose target is a file in the size window."""
+    for raw in paths:
+        candidate = Path(os.fsdecode(raw))
+        try:
+            if not candidate.is_file():
+                continue
+            if not KEY_MIN_BYTES <= candidate.stat().st_size <= KEY_MAX_BYTES:
+                continue
+        except OSError:
+            continue
+        yield candidate
+
+
+def _head(path: Path):
+    """The first 48 bytes of ``path``, or None when it cannot be opened."""
+    try:
+        with path.open("rb") as handle:
+            return handle.read(48)
+    except OSError:
+        return None
+
+
+def _marker_offsets(heads):
+    """Every byte offset of the marker in ``heads``, in stream order.
+
+    The stream is one 48-byte block per file, so ``offset // 48`` is the file
+    whose head carries it; a marker that straddles two blocks names the earlier
+    file, which costs one extra ``ssh-keygen`` and can never hide a real match.
+    """
+    start = heads.find(KEY_MARKER)
+    while start >= 0:
+        yield start
+        start = heads.find(KEY_MARKER, start + 1)
 
 
 def _private_public(path: Path) -> tuple[str, str] | None:
@@ -412,21 +589,24 @@ def _private_public(path: Path) -> tuple[str, str] | None:
 
 def _private_half(machine: Machine, algo: str, blob: str) -> str | None:
     """A private key under a persistent root whose public half is this key."""
-    seen = set()
-    for root in PRIVATE_ROOTS:
-        for path in _private_candidates(machine.path(root)):
-            if path in seen:
-                continue
-            seen.add(path)
-            try:
-                with path.open("rb") as handle:
-                    head = handle.read(48)
-            except OSError:
-                continue
-            if b"PRIVATE KEY" not in head:
+    roots = [machine.path(root) for root in PRIVATE_ROOTS]
+    found = _scan_candidates(roots)
+    if found is None:
+        for path, head in _walk_candidates(roots):
+            if not head or KEY_MARKER not in head:
                 continue
             if _private_public(path) == (algo, blob):
                 return _display(machine, path)
+        return None
+    files, heads, links = found
+    for offset in _marker_offsets(heads):
+        path = Path(os.fsdecode(files[offset // 48]))
+        if _private_public(path) == (algo, blob):
+            return _display(machine, path)
+    for path in _link_candidates(links):
+        head = _head(path)
+        if head and KEY_MARKER in head and _private_public(path) == (algo, blob):
+            return _display(machine, path)
     return None
 
 
@@ -836,7 +1016,34 @@ CHECKS = (
 
 
 def audit(machine: Machine) -> list[Result]:
-    return [check(machine) for check in CHECKS]
+    """Every check, in report order.
+
+    The boot-key row walks the machine's persistent state; the other checks are
+    a handful of file and program reads. They run beside the walk, so a page
+    request waits for the walk rather than for the walk plus the rest
+    (t_87943990: the /verify page's 6.8 s was 6.3 s of that walk).
+    """
+    results = {}
+    failures = []
+
+    def other_checks():
+        try:
+            for index, check in enumerate(CHECKS):
+                if check is not check_boot_key:
+                    results[index] = check(machine)
+        except BaseException as error:  # re-raised on the caller's thread
+            failures.append(error)
+
+    worker = threading.Thread(target=other_checks, daemon=True)
+    worker.start()
+    boot_index = next(index for index, check in enumerate(CHECKS) if check is check_boot_key)
+    try:
+        results[boot_index] = check_boot_key(machine)
+    finally:
+        worker.join()
+    if failures:
+        raise failures[0]
+    return [results[index] for index in range(len(CHECKS))]
 
 
 # ---------------------------------------------------------------------------

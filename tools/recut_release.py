@@ -17,8 +17,8 @@ It writes four files and four signatures:
     installer/odile_install.py.sig      over the installer
     release/odile_install.py            a byte copy of the installer
     release/odile_install.py.sig
-    release/manifest.json               installer_sha256 and backup_sha256
-                                        re-derived from the installer
+    release/manifest.json               installer_sha256, audit_sha256 and
+                                        backup_sha256 re-derived from the installer
     release/manifest.json.sig
     release/release.json                manifest sha256, artefact size + sha256
     release/release.json.sig
@@ -96,16 +96,19 @@ def check() -> int:
     same("installer size", str(installer.stat().st_size), str(release["artifacts"]["installer"]["size"]))
     same("manifest", sha256(ROOT / "release" / "manifest.json"), release["manifest"]["sha256"])
     same("installer copy", sha256(ROOT / "installer" / "odile_install.py"), sha256(installer))
-    # The backup program the installer embeds is the one the release manifest
-    # names (t_e0475dba). A row that disagrees with the installer this
-    # document names is the mismatch the row exists to catch; a document cut
-    # before the row existed is reported, not failed.
-    pin = installer_manifest(installer).get("backup_sha256")
-    recorded = manifest.get("backup_sha256")
-    if pin and recorded:
-        same("backup", recorded, pin)
-    elif pin:
-        print(f"  warn  backup (the manifest predates the row; the installer pins {pin[:16]}…)")
+    # The programs the installer embeds are the ones the release manifest names
+    # (the handoff audit, t_87943990; the tenant backup, t_e0475dba). A row that
+    # disagrees with the installer this document names is the mismatch the row
+    # exists to catch; a document cut before the row existed is reported, not
+    # failed.
+    shipped = installer_manifest(installer)
+    for label, field in (("audit", "audit_sha256"), ("backup", "backup_sha256")):
+        pin = shipped.get(field)
+        recorded = manifest.get(field)
+        if pin and recorded:
+            same(label, recorded, pin)
+        elif pin:
+            print(f"  warn  {label} (the manifest predates the row; the installer pins {pin[:16]}…)")
     for name in ("installer/odile_install.py", "release/odile_install.py",
                  "release/manifest.json", "release/release.json"):
         line = verify(ROOT / name)
@@ -127,12 +130,15 @@ def cut(key: pathlib.Path) -> int:
     manifest_path = ROOT / "release" / "manifest.json"
     manifest = json.loads(manifest_path.read_text())
     manifest["installer_sha256"] = installer_hash
-    # A re-cut after the installer's embedded backup program moved must move
-    # this row too, or the release would name a program the installer it ships
-    # does not write (t_e0475dba).
-    pin = installer_manifest(release_installer).get("backup_sha256")
-    if pin:
-        manifest["backup_sha256"] = pin
+    # A re-cut after a program the installer embeds moved must move its row
+    # too, or the release would name a program the installer it ships does not
+    # write: the handoff audit `/verify` quotes (t_87943990) and the tenant
+    # backup program (t_e0475dba).
+    shipped = installer_manifest(release_installer)
+    for field in ("audit_sha256", "backup_sha256"):
+        pin = shipped.get(field)
+        if pin:
+            manifest[field] = pin
     manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
     manifest_hash = sha256(manifest_path)
 
