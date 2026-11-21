@@ -13,3 +13,10 @@ backup_repo: sftp://backup@example.invalid/odile
 support_public_key: /etc/odile/support/odile-support.pub
 default_plan_id: 113
 default_days: 31
+
+# The account site the invitation email names. When set, the recovery kit
+# prints <host>/forgot instead of pointing at the invitation email; a pasted
+# <host>/forgot is accepted and stripped. Keep the value alone on the line: an
+# inline `#` comment would land in the value (the loader keeps `#`). Uncomment
+# on a host whose account site answers /forgot (ODL-578 ships that route).
+# account_host: https://odile.fyi

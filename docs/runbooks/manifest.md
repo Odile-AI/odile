@@ -45,7 +45,7 @@ what the installer put on the machine.
 |---|---|
 | `installer_sha256` | the installer file that made the machine (`/usr/local/bin/odile-install.sh` on a tenant; `--installer` names another copy) |
 | `audit_sha256` | the handoff audit script `/usr/local/bin/odile-audit` (ODL-208), the one the installer places and `/verify` quotes |
-| `backup_sha256` | the tenant backup program `/usr/local/lib/odile/backup.py`, the one the nightly `odile-backup` unit runs (ODL-215); a tenant build (`--root /`) without the file is refused, and any other root without it falls back to the installer's own `--manifest` pin — the bytes that installer writes |
+| `backup_sha256` | the tenant backup program `/usr/local/lib/odile/backup.py`, the one the nightly `odile-backup` unit runs (ODL-215); a tenant build (`--root /`) without the file is refused, and any other root without it falls back to the installer's own `--manifest` pin — the bytes that installer writes. `build` records the installed file, so a one-byte edit on a root moves this row; the release cutter refuses a row that disagrees with the installer the bundle ships (`update.md` §5, t_f6dd9b65) |
 | `hermes.commit` | the Hermes checkout's `HEAD`, checked against the Webapp bundle's `pinnedCommit`; a mismatch is refused |
 | `hermes.install_script_sha256` | the sha256 the installer required of the fetched `install.sh` before running it (ODL-399); read from the installer's own `--manifest`, which refuses one that predates the pin |
 | `hermes.lockfiles` | sha256 of `package-lock.json` and `uv.lock` |
@@ -98,6 +98,16 @@ build (`--root /`) without `/usr/local/lib/odile/backup.py` is refused for the
 same reason — the installer writes it, so its absence is a broken app layer —
 while any other root falls back to the installer's `backup_sha256` pin, the
 bytes that installer would write.
+
+`build` records the installed file and nothing else, so it does **not** refuse a
+root whose installer has moved while the installed program has not — that is the
+state an installer-only update leaves (the guest replaces the installer and never
+runs it). The comparison belongs where the two records are shipped together:
+`odile_update.py release` refuses (exit 2) a manifest row that differs from the
+`backup_sha256` the installer beside it pins, because the bundle would name one
+program and carry an installer that writes another (`update.md` §5). Keeping the
+refusal at the cut is also what lets a one-byte edit move the row on a build:
+the installed bytes are the fact `build` exists to record.
 
 ## 4. Two fresh installs (DoD line 1)
 
@@ -325,6 +335,9 @@ versions rather than HQ's probe; it refuses a package without an installed
 version. Compare the app-layer fields, not the whole document: `mode`,
 `packages.source` and the version strings are build provenance; the installer,
 backup program, commit, webapp, skill and package *sets* are the pinned layer.
+The guest's own comparison of the backup row is `odile-update check`: it prints
+the release's `backup` value and, when this machine's program differs, names
+both hashes and the drift (`update.md` §6).
 
 ## 9. Re-signing (HQ only)
 

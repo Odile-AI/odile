@@ -219,7 +219,7 @@ WantedBy=timers.target
 
 ## 6. The demo machine — what a reinstall must put back
 
-Odile's own demo (the judge path, `demo.odile.fyi` → `odl-7971a8`) runs the
+Odile's own demo (the judge path, `demo.odile.fyi` → `odl-fake01`) runs the
 same signed heartbeat and nightly backup as a tenant, but it is not a tenant:
 its password is published, the judge can stop or break it, and it is **excluded
 from `/status`** (`status/status.py`'s `DEMO_SLUGS`).  The page counts tenant
@@ -245,7 +245,7 @@ converged machine:
 | Step | What it writes |
 |---|---|
 | the program | `/usr/local/lib/odile/backup.py` (0755 root, the checkout's `scripts/backup.py`) |
-| the repository | `/etc/odile/backup-repo.txt` — the seed's URL when its host resolves, otherwise `sftp://odile-backup@odile.fyi:2222/tenants/odl-7971a8` (the storage box today is HQ's own sftp service, `docs/runbooks/backup.md` §3) |
+| the repository | `/etc/odile/backup-repo.txt` — the seed's URL when its host resolves, otherwise `sftp://odile-backup@odile.fyi:2222/tenants/odl-fake01` (the storage box today is HQ's own sftp service, `docs/runbooks/backup.md` §3) |
 | the SFTP key | `/etc/odile/backup-ssh/id_ed25519` (0600) and `known_hosts` (0600, `ssh-keyscan -H`) |
 | the heartbeat key | `/etc/odile/heartbeat/heartbeat.key` (0600) and `.pub` |
 | the backup timer | `odile-backup-tenant.service` + `.timer` from the program's own templates (`OnCalendar=*-*-* 03:00:00`, `Persistent=true`) |
@@ -283,7 +283,7 @@ The HQ half then finishes what only HQ can:
    what the check reports, so the cause can never again be a timeout.
 4. **The beat.**  It starts `odile-heartbeat.service` and reads `MAX(at)` for
    the slug out of HQ's own `heartbeats` table; a beat newer than ten minutes
-   is the line `HQ holds a signed heartbeat for odl-7971a8 at <epoch>`.
+   is the line `HQ holds a signed heartbeat for odl-fake01 at <epoch>`.
 
 If the backup fails with `wrong password or no key found`, the rebuild minted a
 new repository password while the repository still holds the old one: a rebuild
@@ -298,14 +298,14 @@ and doing it keeps the bytes:
 
 ```sh
 # HQ, root: keep the unreadable repository, then let the machine make a new one
-mv /srv/odile-backup/tenants/odl-7971a8 \
-   /srv/odile-backup/tenants/odl-7971a8.unreadable-$(date -u +%Y-%m-%d)
+mv /srv/odile-backup/tenants/odl-fake01 \
+   /srv/odile-backup/tenants/odl-fake01.unreadable-$(date -u +%Y-%m-%d)
 install -d -m 0700 -o odile-backup -g odile-backup \
-    /srv/odile-backup/tenants/odl-7971a8
+    /srv/odile-backup/tenants/odl-fake01
 
 # on the demo machine, as root (serial console or the tenant console)
 /usr/bin/python3 /usr/local/lib/odile/backup.py init \
-    --repo 'sftp://odile-backup@odile.fyi:2222/tenants/odl-7971a8' \
+    --repo 'sftp://odile-backup@odile.fyi:2222/tenants/odl-fake01' \
     --recovery /etc/odile/recovery.txt \
     --key /etc/odile/backup-ssh/id_ed25519 \
     --known-hosts /etc/odile/backup-ssh/known_hosts
@@ -324,7 +324,7 @@ does the machine half only and prints the two public keys; without
 After a seed, the two checks the card asks for are:
 
 ```sh
-/usr/bin/python3 -m odilectl health --json | grep -A2 '"slug": "odl-7971a8"'
+/usr/bin/python3 -m odilectl health --json | grep -A2 '"slug": "odl-fake01"'
 /usr/bin/python3 status/status.py --db /var/lib/odile/waitlist.db --json
 ```
 

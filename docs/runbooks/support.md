@@ -49,7 +49,7 @@ sudo w                                                   # no support session
 curl -sS https://<slug>.odile.fyi/verify | grep "operator key"
 ```
 
-`<slug>` is the machine's own name (`odl-7971a8` in the drill), and that page
+`<slug>` is the machine's own name (`odl-fake01` in the drill), and that page
 is fed by `/var/lib/odile/access-report.txt`; its `operator key` row reads
 `PASS none (authorized_keys: 1 line(s), the measured throwaway)`. The page at
 `https://odile.fyi/verify` is not that page: HQ answers **302** to
@@ -223,7 +223,7 @@ answer.
 
 ```
 grant live
-  tenant:     odl-7971a8
+  tenant:     odl-fake01
   reason:     disk full after an update
   expires:    2026-11-13T17:00:00Z (24h 0m left)
   key:        SHA256:… (odile-support-grant-<id>)
@@ -357,44 +357,127 @@ The access report is the machine's own audit. Its `usable keys` and
 turns both rows **FAIL** on purpose: there is an operator key, and its expiry is
 the mitigation. This is the honest reading of the deck's A10 — "a support grant
 is a time-boxed door" — and the rows return to PASS after `revoke` or expiry.
-Measured on the tenant (§8.5):
+Measured on a bench root on 2026-11-19 (the gate's own fixture: the synthetic
+SEV-SNP report, the measured throwaway boot key and the tenant `.env`, with the
+grant line and its state added — the same bench `tests/test_verify.py` drives;
+the tenant drill's version of these rows is §8.5):
 
 ```
-usable keys    FAIL  1 authorized key(s) other than the measured throwaway in /root/.ssh/authorized_keys: SHA256:clN4wFkP…
-operator key   FAIL  authorized_keys carries command="/usr/local/sbin/odile-support session",… odile-support-grant-7bc06cc48244
-FAIL — the access report did not pass
+usable keys    FAIL  1 authorized key(s) other than the measured throwaway in /root/.ssh/authorized_keys: SHA256:zaZC3CG0yGBGyTbJ8NR8JnL8pzL2Xao1vR2cgYQFkC0; the support grant 39602e79e81a explains one of them (expires 2026-11-20T15:50:44Z)
+boot key       PASS  ssh-ed25519 SHA256:LLwDfYyE3VMc9T9o+XvydfNzrXxyzaQ2lysSxCSSEWA; public key only, no private half of it on the machine
+seal           PASS  policy 0x30000; seal_id strict-bench-v1; measurement 519c7c9aae54bf139cacd783e1b69bd98b01e79b9e8b52feb41aadb7a483f481227a8a3b64ea2b885234ca56e09c9ee8
+sign-in hash   PASS  scrypt hash present in /home/odile/.hermes/.env; no plaintext password
+operator key   FAIL  authorized_keys carries command="/usr/local/sbin/odile-support session",no-agent-forwarding,no-port-forwarding,no-X11-forwarding,no-user-rc ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIMdWyPF1Bcwd6sFiL4KiUtmYTq2FLe95TmfBQS0fEnu2 odile-support-grant-39602e79e81a; one is the support grant 39602e79e81a (expires 2026-11-20T15:50:44Z)
+support grant  OPEN  grant 39602e79e81a; expires 2026-11-20T15:50:44Z; key SHA256:zaZC3CG0yGBGyTbJ8NR8JnL8pzL2Xao1vR2cgYQFkC0; line present in /root/.ssh/authorized_keys
+
+OPEN — a support grant is live until 2026-11-20T15:50:44Z (grant 39602e79e81a): the two key rows fail because that granted key is in /root/.ssh/authorized_keys.
 ```
 
-and after `revoke`, on a report regenerated the same way:
+and on the same bench with no grant state, the report is unchanged from
+ODL-473 — five rows and this verdict (after `revoke` on the tenant, §8.5, the
+same lines with the tenant's own fingerprint):
 
 ```
-usable keys    PASS  0 usable user keys; every authorized_keys line is the measured boot key (SHA256:I2VaMwa+…)
+usable keys    PASS  0 usable user keys; every authorized_keys line is the measured boot key (SHA256:LLwDfYyE3VMc9T9o+XvydfNzrXxyzaQ2lysSxCSSEWA)
 operator key   PASS  none (authorized_keys: 1 line(s), the measured throwaway)
 PASS — five checks: zero usable user keys, the throwaway boot key, the seal, the sign-in hash, no operator key.
 ```
 
-The fingerprint in the FAIL row is the key in `/etc/odile/support-key.pub` at
-grant time: `SHA256:clN4wFkP…` in the drill, because the drill had replaced the
-seed key with a throwaway (§8). On a tenant it is the seed key,
-`SHA256:HEPfoGHs…`.
+The row's witness is `/var/lib/odile/support-grant.json`, not the line's
+shape: the state must be inside its window and carry no `expired_at` or
+`revoked_at` tombstone, and it may account only for the exact forced-command
+line `odile-support grant` wrote — the marker `odile-support-grant-<id>`, the
+state's own key fingerprint, a `command="…/odile-support … session"` prefix,
+and root's own `authorized_keys`. A hand-written grant-shaped line, a
+tombstoned state, or a state edited to name another key still fails both rows,
+so the row cannot excuse a key a root shell planted. The fingerprint in the
+FAIL rows is the key in `/etc/odile/support-key.pub` at grant time:
+`SHA256:clN4wFkP…` in the drill, because the drill had replaced the seed key
+with a throwaway (§8); on a tenant it is the seed key, `SHA256:HEPfoGHs…`.
 
-The reporter unit exits non-zero when the report does not pass, so
-`systemctl restart odile-access-report` shows `Result: exit-code` during a live
-grant: the unit's exit status is the report's verdict, not a broken unit.
+After a reboot the installer's `authorized_keys` rewrite deletes the granted
+line and the timer restores it within 30 s (§3), so a report written inside
+that window has five PASS rows, the same `support grant  OPEN` row with
+`line missing from /root/.ssh/authorized_keys (the timer restores it within
+30 s)`, and this verdict — still OPEN, because the state is what makes the
+grant live:
+
+```
+OPEN — a support grant is live until 2026-11-20T15:50:44Z (grant 39602e79e81a); its line is missing from /root/.ssh/authorized_keys (the timer restores it within 30 s).
+```
+
+The reporter unit exits non-zero whenever a row fails — the report's verdict is
+also the unit's exit status — so `systemctl restart odile-access-report` shows
+`Result: exit-code` while the granted line is in place (exit 1 above, exit 0 on
+the no-grant bench and in the reboot window): the unit's status is the report's
+verdict, not a broken unit.
+
+A grant explains the two key rows and nothing else. The verdict is built from
+the rows that failed, so a compound state names the grant **and** the other
+failing labels instead of blaming only the door. Same bench, the drill's grant
+id, with the attestation policy moved to `0x30001` (the seal row fails):
+
+```
+seal           FAIL  policy 0x30001; seal_id strict-bench-v1; measurement 519c7c9a… (policy is 0x30001, not 0x30000)
+support grant  OPEN  grant 39602e79e81a; expires 2026-11-20T15:50:44Z; key SHA256:zaZC3CG0…; line present in /root/.ssh/authorized_keys
+
+OPEN — a support grant is live until 2026-11-20T15:50:44Z (grant 39602e79e81a); 1 other check FAIL (seal): the report did not pass.
+```
+
+and with a planted key and its private half beside the grant (`usable keys`
+fails for more than the grant):
+
+```
+usable keys    FAIL  2 authorized key(s) other than the measured throwaway in /root/.ssh/authorized_keys: SHA256:zaZC3CG0…, SHA256:+miR6jIgSAfkl/YB…; the support grant 39602e79e81a explains one of them (expires 2026-11-20T15:50:44Z); 1 private half on the machine: /home/odile/.ssh/id_ed25519
+
+OPEN — a support grant is live until 2026-11-20T15:50:44Z (grant 39602e79e81a); 1 other check FAIL (usable keys): the report did not pass.
+```
+
+The exit status follows the rows: 1 wherever a row fails (the pure grant above
+and both compound states), 0 in the reboot window and with no grant. A grant
+accounts for `usable keys` only when the single foreign key is the state's own
+fingerprint and for `operator key` only when the one grant-shaped line is the
+exact line the state owns, so a second planted key keeps its own FAIL label.
 
 HQ audits a grant through the log the tenant carries
 (`/var/log/odile-support.log`), `odile-support status --json`, and the
-`audit`/`logs` sections of the bundle the user emails. Teaching `/verify` to
-name the grant (its id, expiry and fingerprint) rather than show a bare FAIL
-needs the reporter in `installer/odile_install.py`; ODL-474 landed the A10
-sentence and the installer placement, and the reporter row is routed to card
-`t_e23f3288`.
+`audit`/`logs` sections of the bundle the user emails.
+
+A tenant's `/verify` is `verify/verify.py` + `templates/verify.html`
+(`odile-verify.service` on 127.0.0.1:8098 behind Caddy's one no-store handle),
+and it names a live grant in its own `support access` row, read from the state
+file by the program that writes it (`odile-support status --json`). Rendered on
+2026-11-20 with the shipped program over a bench root
+(`verify/verify.py --root <bench> --luks-dump <dump> --now <t> --out <page>`),
+the grant state reads:
+
+```
+support access  NOTE  grant live: 544895ed3819, expires 2026-11-21T00:36:31Z, reason ODL-217 drill: grant, use, expire · 2 keys in authorized_keys (1 grant) · 2 keyslots · support key SHA256:9wJnb+0o…
+LUKS            NOTE  2 keyslots (0, 1) — the second is the support grant's handover; after revoke the header must be one keyslot again
+```
+
+and with the state removed the same two rows read `support access  PASS  no
+grant` and `LUKS  PASS  one keyslot (slot 0), no token: one volume key, no
+second way in`. The page's tenant block carries the published scoped row
+(`No one at Odile can log in unless you grant it.`, `docs/CLAIMS.md` §1
+*Access*), so the sentence above the rows and the row that proves it agree.
+
+The report's sixth row is this card's too. The reporter
+(`scripts/verify_and_unlock.sh`, `332eccdf…`) ships inside the signed installer
+and `2026.11.20-2`: with no grant it prints the five rows and `PASS — five
+checks …` (exit 0); with a live grant it prints the same five plus
+`support grant  OPEN  grant <id>; expires …; key …; line present …` and an
+`OPEN — …` verdict (exit 1). The parsers in `app.py` and
+`installer/first_visit.py` accept the sixth row only together with the OPEN
+verdict. The tenant's page no longer reads the report file — it reads the state
+directly — so the report is the support bundle's copy and HQ's fallback page's
+copy of the machine's own audit (`docs/runbooks/install.md` §12.6).
 
 ---
 
 ## 8. The drill (2026-11-12, re-run 2026-11-13)
 
-**Machine:** the M1 tenant `odl-7971a8` (`203.0.113.87`, Debian 13, SEV-SNP,
+**Machine:** the M1 tenant `odl-fake01` (`203.0.113.87`, Debian 13, SEV-SNP,
 the ODL-332 image), driven through its own Webapp terminal as the `tenant` user
 with NOPASSWD sudo, from this workstation. The tenant's `/verify` still reports
 the ODL-332 pin: seal id `53ac131dda13e47a`, measurement `9f01725a…f137`.
@@ -468,7 +551,7 @@ $ sudo odile-support grant --hours 0.02 --reason 'ODL-217 drill: grant, use, exp
 systemctl daemon-reload: ok
 systemctl enable --now odile-support-expire.timer: ok
 grant live
-  tenant:     odl-7971a8
+  tenant:     odl-fake01
   reason:     ODL-217 drill: grant, use, expire
   expires:    2026-11-13T00:07:19Z (1m left)
   key:        SHA256:clN4wFkPkmjrpKbjkg6Z7N7zSB3L7w/AcHV5ysbfWAQ (odile-support-grant-9947606342d1)
@@ -676,7 +759,7 @@ The live values were the tenant's own: a 35-character meter key (`sk-` + 32
 hex), an 86-character scrypt sign-in hash, a 32-character backup password, a
 35-character NEAR key, and a two-line workspace file. The workspace's lines are
 `odile-smoke-ok` and `tenant`; the second is also the bundle header's own word
-(`tenant: odl-7971a8`), so the check names the distinctive `odile-smoke-ok`
+(`tenant: odl-fake01`), so the check names the distinctive `odile-smoke-ok`
 line — the generic word is not evidence either way. None of these values is in
 the bundle; the planted ones are replaced by `PASSWORD=[redacted]`,
 `NEAR_API_KEY=[redacted]`, `Authorization: [redacted]` and
@@ -705,7 +788,8 @@ bundle defect.
 
 During the live grant, a regenerated report gave `usable keys FAIL`,
 `operator key FAIL` and the page's `FAIL — the access report did not pass`
-(the rows are quoted in §7). After `revoke`, a regenerated report gave
+(the drill's rows; §7 quotes the shape after the sixth row landed with
+`t_e23f3288`). After `revoke`, a regenerated report gave
 `usable keys PASS`, `operator key PASS`, `PASS — five checks …`.
 
 After the drill the machine was put back: `revoke`, the seed key restored in

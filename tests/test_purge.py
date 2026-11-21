@@ -38,7 +38,7 @@ if str(ROOT) not in sys.path:
 from odilectl import cli, purge  # noqa: E402
 from odilectl.state import StateStore  # noqa: E402
 
-SLUG = "odl-7971a8"
+SLUG = "odl-fake01"
 DUE = "2026-11-01T00:00:00Z"  # past for every run of this suite
 FUTURE = "2099-01-01T00:00:00Z"
 PASSWORD = "test-purge-password-2026-0001"
@@ -415,7 +415,7 @@ class PurgeRealResticTest(PurgeFixture):
         self.set_backup(repo=f"sftp:odile-backup@backup.odile.fyi:/tenants/{SLUG}-other")
         code, out, err = self.command(apply=True)
         self.assertEqual(code, 2)
-        self.assertIn("not 'odl-7971a8'", err)
+        self.assertIn("not 'odl-fake01'", err)
         self.assertTrue(self.repo.exists())
 
     def test_the_plan_is_the_default_and_apply_is_what_deletes(self):

@@ -5,9 +5,9 @@
 checkout carries an untracked private operating record under `docs/ops/`. While
 the lists came from `find`, one shellcheck warning in a private evidence script
 failed `lint` for every merge (ODL-338). The lists now come from `git ls-files`,
-plus `.githooks/pre-commit`, which is shell but has no `.sh` suffix. A tree with
-no git — the built public tree — keeps the directory walk, so it still lints
-every script it ships.
+plus the hooks, which are shell but have no `.sh` suffix. A tree with no git —
+the built public tree — keeps the directory walk, so it still lints every script
+it ships.
 
 Each test builds a throwaway repository and asserts what `make -n` plans, so the
 suite pins the scope the gate applies rather than the Makefile's text.
@@ -180,7 +180,9 @@ class ThisCheckoutTest(unittest.TestCase):
 
     def test_the_checkouts_lint_plan_is_its_index(self) -> None:
         self.assertEqual(sorted(self.plan("lint", "shellcheck")),
-                         sorted(self.tracked("*.sh") + [".githooks/pre-commit"]))
+                         sorted(self.tracked("*.sh")
+                                + [".githooks/commit-msg", ".githooks/pre-commit",
+                                   ".githooks/pre-push"]))
 
     def test_the_checkouts_compile_plan_is_its_index(self) -> None:
         self.assertEqual(sorted(self.plan("compile",

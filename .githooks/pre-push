@@ -1,0 +1,128 @@
+#!/bin/sh
+# Odile pre-push gate: the outgoing range must not carry a private literal.
+#
+# The pre-commit hook runs `make check`, which scans the whole tree. This hook
+# covers the two surfaces a file scan cannot see: the commit messages and the
+# content of the commits about to leave the machine. It reads the same deny list
+# as `make leak` — HQ's `docs/ops/leak-forbid.txt`, the one copy; the repository
+# publishes none — and the same allowlist, by path: a live identifier the tree
+# keeps (a tenant slug a program reads) is pinned at its own path in
+# `leak-allow.tsv`, so the commit that carries it is not a leak while the same
+# value at any other path is. The commit-message surface's path is the label
+# `commit-message` (the name `.githooks/commit-msg` scans under too), so a
+# message naming a literal blocks unless an allowlist row whose path is
+# `commit-message` pins that exact value's digest; the row's reason must not
+# quote the value (the self-satisfying rule).
+#
+# A clone carries no list (the repository does not publish one), so on a clone
+# this hook prints `forbid list absent` and lets the push through: there is
+# nothing to scan against. Supply the list at the documented path to arm it.
+# CI holds the same bytes as the `LEAK_FORBID_B64` secret and scans every blob,
+# so a literal that a clone pushed unscanned is still a red run.
+#
+# Git does not version hook installation, so enable it once per clone:
+#
+#     make hooks
+#
+# The deliberate bypass is:
+#
+#     git push --no-verify
+#
+# It is for a push whose literal is already in the remote (a rewrite in
+# progress), never for "the hook is inconvenient": CI's `history-secrets` job
+# runs the same list over every blob, so a bypassed literal is a red run.
+set -eu
+
+cd "$(git rev-parse --show-toplevel)"
+
+PYTHON=${PYTHON:-/usr/bin/python3}
+SCANNER=tools/leak_scan.py
+
+FORBID=docs/ops/leak-forbid.txt
+if [ ! -f "$FORBID" ]; then
+    printf 'pre-push: forbid list absent: %s\n' "$FORBID" >&2
+    printf 'pre-push: the outgoing range was not scanned for private literals.\n' >&2
+    printf 'pre-push: the repository does not publish the list; supply it at that path\n' >&2
+    printf 'pre-push: to arm this hook (CI scans every blob with the same bytes).\n' >&2
+    exit 0
+fi
+if [ ! -f "$SCANNER" ]; then
+    printf 'pre-push: %s is missing; refusing to push an unscanned range.\n' "$SCANNER" >&2
+    exit 1
+fi
+
+# The base of the outgoing range. An upstream is the card's form:
+# `git log @{u}..HEAD --format=%B` and `git diff @{u}...HEAD`. A new branch has
+# no upstream yet, so fall back to the merge base with origin/main; a repository
+# with neither has no ref to compare against, so every commit in HEAD is
+# outgoing and the empty tree is the base.
+EMPTY_TREE=$(git hash-object -t tree /dev/null)
+BASE=
+if git rev-parse --verify --quiet '@{u}' >/dev/null 2>&1; then
+    BASE='@{u}'
+elif git rev-parse --verify --quiet refs/remotes/origin/main >/dev/null 2>&1; then
+    BASE=$(git merge-base HEAD refs/remotes/origin/main)
+else
+    BASE=$EMPTY_TREE
+fi
+if [ "$BASE" = "$EMPTY_TREE" ]; then
+    MESSAGES=HEAD
+else
+    MESSAGES="$BASE..HEAD"
+fi
+
+scan() {
+    "$PYTHON" "$SCANNER" --stdin --label "$1" --forbid-file "$FORBID"
+}
+
+# A patch is scanned per path: the scanner files each added line under the
+# `+++ b/<path>` header it followed, so an allowlist row pinned at that path
+# waives it and the same value at another path is still a finding.
+scan_patch() {
+    "$PYTHON" "$SCANNER" --stdin-patch --label "$1" --forbid-file "$FORBID"
+}
+
+# Every diff scan skips the deny list by path, wherever a copy of it sits. The
+# list carries its literals by definition, so scanning it would report its own
+# rows. Two paths: `docs/ops/leak-forbid.txt` (the one list, untracked at HQ)
+# and the retired root `leak-forbid.txt` that this branch's own history added
+# and a later commit removes — the deletion is not scanned, but the commit that
+# added it is. The commit-message scan excludes no path: a message is not a file
+# in the tree, so its only waiver is a `commit-message` allowlist row that pins
+# the value.
+without_the_lists() {
+    git "$@" -- . ":(exclude)docs/ops/leak-forbid.txt" ":(exclude)leak-forbid.txt"
+}
+
+status=0
+
+# 1. Every commit message in the outgoing range.
+if ! git log --format=%B "$MESSAGES" | scan commit-message; then
+    status=1
+fi
+
+# 2. The range's net diff, added lines only: a line being removed is not
+#    outgoing. `git diff @{u}...HEAD` is the card's command; the empty-tree
+#    case diffs the whole head, because every commit in it is outgoing.
+if [ "$BASE" = "$EMPTY_TREE" ]; then
+    if ! without_the_lists diff --no-color "$EMPTY_TREE" HEAD | scan_patch outgoing-diff; then
+        status=1
+    fi
+elif ! without_the_lists diff --no-color "$BASE...HEAD" | scan_patch outgoing-diff; then
+    status=1
+fi
+
+# 3. Each outgoing commit's own added lines, so a literal added and removed
+#    again inside one push is still caught: it is in the pushed history.
+if ! without_the_lists log --format= --no-color -p "$MESSAGES" | scan_patch outgoing-history; then
+    status=1
+fi
+
+if [ "$status" -ne 0 ]; then
+    printf '\npre-push: a private literal is in the outgoing range; the push did not happen.\n' >&2
+    printf 'pre-push: rewrite the commit (or remove the literal), or bypass deliberately with:\n' >&2
+    printf 'pre-push:     git push --no-verify\n' >&2
+    exit 1
+fi
+
+printf 'pre-push: the outgoing range carries no literal from %s\n' "$FORBID"

@@ -37,6 +37,7 @@ import urllib.error
 import urllib.request
 from unittest import mock
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from html.parser import HTMLParser
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -637,6 +638,18 @@ def load_app():
 _SNP = None
 
 
+def load_installer():
+    """The signed installer as a module: its parser is the installed one."""
+    spec = importlib.util.spec_from_file_location(
+        "odile_install_odl474b", ROOT / "installer" / "odile_install.py")
+    if spec is None or spec.loader is None:
+        raise AssertionError("cannot load installer/odile_install.py")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
 def load_snp_report():
     """tools/snp_report.py as a module: the KDS and TCB helpers under test."""
     global _SNP
@@ -873,6 +886,215 @@ class AccessReportTests(unittest.TestCase):
         self.assertRegex(result.stdout, r"operator key\s+FAIL")
         self.assertIn("odile-support", result.stdout)
         self.assertIn("/home/odile/.ssh/authorized_keys", result.stdout)
+
+    # -- a live support grant is named, not a bare FAIL (t_e23f3288) -----
+    #
+    # A grant is a key in authorized_keys by design, so `usable keys` and
+    # `operator key` fail while it is open. What the page lacked was a row
+    # that says *why*: the grant id, its expiry and the key fingerprint. The
+    # state file is the witness, not the line's shape — a hand-written
+    # grant-shaped line with no live state must still fail (the two tests
+    # above pin that).
+    GRANT_ID = "7bc06cc48244"
+    GRANT_EXPIRES = "2099-01-01T00:00:00Z"
+    GRANT_KEY = ("ssh-ed25519 "
+                 "AAAAC3NzaC1lZDI1NTE5AAAAIMdWyPF1Bcwd6sFiL4KiUtmYTq2FLe95TmfBQS0fEnu2"
+                 " support@hq")
+    OTHER_KEY = "AAAAC3NzaC1lZDI1NTE5AAAAIBW0mNRc2zHqyCxjwkzfdIt+lubwOEBY/Repnbm1lqCn"
+
+    def key_fingerprint(self, blob: str) -> str:
+        return "SHA256:" + base64.b64encode(
+            hashlib.sha256(base64.b64decode(blob)).digest()).decode().rstrip("=")
+
+    def grant_line(self, *, blob: str | None = None, grant_id: str | None = None,
+                   command: str = "/usr/local/sbin/odile-support session") -> str:
+        """The one line `odile-support grant` appends to root's key file."""
+        blob = blob or self.GRANT_KEY.split()[1]
+        return ('command="%s",no-agent-forwarding,no-port-forwarding,'
+                "no-X11-forwarding,no-user-rc ssh-ed25519 %s odile-support-grant-%s"
+                % (command, blob, grant_id or self.GRANT_ID))
+
+    def grant_state(self, **fields: object) -> dict:
+        """A live grant's state file: public material only, 0644 on a tenant."""
+        blob = self.GRANT_KEY.split()[1]
+        state = {
+            "version": 1,
+            "grant_id": self.GRANT_ID,
+            "slug": "odl-bench",
+            "reason": "ODL-217 drill: grant, use, expire",
+            "created_at": "2026-11-12T21:23:43Z",
+            "expires_at": self.GRANT_EXPIRES,
+            "hours": 24.0,
+            "key_type": "ssh-ed25519",
+            "key_blob": blob,
+            "key_fingerprint": self.key_fingerprint(blob),
+            "key_comment": "support@hq",
+        }
+        state.update(fields)
+        return state
+
+    def test_a_live_grant_is_its_own_open_row(self) -> None:
+        """The two FAIL rows stay honest; a sixth row names the grant."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self.bench(
+                Path(tmp),
+                keys=(self.THROWAWAY, self.grant_line()),
+                extra_files={"var/lib/odile/support-grant.json":
+                             json.dumps(self.grant_state())},
+            )
+            result = self.report(root)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertRegex(result.stdout, r"usable keys\s+FAIL")
+        self.assertRegex(result.stdout, r"operator key\s+FAIL")
+        self.assertRegex(result.stdout, r"support grant\s+OPEN")
+        self.assertIn(self.GRANT_ID, result.stdout)
+        self.assertIn(self.GRANT_EXPIRES, result.stdout)
+        self.assertIn(self.key_fingerprint(self.GRANT_KEY.split()[1]), result.stdout)
+        self.assertIn("line present", result.stdout)
+        # The verdict is the grant, not the bare FAIL that read as a break.
+        self.assertRegex(result.stdout.splitlines()[-1], r"^  OPEN \u2014 ")
+        self.assertIn("the two key rows fail because that granted key is in", result.stdout)
+        self.assertNotIn("FAIL \u2014 the access report did not pass", result.stdout)
+
+    def test_a_live_grant_and_a_failed_seal_names_both(self) -> None:
+        """A grant explains the key rows, not the seal; the verdict says both.
+
+        The verdict used to be chosen from `grant` before `fails`, so a
+        machine that also failed attestation read as "only the grant is open",
+        and the causal sentence blamed two rows while three had failed.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self.bench(
+                Path(tmp),
+                keys=(self.THROWAWAY, self.grant_line()),
+                policy=0x30001,
+                extra_files={"var/lib/odile/support-grant.json":
+                             json.dumps(self.grant_state())},
+            )
+            result = self.report(root)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertRegex(result.stdout, r"seal\s+FAIL")
+        self.assertRegex(result.stdout, r"support grant\s+OPEN")
+        verdict = result.stdout.splitlines()[-1]
+        self.assertRegex(verdict, r"^  OPEN \u2014 a support grant is live until ")
+        self.assertIn(self.GRANT_ID, verdict)
+        self.assertIn("1 other check FAIL (seal)", verdict)
+        self.assertIn("the report did not pass", verdict)
+        self.assertNotIn("the two key rows fail", verdict)
+
+    def test_a_live_grant_and_a_planted_key_name_the_other_failure(self) -> None:
+        """`usable keys` failing for more than the grant is still reported.
+
+        The row said two foreign keys and a private half; the verdict said the
+        two key rows fail because of the grant, which the row contradicts.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            subprocess.run(
+                ["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-C", "bench-user",
+                 "-f", str(tmp_path / "user")],
+                check=True,
+            )
+            public = (tmp_path / "user.pub").read_text(encoding="utf-8").strip()
+            private = (tmp_path / "user").read_text(encoding="utf-8")
+            root = self.bench(
+                tmp_path,
+                keys=(self.THROWAWAY, self.grant_line(), public),
+                private_key=("home/odile/.ssh/id_ed25519", private),
+                extra_files={"var/lib/odile/support-grant.json":
+                             json.dumps(self.grant_state())},
+            )
+            result = self.report(root)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("2 authorized key(s) other than the measured throwaway", result.stdout)
+        self.assertIn("1 private half on the machine", result.stdout)
+        self.assertRegex(result.stdout, r"support grant\s+OPEN")
+        verdict = result.stdout.splitlines()[-1]
+        self.assertRegex(verdict, r"^  OPEN \u2014 a support grant is live until ")
+        self.assertIn(self.GRANT_ID, verdict)
+        self.assertIn("1 other check FAIL (usable keys)", verdict)
+        self.assertIn("the report did not pass", verdict)
+        self.assertNotIn("the two key rows fail", verdict)
+
+    def test_a_live_grant_after_the_boot_rewrite_is_open_and_passes_five(self) -> None:
+        """The boot rewrite deletes the line; the state keeps the grant live.
+
+        `odile-release-setup.service` rewrites authorized_keys at every boot and
+        the grant's timer restores its line within 30 s, so the report the boot
+        oneshot writes often sees a live grant with no line. Five rows PASS and
+        the grant row says the line is missing.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self.bench(
+                Path(tmp),
+                extra_files={"var/lib/odile/support-grant.json":
+                             json.dumps(self.grant_state())},
+            )
+            result = self.report(root)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        for tag in ("usable keys", "boot key", "seal", "sign-in hash", "operator key"):
+            self.assertRegex(result.stdout, r"%s\s+PASS" % tag)
+        self.assertRegex(result.stdout, r"support grant\s+OPEN")
+        self.assertIn("line missing", result.stdout)
+        self.assertRegex(result.stdout.splitlines()[-1], r"^  OPEN \u2014 ")
+
+    def test_an_expired_or_revoked_grant_state_is_not_live(self) -> None:
+        """Only a grant still in its window is named; a tombstone is not."""
+        cases = {
+            "expired": {"expires_at": "2020-01-01T00:00:00Z"},
+            "expired-tombstone": {"expires_at": "2020-01-01T00:00:00Z",
+                                  "expired_at": "2026-11-13T00:07:48Z"},
+            "revoked": {"revoked_at": "2026-11-13T00:08:08Z"},
+        }
+        for name, fields in cases.items():
+            with self.subTest(state=name), tempfile.TemporaryDirectory() as tmp:
+                root = self.bench(
+                    Path(tmp),
+                    keys=(self.THROWAWAY, self.grant_line()),
+                    extra_files={"var/lib/odile/support-grant.json":
+                                 json.dumps(self.grant_state(**fields))},
+                )
+                result = self.report(root)
+            self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+            self.assertNotIn("support grant", result.stdout)
+            self.assertRegex(result.stdout.splitlines()[-1],
+                             r"^  FAIL \u2014 the access report did not pass")
+
+    def test_a_grant_state_does_not_excuse_a_different_key(self) -> None:
+        """The state names one fingerprint; a line carrying another still fails.
+
+        A root shell can write the state file, so the row may only excuse the
+        exact line `grant` would have written for that state.
+        """
+        line = self.grant_line(blob=self.OTHER_KEY)
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self.bench(
+                Path(tmp),
+                keys=(self.THROWAWAY, line),
+                extra_files={"var/lib/odile/support-grant.json":
+                             json.dumps(self.grant_state())},
+            )
+            result = self.report(root)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertRegex(result.stdout, r"usable keys\s+FAIL")
+        self.assertIn(self.key_fingerprint(self.OTHER_KEY), result.stdout)
+        self.assertRegex(result.stdout, r"support grant\s+OPEN")
+        self.assertIn("line missing", result.stdout)
+
+    def test_a_matching_key_with_the_wrong_forced_command_is_not_the_grant(self) -> None:
+        """Same key, same marker, but a command that is not the session wrapper."""
+        line = self.grant_line(command="/bin/sh -c id")
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self.bench(
+                Path(tmp),
+                keys=(self.THROWAWAY, line),
+                extra_files={"var/lib/odile/support-grant.json":
+                             json.dumps(self.grant_state())},
+            )
+            result = self.report(root)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertRegex(result.stdout, r"operator key\s+FAIL")
+        self.assertIn("line missing", result.stdout)
 
     def test_the_boot_private_half_outside_a_dot_ssh_dir_fails(self) -> None:
         """A private key is not less dangerous because it is not under .ssh.
@@ -1272,6 +1494,86 @@ class OwnReportTests(unittest.TestCase):
         self.assertIn("usable keys    FAIL", page)
         self.assertIn("FAIL \u2014 the access report did not pass", page)
         self.assertIn("read from your machine", page)
+
+    # -- a live grant on the page (t_e23f3288) ---------------------------
+    GRANT_ROW = ("  " + "%-14s" % "support grant" + " OPEN  "
+                 "grant 7bc06cc48244; expires 2099-01-01T00:00:00Z; "
+                 "key SHA256:clN4wFkPkmjrpKbjkg6Z7N7zSB3L7w/AcHV5ysbfWAQ; line present")
+    OPEN_SUMMARY = ("OPEN \u2014 a support grant is live until 2099-01-01T00:00:00Z "
+                    "(grant 7bc06cc48244): the two key rows fail because that "
+                    "granted key is in /root/.ssh/authorized_keys.")
+
+    def grant_rows(self) -> tuple[str, ...]:
+        rows = list(self.PASS_ROWS)
+        rows[0] = ("  usable keys    FAIL  1 authorized key(s) other than the "
+                   "measured throwaway in /root/.ssh/authorized_keys: "
+                   "SHA256:clN4wFkPkmjrpKbjkg6Z7N7zSB3L7w/AcHV5ysbfWAQ "
+                   "\u2014 the support grant 7bc06cc48244 (expires "
+                   "2099-01-01T00:00:00Z)")
+        rows[4] = ("  operator key   FAIL  authorized_keys carries "
+                   "command=\"/usr/local/sbin/odile-support session\" "
+                   "odile-support-grant-7bc06cc48244 \u2014 the support grant "
+                   "7bc06cc48244, expires 2099-01-01T00:00:00Z")
+        return tuple(rows) + (self.GRANT_ROW,)
+
+    def test_a_live_grant_report_reaches_the_page(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = self.write_report(Path(tmp), rows=self.grant_rows(),
+                                     summary=self.OPEN_SUMMARY)
+            page = self.app_page("tenant", path)
+        block = re.search(r'<pre class="report-pre"><code>(.*?)</code></pre>', page, re.S)
+        self.assertIsNotNone(block, "the grant report is not shown as this machine's")
+        quoted = html.unescape(block.group(1))
+        self.assertRegex(quoted, r"support grant\s+OPEN")
+        self.assertIn("7bc06cc48244", quoted)
+        self.assertIn("2099-01-01T00:00:00Z", quoted)
+        self.assertIn("OPEN \u2014 a support grant is live", quoted)
+        self.assertNotIn("not in the shape the reporter writes", page)
+
+    def test_a_grant_row_without_an_open_verdict_is_not_the_reporter_shape(self) -> None:
+        """The row and the verdict move together; half of one is a bad file."""
+        for name, rows, summary in (
+            ("row-with-fail", self.grant_rows(), self.FAIL_SUMMARY),
+            ("open-without-row", self.PASS_ROWS, self.OPEN_SUMMARY),
+        ):
+            with self.subTest(shape=name), tempfile.TemporaryDirectory() as tmp:
+                path = self.write_report(Path(tmp), rows=tuple(rows), summary=summary)
+                page = self.app_page("tenant", path)
+            self.assertNotIn("support grant", page)
+            self.assertIn("not in the shape the reporter writes", page)
+
+    def test_the_three_parsers_agree_on_a_grant_report(self) -> None:
+        """app.py, first_visit.py and the installer's embedded copy read alike.
+
+        The installer ships `first_visit.py` as an embedded string, so the copy
+        under test is the one a tenant gets, not a checkout file beside it.
+        """
+        sys.path.insert(0, str(ROOT / "installer"))
+        import first_visit  # noqa: E402
+        installer = load_installer()
+        with tempfile.TemporaryDirectory() as tmp:
+            path = self.write_report(Path(tmp), rows=self.grant_rows(),
+                                     summary=self.OPEN_SUMMARY)
+            shipped = Path(tmp) / "shipped_first_visit.py"
+            shipped.write_text(installer.FIRST_VISIT_SOURCE, encoding="utf-8")
+            spec = importlib.util.spec_from_file_location("first_visit_shipped", shipped)
+            embedded = importlib.util.module_from_spec(spec)
+            sys.modules[spec.name] = embedded
+            spec.loader.exec_module(embedded)
+            app = load_app()
+            saved = app.ACCESS_REPORT_PATH
+            app.ACCESS_REPORT_PATH = str(path)
+            try:
+                from_app = app.access_report()
+            finally:
+                app.ACCESS_REPORT_PATH = saved
+            answers = [from_app, first_visit.access_report(path),
+                       embedded.access_report(path)]
+        for answer in answers[1:]:
+            self.assertEqual(answer, answers[0],
+                             "a parser disagrees with app.py on the grant report")
+        self.assertEqual(answers[0]["state"], "ok")
+        self.assertRegex(answers[0]["text"], r"support grant\s+OPEN")
 
     def test_without_a_file_the_demo_keeps_the_bench_and_the_tenant_says_so(self) -> None:
         demo = self.app_page("demo", None)
@@ -1768,6 +2070,185 @@ class VerifyReadmeNoteTests(unittest.TestCase):
         self.assertIn("synthetic test-only chain with no network", text)
 
 
+class FocusOrder(HTMLParser):
+    """The document order of what a browser would tab to, and nothing else.
+
+    ``<a href>``, ``<button>``, ``<input>`` that is not hidden, ``<select>``,
+    ``<textarea>`` and any element with a non-negative ``tabindex``. A class
+    name proves nothing about order, so the tests read the rendered page: the
+    skip link's whole contract is that it comes first.
+    """
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.stops: list[dict[str, str | None]] = []
+
+    def handle_starttag(self, tag: str,
+                        attrs: list[tuple[str, str | None]]) -> None:
+        attributes = dict(attrs)
+        tabindex = (attributes.get("tabindex") or "").strip()
+        kind = (attributes.get("type") or "text").strip().lower()
+        focusable = (
+            (tag == "a" and attributes.get("href") is not None)
+            or tag in ("button", "select", "textarea")
+            or (tag == "input" and kind != "hidden")
+            or (tabindex.isdigit() and int(tabindex) >= 0)
+        )
+        if focusable:
+            self.stops.append({
+                "tag": tag,
+                "class": attributes.get("class") or "",
+                "id": attributes.get("id"),
+                "href": attributes.get("href"),
+            })
+
+
+def focus_order(body: str) -> list[dict[str, str | None]]:
+    """What the page's own markup makes tabbable, in document order."""
+    parser = FocusOrder()
+    parser.feed(body)
+    parser.close()
+    return parser.stops
+
+
+def main_id(body: str) -> str | None:
+    """The ``id`` on the page's ``<main>``, or None when it carries none."""
+    element = re.search(r"<main\b([^>]*)>", body)
+    if element is None:
+        return None
+    attribute = re.search(r'\bid="([^"]+)"', element.group(1))
+    return attribute.group(1) if attribute else None
+
+
+class VerifySkipLinkTests(unittest.TestCase):
+    """BRAND.md's Keyboard row on HQ's /verify page.
+
+    The page exposes four landmarks in the demo role and three on a tenant, so
+    the rule applies: a skip link is the first focusable element and it names
+    the page's own ``main``. HQ serves ``web/verify-public.html``; the review
+    reads ``web/verify.html``; the machine's page is ``templates/verify.html``,
+    rendered by ``odile-verify`` (asserted in ``VerifyPageTests``). One shell,
+    three carriers, so all three must carry the same rule.
+    """
+
+    AT = "2026-11-11T10:00:00Z"
+    REPORT = (
+        "read from your machine, 2026-11-11T10:00:00Z\n"
+        "verify_and_unlock \u2014 access report\n\n"
+        "  usable keys    PASS  0 usable user keys; every authorized_keys line is the measured boot key\n"
+        "  boot key       PASS  ssh-ed25519 SHA256:LLwDfYyE3VMc9T9o+XvydfNzrXxyzaQ2lysSxCSSEWA; public key only\n"
+        "  seal           PASS  policy 0x30000; seal_id strict-bench-v1; measurement " + "a" * 96 + "\n"
+        "  sign-in hash   PASS  scrypt hash present in /home/odile/.hermes/.env; no plaintext password\n"
+        "  operator key   PASS  none (authorized_keys: 1 line(s), the measured throwaway)\n\n"
+        "  PASS \u2014 five checks: zero usable user keys, the throwaway boot key, the seal, "
+        "the sign-in hash, no operator key.\n"
+    )
+
+    def setUp(self) -> None:
+        self._dir = tempfile.TemporaryDirectory(prefix="odile-verify-skip-")
+        self.base = Path(self._dir.name)
+
+    def tearDown(self) -> None:
+        self._dir.cleanup()
+
+    def page(self, role: str, report: str | None) -> str:
+        """app.py's render of the HQ page, with or without a report file."""
+        app = load_app()
+        saved = app.ACCESS_REPORT_PATH
+        if report is None:
+            app.ACCESS_REPORT_PATH = str(self.base / "no-report.txt")
+        else:
+            path = self.base / "access-report.txt"
+            path.write_text(report, encoding="utf-8")
+            app.ACCESS_REPORT_PATH = str(path)
+        try:
+            return app.render_verify(role)
+        finally:
+            app.ACCESS_REPORT_PATH = saved
+
+    def states(self) -> dict[str, str]:
+        """The demo's bench fallback and report, and a tenant with each."""
+        return {
+            "demo-bench": self.page("demo", None),
+            "demo-machine": self.page("demo", self.REPORT),
+            "tenant-machine": self.page("tenant", self.REPORT),
+            "tenant-noaccess": self.page("tenant", None),
+        }
+
+    def test_the_first_tab_stop_in_every_state_is_a_skip_link_to_that_pages_main(self):
+        for name, body in self.states().items():
+            with self.subTest(state=name):
+                stops = focus_order(body)
+                self.assertTrue(stops, "the %s page has no focusable element" % name)
+                first = stops[0]
+                self.assertEqual(first["tag"], "a",
+                                 "the first tab stop is <%s>, not the skip link"
+                                 % first["tag"])
+                self.assertIn("skip", (first["class"] or "").split(),
+                              "the first tab stop is not the skip link: %r" % first)
+                target = main_id(body)
+                self.assertIsNotNone(target, "the page's <main> carries no id")
+                self.assertEqual(first["href"], "#" + str(target),
+                                 "the skip link points at %r, not the page's main"
+                                 % first["href"])
+                self.assertIn('<a class="skip" href="#%s">Skip to content</a>'
+                              % target, body)
+
+    def test_every_state_keeps_its_landmarks_and_its_one_heading(self):
+        """The skip link is an anchor before ``main``, so nothing else moves.
+
+        The demo role keeps the laptop section, the report, the access report
+        and the three gaps; a tenant keeps the report, its own access section
+        and the gaps. The header sits inside ``main``, so it is not a banner
+        landmark of its own, and one ``<h1>`` stays one ``<h1>``.
+        """
+        expected = {
+            "demo-bench": ["check", "report", "access", "gaps"],
+            "demo-machine": ["check", "report", "access", "gaps"],
+            "tenant-machine": ["report", "access", "gaps"],
+            "tenant-noaccess": ["report", "access", "gaps"],
+        }
+        for name, body in self.states().items():
+            with self.subTest(state=name):
+                self.assertEqual(
+                    re.findall(r'<section\b[^>]*aria-labelledby="([^"]+)"', body),
+                    expected[name], "a landmark was added or removed")
+                self.assertEqual(len(re.findall(r"<h1\b", body)), 1)
+                self.assertEqual(len(re.findall(r"<main\b", body)), 1)
+                self.assertEqual(len(re.findall(r"<header\b", body)), 1)
+
+    def test_the_shipped_carriers_read_the_skip_link_first_and_paint_the_ring(self):
+        """The review copy, the served copy and the machine's template agree."""
+        carriers = (ROOT / "web" / "verify.html",
+                    ROOT / "web" / "verify-public.html",
+                    TEMPLATE)
+        for path in carriers:
+            with self.subTest(page=path.name):
+                text = path.read_text(encoding="utf-8")
+                stops = focus_order(text)
+                self.assertTrue(stops, "the page has no focusable element")
+                self.assertIn("skip", (stops[0]["class"] or "").split(),
+                              "the first tab stop in the markup is %r" % stops[0])
+                self.assertEqual(stops[0]["href"], "#" + str(main_id(text)))
+                self.assertIn(".skip{position:absolute;left:-9999px;top:0}", text)
+                rule = re.search(r"\.skip:focus-visible\{([^}]*)\}", text)
+                self.assertIsNotNone(rule, "no :focus-visible rule reveals the skip link")
+                assert rule is not None  # the assertion above names the failure
+                declarations = rule.group(1)
+                self.assertIn("left:24px", declarations)
+                self.assertIn("min-height:44px", declarations)
+                self.assertIn("background:var(--ink)", declarations)
+                self.assertIn("color:var(--paper)", declarations)
+                self.assertIn("outline:2px solid var(--ink)", declarations,
+                              "the focus ring is not the sheet's 2 px --ink")
+                self.assertIn("outline-offset:3px", declarations,
+                              "the focus ring is not at the sheet's 3 px offset")
+                self.assertNotIn(".skip:focus{", text,
+                                 "the link shows on a mouse focus too")
+                self.assertIn(".skip:focus-visible{left:18px}", text,
+                              "the link does not follow main's 18 px inset at 390")
+
+
 class VerifyPageTests(unittest.TestCase):
     """The /verify page: every row, its provenance, and a page that fails honest.
 
@@ -1920,7 +2401,7 @@ Digests:
     def grant_document(self) -> dict:
         return {
             "grant_id": "9947606342d1",
-            "slug": "odl-7971a8",
+            "slug": "odl-fake01",
             "reason": "drill",
             "created_at": "2026-11-13T09:00:00Z",
             "expires_at": "2026-11-14T09:00:00Z",
@@ -2449,6 +2930,36 @@ Digests:
                              "PASS" if verdicts[audit_name] else "FAIL",
                              "the page and the audit disagree on %s" % audit_name)
         self.assertEqual(names["LUKS"]["state"], "PASS")
+
+    # -- the keyboard contract ---------------------------------------------
+
+    def test_the_first_tab_stop_is_the_skip_link_and_the_landmarks_did_not_move(self) -> None:
+        """BRAND.md's Keyboard row on the page a tenant actually reads.
+
+        The rendered page has four named sections, so a skip link comes first:
+        it is an anchor before ``main``, points at the page's own ``main``,
+        and adds or removes no landmark. The rule that paints the sheet's ring
+        is read in ``VerifySkipLinkTests``; here the page is the render
+        ``odile-verify`` produced, not the template text.
+        """
+        body = self.page()
+        stops = focus_order(body)
+        self.assertTrue(stops, "the rendered page has no focusable element")
+        self.assertEqual(stops[0]["tag"], "a",
+                         "the first tab stop is <%s>, not the skip link"
+                         % stops[0]["tag"])
+        self.assertIn("skip", (stops[0]["class"] or "").split())
+        target = main_id(body)
+        self.assertIsNotNone(target, "the page's <main> carries no id")
+        self.assertEqual(stops[0]["href"], "#" + str(target))
+        self.assertIn('<a class="skip" href="#%s">Skip to content</a>' % target, body)
+        self.assertEqual(
+            re.findall(r'<section\b[^>]*aria-labelledby="([^"]+)"', body),
+            ["laptop-h", "machine-h", "check-h", "gaps-h"],
+            "a landmark was added or removed")
+        self.assertEqual(len(re.findall(r"<h1\b", body)), 1)
+        self.assertEqual(len(re.findall(r"<main\b", body)), 1)
+        self.assertEqual(len(re.findall(r"<header\b", body)), 1)
 
 
 if __name__ == "__main__":

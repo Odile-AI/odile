@@ -902,7 +902,7 @@ class TenantVerify(unittest.TestCase):
                 self.assertIn(FETCHED_AT, body)
                 self.assertIn("read from your machine", body)
                 self.assertIn("usable keys    PASS", body)
-                self.assertIn("No one at Odile can log in to a tenant machine.", body)
+                self.assertIn("No one at Odile can log in unless you grant it.", body)
                 self.assertNotIn("This is Odile's tenant machine", body)
                 self.assertNotIn("from a test machine", body)
 

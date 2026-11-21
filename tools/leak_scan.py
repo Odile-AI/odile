@@ -50,6 +50,15 @@ Classes:
                          never appear in a published tree. The list itself is the
                          one file that carries them, so it is not scanned for its
                          own literals.
+* ``forbidden-path``     the same list matched against a file's relative path
+                         (and an archive member's name). A tree publishes its
+                         paths as surely as its bytes, and the builder's scrub
+                         rewrites text and never renames, so a file *named* with
+                         a vendor id would otherwise ship with clean contents.
+                         The value is the matched literal, so an allowlist row
+                         pins it by digest exactly as it pins a value inside a
+                         file. ``line`` is 1: a path finding is the file as a
+                         whole, in the ``path:line`` shape every finding uses.
 
 Opaque payloads. A base64 run longer than 128 characters is decoded and
 scanned; a UTF-16 payload is decoded before the text rules run; a DER or PEM
@@ -80,16 +89,41 @@ A row without a reason is itself a finding, and so is a row whose reason contain
 its own value: that row matches itself, so "every row matched" would prove
 nothing.
 
-The forbid list. The default is ``leak-forbid.txt`` at the root of the tree, and
-the public tree carries one (``tools/build_public_tree.py`` copies it). A missing
-default is printed in the header, so a skip is never silent; an explicitly named
-``--forbid-file`` that does not exist is a finding and exit 2, because the caller
-asked for that list and did not get it.
+The forbid list. There is one list, ``docs/ops/leak-forbid.txt``. It lives on
+HQ (``docs/ops/`` is excluded from git) and reaches CI as the
+``LEAK_FORBID_B64`` repository secret; the repository carries no copy, so a
+clone has no list unless one is supplied at that path. The list itself is the
+one file that carries its literals, so its path is skipped — and so is the
+retired published copy at the tree root, because the commits that first added
+it are still in history. A missing default is printed, so a skip is never
+silent; an explicitly named ``--forbid-file`` that does not exist is a finding
+and exit 2, because the caller asked for that list and did not get it. A hit is
+waived only by an allowlist row whose digest pins that exact value and whose
+path glob matches; that is how a permanent public fixture, or a debt row with
+the date of the card that clears it, is recorded.
+
+``--forbid-only`` runs that one class and skips the tree classes: it is what
+the CI history job uses, so an already-public address in an old root does not
+fail a job about the deny list. ``--stdin`` scans a stream under ``--label`` as
+its path — the commit-message surface, which both ``.githooks/commit-msg`` and
+the pre-push hook name ``commit-message``. That label is the surface's path, so
+an allowlist row whose path is ``commit-message`` and whose digest pins a value
+waives exactly that value in a message; the same row does not waive a different
+value, and the row's reason must not quote the value it waives (the
+self-satisfying rule below). ``--stdin-patch``
+scans a git patch and files each added line under the path of the file section
+it belongs to, so the allowlist's path column applies to an outgoing diff the
+same way it applies to a whole file: a live constant pinned at its own path
+is not a leak, and the same value at any other path still is. The hunk's own
+``@@ -a,b +c,d @@`` counts decide which lines are body: an added line may
+itself begin with ``++`` (a pasted ``set -x`` transcript reaches the parser as
+``+++ …``), so the prefix alone cannot tell a header from content.
 
 Usage:
 
     tools/leak_scan.py --tree                 # tracked and untracked files
-    tools/leak_scan.py --history              # every commit in rev-list --all
+    tools/leak_scan.py --history --forbid-only --forbid-file docs/ops/leak-forbid.txt
+    tools/leak_scan.py --stdin --label commit-message < messages.txt
     tools/leak_scan.py --all --forbid-file docs/ops/leak-forbid.txt
 
 Exit codes: 0 clean, 1 a finding, 2 the scan could not run.
@@ -111,6 +145,7 @@ import sys
 import tarfile
 import zipfile
 from collections import Counter
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path
@@ -120,7 +155,15 @@ MIN_ASSIGNMENT_LENGTH, MIN_ASSIGNMENT_ENTROPY = 20, 3.3
 SKIP_SUFFIXES = (".sig",)
 SKIP_DIRS = (".git", ".worktrees", ".fresh-clone", ".venv", "__pycache__", "node_modules")
 ALLOW_FILE = "leak-allow.tsv"
-DEFAULT_FORBID = "leak-forbid.txt"
+# The one list. HQ keeps it under docs/ops/ (excluded from git); CI installs
+# the same bytes from the LEAK_FORBID_B64 repository secret. A tree that has
+# neither has no deny list, and says so rather than passing silently.
+DEFAULT_FORBID = "docs/ops/leak-forbid.txt"
+# Paths that carry their own literals and are never scanned as content. The
+# second is the published root copy this repository used to ship; branches cut
+# before ODL-911's re-cut still carry it in history, and a history scan that
+# re-reported the list itself could never pass.
+FORBID_PATHS = (DEFAULT_FORBID, "leak-forbid.txt")
 
 # Addresses that are never a leak: loopback, private, link-local, CGNAT,
 # benchmarking, documentation and the public resolvers the product names.
@@ -294,7 +337,7 @@ TENANT_SLUG_ALLOW = {"odl-000000"}
 
 # A Servury account id is 8 lowercase alphanumerics, not hex: `account=…` and
 # `account_id=…` name the same resource, and the shape is a word's shape too,
-# so the value must carry a digit (`lkbxu6i9` is an id, `username` is a word).
+# so the value must carry a digit (`ab12cdzz` is an id, `username` is a word).
 ACCOUNT_ID = re.compile(
     r"(?i)\baccount(?:[_-]?id)?\b\s*[=:]\s*[\"']?([a-z0-9]{8})\b")
 
@@ -987,43 +1030,99 @@ def is_binary(data: bytes) -> bool:
     return b"\0" in data[:8192]
 
 
+def matching_allow(allows: list[Allow], path: str, rule: str, value: str) -> Allow | None:
+    """The allowlist row that waives this value at this path, if one does.
+
+    The digest is over the matched value, so a row cannot hide a different
+    value at the same path. A ``*`` path is allowed because the digest still
+    pins the one value.
+    """
+    digest = "sha256:" + hashlib.sha256(value.encode("utf-8", "replace")).hexdigest()[:12]
+    for row in allows:
+        if row.rule == rule and fnmatch.fnmatch(path, row.path) and row.digest == digest:
+            return row
+    return None
+
+
+def record(report: Report, allows: list[Allow], today: date, rule: str, path: str,
+           line: int, value: str, note: str = "") -> None:
+    """File one candidate as a finding, an allowance, or a broken row."""
+    hit = matching_allow(allows, path, rule, value)
+    if hit is None:
+        report.findings.append(Finding(rule, path, line, value, note=note))
+        return
+    if not hit.live(today):
+        report.findings.append(Finding("stale-allow", path, line, value,
+                                       note=f"expired {hit.expires} (debt)"))
+    elif value.strip() and value.strip() in hit.reason:
+        # The reason quotes the value it waives, so the row matches its own
+        # evidence and "every row matched" proves nothing.
+        report.findings.append(Finding("self-satisfying", path, line, value,
+                                       note="the row's reason contains its own value"))
+    else:
+        report.allowed += 1
+
+
 def apply(report: Report, root: Path, allows: list[Allow], today: date,
           path: str, candidates: list[tuple[str, int, str, str]]) -> None:
     for rule, line, value, note in candidates:
-        hit = None
-        for row in allows:
-            if row.rule != rule or not fnmatch.fnmatch(path, row.path):
-                continue
-            if row.digest == "sha256:" + hashlib.sha256(value.encode("utf-8", "replace")).hexdigest()[:12]:
-                hit = row
-                break
-        if hit is not None:
-            if not hit.live(today):
-                report.findings.append(Finding("stale-allow", path, line, value,
-                                               note=f"expired {hit.expires} (debt)"))
-            elif value.strip() and value.strip() in hit.reason:
-                # The reason quotes the value it waives, so the row matches its
-                # own evidence and "every row matched" proves nothing.
-                report.findings.append(Finding("self-satisfying", path, line, value,
-                                               note="the row's reason contains its own value"))
-            else:
-                report.allowed += 1
-            continue
-        report.findings.append(Finding(rule, path, line, value, note=note))
+        record(report, allows, today, rule, path, line, value, note)
 
 
-def scan_forbidden(text: str, path: str, forbid: list[tuple[str, re.Pattern[str]]]) -> list[Finding]:
-    found = []
+def scan_forbidden(report: Report, allows: list[Allow], today: date, text: str,
+                   path: str, forbid: list[tuple[str, re.Pattern[str]]]) -> int:
+    """File the forbidden literals in one text; return how many matched.
+
+    A hit is a finding unless an allowlist row pins that value (a permanent
+    fixture, or a debt row with the date of the card that clears it). The
+    forbid list itself carries its own literals, so the caller skips its path.
+    """
+    seen = 0
     for label, pattern in forbid:
         for match in pattern.finditer(text):
-            found.append(Finding("forbidden-value", path, text[:match.start()].count("\n") + 1,
-                                 match.group(0), note=label))
-    return found
+            seen += 1
+            record(report, allows, today, "forbidden-value", path,
+                   text[:match.start()].count("\n") + 1, match.group(0), label)
+    return seen
+
+
+def scan_forbidden_path(report: Report, root: Path, allows: list[Allow], today: date,
+                        path: str, forbid: list[tuple[str, re.Pattern[str]]],
+                        seen: set[tuple[str, str, str]] | None = None) -> None:
+    """File the forbid literals carried by one path.
+
+    The tree publishes a path as surely as a file's bytes, so the walk reads the
+    name too: a file called ``servury_reseller_key_<id>.txt`` is a leak even
+    when the file's contents are clean, and the builder's ``scrub()`` rewrites
+    text in place and never renames. The value is the matched literal, so an
+    allowlist row pins it by digest exactly as it pins a value inside a file —
+    the row's rule is ``forbidden-path``, not ``forbidden-value``, so a waiver
+    names the shape it waives. ``seen`` dedupes one path across the commits a
+    history scan walks, so a name is one finding, at the commit that first
+    carried it.
+    """
+    candidates: list[tuple[str, int, str, str]] = []
+    seen_here: set[tuple[str, str]] = set()
+    for label, pattern in forbid:
+        for match in pattern.finditer(path):
+            value = match.group(0)
+            here = (label, value)
+            if here in seen_here:
+                continue
+            seen_here.add(here)
+            if seen is not None:
+                key = (path, label, value)
+                if key in seen:
+                    continue
+                seen.add(key)
+            candidates.append(("forbidden-path", 1, value, label))
+    if candidates:
+        apply(report, root, allows, today, path, candidates)
 
 
 def scan_tree(root: Path, allows: list[Allow], today: date,
               forbid: list[tuple[str, re.Pattern[str]]],
-              skip: set[str] | None = None) -> Report:
+              skip: set[str] | None = None, forbid_only: bool = False) -> Report:
     report = Report("tree")
     skip = skip or set()
     listed = subprocess.run(["git", "-C", str(root), "ls-files", "-z"], capture_output=True).stdout.split(b"\0")
@@ -1035,6 +1134,10 @@ def scan_tree(root: Path, allows: list[Allow], today: date,
             continue
         if any(part in SKIP_DIRS for part in relative.split("/")):
             continue
+        # The path is published before and regardless of the bytes: read it
+        # before the file is opened, so an unreadable file and a skipped suffix
+        # cannot hide a name.
+        scan_forbidden_path(report, root, allows, today, relative, forbid)
         if relative.endswith(SKIP_SUFFIXES):
             continue
         path = root / relative
@@ -1044,15 +1147,24 @@ def scan_tree(root: Path, allows: list[Allow], today: date,
             continue
         report.files += 1
         report.bytes_scanned += len(data)
+        # `scan_data` reads the file and, for an archive, each member's own
+        # text view, so the deny list sees inside a tarball too. `--forbid-only`
+        # skips the address/mailbox classes and keeps this one.
         for scanned_path, candidates, text in scan_data(relative, data):
-            apply(report, root, allows, today, scanned_path, candidates)
-            report.findings.extend(scan_forbidden(text, scanned_path, forbid))
+            # `--forbid-only` runs the two deny-list classes and skips the
+            # address/mailbox/credential classes.
+            if not forbid_only:
+                apply(report, root, allows, today, scanned_path, candidates)
+            scan_forbidden(report, allows, today, text, scanned_path, forbid)
+            if scanned_path != relative:
+                # An archive member's name is published inside the archive too.
+                scan_forbidden_path(report, root, allows, today, scanned_path, forbid)
     return report
 
 
 def scan_history(root: Path, allows: list[Allow], today: date,
                  forbid: list[tuple[str, re.Pattern[str]]],
-                 skip: set[str] | None = None) -> Report:
+                 skip: set[str] | None = None, forbid_only: bool = False) -> Report:
     report = Report("history")
     skip = skip or set()
     commits = [c.decode() for c in subprocess.run(
@@ -1060,6 +1172,7 @@ def scan_history(root: Path, allows: list[Allow], today: date,
         capture_output=True).stdout.split() if c]
     report.commits = len(commits)
     first: dict[str, tuple[str, str]] = {}
+    seen_paths: set[tuple[str, str, str]] = set()
     for commit in commits:
         tree = subprocess.run(["git", "-C", str(root), "ls-tree", "-r", "-z", "--full-tree", commit],
                               capture_output=True).stdout
@@ -1070,7 +1183,17 @@ def scan_history(root: Path, allows: list[Allow], today: date,
             fields = meta.split()
             if len(fields) < 3 or fields[1] != b"blob":
                 continue
-            first.setdefault(fields[2].decode(), (commit, raw_path.decode("utf-8", "replace")))
+            path = raw_path.decode("utf-8", "replace")
+            # A path enters the history the moment a commit carries it. Read it
+            # here, once per name, so a file deleted before the push is still a
+            # finding at the commit that first carried it — the blob walk below
+            # would not see the name at all.
+            if path not in skip and not any(part in SKIP_DIRS for part in path.split("/")):
+                before = len(report.findings)
+                scan_forbidden_path(report, root, allows, today, path, forbid, seen_paths)
+                for finding in report.findings[before:]:
+                    finding.commit = commit[:7]
+            first.setdefault(fields[2].decode(), (commit, path))
     report.blobs = len(first)
     process = subprocess.Popen(["git", "-C", str(root), "cat-file", "--batch"],
                                stdin=subprocess.PIPE, stdout=subprocess.PIPE)
@@ -1092,8 +1215,14 @@ def scan_history(root: Path, allows: list[Allow], today: date,
                 continue
             before = len(report.findings)
             for scanned_path, candidates, text in scan_data(path, data):
-                apply(report, root, allows, today, scanned_path, candidates)
-                report.findings.extend(scan_forbidden(text, scanned_path, forbid))
+                if not forbid_only:
+                    apply(report, root, allows, today, scanned_path, candidates)
+                scan_forbidden(report, allows, today, text, scanned_path, forbid)
+                if scanned_path != path:
+                    # A member's name is published inside the archive too; the
+                    # tree walk checks it in the working tree, this checks the
+                    # archive a commit carries.
+                    scan_forbidden_path(report, root, allows, today, scanned_path, forbid, seen_paths)
             for finding in report.findings[before:]:
                 finding.commit = commit[:7]
     finally:
@@ -1121,6 +1250,57 @@ def render(report: Report) -> None:
     print(f"PASS: nothing to leak in {where}, {report.bytes_scanned:,} bytes scanned")
 
 
+HUNK_HEADER = re.compile(r"^@@ -\d+(?:,(?P<old>\d+))? \+\d+(?:,(?P<new>\d+))? @@")
+
+
+def added_lines(patch: Iterable[str]) -> dict[str, list[str]]:
+    """The added lines of a git patch, filed under the path they came from.
+
+    The hunk header's counts drive the parse, not the shape of the line. An
+    added file line may begin with ``++`` — a pasted ``set -x`` transcript is
+    the archetypal one — and arrives here as ``+++ …``, indistinguishable from a
+    ``+++ b/<path>`` header by prefix alone. Reading the counts keeps every
+    header a header and every body line a body line, so the line is scanned and
+    the rest of its hunk stays filed under the right path.
+    """
+    added: dict[str, list[str]] = {}
+    path = ""
+    in_hunk = False
+    # (old lines left, new lines left); None means an `@@` shape this parser
+    # does not model — a combined `@@@ … @@@` hunk — so the body runs until the
+    # next `@@` or `diff --git` and no line is mistaken for a header.
+    remaining: tuple[int, int] | None = None
+    for line in patch:
+        if line.startswith("diff --git "):
+            path, in_hunk, remaining = "", False, None
+            continue
+        if in_hunk:
+            if line.startswith("\\"):
+                continue                      # "\ No newline at end of file"
+            if line.startswith("+"):
+                if path:
+                    added.setdefault(path, []).append(line[1:].rstrip("\n"))
+                if remaining is not None:
+                    remaining = (remaining[0], remaining[1] - 1)
+            elif remaining is not None:
+                # A context line consumes both sides, a removal only the old.
+                step = 0 if line.startswith("-") else 1
+                remaining = (remaining[0] - 1, remaining[1] - step)
+            if remaining is not None and remaining[0] <= 0 and remaining[1] <= 0:
+                in_hunk = False
+            continue
+        if line.startswith("@@"):
+            match = HUNK_HEADER.match(line)
+            remaining = ((int(match.group("old") or 1), int(match.group("new") or 1))
+                         if match else None)
+            in_hunk = remaining is None or remaining[0] > 0 or remaining[1] > 0
+            continue
+        if line.startswith("+++ "):
+            target = line[4:].rstrip("\n")
+            path = "" if target == "/dev/null" else re.sub(r"^b/", "", target)
+    return added
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Publication gate: no address, person or account.")
     parser.add_argument("--tree", action="store_true")
@@ -1129,8 +1309,22 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--root", default=".")
     parser.add_argument("--forbid-file", default=None,
                         help="file of private literals, one per line: label<TAB>regex "
-                             "(default: leak-forbid.txt at the tree root; a missing "
-                             "default is reported, a named file that is missing exits 2)")
+                             "(default: docs/ops/leak-forbid.txt; a missing default is "
+                             "reported and the class skipped, a named file that is "
+                             "missing exits 2)")
+    parser.add_argument("--forbid-only", action="store_true",
+                        help="run only the two deny-list classes (forbidden-value, "
+                             "forbidden-path), not the address/mailbox/credential classes "
+                             "(CI history, a push)")
+    parser.add_argument("--stdin", action="store_true",
+                        help="scan stdin for forbidden literals only; with --label, the "
+                             "path the findings are reported under (the pre-push hook)")
+    parser.add_argument("--stdin-patch", action="store_true",
+                        help="scan a git patch on stdin for forbidden literals, filing each "
+                             "added line under the path its +++ header names, so an "
+                             "allowlist row's path applies (the pre-push hook's diffs)")
+    parser.add_argument("--label", default="<stdin>",
+                        help="path label for --stdin findings (default: <stdin>)")
     args = parser.parse_args(argv)
 
     root = Path(args.root).resolve()
@@ -1167,15 +1361,58 @@ def main(argv: list[str] | None = None) -> int:
         print(f"FINDING allow-file  --forbid-file {forbid_name}: no such file")
         return 2
     else:
-        # The default is absent in the private checkout, where the list lives
-        # under docs/ops/. Say so, so a skip is never silent.
-        print(f"forbid list:     absent ({forbid_name}) — the forbidden-value class did not run")
+        # No list at the documented path: either a clone (the repository does
+        # not carry one) or a tree cut before the list existed. Say so, so a
+        # skip is never silent.
+        print(f"forbid list:     absent ({forbid_name}) — the forbidden-value and forbidden-path classes did not run")
     skip: set[str] = set()
-    try:
-        skip = {forbid_path.resolve().relative_to(root).as_posix()}
-    except ValueError:
-        skip = set()
+    # The list carries its own literals by definition. Skip it wherever it sits:
+    # the documented path, a --forbid-file somewhere else, and the retired root
+    # copy that branches cut before the re-cut still carry in history. Without
+    # the second and third the scan reports the list as a leak of itself.
+    for name in (forbid_name, *FORBID_PATHS):
+        candidate = Path(name)
+        if not candidate.is_absolute():
+            candidate = root / candidate
+        try:
+            skip.add(candidate.resolve().relative_to(root).as_posix())
+        except ValueError:
+            pass
     today = date.today()
+
+    if args.stdin:
+        text = sys.stdin.read()
+        report = Report("stdin")
+        scan_forbidden(report, allows, today, text, args.label, forbid)
+        print(f"leak scan: stdin ({args.label})")
+        print(f"  lines scanned:  {len(text.splitlines()):,}")
+        for finding in report.findings:
+            print(finding.render())
+        if report.findings:
+            print(f"FAIL: {len(report.findings)} finding(s) in {args.label}")
+            return 1
+        print(f"PASS: nothing forbidden in {args.label}")
+        return 0
+
+    if args.stdin_patch:
+        report = Report("stdin")
+        for relative, lines in added_lines(sys.stdin).items():
+            if relative in skip:
+                continue
+            report.files += 1
+            text = "\n".join(lines) + "\n"
+            report.bytes_scanned += len(text.encode("utf-8", "replace"))
+            scan_forbidden(report, allows, today, text, relative, forbid)
+        print(f"leak scan: {args.label} ({report.files:,} paths with added lines)")
+        print(f"  lines scanned:  {report.bytes_scanned:,} bytes")
+        print(f"  allowlisted:    {report.allowed}")
+        for finding in report.findings:
+            print(finding.render())
+        if report.findings:
+            print(f"FAIL: {len(report.findings)} finding(s) in {args.label}")
+            return 1
+        print(f"PASS: nothing forbidden in {args.label}")
+        return 0
 
     modes = ["tree", "history"] if args.all else (
         [m for m, on in (("tree", args.tree), ("history", args.history)) if on] or ["tree"])
@@ -1188,8 +1425,8 @@ def main(argv: list[str] | None = None) -> int:
         print(f"FINDING forbid-file {problem}")
         status = 1
     for mode in modes:
-        report = (scan_tree(root, allows, today, forbid, skip) if mode == "tree"
-                  else scan_history(root, allows, today, forbid, skip))
+        report = (scan_tree(root, allows, today, forbid, skip, args.forbid_only) if mode == "tree"
+                  else scan_history(root, allows, today, forbid, skip, args.forbid_only))
         render(report)
         if report.findings:
             status = 1

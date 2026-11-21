@@ -37,6 +37,7 @@ import tempfile
 import threading
 import time
 import unittest
+from html.parser import HTMLParser
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -1644,6 +1645,171 @@ class PageTests(unittest.TestCase):
                          "a small caps label is not on the text face")
         self.assertIn("max-width:60ch", text, "the reading measure moved")
         self.assertIn("max-width:54ch", text, "the note measure moved")
+
+
+class FocusOrder(HTMLParser):
+    """The document order of what a browser would tab to, and nothing else.
+
+    ``<a href>``, ``<button>``, ``<input>`` that is not hidden, ``<select>``,
+    ``<textarea>`` and any element with a non-negative ``tabindex``. The tests
+    read the rendered page this way because a class name proves nothing: on
+    ODL-579 a gate test asserted the ``.consent`` selector string while the
+    rule it named could not match, and the shipped page kept the link in the
+    tab order.
+    """
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.stops: list[dict[str, str | None]] = []
+
+    def handle_starttag(self, tag: str,
+                        attrs: list[tuple[str, str | None]]) -> None:
+        attributes = dict(attrs)
+        tabindex = (attributes.get("tabindex") or "").strip()
+        kind = (attributes.get("type") or "text").strip().lower()
+        focusable = (
+            (tag == "a" and attributes.get("href") is not None)
+            or tag in ("button", "select", "textarea")
+            or (tag == "input" and kind != "hidden")
+            or (tabindex.isdigit() and int(tabindex) >= 0)
+        )
+        if focusable:
+            self.stops.append({
+                "tag": tag,
+                "class": attributes.get("class") or "",
+                "id": attributes.get("id"),
+                "href": attributes.get("href"),
+            })
+
+
+def focus_order(body: str) -> list[dict[str, str | None]]:
+    """What the page's own markup makes tabbable, in document order."""
+    parser = FocusOrder()
+    parser.feed(body)
+    parser.close()
+    return parser.stops
+
+
+def main_id(body: str) -> str | None:
+    """The ``id`` on the page's ``<main>``, or None when it carries none."""
+    element = re.search(r"<main\b([^>]*)>", body)
+    if element is None:
+        return None
+    attribute = re.search(r'\bid="([^"]+)"', element.group(1))
+    return attribute.group(1) if attribute else None
+
+
+class KeyboardContractTests(unittest.TestCase):
+    """BRAND.md's Keyboard row on the first-visit page.
+
+    The page exposes more than one landmark once the recovery section renders
+    (``main`` plus the named ``<section>``), so the rule applies: a skip link
+    is the first focusable element, it names the page's own ``main``, and a
+    keyboard focus paints the sheet's 2 px ``--ink`` ring at 3 px. The ring's
+    settled computed style is measured in the render probe; here the rule that
+    paints it is read declaration by declaration, because a selector string
+    alone was what ODL-579's review caught.
+    """
+
+    def setUp(self):
+        self.harness = FirstVisitHarness()
+        self.addCleanup(self.harness.close)
+
+    def states(self) -> dict[str, str]:
+        """Every state the page can render, from one guest root."""
+        pages = {
+            "form": self.harness.call(
+                "GET", "/first-visit?t=" + self.harness.token)[2],
+            "refused-unknown": self.harness.call(
+                "GET", "/first-visit?t=" + "a" * 64)[2],
+        }
+        status, _, done = self.harness.set_signin()
+        self.assertEqual(status, 200)
+        pages["done"] = done
+        pages["refused"] = self.harness.call(
+            "GET", "/first-visit?t=" + self.harness.token)[2]
+        pages["reset-form"] = self.harness.call("GET", "/first-visit/reset")[2]
+        pages["recover-form"] = self.harness.call("GET", "/first-visit/recovery")[2]
+        code_match = CODE_RE.search(done)
+        assert code_match is not None, "the done page has no recovery code"
+        code = code_match.group(1)
+        status, _, reset_done = self.harness.call(
+            "POST", "/first-visit/reset",
+            {"code": code, "password": NEW_PASSWORD, "password2": NEW_PASSWORD})
+        self.assertEqual(status, 200)
+        pages["reset-done"] = reset_done
+        new_code = CODE_RE.search(reset_done)
+        assert new_code is not None, "the reset-done page has no recovery code"
+        status, _, recovery_done = self.harness.call(
+            "POST", "/first-visit/recovery", {"code": new_code.group(1)})
+        self.assertEqual(status, 200)
+        pages["recovery-done"] = recovery_done
+        return pages
+
+    def test_the_first_tab_stop_in_every_state_is_a_skip_link_to_that_pages_main(self):
+        for name, body in self.states().items():
+            with self.subTest(state=name):
+                stops = focus_order(body)
+                self.assertTrue(stops, "the %s page has no focusable element" % name)
+                first = stops[0]
+                self.assertEqual(first["tag"], "a",
+                                 "the first tab stop is <%s>, not the skip link"
+                                 % first["tag"])
+                self.assertIn("skip", (first["class"] or "").split(),
+                              "the first tab stop is not the skip link: %r" % first)
+                target = main_id(body)
+                self.assertIsNotNone(target, "the page's <main> carries no id")
+                self.assertEqual(first["href"], "#" + str(target),
+                                 "the skip link points at %r, not the page's main"
+                                 % first["href"])
+                self.assertIn('<a class="skip" href="#%s">Skip to content</a>'
+                              % target, body)
+
+    def test_no_state_gains_or_loses_a_landmark_or_a_heading(self):
+        """The skip link is an anchor, so the structure stays where it was.
+
+        One ``<h1>``, one ``<main>``, one ``<header>`` in every state, and a
+        named ``<section>`` only in the three done states and the unknown-link
+        refusal. The header sits inside ``main``, so it is not a banner
+        landmark of its own; pinning the elements keeps that true whatever a
+        browser's role mapping does with it.
+        """
+        expected = {
+            "form": [], "refused": [], "reset-form": [], "recover-form": [],
+            "done": ["recovery"], "reset-done": ["recovery"],
+            "recovery-done": ["recovery"], "refused-unknown": ["what-next"],
+        }
+        for name, body in self.states().items():
+            with self.subTest(state=name):
+                self.assertEqual(len(re.findall(r"<h1\b", body)), 1,
+                                 "the state's one heading moved")
+                self.assertEqual(len(re.findall(r"<main\b", body)), 1)
+                self.assertEqual(len(re.findall(r"<header\b", body)), 1)
+                self.assertEqual(
+                    re.findall(r'<section\b[^>]*aria-labelledby="([^"]+)"', body),
+                    expected[name], "a landmark was added or removed")
+
+    def test_the_skip_link_is_off_screen_until_a_keyboard_focus_paints_the_ring(self):
+        text = PAGE.read_text(encoding="utf-8")
+        self.assertIn(".skip{position:absolute;left:-9999px;top:0}", text,
+                      "the skip link is not the sheet's off-screen element")
+        rule = re.search(r"\.skip:focus-visible\{([^}]*)\}", text)
+        self.assertIsNotNone(rule, "no :focus-visible rule reveals the skip link")
+        assert rule is not None  # the assertion above names the failure
+        declarations = rule.group(1)
+        self.assertIn("left:24px", declarations, "the link stays off screen")
+        self.assertIn("min-height:44px", declarations, "the link is under the target floor")
+        self.assertIn("background:var(--ink)", declarations)
+        self.assertIn("color:var(--paper)", declarations)
+        self.assertIn("outline:2px solid var(--ink)", declarations,
+                      "the focus ring is not the sheet's 2 px --ink")
+        self.assertIn("outline-offset:3px", declarations,
+                      "the focus ring is not at the sheet's 3 px offset")
+        self.assertNotIn(".skip:focus{", text,
+                         "the link shows on a mouse focus too; the sheet says "
+                         ":focus-visible")
+        self.assertIn(".skip:focus-visible{left:18px}", text,
+                      "the link does not follow main's 18 px inset at 390")
 
 
 class IconRouteTests(unittest.TestCase):
