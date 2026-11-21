@@ -556,6 +556,15 @@ The command was replayed on 2026-11-13T08:03Z (dry run → applied, record
 `83269c0c…` → one A record read back → deleted → `result_count 0`;
 `evidence/dns-create.txt`, §7).
 
+**A machine that vanished is not a destroy.** Where the tenant is still live
+(`ready`, `suspended`, …) and the provider no longer lists its machine,
+`reconcile --apply` is the command that marks it `destroyed`; `provision` on
+that live row is refused **before** the order and names the remedy, because a
+live row has no edge back to `provisioning` and an order recorded there would be
+a paid machine no row names (`docs/runbooks/provision.md` §9, ADR-007 §5). Run
+it first — the finding names this same-slug rebuild — then the five steps below.
+Both paths meet at the same `claimed -> provisioning -> first_boot`.
+
 The old behaviour was the fork this card closed. On 2026-11-13, a destroyed
 slug refused in `_record` **after** the order had been placed and billed:
 

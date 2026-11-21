@@ -1057,6 +1057,34 @@ class FixtureFlowTest(TempConfigMixin):
         finally:
             con.close()
 
+    def _ready_row(self, config_path) -> Path:
+        """A live tenant whose machine is gone: both schemas, no provider row.
+
+        The state row reached `ready` on `srv-old-0001` and the web row still
+        names it; `provider.list` is empty, which is what `reconcile` calls a
+        missing machine. This is the fixture this card measured on 2026-11-18.
+        """
+        db = Path(config_path).parent / "waitlist.db"
+        store = state.StateStore.open(db)
+        try:
+            store.invite(SLUG)
+            store.claim(SLUG)
+            store.provision(
+                SLUG,
+                server_id="srv-old-0001",
+                ipv4="203.0.113.7",
+                plan_id=113,
+                release="2026.11.1",
+                expires_at=1_792_000_000,
+            )
+            store.await_boot(SLUG)
+            store.start_first_visit(SLUG)
+            store.ready(SLUG)
+        finally:
+            store.close()
+        self._web_row(db)
+        return db
+
     def test_provision_on_a_destroyed_slug_reopens_it_under_the_same_slug(self):
         """The card's end-to-end: destroy, provision again, the slug survives."""
         config_path = self.make_config()
@@ -1189,6 +1217,206 @@ class FixtureFlowTest(TempConfigMixin):
         with self.assertRaises(bootrecord.BootRecordError) as caught:
             bootrecord.record_boot(con, slug=SLUG, record=stale, source="first_boot")
         self.assertIn("srv-old-0001", str(caught.exception))
+
+    def test_provision_refuses_a_live_row_whose_machine_is_gone(self):
+        """No paid orphan: the run stops before `create`, and names reconcile.
+
+        The card's fixture (verifier, 2026-11-18): a `ready` tenant naming
+        `srv-old-0001`, both schemas, an empty provider list. Before the
+        guard, `provision --apply` billed `abc12345` and recorded it on
+        neither row (`recorded: false`, `web_row: "skipped"`). The recorded
+        transport carries the create and poll routes the old run would take, so
+        the assertion on `calls` is the money: a run that orders calls `create`.
+        """
+        config_path = self.make_config()
+        db = self._ready_row(config_path)
+        transport = self._flow_transport()
+        code, out, err = run_cli(
+            [
+                "provision",
+                SLUG,
+                "--key",
+                str(self.key_file()),
+                "--pin",
+                str(self.pin_file()),
+                "--interval",
+                "0",
+                "--apply",
+                "--json",
+            ],
+            config_path,
+            provider_factory=lambda _config: servury.ServuryProvider(TEST_KEY, transport=transport),
+        )
+        self.assertEqual(code, 4, err)
+        payload = json.loads(out)
+        self.assertFalse(payload["ok"])
+        self.assertFalse(payload["dry_run"])
+        error = payload["error"]
+        self.assertIn(f"odilectl reconcile {SLUG} --apply", error)
+        self.assertIn("srv-old-0001", error)
+        self.assertIn("ready", error)
+        # The money: the list ran, and create never did.
+        self.assertEqual([call["action"] for call in transport.calls], ["servers"])
+        # Neither row moved, and the event log gained nothing.
+        store = state.StateStore.open(db)
+        try:
+            tenant = store.get(SLUG)
+            events = store.events(SLUG)
+        finally:
+            store.close()
+        self.assertEqual(tenant.state, "ready")
+        self.assertEqual(tenant.server_id, "srv-old-0001")
+        self.assertEqual(
+            [event.kind for event in events],
+            ["invited", "claimed", "provisioning", "first_boot", "first_visit", "ready"],
+        )
+        con = sqlite3.connect(db)
+        con.row_factory = sqlite3.Row
+        self.addCleanup(con.close)
+        row = con.execute(
+            "SELECT state, server_id FROM tenants WHERE slug = ?", (SLUG,)
+        ).fetchone()
+        self.assertEqual((row["state"], row["server_id"]), ("active", "srv-old-0001"))
+
+    def test_provision_refuses_a_live_row_that_names_another_machine(self):
+        """A live row records only its own machine; the provider's other id is drift.
+
+        `provider.list` names `abc12345` for the slug while the row names
+        `srv-old-0001`. The old code "reused" that machine, ran
+        `record_release`, and reported `web_row: "skipped"` — a row still
+        naming a machine the provider does not have. The refusal keeps the
+        decision with `reconcile`, whose `missing_vm` and `unknown_vm` findings
+        are exactly this pair.
+        """
+        config_path = self.make_config()
+        self._ready_row(config_path)
+        transport = RecordedTransport({("GET", "servers"): [(200, servers_response())]})
+        code, out, err = run_cli(
+            [
+                "provision",
+                SLUG,
+                "--key",
+                str(self.key_file()),
+                "--pin",
+                str(self.pin_file()),
+                "--interval",
+                "0",
+                "--apply",
+                "--json",
+            ],
+            config_path,
+            provider_factory=lambda _config: servury.ServuryProvider(TEST_KEY, transport=transport),
+        )
+        self.assertEqual(code, 4, err)
+        error = json.loads(out)["error"]
+        self.assertIn("srv-old-0001", error)
+        self.assertIn(SERVER_ID, error)
+        self.assertIn(f"odilectl reconcile {SLUG} --apply", error)
+        self.assertEqual([call["action"] for call in transport.calls], ["servers"])
+
+    def test_reconcile_then_provision_records_a_live_rows_replacement(self):
+        """The refusal names a path that works, and that path records both rows.
+
+        `ready` -> `reconcile --apply` (marks it destroyed, orders nothing) ->
+        `provision --apply` (reopens, orders, `first_boot`, web row repointed).
+        The new machine's own boot record is pinned by
+        `test_a_rebuilt_tenant_records_its_first_boot_on_the_new_machine`; this
+        test proves the remedy in the refusal is not a dead end.
+        """
+        config_path = self.make_config()
+        db = self._ready_row(config_path)
+        empty = RecordedTransport(
+            {("GET", "servers"): [(200, empty_servers_response())]}
+        )
+        code, out, err = run_cli(
+            ["reconcile", SLUG, "--apply", "--json"],
+            config_path,
+            provider_factory=lambda _config: servury.ServuryProvider(TEST_KEY, transport=empty),
+        )
+        self.assertEqual(code, 0, err)
+        payload = json.loads(out)
+        self.assertEqual(payload["fixed"], [SLUG])
+        self.assertEqual(payload["drift"][0]["kind"], "missing_vm")
+        self.assertIn(f"provision {SLUG}", payload["drift"][0]["detail"]["rebuild"])
+        self.assertEqual([call["action"] for call in empty.calls], ["servers"])
+        store = state.StateStore.open(db)
+        try:
+            self.assertEqual(store.get(SLUG).state, "destroyed")
+        finally:
+            store.close()
+
+        transport = self._flow_transport()
+        code, out, err = run_cli(
+            [
+                "provision",
+                SLUG,
+                "--key",
+                str(self.key_file()),
+                "--pin",
+                str(self.pin_file()),
+                "--interval",
+                "0",
+                "--apply",
+                "--json",
+            ],
+            config_path,
+            provider_factory=lambda _config: servury.ServuryProvider(TEST_KEY, transport=transport),
+        )
+        self.assertEqual(code, 0, err)
+        payload = json.loads(out)
+        self.assertTrue(payload["reopened"])
+        self.assertTrue(payload["created"])
+        self.assertEqual(payload["web_row"], "repointed")
+        self.assertEqual(payload["tenant_state"], "first_boot")
+        con = sqlite3.connect(db)
+        con.row_factory = sqlite3.Row
+        self.addCleanup(con.close)
+        row = con.execute(
+            "SELECT state, server_id FROM tenants WHERE slug = ?", (SLUG,)
+        ).fetchone()
+        self.assertEqual((row["state"], row["server_id"]), ("provisioned", SERVER_ID))
+        store = state.StateStore.open(db)
+        try:
+            tenant = store.get(SLUG)
+            events = store.events(SLUG)
+        finally:
+            store.close()
+        self.assertEqual(tenant.server_id, SERVER_ID)
+        self.assertEqual(
+            [event.kind for event in events][-4:],
+            ["destroyed", "claimed", "provisioning", "first_boot"],
+        )
+
+    def test_provision_dry_run_lists_the_guard_before_create(self):
+        """The plan names the refusal between the list and the paid call."""
+        config_path = self.make_config()
+        self._ready_row(config_path)
+        code, out, err = run_cli(
+            [
+                "provision",
+                SLUG,
+                "--key",
+                str(self.key_file()),
+                "--pin",
+                str(self.pin_file()),
+                "--dry-run",
+                "--json",
+            ],
+            config_path,
+            provider_factory=explode_provider,
+        )
+        self.assertEqual(code, 0, err)
+        payload = json.loads(out)
+        names = [action["action"] for action in payload["actions"]]
+        self.assertLess(names.index("provider.list"), names.index("state.guard"))
+        self.assertLess(names.index("state.guard"), names.index("provider.create"))
+        guard = payload["actions"][names.index("state.guard")]
+        self.assertEqual(guard["slug"], SLUG)
+        self.assertIn(f"odilectl reconcile {SLUG} --apply", json.dumps(payload["actions"]))
+        self.assertTrue(
+            any(f"odilectl reconcile {SLUG} --apply" in note for note in payload["notes"]),
+            payload["notes"],
+        )
 
     def test_provision_dry_run_on_a_destroyed_slug_lists_the_reopen(self):
         config_path = self.make_config()

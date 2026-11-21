@@ -31,7 +31,28 @@ before the first provider call, so the order always lands on a row that can
 record it. The slug — and therefore `https://<slug>.odile.fyi`, the recovery
 file's name and the `tenants/<slug>` repository — does not change; the reopen
 is one `claimed` event whose detail carries the reason, and the dead machine's
-columns are cleared. Running the command on a live tenant does nothing extra.
+columns are cleared. Running the command on a live tenant whose machine is
+still listed does nothing extra.
+
+**A live row whose machine is gone is refused, not re-ordered (this card).** A
+row in `MACHINE_STATES` already names a machine, and `TRANSITIONS` has no edge
+from any of those states back to `provisioning`. So `_refuse_an_unrecordable_order`
+stops the run *before* `provider.create` when the provider lists no machine for
+the slug, and the message names the way back: `odilectl reconcile <slug>
+--apply` marks the row `destroyed`, and the reopen above orders onto it. This is
+the bug the card measured: `provision` on a `ready` tenant with an empty
+provider list billed a machine, `_record_machine` skipped the web row (the new
+id was not the row's), and both rows kept naming the dead one — one paid
+machine no row named, and a first boot that could never land. The alternative —
+recording the new machine through a `ready -> provisioning` edge, the way a
+reopen records one — was rejected: it adds a second door into `provisioning`
+(or six, one per machine state), gives the state machine two ways to say "the
+machine is gone", and lets a provider list that is down or short rewind a live
+tenant whose machine is fine. `reconcile` owns that judgement because it owns
+the comparison; `provision` only knows what `provider.list` answered. The
+refusal is still recorded on a live tenant's own machine: a reused provider row
+whose `server_id` is the row's is recorded without an order (`web_row:
+unchanged`, or `absent` on a state-only database).
 
 **The order is recorded in both schemas.** A `provision` that has placed the
 order names the machine on the state row *and* on the web `tenants` row, and
@@ -71,9 +92,11 @@ from .providers import configured_name
 from .providers.base import CreateSpec, Machine
 from .state import (
     DEFAULT_STATE_DB,
+    MACHINE_STATES,
     RELEASE_ID_RE,
     StateError,
     StateStore,
+    Tenant,
     UnknownTenant,
 )
 
@@ -402,13 +425,14 @@ def pinned_release(pin: str | Path | None = None, *, prefix: str = "provision") 
     return chosen
 
 
-def _state_of(ctx: Context, slug: str) -> str | None:
-    """The tenant's state, read without creating or writing the database.
+def _row_before(ctx: Context, slug: str) -> tuple[str, str | None] | None:
+    """The tenant's state and machine, read without writing the database.
 
     The dry run must list the reopen it would take, and `StateStore.open`
     writes the schema (and creates the file), so this peeks at an existing file
     in SQLite's read-only URI mode instead. A missing file or table is `None`:
-    a new tenant has no row yet.
+    a new tenant has no row yet. The machine is read with the state because the
+    refusal below has to name the machine the row would keep.
     """
     path = ctx.config.path_value("state_db", DEFAULT_STATE_DB) or Path(DEFAULT_STATE_DB)
     if not Path(path).exists():
@@ -417,22 +441,64 @@ def _state_of(ctx: Context, slug: str) -> str | None:
         con = sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=5.0)
         try:
             row = con.execute(
-                "SELECT state FROM tenant_state WHERE slug = ?", (slug,)
+                "SELECT state, server_id FROM tenant_state WHERE slug = ?", (slug,)
             ).fetchone()
         finally:
             con.close()
     except sqlite3.Error:
         return None
-    return row[0] if row else None
+    return (row[0], row[1]) if row else None
 
 
-def _reopen_destroyed(ctx: Context, slug: str) -> bool:
+def _refuse_an_unrecordable_order(
+    slug: str, state: str | None, server_id: str | None, existing: list[Machine]
+) -> None:
+    """Refuse, before the paid call, an order the row could not record.
+
+    A row in `MACHINE_STATES` already names a machine and `TRANSITIONS` has no
+    edge from it back to `provisioning`, so a new `server_id` could only reach
+    `_record_machine` as a silent `web_row: "skipped"` — the paid machine no
+    row names that this card measured. A live row is allowed through only when
+    the provider's machine for the slug *is* the row's machine (the reuse path
+    records it without ordering). Every other row — `invited`, `claimed`, a
+    destroyed row the caller has reopened, or no row at all — names no machine
+    and can record an order.
+
+    The remedy in the message is the documented two-step: `reconcile --apply`
+    marks the row `destroyed` and its finding names this same-slug rebuild,
+    then `provision` reopens the row and orders. A terminated provider row
+    counts as absent, the way `state.reconcile` reads it.
+    """
+    if state not in MACHINE_STATES:
+        return
+    present = [machine for machine in existing if machine.state != "terminated"]
+    if present and present[0].server_id == server_id:
+        return
+    named = repr(server_id) if server_id else "no machine"
+    if present:
+        listed = f"the provider's machine for {slug} is {present[0].server_id!r}"
+    else:
+        listed = f"the provider lists no machine named {slug}"
+    raise ProviderError(
+        f"provision: {slug} is {state} and its state row names {named}, but "
+        f"{listed}; ordering one now would be a paid machine no row names. "
+        "Mark the old machine gone first, then run this command again:\n"
+        f"  odilectl reconcile {slug} --apply"
+    )
+
+
+def _reopen_destroyed(ctx: Context, slug: str) -> tuple[bool, Tenant | None]:
     """Move a destroyed row to `claimed` before the order (ADR-007).
 
     The order must land on a row that can record it. A destroyed row is
     reopened first, so a failed `create` leaves a retryable claim rather than a
     paid machine no row names. The reason is in the event log; the slug, the
     URL and the repository keep their names.
+
+    Returns the row as it now stands, read through the same store that wrote
+    it. `_refuse_an_unrecordable_order` uses that row, not the dry run's
+    read-only peek: SQLite's `mode=ro` needs the WAL side files, so the peek
+    can miss a row that exists, and the guard must not.
     """
     db_path = (
         ctx.config.path_value("state_db", DEFAULT_STATE_DB) or Path(DEFAULT_STATE_DB)
@@ -445,11 +511,10 @@ def _reopen_destroyed(ctx: Context, slug: str) -> bool:
         try:
             tenant = store.get(slug)
         except UnknownTenant:
-            return False
+            return (False, None)
         if tenant.state != "destroyed":
-            return False
-        store.reopen(slug, reason=REPROVISION_REASON)
-        return True
+            return (False, tenant)
+        return (True, store.reopen(slug, reason=REPROVISION_REASON))
     except StateError as error:
         raise ProviderError(f"provision: {slug} could not be reopened: {error}") from None
     finally:
@@ -546,6 +611,10 @@ def _record_machine(
     at the same machine. Only then can `record_boot` take the machine's
     measured line: it reads `tenants.server_id` and refuses a
     `claimed`/`provisioning` row. A same-slug rebuild takes this path again.
+    A **live** row (`ready`, `suspended`, …) reaches this function only from
+    the reuse path, whose machine is the row's own: `run()`'s
+    `_refuse_an_unrecordable_order` has already refused an order the row could
+    not record, and a row that still names another machine raises here.
     """
     db_path = ctx.config.path_value("state_db", DEFAULT_STATE_DB) or Path(DEFAULT_STATE_DB)
     store = StateStore.open(db_path)
@@ -582,14 +651,21 @@ def _record_machine(
             recorded = before is None
         # The web row follows the spine: it is pointed at the machine only once
         # the state row names it, so the two can never disagree about which
-        # machine exists. Then the spine's `first_boot`, the state the machine's
-        # own record is written from.
-        if tenant.server_id == machine.server_id:
-            web_row = _point_web_row_at_machine(store.connection, spec, machine, release)
-        else:
-            # A live row that has no edge to `provisioning` (ready, suspended):
-            # the spine keeps its machine, and the web row is left as it was.
-            web_row = "skipped"
+        # machine exists. `_refuse_an_unrecordable_order` makes that true for
+        # every order this run places — a live row reaches here only through
+        # the reuse path, its own machine — so a row that still names another
+        # machine is a loud failure, never a silent `web_row: "skipped"` that
+        # would leave a paid order unrecorded. Then the spine's `first_boot`,
+        # the state the machine's own record is written from.
+        if tenant.server_id != machine.server_id:
+            raise ProviderError(
+                f"provision: {spec.hostname} is {tenant.state} and its state row "
+                f"names {tenant.server_id!r}; the order for {machine.server_id} "
+                "was not recorded (a live row has no edge back to provisioning). "
+                "Run this, then this command again:\n"
+                f"  odilectl reconcile {spec.hostname} --apply"
+            )
+        web_row = _point_web_row_at_machine(store.connection, spec, machine, release)
         if tenant.state == "provisioning":
             tenant = store.await_boot(spec.hostname)
         return {
@@ -638,7 +714,8 @@ def run(ctx: Context, args) -> Report:
     except ValueError as error:
         raise UsageError(f"provision: {error}") from None
 
-    state_before = _state_of(ctx, spec.hostname)
+    row_before = _row_before(ctx, spec.hostname)
+    state_before = row_before[0] if row_before else None
     reprovision = state_before == "destroyed"
 
     actions = []
@@ -657,6 +734,15 @@ def run(ctx: Context, args) -> Report:
             "action": "provider.list",
             "provider": configured_name(ctx.config),
             "find_hostname": spec.hostname,
+        },
+        {
+            "action": "state.guard",
+            "slug": spec.hostname,
+            "refuse_when": (
+                "the row is a live machine state and the list above does not "
+                "name that same server_id"
+            ),
+            "remedy": f"odilectl reconcile {spec.hostname} --apply, then this command again",
         },
         {
             "action": "provider.create",
@@ -696,6 +782,9 @@ def run(ctx: Context, args) -> Report:
     notes = [
         "an active, pending or queued machine with this hostname is reused, "
         "so a second run orders no duplicate",
+        "a live row (a machine state) whose machine the provider no longer lists "
+        "is refused before the order — no paid machine no row names; mark it gone "
+        f"first with `odilectl reconcile {spec.hostname} --apply`",
         f"the release {release} comes from the pin's provision_release and is "
         "recorded with the tenant once the machine is active",
         "the setup token is bound to the instance id the create call returns, "
@@ -736,14 +825,22 @@ def run(ctx: Context, args) -> Report:
         )
 
     # Before the first provider call: a destroyed row is reopened, so every
-    # order this run places has a row that can record it (ADR-007).
-    reopened = _reopen_destroyed(ctx, spec.hostname)
+    # order this run places has a row that can record it (ADR-007). The row
+    # this returns is the one the guard below reads: the store that writes it,
+    # not the read-only peek the dry run uses.
+    reopened, tenant_before = _reopen_destroyed(ctx, spec.hostname)
+    state_now, machine_now = (
+        (tenant_before.state, tenant_before.server_id) if tenant_before else (None, None)
+    )
 
     existing = [machine for machine in ctx.provider.list() if machine.hostname == spec.hostname]
     if len(existing) > 1:
         raise ProviderError(
             f"provision: {len(existing)} machines are named {spec.hostname}; refusing to guess"
         )
+    # Before the paid call: a live row can only record its own machine. A
+    # missing machine is `reconcile`'s finding to make, not this command's.
+    _refuse_an_unrecordable_order(spec.hostname, state_now, machine_now, existing)
     if existing:
         machine = existing[0]
         if _is_queued(machine):
