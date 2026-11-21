@@ -48,7 +48,7 @@ Servury sets reverse DNS; the box cannot. **Done 2026-11-06:** both
 Gmail requires forward-*confirmed* reverse DNS for every sender, not just bulk
 senders. A PTR that does not forward-resolve is worthless, which is why §3.2
 must exist before the PTR is worth anything. Before this change the PTR was
-`oqwaclzm.local`, a placeholder that would have had every message rejected.
+`hostfake.local`, a placeholder that would have had every message rejected.
 
 ### 3.2 The records — zone `odile.fyi`
 
@@ -228,7 +228,7 @@ chown root:postfix /etc/sasldb2 && chmod 640 /etc/sasldb2
 ```
 
 The realm must be `mail.odile.fyi`: `saslpasswd2` otherwise stores
-`user@<OS hostname>` (here `oqwaclzm`), and authentication fails with a bare
+`user@<OS hostname>` (here `hostfake`), and authentication fails with a bare
 `535` even though the password is right.
 
 The test account's file is `/root/.odile/mail_test_account.json`; a client
@@ -557,7 +557,7 @@ PASS there and here.
 | Symptom | Cause | Fix |
 |---|---|---|
 | `451 4.3.0 … Temporary lookup failure` at RCPT on 587 | `postfix-pcre` missing; `pcre:/etc/postfix/sender_login.pcre` cannot load | install `postfix-pcre`, restart postfix |
-| `535 5.7.8 Error: authentication failed` with a correct password | Account was stored under the OS hostname realm (`user@oqwaclzm`), not `user@mail.odile.fyi` | recreate with `saslpasswd2 -c -u mail.odile.fyi`; check `sasldblistusers2` |
+| `535 5.7.8 Error: authentication failed` with a correct password | Account was stored under the OS hostname realm (`user@hostfake`), not `user@mail.odile.fyi` | recreate with `saslpasswd2 -c -u mail.odile.fyi`; check `sasldblistusers2` |
 | `553 5.7.1 Sender address rejected: not owned by user …` | Authenticated tenant used an envelope sender outside `mail.odile.fyi` | send with a VERP sender, or extend `sender_login.pcre` (M1) |
 | `451 4.7.1 Service unavailable` on every connection | Milter socket unreachable: directory or socket not group-owned by `postfix` | `deploy/opendkim/apply.py --apply`; check `UserID opendkim:postfix` |
 | `--check-dns` fails for a record `dig @1.1.1.1` shows | Local resolver serving the pre-change NXDOMAIN for the SOA minimum | believe `--check-dns` (it asks the authoritative server); the cache clears on its own |

@@ -807,6 +807,7 @@ def render(template: str, keep: str, *, title: str, error: FieldError | None = N
 
 ACCESS_REPORT_MAX = 64 * 1024
 ACCESS_TAGS = ("usable keys", "boot key", "seal", "sign-in hash", "operator key")
+ACCESS_GRANT_TAG = "support grant"
 ACCESS_HEAD = "read from your machine, "
 ACCESS_TITLE = "verify_and_unlock \u2014 access report"
 ISO_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$")
@@ -822,6 +823,11 @@ def access_report(path: Path) -> dict:
     "missing"}`` when the file does not exist, ``{"state": "bad"}`` when it
     does and is not what ``--mode access --out`` writes. A file that exists
     and does not parse is never silently replaced by the bench block.
+
+    Two shapes are the script's own: five rows and a PASS/FAIL verdict, or the
+    same five plus a ``support grant`` row and an OPEN verdict while a grant is
+    live (t_e23f3288). A grant row without an OPEN verdict (or the reverse) is
+    a bad file, not a state the page may guess at.
     """
     try:
         with open(path, encoding="utf-8", errors="replace") as handle:
@@ -833,17 +839,28 @@ def access_report(path: Path) -> dict:
     if len(data) > ACCESS_REPORT_MAX:
         return {"state": "bad"}
     lines = data.splitlines()
-    if len(lines) != 10 or not lines[0].startswith(ACCESS_HEAD):
+    if len(lines) not in (10, 11) or not lines[0].startswith(ACCESS_HEAD):
         return {"state": "bad"}
     at = lines[0][len(ACCESS_HEAD):]
     if not ISO_RE.match(at):
         return {"state": "bad"}
-    if lines[1] != ACCESS_TITLE or lines[2] != "" or lines[8] != "":
+    if lines[1] != ACCESS_TITLE or lines[2] != "":
         return {"state": "bad"}
-    for index, tag in enumerate(ACCESS_TAGS):
-        if not re.match(r"^  %s +(PASS|FAIL) +" % re.escape(tag), lines[3 + index]):
+    granted = len(lines) == 11
+    tags = ACCESS_TAGS + ((ACCESS_GRANT_TAG,) if granted else ())
+    for index, tag in enumerate(tags):
+        row = lines[3 + index]
+        if tag == ACCESS_GRANT_TAG:
+            if not re.match(r"^  %s +OPEN +" % re.escape(tag), row):
+                return {"state": "bad"}
+        elif not re.match(r"^  %s +(PASS|FAIL) +" % re.escape(tag), row):
             return {"state": "bad"}
-    if not re.match(r"^  (PASS|FAIL) \u2014 ", lines[9]):
+    if lines[3 + len(tags)] != "":
+        return {"state": "bad"}
+    verdict = lines[4 + len(tags)]
+    if not re.match(r"^  (PASS|FAIL|OPEN) \u2014 ", verdict):
+        return {"state": "bad"}
+    if granted != verdict.startswith("  OPEN "):
         return {"state": "bad"}
     return {"state": "ok", "at": at, "text": "\n".join(lines[1:])}
 

@@ -42,7 +42,9 @@ SIGNING_KEY = ROOT / "installer" / "odile-signing-key.pub"
 DECIDED = ROOT / "docs" / "product" / "CLAIMS-RECUT-STRICT.md"
 
 sys.path.insert(0, str(ROOT / "tools"))
+sys.path.insert(0, str(ROOT))
 import claims_lint  # noqa: E402
+from odilectl.config import Config  # noqa: E402
 
 SLUG = "odl-7f3a2c"
 IPV4 = "203.0.113.120"
@@ -54,6 +56,16 @@ MEASUREMENT = "ab" * 48
 REPO = "sftp:odile-backup@backup.odile.fyi:/tenants/odl-7f3a2c"
 URL = f"https://{SLUG}.odile.fyi"
 FIRST_VISIT = f"{URL}/first-visit?t={TOKEN}"
+ACCOUNT = "https://test.odile.fyi"
+
+# The sentence a reader acts on when the renderer is given no account host: the
+# fallback is byte-for-byte the paragraph ODL-579 shipped, so a caller that
+# passes no slot reads exactly what it read before.
+FALLBACK_PARAGRAPH = (
+    "Your account password is not reset on the machine. It resets at your account\n"
+    "site — the site in your invitation email. Open that site and add /forgot. That\n"
+    "reset works while the machine is down; the recovery code needs the machine up.\n"
+)
 
 # Every one of these is a decided v3.9 row (`docs/product/CLAIMS-RECUT-STRICT.md`)
 # or a deck row that row keeps. The kit may not coin a trust sentence of its own.
@@ -252,6 +264,96 @@ class RenderTests(unittest.TestCase):
         self.assertIn(f"odile-{SLUG}-recovery-kit.txt", text, "this kit is named separately")
         self.assertIn("backup password", text)
         self.assertIn("certificate fingerprint", text)
+
+    def test_without_the_account_slot_the_sentence_is_byte_identical(self) -> None:
+        """No slot: the paragraph the reader acts on is exactly ODL-579's bytes."""
+        text = kit_text()
+        self.assertIn(FALLBACK_PARAGRAPH, text)
+        self.assertNotIn("{{", text)
+        self.assertEqual(kit_text(account_host=""), text,
+                         "an empty --account-host is the unset slot, not a different kit")
+
+    def test_the_account_slot_prints_an_address_the_reader_can_type(self) -> None:
+        """The action sentence carries the literal URL, and nothing else moves."""
+        fallback = kit_text()
+        text = kit_text(account_host=ACCOUNT)
+        self.assertIn(
+            "Your account password is not reset on the machine. It resets at\n"
+            f"{ACCOUNT}/forgot. That reset works while the machine is down;\n"
+            "the recovery code needs the machine up.\n",
+            text)
+        self.assertNotIn("{{", text, "no placeholder survives a render")
+        self.assertNotIn("invitation email", text)
+        self.assertEqual(text.count(f"{ACCOUNT}/forgot"), 1)
+        self.assertNotIn(f"{ACCOUNT}//forgot", text)
+        # Only the sentence's own lines move; the rest of the kit is byte-identical.
+        self.assertEqual(len(fallback.splitlines()), len(text.splitlines()))
+        differing = [(a, b) for a, b in zip(fallback.splitlines(), text.splitlines()) if a != b]
+        self.assertEqual(len(differing), 3, differing)
+
+    def test_a_trailing_slash_on_the_account_host_does_not_double_the_path(self) -> None:
+        text = kit_text(account_host=f"{ACCOUNT}/")
+        self.assertIn(f"{ACCOUNT}/forgot.", text)
+        self.assertNotIn(f"{ACCOUNT}//forgot", text)
+
+    def test_a_pasted_reset_url_renders_exactly_one_forgot(self) -> None:
+        """`<host>/forgot` is the value the decision doc prints; it stands for the host.
+
+        Measured on t_cc6cb872: the flag trimmed only a trailing `/`, so the
+        natural paste from `DECISION-password-reset.md` rendered
+        `https://test.odile.fyi/forgot/forgot` at rc=0, with no warning.
+        """
+        expected = kit_text(account_host=ACCOUNT)
+        for value in (f"{ACCOUNT}/forgot", f"{ACCOUNT}/forgot/"):
+            with self.subTest(value):
+                text = kit_text(account_host=value)
+                self.assertNotIn(f"{ACCOUNT}/forgot/forgot", text)
+                self.assertEqual(text.count(f"{ACCOUNT}/forgot"), 1)
+                self.assertEqual(
+                    text, expected,
+                    "a pasted reset URL renders the host it starts with, byte for byte")
+
+    def test_the_config_example_names_the_slot_and_uncomments_to_a_working_host(self) -> None:
+        """The example is where an operator learns the key (the second t_cc6cb872 nit).
+
+        `odilectl/config.py` treats `#` as an ordinary character in a value, so
+        an inline comment on the key line would land in the value the moment the
+        line is uncommented. Pin the whole discovery path: uncomment the
+        example's own line, load it through the real loader, render with it.
+        """
+        lines = (ROOT / "odilectl" / "config.example.yaml").read_text(
+            encoding="utf-8").splitlines()
+        slots = [line for line in lines if line.startswith("# account_host:")]
+        self.assertEqual(len(slots), 1,
+                         "the example names account_host once, as a comment")
+        key, _, value = slots[0][len("# "):].partition(":")
+        self.assertEqual(key, "account_host")
+        value = value.strip()
+        self.assertTrue(value.startswith("https://"), value)
+
+        body = [line for line in lines
+                if line.strip() and not line.lstrip().startswith("#")]
+        body.append(f"{key}: {value}")
+        with tempfile.TemporaryDirectory(prefix="odile-kit-config-") as directory:
+            path = Path(directory) / "config.yaml"
+            path.write_text("\n".join(body) + "\n", encoding="utf-8")
+            path.chmod(0o600)
+            loaded = Config.load(path)
+        self.assertEqual(loaded.get("account_host"), value,
+                         "uncommenting the example's line yields the bare value")
+
+        text = kit_text(account_host=loaded.get("account_host"))
+        self.assertEqual(text.count(f"{value}/forgot"), 1)
+        self.assertNotIn("the site in your invitation email", text)
+
+    def test_a_bad_account_host_is_refused_naming_the_flag(self) -> None:
+        for value in ("http://test.odile.fyi", "test.odile.fyi",
+                      "https://test odile.fyi", "https://"):
+            with self.subTest(value):
+                result = render(account_host=value)
+                self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+                self.assertIn("recovery kit:", result.stderr)
+                self.assertIn("--account-host", result.stderr)
 
     def test_the_kit_carries_both_public_halves_and_the_certificate(self) -> None:
         """ODL-514: a kit that names one key stops being an anchor the day the other signs."""

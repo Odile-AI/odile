@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import re
 import secrets
+import signal
 import subprocess
 import sys
 import tempfile
@@ -224,6 +225,32 @@ class LocalDemoTest(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertIn("odile-demo: stopped", output)
         self.assertNotIn("Traceback", output)
+
+    def test_sigint_stops_the_server_even_when_it_is_inherited_ignored(self) -> None:
+        """The server stops on SIGINT even when its launcher ignored SIGINT.
+
+        A background job of a non-interactive shell (job control off) has SIGINT
+        set to SIG_IGN, and SIG_IGN -- unlike a handler -- survives exec, so
+        every descendant inherits it. CPython then installs no SIGINT handler of
+        its own, which is why a server relying on the inherited disposition
+        never stopped: the full-suite gate killed it after the stop window and
+        the two tests that assert `code == 0` failed with -9. Here the parent
+        hands the child the same disposition the gate handed it.
+        """
+        state = Path(self.tmp.name) / "ignored-state"
+        previous = signal.signal(signal.SIGINT, signal.SIG_IGN)
+        try:
+            ignored = demo_check.DemoProcess(state, heartbeat_seconds=0.25)
+        finally:
+            signal.signal(signal.SIGINT, previous)
+        code, output = ignored.stop()
+        self.assertEqual(code, 0, output)
+        self.assertIn("odile-demo: stopped", output)
+        self.assertLess(
+            ignored.stops[-1],
+            demo_check.STOP_TIMEOUT,
+            "the server did not act on SIGINT before the stop window closed",
+        )
 
     # -- the no-JavaScript, no-state, no-third-party rule ------------------
     def test_page_has_no_javascript_state_header_or_external_url(self) -> None:

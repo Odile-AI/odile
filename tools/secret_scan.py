@@ -196,7 +196,7 @@ ALLOW: tuple[Allow, ...] = (
     Allow(
         "credential-assignment",
         "docs/ops/evidence/uki-cycle/*/boot-*.txt",
-        "serial transcript of the scratch tenant 31a63bbb: the measured command line "
+        "serial transcript of the scratch tenant 0badc0de: the measured command line "
         "necessarily carries its one-time setup token (already used) and the public boot key",
     ),
     Allow(

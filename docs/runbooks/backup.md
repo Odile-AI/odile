@@ -43,6 +43,16 @@ All guest commands run as root on the tenant. The operator has no SSH: the
 drill drove the machine through its own Webapp (the tenant's sign-in) and its
 own Hermes cron, which is the same path the user has.
 
+**Vintage of the R2 code paths (20 November 2026).** The destination, the
+bucket layout and the R2 rows in §1 and §3.1 are the interim **design**
+(ADR-004 §8); the code that operates them is **not shipped at this head**. The
+`s3:` branch of `scripts/backup.py`, the guest's `/etc/odile/backup-s3.env` and
+the cap check are **ODL-933**; the `odilectl backup-usage` readback and its
+8.0/9.0 GB alert are **ODL-934**; the bucket-emptying half of `odilectl purge`
+is **ODL-935**; the provisioning that records the bucket and the tokens is
+**ODL-924**, still blocked on Savio's minting. Read every R2 sentence below as
+those cards' design until they land; the SFTP material stays the v5 record.
+
 ---
 
 ## 1. The trust boundary, in one table
@@ -54,7 +64,7 @@ own Hermes cron, which is the same path the user has.
 | Repository URL | `/etc/odile/backup-repo.txt` (from the seed, 0644) and the tenant row | everyone; it is an address, not a secret |
 | Repository contents | the SFTP box (v5) / the tenant's R2 bucket `odile-t-<slug>` (interim), restic ciphertext | anyone can copy the bytes; only the password decrypts them |
 | SFTP transport key | `/etc/odile/backup-ssh/id_ed25519` (0600, generated on the guest); public half registered on the backup box | root on the guest; the backup box sees the public half |
-| R2 transport token (interim) | `/etc/odile/backup-s3.env` (0600 root): endpoint, bucket, `AWS_DEFAULT_REGION=auto`, cap and the **Object Read & Write** token scoped to `odile-t-<slug>`; the read-only twin is in the user's recovery file | root on the guest; Cloudflare; HQ holds a copy only to re-seed a rebuild |
+| R2 transport token (interim — ODL-933; not shipped) | `/etc/odile/backup-s3.env` (0600 root): endpoint, bucket, `AWS_DEFAULT_REGION=auto`, cap and the **Object Read & Write** token scoped to `odile-t-<slug>`; the read-only twin is in the user's recovery file | root on the guest; Cloudflare; HQ holds a copy only to re-seed a rebuild |
 | Last status, size, snapshot id | `/var/lib/odile/backup.json` on the guest; the signed heartbeat carries the same fields to HQ | the user, HQ (the fields only) |
 | File names, file contents | inside the encrypted repository | nobody without the password |
 
@@ -72,7 +82,8 @@ repository), deletes `/srv/odile-backup/tenants/<slug>` and the guest's
 paths are v5 (the SFTP stand-in): on an interim tenant the same command is
 designed to empty `odile-t-<slug>` through the tenant's own token, and the empty
 bucket is then deleted in the Cloudflare dashboard — §3.1, and ADR-004 §8's exit
-row gives that change to `t_9d6fb595`.** The command reads no file name,
+row gives that change to **ODL-935**, not shipped at this head; `t_9d6fb595` is
+the shipped v5 command and has no bucket path.** The command reads no file name,
 decrypts nothing, and prints no password.
 
 **HQ cannot read the repository.** Measured 2026-11-12T23:24Z on the host that
@@ -85,9 +96,9 @@ $ grep -rlF -e "$(sed -n 's/^Backup password:[[:space:]]*//p' \
       /root/.odile /etc/odile /opt/odile; echo rc=$?
 rc=1
 $ RESTIC_PASSWORD=wrong-password-000000000000 \
-      restic -r /srv/odile-backup/tenants/odl-7971a8 snapshots
+      restic -r /srv/odile-backup/tenants/odl-fake01 snapshots
 Fatal: wrong password or no key found
-$ strings /srv/odile-backup/tenants/odl-7971a8/data/77/77c52743… | grep -c odile
+$ strings /srv/odile-backup/tenants/odl-fake01/data/77/77c52743… | grep -c odile
 0
 ```
 
@@ -116,20 +127,20 @@ prints it against the SFTP stand-in — `--repo sftp://…` with `--key` and
 `--known-hosts`. On an interim tenant the same program is designed to run
 against the R2 repository (§3.1): an `s3:` URL from the seed, the bucket token
 in `/etc/odile/backup-s3.env`, and no `--key` or `--known-hosts`. That `s3:`
-branch is ADR-004 §8's `backup.py` + installer card and **is not shipped at
-this head**; until it lands, a tenant's unit is the SFTP form below.
+branch is ADR-004 §8's `backup.py` + installer card, **ODL-933**, and **is not
+shipped at this head**; until it lands, a tenant's unit is the SFTP form below.
 
 ```
 /usr/local/lib/odile/backup.py run
-  --repo sftp://odile-backup@203.0.113.139:2222/tenants/odl-7971a8
+  --repo sftp://odile-backup@203.0.113.139:2222/tenants/odl-fake01
   --repo-file /etc/odile/backup-repo.txt      # the seed's URL; --repo wins
   --recovery  /etc/odile/recovery.txt
   --home      /home/tenant
   --key       /etc/odile/backup-ssh/id_ed25519
   --known-hosts /etc/odile/backup-ssh/known_hosts
   --status    /var/lib/odile/backup.json
-  --slug      odl-7971a8
-ExecStartPost=-/usr/local/lib/odile/backup.py heartbeat --status … --slug odl-7971a8
+  --slug      odl-fake01
+ExecStartPost=-/usr/local/lib/odile/backup.py heartbeat --status … --slug odl-fake01
   --url http://203.0.113.139:8099/heartbeat --key-dir /etc/odile/heartbeat
 ```
 
@@ -142,12 +153,12 @@ is the same body with the production URL:
 
 One run does, in order:
 
-1. `restic backup /home/tenant --tag tenant --host odl-7971a8 --json`
+1. `restic backup /home/tenant --tag tenant --host odl-fake01 --json`
    — `--host` is the **slug**, not the kernel hostname, so a rebuilt guest
    keeps one retention group.
 2. `restic stats --mode raw-data --json` — the repository size HQ is allowed
    to know.
-3. `restic forget --keep-daily 7 --keep-weekly 4 --group-by host --host odl-7971a8 --prune`
+3. `restic forget --keep-daily 7 --keep-weekly 4 --group-by host --host odl-fake01 --prune`
    — the retention the card specifies.
 4. Writes `/var/lib/odile/backup.json` atomically, mode 0600, the HQ-visible
    fields only. A failed run writes `status: failed` and keeps the previous
@@ -274,10 +285,10 @@ the Webapp). On a guest that has the file:
 ```sh
 install -m 0755 scripts/backup.py /usr/local/lib/odile/backup.py
 /usr/local/lib/odile/backup.py init \
-    --repo 'sftp://***@backup.odile.fyi/tenants/odl-7971a8' --dry-run
+    --repo 'sftp://***@backup.odile.fyi/tenants/odl-fake01' --dry-run
 /usr/local/lib/odile/backup.py install \
-    --repo 'sftp://***@backup.odile.fyi/tenants/odl-7971a8' \
-    --slug odl-7971a8 --home /home/tenant
+    --repo 'sftp://***@backup.odile.fyi/tenants/odl-fake01' \
+    --slug odl-fake01 --home /home/tenant
 systemctl list-timers odile-backup-tenant.timer
 ```
 
@@ -368,8 +379,8 @@ $ journalctl -u odile-backup-tenant.service -n 5 --no-pager
 Nov 12 22:24:54 odile-bench systemd[1]: Starting odile-backup-tenant.service - Odile tenant backup (restic, nightly)...
 Nov 12 22:25:00 odile-bench python3[8104]: ok           snapshot fb0f6694 of /home/tenant in 1.0s (47366363 bytes processed, 0 new files)
 Nov 12 22:25:00 odile-bench python3[8104]: status       /var/lib/odile/backup.json
-Nov 12 22:25:00 odile-bench python3[8153]: posted       heartbeat for odl-7971a8 at 1794522300 -> http://203.0.113.139:8099/heartbeat
-Nov 12 22:25:00 odile-bench python3[8153]: HQ said      {"at": 1794522300, "ok": true, "received_at": "2026-11-12T22:25:04Z", "slug": "odl-7971a8"}
+Nov 12 22:25:00 odile-bench python3[8153]: posted       heartbeat for odl-fake01 at 1794522300 -> http://203.0.113.139:8099/heartbeat
+Nov 12 22:25:00 odile-bench python3[8153]: HQ said      {"at": 1794522300, "ok": true, "received_at": "2026-11-12T22:25:04Z", "slug": "odl-fake01"}
 ```
 
 The timer is armed for the next 03:00, and it has fired on its own before the
@@ -387,12 +398,12 @@ enabled
 ### What HQ shows
 
 ```
-$ odilectl status odl-7971a8
-status: 1 machine(s) for odl-7971a8
+$ odilectl status odl-fake01
+status: 1 machine(s) for odl-fake01
   SERVER     HOSTNAME                 STATE      IPV4             EXPIRES
-  31a63bbb   odl-7971a8               active     203.0.113.87     2026-12-10
+  0badc0de   odl-fake01               active     203.0.113.87     2026-12-10
   release:   intended not recorded, booted no report (unknown)
-  backup:    last 2026-11-12T22:25:00Z, (37m ago), snapshot fb0f6694, 1017507922 bytes in the repository, sftp://odile-backup@203.0.113.139:2222/tenants/odl-7971a8
+  backup:    last 2026-11-12T22:25:00Z, (37m ago), snapshot fb0f6694, 1017507922 bytes in the repository, sftp://odile-backup@203.0.113.139:2222/tenants/odl-fake01
 ```
 
 (The repository URL prints with the account masked as `***@` in some
@@ -436,7 +447,7 @@ The SFTP key is generated **on the guest** (`init`), and only its public half
 travels:
 
 ```
-$ backup.py init --repo 'sftp://odile-backup@203.0.113.139:2222/tenants/odl-7971a8'
+$ backup.py init --repo 'sftp://odile-backup@203.0.113.139:2222/tenants/odl-fake01'
 created      /etc/odile/backup-ssh/id_ed25519 (ed25519, no passphrase)
 recorded     203.0.113.139 in /etc/odile/backup-ssh/known_hosts (6 line(s))
 created      the restic repository
@@ -456,7 +467,8 @@ password against an existing repository is refused by name, never re-initialised
 
 ### 3.1 The interim destination — Cloudflare R2, 19 November 2026
 
-The live destination until B2 is restored. A tenant repository is an R2 bucket,
+The interim destination until B2 is restored — designed, not yet provisioned
+(**ODL-924**). A tenant repository is an R2 bucket,
 **one bucket per tenant**, and the URL is the provider's, not ours:
 
 ```
@@ -477,7 +489,9 @@ dashboard step in that branch.
   dashboard** (there is no account-wide R2 credential at HQ): **Object Read &
   Write** for the guest, **Object Read only** for the user's recovery file. The
   guest's pair, the endpoint, the bucket and `AWS_DEFAULT_REGION=auto` live in
-  `/etc/odile/backup-s3.env` (0600 root); the same pair is kept on HQ at
+  `/etc/odile/backup-s3.env` (0600 root; written by **ODL-933**'s installer from
+  the seed **ODL-924** builds — neither is shipped at this head); the same pair
+  is kept on HQ at
   `/root/.odile/r2/odile-t-<slug>.env` (0600) only so a rebuild can
   re-deliver it. Neither token can create or delete a bucket.
 - **Cap:** **2.0 GB per repository, at most three buckets in total (the demo
@@ -487,20 +501,25 @@ dashboard step in that branch.
   when the repository after prune exceeds it; a run that starts over cap does not
   upload. `odilectl backup-usage` lists all four buckets daily and alerts at
   **8.0 GB (warn) / 9.0 GB (critical)**. The **fourth bucket — the second
-  paying tenant — waits for B2.**
+  paying tenant — waits for B2.** The cap check in `backup.py` is **ODL-933**'s
+  and the daily readback **ODL-934**'s; neither is shipped at this head.
 - **Verification after minting:** `HeadBucket` on `odile-t-<slug>` must answer,
   and `HeadBucket` on `hermes-hq-backup` with the tenant token must **not** be
   200. Record both codes in the handoff — that is the proof the token is scoped.
-- **Purge:** an Object Read & Write token can empty its bucket but **cannot
-  delete the bucket**. At `keep_until`, `odilectl purge` empties
-  `odile-t-<slug>` through the tenant token and records `bucket_emptied_at` (the
-  dashboard's **Empty Bucket** is the fallback if the token is gone); the empty
-  bucket is deleted in the Cloudflare dashboard. The 30-day promise and the
+- **Purge (ODL-935; not shipped at this head):** an Object Read & Write token
+  can empty its bucket but **cannot delete the bucket**. At `keep_until`,
+  `odilectl purge` empties `odile-t-<slug>` through the tenant token and records
+  `bucket_emptied_at` — ODL-935's bucket path; not shipped at this head, so the
+  dashboard's **Empty Bucket** is the fallback. The empty bucket
+  is deleted in the Cloudflare dashboard. The 30-day promise and the
   deletion are unchanged; only the last click is manual.
 
-The first `init` is §3's second half removed: no SSH key, no `known_hosts`, no
-human on the provider's side. With `/etc/odile/backup-s3.env` in place (0600
-root), the guest runs
+**Init — ODL-933; not shipped at this head.** No code loads
+`/etc/odile/backup-s3.env` today — `git grep -n 'backup-s3' -- '*.py' '*.sh' '*.service'` matches nothing — and `scripts/backup.py`'s `_environment()` sets
+`RESTIC_*` only, so the command below has no AWS credentials until ODL-933
+lands. The first `init` is §3's second half removed: no SSH key, no
+`known_hosts`, no human on the provider's side. With `/etc/odile/backup-s3.env`
+in place (0600 root), the guest runs
 
 ```sh
 backup.py init --repo 's3:https://<account_id>.r2.cloudflarestorage.com/odile-t-<slug>/repo'
@@ -522,8 +541,8 @@ restores it from the snapshot into a temporary directory, compares SHA-256, and
 puts the file back in place. A second run is safe and still passes.
 
 ```
-$ backup.py drill --repo 'sftp://odile-backup@203.0.113.139:2222/tenants/odl-7971a8' \
-    --slug odl-7971a8 --home /home/tenant
+$ backup.py drill --repo 'sftp://odile-backup@203.0.113.139:2222/tenants/odl-fake01' \
+    --slug odl-fake01 --home /home/tenant
 drill        backed up /home/tenant/backup-drill/canary.txt as 74e1507d, deleted it, restored it
 sha256       before 896bcb5bc104dac7c9bb351eeba3c852f4929d781d907dd98eb04cc219cf0fde
              after  896bcb5bc104dac7c9bb351eeba3c852f4929d781d907dd98eb04cc219cf0fde
@@ -546,8 +565,8 @@ $ cat /home/tenant/backup/drill.json
   "at_iso": "2026-11-12T19:04:15Z",
   "duration_seconds": 7.553,
   "file": "/home/tenant/backup-drill/canary.txt",
-  "host": "odl-7971a8",
-  "repo": "sftp://odile-backup@203.0.113.139:2222/tenants/odl-7971a8",
+  "host": "odl-fake01",
+  "repo": "sftp://odile-backup@203.0.113.139:2222/tenants/odl-fake01",
   "rpo_seconds": 0.0,
   "rto_seconds": 0.931,
   "schema": 1,
@@ -578,8 +597,8 @@ restic      restic 0.18.0 (guest)
 The password check, also on the live tenant:
 
 ```
-$ backup.py verify --repo 'sftp://odile-backup@203.0.113.139:2222/tenants/odl-7971a8'
-repo         sftp://…@203.0.113.139:2222/tenants/odl-7971a8
+$ backup.py verify --repo 'sftp://odile-backup@203.0.113.139:2222/tenants/odl-fake01'
+repo         sftp://…@203.0.113.139:2222/tenants/odl-fake01
 password     opens the repository (2 snapshot(s))
 wrong one    refused
 ```
@@ -849,7 +868,8 @@ sentence is quoted (ODL-474 lands it).
 - **Exit:** the encrypted repository is kept 30 days after cancellation, then
   deleted. The user can download it with the password before then; Odile can
   delete it, not read it. The deletion is `odilectl purge <slug>`
-  (`docs/runbooks/offboard.md` §4, **t_9d6fb595**).
+  (`docs/runbooks/offboard.md` §4, **t_9d6fb595**). On an interim tenant the
+  bucket half is **ODL-935**'s and is not shipped at this head (§3.1).
 
 ---
 
@@ -857,12 +877,12 @@ sentence is quoted (ODL-474 lands it).
 
 | Date | What | Result |
 |---|---|---|
-| 2026-11-12T19:01Z | First repository on the drill box (`init`, 3 calls: 2 failures before the key was registered) | created; `config`, `data`, `index`, `keys`, `snapshots` under `/srv/odile-backup/tenants/odl-7971a8` |
+| 2026-11-12T19:01Z | First repository on the drill box (`init`, 3 calls: 2 failures before the key was registered) | created; `config`, `data`, `index`, `keys`, `snapshots` under `/srv/odile-backup/tenants/odl-fake01` |
 | 2026-11-12T19:02:41Z | First nightly run (`backup.py run`) | snapshot `b50aa5e5`; 156,311 files / 3,139,596,963 bytes in 27.3 s; repository 1,017,111,156 bytes |
 | 2026-11-12T19:04:08Z | **Drill 1** (`backup.py drill`) | PASS: canary `896bcb5b…` before = after; snapshot `74e1507d`; RTO 0.931 s; RPO 0.0 s; the whole drill 7.553 s |
 | 2026-11-12T19:07:29Z | Password check (`backup.py verify`) | password opens (2 snapshots); a wrong password refused |
 | 2026-11-12T19:08:34Z | Unit run (`systemctl start odile-backup-tenant.service`) | snapshot `08c1103b` in 6.5 s; heartbeat accepted `{"ok": true}`; timer next 2026-11-13T03:00:17Z |
-| 2026-11-12T19:08:44Z | `odilectl status odl-7971a8` | `backup: last 2026-11-12T19:08:44Z … snapshot 08c1103b, 1017383711 bytes` |
+| 2026-11-12T19:08:44Z | `odilectl status odl-fake01` | `backup: last 2026-11-12T19:08:44Z … snapshot 08c1103b, 1017383711 bytes` |
 | 2026-11-12T19:14:56Z | HQ cannot read | no password in `/root/.odile`, `/etc/odile`, `/opt/odile`; the storing host gets `wrong password`; a pack has no plaintext name |
 | 2026-11-12T22:25:00Z | Nightly unit again (`systemctl start`) | snapshot `fb0f6694` in 1.0 s; heartbeat accepted; `odilectl status` shows `last 22:25:00Z … snapshot fb0f6694` |
 | 2026-11-12T22:28:39Z–23:52:52Z | **Drill 2** (destroy A, rebuild as B and then C, restore A's home with A's recovery file) | PASS: 550 files / 3.630 MiB restored in 0.861 s; `sha256sum -c` OK for all three manifest files; canary `17469543…`; end-to-end RTO 84m13s, of which the timed rebuild-and-restore is 38m03s; RPO 10m51s |
@@ -930,9 +950,11 @@ sentence is quoted (ODL-474 lands it).
   it, and past it runs `restic snapshots`, deletes the box's directory and
   drops the guest's key line; a second run says `already purged`
   (`docs/runbooks/offboard.md` §4). The off-site box it will run against is
-  **t_8eb17a54**'s; the drill's chroot is on HQ.
+  **t_8eb17a54**'s; the drill's chroot is on HQ. On an interim tenant the
+  bucket-emptying half is **ODL-935**'s and is not shipped at this head (§3.1).
 
 The follow-ups are board cards, not prose: **t_fec9f699** (rebuild keeps
 the repository), **t_19148cba** (installer places the program and the units,
 heartbeat reachable — this card), **t_8eb17a54** (Savio buys the box and
-sets DNS) and **t_9d6fb595** (the 30-day purge, §9).
+sets DNS), **t_9d6fb595** (the v5 30-day purge, §9) and **ODL-935** (the
+interim bucket half, §3.1).

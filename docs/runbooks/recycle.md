@@ -131,9 +131,34 @@ disk write started.
 It arms the console log first (the first boot's transcript cannot be recovered
 after the fact), **after** the one-id fence (§1 rule 8), then reinstall → boot
 image → disk image, in the vendor's order. The disk write **starts the machine
-itself**; the command ends at that submission. Without `--apply --confirm` the
-same command is a dry run and prints every field it would post, including the
-pair it would lose.
+itself**. Without `--apply --confirm` the same command is a dry run and prints
+every field it would post, including the pair it would lose.
+
+The line comes from `--cmdline-file` only: `--recycle` refuses `--cmdline`
+(exit 2, before the fence and the console), because argv is world-readable in
+`ps` and the line carries the per-machine seed token.
+
+**The disk write clears the boot-image field**, measured twice on this box on
+2026-11-20 (`t_556631d6`; `t_6d956aee` earlier), so the command does not end at
+the disk write's submission. It waits for the panel's own `Written <UTC>` stamp
+in the Disk image section — the POST returns a minute or two before the image is
+on the disk, so a read straight after it is a pre-write read — then reads
+`?action=boot-image&id=<id>` back from the API with the account's key
+(`--key-file`, default `/root/.odile/servury_reseller_key_lkbxu6i9`; the run
+refuses before the reinstall without one, or with an empty file) and:
+
+* when `next_start` is `custom` with the same URL, SHA-256 and line, writes
+  nothing and restarts nothing — it prints `the field survived the write (no
+  re-attach)`;
+* otherwise it attaches the same pair and per-machine line again, reads the
+  field back to prove it stuck, and presses **restart** — the disk write already
+  started the machine, so only the next start has to be the requested UKI.
+
+The run's last line names the pair the next start will use. A disk write that
+reports no new `Written` stamp in `--wait` seconds fails (exit 1) as unfinished,
+and a re-attach that does not read back as `custom` fails too: neither is
+printed as success. A read-back that errors — a panel fetch failure, or a page
+instead of the API's JSON — also exits 1 with a sentence, never a traceback.
 
 If the wait for `Running` ends the command (the machine is still `reinstalling`
 at `--wait`), the erase has already happened and the boot/disk fields are
@@ -150,6 +175,29 @@ boot-image attach (115 MB download + hash) 10 s; disk write submitted, the
 machine stops, writes and starts. The spike measured 1 m 32 s and 6 s and
 77 s for the same three steps on the same class of box; treat the ones digit
 as "a minute or so", the order as the contract.
+
+**The same read-back by hand, when the command was not the one that ran.**
+Measured 2026-11-20 on the same box (`t_556631d6`): the reinstall reported
+`Running` at 32 s, the attach printed its success, the disk write completed at
+10:36:14Z — and `?action=boot-image` then answered `next_start: release` with
+`image: null`. The machine had already started on the Servury release against
+the new disk and sat at its unlock prompt (`Please unlock disk root_crypt`).
+The recovery is the ordinary attach, with the same URL, SHA-256 and per-machine
+line, then a restart:
+
+```sh
+./tools/servury_panel.py --set-boot-image --server <id> \
+    --url https://odile.fyi/releases/uki/<digest>.efi --sha256 <digest> \
+    --cmdline "$(cat line.txt)" --apply --confirm
+./tools/servury_panel.py --power --server <id> --action restart
+```
+
+(that verb takes `--cmdline`, not `--cmdline-file`, unlike `--recycle`).
+Read the boot image back from the API before the restart: the pair must be
+`next_start: custom` with the line in `image.cmdline`. The console log is a
+ring buffer: once the transcript passes ~64 KiB, `--console --action read` (and
+`?action=serial`) return the newest ~64 KiB, so a fresh boot is recognisable by
+the kernel's first line, not by an offset.
 
 ### 2.3 The first boot — the machine's own evidence
 
@@ -215,12 +263,22 @@ What the numbers mean — and what they do **not** mean:
   another line therefore installs, but the pin in the image is not the record
   of that boot — the boot record is.
 * A per-machine line that changes `bb.key` also changes the **measured boot
-  key**, and the disk's baked `/etc/odile/boot-key.pub` still names the old
-  one: `odile-firstboot` prints `record skipped (the measured boot key and
-  /etc/odile/boot-key.pub disagree)` and skips the boot-record **POST** to HQ.
-  The local `/etc/odile/boot-record.json` is still written and `/attestation`
-  still reports the same measurement. Re-cutting the disk with the new
-  `boot-key.pub` is the fix; the skip is not a failed boot.
+  key**, and the disk's baked `/etc/odile/boot-key.pub` names the key of
+  whichever machine the disk was built for. Since 2026-11-20 (`t_556631d6`) the
+  measured key wins: `odile-firstboot` rewrites `/etc/odile/boot-key.pub` from
+  the line (idempotently — a converged boot writes nothing, and `--check` never
+  writes), prints `refreshed /etc/odile/boot-key.pub from the measured line` on
+  its one console line, and **posts** the boot record. The "mismatch" refusal
+  stays for a line with **no** `bb.key=` at all: on a shared disk the file is
+  the build's key, not this boot's. Measured on `<server:ukitest>` after a
+  recycle with a per-machine line: `record 2026.11.1 pending key
+  SHA256:l5JYOc… (hq first_visit) · refreshed …`, the local boot record
+  `b22cd431…` equal to `sev-snp-measure` over the served UKI with the panel
+  line, and `/etc/odile/boot-key.pub` byte-equal to the line's key
+  (`docs/ops/evidence/2026-11-20-recycle-bootkey/EVIDENCE.md`). Before that
+  fix the same boot printed `record skipped (the measured boot key and
+  /etc/odile/boot-key.pub disagree)` and HQ never received the record; the
+  local `/etc/odile/boot-record.json` was written either way.
 
 ## 4. Trim the fence, then restore it
 

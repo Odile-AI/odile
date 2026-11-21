@@ -13,6 +13,11 @@ the printed line, and the state of `main`. The stand-in `make` reproduces the
 measured shape of a gate that never got the host lock: `tools/check_lock.py`
 answers 75, `make` wraps that into its own status 2 and echoes `Error 75`.
 
+The tool's own environment scrub (`caller_env`) is asserted by `CallerEnvTests`
+with no wrapper between the caller and the tool: the suite's `clean_env()` used
+to hide whether the tool scrubbed anything at all, so deleting
+`env=caller_env()` from the tool left this suite green (t_ab1f19e3, 2026-11-20).
+
 `tools/merge_card.py` is HQ-only machinery — it is excluded from the public
 tree — so the suite skips where the tool is absent (a fresh clone).
 """
@@ -51,6 +56,10 @@ def clean_env(extra: dict[str, str] | None = None) -> dict[str, str]:
         and not key.startswith("ODILE_MERGE_")
         and key != "CHECK_LOCK_WAIT"
     }
+    # The fixture repositories are hermetic: a system or global git config
+    # (`commit.gpgsign`, `core.hooksPath`) must not change what a test measures.
+    env["GIT_CONFIG_NOSYSTEM"] = "1"
+    env["GIT_CONFIG_GLOBAL"] = os.devnull
     env.update(extra or {})
     return env
 
@@ -76,6 +85,20 @@ def merge_tool() -> Path | None:
 
 
 TOOL = merge_tool()
+
+
+def load_tool():
+    """The module under test, loaded from `TOOL` so a mutant copy can stand in.
+
+    A reviewer reproduces a red by writing a modified copy of the tool to
+    `<worktree>/tools/merge_card.py` (`merge_tool` prefers that path) and
+    re-running this module; nothing here reaches into the shipped file.
+    """
+    spec = importlib.util.spec_from_file_location("merge_card_under_test", TOOL)
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 class Fixture:
@@ -454,11 +477,8 @@ class PolicyTests(unittest.TestCase):
         3600` — and had its merge reset (2026-11-18, the ODL-910 gate run).
         Load the module with those variables removed.
         """
-        spec = importlib.util.spec_from_file_location("merge_card_under_test", TOOL)
-        assert spec and spec.loader
-        module = importlib.util.module_from_spec(spec)
         with mock.patch.dict(os.environ, clean_env(), clear=True):
-            spec.loader.exec_module(module)
+            module = load_tool()
 
         self.assertGreater(module.CHECK_TIMEOUT, module.CHECK_LOCK_WAIT)
         self.assertLess(module.CHECK_LOCK_WAIT, 3600, "the queue must be bounded below the Makefile default")
@@ -564,29 +584,254 @@ class NoBranchCardTests(unittest.TestCase):
     def tearDown(self) -> None:
         self.fixture.cleanup()
 
-    def load_tool(self):
-        spec = importlib.util.spec_from_file_location("merge_card_under_test", TOOL)
-        assert spec and spec.loader
-        module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
-        return module
+    def _run_publish(self, env: dict[str, str]) -> int:
+        """Run `merge_card --card` in-process, in exactly the environment given.
+
+        The card has no branch, so the tool's work is `publish_main`: one
+        `make leak` in the repository and one `git push origin main`. The
+        stand-in `make` answers the leak gate, so what the exit code and the
+        fixture's refs measure is the tool, not this suite. `card_details` is
+        replaced so no board is read.
+        """
+        self.fixture.write_make('case "$1" in\n  leak) echo "make leak: OK" ;;\nesac\nexit 0\n')
+        with mock.patch.dict(os.environ, env, clear=True):
+            module = load_tool()
+            setattr(module, "card_details", lambda card: {"branch_name": None,
+                                                          "workspace_path": None,
+                                                          "title": "a dir-workspace card"})
+            return module.main(["--card", "t_000000", "--repo", str(self.fixture.repo)])
+
+    def publish(self) -> int:
+        """Publish with the suite's `clean_env()` standing in for the caller.
+
+        This models a caller that is already clean — a shell outside a hook —
+        and `clean_env()` strips every `GIT_*` before the tool sees it. That is
+        why it cannot assert the tool's own scrub: it passed on the tool that
+        had none (t_ab1f19e3). `publish_unwrapped()` is the version that can.
+        """
+        run_env = clean_env({
+            "PATH": os.pathsep.join([str(self.fixture.bin_dir), os.environ.get("PATH", "")]),
+        })
+        return self._run_publish(run_env)
+
+    def publish_unwrapped(self, caller: dict[str, str]) -> int:
+        """Publish with the caller's own environment reaching the tool.
+
+        Nothing here scrubs a repository-pinning name: the caller's `GIT_DIR`,
+        `GIT_INDEX_FILE` and the rest go into `os.environ` and only the tool's
+        `caller_env()` can keep them out of its `git` calls. The ambient `GIT_*`
+        are dropped first so the caller pinned below is the only repository
+        named — a gate's own hook variables would otherwise pin the *real*
+        checkout, and a tool that failed to scrub would push it.
+
+        The caller also pins the hermetic config pair (`/dev/null`, `1`), which
+        the tool keeps: it is what makes this run independent of the host's
+        `$HOME/.gitconfig`.
+        """
+        env = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
+        env["PATH"] = os.pathsep.join([str(self.fixture.bin_dir), env.get("PATH", "")])
+        env["GIT_CONFIG_GLOBAL"] = os.devnull
+        env["GIT_CONFIG_NOSYSTEM"] = "1"
+        env.update(caller)
+        return self._run_publish(env)
+
+    def decoy_caller(self) -> tuple[Fixture, dict[str, str], str, str]:
+        """A second repository pinned the way `.githooks/pre-commit` pins one.
+
+        The decoy plays the caller's repository: an unpushed `main` and its own
+        `origin`, so one push is all it takes to tell that the tool acted on it
+        instead of on `--repo`. Returns the decoy, the caller's environment, the
+        decoy's `main` and its `origin/main`; the caller must `decoy.cleanup()`.
+        """
+        decoy = Fixture()
+        try:
+            decoy.add_origin()
+            decoy.git("commit", "-q", "--allow-empty", "-m", "decoy: an unpushed commit")
+            main = decoy.head()
+            origin = decoy.origin_main()
+            caller = {
+                "GIT_DIR": decoy.git("rev-parse", "--absolute-git-dir").stdout.strip(),
+                "GIT_INDEX_FILE": decoy.git("rev-parse", "--path-format=absolute",
+                                            "--git-path", "index").stdout.strip(),
+            }
+        except BaseException:
+            decoy.cleanup()
+            raise
+        return decoy, caller, main, origin
 
     def test_a_card_without_a_branch_publishes_main(self) -> None:
-        module = self.load_tool()
-        setattr(module, "card_details", lambda card: {"branch_name": None, "workspace_path": None,
-                                                      "title": "a dir-workspace card"})
-        previous = os.environ.copy()
-        self.fixture.write_make('case "$1" in\n  leak) echo "make leak: OK" ;;\nesac\nexit 0\n')
-        os.environ["PATH"] = f"{self.fixture.bin_dir}{os.pathsep}{previous['PATH']}"
-        try:
-            code = module.main(["--card", "t_000000", "--repo", str(self.fixture.repo)])
-        finally:
-            os.environ.clear()
-            os.environ.update(previous)
+        code = self.publish()
 
         self.assertEqual(code, 0)
         self.assertEqual(self.fixture.origin_main(), self.fixture.head(),
                          "the branch-less card's commit was not published")
+        self.assertNotEqual(self.fixture.origin_main(), self.fixture.before,
+                            "origin/main did not move: nothing was published")
+
+    def test_a_caller_pinned_git_dir_is_scrubbed_by_the_tool_itself(self) -> None:
+        """The tool, not this suite, must drop the caller's `GIT_DIR`.
+
+        No `clean_env()` between the caller and the tool: the pin goes into
+        `os.environ` and the tool has to scrub it. This is the mutant that
+        reproduced the bug — with `env=caller_env()` deleted from the tool's
+        `git()`/`publish()`, every `git -C <fixture>` acts on the decoy and the
+        push publishes the decoy's `main` (measured 2026-11-20 on the pre-fix
+        bytes, `caller_env` removed: this test red, the wrapped one green).
+        """
+        decoy, caller, decoy_main, decoy_origin = self.decoy_caller()
+        try:
+            self.assertNotEqual(decoy_main, decoy_origin, "the decoy has nothing to publish")
+            code = self.publish_unwrapped(caller)
+
+            self.assertEqual(code, 0)
+            self.assertEqual(self.fixture.origin_main(), self.fixture.head(),
+                             "the caller's GIT_DIR redirected the publish away from the fixture")
+            self.assertEqual(decoy.head(), decoy_main, "the caller's repository's main moved")
+            self.assertEqual(decoy.origin_main(), decoy_origin,
+                             "the caller's repository's main was pushed to its origin")
+        finally:
+            decoy.cleanup()
+
+    def test_a_caller_pinned_git_dir_does_not_redirect_the_publish(self) -> None:
+        """The pre-commit hook's environment must not reach the tool's git calls.
+
+        `.githooks/pre-commit` runs inside a linked worktree, where git exports
+        an absolute `GIT_DIR`/`GIT_INDEX_FILE` for the *outer* repository.
+        Inherited by the in-process tool, every `git -C <fixture>` acts on that
+        repository instead: the fixture's `main` never moves and the push
+        publishes the outer `main` to the real `origin` — measured on a card
+        commit, 2026-11-20, where the hook's own suite failed on this test and
+        the push fast-forwarded real merges.
+
+        The decoy here plays the outer repository: a second repository with an
+        unpushed `main` and its own `origin`, pinned in the caller's
+        environment exactly as the hook pins it. Nothing about it may move.
+
+        This test runs the tool inside the suite's `clean_env()`, so it asserts
+        the hook-shaped path end to end but cannot tell whether the tool
+        scrubbed anything itself (t_ab1f19e3);
+        `test_a_caller_pinned_git_dir_is_scrubbed_by_the_tool_itself` is the
+        one that reddens when the tool's own scrub is deleted.
+        """
+        decoy, caller, decoy_main, decoy_origin = self.decoy_caller()
+        try:
+            self.assertNotEqual(decoy_main, decoy_origin, "the decoy has nothing to publish")
+
+            with mock.patch.dict(os.environ, caller):
+                code = self.publish()
+
+            self.assertEqual(code, 0)
+            self.assertEqual(self.fixture.origin_main(), self.fixture.head(),
+                             "the caller's GIT_DIR redirected the publish away from the fixture")
+            self.assertEqual(decoy.head(), decoy_main, "the caller's repository's main moved")
+            self.assertEqual(decoy.origin_main(), decoy_origin,
+                             "the caller's repository's main was pushed to its origin")
+        finally:
+            decoy.cleanup()
+
+
+@unittest.skipUnless(TOOL, TOOL_MISSING)
+class CallerEnvTests(unittest.TestCase):
+    """`caller_env()`, asserted with nothing between the caller and the tool.
+
+    `NoBranchCardTests` runs the tool inside the suite's own `clean_env()`, so
+    deleting the tool's `env=caller_env()` left every test green (t_ab1f19e3,
+    2026-11-20). These two load the tool and drive it with the caller's own
+    environment, so the tool's scrub is the only thing that can pass them.
+    """
+
+    #: Names git uses to pick a repository, a work tree or an object store. Each
+    #: outranks `-C`, so a `git -C <repo>` that inherits one acts on the
+    #: caller's repository instead.
+    PINNED = {
+        "GIT_DIR": "/var/tmp/decoy/.git",
+        "GIT_INDEX_FILE": "/var/tmp/decoy/.git/index",
+        "GIT_WORK_TREE": "/var/tmp/decoy",
+        "GIT_PREFIX": "sub/dir/",
+        "GIT_OBJECT_DIRECTORY": "/var/tmp/decoy/.git/objects",
+        "GIT_ALTERNATE_OBJECT_DIRECTORIES": "/var/tmp/other/.git/objects",
+        "GIT_COMMON_DIR": "/var/tmp/decoy/.git",
+        "GIT_NAMESPACE": "probe",
+        "GIT_CEILING_DIRECTORIES": "/var/tmp",
+        "GIT_DISCOVERY_ACROSS_FILESYSTEM": "1",
+        # A name this tool has never heard of must go too: the rule is the
+        # namespace minus the config knobs, not a list that goes stale.
+        "GIT_NAME_FROM_A_FUTURE_GIT": "1",
+    }
+    #: Configuration names, not repository names. Dropping them hands the tool
+    #: the host's `$HOME/.gitconfig`; keeping them lets a caller stay hermetic.
+    KEPT = {"GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_NOSYSTEM": "1"}
+
+    def test_caller_env_drops_every_repository_pinning_name_and_keeps_the_config_knobs(self) -> None:
+        """The `GIT_*` namespace goes; the two configuration knobs stay.
+
+        A caller that exported `GIT_CONFIG_GLOBAL=/dev/null` and
+        `GIT_CONFIG_NOSYSTEM=1` asked for a hermetic read. A tool that strips
+        them reads `$HOME/.gitconfig` instead, where a host may carry
+        `commit.gpgsign = true` — 12 failures measured at the t_8e5fb6fc
+        review.
+        """
+        caller = dict(self.PINNED)
+        caller.update(self.KEPT)
+        caller.update({"PATH": "/usr/local/bin:/usr/bin:/bin", "HOME": "/root",
+                       "MERGE_TEST_CALLER": "kept"})
+
+        with mock.patch.dict(os.environ, caller, clear=True):
+            env = load_tool().caller_env()
+
+        for name in self.PINNED:
+            self.assertNotIn(name, env, f"caller_env() left {name}, which pins a repository")
+        for name, value in self.KEPT.items():
+            self.assertEqual(env.get(name), value, f"caller_env() dropped the config knob {name}")
+        self.assertEqual(env.get("MERGE_TEST_CALLER"), "kept",
+                         "caller_env() is not the caller's environment minus GIT_*")
+        self.assertEqual(env.get("PATH"), caller["PATH"])
+        self.assertEqual(env.get("HOME"), caller["HOME"])
+        self.assertEqual(
+            {name for name in env if name.startswith("GIT_")} - set(self.KEPT),
+            set(),
+            "a GIT_* the caller exported survived caller_env() without being a config knob",
+        )
+
+    def test_a_hermetic_config_keeps_a_hostile_home_out_of_the_tools_own_commit(self) -> None:
+        """The kept knobs reach the tool's own `git`, measured by a commit.
+
+        The hostile `$HOME/.gitconfig` signs every commit with `/bin/false`, so
+        a tool that loses the knobs cannot write a commit object (`error: gpg
+        failed to sign the data`) — the shape that reddened 12 tests at the
+        t_8e5fb6fc review. Reaching `git()` here is the point: the knobs have to
+        survive the tool's own scrub, not only a direct read of the helper.
+
+        The environment is declared whole (`clear=True`) rather than layered
+        over the gate's: a gate exports `GIT_DIR`/`GIT_INDEX_FILE`, and a tool
+        under test that failed to scrub would otherwise land this probe commit
+        on the caller's own branch — measured while writing this test, where the
+        no-scrub mutant added a commit to the card's worktree.
+        """
+        fixture = Fixture()
+        try:
+            home = fixture.tmp / "hostile-home"
+            home.mkdir()
+            (home / ".gitconfig").write_text(
+                "[commit]\n\tgpgsign = true\n[gpg]\n\tprogram = /bin/false\n", encoding="utf-8")
+            caller = {
+                "PATH": os.environ.get("PATH", "/usr/local/bin:/usr/bin:/bin"),
+                "HOME": str(home),
+                "GIT_CONFIG_GLOBAL": os.devnull,
+                "GIT_CONFIG_NOSYSTEM": "1",
+            }
+
+            with mock.patch.dict(os.environ, caller, clear=True):
+                proc = load_tool().git(fixture.repo, "commit", "--allow-empty", "-m",
+                                       "probe: the tool's own commit", check=False)
+
+            self.assertEqual(proc.returncode, 0,
+                             "the tool inherited $HOME/.gitconfig: " + proc.stdout + proc.stderr)
+            self.assertEqual(fixture.git("log", "-1", "--format=%s").stdout.strip(),
+                             "probe: the tool's own commit",
+                             "the tool's commit did not land in the fixture repository")
+        finally:
+            fixture.cleanup()
 
 
 if __name__ == "__main__":

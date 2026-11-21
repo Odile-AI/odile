@@ -588,6 +588,17 @@ def main(argv: list[str] | None = None) -> int:
     def _sigterm(_signum, _frame):
         raise KeyboardInterrupt
 
+    # Ctrl-C stops this server even when SIGINT arrives already ignored.
+    # CPython installs its default SIGINT handler only when the inherited
+    # disposition is not SIG_IGN, and SIG_IGN -- unlike a handler -- survives
+    # exec: a job started as a background command by a non-interactive shell
+    # (`make check > log 2>&1 &`, job control off) is handed SIGINT=SIG_IGN,
+    # every descendant inherits it, and this server then ignored the interrupt.
+    # The demo tests killed it when their stop window closed: -9, and the module
+    # took 203.8 s instead of 4.3 s (measured 2026-11-20). Installing the
+    # handler here, rather than inheriting one, is what makes the printed
+    # promise -- "Ctrl-C stops it" -- true however the parent was launched.
+    signal.signal(signal.SIGINT, signal.default_int_handler)
     signal.signal(signal.SIGTERM, _sigterm)
     port = httpd.server_address[1]
     print(f"odile-demo: url http://127.0.0.1:{port}/")

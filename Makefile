@@ -21,20 +21,19 @@ SLUG ?= odlukitest
 # The gate's file lists come from the index, not from a walk of the working
 # tree: `git ls-files` is the repository, so an untracked private evidence
 # script (the shared checkout keeps the operating record under `docs/ops/`
-# untracked) cannot fail the gate every merge runs (ODL-338). The pre-commit
-# hook is shell without the `.sh` suffix, so `.githooks/pre-commit` is named
-# explicitly; every hook that does carry the suffix is already in the list. A
-# tree with no git — the built public tree — keeps the walk, pruned of VCS,
-# virtualenvs and the disposable fresh-clone checkout, so it still lints every
-# script and compiles every module it ships.
+# untracked) cannot fail the gate every merge runs (ODL-338). The hooks carry no
+# `.sh` suffix, so each is named explicitly; every script that does carry the
+# suffix is already in the list. A tree with no git — the built public tree —
+# keeps the walk, pruned of VCS, virtualenvs and the disposable fresh-clone
+# checkout, so it still lints every script and compiles every module it ships.
 GIT ?= git
 PRUNE = \( -path ./.git -o -path ./.worktrees -o -path ./.venv -o -path ./.fresh-clone \) -prune
 ifeq ($(shell $(GIT) rev-parse --is-inside-work-tree 2>/dev/null),true)
 PY_FILES = $(shell $(GIT) ls-files -- '*.py')
-SH_FILES = $(shell { $(GIT) ls-files -- '*.sh'; $(GIT) ls-files -- .githooks/pre-commit; } | sort -u)
+SH_FILES = $(shell { $(GIT) ls-files -- '*.sh'; $(GIT) ls-files -- .githooks/pre-commit .githooks/commit-msg .githooks/pre-push; } | sort -u)
 else
 PY_FILES = $(shell find . $(PRUNE) -o -name '*.py' -print | sort)
-SH_FILES = $(shell find . $(PRUNE) -o \( -name '*.sh' -o -path './.githooks/pre-commit' \) -print | sort)
+SH_FILES = $(shell find . $(PRUNE) -o \( -name '*.sh' -o -path './.githooks/pre-commit' -o -path './.githooks/commit-msg' -o -path './.githooks/pre-push' \) -print | sort)
 endif
 
 .PHONY: check check-hq check-inner acceptance prereqs test test-unit self-test compile lint claims brand roadmap secrets leak hooks fresh-check deploy-dry \
@@ -74,13 +73,16 @@ acceptance: check check-hq
 	@echo "make acceptance: OK $(CARD)"
 
 # The HQ half of the suite (ODL-479). A card worktree is a fresh checkout, so
-# `unittest discover -s tests` there finds the 64 tracked modules; 15 more exist
-# only at HQ (`.git/info/exclude`) and carry rules about the tree — every
-# `docs/*.md` quoting the UKI `f7bc0ceb…` must name `t_c1e0f336`, every craft
-# playbook keeps its five sections — so a card breaking one was green in its
-# worktree and red for everyone in main. `tools/hq_gate.py` runs those modules
-# against this checkout's own commit: a throwaway worktree with the HQ-only
-# files overlaid, removed afterwards, so the card's tree is never written to.
+# `unittest discover -s tests` there finds only the tracked modules — 66 of the
+# 82 `tests/test_*.py` at `main` `ef23edf`; the other 16 exist only at HQ
+# (`.git/info/exclude`) and carry rules about the tree — every `docs/*.md`
+# quoting the UKI `f7bc0ceb…` must name `t_c1e0f336`, every craft playbook
+# keeps its five sections — so a card breaking one was green in its worktree and
+# red for everyone in main. `tools/hq_gate.py` runs those modules against this
+# checkout's *merge preview*: a throwaway worktree at the branch's commit with
+# the paths the branch left alone taken as HQ's HEAD has them, main's deletions
+# applied too, and the HQ-only files overlaid, removed afterwards, so the card's
+# tree is never written to.
 # Outside HQ (a public clone) the tool prints one skip line and passes.
 check-hq:
 	@$(CHECK_LOCK_PY) $(PYTHON) tools/hq_gate.py
@@ -156,18 +158,38 @@ secrets:
 # assignment or private literal in the tree. It runs in `check` as well as in CI
 # (`publish-lint`), because `.githooks/pre-commit` runs `check` — a leak dies
 # before it becomes a commit, which is the only point where the fix is cheap.
-# `leak-forbid.txt` at the root of the checkout adds the private literals (the
-# vendor account and box ids); the scanner reports every copy of a listed one.
+#
+# There is one deny list, and it is HQ-only: `docs/ops/leak-forbid.txt` (the
+# directory is excluded from git), installed in CI from the `LEAK_FORBID_B64`
+# repository secret. The repository carries no copy, so a fresh clone has no
+# list: this target prints `forbid list absent` and still runs the tree classes,
+# rather than passing as if the class had run. That absent branch is the
+# target's, whatever path is named — `make leak FORBID_FILE=/nonexistent` also
+# prints the line and passes, because the target's job is the tree. Exit 2 is
+# the scanner's own contract, not the target's: a direct call
+# `tools/leak_scan.py --forbid-file /nonexistent` exits 2, because the caller
+# named a file the scan must have.
+FORBID_FILE ?= docs/ops/leak-forbid.txt
 leak: prereqs
-	$(PYTHON) tools/leak_scan.py --tree
+	@if [ -f "$(FORBID_FILE)" ]; then \
+		$(PYTHON) tools/leak_scan.py --tree --forbid-file "$(FORBID_FILE)"; \
+	else \
+		printf 'leak: forbid list absent: %s — the forbidden-value and forbidden-path classes did not run\n' "$(FORBID_FILE)"; \
+		printf 'leak: supply it at that path (HQ keeps it; CI reads the LEAK_FORBID_B64 secret)\n'; \
+		$(PYTHON) tools/leak_scan.py --tree; \
+	fi
 
-# Enable the committed pre-commit hook in this clone. Idempotent: git keeps the
-# path in local config, so run it once per clone.
+# Enable the committed hooks in this clone. Idempotent: git keeps the path in
+# local config, so run it once per clone. The commit-msg hook scans the message
+# before the commit object exists; the pre-push hook scans the outgoing diff and
+# commit messages against the same deny list. `git commit --no-verify` and
+# `git push --no-verify` are the deliberate bypasses.
 hooks:
 	@git rev-parse --git-dir >/dev/null 2>&1 || { echo "make hooks: run inside a git checkout" >&2; exit 1; }
 	@git config core.hooksPath .githooks
-	@chmod +x .githooks/pre-commit
-	@echo "make hooks: pre-commit gate enabled; bypass with: git commit --no-verify"
+	@chmod +x .githooks/commit-msg .githooks/pre-commit .githooks/pre-push
+	@echo "make hooks: commit-msg, pre-commit and pre-push leak gates enabled"
+	@echo "make hooks: bypass with: git commit --no-verify / git push --no-verify"
 
 # Clone HEAD into a throwaway checkout and run the gate there. This is the
 # "works on a fresh machine" proof; commit first, because a clone sees commits,

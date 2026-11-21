@@ -2,7 +2,7 @@
 
 A judge opens <https://demo.odile.fyi>, meets Odile's sign-in page, signs in as
 `judge`, and lands in the Webapp of Odile's own tenant machine: the custom
-measured image (`odl-7971a8`, `203.0.113.87`, measurement `9f01725a…`), one
+measured image (`odl-fake01`, `203.0.113.87`, measurement `9f01725a…`), one
 shared workspace, no nightly reset and no meter. Card: ODL-503.
 
 `https://odile.fyi/judge` was retired on 2026-11-14: ODL-901 answers it with a
@@ -20,7 +20,7 @@ page a judge should be sent to. It does not demonstrate a user-held key.
 | DNS | `demo.odile.fyi` A -> `203.0.113.87`, DNS-only (Cloudflare, `proxied=false`) |
 | TLS + proxy | Caddy on the tenant, block between `# BEGIN odile-demo-public` and `# END odile-demo-public` in `/etc/caddy/Caddyfile`; `admin off`, so a change needs `systemctl restart caddy` |
 | Webapp | `127.0.0.1:9130`, the `tenant` gateway; `webapp.public_url` is `https://demo.odile.fyi` |
-| Host check | Hermes refuses a Host header that is not the bound host or `webapp.public_url` (`400 Invalid Host header`); the demo host *is* the public_url, so the machine's own name `odl-7971a8.odile.fyi` still answers `/verify`, `/first-visit` and `/manifest`, but its Webapp path is refused |
+| Host check | Hermes refuses a Host header that is not the bound host or `webapp.public_url` (`400 Invalid Host header`); the demo host *is* the public_url, so the machine's own name `odl-fake01.odile.fyi` still answers `/verify`, `/first-visit` and `/manifest`, but its Webapp path is refused |
 | Gate | Hermes dashboard basic-auth provider (`HERMES_DASHBOARD_BASIC_AUTH_*` in `/home/tenant/.hermes/.env`, mode 0600) |
 | Account | `judge`; the password is carried by the sign-in page's form (`deploy/demo-host/login.html`), never here |
 | Sign-in page | `/srv/odile-demo/login.html`, Caddy's `handle /login*`. Committed and live are **one file**: sha256 `077f47d541b8a9daab33cf7e607f1a2e7e03c561342230f62fa5f25437b89253` (167,642 B), t_9896a577's artwork page with ODL-504's icon head (three links + the credit comment) and ODL-505's three paths (t_6b25f6e5), installed from `deploy/demo-host/login.html`. `--no-login` remains for a deploy that must keep the machine's current page |
@@ -211,7 +211,7 @@ The template is read per request, so no restart is needed. `--report` prints a
 
 The demo used to stop and mask the meter here. It no longer does (t_ee5aac66:
 the machine's meter state is its own), and the meter is **removed on this
-machine**: on `odl-7971a8` the unit is not installed
+machine**: on `odl-fake01` the unit is not installed
 (`systemctl is-enabled odile-meter` → `not-found`), `/etc/odile/meter.key` is
 gone and the `odile-meter` user is deleted (t_e237e261, merged into `main` at
 `0a4b726`; the installer no longer installs the meter product-wide). The
@@ -605,7 +605,7 @@ transcript.
 | The check, before and after | public half before the deploy: 20 passed / 4 failed (no command section, the sign-in page's missing credit comment, the two DNS rows); after ODL-563: 23 passed / 2 failed — both were the DNS rows, which then compared the tree's redacted `203.0.113.87` to the live A record. The ODL-563 follow-up (t_48e59c67) gives the rows `--target`, whose default is that redacted `create_dns.TENANT_IP`: on the live zone `./deploy/demo-host/check_demo_public.py --target "$(dig +short demo.odile.fyi)"` is `PASS (25 passed, 0 failed)`, exit 0, and the same file without the flag is `FAIL (23 passed, 2 failed)` with both rows naming `expected 203.0.113.87`. The command row prints `ok` and the page's own line, run out of the published bundle, exits 0 |
 | The second run | `deploy_demo_public.py` prints `same` for `/usr/local/lib/odile/verify.html (the demo lede)` and `(the demo command)` — including the 20:28Z run after the re-cut repair — plus the login page, the icons, the Caddyfile block, the config, the `.env` and `state.db`; the page's sha256 is unchanged. In the three run-window readings (19:00:31, 19:02:57, 19:04:15Z — before, between and after the two runs) the seeded session `local-931d9e32…` kept its 22 messages, `messages_sha256 870fa53c…` and both timestamps. A live count moves after the card — a check's turn appends to the seed by design (21:05Z read 28 messages, `c3746671…`) — so quote the run-window transcript, not a live read |
 | The two other writers | 2026-11-15T01:09:17Z: `deploy_demo_icons.py` installs `/tmp/verify.html` over `/usr/local/lib/odile/verify.html`; `apply_demo_public.py --report` then reads `"demo_lede": true, "demo_command": false`. 20:12:29Z: `odile-recut-run2` runs `odile-release-setup.sh --force` and the release installer writes the release page (customer lede, no section) over the template; the deploy restores both (`write … (the demo lede)` / `(the demo command)`) and the next run prints `same` (§2) |
-| The re-cut's side effect | the same re-cut set `/etc/odile` to 0750 root:odile-manifest; the machine's old listener (no `SupplementaryGroups=odile-manifest`) answered `/manifest` 503 until `deploy/image/odile-manifest.service` was installed and the unit restarted (loopback and `odl-7971a8.odile.fyi` both 200, §6) |
+| The re-cut's side effect | the same re-cut set `/etc/odile` to 0750 root:odile-manifest; the machine's old listener (no `SupplementaryGroups=odile-manifest`) answered `/manifest` 503 until `deploy/image/odile-manifest.service` was installed and the unit restarted (loopback and `odl-fake01.odile.fyi` both 200, §6) |
 
 ### The published password's reach (2026-11-14)
 
@@ -704,7 +704,7 @@ Check before every restart:
 
 ```sh
 curl -sS -H "X-Reseller-Key: $(...) " \
-  'https://servury.com/api/reseller.php?action=boot-image&id=31a63bbb'
+  'https://servury.com/api/reseller.php?action=boot-image&id=0badc0de'
 ```
 
 `next_start` must be `custom` with
@@ -714,14 +714,14 @@ tenant's own image back (the route measured on 2026-11-13, download ready in
 10 s):
 
 ```sh
-POST ?action=boot-image&id=31a63bbb
+POST ?action=boot-image&id=0badc0de
 {"url": "https://odile.fyi/releases/m1/odile-tenant.efi",
  "sha256": "5cb318083d2ce0555132a008b0d5dfb7613e6bd0a3fb19d0ae29adac8b1b6a5e"}
 ```
 
 then `POST ?action=power {"action":"restart"}` and read `?action=serial` until
 `bb-sealed-unlock: root_crypt opened with the SNP-derived key` and the
-`odile-release-setup … · odl-7971a8 · instance 31a63bbb` header. The guest's
+`odile-release-setup … · odl-fake01 · instance 0badc0de` header. The guest's
 identity comes from the UKI's own command line; the wrong UKI shows
 `odlukitest`/`.117` there.
 
@@ -736,11 +736,11 @@ re-runs the installer. A boot that ends `rc≠0` (for example after a restore)
 leaves the machine with the **tenant's own Caddy block only** —
 `demo.odile.fyi` then has no site, Caddy's TLS handshake for it fails with
 `tlsv1 alert internal error`, and the Webapp is reachable on
-`https://odl-7971a8.odile.fyi` instead. There is no boot re-assert to repair
+`https://odl-fake01.odile.fyi` instead. There is no boot re-assert to repair
 it; run the deploy against the machine's own name:
 
 ```sh
-./deploy/demo-host/deploy_demo_public.py --base https://odl-7971a8.odile.fyi \
+./deploy/demo-host/deploy_demo_public.py --base https://odl-fake01.odile.fyi \
   --access-user tenant --access-password-file <published> \
   --judge-password-file <published>
 ```
@@ -773,7 +773,7 @@ clear. Reset afterwards and the failed boot's marker is already written: remove
 it (`rm -f /var/lib/odile/release-setup.done`, then `--force`) as §6 says, or the
 machine keeps answering `already converged` with nothing installed.
 
-Before a reinstall of instance `31a63bbb`, un-end that instance's rows in the
+Before a reinstall of instance `0badc0de`, un-end that instance's rows in the
 seed ledger. The recipe, the hash-vs-instance choice and the rest of the traps
 (the copy is `.backup`, not `cp`; do the reset and the reinstall in one window)
 are [`seed.md`](seed.md) §6a; on this machine the instance-wide form is:
@@ -784,7 +784,7 @@ sudo sqlite3 /var/lib/odile/waitlist.db \
 sudo -u odile sqlite3 /var/lib/odile/waitlist.db \
   "update seed_tokens set used_at = NULL,
      expires_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now', '+30 days')
-   where instance_id = '31a63bbb';"
+   where instance_id = '0badc0de';"
 ```
 
 It re-arms only this tenant's own seed — the rows stay bound to tenant **and**
