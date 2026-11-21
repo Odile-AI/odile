@@ -95,6 +95,9 @@ acceptance: check check-hq
 # the paths the branch left alone taken as HQ's HEAD has them, main's deletions
 # applied too, the HQ-only files overlaid, and a seat's staged-at-HQ batch read
 # from HQ's index, removed afterwards, so the card's tree is never written to.
+# A path main deleted that HQ still carries — ignored on disk, or staged in its
+# index — is the exception: the preview keeps HQ's bytes and drops only the index
+# entry, as HQ's own checkout has it.
 # Outside HQ (a public clone) the tool prints one skip line and passes.
 check-hq:
 	@$(CHECK_LOCK_PY) $(PYTHON) tools/hq_gate.py
