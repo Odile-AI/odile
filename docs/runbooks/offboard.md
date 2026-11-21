@@ -664,7 +664,8 @@ empty — recommended in the spike's §6 and recorded as unmeasured in its §10)
 The fence and the one-command sequence for the three writes landed as
 **t_6d956aee** (merged `1665cca`) in `tools/servury_panel.py --recycle`
 (`docs/runbooks/recycle.md`). The disk write is still a human panel step for
-the live tenant: that account's panel login is not on this box (`:601`).
+the live tenant: that account's panel login is not on this box (§5, *The signed
+image is the panel's, not the API's*).
 
 ### The live tenant
 
