@@ -15535,7 +15535,7 @@ def self_test() -> int:
         # placeholder: the site, the Webapp's public_url and the DNS/ACME wait
         # are the same one name the install then serves.
         dry_kit = root / "dry-run-kit.json"
-        dry_kit.write_text(json.dumps({"slug": "odl-dry", "instance_id": "168020b4",
+        dry_kit.write_text(json.dumps({"slug": "odl-dry", "instance_id": "deadbeef",
                                        "setup_token": "0" * 64}), encoding="utf-8")
         dry_plan = {}
         for label, extra in (("production", []),
