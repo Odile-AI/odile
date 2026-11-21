@@ -115,9 +115,11 @@ PASS_LINE = ("PASS — the CPU signed this report and the launch measurement "
 #: its second interval (t_145ca49c).
 REPORT_MAX_AGE_SECONDS = 600
 #: The seeded session's identity is frozen: the id is a hash over the profile
-#: and principal the row was minted with on the retired HQ demo, and app.py's
-#: /judge deep link carries the same id. The retired account name is spelled in
-#: two pieces so it does not reappear in the tree; the string must never change.
+#: and principal the row was minted with on the retired HQ demo, so it is the
+#: identity the tenant's seeded row carries. It stays fixed because the row was
+#: minted with it, not because any HQ page deep-links it. The retired account
+#: name is spelled in two pieces so it does not reappear in the tree; the string
+#: must never change.
 SEED_PROFILE_ID = "/home/odile" "demo/.hermes"
 SEED_PRINCIPAL_ID = "uid:1001"
 SESSION_ID = "local-" + hashlib.sha256(
