@@ -8,8 +8,11 @@
 # publishes none — and the same allowlist, by path: a live identifier the tree
 # keeps (a tenant slug a program reads) is pinned at its own path in
 # `leak-allow.tsv`, so the commit that carries it is not a leak while the same
-# value at any other path is. The commit-message surface has no path, so a
-# message naming a literal blocks wherever it is written.
+# value at any other path is. The commit-message surface's path is the label
+# `commit-message` (the name `.githooks/commit-msg` scans under too), so a
+# message naming a literal blocks unless an allowlist row whose path is
+# `commit-message` pins that exact value's digest; the row's reason must not
+# quote the value (the self-satisfying rule).
 #
 # A clone carries no list (the repository does not publish one), so on a clone
 # this hook prints `forbid list absent` and lets the push through: there is
@@ -84,8 +87,9 @@ scan_patch() {
 # rows. Two paths: `docs/ops/leak-forbid.txt` (the one list, untracked at HQ)
 # and the retired root `leak-forbid.txt` that this branch's own history added
 # and a later commit removes — the deletion is not scanned, but the commit that
-# added it is. The commit-message scan has no path to exclude: a message naming
-# a literal is a leak wherever it is written.
+# added it is. The commit-message scan excludes no path: a message is not a file
+# in the tree, so its only waiver is a `commit-message` allowlist row that pins
+# the value.
 without_the_lists() {
     git "$@" -- . ":(exclude)docs/ops/leak-forbid.txt" ":(exclude)leak-forbid.txt"
 }
