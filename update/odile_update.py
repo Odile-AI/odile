@@ -900,6 +900,9 @@ def print_plan(release: Release, plan: Plan, layout: Layout, *, key_id: str) -> 
           f"hermes {manifest['hermes']['commit'][:12]} · "
           f"installer {manifest['installer_sha256'][:12]}"
           + (f" · backup {backup[:12]}" if backup else ""))
+    drift = verify_backup_drift(release, layout)
+    if drift:
+        print(f"warning      {drift}", file=sys.stderr)
     if plan.empty():
         print("plan         same: this machine already matches the release")
         return
@@ -1219,6 +1222,53 @@ def verify_installed(release: Release, layout: Layout) -> list[str]:
     return problems
 
 
+def installer_backup_pin(installer: Path) -> str | None:
+    """The backup program the installer itself pins, or None if it cannot say.
+
+    The installer's own `--manifest` is the existing spelling of this record
+    (`scripts/manifest.py read_installer_manifest` reads the same one). It is
+    the bytes that installer writes when it runs, so it is the program a fresh
+    install from a bundle would carry. A fixture or a pre-pin installer that
+    prints nothing usable returns None: the caller says the row was not
+    cross-checked rather than inventing a pin.
+    """
+    try:
+        proc = run([sys.executable, str(installer), "--manifest"], timeout=120)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if proc.returncode != 0:
+        return None
+    try:
+        document = json.loads(proc.stdout)
+    except ValueError:
+        return None
+    pin = document.get("backup_sha256") if isinstance(document, dict) else None
+    return pin if isinstance(pin, str) and bool(HEX_RE.match(pin)) else None
+
+
+def verify_backup_drift(release: Release, layout: Layout) -> str | None:
+    """One line when this machine's program is not the release's row, else None.
+
+    A warning, not a refusal: `backup_sha256` is a fact about the release, and
+    the file is a fact about the machine. `apply` writes the installer, the
+    skills and the Webapp — never the backup program — so refusing would roll
+    back an otherwise correct update and could never converge; the drift has to
+    be repaired by running the installer. The machine's bytes are still the ones
+    the nightly unit executes, so they are named rather than left implied.
+    """
+    row = release.manifest.get("backup_sha256")
+    if not row:
+        return None
+    actual = sha256_file(layout.backup_program)
+    if actual is None:
+        return (f"no {layout.backup_program}; the manifest names backup {row[:12]} "
+                "and the nightly unit has no program to run")
+    if actual == row:
+        return None
+    return (f"backup {actual[:12]} on this machine is not the manifest's {row[:12]}: "
+            "the program drifted from the release, which does not rewrite it")
+
+
 def append_log(layout: Layout, line: str) -> None:
     try:
         layout.var.mkdir(parents=True, exist_ok=True)
@@ -1379,6 +1429,28 @@ def build_release(layout: Layout, manifest_path: Path, *, release_id: str, boot_
         require(manifest["backup_sha256"] == sha256_file(layout.backup_program),
                 "the manifest's backup_sha256 is not this root's tenant backup program",
                 EXIT_BAD_INPUT)
+    # The row has to agree with the installer this bundle ships, not only with
+    # the candidate root. An installer-only update replaces the installer and
+    # never runs it, so a candidate root can carry the old program while its
+    # installer pins the new one; the bundle would then name one program and
+    # ship an installer that writes another. `tools/recut_release.py --check`
+    # already fails that pair on the surgical path; a full cut refuses it here.
+    row = manifest.get("backup_sha256")
+    pin = installer_backup_pin(layout.installer)
+    if row and pin:
+        require(row == pin,
+                f"the manifest's backup_sha256 {row[:12]} is not the program the installer "
+                f"it ships pins ({pin[:12]}): the root's installed program is the old bytes, "
+                f"the installer writes the new ones — run {layout.installer} on this root, "
+                "or re-cut the row from the installer", EXIT_BAD_INPUT)
+    elif row:
+        print(f"warning: {layout.installer} does not answer --manifest with a backup_sha256; "
+              f"the manifest's row {row[:12]} is not cross-checked against the installer "
+              "this bundle ships", file=sys.stderr)
+    else:
+        print("warning: the manifest names no backup_sha256; this release does not pin the "
+              "program the nightly unit runs (rebuild it from this root to carry the row)",
+              file=sys.stderr)
     target_webapp = {key_name: manifest["hermes"]["webapp"][key_name]
                      for key_name in ("node", "source_sha256", "output_sha256")}
     require(target_webapp == read_webapp_build(layout),
@@ -1888,6 +1960,20 @@ def self_test() -> int:
         check.expect("apply: odile-home rendered for this machine",
                      b"tester" in (layout.skills / "odile-home/SKILL.md").read_bytes())
         check.expect("apply: no post-check problems", verify_installed(release, layout) == [])
+        # Drift between the machine's program and the release row (t_f6dd9b65):
+        # reported, never refused, because apply does not write the file.
+        check.expect("backup drift: a machine at the row reports none",
+                     verify_backup_drift(release, layout) is None)
+        program_path = layout.backup_program
+        program_bytes = program_path.read_bytes()
+        program_path.write_bytes(program_bytes + b"# drifted\n")
+        drift_line = verify_backup_drift(release, layout)
+        check.expect("backup drift: a drifted program is named with both hashes",
+                     drift_line is not None
+                     and str(sha256_file(program_path))[:12] in drift_line
+                     and release.manifest["backup_sha256"][:12] in drift_line,
+                     f"got {drift_line}")
+        program_path.write_bytes(program_bytes)
         again = apply_release(release, layout, assume_yes=True, allow_downgrade=False,
                               key_id=key_fingerprint(pub, private=False))
         check.expect("apply: a second run is 'same' and writes nothing", again == EXIT_OK)

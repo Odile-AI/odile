@@ -126,6 +126,14 @@ schema: a document cut before it existed still verifies,
 and `check`/`apply` warn rather than refuse; a row that is present has to be a
 64-hex digest.
 
+The row is checked against the installer a bundle ships, not only against the
+candidate root: `odile-update release` refuses (exit 2) a manifest whose
+`backup_sha256` is not the `backup_sha256` that installer's own `--manifest`
+pins, because the bundle would name one program and carry an installer that
+writes another (§5, t_f6dd9b65). `apply` never writes the program, so a machine
+whose file drifted from the row is reported by `check`/`apply` and not refused
+(§6).
+
 ## 4. The commands
 
 | Command | What it does | Writes? |
@@ -257,7 +265,9 @@ the ODL-219 cut, from before the pair was part of the command; its manual
 `tests/test_update_release.py` cuts into a temp directory and asserts the nine
 names — the seven `CORE_RELEASE_FILES` requires, `webapp.tar.gz` when the cut
 carries it, and the key — that the two copies are byte-identical to the
-committed pair, and that a bad signature refuses the cut. `tests/test_flow.py`
+committed pair, that a bad signature refuses the cut, and (since t_f6dd9b65)
+that a `backup_sha256` the shipped installer contradicts refuses it while a
+drifted machine is reported by `check`. `tests/test_flow.py`
 still fails when a committed `release/` lacks `odile_install.py.sig`
 (`CORE_RELEASE_FILES`) or when the key copy differs from
 `installer/odile-signing-key.pub`, so a bundle built by hand still has to pass
@@ -1120,6 +1130,87 @@ and `--check` on the re-cut pair prints `ok backup d9c4278a0660650e…` (rc 0),
 where on `-3` itself it prints `the manifest predates the row; the installer
 pins d9c4278a0660650e…` and still exits 0.
 
+#### The cut compares the row with the installer it ships (2026-11-20)
+
+The row can agree with the candidate root and still be wrong for the bundle:
+`manifest.py build` records the *installed* file, and an installer-only update
+replaces `/usr/local/bin/odile-install.sh` without running it, so a candidate
+root can carry the old program under a new installer — exactly the state
+`apply_change` leaves. `release` used to check the row only against that file
+and accepted the pair; `tools/recut_release.py --check` already failed it on the
+surgical path. The cut now reads the installer's own `--manifest` pin and
+refuses the disagreement (t_f6dd9b65): the bundle would name the program the old
+installer wrote and ship one that writes another, so a fresh install from it
+would contradict its own manifest. A refusal, not a warning, for the same reason
+the row-vs-root check refuses: both facts are present, and one of them is wrong
+about the bytes being shipped. The repair is to run the installer on the
+candidate root (or place the program it pins) and rebuild, or to let the
+surgical re-cut re-derive the row.
+
+Measured on a scratch root built from the test fixture, with the committed
+installer copied over it and the fixture's program left in place:
+
+```sh
+$ sha256sum /var/tmp/odile-t_f6dd9b65/state/machine/usr/local/lib/odile/backup.py \
+            /var/tmp/odile-t_f6dd9b65/state/machine/bootstrap/odile_install.py scripts/backup.py
+bdf81070d22e71486f317948352a404b77e9848cc9354d7cff64f49195932e55  …/usr/local/lib/odile/backup.py
+1d946c4463a83cac6c1ea5e74b2c50b7694c22aa70ecb442b9c57fd5554b39de  …/bootstrap/odile_install.py
+d9c4278a0660650e7edc6b50847d96cdbb71ca7709c52402257e94a291a98955  scripts/backup.py
+$ /usr/bin/python3 scripts/manifest.py build --root …/state/machine --user tester \
+    --model deepseek-ai/DeepSeek-V4.1-Flash-1017-abliterated --packages-json … \
+    --generated-at 2026-11-20T00:00:00Z --out …/manifest-drifted.json
+manifest     …/manifest-drifted.json (sha256 89d8e0656f21b13d3ac2bebaca6928414deeb3f61a21755a257a7b96236a68eb, 2 skills, 9 packages, audit null)
+$ /usr/bin/python3 update/odile_update.py release --root …/state/machine --user tester \
+    --manifest …/manifest-drifted.json --release 2026.11.20-1 --boot-kernel "$(uname -r)" \
+    --out-dir …/bundle-refused --generated-at 2026-11-20T00:10:00Z --key /root/.odile/installer-signing.pem
+error: the manifest's backup_sha256 bdf81070d22e is not the program the installer it ships pins (d9c4278a0660): the root's installed program is the old bytes, the installer writes the new ones — run …/state/machine/bootstrap/odile_install.py on this root, or re-cut the row from the installer
+$ echo $?
+2
+$ ls …/bundle-refused
+ls: cannot access '…/bundle-refused': No such file or directory
+```
+
+The repair is the program the installer pins, and the same cut then succeeds:
+
+```sh
+$ install -m 0755 scripts/backup.py …/state/machine/usr/local/lib/odile/backup.py
+$ sha256sum …/state/machine/usr/local/lib/odile/backup.py
+d9c4278a0660650e7edc6b50847d96cdbb71ca7709c52402257e94a291a98955  …/usr/local/lib/odile/backup.py
+$ /usr/bin/python3 scripts/manifest.py build --root …/state/machine --user tester \
+    --model deepseek-ai/DeepSeek-V4.1-Flash-1017-abliterated --packages-json … \
+    --generated-at 2026-11-20T00:00:00Z --out …/manifest-coherent.json
+manifest     …/manifest-coherent.json (sha256 4d8b358e21d85decaed7be7bccdc588addbb828dfe6a78e71052be9674cf91ed, 2 skills, 9 packages, audit null)
+$ /usr/bin/python3 update/odile_update.py release --root …/state/machine --user tester \
+    --manifest …/manifest-coherent.json --release 2026.11.20-2 --boot-kernel "$(uname -r)" \
+    --out-dir …/bundle --generated-at 2026-11-20T00:20:00Z --key /root/.odile/installer-signing.pem
+artifact     installer odile_install.py (1503889 bytes, sha256 1d946c4463a8…)
+artifact     skills    skills.tar.gz (304 bytes, sha256 662e488c46ac…)
+copy         …/bundle/odile_install.py.sig (…/installer/odile_install.py.sig → 90 bytes, sha256 cccd46f2091c…)
+copy         …/bundle/odile-signing-key.pub (…/installer/odile-signing-key.pub → 113 bytes, sha256 13e8c2aee826…)
+release      …/bundle/release.json (release 2026.11.20-2, manifest sha256 4d8b358e21d8…)
+sign         …/bundle/manifest.json.sig (key SHA256:ZyFEbkw2oetDml63XaHTix0kUrR2kAVGZaaeDAHvXu8)
+sign         …/bundle/release.json.sig (key SHA256:ZyFEbkw2oetDml63XaHTix0kUrR2kAVGZaaeDAHvXu8)
+$ echo $?
+0
+```
+
+The signing key in that transcript is the HQ release key
+(`/root/.odile/installer-signing.pem`), the one the published release uses; the
+installer pair is the committed one. A manifest with no row at all still cuts,
+with a warning, so a pre-row manifest can be shipped unchanged:
+
+```
+warning: the manifest names no backup_sha256; this release does not pin the program the nightly unit runs (rebuild it from this root to carry the row)
+```
+
+and an installer that cannot answer `--manifest` (a fixture, or one older than
+the pin) prints `… does not answer --manifest with a backup_sha256; the
+manifest's row <12> is not cross-checked against the installer this bundle
+ships` — the row is not refused against something that cannot state a pin.
+
+This change moves no installer or release bytes either: the branch carries no
+`installer/` or `release/` file, so no re-cut is needed. The rule takes effect
+at the next full cut and in `odile-update release` from this commit on.
 
 ## 6. The guest: check, apply, rollback
 
@@ -1260,6 +1351,84 @@ $ grep ' /good/' http.log | tail -8
 127.0.0.1 - - [08/Nov/2026 15:58:40] "GET /good/skills.tar.gz HTTP/1.1" 200 -
 ```
 
+### A drifted backup program is reported, not refused (2026-11-20)
+
+`verify_installed` compares the release with the tree it names — installer,
+skills, bundle manifest, commit, Webapp, the recorded pair — and `apply` rolls
+back on any disagreement. The tenant backup program is deliberately outside that
+list. `apply` writes the installer, the skills and the Webapp and never
+`/usr/local/lib/odile/backup.py`; a refusal would roll back an update that is
+otherwise correct and the machine could never converge, because the only thing
+that rewrites the file is the installer. So the row is checked where an operator
+can act on it: `check` and `apply` print the plan through one routine, and that
+routine names the machine's bytes against the release's row while the update
+proceeds (exit 0).
+
+Measured on the `t_f6dd9b65` root (§12), release `2026.11.20-2` whose row is
+`d9c4278a0660`, after one line appended to the machine's program:
+
+```sh
+$ printf '# drifted\n' >> …/state/machine/usr/local/lib/odile/backup.py
+$ sha256sum …/state/machine/usr/local/lib/odile/backup.py
+ce58882afed59ebd77b9c17ca3e45b8c536e228eabe0298f9beb7d499a9171ac  …/usr/local/lib/odile/backup.py
+$ ./update/odile_update.py check --root …/state/machine --user tester \
+    --release-url http://127.0.0.1:9271/release.json --pubkey installer/odile-signing-key.pub
+warning      backup ce58882afed5 on this machine is not the manifest's d9c4278a0660: the program drifted from the release, which does not rewrite it
+release      2026.11.20-2 (generated 2026-11-20T00:20:00Z)
+signature    OK (release.json and manifest.json; key SHA256:ZyFEbkw2oetDml63XaHTix0kUrR2kAVGZaaeDAHvXu8)
+boot         kernel 6.12.115+deb13.1-amd64 matches this machine
+manifest     schema 1 · 2 skills · hermes 088faa6d64d6 · installer 1d946c4463a8 · backup d9c4278a0660
+plan         records   write     manifest.json and release.json
+available    unrecorded → 2026.11.20-2
+$ echo $?
+0
+```
+
+The row keeps being reported after the update lands and the plan empties — the
+previous behaviour printed `same` while the drifted program stayed, which is the
+gap this closes:
+
+```sh
+$ ./update/odile_update.py apply --yes --root …/state/machine --user tester \
+    --release-url http://127.0.0.1:9271/release.json --pubkey installer/odile-signing-key.pub
+…
+record       …/state/machine/etc/odile/manifest.json and release.json
+applied      release 2026.11.20-2
+$ ./update/odile_update.py check --root …/state/machine --user tester \
+    --release-url http://127.0.0.1:9271/release.json --pubkey installer/odile-signing-key.pub
+warning      backup ce58882afed5 on this machine is not the manifest's d9c4278a0660: the program drifted from the release, which does not rewrite it
+…
+plan         same: this machine already matches the release
+current      already at release 2026.11.20-2
+$ echo $?
+10
+```
+
+A machine with no program at all is named the same way, and the repair — the
+program the installer pins — removes the row:
+
+```sh
+$ ./update/odile_update.py check --root … --user tester --release-url … --pubkey …
+warning      no …/state/machine/usr/local/lib/odile/backup.py; the manifest names backup d9c4278a0660 and the nightly unit has no program to run
+…
+$ install -m 0755 scripts/backup.py …/state/machine/usr/local/lib/odile/backup.py
+$ ./update/odile_update.py check --root … --user tester --release-url … --pubkey …
+release      2026.11.20-2 (generated 2026-11-20T00:20:00Z)
+…
+plan         same: this machine already matches the release
+current      already at release 2026.11.20-2
+$ echo $?
+10
+```
+
+`status` is unchanged: it prints the recorded release and the installed
+manifest's summary without comparing either to the machine, so `check` is the
+command that answers "is this machine the release". The
+self-test holds both ends of the rule (`backup drift: a machine at the row
+reports none`, `backup drift: a drifted program is named with both hashes`), and
+`tests/test_update_release.py` drives the real command line over a served
+release for the same two states.
+
 ## 7. What the update writes
 
 | Path | Mode | Owner | Content |
@@ -1272,6 +1441,12 @@ $ grep ' /good/' http.log | tail -8
 | `/etc/odile/release.json`, `.sig` | 0644 | `/etc/odile`'s owner | the verified release document, exactly as signed |
 | `/var/lib/odile/odile-update/snapshot/` | 0755 (directory; files 0644) | root | `snapshot.json` and the previous bytes |
 | `/var/lib/odile/odile-update.log` | 0644 | root | one line per apply, failure, rollback; no secret |
+
+`/usr/local/lib/odile/backup.py` is **not** in the list: the update never writes
+the tenant backup program, so its bytes are whatever the installer last wrote.
+That is why a drift from the release's `backup_sha256` is reported by
+`check`/`apply` (§6) rather than refused — refusing could never repair it, and
+running the installer is the repair.
 
 A first update on a fresh machine has no `/etc/odile/release.json`; the
 snapshot records `previous_release: none` and rollback removes the records it
@@ -1371,15 +1546,24 @@ ODL-332 owns the machine half. It needs to:
   `/usr/local/bin/odile-install.sh` first (CLAIMS.md §4.6); a scratch root
   resolves `bootstrap/odile_install.py`. The release names the artifact, not
   the destination.
+- **`backup_sha256` is a release fact, not a post-check.** `apply` never writes
+  the tenant backup program, so a machine whose `/usr/local/lib/odile/backup.py`
+  drifted from the row is a warning on `check`/`apply`, not exit 6 and not a
+  rollback (§6). The gate is on the other side: `release` refuses to cut a
+  manifest whose row is not the pin of the installer the bundle ships, so a
+  published bundle cannot name one program and carry an installer that writes
+  another.
 
 ## 11. The self-test
 
 `./update/odile_update.py self-test` builds a machine, a candidate root, a
-signed release and a rollback in one temporary directory. Forty checks:
+signed release and a rollback in one temporary directory. Forty-two checks:
 the canonical round trip and a cross-check against `scripts/manifest.py`'s
 canonicaliser and hasher; the tenant backup program's row (the fixture root's
 program is the hash the manifest records, a manifest without the row still
-validates, and a malformed row is refused); a release that plans, applies,
+validates, and a malformed row is refused); the machine's program against the
+release row (a machine at the row reports no drift, a drifted one is named with
+both hashes); a release that plans, applies,
 verifies and rolls back; a second apply that writes nothing; a rollback that
 moved the Hermes commit or the Webapp bundle restarts `odile-agent`, a rollback
 that moved only the installer or the skills restarts nothing, and a no-op
@@ -1387,7 +1571,7 @@ rollback restarts nothing; a dry run of an older release is refused with exit 5
 and `--allow-downgrade` still prints the plan; two post-check tampering cases; a
 changed release, a changed manifest under a re-signed release, a changed
 artifact, another kernel, a commit the checkout lacks, and two schema refusals.
-It prints `self-test: 40/40 passed` and exits 0. `make check` compiles the file
+It prints `self-test: 42/42 passed` and exits 0. `make check` compiles the file
 but does not run this self-test; the installer's `--self-test` is a gate step
 ([`install.md`](install.md) §7), this one is not.
 
@@ -1400,6 +1584,15 @@ The commands and output above were run in the card's worktree,
 directory, the five tampered variants, the manifests and the served copies are
 in the same directory. The machine is `/var/tmp/odl219-a`; the release was
 served by `python3 -m http.server 9180` from that directory.
+
+The 2026-11-20 transcripts in §5 and §6 are a later run: the machine is
+`/var/tmp/odile-t_f6dd9b65/state/machine`, a root built from `_self_test_root`
+with the committed installer and `scripts/backup.py` copied in, the release is
+`/var/tmp/odile-t_f6dd9b65/bundle` signed with the HQ release key, and it was
+served by `python3 -m http.server 9271` from that directory.
+`tests/test_update_release.py` drives the same two states through the real
+command line (refused cut, reported drift) and `self-test` holds the pure
+functions.
 
 | DoD line | Observed |
 |---|---|
