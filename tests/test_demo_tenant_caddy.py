@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import http.server
 import importlib.util
+import os
 import shutil
 import socket
 import subprocess
@@ -157,6 +158,24 @@ class _StubGateway(http.server.BaseHTTPRequestHandler):
         pass
 
 
+def assert_checkout_root_gains_no_caddy(case: unittest.TestCase) -> None:
+    """Caddy's autosave belongs in the test's temp dir, never the checkout.
+
+    Caddy resolves its config dir from ``$XDG_CONFIG_HOME`` and falls back to
+    ``$HOME/.config``; with neither set it uses ``./caddy`` relative to its
+    cwd (measured on caddy 2.6.2). The gate can run with no ``HOME``, so a
+    bare ``Popen`` left an untracked 3,270-byte ``caddy/autosave.json`` in the
+    checkout root and ``git add -A`` committed it. The child is started with
+    its cwd and both XDG roots inside its own temporary directory; this turns
+    any regression into a test failure instead of a dirty tree.
+    """
+    for base in dict.fromkeys((ROOT, Path.cwd())):
+        stray = base / "caddy"
+        case.assertFalse(
+            stray.exists(),
+            f"caddy wrote its autosave into the checkout: {stray}")
+
+
 def start_caddy(case: unittest.TestCase,
                 site_root: Path | None = None
                 ) -> tuple[subprocess.Popen[bytes], int, tempfile.TemporaryDirectory[str], int]:
@@ -181,13 +200,20 @@ def start_caddy(case: unittest.TestCase,
         tmp = tempfile.TemporaryDirectory()
         path = Path(tmp.name) / "Caddyfile"
         path.write_text(config, encoding="utf-8")
+        # The child's own cwd and XDG roots: caddy's autosave (`./caddy` with
+        # no HOME, `$HOME/.config/caddy` otherwise) lands inside the test's
+        # temporary directory, so a gate never dirties the checkout and two
+        # concurrent suites never share one autosave file.
         child = subprocess.Popen(
             ["caddy", "run", "--config", str(path), "--adapter", "caddyfile"],
+            cwd=tmp.name,
+            env=dict(os.environ, XDG_CONFIG_HOME=tmp.name, XDG_DATA_HOME=tmp.name),
             stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
         )
         for _ in range(40):
             try:
                 with socket.create_connection(("127.0.0.1", port), timeout=0.2):
+                    assert_checkout_root_gains_no_caddy(case)
                     return child, port, tmp, stub_port
             except OSError:
                 if child.poll() is not None:
