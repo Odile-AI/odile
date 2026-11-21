@@ -2023,6 +2023,28 @@ class SyntheticFixtureTests(unittest.TestCase):
             self.assertEqual(len(report.raw), 1184)
 
 
+def sha256sum_fence(path: Path) -> str:
+    """The first ```sh fence in `path` that runs `sha256sum -c`, fences included.
+
+    The deck's §4.4 and the decided draft's §4.4 each carry one such block —
+    the four commands a judge copies. Reading the block rather than the whole
+    file is what makes a stale §4.4 line fail even though the deck names the
+    current digest in its change-log row as well (measured on `t_650c8f4c`).
+    """
+    lines = path.read_text(encoding="utf-8").splitlines(keepends=True)
+    for opening, line in enumerate(lines):
+        if line.strip() != "```sh":
+            continue
+        for closing in range(opening + 1, len(lines)):
+            if lines[closing].strip() != "```":
+                continue
+            block = "".join(lines[opening:closing + 1])
+            if "sha256sum -c" in block:
+                return block
+            break
+    raise AssertionError("%s carries no ```sh fence with sha256sum -c" % path)
+
+
 class BundleTests(unittest.TestCase):
     """The published tarball is reproducible and its hash is the one we print."""
 
@@ -2039,16 +2061,17 @@ class BundleTests(unittest.TestCase):
                          "the gzip header must not carry a build clock")
 
     def test_the_published_hash_is_the_bundle_in_this_tree(self) -> None:
-        """Every home of the hash names the bundle this tree builds.
+        """Every home of the hash names the bundle this tree builds, block included.
 
         `docs/CLAIMS.md` §4.4 is the block a judge copies: while it was
         outside this set, a pin change (the 2-vCPU plan on `t_a37c001d`) moved
         this test's three files and left the deck naming the old tarball
-        (`t_b0cc9015` fixed that by hand). The deck joins the set directly
-        rather than being compared against CLAIMS-RECUT-STRICT's copy, because
-        this test reads the pin: only the digest form can be red on a tree
-        whose pin differs from what the deck names, and a copy comparison
-        stays green there.
+        (`t_b0cc9015` fixed that by hand). Two shapes, and both are needed:
+        the presence loop reads the pin, so it is the only one red on a tree
+        whose pin differs from what the deck names; the fence comparison binds
+        the §4.4 block itself, so a stale §4.4 line cannot hide behind the
+        digest the deck's own change-log row carries (`t_650c8f4c` left that
+        gap: the row made the presence loop green with §4.4 reverted).
         """
         app = load_app()
         app._bundle = None
@@ -2056,6 +2079,16 @@ class BundleTests(unittest.TestCase):
         for path in (VERIFY_MD, RECUT_MD, VERDICT_MD, CLAIMS_MD):
             self.assertIn(digest, path.read_text(encoding="utf-8"),
                           "%s does not name the bundle this tree builds" % path)
+        # The block, not the file: `docs/CLAIMS.md` carries this digest twice
+        # (§4.4 and the v3.10n row), so the loop above cannot see a stale
+        # §4.4 line. §4.4 is the block a judge copies, so it must equal the
+        # decided draft's byte for byte. This comparison reads no pin, which
+        # is why it does not replace the loop.
+        self.assertEqual(
+            sha256sum_fence(CLAIMS_MD), sha256sum_fence(RECUT_MD),
+            "docs/CLAIMS.md §4.4's sha256sum fence differs from "
+            "docs/product/CLAIMS-RECUT-STRICT.md §4.4's",
+        )
 
 
 class VerifyPageNoteTests(unittest.TestCase):
