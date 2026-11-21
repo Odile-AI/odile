@@ -2492,8 +2492,9 @@ the `-3` bench measurement; a build of this tree carries the `-4` pair.
 
 **The `2026.11.21-1` cut (t_9574a1c8: the installed help is selected for a
 money question).** This branch is cut on `main`'s `ab3930e` — whose `-4` is
-t_e3540242's dry-run-fixture cut above — and rebased onto `9ea1371`, its
-merge-base with `main`. Round 2 named a cost and a bill in the selector; a
+t_e3540242's dry-run-fixture cut above — and rebased onto `dbbebfb`, its
+merge-base with `main` (the merge of `odl/public-repo-drift`). Round 2 named a
+cost and a bill in the selector; a
 fresh-root ask "how much is the subscription?" still answered with the Nous
 Portal tiers and four `$` figures, because neither selector named a subscription
 and the bundled `hermes-agent` skill won the word. This round's
@@ -2509,9 +2510,11 @@ charge or a subscription" — plus the round-2 pin on moment 4's words: "Answer
 in these words; do not paraphrase:" above the unchanged blockquote, "Never
 quote a figure: a number that is not in the words above is one I invented."
 below it, so a paraphrase cannot drop "we hold the customer id, the subscription
-id and whether it is paid". The moves from `ab3930e` to `9ea1371` touch 36
-files — documents, tests (`tests/test_seed.py` +32 among them), the
-commit-message gate and `deploy/demo-host/` — and none is
+id and whether it is paid". The moves from `ab3930e` to `dbbebfb` touch 49
+files — most of them the operating-record documents `odl/public-repo-drift`
+withdrew, plus the HQ merge tool's own test module removed and
+`tests/test_public_tree_shape.py` added, the commit-message gate,
+`deploy/demo-host/` and `tests/test_seed.py` (+32) — and none is
 `installer/odile_install.py` or under `templates/`, `web/`, `scripts/`,
 `support/`, `odilectl/` or `skills/`, so the only embedded byte this cut moves
 is its own skill and the pair was cut once. The manifest and the skills
@@ -2529,21 +2532,32 @@ bytes) and `release/release.json` (`705f9e6b…`, 799 bytes) names
 `2026.11.21-1` at `2026-11-21T11:13:47Z`. On the first root the installed help
 answered all three unprimed asks — "what does Odile cost per month?", "why was
 I charged on my card?", "how much is the subscription?" — one session each, in
-the tenant's own chat (the full-toolset prompt, `c6b616ae…`, 13,544 characters,
-whose skill index carries `odile-help: Odile price, bill, subscription?`), with
-the moment's words: no `$`, no figure, no connector punt; one answer then
-carried a paragraph of the model's own ("This machine is up and answering…")
-and another the first-run greeting, so those tails are the model's, not the
-skill's. That chat is the surface this change carries. The smoke-flag mode is
-not: its `-t terminal` prompt (`c37642fe…`, 8,643 characters) carries no skills
-index, so the frontmatter description cannot be read there and `odile-help` is
-never selected. Measured on a fresh root at this head, one session each: "what
-does Odile cost per month?" quoted the FAQ's retired `$49` figure, the
-`$33.66` per-tenant cost and the `$12`/`$10` allowances; "why was I charged on
-my card?" punted to a missing bank/email connection; "how much is the
-subscription?" returned the bundled `hermes-agent` skill's Nous Portal tiers
-(`$0`, `$20`, `$100`, `$200`). An earlier run on the cut's own root returned
-the moment's words 3/3, so the mode is not a stable surface for the selector.
+the tenant's own chat, with the moment's words: no `$`, no figure, no connector
+punt; the third answer (the subscription one) then carried the model's own tail
+("Long version: https://odile.fyi/faq"), so that tail is the model's, not the
+skill's. That chat is the surface this change carries, because its full-toolset
+prompt's skill index carries the row
+`odile-help: Odile price, bill, subscription? odile.fyi/faq · odile-diag.` The
+prompt's hash and length are not quoted here, because they belong to the
+machine, not to the cut: the prompt embeds the home, cwd and scratch paths and
+carries the `AGENTS.md` project block only when the chat starts in the home
+directory. Measured on this cut's own root (`/var/tmp/odile-t9574a1c8-r4`, user
+`odilet9574r4`), the full-toolset prompt was 15,506 characters and the two
+`-t terminal` prompts 8,631 and 8,621; the verifier's round-3 probe root gave
+13,544 and 8,643. What reproduces on any root is the mechanism: `select prompt
+from system_prompts` finds the index row in the full-toolset prompt and no
+skills index at all in the `-t terminal` prompt, so the frontmatter description
+cannot be read in the smoke-flag mode and `odile-help` is never selected
+there. Measured on a fresh root at this cut, one session each: "what does
+Odile cost per month?" quoted the FAQ's retired `$49` figure, the `$33.66`
+per-tenant cost and the `$12`/`$10` allowances; "why was I charged on my card?"
+punted to a missing bank/email connection; "how much is the subscription?"
+returned the bundled `hermes-agent` skill's Nous Portal tiers (`$0`, `$20`,
+`$100`, `$200`). The earlier run on the cut's own root — the one that returned
+the moment's words 3/3 — carried two tails of its own, "This machine is up and
+answering…" and the first-run greeting ("What should I call you?"), which
+belong to this mode, not to the tenant chat, so the mode is not a stable
+surface for the selector.
 No `AGENTS.md` router line is added for it: it would re-embed and re-sign the
 installer to make a diagnostic prompt carry a selector, so this round is
 documentation only and none of the four release bytes above moves.
