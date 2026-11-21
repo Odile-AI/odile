@@ -1,9 +1,25 @@
 # ADR-006 — The account password is not the instance sign-in
 
+*20 November 2026 — the title is the A-era answer. Under B-once the password
+chosen at registration **is** the machine's sign-in, written once at provision;
+the Status note below is the record.*
+
 **Status:** Accepted · 17 November 2026 · Architect · revised 18 November 2026
 after three review rounds (host naming per environment, counts, annex output,
 identifier, the evidence pin; §5's dead-email action superseded by
 `docs/product/DECISION-password-reset.md` §5, ODL-584)
+**Status (20 November 2026): the recommendation is superseded.** Option A is the
+record of the 17 November decision; it is **superseded 2026-11-20** by Savio's
+B-once — one credential, written once at provision, no standing HQ-to-guest write
+path — and the model is `docs/product/DECISION-one-recovery-code.md` (decision on
+card `t_ab499d49`, model and card map on `t_82979fce`). The dated notes below
+mark the places the decision changes this answer, and where the two disagree the
+decision wins. Read the rest as the 17 November record, in particular every
+sentence that gives the **account** an emailed link, the **machine** a first-visit
+setup, or **HQ** a write path after provision. The mechanisms are specification
+until ODL-925 (the guest half), ODL-926 (the code's lifecycle) and ODL-578 (the
+account's `recovery_hash`) land; A2's provision path (ODL-341) and ODL-925 are
+`todo` at this head, so no machine is provisioned under B-once yet.
 **Number:** ADR-006. `main` holds ADR-001–004 (`ADR-backup.md` is ADR-004,
 ODL-570). The two contested numbers are settled: `ADR-upgrades-and-model.md`
 (ODL-571) merged as **ADR-005**, and the destroyed-slug ADR (t_ce52bb8d) took
@@ -11,10 +27,11 @@ ODL-570). The two contested numbers are settled: `ADR-upgrades-and-model.md`
 changes this file: it is 006.
 **Answers:** ODL-569 · G3 of `docs/product/ROADMAP-ALPHA0.md` §4 — “is the
 account password the instance sign-in, or are they two credentials?”
-**Short answer:** no. **Two credentials, one link.** A2's registration collects an
-email and a password that open the **account page and nothing else**; the
-machine's sign-in is still set on the guest at first visit and hashed there, and
-HQ holds nothing that opens it. The account is new, so one approved **access**
+**Short answer:** no. **Two credentials, one link.** *(The 17 November answer;
+B-once is the model from 20 November — see the Status note.)* A2's registration
+collects an email and a password that open the **account page and nothing else**;
+the machine's sign-in is still set on the guest at first visit and hashed there,
+and HQ holds nothing that opens it. The account is new, so one approved **access**
 sentence is falsified (“There is no password and no account at HQ”) and one
 inventory list gains a row (“At HQ we hold …”, adding the account and a hash of
 its password); A2 forces both whichever option wins. Outside the access deck,
@@ -30,9 +47,12 @@ ADR-image-vs-installer.md` §7; cards ODL-521, ODL-522, ODL-523, ODL-569,
 ODL-572, `t_adcdec31`.
 **Decision owner:** Architect for the recommendation as written: it keeps the
 access model, adds one account verifier at HQ, and changes no public sentence
-that A2 does not already change. **Option B needs Savio** — it makes HQ the
-authority for a tenant's sign-in for the life of the machine. **Option C needs
-Savio** and puts Odile in every request path.
+that A2 does not already change. **Option B needs Savio** — **B-once is decided — 2026-11-20**
+(Savio, card `t_ab499d49`: one credential, written once at provision, no HQ→guest
+write path). The A-era reason — it makes HQ the authority for a tenant's sign-in
+for the life of the machine — is the B-push form; the model is
+`docs/product/DECISION-one-recovery-code.md` (§3.2 and §4.3 carry the notes).
+**Option C needs Savio** and puts Odile in every request path.
 
 ---
 
@@ -46,9 +66,22 @@ so it can be falsified:
   rebuild.** Not a key, not a passphrase, not a password, and not a value HQ can
   present to the machine's gate. §6 names the two windows that exist (the setup
   token before the first visit, and the rebuild's sealed backup password).
+  *20 November 2026 (B-once).* I1 survives in the **standing-credential form**:
+  no stored key, passphrase or password, and nothing presentable to the gate. The
+  residual is stated, not hidden: HQ sees the plaintext at registration and at
+  every account sign-in (decision §2.1; deck row D-2, ODL-577), so an operator
+  who keeps it can open the machine until the owner changes the sign-in on the
+  machine. §6's operator row and two-windows note carry the same residual.
 - **I2 — the guest is the only writer of the sign-in.** The scrypt hash in the
   tenant `.env` is produced on the machine, from a password typed into the
   machine's own page.
+  *20 November 2026 (B-once).* The second sentence is the A-era form. Under
+  B-once the verifier is minted at provision from the registration password,
+  carried in the seed as `sign_in_hash`, and written locally by the guest's
+  installer; after provision the guest is still the only writer of the machine's
+  credentials — the recovery code, and any later change of sign-in, are the
+  machine's (decision §2.1, §2.3; ODL-925). What moves is who wrote the first
+  value; `/verify`'s hash line stays true.
 - **I3 — HQ is not in a request path** (§6.1 Invariant 4). The browser talks TLS
   to the guest; the guest talks TLS to NEAR. This is what makes “your prompts do
   not pass through Odile's servers” true.
@@ -97,6 +130,14 @@ Two consequences the options must live with:
    the setup-token reason above survives. The row's why and landing line are the Product Lead's
    re-cut, outside this card's `touches`; this ADR names them so the deck is not
    read as cleared while the token window is open.
+   *20 November 2026 (B-once).* The window changes form rather than closing: the
+   sign-in exists from provision, the ready email carries no token (its action
+   line names the tokenless `{{URL}}/first-visit`; ODL-925), and the token keeps
+   its two machine-side jobs — the seed exchange and the rebuild seal — so it is
+   the seed badge and the rebuild-seal key, not a first-visit link. An operator
+   can no longer *set* a sign-in before the visit; what it can do instead is keep
+   the registration plaintext and use it (I1's note). The copy in
+   `/var/log/odile-firstboot.log` is redacted at this head (ODL-579).
 2. **A2 must put a session somewhere.** The public pages carry “No cookies, no
    trackers, no third-party requests” (`docs/CLAIMS.md:154`). A registration
    page with a session sets one first-party session cookie, so that sentence is
@@ -119,6 +160,11 @@ Two consequences the options must live with:
 | **A — two credentials, one link** (recommended) | The four invariants, unchanged; the guest's first-visit flow, already built and proven, is reused as-is; the account and the machine can be reset independently | One more password to remember and one more form, reached from the ready email the user already opens; the machine's reset does not follow the account; a real copy problem (“which password?”) | **The user** (a password), **Product Lead** (copy and one criterion re-cut), **support** (the lost-recovery-code path) |
 | **B — one credential, set at registration** | One password, one reset story, the account is the authority; the pre-first-visit token retires; “the instance follows the account” is true by construction | HQ sees the password once (B1) or holds a verifier (B2); HQ can set any tenant's sign-in at any time, so the machine's gate is inside the operator's power; eight approved CLAIMS sentences — seven of them unique to B — and two embedded surfaces move; a new HQ→guest write path; a migration across every machine already seeded | **The product** (the promise and `/verify`'s proof), **Builder** (seed contract, installer, A5 push path), **security** (an offline-crackable copy of the machine credential at HQ) |
 | **C — an auth proxy in front of the instance** | SSO; resets trivial; one place to gate every workspace; can hide the instance's own page entirely | Odile is in the login path **and in every request**: Invariant 4 and “your prompts do not pass through Odile's servers” both die; HQ holds an assertion key that mints a session for any tenant; HQ's availability becomes every tenant's sign-in; a new service, cookie domain, TLS and CSP surface | **The product** (the access model), **Builder** (a new service and path), **Savio** (access change) |
+
+*20 November 2026:* the B row above is the B-push costing. Savio chose
+**B-once** — one credential written once at provision, no HQ→guest write path —
+so the row's "HQ can set any tenant's sign-in at any time" and "a new HQ→guest
+write path" are the refused shape; §3.2's note is the decided one.
 
 ### 3.1 A — two credentials, one link
 
@@ -184,8 +230,22 @@ not merely a seed field:
    relay completes an account reset, which — under B — sets the machine's
    sign-in. Under A the same email only opens the account page.
 
+*20 November 2026 (B-once, decided).* Savio chose B with no push, in B1's shape
+except for one clause: the plaintext passes HQ at every account sign-in, not
+once (D-2). HQ hashes the registration password; the seed carries the verifier
+(`sign_in_hash`); the guest's installer writes it before the gate is first
+reachable; and after provision there is **no** HQ→guest write path. Read the
+numbered list above as the B-push costing: item 1's seed opening happens anyway
+(a verifier is not a password; `SEED_FORBIDDEN` keeps `password`), item 2's
+second writer is correct and is now the model (§1's I2 note), item 3 is
+**refused** (A5's reset push is not adopted), item 4's residual changes shape
+from "HQ can set a sign-in at any time" to "HQ saw the plaintext" (D-2), and item
+5's mail-queue path dies with the emailed reset (decision §1, §2.1).
+
 The one thing B buys that A cannot: a password reset that works when the machine
-is down and the user has lost the recovery code. §5 prices that.
+is down and the user has lost the recovery code. §5 prices that. *20 November
+2026:* B-once does not buy it either — with one code, a reset with the machine
+down still needs the code, and a lost code means a new account (decision §3.4).
 
 ### 3.3 C — an auth proxy in front of the instance
 
@@ -204,17 +264,31 @@ with an operator admin console, not an operator-blind machine.
 
 ## 4. Recommendation — A, and the sentence it touches
 
-**Choose A.** It is the only option that keeps I1–I4 without a new mechanism, a
-new network path or a new residual power. It also changes **no line of the
-guest's contract**: `SEED_KEYS`, `SEED_FORBIDDEN`, the installer, the first-visit
-page, the `/verify` report and every test that binds them are untouched — the
-whole of A2's build is on HQ. (A5's session rotation, §5 item 3, is a separate,
-bounded guest change that both options need.) That is what makes it a two-way
+**Choose A** — the 17 November recommendation, **superseded 2026-11-20**; the
+A-era argument follows and the note after it is the record. It is the only option
+that keeps I1–I4 without a new mechanism, a new network path or a new residual
+power. It also changes **no line of the guest's contract**: `SEED_KEYS`,
+`SEED_FORBIDDEN`, the installer, the first-visit page, the `/verify` report and
+every test that binds them are untouched — the whole of A2's build is on HQ.
+(A5's session rotation, §5 item 3, is a separate, bounded guest change that both
+options need.) That is what makes it a two-way
 door: A→B is a seed field, an installer write and a push path, and it can be done
 per-tenant; B→A cannot restore the claim for machines already seeded under B,
 because the verifier sat at HQ and the operator could set the sign-in at will.
 That asymmetry, not convenience, is the deciding argument: **A is a two-way door,
 B is a one-way door on the promise**, and the promise is the product.
+
+*20 November 2026 — B-once, decided.* Savio chose one credential (card
+`t_ab499d49`): the registration password is the machine's sign-in, written once
+at provision, with no standing HQ-to-guest write path — B1's shape, not the push
+(§3.2's note). The recommendation above is therefore the A-era record and the
+model is `docs/product/DECISION-one-recovery-code.md`; §4.3's design note is what
+was priced, and §4.1's re-cut is dead (its note). The two-way-door reading was
+right about the *cost* — A→B is a seed field and an installer write, and the push
+§4.3 names was not needed — which is why Savio could decide it before A2's
+provision path built anything. It is still one-way for a machine once
+provisioned: the verifier sits on the guest and there is no path back to an
+A-era "set at first visit" sign-in without a rebuild (§10).
 
 ### 4.1 The CLAIMS sentence it touches
 
@@ -231,6 +305,14 @@ the Product Lead's, and its honest form is one sentence, not a retreat:
 > “Your Odile account holds your email and a password that opens your account
 > page — never your machine. The sign-in on the machine is set there and hashed
 > there; Odile never sees it.”
+
+*20 November 2026 (B-once).* This re-cut **dies and is not replaced**: both
+clauses are false under B-once (decision §4). Its replacement is D-1 + D-10 on
+the deck and D-17 on the account page. Read the table's B column as B-push, which
+was refused: the replacement rows are D-2, D-3, D-4, D-7, D-8, D-9, D-10 and D-19,
+and “between the first visit and a rebuild” becomes D-3’s “The password you chose
+is the only sign-in” — true of the credential, not of who has it: the kept-password
+residual is the one §1’s I1 note and §6 state (decision §2.1).
 
 Nothing else in the access deck moves, except `:156`'s inventory list, which
 gains the account and its password hash in the same re-cut (the `:156` row
@@ -276,11 +358,30 @@ Savio's acceptance of the fourth residual power (“Odile can set your machine's
 sign-in”) are the price, and they must be decided **before A2 ships** — after
 that, the change is a migration with two credential models in the field.
 
+*20 November 2026.* Savio wants one credential, and this paragraph is what was
+priced: he chose B-once, so the seed field and the installer write are the model
+(ODL-925), the first-visit page becomes a login, and **A5's signed reset push is
+not adopted**. The price is not the fourth residual power named here ("Odile can
+set your machine's sign-in") but the kept-password residual I1's note states
+(D-2, D-3). It was decided before A2 shipped, which is the condition this
+paragraph names.
+
 ## 5. The reset constraint for A5 (ODL-572)
 
 Under A there are two resets, and the card must say which is which on every
 screen. The constraint is not “pick one”; it is **two flows with two authorities,
 and the machine's flow needs the machine**.
+
+*20 November 2026 (B-once and one code, decided).* The constraint now reads
+under the one-code model: **one code resets the account at the account site and
+the machine on the machine; there is no emailed reset; a lost code means a new
+account.** The machine mints the code at the first sign-in and pushes its hash to
+the account, so the account can verify it with the machine down; the code does
+not rotate on use and does not expire — a burn on one side cannot reach the other
+without the write path B-once refused — and it is replaced only on request, from
+the machine (decision §2.2–§2.4, §3.1–§3.2). Everything below is the A-era
+two-authority reading; the dated notes at the bullets it changes say how they
+read now.
 
 **Name the host per environment.** A2 and A5 are judged on the bench: A1 puts
 the account site at `test.odile.fyi` and a test tenant at
@@ -300,6 +401,12 @@ which has no such account, and nothing is reset.
   the same shape as the recovery code below; it is safe only because it is
   single-use, short-lived and stored as a hash, and A5's link must keep all
   three or it becomes defect 2.
+  *20 November 2026:* **no emailed reset.** The account reset is `GET`/`POST
+  /forgot` — email + recovery code + new password, verified against
+  `accounts.recovery_hash`, rate-limited per address and per IP, and queues no
+  mail (decision §3.1). The link, its TTL and its token column are the A-era form
+  and do not ship (ODL-578). The reset still works with the machine down, which
+  was the point.
 - It ends the account's other sessions. It does **not** touch the machine.
 - A signed-in user changes the email at the account: confirm at both addresses
   (`old` and `new`), then invalidate live links sent to the old one. The machine
@@ -319,6 +426,10 @@ which has no such account, and nothing is reset.
 - If the user has lost the code: there is no operator reset (D20). The path is
   the recovery file's restore into a rebuilt machine (A3/A6). The account page
   must name that path before the user asks support.
+  *20 November 2026:* a lost code now costs the account, not just the sign-in:
+  the A6 console deletes the account and the machine, the user registers again,
+  and an A3 backup is the only way back to the files (decision §3.4, D-5). A
+  rebuild is no longer a recovery path for a lost code.
 - If the account email is dead: the account is the identity. “This is an A6
   admin action (delete and recreate)” is **superseded** by
   `docs/product/DECISION-password-reset.md` §5, and the action is now an A6
@@ -332,6 +443,13 @@ which has no such account, and nothing is reset.
 **Four defects in today's sign-in paths that A5 inherits and must fix.** They are
 small, and they matter because A makes the machine's reset the only
 post-first-visit path:
+
+*20 November 2026:* all four are ODL-579's and are closed at this head
+(`docs/evidence/a5-machine-reset.md`). What the one-code decision removes is two
+of the *fixes* — single-use and the rotation on use, which ODL-579 added and
+which cannot hold when one code verifies in two places (decision §2.2). The POST
+reset, the one-time download token, the redacted first-boot log and the
+session-secret rotation stay.
 
 1. **The recovery code is not single-use.** `recovery_used_at` is written
    (`installer/odile_install.py:4303`, dumped at `:4371`) and never read, so the
@@ -371,6 +489,12 @@ the trade the gate is buying. The Product Lead owns the two cards' criteria; the
 edit lands on A2's gate and on ODL-572 **before** either gate is judged, not as
 a post-hoc reading of a gate that already ran.
 
+*20 November 2026:* B-once was picked, and the sentence above is false in one
+word — A5 keeps **two flows**, one code and two authorities, because each surface
+verifies the code itself and a burn on one cannot be written down to the other
+(decision §2.2, §3). The three criteria read as decision §8's rows (A2 exit 2,
+A5 exits 3 and 4), not as the re-cuts above.
+
 ## 6. The trust boundary, written down
 
 The account is a new store at HQ. What it does and does not do:
@@ -379,7 +503,7 @@ The account is a new store at HQ. What it does and does not do:
 |---|---|---|
 | **The account service (HQ)** | Read the email, the scrypt verifier and the account's sessions; reset the **account** password; read the tenant record; create, stop, delete the machine (provider); read serial boot logs and the mail queue | Read or set the machine's sign-in; read the disk, memory, prompts or files; present anything to the guest's gate |
 | **The guest's first-visit service** | Write the sign-in hash and rotate it with the recovery code | Be reached by HQ except with the token (before the first visit) or the code |
-| **The operator (a person at Odile)** | Everything the HQ service can; read the setup token in the mail queue or the boot log **before the first visit** | Open a machine **after** the first visit, without a support grant |
+| **The operator (a person at Odile)** | Everything the HQ service can; mint a setup token and unseal a rebuild's sealed backup password (**before B-once**, also read it in the mail queue and the boot log) | Open a machine **after** the first visit, without a support grant — or, under B-once, with the registration password it kept while the owner still uses it (I1's note; D-2) |
 | **Servury** | Console, ciphertext, stop, delete | Log in; read the disk |
 | **NEAR AI** | Prompts inside the TEE | The machine |
 
@@ -390,11 +514,20 @@ can unseal it. The rebuild is a handover by design (the machine is replaced and
 the user restores); it is not the credential this ADR decides, and a later ADR
 may retire the sealed copy.
 
+*20 November 2026 (B-once).* The two windows are unchanged and no longer exhaust
+the paths. The setup token's jobs are the seed exchange and the rebuild seal — not
+a first-visit link (§2 item 1's note); the rebuild's sealed backup password is as
+written; and a third path is stated: an operator who kept the registration
+plaintext can open the machine until the owner changes the sign-in on the machine
+(I1's note; decision §2.1, §7). That path is not a stored credential — it is a
+value the operator saw — which is why I1 still holds in the standing-credential
+form.
+
 **The account record** (the interface this ADR owns):
 
 ```
-accounts(id, email UNIQUE, password_hash, created_at, email_verified_at,
-         invite_code_id NULL, state)
+accounts(id, email UNIQUE, password_hash, recovery_hash, created_at,
+         email_verified_at, invite_code_id NULL, state)
 tenants.account_id → accounts.id        -- the link; no secret crosses it
 ```
 
@@ -404,6 +537,26 @@ handed to a guest if B is ever adopted — one format, one implementation to aud
 The guard rail, stated once and testable: **no column in `accounts` is a value
 that can be presented to a tenant's gate.** A test that asserts exactly that is
 worth more than a paragraph in this ADR.
+
+*20 November 2026 (B-once).* The conditional above is now the model: at
+provision `accounts.password_hash` **is** the same verifier the machine holds —
+the seed's `sign_in_hash`, written into the tenant `.env` by the guest's
+installer — so one format is no longer an argument for later. The rail's precise
+form, and why it still holds:
+
+- after provision the account and the machine change **separately** (D-11,
+  decision §2.4): a change at either end leaves the other's verifier alone;
+- a verifier is **not a bearer**: the gate recomputes scrypt from the typed
+  password and compares (`verify_password`,
+  `installer/odile_install.py:3241`), so typing the stored string at the gate
+  fails;
+- **no `accounts` column holds a plaintext password or a token**: the plaintext
+  exists only in a request (registration, account sign-in), which is the residual
+  I1's note states, not a stored credential.
+
+`recovery_hash` is the same shape for the code — the machine mints it, hashes it,
+and pushes the hash (decision §2.3–§2.4). `session_epoch`, the account's session
+cut, is ODL-578's column and not part of this rail.
 
 ## 7. Failure modes the builder must not miss
 
@@ -419,13 +572,24 @@ worth more than a paragraph in this ADR.
 - **Reset links are tokens.** Store the hash, not the link; single-use; a TTL;
   rate-limit the request; invalidate on use and on an email change. A link
   printed in a mail log must be useless after its first use.
+  *20 November 2026:* there are no reset links under code-only. The rule survives
+  as "the recovery code is a bearer: store its hash, rate-limit the form, and
+  never put it in a URL" (decision §3.1; §5's defect 2 and ODL-579).
 - **The first visit is a one-shot POST.** `check_token` returns `used` after a
   success and the POST answers **410** (`installer/odile_install.py:4018`,
   `:4232`). A browser retry after a timeout is therefore *not* a failure, and the
   page must render it as “already set”, not as an error. Do not “fix” it by
   allowing a second write.
+  *20 November 2026:* under B-once the first visit is a **login**, not a setup;
+  the one-shot setup POST and its 410 are the A-era page (ODL-925), and a login
+  retry writes no hash.
 - **No password in the seed.** `SEED_FORBIDDEN` stays as it is under A; the seed
   carries no login credential (`docs/runbooks/seed.md:50-53`).
+  *20 November 2026 (B-once).* `SEED_FORBIDDEN` does stay as it is — the seed
+  carries no *password* — but it does carry the machine's gate: `SEED_KEYS` gains
+  `sign_in_hash`, the verifier the account holds, and the guest's installer writes
+  it before the first visit (decision §2.1; ODL-925). The runbook's "no login
+  credential" sentence is ODL-925's re-cut.
 - **No secret in an argv.** `installer/odile_install.py:14040` already has a
   `--signin-password` flag on the classic-install path; the account flow must not
   add one, and A5's reset must not pass a password on a command line.
@@ -441,6 +605,9 @@ worth more than a paragraph in this ADR.
   “send it again” mints a new token with the existing rotation
   (`odilectl/rotate_token.py` → `seed/seed.py token rotate`) and ends the old
   one. Re-showing a stored plaintext would put the machine's gate back at HQ.
+  *20 November 2026:* the ready email carries no token — the first-visit page is
+  tokenless — so the rotation survives for the seed exchange and the rebuild seal,
+  and “send it again” is a plain resend (ODL-583; decision §8).
 - **Registration is a public, unauthenticated POST that costs money.** Rate
   limit it, and note that A7's invitation gate is what stops it being an open
   machine factory (`docs/backlog.yaml` A7).
@@ -450,6 +617,9 @@ worth more than a paragraph in this ADR.
 - **Savio wants one credential**, or wants “the instance follows the account” as
   written: adopt B (§4.3), and accept the fourth residual power and the claim
   re-cut first.
+  *20 November 2026:* this happened — one credential, B-once, without “the
+  instance follows the account”; the residual accepted is the kept-password one,
+  not the fourth power (§4.3's note; decision §1).
 - **A6's console must “log in as” a tenant**: that is C, and it breaks I1 and I3.
   A6 should only delete and inspect the record; if it needs to see a workspace,
   it uses a support grant like anyone else.
@@ -467,6 +637,10 @@ worth more than a paragraph in this ADR.
   for the life of the machine, and because eight approved public sentences (seven
   of them unique to B), two embedded surfaces and `/verify`'s proof move with it.
   Adoptable later; §4.3 is its design note.
+  *20 November 2026:* adopted, in the B-once shape, before A2 shipped. HQ is not
+  the authority for the sign-in — it has no write path after provision — but it
+  saw the plaintext, which is the residual I1's note states; the eight sentences
+  are re-cut by ODL-577 to the decision's rows.
 - **C, at all.** Rejected because an operator-held assertion key is a credential
   that opens every machine, and because a proxy in the request path ends
   Invariant 4 and the prompts sentence together. It is a different product.
@@ -480,6 +654,13 @@ alpha.0 has no accounts, so A2 creates the table and there is nothing to
 migrate. The rollback for A is to stop using the account (the tenant row and the
 machine are unchanged); the rollback for B does not exist for machines already
 seeded, which is why B must be decided before A2 ships.
+
+*20 November 2026:* decided before A2's provision path (ODL-341) or the seed
+field (ODL-925) landed, so no machine was seeded under B and the one-way door was
+entered with the migration cost at zero. For a machine provisioned under B-once
+the asymmetry stands: the verifier sits on the guest and in the account, and
+there is no path back to an A-era "set at first visit" sign-in without a rebuild.
+The live alpha.0 tenant predates A2 and keeps the sign-in it set on the machine.
 
 ## Annex — the load-bearing lines, reproducible
 
