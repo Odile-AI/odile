@@ -364,7 +364,7 @@ manifest verifies only with the key that signed it.
   `scripts/audit.py` is embedded in the installer and placed at
   `/usr/local/bin/odile-audit`; `build --audit /usr/local/bin/odile-audit`
   records it, and the release's `manifest.json` (`2026.11.12-4` onward) carries
-  the same `audit_sha256` (`539e205f…`). The installer's own `--manifest` and
+  the same `audit_sha256` (`fd66f284…`). The installer's own `--manifest` and
   its `--self-test` check the embedded copy against this checkout.
 - **The apt install is pinned to the same table the manifest records.** The
   installer's `ensure_packages` passes `name=version` for every package from

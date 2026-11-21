@@ -451,6 +451,26 @@ class ShippedInstallerTests(unittest.TestCase):
         self.assertEqual(record["backup_sha256"],
                          sha256((ROOT / "scripts" / "backup.py").read_bytes()))
 
+    def test_the_release_manifest_names_the_audit_the_installer_places(self):
+        """The signed release document names the handoff audit it ships.
+
+        `/usr/local/bin/odile-audit` is the program `/verify` quotes, and
+        `release/manifest.json`'s `audit_sha256` is the row a stranger reads to
+        check it (audit.md §5, manifest.md §10). A surgical re-cut that moves
+        the audit and leaves the row behind ships a signed document naming a
+        program the installer does not write (measured on this card's first cut,
+        t_87943990); `tools/recut_release.py` now derives the row from the
+        installer and fails `--check` when the two disagree.
+        """
+        module = load_manifest_script()
+        record = module.read_installer_manifest(ROOT / "installer" / "odile_install.py")
+        self.assertRegex(record["audit_sha256"], r"^[0-9a-f]{64}$")
+        self.assertEqual(record["audit_sha256"],
+                         sha256((ROOT / "scripts" / "audit.py").read_bytes()))
+        manifest = json.loads((ROOT / "release" / "manifest.json").read_text())
+        self.assertEqual(manifest["audit_sha256"], record["audit_sha256"],
+                         "the release manifest names an audit program the installer does not place")
+
 
 class SignatureTests(unittest.TestCase):
     @classmethod
