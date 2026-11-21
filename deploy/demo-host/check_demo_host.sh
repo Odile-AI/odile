@@ -1321,9 +1321,13 @@ expect "GET /api/sessions without credentials" "401" "$API"
 expect "GET /openapi.json (the operator's map stays closed)" "404" \
     "$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 "$DEMO_URL/openapi.json")"
 # The machine's own name still answers its own report: the tenant's own Caddy
-# block survives beside the demo one.
+# block survives beside the demo one. The page is rendered per request and
+# odile-audit's boot-key row walks the tenant's home for a private half of the
+# boot key (measured 2026-11-21: 6.83 s and 6.80 s over loopback, 178,397
+# files), so this leg alone gets 30 s: the old 10 s budget answered '000' once
+# in three runs (t_d49d3368), and the manifest beside it is a file read.
 expect "GET $MACHINE_URL/verify" "200" \
-    "$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 "$MACHINE_URL/verify")"
+    "$(curl -s -o /dev/null -w '%{http_code}' --max-time 30 "$MACHINE_URL/verify")"
 expect "GET $MACHINE_URL/manifest" "200" \
     "$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 "$MACHINE_URL/manifest")"
 

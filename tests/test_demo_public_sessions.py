@@ -13,6 +13,8 @@ deleted boot re-assert.
 
 from __future__ import annotations
 
+import contextlib
+import http.server
 import importlib.util
 import json
 import os
@@ -21,6 +23,8 @@ import sqlite3
 import subprocess
 import sys
 import tempfile
+import threading
+import time
 import types
 import unittest
 import unittest.mock
@@ -874,6 +878,42 @@ def host_check_arm(functions: tuple[str, ...], literals: tuple[str, ...], body: 
                           capture_output=True, text=True)
 
 
+@contextlib.contextmanager
+def slow_page(delay: float, code: int = 200):
+    """A local HTTP page that answers after ``delay`` seconds, on a free port.
+
+    The subject of the test below, not a sync sleep: the leg's budget is only
+    observable against a page that answers slower than the old one.
+    """
+    body = b"a slow page\n"
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def do_GET(self) -> None:  # noqa: N802 (http.server's name)
+            time.sleep(delay)
+            self.send_response(code)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, format: str, *args) -> None:  # noqa: A002
+            return
+
+    class Quiet(http.server.ThreadingHTTPServer):
+        def handle_error(self, request, client_address) -> None:
+            # curl's --max-time closes the socket mid-sleep; that is the point.
+            return
+
+    server = Quiet(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield "http://127.0.0.1:%d" % server.server_address[1]
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+
+
 def matcher_verdict(block: str) -> str:
     """The check's matcher assertion over one Caddy block: ok or bad."""
     statement = host_check_statement("named matchers in the demo block")
@@ -1012,6 +1052,24 @@ class HostCheckDriftTests(unittest.TestCase):
         runbook = (ROOT / "docs" / "runbooks" / "demo-public.md").read_text(encoding="utf-8")
         for name in ("@apidocs", "@favicon", "@tabicons"):
             self.assertIn(name, runbook)
+
+
+class VerifyLegBudgetTests(unittest.TestCase):
+    """The machine's own /verify leg waits for the page it fetches.
+
+    Measured on the demo tenant, 2026-11-21: the page renders in 6.8 s
+    (odile-audit's boot-key row walks the tenant's home), and the leg's 10 s
+    budget answered '000' once in three runs. This runs the leg's own statement
+    from check_demo_host.sh — its real curl — against a page that answers after
+    10.5 s: the old budget is red here, the raised one green.
+    """
+
+    def test_the_own_name_verify_leg_waits_out_a_page_slower_than_ten_seconds(self) -> None:
+        statement = host_check_statement("GET $MACHINE_URL/verify")
+        with slow_page(delay=10.5) as url:
+            result = host_check_arm((), ("MACHINE_URL",), statement,
+                                    env={"MACHINE_URL": url})
+        self.assertEqual(result.stdout.strip(), "ok", result.stderr)
 
 
 if __name__ == "__main__":
