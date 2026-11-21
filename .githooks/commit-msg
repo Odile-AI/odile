@@ -68,11 +68,36 @@ if [ ! -f "$SCANNER" ]; then
     exit 1
 fi
 
+# Git hands the hook the whole message file. With `-v` (or
+# `commit.verbose=true`) that file also carries the staged diff, appended after
+# the scissors line, and that diff is not part of the message. Cut the file at
+# the scissors marker and scan everything above it. The tree surfaces are the
+# pre-push hook's job, and it scans them per path, so a value waived at its own
+# path is not a message literal.
+#
+# Everything above the marker is scanned, comment lines included. `-m` and `-F`
+# clean the message with `cleanup=whitespace`, which *keeps* a line beginning
+# with the comment character: that line lands in the commit object, so a
+# literal on it must be refused here or the push later wedges at the pre-push
+# scan. On the editor path the template's own `#` lines are scanned too, a
+# deliberate superset — a literal in an editor comment is refused although the
+# default editor cleanup would drop the line. Scanning more than git records is
+# safe; scanning less is the bug this hook exists to prevent.
+#
+# The scissors marker is matched whatever comment character git used
+# (`core.commentChar`), because the marker text itself is fixed. `git
+# stripspace` normalises whitespace and is deliberately *not* given
+# `--strip-comments`: that would drop the `-m`/`-F` lines git keeps.
+BODY=$(
+    sed '/------------------------ >8 ------------------------$/,$d' "$MESSAGE" \
+        | git stripspace
+)
+
 # The scanner prints its report on stdout; on a finding it goes to stderr so
 # `git commit` shows it even when it is summarising. On a clean message there
 # is nothing to say.
-if ! report=$("$PYTHON" "$SCANNER" --stdin --label commit-message \
-        --forbid-file "$FORBID" < "$MESSAGE"); then
+if ! report=$(printf '%s\n' "$BODY" | "$PYTHON" "$SCANNER" --stdin --label commit-message \
+        --forbid-file "$FORBID"); then
     printf '%s\n' "$report" >&2
     printf '\ncommit-msg: a private literal is in the commit message; the commit did not happen.\n' >&2
     printf 'commit-msg: rewrite the message, or waive the value with a commit-message row in\n' >&2

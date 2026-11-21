@@ -12,7 +12,10 @@ pin the four forward gates the card adds:
   has no list, prints `forbid list absent` instead of passing silently;
 * the commit-msg hook refuses a message carrying a literal before the commit
   object exists, accepts a clean one and passes on a clone with no list; a
-  `commit-message` allowlist row waives the value it pins and no other;
+  `commit-message` allowlist row waives the value it pins and no other; a
+  `git commit -v` message is scanned without the appended diff below its
+  scissors line, and a `#`-leading line of an `-m`/`-F` message — which git
+  records — is scanned, so a literal on it is refused at write time;
 * history mode scoped to the deny list (`--forbid-only`) is red on a branch
   that carries a literal and green after the branch is deleted — the CI job's
   command, run for real;
@@ -580,6 +583,70 @@ class CommitMsgHook(unittest.TestCase):
         self.assertEqual(allowed.returncode, 0, allowed.stdout + allowed.stderr)
         self.assertEqual(git("log", "-1", "--format=%s", cwd=self.repo).stdout.strip(),
                          f"name the host {HQ_IP}")
+
+    def test_a_verbose_commit_scans_the_message_not_the_appended_diff(self) -> None:
+        # `git commit -v` (or `commit.verbose=true`) hands the hook the staged
+        # diff appended after a scissors line. The diff is not the message: a
+        # value waived at its own tree path must not be refused at the message
+        # surface, which is what the pre-push hook scans per path.
+        live = self.repo / "live"
+        live.mkdir()
+        (live / "box.txt").write_text(f"box {BOX}\n", encoding="utf-8")
+        (self.repo / "leak-allow.tsv").write_text(
+            "# rule\tpath\tsha256\tclass\tcredential\treason\texpires\n"
+            f"forbidden-value\tlive/box.txt\t{digest(BOX)}\tconstant\tno\t"
+            "the frozen fixture names this box\tnever\n", encoding="utf-8")
+        # The editor keeps git's template and appends nothing: the message is
+        # typed above the comments, the diff stays below the scissors line, and
+        # a copy proves the hook saw the diff.
+        editor = Path(self.temp.name) / "editor.sh"
+        editor.write_text(
+            "#!/bin/sh\n"
+            "cp \"$1\" \"$1.verbose\"\n"
+            "printf 'a clean verbose message\\n' | cat - \"$1\" > \"$1.tmp\"\n"
+            "mv \"$1.tmp\" \"$1\"\n", encoding="utf-8")
+        editor.chmod(0o755)
+        git("add", "-A", cwd=self.repo)
+        verbose = git("-c", "user.email=probe@example.test", "-c", "user.name=probe",
+                      "-c", "commit.gpgsign=false", "-c", f"core.editor={editor}",
+                      "commit", "-v", cwd=self.repo)
+        self.assertEqual(verbose.returncode, 0, verbose.stdout + verbose.stderr)
+        self.assertEqual(git("log", "-1", "--format=%s", cwd=self.repo).stdout.strip(),
+                         "a clean verbose message")
+        seen = (self.repo / ".git" / "COMMIT_EDITMSG.verbose").read_text(encoding="utf-8")
+        self.assertIn("------------------------ >8 ------------------------", seen)
+        self.assertIn(BOX, seen, "the fixture did not reproduce git's -v message file")
+
+    def test_a_comment_leading_line_of_a_dash_m_message_is_scanned(self) -> None:
+        # `git commit -m` and `git commit -F` use cleanup=whitespace, which
+        # keeps a line beginning with the comment character: it lands in the
+        # commit object, and the pre-push hook then blocks the push on it. The
+        # write-time hook must see it, or it accepts exactly the message this
+        # card exists to refuse.
+        blocked = self.commit(f"#{BOX} deploy note")
+        self.assertNotEqual(blocked.returncode, 0, blocked.stdout + blocked.stderr)
+        self.assertIn("FINDING forbidden-value", blocked.stderr)
+        self.assertIn("the commit did not happen", blocked.stderr)
+        self.assertNotEqual(
+            git("rev-parse", "--verify", "HEAD", cwd=self.repo).returncode, 0,
+            "a refused message left a commit behind")
+        # A body line as well as a subject line, and the `-F` form.
+        blocked = self.commit(f"a dash-m commit\n# the box was {BOX} at the time")
+        self.assertNotEqual(blocked.returncode, 0, blocked.stdout + blocked.stderr)
+        self.assertIn("commit-message:2", blocked.stderr)
+        message_file = Path(self.temp.name) / "message.txt"
+        message_file.write_text(f"a dash-F commit\n# the box was {BOX}\n", encoding="utf-8")
+        blocked = git("-c", "user.email=probe@example.test", "-c", "user.name=probe",
+                      "-c", "commit.gpgsign=false", "commit", "-F", str(message_file),
+                      cwd=self.repo)
+        self.assertNotEqual(blocked.returncode, 0, blocked.stdout + blocked.stderr)
+        self.assertIn("FINDING forbidden-value", blocked.stderr)
+        # A clean message that carries a comment line commits, and git keeps
+        # the line — the fixture's own proof that this shape is not skipped.
+        clean = self.commit("a clean dash-m commit\n# a comment line without a literal")
+        self.assertEqual(clean.returncode, 0, clean.stdout + clean.stderr)
+        body = git("log", "-1", "--format=%B", cwd=self.repo).stdout
+        self.assertIn("# a comment line without a literal", body)
 
     def test_the_hook_passes_when_the_list_is_absent(self) -> None:
         # A public clone carries no list: same rule as the pre-push hook, the
