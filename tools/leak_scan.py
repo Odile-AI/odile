@@ -104,8 +104,13 @@ the date of the card that clears it, is recorded.
 
 ``--forbid-only`` runs that one class and skips the tree classes: it is what
 the CI history job uses, so an already-public address in an old root does not
-fail a job about the deny list. ``--stdin`` scans a stream with ``--label``
-naming it — the pre-push hook's commit-message surface. ``--stdin-patch``
+fail a job about the deny list. ``--stdin`` scans a stream under ``--label`` as
+its path — the commit-message surface, which both ``.githooks/commit-msg`` and
+the pre-push hook name ``commit-message``. That label is the surface's path, so
+an allowlist row whose path is ``commit-message`` and whose digest pins a value
+waives exactly that value in a message; the same row does not waive a different
+value, and the row's reason must not quote the value it waives (the
+self-satisfying rule below). ``--stdin-patch``
 scans a git patch and files each added line under the path of the file section
 it belongs to, so the allowlist's path column applies to an outgoing diff the
 same way it applies to a whole file: a live constant pinned at its own path

@@ -10,6 +10,12 @@ pin the four forward gates the card adds:
 * the pre-push hook blocks a literal in the outgoing diff or a commit message,
   and lets the same range through once it is rewritten — and, on a clone that
   has no list, prints `forbid list absent` instead of passing silently;
+* the commit-msg hook refuses a message carrying a literal before the commit
+  object exists, accepts a clean one and passes on a clone with no list; a
+  `commit-message` allowlist row waives the value it pins and no other; a
+  `git commit -v` message is scanned without the appended diff below its
+  scissors line, and a `#`-leading line of an `-m`/`-F` message — which git
+  records — is scanned, so a literal on it is refused at write time;
 * history mode scoped to the deny list (`--forbid-only`) is red on a branch
   that carries a literal and green after the branch is deleted — the CI job's
   command, run for real;
@@ -40,6 +46,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 SCANNER = ROOT / "tools" / "leak_scan.py"
 HOOK = ROOT / ".githooks" / "pre-push"
+COMMIT_MSG = ROOT / ".githooks" / "commit-msg"
 EXAMPLE = ROOT / "deploy" / "hosts.example"
 sys.path.insert(0, str(ROOT / "tools"))
 
@@ -459,8 +466,9 @@ class PrePushHook(unittest.TestCase):
         self.assertIn("(servury-box-id)", blocked.stdout + blocked.stderr)
 
     def test_a_path_pinned_value_in_a_commit_message_still_blocks(self) -> None:
-        # The message surface has no path, so a row pinned at one path cannot
-        # waive it: the value may live in that file and nowhere else.
+        # The message surface's path is the label `commit-message`, so a row
+        # pinned at a tree path cannot waive it: the value may live in that file
+        # and nowhere else, and a message is not that file.
         (self.work / "clean.txt").write_text("nothing private\n", encoding="utf-8")
         (self.work / "leak-allow.tsv").write_text(
             "# rule\tpath\tsha256\tclass\tcredential\treason\texpires\n"
@@ -473,6 +481,182 @@ class PrePushHook(unittest.TestCase):
         self.assertIn("(servury-box-id)", blocked.stdout + blocked.stderr)
         git("commit", "--amend", "-qm", "a clean message", cwd=self.work)
         self.assertEqual(self.push().returncode, 0)
+
+
+class MessageSurface(unittest.TestCase):
+    """`--stdin --label commit-message`: the literal, its waiver, a neighbour."""
+
+    def setUp(self) -> None:
+        self.temp = tempfile.TemporaryDirectory()
+        self.repo = Path(self.temp.name) / "repo"
+        self.repo.mkdir()
+        git("init", "-q", "-b", "main", cwd=self.repo)
+        (self.repo / "leak-allow.tsv").write_text("# no exceptions\n", encoding="utf-8")
+        write_list(self.repo, LIST_LINE)
+        (self.repo / "keep.txt").write_text("nothing private here\n", encoding="utf-8")
+
+    def tearDown(self) -> None:
+        self.temp.cleanup()
+
+    def message(self, text: str) -> subprocess.CompletedProcess[str]:
+        return run([sys.executable, str(SCANNER), "--stdin", "--label",
+                    "commit-message", "--forbid-file", LIST_PATH],
+                   cwd=self.repo, input=text)
+
+    def pin(self, value: str) -> None:
+        (self.repo / "leak-allow.tsv").write_text(
+            "# rule\tpath\tsha256\tclass\tcredential\treason\texpires\n"
+            f"forbidden-value\tcommit-message\t{digest(value)}\tconstant\tno\t"
+            "the committed transcript names this host\tnever\n", encoding="utf-8")
+
+    def test_a_message_carrying_a_literal_fails(self) -> None:
+        result = self.message(f"name the host {HQ_IP}\n")
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn("FINDING forbidden-value", result.stdout)
+        self.assertIn("commit-message:1", result.stdout)
+        self.assertIn("(hq-address)", result.stdout)
+        self.assertIn("FAIL: 1 finding(s) in commit-message", result.stdout)
+
+    def test_a_commit_message_row_waives_the_value_it_pins(self) -> None:
+        self.pin(HQ_IP)
+        waived = self.message(f"name the host {HQ_IP}\n")
+        self.assertEqual(waived.returncode, 0, waived.stdout)
+        self.assertIn("PASS: nothing forbidden in commit-message", waived.stdout)
+
+    def test_the_row_does_not_waive_a_different_literal(self) -> None:
+        # The digest pins the value, not the row: the neighbouring address in
+        # the same class is still a finding under the same `commit-message` path.
+        self.pin(HQ_IP)
+        neighbour = ".".join(["23", "155", "44", "7"])
+        other = self.message(f"name another host {neighbour}\n")
+        self.assertEqual(other.returncode, 1, other.stdout)
+        self.assertIn("(hq-address)", other.stdout)
+
+
+class CommitMsgHook(unittest.TestCase):
+    """The write-time gate: the real hook, run by a real `git commit`."""
+
+    def setUp(self) -> None:
+        self.temp = tempfile.TemporaryDirectory()
+        self.repo = Path(self.temp.name) / "repo"
+        self.repo.mkdir()
+        git("init", "-q", "-b", "main", cwd=self.repo)
+        (self.repo / "leak-allow.tsv").write_text("# no exceptions\n", encoding="utf-8")
+        write_list(self.repo)
+        (self.repo / "keep.txt").write_text("nothing private here\n", encoding="utf-8")
+        (self.repo / "tools").mkdir()
+        shutil.copy2(SCANNER, self.repo / "tools" / "leak_scan.py")
+        (self.repo / ".githooks").mkdir()
+        shutil.copy2(COMMIT_MSG, self.repo / ".githooks" / "commit-msg")
+        (self.repo / ".githooks" / "commit-msg").chmod(0o755)
+        git("config", "core.hooksPath", ".githooks", cwd=self.repo)
+        git("add", "-A", cwd=self.repo)
+
+    def tearDown(self) -> None:
+        self.temp.cleanup()
+
+    def commit(self, message: str) -> subprocess.CompletedProcess[str]:
+        return git("-c", "user.email=probe@example.test", "-c", "user.name=probe",
+                   "-c", "commit.gpgsign=false", "commit", "-m", message,
+                   cwd=self.repo)
+
+    def test_a_literal_message_is_refused_and_a_clean_one_commits(self) -> None:
+        blocked = self.commit(f"name the host {HQ_IP}")
+        self.assertNotEqual(blocked.returncode, 0, blocked.stdout + blocked.stderr)
+        self.assertIn("FINDING forbidden-value", blocked.stderr)
+        self.assertIn("commit-message:1", blocked.stderr)
+        self.assertIn("the commit did not happen", blocked.stderr)
+        self.assertNotEqual(
+            git("rev-parse", "--verify", "HEAD", cwd=self.repo).returncode, 0,
+            "a refused message left a commit behind")
+        clean = self.commit("a clean message")
+        self.assertEqual(clean.returncode, 0, clean.stdout + clean.stderr)
+        self.assertEqual(git("log", "-1", "--format=%s", cwd=self.repo).stdout.strip(),
+                         "a clean message")
+
+    def test_a_commit_message_row_lets_the_commit_through(self) -> None:
+        (self.repo / "leak-allow.tsv").write_text(
+            "# rule\tpath\tsha256\tclass\tcredential\treason\texpires\n"
+            f"forbidden-value\tcommit-message\t{digest(HQ_IP)}\tconstant\tno\t"
+            "the committed transcript names this host\tnever\n", encoding="utf-8")
+        allowed = self.commit(f"name the host {HQ_IP}")
+        self.assertEqual(allowed.returncode, 0, allowed.stdout + allowed.stderr)
+        self.assertEqual(git("log", "-1", "--format=%s", cwd=self.repo).stdout.strip(),
+                         f"name the host {HQ_IP}")
+
+    def test_a_verbose_commit_scans_the_message_not_the_appended_diff(self) -> None:
+        # `git commit -v` (or `commit.verbose=true`) hands the hook the staged
+        # diff appended after a scissors line. The diff is not the message: a
+        # value waived at its own tree path must not be refused at the message
+        # surface, which is what the pre-push hook scans per path.
+        live = self.repo / "live"
+        live.mkdir()
+        (live / "box.txt").write_text(f"box {BOX}\n", encoding="utf-8")
+        (self.repo / "leak-allow.tsv").write_text(
+            "# rule\tpath\tsha256\tclass\tcredential\treason\texpires\n"
+            f"forbidden-value\tlive/box.txt\t{digest(BOX)}\tconstant\tno\t"
+            "the frozen fixture names this box\tnever\n", encoding="utf-8")
+        # The editor keeps git's template and appends nothing: the message is
+        # typed above the comments, the diff stays below the scissors line, and
+        # a copy proves the hook saw the diff.
+        editor = Path(self.temp.name) / "editor.sh"
+        editor.write_text(
+            "#!/bin/sh\n"
+            "cp \"$1\" \"$1.verbose\"\n"
+            "printf 'a clean verbose message\\n' | cat - \"$1\" > \"$1.tmp\"\n"
+            "mv \"$1.tmp\" \"$1\"\n", encoding="utf-8")
+        editor.chmod(0o755)
+        git("add", "-A", cwd=self.repo)
+        verbose = git("-c", "user.email=probe@example.test", "-c", "user.name=probe",
+                      "-c", "commit.gpgsign=false", "-c", f"core.editor={editor}",
+                      "commit", "-v", cwd=self.repo)
+        self.assertEqual(verbose.returncode, 0, verbose.stdout + verbose.stderr)
+        self.assertEqual(git("log", "-1", "--format=%s", cwd=self.repo).stdout.strip(),
+                         "a clean verbose message")
+        seen = (self.repo / ".git" / "COMMIT_EDITMSG.verbose").read_text(encoding="utf-8")
+        self.assertIn("------------------------ >8 ------------------------", seen)
+        self.assertIn(BOX, seen, "the fixture did not reproduce git's -v message file")
+
+    def test_a_comment_leading_line_of_a_dash_m_message_is_scanned(self) -> None:
+        # `git commit -m` and `git commit -F` use cleanup=whitespace, which
+        # keeps a line beginning with the comment character: it lands in the
+        # commit object, and the pre-push hook then blocks the push on it. The
+        # write-time hook must see it, or it accepts exactly the message this
+        # card exists to refuse.
+        blocked = self.commit(f"#{BOX} deploy note")
+        self.assertNotEqual(blocked.returncode, 0, blocked.stdout + blocked.stderr)
+        self.assertIn("FINDING forbidden-value", blocked.stderr)
+        self.assertIn("the commit did not happen", blocked.stderr)
+        self.assertNotEqual(
+            git("rev-parse", "--verify", "HEAD", cwd=self.repo).returncode, 0,
+            "a refused message left a commit behind")
+        # A body line as well as a subject line, and the `-F` form.
+        blocked = self.commit(f"a dash-m commit\n# the box was {BOX} at the time")
+        self.assertNotEqual(blocked.returncode, 0, blocked.stdout + blocked.stderr)
+        self.assertIn("commit-message:2", blocked.stderr)
+        message_file = Path(self.temp.name) / "message.txt"
+        message_file.write_text(f"a dash-F commit\n# the box was {BOX}\n", encoding="utf-8")
+        blocked = git("-c", "user.email=probe@example.test", "-c", "user.name=probe",
+                      "-c", "commit.gpgsign=false", "commit", "-F", str(message_file),
+                      cwd=self.repo)
+        self.assertNotEqual(blocked.returncode, 0, blocked.stdout + blocked.stderr)
+        self.assertIn("FINDING forbidden-value", blocked.stderr)
+        # A clean message that carries a comment line commits, and git keeps
+        # the line — the fixture's own proof that this shape is not skipped.
+        clean = self.commit("a clean dash-m commit\n# a comment line without a literal")
+        self.assertEqual(clean.returncode, 0, clean.stdout + clean.stderr)
+        body = git("log", "-1", "--format=%B", cwd=self.repo).stdout
+        self.assertIn("# a comment line without a literal", body)
+
+    def test_the_hook_passes_when_the_list_is_absent(self) -> None:
+        # A public clone carries no list: same rule as the pre-push hook, the
+        # gate says so on stderr and lets the commit through.
+        write_list(self.repo).unlink()
+        passed = self.commit(f"name the host {HQ_IP}")
+        self.assertEqual(passed.returncode, 0, passed.stdout + passed.stderr)
+        self.assertIn("commit-msg: forbid list absent: docs/ops/leak-forbid.txt",
+                      passed.stderr)
+        self.assertIn("the message was not scanned for private literals", passed.stderr)
 
 
 class HostsExample(unittest.TestCase):
@@ -572,7 +756,7 @@ class OneList(unittest.TestCase):
     def test_every_gate_names_the_documented_path(self) -> None:
         # One path in the scanner's default, the Makefile, the hook and CI, so
         # there is one place to put the list and one place to rotate it.
-        for path in (SCANNER, ROOT / "Makefile", HOOK,
+        for path in (SCANNER, ROOT / "Makefile", HOOK, COMMIT_MSG,
                      ROOT / ".github" / "workflows" / "check.yml"):
             self.assertIn(LIST_PATH, path.read_text(encoding="utf-8"), str(path))
 
