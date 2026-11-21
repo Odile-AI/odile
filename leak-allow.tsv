@@ -82,7 +82,6 @@ ssh-fingerprint	*	sha256:4a06410661a1	constant	no	the bench disk B's ed25519 SSH
 ssh-fingerprint	*	sha256:9dc5452993d1	constant	no	the bench disk B's rsa SSH host-key fingerprint in image.md section 13.11; the public half of a second machine booted from the same image	never
 ssh-fingerprint	*	sha256:e16a77fdc93e	constant	no	the bench disk B's ecdsa SSH host-key fingerprint in image.md section 13.11; the public half of a second machine booted from the same image	never
 ssh-fingerprint	*	sha256:dc2ac0dce274	constant	no	the measured boot key's fingerprint in image.md section 13.11.5's boot-record line; a public key in the measured command line	never
-public-ip	docs/ops/GATE-PACKET.md	sha256:9876939e2536	constant	no	the gate packet's runnable card needs HQ's real IPv4 — the zone's A record; the address is public in DNS, not a secret	never
 high-entropy	docs/runbooks/image.md	sha256:6a3d71aa28cc	constant	no	history only: the scrypt hash of the published bench fixture password (odile-bench-not-a-secret), retired with the 2026.11.14-5 image; value-scoped, so a different value at this path is still a finding	never
 
 # Published history, pinned path by path (ODL-911). The tree no longer carries
@@ -162,31 +161,12 @@ forbidden-value	docs/runbooks/incidents.md	sha256:eaf6312fa1f2	constant	no	a sib
 vendor-resource-id	*	sha256:63737dacb46c	constant	no	a destroyed test tenant's instance id in the offboard drill record (ODL-218); the machine is gone and the record is its evidence	never
 vendor-resource-id	*	sha256:3e5275784e44	constant	no	the bench box id this operator's panel script and its test name; the public build replaces it with deadbeef and the forbid list names it	never
 vendor-resource-id	*	sha256:4014bb9b4e56	constant	no	the Servury dev account id in the panel script's comment; the public build replaces it with 0acc0001 and the forbid list names it	never
-vendor-resource-id	docs/ops/evidence/2026-11-20-finance/*	sha256:716084d53ac1	constant	no	the Servury dev box id in the unit-2 finance evidence's verbatim API read and the lines that cite it (README, reconcile transcript, script); the public build scrubs it to 0acc0003 and the forbid list names it	never
-home-path	docs/ops/evidence/2026-11-20-finance/*	sha256:18b74e4c8911	constant	no	the checkout path this machine ran the reconciliation from, quoted in the evidence script; the public build replaces it with <checkout>	never
-public-ip	docs/ops/evidence/2026-11-20-finance/*	sha256:9876939e2536	constant	no	the host's IPv4 in the verbatim Servury API read: odile.fyi's A record, the same published address the gate-packet row allow-lists, not a secret	never
-public-ipv6	docs/ops/evidence/2026-11-20-finance/*	sha256:555c8104f95f	constant	no	the host's provider IPv6 address in the verbatim Servury API read; the public build replaces the prefix with the documentation range	never
-public-ipv6	docs/ops/evidence/2026-11-20-finance/*	sha256:c6f39accd75f	constant	no	the provider-routed /64 subnet in the same verbatim read; the public build replaces the prefix with the documentation range	never
 
 # main landed these files after the branch forked (ODL-218, the 19-20 November
 # evidence, the servury panel/reinstall work). The deny-list class is armed for the
 # first time at this head, so each value is pinned at the path that carries it: one
 # value at one path, never a glob. Do not widen a row.
 forbidden-value	docs/architecture/ADR-backup.md	sha256:421fe1d07ee8	constant	no	a dated record names the live machine; the path is pinned, so another value there is still a finding	never
-forbidden-value	docs/ops/evidence/2026-11-19-growth/make-check.txt	sha256:3e5275784e44	constant	no	a published evidence file records the verbatim vendor read its probe ran (2026-11-19/20); the path is pinned, so another value there is still a finding	never
-forbidden-value	docs/ops/evidence/2026-11-19-growth/make-check.txt	sha256:4014bb9b4e56	constant	no	a published evidence file records the verbatim vendor read its probe ran (2026-11-19/20); the path is pinned, so another value there is still a finding	never
-forbidden-value	docs/ops/evidence/2026-11-19-growth/make-check.txt	sha256:eaf6312fa1f2	constant	no	a published evidence file records the verbatim vendor read its probe ran (2026-11-19/20); the path is pinned, so another value there is still a finding	never
-forbidden-value	docs/ops/evidence/2026-11-20-finance/README.md	sha256:716084d53ac1	constant	no	a published evidence file records the verbatim vendor read its probe ran (2026-11-19/20); the path is pinned, so another value there is still a finding	never
-forbidden-value	docs/ops/evidence/2026-11-20-finance/make-check.txt	sha256:3e5275784e44	constant	no	a published evidence file records the verbatim vendor read its probe ran (2026-11-19/20); the path is pinned, so another value there is still a finding	never
-forbidden-value	docs/ops/evidence/2026-11-20-finance/make-check.txt	sha256:4014bb9b4e56	constant	no	a published evidence file records the verbatim vendor read its probe ran (2026-11-19/20); the path is pinned, so another value there is still a finding	never
-forbidden-value	docs/ops/evidence/2026-11-20-finance/make-check.txt	sha256:eaf6312fa1f2	constant	no	a published evidence file records the verbatim vendor read its probe ran (2026-11-19/20); the path is pinned, so another value there is still a finding	never
-forbidden-value	docs/ops/evidence/2026-11-20-finance/reconcile-week.txt	sha256:716084d53ac1	constant	no	a published evidence file records the verbatim vendor read its probe ran (2026-11-19/20); the path is pinned, so another value there is still a finding	never
-forbidden-value	docs/ops/evidence/2026-11-20-finance/reconcile_week.py	sha256:18b74e4c8911	constant	no	a published evidence file records the verbatim vendor read its probe ran (2026-11-19/20); the path is pinned, so another value there is still a finding	never
-forbidden-value	docs/ops/evidence/2026-11-20-finance/reconcile_week.py	sha256:716084d53ac1	constant	no	a published evidence file records the verbatim vendor read its probe ran (2026-11-19/20); the path is pinned, so another value there is still a finding	never
-forbidden-value	docs/ops/evidence/2026-11-20-finance/servury-read-2026-11-20.json	sha256:421fe1d07ee8	constant	no	a published evidence file records the verbatim vendor read its probe ran (2026-11-19/20); the path is pinned, so another value there is still a finding	never
-forbidden-value	docs/ops/evidence/2026-11-20-finance/servury-read-2026-11-20.json	sha256:59994270da6b	constant	no	a published evidence file records the verbatim vendor read its probe ran (2026-11-19/20); the path is pinned, so another value there is still a finding	never
-forbidden-value	docs/ops/evidence/2026-11-20-finance/servury-read-2026-11-20.json	sha256:716084d53ac1	constant	no	a published evidence file records the verbatim vendor read its probe ran (2026-11-19/20); the path is pinned, so another value there is still a finding	never
-forbidden-value	docs/ops/evidence/2026-11-20-finance/servury-read-2026-11-20.json	sha256:9876939e2536	constant	no	a published evidence file records the verbatim vendor read its probe ran (2026-11-19/20); the path is pinned, so another value there is still a finding	never
 forbidden-value	docs/runbooks/recycle.md	sha256:3e5275784e44	constant	no	a dated record names the live machine; the path is pinned, so another value there is still a finding	never
 forbidden-value	docs/runbooks/recycle.md	sha256:4014bb9b4e56	constant	no	a dated record names the live machine; the path is pinned, so another value there is still a finding	never
 forbidden-value	installer/odile_install.py	sha256:3e5275784e44	constant	no	history only: the blob this path carried before t_e3540242 replaced the dry-run fixture's id with the public build's same-length deadbeef stand-in; the path is pinned, so another value there is still a finding	never
