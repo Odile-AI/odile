@@ -8,9 +8,10 @@ local-only". Both are HQ-host files, so this fence carries the same list as
 data and reads the tracked tree with `git ls-files`, which is exactly what a
 push publishes.
 
-Why the fence exists: between 2026-11-19 and 2026-11-21 three upskill commits
-added 31 files under local-only roots as ordinary commits, and every merge
-pushed them. They were not scrubbed, so the public repository served the HQ
+Why the fence exists: between 2026-11-14 and 2026-11-21 the 31 became tracked
+by ordinary commits — 28 operating-record files (four upskill commits and
+`d27c1d7`) and three test modules (`cf05e31`, `424ef3d`, `9e4374d`) — and every
+merge pushed them. They were not scrubbed, so the public repository served the HQ
 IPv4, the Servury box and account ids, a provider IPv6 prefix, a tenant
 instance id and this checkout's path, and 19 `leak-allow.tsv` rows had been
 added to waive them at the gate. `t_91f138b3` removed 29 of the 31 on
@@ -66,6 +67,8 @@ LOCAL_ONLY_FILES = (
     "docs/backlog.yaml",
     "docs/product/OPERATING.md",
     "docs/product/ROADMAP-PAGE-CEO.md",
+    "docs/runbooks/backup-hq.md",
+    "docs/runbooks/testing-host.md",
 )
 # `docs/product/` is mixed: the builder's INCLUDE names three files and the
 # rest of the directory is the operating record (PR/FAQ, growth queue, decision
