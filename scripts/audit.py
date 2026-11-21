@@ -403,7 +403,14 @@ def _scan_candidates(roots):
     for the same files opened in Python. ``heads`` holds exactly 48 bytes per
     regular file, in the order of ``files``. Only a regular file's path is a
     path head can open. A stream that does not line up is not trusted, and
-    ``None`` sends the caller to the walk below.
+    ``None`` sends the caller to the walk below. ``-H`` follows a symlink named
+    as a root, which is what ``os.scandir`` does with a directory: without it a
+    private root that is itself a symlink prints nothing, which reads as a PASS
+    over a planted key (t_df24b754). Nested symlinks to directories are
+    followed by neither path. The one shape where ``-H`` reads more than the
+    walk is a root that is a symlink to a *file*: it is reported as that file,
+    the walk skips it, and the extra candidate can only add a FAIL, never hide
+    one.
     """
     if not roots:
         return [], b"", []
@@ -411,7 +418,7 @@ def _scan_candidates(roots):
         return None
     read_end, write_end = os.pipe()
     fd_directory = "/dev/fd" if os.path.isdir("/dev/fd") else "/proc/self/fd"
-    command = ["find", *[str(root) for root in roots],
+    command = ["find", "-H", *[str(root) for root in roots],
                "!", "-name", "*.pub", "!", "-name", "authorized_keys*",
                "!", "-name", "known_hosts*",
                "(", "(", "-type", "f",

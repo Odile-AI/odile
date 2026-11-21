@@ -358,6 +358,42 @@ class WalkCostTest(unittest.TestCase):
         os.symlink(elsewhere, fixture.root / "home" / "tenant" / "linked-key")
         self.assertEqual(fixture.failed(), ["boot key"])
 
+    def test_a_private_root_that_is_itself_a_symlink_is_scanned(self):
+        """find(1) must follow a command-line symlink, as the walk does.
+
+        Measured on t_87943990: ``/var/lib/odile`` replaced by a symlink to a
+        directory produced a well-formed empty stream from ``find`` without
+        ``-H``, so the row printed PASS over a planted key while
+        ``_walk_candidates`` found it. The installer creates real directories,
+        so no shipped shape is affected; this pins the candidate set the row
+        claims for every shape a machine can be in.
+        """
+        private, public = self.keypair()
+        fixture = self.boot_key_fixture(public)
+        # The private root the row scans is a symlink to a directory elsewhere
+        # in the machine: only a walk that follows the argument reaches it.
+        real = fixture.root / "var" / "lib" / "odile-real"
+        target = real / "sub" / "key"
+        target.parent.mkdir(parents=True)
+        target.write_bytes(private.read_bytes())
+        os.chmod(target, 0o600)
+        linked = fixture.root / "var" / "lib" / "odile"
+        linked.symlink_to(real)
+        answers = []
+        real_scan = audit._scan_candidates
+
+        def spy(roots):
+            found = real_scan(roots)
+            answers.append(found)
+            return found
+
+        with mock.patch.object(audit, "_scan_candidates", side_effect=spy):
+            self.assertEqual(fixture.failed(), ["boot key"])
+        self.assertEqual(len(answers), 1)
+        self.assertIsNotNone(answers[0], "the fast path fell back to the Python walk")
+        detail = [r.detail for r in fixture.results() if r.name == "boot key"][0]
+        self.assertIn("private half is on the machine: /var/lib/odile/sub/key", detail)
+
     def test_a_hung_find_cannot_hold_the_read(self):
         """WALK_TIMEOUT bounds the read, not only ``wait()`` (t_87943990).
 

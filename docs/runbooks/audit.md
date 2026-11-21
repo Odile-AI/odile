@@ -135,7 +135,10 @@ rm -f /root/boot-key
 
 The audit scans `/root`, `/home`, `/etc/odile` and `/var/lib/odile` for a file
 that is a private key and names the boot key's public half (`ssh-keygen -y`, or
-a `.pub` sibling); the row prints the path it found.
+a `.pub` sibling); the row prints the path it found. A root that is itself a
+symlink to a directory is followed, so a machine that linked one of the four
+elsewhere is still scanned — and, because the row must not pass over an empty
+answer, `find(1)` runs with `-H` and the Python walk stays the fallback.
 
 ## 5. The script is in the installer's published manifest
 
@@ -146,9 +149,9 @@ like the `/verify` surface. Two records name it:
 ```sh
 # the installer's own manifest record
 $ ./installer/odile_install.py --manifest | grep audit_sha256
-  "audit_sha256": "fd66f284b1c9f4606a2ff0fadcbe60d29a642df170083f6aa7a13394a3ee9127",
+  "audit_sha256": "6d3f7be0e7137613b5ef480cf70b44683a111423de61c39f563ea76029781c9d",
 $ sha256sum scripts/audit.py
-fd66f284b1c9f4606a2ff0fadcbe60d29a642df170083f6aa7a13394a3ee9127  scripts/audit.py
+6d3f7be0e7137613b5ef480cf70b44683a111423de61c39f563ea76029781c9d  scripts/audit.py
 ```
 
 On the machine, the signed manifest at `/etc/odile/manifest.json` (served at
@@ -167,7 +170,7 @@ six planted ones in a temporary directory and asserts each direction.
 $ /usr/bin/python3 scripts/audit.py --self-test
 audit self-test: PASS (11 ok, 0 failed)
 $ /usr/bin/python3 -m unittest tests.test_audit -v
-Ran 53 tests in 1.699s
+Ran 60 tests in 2.388s
 
 OK
 ```
@@ -177,7 +180,8 @@ same second key in `authorized_keys2` in both homes, a forced-command line, an
 operator-shaped comment, an operator account, a second uid 0, a private half
 beside a matching public key, the boot private key at `/root/boot-key` with no
 `.pub` sibling, an unrelated private key and a TLS key that are not the boot
-key's half, two `bb.key=` tokens, a missing or non-base64 key, a root password
+key's half, a private root that is itself a symlink to the directory holding
+the planted key, two `bb.key=` tokens, a missing or non-base64 key, a root password
 hash, a `PasswordAuthentication yes` drop-in that beats the main file, a second
 keyslot, a LUKS token, a plain ext4 root, an active grant, an expired grant, a
 grant with no expiry, an agent socket, a foreign login fingerprint and a

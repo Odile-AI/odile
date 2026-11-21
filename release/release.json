@@ -1,8 +1,8 @@
 {
   "artifacts": {
     "installer": {
-      "sha256": "9b5852090349a5ef7fd93f38c4419fe19a2ca96bb4a25abea28b46cde9379f2e",
-      "size": 1527037,
+      "sha256": "b61d0713d8efa22ca7d53fb2f638cc3a0fd4703960bcda41906628b85cb2d57a",
+      "size": 1527550,
       "url": "odile_install.py"
     },
     "skills": {
@@ -14,14 +14,14 @@
   "boot": {
     "kernel": "6.12.115+deb13.1-amd64"
   },
-  "generated_at": "2026-11-21T23:25:00Z",
+  "generated_at": "2026-11-22T01:24:27Z",
   "manifest": {
-    "sha256": "3912ce1b05acb052528dee140532d0634d33a8049cd9fa6ee7a39340de27f45f",
+    "sha256": "3a5d4b890198419e0ec079f6ef840c1fc12ee962dc91cf0c8778a35b10b9afc3",
     "signature_url": "manifest.json.sig",
     "url": "manifest.json"
   },
-  "notes": "t_d55b0e47 (the /verify unit's sandbox keeps cryptsetup's lock writable), over 2026.11.21-4 (t_87943990's boot-key walk cut, which also drives the page's cost). The tenant /verify page's LUKS row read FAIL on every machine that runs the unit the image and the installer write: verify.py runs `cryptsetup status root_crypt` and then `cryptsetup luksDump <device>`, cryptsetup takes its read lock in /run/cryptsetup, and the unit's ProtectSystem=strict mounts /run read-only. Both copies -- deploy/image/odile-verify.service and the installer's VERIFY_UNIT_TEMPLATE -- now carry ReadWritePaths=/run beside ProtectSystem=strict, and --self-test asserts it. `/run`, not `/run/cryptsetup`: a ReadWritePaths= path missing at start fails the unit, and a machine with no LUKS container has no /run/cryptsetup at boot. Measured on the demo host on 2026-11-21: under the unit's own four properties (NoNewPrivileges, PrivateTmp, ProtectSystem=strict, ProtectHome=read-only) `systemd-run ... cryptsetup luksDump /dev/sda3` exited 5 with 'Failed to acquire read lock on device /dev/sda3.' and 'Device /dev/sda3 is not a valid LUKS device.'; under the same four plus ReadWritePaths=/run it printed the header and exited 0, and after the installer's own unit was installed the page read LUKS PASS 'one keyslot (slot 2), no token'. The embedded skills, the odile-help row, the audit row, the backup row and the tenant pages are 2026.11.21-4's; only installer_sha256, manifest.sha256, generated_at and this note move.",
+  "notes": "t_df24b754 (the boot-key walk follows a private root that is itself a symlink), over 2026.11.21-5 (t_d55b0e47's /verify unit keeps cryptsetup's lock writable). scripts/audit.py now runs `find` with `-H`: without it, a private root that is itself a symlink to a directory printed nothing, which is a well-formed empty stream and reads as a PASS over a planted key, while the Python fallback (os.scandir) followed the root. Odile's installer creates all four roots as real directories, so no shipped or demo shape was affected, and on a real-dir tree the flag costs nothing (fixed 20,000-file tree: 0.354-0.395 s without, 0.369-0.423 s with, four interleaved draws each, the same 20,000 files and 20,000 heads). The row's proof is otherwise unchanged -- same four roots, same 200..65536-byte window, same .pub/authorized_keys*/known_hosts* exclusions, same 48-byte PRIVATE KEY marker, same ssh-keygen -y/.pub-sibling identification, and the Python walk remains the fallback when find cannot answer. Only audit_sha256, installer_sha256, manifest.sha256, generated_at and this note move; the embedded /verify pages, the skills tarball, the odile-help row, the backup row and 2026.11.21-5's ReadWritePaths=/run unit are that cut's.",
   "product": "odile",
-  "release": "2026.11.21-5",
+  "release": "2026.11.21-6",
   "schema": 1
 }
