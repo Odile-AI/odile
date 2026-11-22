@@ -66,7 +66,7 @@ class TwoUidLockTest(unittest.TestCase):
 
     def env(self, extra: dict[str, str] | None = None) -> dict[str, str]:
         env = {key: value for key, value in os.environ.items()
-               if key != "ODILE_CHECK_LOCK"}
+               if key not in ("ODILE_CHECK_LOCK", "ODILE_GATE_EVENT_LOG", "ODILE_GATE_PARENT_PID")}
         env["HOME"] = str(self.tmp)
         if extra:
             env.update(extra)
@@ -151,7 +151,7 @@ class LockContractTest(unittest.TestCase):
 
     def env(self, extra: dict[str, str] | None = None) -> dict[str, str]:
         env = {key: value for key, value in os.environ.items()
-               if key != "ODILE_CHECK_LOCK"}
+               if key not in ("ODILE_CHECK_LOCK", "ODILE_GATE_EVENT_LOG", "ODILE_GATE_PARENT_PID")}
         env["HOME"] = str(self.tmp)
         if extra:
             env.update(extra)
@@ -205,7 +205,7 @@ class QueueInstrumentTest(unittest.TestCase):
 
     def env(self) -> dict[str, str]:
         env = {key: value for key, value in os.environ.items()
-               if key != "ODILE_CHECK_LOCK"}
+               if key not in ("ODILE_CHECK_LOCK", "ODILE_GATE_EVENT_LOG", "ODILE_GATE_PARENT_PID")}
         env["HOME"] = str(self.tmp)
         return env
 
