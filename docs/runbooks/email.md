@@ -305,23 +305,29 @@ the applier has not run since. A destination that publishes only an A is
 expected to show the literal, by design.
 
 **Why the A is quarantined — measured 2026-11-22 (`t_6b6ac0dd`).** Not because
-of a list, so **there is nothing to delist**. Every list below was asked
-directly of its own nameserver (`dig +norecurse @<its NS>`), with the published
-control `2.0.0.127.zen.spamhaus.org` in the same batch, and it answers
-NXDOMAIN for `203.0.113.139`: Spamhaus ZEN, SBL, XBL and PBL (at
+of a list, so **there is nothing to delist**. Every list below was queried
+through four resolvers (`05-blocklist-matrix.txt`), and the nine zones that
+publish a resolvable NS were also asked directly of that nameserver
+(`dig +norecurse @<its NS>`, `12-authoritative-ns.txt`; of its 13 recorded
+zones, SORBS, SpamCop and both Validity zones answer `NS: (none)`) with the
+published control `2.0.0.127.zen.spamhaus.org` in the same batch. The direct
+answer for `203.0.113.139` is NXDOMAIN at Spamhaus ZEN, SBL, XBL and PBL (at
 `a`–`e.gns.spamhaus.org`; the control returns `127.0.0.2`, `127.0.0.4`,
-`127.0.0.10`), Barracuda BRBL, UCEPROTECT L1/L2/L3, CBL, PSBL, SpamCop,
-Hostkarma, Invaluement and Mailspike. SORBS no longer answers at all (its zone
-name is NXDOMAIN at the `net` servers). The Validity zones are the one
-exception: every resolver gets `127.255.255.255` plus the TXT "Excessive Number
-of Queries", so those are *could not query*, not verdicts — their product needs
-a key.
+`127.0.0.10`), Barracuda BRBL, UCEPROTECT L1/L2/L3 and PSBL. CBL, SpamCop,
+Hostkarma, Invaluement and Mailspike are covered by the resolver matrix alone
+(SpamCop's NS lookup SERVFAILs); it records the same NXDOMAIN for each. SORBS
+no longer answers at all (its zone name is NXDOMAIN at the `net` servers). The
+Validity zones are the one exception: the first resolver pass got NXDOMAIN, and
+from 12:33Z every `+tcp` query gets `127.255.255.255` plus the TXT "Excessive
+Number of Queries", so those are *could not query*, not verdicts — their
+product needs a key.
 
 The /24 that holds the A is not dirty either: it is Servury's own (AS395904,
-ARIN registration event 2026-03-30), 11 of its 254 addresses publish a PTR, and
-0 of the 254 are in Spamhaus ZEN — asked through a resolver that returns real
-listings (its control answered `127.0.0.2 127.0.0.10 127.0.0.4` in the same
-batch). UCEPROTECT's /24 (L2) and ASN (L3) lists are clean too.
+ARIN registration 2026-03-25, last changed 2026-04-06), 11 of its 254 addresses
+publish a PTR, and 0 of the 254 are in Spamhaus ZEN — asked through a resolver
+that returns real listings (its control answered `127.0.0.2 127.0.0.10
+127.0.0.4` in the same batch). UCEPROTECT's /24 (L2) and ASN (L3) lists are
+clean too.
 
 What is left is Google's own per-IP model, which only Postmaster Tools shows,
 and the From domain's age — a penalty that fires on *both* legs and so cannot
@@ -341,9 +347,12 @@ and the reproduce commands are in `docs/evidence/t_6b6ac0dd/README.md`.
 
 **Retiring the A is a DNS change: proposed, not applied.** Deleting
 `mail.odile.fyi A` would also delete the IPv4 path into the MX that `odile.fyi`
-points at (94 of the 98 inbound connections in the log were IPv4). If the A is
-ever retired from *outbound*, it should be retired with a second AAAA-only name
-and its own PTR — not by deleting the record the world uses to reach port 25.
+points at: in the frozen log slice of 2026-11-22 (00:45–14:29Z,
+`docs/evidence/t_6b6ac0dd/mail-log-2026-11-22T1455Z.log`, 94 `smtpd connect`
+lines), 72 of the 75 connections that were not the relay itself arrived over
+IPv4, and only 2 over IPv6. If the A is ever retired from *outbound*, it should
+be retired with a second AAAA-only name and its own PTR — not by deleting the
+record the world uses to reach port 25.
 
 ## 6. First run and the daily check
 
