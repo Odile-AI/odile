@@ -55,12 +55,13 @@ PLANNED_ITEMS = (
 )
 
 # The access model, exactly as the deck states it. The privacy page must carry
-# each row verbatim; a rewording is a new claim. v3.9 (ODL-462) publishes the
-# proven half of each row: A1's operator sentence, A2 whole, A4's no-passphrase
-# sentence, and "We can stop it."; the clauses ODL-466 marks BLOCK are held
-# (docs/CLAIMS.md §1a) until t_28dda3b7 and t_adcdec31 land.
+# each row verbatim; a rewording is a new claim. v3.11 (ODL-577) publishes the
+# proven half of each row: D-3's no-standing-key sentence (the "only sign-in"
+# tail is held until ODL-925, §1a), the sibling grant row, A2 whole, A4's
+# no-passphrase sentence, and "We can stop it."; the clauses ODL-466 marks BLOCK
+# are held (docs/CLAIMS.md §1a) until t_28dda3b7 lands.
 ACCESS_ROWS = (
-    "No one at Odile can log in to a tenant machine.",
+    "No one at Odile holds a key to your machine: no standing key, no root password, no disk passphrase.",
     "No one at Odile can log in unless you grant it: no standing key, no root password, no disk passphrase.",
     "The boot key in the command line is a public key with no private half. It is plumbing, not a credential.",
     "There is no passphrase to type.",
@@ -190,9 +191,18 @@ class AccessModelTests(unittest.TestCase):
         for sentence in ACCESS_ROWS:
             self.assertIn(sentence, page, "the page reworded an access row")
 
-    def test_the_privacy_page_says_there_are_no_cookies(self):
+    def test_the_privacy_page_states_the_cookie_rule(self):
+        # ADR-006 §2 item 2: A2's account session sets one first-party cookie,
+        # so the old no-cookies row is re-cut (v3.11, ODL-577) — the tracker and
+        # third-party clauses survive, the cookie clause dies.
         page = PAGES["privacy"].read_text(encoding="utf-8")
-        self.assertIn("No cookies, no trackers, no third-party requests.", page)
+        row = (
+            "No trackers, no third-party requests. One first-party cookie keeps "
+            "you signed in to your account page."
+        )
+        self.assertIn(row, page)
+        self.assertNotIn("No cookies, no trackers", page)
+        self.assertIn("the only cookie this site sets", page)
 
     def test_the_no_read_row_is_scoped_to_a_tenant_machine(self):
         # The demo is an Odile machine whose key Odile holds; an unscoped
@@ -211,7 +221,7 @@ class AccessModelTests(unittest.TestCase):
         )
         self.assertIn(row, deck)
         self.assertNotIn(row, page, "the privacy page quotes a row held until t_28dda3b7")
-        self.assertIn("No one at Odile can log in to a tenant machine.", page)
+        self.assertIn("No one at Odile holds a key to your machine: no standing key, no root password, no disk passphrase.", page)
         self.assertNotIn('- "Odile cannot read the disk', deck)
         self.assertNotIn("<li>Odile cannot read the disk", page)
 

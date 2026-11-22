@@ -2,8 +2,9 @@
 
 `docs/FAQ.md` is a public-facing support document (the claims lint already
 scans it). Every sentence it marks as a deck row must appear verbatim in
-`docs/CLAIMS.md`, or in a decided v3.9 row of
-`docs/product/CLAIMS-RECUT-STRICT.md` that the deck has not yet absorbed. The
+`docs/CLAIMS.md`; the v3.11 re-cut (ODL-577) moved answer 2, the reset answer
+and answer 5 to the D- rows, and the `DECIDED_ROWS` tuple below is checked
+against the deck in the same test.
 `odile-help` skill must name the three real exits: the FAQ link, `odile-diag`,
 and the support grant.
 
@@ -43,7 +44,6 @@ if str(ROOT) not in sys.path:
 from tests.test_web_pages import focus_order, main_id  # noqa: E402
 FAQ = ROOT / "docs" / "FAQ.md"
 DECK = ROOT / "docs" / "CLAIMS.md"
-DECIDED = ROOT / "docs" / "product" / "CLAIMS-RECUT-STRICT.md"
 SKILL = ROOT / "skills" / "odile-help" / "SKILL.md"
 EMAIL = ROOT / "templates" / "emails" / "support.md"
 # The public FAQ the installed skill points at. Its `<code>` markup is the
@@ -113,9 +113,11 @@ GRANT_FACTS = (
     "password if the recovery file is still on the machine"
 )
 RESET_RESTORE = (
-    "No. There is no escrow and no passphrase. A lost sign-in is reset on the "
-    "machine with your recovery code; if the disk will not open, the machine is "
-    "rebuilt and you restore from your backup."
+    "Not the machine's sign-in. There is no escrow and no passphrase. A lost "
+    "Odile sign-in is reset on the machine with your recovery code; HQ cannot "
+    "reset your machine's sign-in. Your account password is reset at the account "
+    "page with the same code. If the disk will not open, the machine is rebuilt "
+    "and you restore from your backup."
 )
 SUPPORT_GRANT = (
     "Ask the agent to run `odile-diag` and email the bundle to help@odile.fyi. "
@@ -131,12 +133,13 @@ SUPPORT_GRANT = (
     "edit it."
 )
 
-# The decided v3.9 rows the five answers quote while `docs/CLAIMS.md` is still
-# v3.8. ODL-462 lands them in the deck; until then this tuple is what keeps a
-# paraphrase out of the answers: each sentence is asserted against the decided
-# draft, and every **Deck:** citation must be one of these or a deck row.
+# The deck rows the five answers quote, verbatim. v3.11 (ODL-577) replaced the
+# v3.9 first-visit sign-in row with D-1, the operator row with D-3, the reset
+# row with D-4/D-19 and the HQ data row with D-8; the rows below are checked
+# against docs/CLAIMS.md, so a reworded row fails here before the answers drift.
 DECIDED_ROWS = (
-    "No one at Odile can log in to a tenant machine. The only sign-in is yours.",
+    "No one at Odile holds a key to your machine: no standing key, no root "
+    "password, no disk passphrase.",
     "The disk unlocks only on the boot you verify. Change the image, and it "
     "stays locked.",
     "There is no passphrase to type. The disk key is sealed to the measured "
@@ -144,17 +147,22 @@ DECIDED_ROWS = (
     "After a reboot, it starts itself. The seal is the key.",
     "A repeating job — the morning brief, a watchdog — runs when the machine "
     "comes back up if it was due while it was down.",
-    "Your Odile sign-in is set on your machine at first visit and hashed "
-    "there. We never see it. It is the only app-layer gate: no 2FA in V0.1.",
-    "A lost Odile sign-in is reset on the machine with your recovery code. "
-    "There is no HQ reset.",
+    "Your Odile password opens your machine and your account page. You chose it "
+    "when you registered. It is the only app-layer gate: no 2FA in alpha.0.",
+    "One recovery code resets both: your account password at the account page "
+    "and your machine's sign-in on the machine. There is no emailed reset.",
+    "A lost Odile sign-in is reset on the machine with your recovery code; HQ "
+    "cannot reset your machine's sign-in.",
     RESET_RESTORE,
-    "At HQ we hold your email, the record of your machine, and a boot key "
-    "with no private half. Not the disk key, not your sign-in.",
+    "At HQ we hold your email, the record of your machine, a boot key with no "
+    "private half, a hash of your password and a hash of your recovery code. "
+    "Not the disk key. Not your password itself.",
     "A recovery code and a recovery file are the way back: the code resets "
     "your sign-in, the file opens your backup. Your first visit gives you "
     "both; keep them off the machine. While the machine is still running, the "
-    "agent can show it again.",
+    "agent can replace the code and show you the new one.",
+    "Your recovery code works at both places until you replace it; using it "
+    "does not spend it.",
     "A support grant is a time-boxed door into the running machine. It ends "
     "for new logins when it expires or you revoke it.",
     "A root shell, for 24 hours — only when you grant it.",
@@ -166,10 +174,12 @@ DECIDED_ROWS = (
 )
 
 # The ceremony v3.4 taught and the sealed boot removed: the card's DoD grep,
-# plus the two phrases that would still send a user to a terminal.
+# plus the two phrases that would still send a user to a terminal. "your disk
+# passphrase" is the v3.4 credential; D-3's "no disk passphrase" is a different
+# sentence and must not trip this.
 OLD_CEREMONY = re.compile(
     r"unlock prompt|ssh in with your key|run .unlock|your passphrase unlocks|"
-    r"the boot ssh key|add a second key now|disk passphrase|initramfs",
+    r"the boot ssh key|add a second key now|your disk passphrase|initramfs",
     re.IGNORECASE,
 )
 
@@ -245,20 +255,22 @@ class SupportAnswers(unittest.TestCase):
             "v3.9 row carries",
         )
 
-    def test_the_decided_rows_are_verbatim_in_the_recut_draft(self):
-        # The tuple above is a copy of the decided text, not a paraphrase of
-        # it: a reworded row in the draft fails here before the answers drift.
-        draft = flat(DECIDED.read_text(encoding="utf-8"))
-        missing = [row for row in DECIDED_ROWS if flat(row) not in draft]
+    def test_the_decided_rows_are_verbatim_in_the_deck(self):
+        # The tuple above is a copy of the deck's rows, not a paraphrase of
+        # them: a reworded row in the deck fails here before the answers drift.
+        deck = flat(DECK.read_text(encoding="utf-8"))
+        missing = [row for row in DECIDED_ROWS if flat(row) not in deck]
         self.assertEqual(missing, [],
-                         "a row quoted by the answers is not in the decided draft")
+                         "a row quoted by the answers is not in the deck")
 
     def test_the_recut_rows_are_cited(self):
         # The five moments name the rows they come from; the bill stays on the
-        # deck's unchanged money rows.
+        # deck's unchanged money rows. v3.11 re-cut answer 2, the reset answer
+        # and answer 5 to the D- rows, and the survivor A- rows stay named.
         faq = FAQ.read_text(encoding="utf-8")
-        self.assertIn("v3.9", faq)
-        for row in ("A1", "A3", "A4", "A5", "A7", "A8", "A9", "A10", "A11"):
+        self.assertIn("v3.11", faq)
+        for row in ("D-3", "D-4", "D-5", "D-6", "D-14", "D-19", "D-20",
+                    "A5", "A9", "A10", "A11"):
             self.assertRegex(faq, rf"\b{row}\b", f"the FAQ does not cite {row}")
 
     def test_no_unlock_ssh_or_passphrase_ceremony(self):

@@ -208,22 +208,27 @@ class ClaimsDeckTests(unittest.TestCase):
     def test_the_deck_carries_the_strict_bar_rows(self):
         # ODL-459/470/471/472 quote these; the pages and the ready email ship
         # first, so the deck must lead them. v3.9 replaced the v3.4 Model A
-        # rows (a user boot key, a passphrase, a sign-in set during install).
+        # rows (a user boot key, a passphrase, a sign-in set during install);
+        # v3.11 (ODL-577) replaced the first-visit sign-in row with D-1, the
+        # operator row with D-3 and the HQ data row with D-8.
         text = (ROOT / "docs" / "CLAIMS.md").read_text(encoding="utf-8")
         for sentence in (
-            "No one at Odile can log in to a tenant machine. The only sign-in is yours.",
+            "No one at Odile holds a key to your machine: no standing key, "
+            "no root password, no disk passphrase. The password you chose is "
+            "the only sign-in.",
             "The boot key in the command line is a public key with no private half. "
             "It is plumbing, not a credential.",
             "The disk unlocks only on the boot you verify. Change the image, and it stays locked.",
             "There is no passphrase to type. The disk key is sealed to the measured boot, "
             "and no one at Odile holds it.",
             "After a reboot, it starts itself. The seal is the key.",
-            "Your Odile sign-in is set on your machine at first visit and hashed there. "
-            "We never see it. It is the only app-layer gate: no 2FA in alpha.0.",
+            "Your Odile password opens your machine and your account page. "
+            "You chose it when you registered. It is the only app-layer gate: no 2FA in alpha.0.",
             "A support grant is a time-boxed door into the running machine. It ends for "
             "new logins when it expires or you revoke it.",
-            "At HQ we hold your email, the record of your machine, and a boot key with "
-            "no private half. Not the disk key, not your sign-in.",
+            "At HQ we hold your email, the record of your machine, a boot key with "
+            "no private half, a hash of your password and a hash of your recovery code. "
+            "Not the disk key. Not your password itself.",
             "A repeating job — the morning brief, a watchdog — runs when the machine "
             "comes back up if it was due while it was down.",
         ):
@@ -240,7 +245,8 @@ class ClaimsDeckTests(unittest.TestCase):
         # the destination on HQ's disk until the R2 migration lands), and the
         # dropped timing.
         held = (
-            "The only sign-in is yours.",
+            "The password you chose is the only sign-in.",
+            "It is the only app-layer gate",
             "The disk unlocks only on the boot you verify.",
             "The disk key is sealed to the measured boot",
             "Not the disk key",
@@ -260,8 +266,10 @@ class ClaimsDeckTests(unittest.TestCase):
     def test_the_v310_landing_is_verbatim_on_its_surfaces(self):
         # The deck leads the pages: the header, the change-log row and every
         # page carry the same date and the same rows (ODL-474's fourth DoD).
+        # v3.11 (ODL-577) re-cut the three sentences this test pinned, so the
+        # version pin moves and the two passages D-6 keeps verbatim stay.
         deck = (ROOT / "docs" / "CLAIMS.md").read_text(encoding="utf-8")
-        self.assertIn("v3.10", deck.splitlines()[0])
+        self.assertIn("v3.11", deck.splitlines()[0])
         self.assertIn("| 2026-11-14 | v3.10:", deck)
         faq = (ROOT / "web" / "faq.html").read_text(encoding="utf-8")
         terms = (ROOT / "web" / "terms.html").read_text(encoding="utf-8")
@@ -272,7 +280,7 @@ class ClaimsDeckTests(unittest.TestCase):
             "your sign-in, the file opens your backup.",
             "We rebuild it; you ask the agent to restore last night's backup with "
             "your recovery file",
-            "if the disk will not open, the machine is rebuilt and you restore from "
+            "If the disk will not open, the machine is rebuilt and you restore from "
             "your backup.",
             "Ask the agent to run <code>odile-diag</code> and email the bundle to "
             "help@odile.fyi.",
@@ -291,6 +299,56 @@ class ClaimsDeckTests(unittest.TestCase):
             first.count("the code resets your sign-in, the file opens your backup"), 2,
             "web/first-visit.html's two done pages must carry A9's full sentence",
         )
+
+
+class RecoveryCodeMemoTests(unittest.TestCase):
+    """The deck lands the memo's rows verbatim, not a paraphrase of them.
+
+    The rows and reductions are `docs/product/DECISION-one-recovery-code.md` §4
+    (Savio, 20 November 2026). That memo is an HQ-only record — it sits in
+    `.git/info/exclude` — so a public clone skips the comparison and the deck's
+    own text is still asserted above; on HQ the comparison runs and a reworded
+    row fails here before a page quotes it.
+    """
+
+    MEMO = ROOT / "docs" / "product" / "DECISION-one-recovery-code.md"
+
+    def memo(self) -> str:
+        if not self.MEMO.is_file():
+            self.skipTest("the HQ-only memo is absent in a public clone")
+        return self.MEMO.read_text(encoding="utf-8")
+
+    def deck(self) -> str:
+        return normalise((ROOT / "docs" / "CLAIMS.md").read_text(encoding="utf-8"))
+
+    def test_every_row_the_memo_approves_is_in_the_deck_verbatim(self):
+        memo = self.memo()
+        rows = re.findall(r'^\| \*\*(D-\d+)\*\* \| "(.*?)" \|', memo, re.M)
+        self.assertGreaterEqual(len(rows), 13, "the memo's §4 table did not parse")
+        deck = self.deck()
+        missing = [rid for rid, sentence in rows if normalise(sentence) not in deck]
+        self.assertEqual(missing, [], "rows the memo approves and the deck does not carry")
+        self.assertIn("D-1", {rid for rid, _ in rows})
+        self.assertIn("D-20", {rid for rid, _ in rows})
+
+    def test_every_reduction_the_memo_records_is_in_the_deck(self):
+        memo = self.memo()
+        rows = re.findall(r'^\| \*\*(D-1[2-7]|D-19)\*\* \| [^|]+ \| "(.*?)" \(', memo, re.M)
+        self.assertEqual(sorted(rid for rid, _ in rows),
+                         ["D-12", "D-13", "D-14", "D-15", "D-16", "D-17", "D-19"])
+        deck = self.deck()
+        missing = [rid for rid, sentence in rows if normalise(sentence) not in deck]
+        self.assertEqual(missing, [], "reductions the memo records and the deck does not carry")
+
+    def test_the_deck_names_no_row_the_memo_does_not(self):
+        memo = self.memo()
+        approved = set(re.findall(r"^\| \*\*(D-\d+)\*\*", memo, re.M))
+        deck = (ROOT / "docs" / "CLAIMS.md").read_text(encoding="utf-8")
+        # One or two digits only: `D-002` is the claims-deck decision's own
+        # number (`docs/AGENT-ORG.md` §3), not a row in this memo.
+        named = {"D-" + digits for digits in re.findall(r"\bD-(\d{1,2})\b", deck)}
+        self.assertEqual(sorted(named - approved), [],
+                         "a D-row the deck cites is not in the memo")
 
 
 class FaqTests(unittest.TestCase):

@@ -83,9 +83,9 @@ h1,h2,h3,.brand,.mark,.wordmark,.focus{font-family:var(--serif)}
     <ol class="gaps">
       <li><strong>The app layer is not hardware-measured yet.</strong> Measured boot covers firmware, kernel, initramfs and command line. Hermes, the installer and the skills are pinned by a signed manifest and a published hash, but the CPU does not measure them. The installer is signed, inspectable and audited at handoff for keys, passwords and keyslots; only a measured image can prove there is no hidden backdoor. The manifest records the machine as provisioned; anything you install afterwards is yours.</li>
       <li><strong>The console passes through the host.</strong> Serial and VNC can be watched. Never type a secret there; the sign-in goes over TLS to the guest, after the report checks out.</li>
-      <li><strong>Odile keeps three powers.</strong> We can stop or delete the machine (availability, not confidentiality); we control DNS for your slug (pin the certificate fingerprint in your recovery file — the one your machine first served; a renewal changes it) and we can set a different boot image from the panel (detectable via the measurement — compare it to the one in your ready email before you set your sign-in).</li>
+      <li><strong>Odile keeps three powers.</strong> We can stop or delete the machine (availability, not confidentiality); we control DNS for your slug (pin the certificate fingerprint in your recovery file — the one your machine first served; a renewal changes it) and we can set a different boot image from the panel (detectable via the measurement — compare it to the one in your ready email before you sign in).</li>
     </ol>
-    <p class="note">Check the machine before you trust it: <a href="/verify">the verify page shows PASS or FAIL</a>, and you set your sign-in only after PASS.</p>
+    <p class="note">Check the machine before you trust it: <a href="/verify">the verify page shows PASS or FAIL</a>.</p>
   </section>
 
   <section aria-labelledby="keys">
@@ -95,17 +95,17 @@ h1,h2,h3,.brand,.mark,.wordmark,.focus{font-family:var(--serif)}
       <dd>A public key in the measured command line whose private half was thrown away. It is plumbing, not a credential.</dd>
 
       <dt>What is the Odile sign-in?</dt>
-      <dd>The username and password that open your workspace. You set it on your machine at first visit, and it is hashed there; we never see it. A lost sign-in is reset with your recovery code.</dd>
+      <dd>The username and password that open your workspace. You chose it when you registered; the machine holds a hash of it. A lost sign-in is reset with your recovery code. HQ cannot reset your machine's sign-in.</dd>
 
       <dt>Do I need the boot key?</dt>
-      <dd>No. You never see it. The boot is sealed; your sign-in is the only thing you set.</dd>
+      <dd>No. You never see it. The boot is sealed.</dd>
 
       <dt>Can Odile log in to my machine?</dt>
       <dd>No. There is no user key and no private key for us to hold, no root password, no disk passphrase.</dd>
 
       <dt>Can you reset my sign-in or unlock my disk?</dt>
-      <dd>No. There is no escrow and no passphrase. A lost sign-in is reset on the machine with your recovery code; if the disk will not open, the machine is rebuilt and you restore from your backup.</dd>
-      <dd>A recovery code and a recovery file are the way back: the code resets your sign-in, the file opens your backup. Your first visit gives you both; keep them off the machine. While the machine is still running, the agent can show it again.</dd>
+      <dd>Not the machine's sign-in. There is no escrow and no passphrase. A lost Odile sign-in is reset on the machine with your recovery code; HQ cannot reset your machine's sign-in. Your account password is reset at the account page with the same code. If the disk will not open, the machine is rebuilt and you restore from your backup.</dd>
+      <dd>A recovery code and a recovery file are the way back: the code resets your sign-in, the file opens your backup. Your first visit gives you both; keep them off the machine. While the machine is still running, the agent can replace the code and show you the new one. Your recovery code works at both places until you replace it; using it does not spend it.</dd>
     </dl>
   </section>
 
@@ -139,10 +139,10 @@ h1,h2,h3,.brand,.mark,.wordmark,.focus{font-family:var(--serif)}
       <dd>The machine is in Montreal, Canada. The encrypted backup is kept 30 days after cancellation, then deleted. Odile can delete it, not read it.</dd>
 
       <dt>What do you store?</dt>
-      <dd>We store your email address, your payment record at Stripe, and the metadata needed to run your machine. At HQ we hold the boot key with no private half, a hash of your setup token, and the record of your machine.</dd>
+      <dd>We store your email address, your payment record at Stripe, and the metadata needed to run your machine. At HQ we hold your email, the record of your machine, a boot key with no private half, a hash of your password and a hash of your recovery code. Not your password itself.</dd>
 
       <dt>Do you track me?</dt>
-      <dd>No cookies, no trackers, no third-party requests.</dd>
+      <dd>No trackers, no third-party requests. One first-party cookie keeps you signed in to your account page.</dd>
 
       <dt>Where does the model run?</dt>
       <dd>In NEAR AI's confidential cloud, in a hardware enclave. Your prompts go from your machine to the enclave. They do not pass through Odile's servers.</dd>

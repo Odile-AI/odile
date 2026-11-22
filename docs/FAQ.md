@@ -3,10 +3,10 @@
 **Source of truth for a reply from `help@odile.fyi` and for the `odile-help`
 skill.** The public page is `web/faq.html`, served at
 <https://odile.fyi/faq>. Every trust sentence below is a subset of a sentence
-in `docs/CLAIMS.md`, or of a decided v3.9 row in
-`docs/product/CLAIMS-RECUT-STRICT.md` §2/§5 that ODL-462 lands in the deck; the
-row is named beside it. The backup restore landed with the M2 drills (ODL-215)
-and the support-grant answer with ODL-217's drill, as v3.10 (ODL-474).
+in `docs/CLAIMS.md` (v3.11, the one-password and one-code rows) or of a v3.9
+row the deck keeps; the row is named beside it. The backup restore landed with
+the M2 drills (ODL-215) and the support-grant answer with ODL-217's drill, as
+v3.10 (ODL-474).
 
 A user with a problem gets an answer without opening a ticket system. Five
 moments cover the alpha. Each answer is short enough to paste into an email,
@@ -17,10 +17,10 @@ and none of them promises a reset at HQ, a refund or access Odile does not have.
 | # | The moment | The answer in one line | Deck |
 |---|---|---|---|
 | 1 | The machine restarted and the workspace does not answer | It starts itself; the seal is the key | A5 |
-| 2 | The Odile sign-in is lost | The recovery code resets it on the machine; no HQ reset | A7, A9 |
+| 2 | The Odile sign-in is lost | The recovery code resets it on the machine; HQ cannot reset the machine's sign-in | D-4, D-19 |
 | 3 | The machine dies | We rebuild it; the recovery file restores last night's backup | A9 |
 | 4 | A bill or a charge is questioned | No price in the alpha; Stripe holds the card | `docs/MVP-V0.1.md` §0; its allowance row is held, §1a |
-| 5 | "Can you log in to my machine?" | No, unless you grant it; a grant is a handover | A1, A10 |
+| 5 | "Can you log in to my machine?" | No, unless you grant it; a grant is a handover | D-3, A10 |
 
 ## 1. The machine restarted
 
@@ -50,33 +50,44 @@ up if it was due while it was down."
 
 ## 2. The Odile sign-in is lost
 
-The sign-in is set on the machine at first visit and only its hash is stored
-there; HQ holds no copy. The way back is the recovery code shown once on the
-first visit.
+**What it is.** The username and password that open your workspace. You chose it
+when you registered; the machine holds a hash of it. A lost sign-in is reset with
+your recovery code. HQ cannot reset your machine's sign-in.
 
 **Ask first:** do they still have the recovery code? If they do, the reset is a
-browser step. If they do not, this is answer 3's rebuild.
+browser step. If they do not, this is the lost-code path (ladder step 6): a new
+account, with the backup as the only data path.
 
 **Reply:**
 
-> A lost Odile sign-in is reset on the machine with your recovery code. There
-> is no HQ reset. Open https://<slug>.odile.fyi/first-visit/reset, enter the
-> code you saved from the first visit and choose a new password; a new code is
-> shown once.
+> One recovery code resets both: your account password at the account page and
+> your machine's sign-in on the machine. There is no emailed reset.
 >
-> If the recovery code is lost too, reply and the machine is rebuilt; if the disk
-> will not open, you restore from your backup.
+> Not the machine's sign-in. There is no escrow and no passphrase. A lost Odile
+> sign-in is reset on the machine with your recovery code; HQ cannot reset your
+> machine's sign-in. Your account password is reset at the account page with the
+> same code. If the disk will not open, the machine is rebuilt and you restore
+> from your backup.
+>
+> Open https://<slug>.odile.fyi/first-visit/reset, enter the recovery code you
+> saved at your first sign-in, then choose a new sign-in. This changes this
+> machine's sign-in; your account password is reset at the account page with the
+> same code. Your recovery code works at both places until you replace it; using
+> it does not spend it.
+>
+> If you lose your recovery code there is no other way back: you start a new
+> account, and a backup is the only way to bring the files.
 
-**Deck:** v3.9 A7 — "Your Odile sign-in is set on your machine at first visit
-and hashed there. We never see it. It is the only app-layer gate: no 2FA in
-V0.1." · v3.9 A8 — "At HQ we hold your email, the record of your machine, and a
-boot key with no private half. Not the disk key, not your sign-in." · v3.9 A9 —
-"A recovery code and a recovery file are the way back: the code resets your
-sign-in, the file opens your backup. Your first visit gives you both; keep them
-off the machine. While the machine is still running, the agent can show it
-again." · v3.9 §5 — "No. There is no escrow and no passphrase. A lost sign-in is
-reset on the machine with your recovery code; if the disk will not open, the
-machine is rebuilt and you restore from your backup."
+**Deck:** v3.11 D-4 — "One recovery code resets both: your account password at
+the account page and your machine's sign-in on the machine. There is no emailed
+reset." · D-14 — "Enter the recovery code you saved at your first sign-in, then
+choose a new sign-in. This changes this machine's sign-in; your account password
+is reset at the account page with the same code." · D-20 — "Your recovery code
+works at both places until you replace it; using it does not spend it." · D-5 —
+"If you lose your recovery code there is no other way back: you start a new
+account, and a backup is the only way to bring the files." · D-19 — "A lost
+Odile sign-in is reset on the machine with your recovery code; HQ cannot reset
+your machine's sign-in."
 
 ## 3. The machine dies
 
@@ -102,10 +113,10 @@ recovery file again. If it is gone, the rebuild makes a new machine.
 
 **Deck:** v3.9 §5 — "We rebuild it; you ask the agent to restore last night's
 backup with your recovery file — the one you downloaded on your first visit." ·
-"Backed up nightly. Rebuildable in under an hour — without a key." · v3.9 A9 —
+"Backed up nightly. Rebuildable in under an hour — without a key." · v3.11 D-6 —
 "Your first visit gives you both; keep them off the machine. While the machine is
-still running, the agent can show it again." · "The recovery file holds the
-backup password and the certificate fingerprint." (deck, A9)
+still running, the agent can replace the code and show you the new one." · "The
+recovery file holds the backup password and the certificate fingerprint." (deck, A9)
 
 ## 4. A bill or a charge
 
@@ -146,10 +157,11 @@ the message and say the target is an answer within 24 hours.
 
 **Reply:**
 
-> No one at Odile can log in to a tenant machine. A support grant is a
-> time-boxed door into the running machine. It ends for new logins when it
-> expires or you revoke it; an open session keeps running until it exits. A root
-> shell, for 24 hours — only when you grant it.
+> No one at Odile holds a key to your machine: no standing key, no root password,
+> no disk passphrase. A support grant is a time-boxed door into the running
+> machine. It ends for new logins when it expires or you revoke it; an open
+> session keeps running until it exits. A root shell, for 24 hours — only when
+> you grant it.
 >
 > Ask the agent to run `odile-diag` and email the bundle to help@odile.fyi. If
 > that is not enough, ask it to run `odile-support grant --hours 24`; it prints
@@ -162,9 +174,10 @@ the message and say the target is an answer within 24 hours.
 > `cryptsetup luksDump` and `crontab -l` after revoke. The grant log is written
 > on the machine; a root shell can edit it.
 
-**Deck:** v3.9 A1 — "No one at Odile can log in to a tenant machine. The only
-sign-in is yours." · v3.9 A10 — "A support grant is a time-boxed door into the
-running machine. It ends for new logins when it expires or you revoke it." ·
+**Deck:** v3.11 D-3 — "No one at Odile holds a key to your machine: no standing
+key, no root password, no disk passphrase." · v3.9 A10 — "A support grant is a
+time-boxed door into the running machine. It ends for new logins when it expires
+or you revoke it." ·
 v3.9 §1 — "A root shell, for 24 hours — only when you grant it." · "A grant is a
 handover, not a peek." · v3.9 §5 — "Ask the agent to run `odile-diag` and email
 the bundle to help@odile.fyi. If that is not enough, ask it to run
@@ -192,9 +205,11 @@ solved.
 4. **A support grant.** `odile-support grant --hours 24` prints the expiry and
    the revoke command. It is a root shell for the hours named, and it is logged
    on the machine.
-5. **A rebuild.** Last resort when the recovery code is lost or the disk will not
-   open: We rebuild it; you ask the agent to restore last night's backup with
-   the recovery file.
+5. **A rebuild.** Last resort when the disk will not open: We rebuild it; you ask
+   the agent to restore last night's backup with the recovery file.
+6. **A lost recovery code.** There is no other way back: ask us to delete your
+   account and machine, then register again. Your backup is the only way to bring
+   the files.
 
 In the Webapp the same three exits are one command: `/odile-help`. It prints
 the FAQ link, the `odile-diag` command and the grant command. Hermes's own
@@ -207,8 +222,8 @@ the FAQ link, the `odile-diag` command and the grant command. Hermes's own
 
 | Never | Why | Write instead |
 |---|---|---|
-| "Send us your sign-in password or the recovery code" | HQ holds no copy; a leaked one is the machine | "Copy the output of `odile-diag`" |
-| "We can reset it" | There is no HQ reset | "Reset it on the machine with your recovery code" |
+| "Send us your sign-in password or the recovery code" | HQ holds only hashes of them; a leaked one is the machine | "Copy the output of `odile-diag`" |
+| "We can reset it" | HQ cannot reset the machine's sign-in | "Reset it on the machine with your recovery code" |
 | "We can log in and fix it" | False by default | "Grant support for 24 hours" |
 | "We can restore everything" | The restore is last night's backup; the last day may be lost | "Keep the recovery file; it restores last night's backup" |
 | "Refund" / "credit" / "discount" | Money is Savio's, and no row exists | "The target is an answer within 24 hours" |

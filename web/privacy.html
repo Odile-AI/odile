@@ -8,7 +8,7 @@
 <link rel="icon" type="image/png" sizes="32x32" href="/icon-32.png">
 <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png">
 <title>{{TITLE}}</title>
-<meta name="description" content="At HQ we hold your email, the record of your machine, and a boot key with no private half.">
+<meta name="description" content="At HQ we hold your email, the record of your machine, a boot key with no private half, a hash of your password and a hash of your recovery code.">
 <meta name="color-scheme" content="light">
 <meta name="robots" content="{{ROBOTS}}">
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; img-src 'self' data:; font-src data:; base-uri 'none'">
@@ -90,16 +90,16 @@ h1,h2,h3,.brand,.mark,.wordmark,.focus{font-family:var(--serif)}
 <main id="main">
   <div class="top"><a class="brand" href="/">Odile</a></div>
   <h1>Privacy</h1>
-  <p class="lede">At HQ we hold your email, the record of your machine, and a boot key with no private half.</p>
+  <p class="lede">At HQ we hold your email, the record of your machine, a boot key with no private half, a hash of your password and a hash of your recovery code.</p>
 
   <section aria-labelledby="short">
     <h2 id="short">The short version</h2>
     <ul class="facts">
-      <li>No one at Odile can log in to a tenant machine.</li>
+      <li>No one at Odile holds a key to your machine: no standing key, no root password, no disk passphrase.</li>
       <li>There is no passphrase to type.</li>
       <li>Support access exists only when you grant it, for as long as you grant it.</li>
       <li>We can stop it.</li>
-      <li>No cookies, no trackers, no third-party requests.</li>
+      <li>No trackers, no third-party requests. One first-party cookie keeps you signed in to your account page.</li>
     </ul>
   </section>
   <section aria-labelledby="hq">
@@ -137,7 +137,7 @@ h1,h2,h3,.brand,.mark,.wordmark,.focus{font-family:var(--serif)}
     <h2 id="onboard">What lives on your machine</h2>
     <p>It is a Debian machine and you are root.</p>
     <p>The disk is encrypted with LUKS2.</p>
-    <p>Your Odile sign-in is set on your machine at first visit and hashed there. We never see it.</p>
+    <p>Your Odile password opens your machine and your account page. You chose it when you registered. The sign-in is yours; HQ holds a hash of your password, never the password.</p>
     <div class="scroll"><table class="inventory onboard">
       <thead><tr><th scope="col">What</th><th scope="col">Why</th><th scope="col">Kept</th></tr></thead>
       <tbody>
@@ -189,7 +189,7 @@ h1,h2,h3,.brand,.mark,.wordmark,.focus{font-family:var(--serif)}
   <section aria-labelledby="access">
     <h2 id="access">The access model</h2>
     <ul class="facts">
-      <li>No one at Odile can log in to a tenant machine.</li>
+      <li>No one at Odile holds a key to your machine: no standing key, no root password, no disk passphrase.</li>
       <li>No one at Odile can log in unless you grant it: no standing key, no root password, no disk passphrase.</li>
       <li>The boot key in the command line is a public key with no private half. It is plumbing, not a credential.</li>
       <li>There is no passphrase to type.</li>

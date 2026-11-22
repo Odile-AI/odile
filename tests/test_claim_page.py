@@ -50,16 +50,18 @@ from tests.test_web_pages import REGION, focus_order, main_id  # noqa: E402
 EMAIL = "ada@example.com"
 MEASUREMENT = "cd" * 48
 # The decided v3.9 rows (docs/product/CLAIMS-RECUT-STRICT.md §2–§3 on
-# odl/ODL-461), verbatim. The deck lands in ODL-462; until then the pages quote
-# these exact sentences, and this test is what keeps a paraphrase from slipping
-# back in.
-# ODL-466 §0.2 holds "The only sign-in is yours." until t_adcdec31: before the
-# first visit the image's public bench password opens the workspace. The page
-# keeps the tenant-scoped operator sentence (ODL-459's accepted form).
-ROW_NO_LOGIN = "No one at Odile can log in to your machine."
+# odl/ODL-461), verbatim, with v3.11's re-cuts (ODL-577): the operator row is
+# D-3, the HQ data row is D-8, the first-visit sign-in row is D-1 and the
+# after-PASS clause is D-7.
+# ODL-466 §0.2 holds D-3's "only sign-in" tail until ODL-925: before the first
+# visit the image's public bench password opens the workspace. The page keeps
+# the no-standing-key sentence, which is the row's proven half.
+ROW_NO_LOGIN = ("No one at Odile holds a key to your machine: no standing key, "
+                "no root password, no disk passphrase.")
 # "Not the disk key" is held until the first-boot re-key (t_28dda3b7).
-ROW_HQ = ("At HQ we hold your email, the record of your machine, and a boot key "
-          "with no private half.")
+ROW_HQ = ("At HQ we hold your email, the record of your machine, a boot key "
+          "with no private half, a hash of your password and a hash of your "
+          "recovery code.")
 # The lede is the row's first two sentences: the tail puts "set your sign-in"
 # before "check the report", which the claimed page and /ceremony contradict.
 # The row reorder is ODL-461's; until then the page carries the subset.
@@ -79,10 +81,12 @@ ROW_REBOOT = "After a reboot, it starts itself. The seal is the key."
 # returned it after that drill. The old "a reboot closes it" wording is false
 # and must not ship.
 ROW_SUPPORT = "A support grant is a time-boxed door into the running machine"
-ROW_SIGN_IN = ("Your Odile sign-in is set on your machine at first visit and "
-               "hashed there. We never see it.")
+# D-1's first two sentences, which the ceremony page and the claim page carry;
+# the third ("the only app-layer gate") is held in §1a until ODL-925.
+ROW_SIGN_IN = ("Your Odile password opens your machine and your account page. "
+               "You chose it when you registered.")
 ROW_PASS_FAIL = ("Check the machine before you trust it: the verify page shows "
-                 "PASS or FAIL, and you set your sign-in only after PASS.")
+                 "PASS or FAIL.")
 OLD_COMMANDS = ("ssh", "scp", "ssh-keygen", "passphrase", "encrypt",
                 "unlock", "installer", "shred", "setup token", "terminal")
 BASE64_RE = re.compile(r"base64,[A-Za-z0-9+/=]+")
@@ -217,7 +221,10 @@ class ClaimPageTests(unittest.TestCase):
         clean = visible(page)
         self.assertNotIn("ssh", clean.lower())
         self.assertNotIn("<code", clean.lower())
-        self.assertNotIn("passphrase", clean.lower())
+        # D-3's "no disk passphrase" is a negative and stays; the v3.4
+        # ceremony's "your passphrase" is what must not return.
+        self.assertNotIn("your passphrase", clean.lower())
+        self.assertNotIn("passphrase to type", clean.lower())
         self.assertNotIn("installer", clean.lower())
         self.assertNotIn("<script", page.lower())
         self.assertNotIn("{{", page)
@@ -463,14 +470,15 @@ class ClaimPageTests(unittest.TestCase):
         self.assertEqual(status, 200, page)
         self.assertIn("The first visit", page)
         self.assertIn("Check the report", page)
-        self.assertIn("Set your sign-in", page)
+        self.assertIn("Sign in", page)
         self.assertIn("Compare the measurement to the one in your ready email.",
                       page)
-        # The claims are the decided v3.9 rows, verbatim; the old
+        # The claims are the decided v3.11 rows, verbatim; the old
         # key/passphrase/ceremony sentences are gone.
         for row in (ROW_PASS_FAIL, ROW_SIGN_IN, ROW_BOOT_KEY,
                     ROW_NO_PASSPHRASE, ROW_REBOOT, ROW_NO_LOGIN):
             self.assertIn(row, page)
+        self.assertNotIn("Set your sign-in", page)
         self.assertNotIn("app-layer gate", page)
         self.assertNotIn("tenant machine", page)
         clean = visible(page)
