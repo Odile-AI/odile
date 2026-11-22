@@ -27,6 +27,7 @@ import importlib.util
 import io
 import json
 import os
+import shutil
 import subprocess
 import tempfile
 import unittest
@@ -36,6 +37,8 @@ ROOT = Path(__file__).resolve().parent.parent
 SCRIPT = ROOT / "deploy" / "bench" / "deploy_bench.py"
 SITE_TEMPLATE = ROOT / "deploy" / "bench" / "odile-bench.service.in"
 SEED_TEMPLATE = ROOT / "deploy" / "bench" / "odile-bench-seed.service.in"
+PROBE_TEMPLATE = ROOT / "deploy" / "bench" / "odile-bench-probe.service.in"
+TIMER_TEMPLATE = ROOT / "deploy" / "bench" / "odile-bench-probe.timer.in"
 BLOCK = ROOT / "deploy" / "bench" / "bench.caddy"
 
 
@@ -304,6 +307,8 @@ class DeployerTests(unittest.TestCase):
         self.env_file = self.etc / "bench.env"
         self.unit_site = base / "etc/systemd/system/odile-bench.service"
         self.unit_seed = base / "etc/systemd/system/odile-bench-seed.service"
+        self.unit_probe = base / "etc/systemd/system/odile-bench-probe.service"
+        self.timer_probe = base / "etc/systemd/system/odile-bench-probe.timer"
         self.caddyfile = base / "etc/caddy/Caddyfile"
         self.config = base / "root/.odile/seed-config.test.json"
         self.prod_config = base / "root/.odile/seed-config.json"
@@ -333,10 +338,12 @@ class DeployerTests(unittest.TestCase):
         self.saved = {name: getattr(deploy, name) for name in (
             "ROOT", "RELEASES", "CURRENT", "PREVIOUS", "STATE", "DB_PATH",
             "ATTEST_PATH", "ROADMAP_PATH", "ROADMAP_SOURCE", "SEED_REBUILDS",
-            "ETC", "ENV_FILE", "UNIT_SITE", "UNIT_SEED", "CADDYFILE",
+            "ETC", "ENV_FILE", "UNIT_SITE", "UNIT_SEED", "UNIT_PROBE",
+            "TIMER_PROBE", "CADDYFILE",
             "CONFIG_FILE", "PROD_CONFIG", "SEED_KEY_FILE", "TOKEN_FILE",
             "DNS_IP", "ROADMAP_CANDIDATES", "run", "require_root",
             "service_ids", "chown", "resolve_a", "primary_ipv4",
+            "port_holders", "is_bench_unit", "terminate",
             "PROBE_SECONDS", "CERT_SECONDS", "DNS_SECONDS")}
         deploy.ROOT = self.root
         deploy.RELEASES = self.releases
@@ -352,6 +359,8 @@ class DeployerTests(unittest.TestCase):
         deploy.ENV_FILE = self.env_file
         deploy.UNIT_SITE = self.unit_site
         deploy.UNIT_SEED = self.unit_seed
+        deploy.UNIT_PROBE = self.unit_probe
+        deploy.TIMER_PROBE = self.timer_probe
         deploy.CADDYFILE = self.caddyfile
         deploy.CONFIG_FILE = self.config
         deploy.PROD_CONFIG = self.prod_config
@@ -365,6 +374,9 @@ class DeployerTests(unittest.TestCase):
         deploy.chown = lambda path, ids: None
         deploy.primary_ipv4 = lambda: "203.0.113.139"
         deploy.resolve_a = lambda name: ["203.0.113.139"]
+        # The live host's ports belong to the real bench; the fixture owns
+        # its own answer, and the guard has its own tests below.
+        deploy.port_holders = lambda port: []
         deploy.PROBE_SECONDS = 0.01
         deploy.CERT_SECONDS = 0.01
         deploy.DNS_SECONDS = 0.01
@@ -424,6 +436,13 @@ class DeployerTests(unittest.TestCase):
                          deploy.render_unit(SITE_TEMPLATE))
         self.assertEqual(self.unit_seed.read_text(encoding="utf-8"),
                          deploy.render_unit(SEED_TEMPLATE))
+        self.assertEqual(self.unit_probe.read_text(encoding="utf-8"),
+                         deploy.render_unit(PROBE_TEMPLATE))
+        self.assertEqual(self.timer_probe.read_text(encoding="utf-8"),
+                         deploy.render_unit(TIMER_TEMPLATE))
+        self.assertIn("OnCalendar=*:0/5", self.timer_probe.read_text(encoding="utf-8"))
+        self.assertIn(["systemctl", "enable", "--now", "odile-bench-probe.timer"],
+                      self.recorder.calls)
         # The bench database: its own path, empty, 0600 — production is not copied.
         self.assertTrue(self.db.is_file())
         self.assertEqual(self.db.stat().st_size, 0)
@@ -549,6 +568,167 @@ class BenchConfigTests(unittest.TestCase):
         self.assertEqual(bench["mail_relay"], PRODUCTION_CONFIG["mail_relay"])
         self.assertNotEqual(bench["backup_repo_url"], PRODUCTION_CONFIG["backup_repo_url"])
         self.assertEqual(bench["environment"], "bench")
+
+
+class PortGuardTests(unittest.TestCase):
+    """ODL-936: a foreign holder is refused, a deleted worktree's orphan is reaped."""
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.base = Path(self.tmp.name)
+        self.saved = (deploy.port_holders, deploy.is_bench_unit, deploy.terminate)
+        deploy.is_bench_unit = lambda pid: False
+        self.terminated: list[int] = []
+        deploy.terminate = lambda pid: self.terminated.append(pid)
+
+    def tearDown(self) -> None:
+        deploy.port_holders, deploy.is_bench_unit, deploy.terminate = self.saved
+        self.tmp.cleanup()
+
+    @staticmethod
+    def holder(cwd: Path, pid: int = 4242) -> list[dict]:
+        return [{"pid": pid, "command": "python3 -m http.server 8082",
+                 "cwd": str(cwd)}]
+
+    def test_a_live_foreign_holder_is_refused_and_named(self) -> None:
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            with self.assertRaises(SystemExit) as caught:
+                deploy.ensure_port_free(False, (8082,),
+                                        holders=lambda port: self.holder(self.base))
+        self.assertEqual(caught.exception.code, 2)
+        message = err.getvalue()
+        self.assertIn("pid 4242", message)
+        self.assertIn("python3 -m http.server 8082", message)
+        self.assertIn("not odile-bench", message)
+        self.assertEqual(self.terminated, [])
+        self.assertNotIn("would reap", out.getvalue())
+
+    def test_an_orphan_whose_worktree_is_gone_is_reaped(self) -> None:
+        worktree = self.base / ".worktrees" / "t_gone"
+        (worktree / "sub").mkdir(parents=True)
+        cwd = worktree / "sub"
+        shutil.rmtree(worktree)
+        state = {"held": True}
+
+        def holders(port: int) -> list[dict]:
+            return self.holder(cwd) if state["held"] else []
+
+        def terminate(pid: int) -> None:
+            self.terminated.append(pid)
+            state["held"] = False
+
+        deploy.terminate = terminate
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            changed = deploy.ensure_port_free(False, (8082,), holders=holders)
+        self.assertTrue(changed)
+        self.assertIn("whose worktree is gone", out.getvalue())
+        self.assertIn("reap", out.getvalue())
+        self.assertEqual(self.terminated, [4242])
+
+    def test_the_dry_run_names_the_reap_and_kills_nothing(self) -> None:
+        worktree = self.base / ".worktrees" / "t_gone"
+        worktree.mkdir(parents=True)
+        cwd = worktree / "sub"
+        worktree.rename(self.base / "moved")  # cwd's parent is gone
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            changed = deploy.ensure_port_free(True, (8082,),
+                                              holders=lambda port: self.holder(cwd))
+        self.assertTrue(changed)
+        self.assertIn("would reap", out.getvalue())
+        self.assertEqual(self.terminated, [])
+
+    def test_the_benchs_own_holder_is_the_healthy_case(self) -> None:
+        deploy.is_bench_unit = lambda pid: True
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            changed = deploy.ensure_port_free(False, (8082,),
+                                              holders=lambda port: self.holder(self.base))
+        self.assertFalse(changed)
+        self.assertIn("held by odile-bench", out.getvalue())
+        self.assertEqual(self.terminated, [])
+
+
+class ProbeTickTests(unittest.TestCase):
+    """ODL-936: one line every tick; red feeds the HQ alert path."""
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.base = Path(self.tmp.name)
+        self.script = self.base / "check_bench.sh"
+        self.script.write_text("#!/bin/sh\n", encoding="utf-8")
+        self.saved = (deploy.PROBE_SCRIPT, deploy.PROBE_TIMEOUT, deploy.run,
+                      deploy.open_bench_alert, deploy.resolve_bench_alert)
+        deploy.PROBE_SCRIPT = self.script
+        self.opened: list[str] = []
+        self.resolved: list[int] = []
+        deploy.open_bench_alert = lambda line, now: self.opened.append(line)
+        deploy.resolve_bench_alert = lambda now: (self.resolved.append(now), True)[1]
+
+    def tearDown(self) -> None:
+        (deploy.PROBE_SCRIPT, deploy.PROBE_TIMEOUT, deploy.run,
+         deploy.open_bench_alert, deploy.resolve_bench_alert) = self.saved
+        self.tmp.cleanup()
+
+    def tick(self, returncode: int, text: str) -> tuple[int, str]:
+        def fake_run(command, **kwargs):
+            return subprocess.CompletedProcess(
+                args=command, returncode=returncode,
+                stdout=text if returncode == 0 else "",
+                stderr="" if returncode == 0 else text)
+
+        deploy.run = fake_run
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            code = deploy.probe_tick()
+        return code, out.getvalue()
+
+    def test_a_red_probe_prints_its_one_line_and_raises_the_alert(self) -> None:
+        line = ("bench probe: FAIL https://test.odile.fyi/ -> 404 server: none "
+                "(want 200 with server: odile-bench); 127.0.0.1:8082 pid 77 "
+                "/usr/bin/python3 seed/seed.py serve")
+        code, out = self.tick(1, line)
+        self.assertEqual(code, 1)
+        self.assertEqual(out.count(line), 1)
+        self.assertEqual(self.opened, [line])
+        self.assertEqual(self.resolved, [])
+
+    def test_a_green_probe_prints_one_line_and_resolves_the_alert(self) -> None:
+        line = ("bench probe: OK https://test.odile.fyi/ -> 200 server: odile-bench; "
+                "127.0.0.1:8082 pid 9 /usr/bin/python3 /opt/odile-test/current/app.py")
+        code, out = self.tick(0, line)
+        self.assertEqual(code, 0)
+        self.assertEqual(out.count(line), 1)
+        self.assertEqual(self.opened, [])
+        self.assertEqual(len(self.resolved), 1)
+
+    def test_a_missing_probe_is_its_own_exit_and_names_the_path(self) -> None:
+        deploy.PROBE_SCRIPT = self.base / "missing.sh"
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            code = deploy.probe_tick()
+        self.assertEqual(code, 2)
+        self.assertIn(str(deploy.PROBE_SCRIPT), out.getvalue())
+
+    def test_the_timer_path_needs_no_root(self) -> None:
+        deploy.PROBE_SCRIPT = self.script
+        deploy_run = deploy.run
+        deploy.run = lambda command, **kwargs: subprocess.CompletedProcess(
+            args=command, returncode=0, stdout="bench probe: OK line\n", stderr="")
+        calls = []
+        saved_root = deploy.require_root
+        deploy.require_root = lambda: calls.append("root")
+        try:
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                code = deploy.main(["--probe-tick"])
+        finally:
+            deploy.require_root = saved_root
+            deploy.run = deploy_run
+        self.assertEqual(code, 0)
+        self.assertEqual(calls, [])
 
 
 if __name__ == "__main__":

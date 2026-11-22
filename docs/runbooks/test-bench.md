@@ -172,8 +172,73 @@ uses it too.
 | Symptom | Cause | Fix |
 |---|---|---|
 | `bench: deployed` but `https://test.odile.fyi/` answers 000/503 | certificate not issued yet, or DNS not resolving | `journalctl -u caddy`, `dig +short test.odile.fyi`; re-run the deploy once the record resolves |
-| `odile-bench` inactive, `journalctl -u odile-bench` shows `address already in use` | 8082 is taken by something else | `ss -ltnp | grep :8082`; the bench expects it free |
+| `odile-bench` inactive, `journalctl -u odile-bench` shows `address already in use` | 8082 is taken by something else | `./scripts/check_bench.sh --probe` names the holder; the deployer refuses it before writing. Kill the holder, or let the deployer reap it when its `.worktrees/<card>` directory is gone |
 | `odile-bench-seed` fails `seed config … missing` | `/root/.odile/seed-config.test.json` was deleted while the unit was running | re-run the deploy (it recreates the file) and `systemctl restart odile-bench-seed` |
 | `caddy validate rejected …; restored it` | the block was edited into invalid Caddy syntax | the live file is unchanged; fix `deploy/bench/bench.caddy` and re-run |
 | `error: production moved during the bench run` | a production deploy or the roadmap timer ran mid-apply | re-run the bench deploy when production is quiet; the bench itself is fine |
 | `error: the Cloudflare token cannot see the odile.fyi zone` | wrong or rotated token | replace `/root/.odile/cloudflare_dns_token`; do not edit DNS by hand |
+
+## 9. The liveness probe, and the five-minute timer (ODL-936)
+
+On 2026-11-21 `test.odile.fyi` answered `404` for half a day while `/health`
+answered `200`: `odile-bench.service` had restarted 17,060 times because an
+orphaned `seed.py serve` from a deleted card worktree held `127.0.0.1:8082`.
+`check_bench.sh` is manual and `/health` is not the bench's page, so nothing
+noticed. Two things now do.
+
+**The probe, in one line.** It needs no record, no tenant and no database:
+
+```sh
+./scripts/check_bench.sh --probe
+# bench probe: OK https://test.odile.fyi/ -> 200 server: odile-bench (the account site); 127.0.0.1:8082 pid 2109529 /usr/bin/python3 /opt/odile-test/current/app.py
+```
+
+Green requires three things at once: `200`, `server: odile-bench`, and the
+account page's own join form in the body. The header alone is Caddy's — the
+bench block sets it — so it proves the name reached the bench, not which
+process answered; a foreign server on 8082 answers `200` through the same
+Caddy. A red probe prints exactly one line and exits 1, naming the pid and
+command that hold the port (or `nobody listening`). `BENCH_URL` and
+`BENCH_PORT` override the target for a drill.
+
+**The timer.** `deploy/bench/deploy_bench.py` installs and enables
+`odile-bench-probe.service` and `odile-bench-probe.timer`; the timer runs the
+probe every five minutes (`OnCalendar=*:0/5`, `Persistent=true`). A red tick
+raises one alert in the existing HQ path — the `odilectl.health` ledger, the
+outbox and the configured transports, `slug bench`, `kind down` — with the
+probe's line as the symptom; the same alert stays open (no repeat) until a
+green tick resolves it. A stopped unit and a foreign listener each produce a
+red line and one ledger row.
+
+```sh
+systemctl list-timers odile-bench-probe.timer
+systemctl start odile-bench-probe.service      # one tick by hand
+journalctl -u odile-bench-probe.service -n 20
+/usr/bin/python3 -m odilectl health            # the open/resolved bench alert
+```
+
+**The port guard.** Before its first write, every apply and rollback inspects
+8082 and 8083. A holder inside the bench unit is the healthy case. A holder
+whose working directory is a `.worktrees/<card>` that no longer exists is the
+2026-11-21 orphan: it is named and killed (SIGTERM, then SIGKILL). Any other
+holder stops the deploy with exit 2, naming the pid, the command and its cwd —
+production is not measured and nothing is written.
+
+## 10. An image re-cut re-records the baseline in the same card
+
+`docs/evidence/a1-bench-baseline.json` records the tenant's expected launch
+measurement. A tenant image re-cut changes that number, and from that moment
+`check_bench.sh` is red on two checks until the record moves with it. A re-cut
+card is therefore not done until it has re-recorded the baseline and the full
+check is 16/16, in that card:
+
+```sh
+# the pin's 96 hex is the tenant's own /verify value, after the re-cut boot
+./scripts/check_bench.sh --record --expect <the pin's 96 hex>
+./scripts/check_bench.sh                        # must end: check_bench: PASS (16 checks)
+```
+
+The record is a capture: it also holds the three production pages as served and
+`NRestarts`. Never edit it by hand; `--record` writes it atomically. The current
+value at 2026-11-22 is `2caf4a5b…` (the 2026.11.21 image), up from `674cc40d…`;
+`docs/evidence/a1-bench.md` §12 carries the transcript.

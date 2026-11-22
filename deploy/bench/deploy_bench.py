@@ -38,9 +38,23 @@ odile.service` must be equal, or the run fails.
     ./deploy/bench/deploy_bench.py --source <tree>     # apply another tree
     ./deploy/bench/deploy_bench.py --rollback --dry-run
     ./deploy/bench/deploy_bench.py --rollback          # previous release back
+    ./deploy/bench/deploy_bench.py --probe-tick        # one liveness tick
+
+ODL-936. Two additions keep a dead bench from reading as healthy:
+
+  * every apply (and every rollback) refuses before its first write when
+    127.0.0.1:8082 or :8083 is held by a process that is not the bench unit.
+    A holder whose working directory is a card worktree that no longer exists
+    is the orphan that took the bench down on 2026-11-21: it is reaped and
+    named, because its worktree is gone and nothing will ever stop it.
+  * `odile-bench-probe.timer` runs `--probe-tick` every five minutes. The
+    tick runs `scripts/check_bench.sh --probe` (one line) and, when the line
+    is red, raises the bench's own alert in the existing HQ ledger, outbox and
+    transports (odilectl.health); a green tick resolves that alert.
 
 Exit codes: 0 success (changed, converged or rolled back), 1 a failed apply
-(Caddy was restored), 2 a bad input or a missing prerequisite.
+(Caddy was restored), 2 a bad input, a missing prerequisite or a foreign port
+holder.
 """
 
 from __future__ import annotations
@@ -51,6 +65,7 @@ import json
 import os
 import re
 import shutil
+import signal
 import socket
 import subprocess
 import sys
@@ -61,6 +76,7 @@ import urllib.parse
 import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
+from types import SimpleNamespace
 
 HERE = Path(__file__).resolve().parent
 REPO = HERE.parents[1]
@@ -82,8 +98,13 @@ ENV_FILE = ETC / "bench.env"
 UNIT_DIR = Path("/etc/systemd/system")
 UNIT_SITE = UNIT_DIR / "odile-bench.service"
 UNIT_SEED = UNIT_DIR / "odile-bench-seed.service"
+UNIT_PROBE = UNIT_DIR / "odile-bench-probe.service"
+TIMER_PROBE = UNIT_DIR / "odile-bench-probe.timer"
 UNIT_SITE_NAME = "odile-bench"
 UNIT_SEED_NAME = "odile-bench-seed"
+UNIT_PROBE_NAME = "odile-bench-probe"
+TIMER_PROBE_NAME = "odile-bench-probe"
+#: The two units an apply starts and restarts; the probe is timer-driven.
 UNIT_NAMES = (UNIT_SITE_NAME, UNIT_SEED_NAME)
 
 CONFIG_FILE = Path("/root/.odile/seed-config.test.json")
@@ -136,6 +157,19 @@ DIG = "dig"
 PROBE_SECONDS = 30.0
 CERT_SECONDS = 120.0
 DNS_SECONDS = 60.0
+
+#: ODL-936 — the liveness tick. The probe itself is `scripts/check_bench.sh
+#: --probe` (one line); the alert is the existing HQ path, not a second one.
+PROBE_SCRIPT = REPO / "scripts" / "check_bench.sh"
+PROBE_TIMEOUT = 90.0
+ALERT_CONFIG = Path("/root/.odile/config.yaml")
+ALERT_SLUG = "bench"
+ALERT_KIND = "down"
+ALERT_TENANT = "bench (test.odile.fyi)"
+ALERT_FIRST_COMMAND = (
+    "systemctl status odile-bench; ss -ltnp 'sport = :8082'")
+#: How long a reaped orphan gets between SIGTERM and SIGKILL.
+REAP_SECONDS = 5.0
 
 #: Directories a release copy never carries. `git ls-files` already excludes
 #: them; the walk fallback needs the list.
@@ -234,6 +268,164 @@ def render(text: str, values: dict) -> str:
         match = re.search(r"\{\{[A-Z_]+\}\}", text)
         raise ValueError(f"unfilled template slot {match.group(0) if match else '{{'}")
     return text
+
+
+# --------------------------------------------------------------------------
+# the bench port — a foreign holder is refused before the first write
+
+
+def _listening_inodes(port: int) -> set[str]:
+    """The socket inodes listening on `port`, from /proc (stdout of ss is a lie
+    when another process owns the socket that was just asked for)."""
+    inodes: set[str] = set()
+    for name in ("tcp", "tcp6"):
+        try:
+            lines = (Path("/proc/net") / name).read_text(encoding="utf-8").splitlines()[1:]
+        except OSError:
+            continue
+        for line in lines:
+            parts = line.split()
+            if len(parts) < 10 or parts[3] != "0A":
+                continue
+            address, _, port_hex = parts[1].rpartition(":")
+            try:
+                bound = int(port_hex, 16)
+            except ValueError:
+                continue
+            # Loopback and wildcard both take the port. The bench binds
+            # 0100007F (127.0.0.1); a foreign wildcard is just as fatal.
+            if bound != port or address not in (
+                    "0100007F", "00000000",
+                    "00000000000000000000000001000000",
+                    "00000000000000000000000000000000"):
+                continue
+            inodes.add(parts[9])
+    return inodes
+
+
+def _command_line(pid: int) -> str:
+    try:
+        raw = Path(f"/proc/{pid}/cmdline").read_bytes()
+    except OSError:
+        return "unknown"
+    parts = [part for part in raw.decode("utf-8", "replace").split("\0") if part]
+    return " ".join(parts) or "unknown"
+
+
+def _working_directory(pid: int) -> str:
+    try:
+        target = os.readlink(f"/proc/{pid}/cwd")
+    except OSError:
+        return ""
+    return target.removesuffix(" (deleted)")
+
+
+def port_holders(port: int) -> list[dict]:
+    """(pid, command, cwd) for every process listening on `port`."""
+    wanted = {f"socket:[{inode}]" for inode in _listening_inodes(port)}
+    if not wanted:
+        return []
+    holders = []
+    for entry in Path("/proc").iterdir():
+        if not entry.name.isdigit():
+            continue
+        pid = int(entry.name)
+        try:
+            fds = list((entry / "fd").iterdir())
+        except OSError:
+            continue
+        for fd in fds:
+            try:
+                target = os.readlink(fd)
+            except OSError:
+                continue
+            if target in wanted:
+                holders.append({"pid": pid, "command": _command_line(pid),
+                                "cwd": _working_directory(pid)})
+                break
+    return sorted(holders, key=lambda holder: holder["pid"])
+
+
+def is_bench_unit(pid: int) -> bool:
+    """True when `pid` runs inside one of the two bench units."""
+    try:
+        text = Path(f"/proc/{pid}/cgroup").read_text(encoding="utf-8")
+    except OSError:
+        return False
+    return f"/{UNIT_SITE_NAME}.service" in text or f"/{UNIT_SEED_NAME}.service" in text
+
+
+def worktree_of(cwd: str) -> Path | None:
+    """The card worktree a process's cwd sits in, if it is one."""
+    marker = "/.worktrees/"
+    head, separator, tail = cwd.partition(marker)
+    if not separator:
+        return None
+    name, _, _rest = tail.partition("/")
+    return Path(f"{head}{marker}{name}") if name else None
+
+
+def terminate(pid: int) -> None:
+    """SIGTERM, wait, SIGKILL — an orphan must not survive its own repair."""
+    for sig, grace in ((signal.SIGTERM, REAP_SECONDS), (signal.SIGKILL, REAP_SECONDS)):
+        try:
+            os.kill(pid, sig)
+        except ProcessLookupError:
+            return
+        deadline = time.monotonic() + grace
+        while time.monotonic() < deadline:
+            try:
+                os.kill(pid, 0)
+            except ProcessLookupError:
+                return
+            time.sleep(0.1)
+    raise SystemExit(f"error: pid {pid} survived SIGKILL")
+
+
+def ensure_port_free(dry: bool, ports: tuple[int, ...] = (APP_PORT, SEED_PORT),
+                     *, holders=None) -> bool:
+    """Refuse or reap a bench-port holder before any write.
+
+    A holder inside the bench's own unit is the healthy case. A holder whose
+    working directory is a `.worktrees/<card>` that no longer exists is the
+    2026-11-21 orphan — its worktree was deleted and its process was not — so
+    it is killed here (SIGTERM, then SIGKILL) and named. Anything else is
+    refused with its pid and command before the first write.
+    """
+    changed = False
+    holders = port_holders if holders is None else holders
+    for port in ports:
+        held = holders(port)
+        if not held:
+            print(f"same         port {port} free")
+            continue
+        reaped = False
+        for holder in held:
+            pid, command, cwd = holder["pid"], holder["command"], holder.get("cwd", "")
+            if is_bench_unit(pid):
+                print(f"same         port {port} held by {UNIT_SITE_NAME} (pid {pid})")
+                continue
+            worktree = worktree_of(cwd)
+            if worktree is not None and not worktree.exists():
+                print(f"{'would reap' if dry else 'reap':<12} port {port}: pid {pid} {command} "
+                      f"started in {worktree}, whose worktree is gone")
+                if not dry:
+                    terminate(pid)
+                changed = reaped = True
+                continue
+            print(f"error: port {port} is held by pid {pid} {command} "
+                  f"(cwd {cwd or 'unknown'}), not {UNIT_SITE_NAME}; stop it before "
+                  f"deploying (the bench app must own the port)", file=sys.stderr)
+            raise SystemExit(2)
+        if dry or not reaped:
+            continue
+        deadline = time.monotonic() + REAP_SECONDS
+        while holders(port) and time.monotonic() < deadline:
+            time.sleep(0.2)
+        if holders(port):
+            print(f"error: port {port} is still held after the reap", file=sys.stderr)
+            raise SystemExit(2)
+    return changed
 
 
 # --------------------------------------------------------------------------
@@ -487,7 +679,11 @@ def ensure_units(dry: bool) -> bool:
             (HERE / "odile-bench.service.in", UNIT_SITE,
              "User=odile, EnvironmentFile=bench.env, app.py from current"),
             (HERE / "odile-bench-seed.service.in", UNIT_SEED,
-             "User=odile, two LoadCredential lines, seed.py from current")):
+             "User=odile, two LoadCredential lines, seed.py from current"),
+            (HERE / "odile-bench-probe.service.in", UNIT_PROBE,
+             "User=root, the five-minute liveness probe; red feeds the HQ alert path"),
+            (HERE / "odile-bench-probe.timer.in", TIMER_PROBE,
+             "every five minutes, Persistent, starts the probe unit")):
         desired = render_unit(template).encode("utf-8")
         current = target.read_bytes() if target.is_file() else None
         if current == desired:
@@ -746,6 +942,25 @@ def ensure_services(dry: bool, unit_changed: bool, env_changed: bool,
     return changed
 
 
+def ensure_probe_timer(dry: bool) -> bool:
+    """Enable the five-minute probe timer; a second apply prints `same`."""
+    name = f"{TIMER_PROBE_NAME}.timer"
+    enabled = run([SYSTEMCTL, "is-enabled", name]).stdout.strip()
+    active = run([SYSTEMCTL, "is-active", name]).stdout.strip()
+    if enabled == "enabled" and active == "active":
+        print(f"same         {name} enabled, active (every five minutes)")
+        return False
+    print(f"{'would enable' if dry else 'enable':<12} {name} (enable --now)")
+    if dry:
+        return True
+    run([SYSTEMCTL, "enable", "--now", name], check=True)
+    state = run([SYSTEMCTL, "is-enabled", name]).stdout.strip()
+    if state != "enabled":
+        raise SystemExit(f"error: systemctl enable {name} left it {state!r}; "
+                         "the timer has no usable [Install] section")
+    return True
+
+
 def ensure_caddy(dry: bool) -> bool:
     current = CADDYFILE.read_text(encoding="utf-8")
     block = (HERE / "bench.caddy").read_text(encoding="utf-8")
@@ -862,6 +1077,102 @@ def probe(dry: bool) -> None:
 
 
 # --------------------------------------------------------------------------
+# the liveness tick — one line, and the existing HQ alert path on red
+
+
+def _needs_delivery(record) -> bool:
+    return not record.deliveries or any(
+        not delivery.get("ok") for delivery in record.deliveries)
+
+
+def _alert_store():
+    """The HQ config and heartbeat/alert store, imported only when needed.
+
+    The deployer itself must run from a tree that carries no `odilectl`
+    package on `sys.path`; the release it installs does carry it, so the
+    import is local and the release root is added explicitly.
+    """
+    if str(REPO) not in sys.path:
+        sys.path.insert(0, str(REPO))
+    from odilectl.config import Config
+    from odilectl.health import HeartbeatStore
+
+    config = Config.load(ALERT_CONFIG)
+    path = config.path_value("heartbeat_db") or config.path_value("state_db")
+    return config, HeartbeatStore.open(path) if path is not None else HeartbeatStore.open()
+
+
+def open_bench_alert(line: str, now: int) -> int | None:
+    """Raise (or refresh) the bench's alert in the existing HQ ledger.
+
+    Returns the ledger row id, or None when a copy was already open and
+    delivered. The alert is the same shape every other alert has: slug,
+    kind, symptom, first command, at. `down` is the ledger's own kind for a
+    bench that answers wrongly; the bench is not a tenant row, so the poll
+    will not resolve it — the probe's green tick does.
+    """
+    config, store = _alert_store()
+    with store:
+        from odilectl.health import Alert, build_courier
+
+        alert = Alert(slug=ALERT_SLUG, kind=ALERT_KIND, tenant=ALERT_TENANT,
+                      symptom=line, first_command=ALERT_FIRST_COMMAND, at=now)
+        record, created = store.raise_alert(alert, now)
+        if not created and not _needs_delivery(record):
+            print(f"alert        {ALERT_KIND} {ALERT_SLUG} still open (ledger row {record.id}); "
+                  "already delivered")
+            return record.id
+        courier = build_courier(config, SimpleNamespace(transport=None, outbox=None), now=now)
+        deliveries = courier.send_alert(alert, alert_email=config.get("alert_email"))
+        store.record_deliveries(record.id, deliveries)
+        channels = ", ".join(delivery.get("channel", "?") for delivery in deliveries)
+        print(f"alert        {ALERT_KIND} {ALERT_SLUG} raised (ledger row {record.id}; {channels})")
+        return record.id
+
+
+def resolve_bench_alert(now: int) -> bool:
+    """Close the open bench alert; True when a row was actually resolved."""
+    _config, store = _alert_store()
+    with store:
+        open_alert = store.open_alert(ALERT_SLUG, ALERT_KIND)
+        if open_alert is None:
+            return False
+        return store.resolve(ALERT_SLUG, ALERT_KIND, now)
+
+
+def probe_tick() -> int:
+    """One liveness tick: run the probe, print its line, feed the alert path.
+
+    Exit 0 is a green bench (any open bench alert resolved), 1 is red after
+    the alert was raised, 2 is a probe that could not run at all.
+    """
+    if not PROBE_SCRIPT.is_file():
+        print(f"bench probe: FAIL {PROBE_SCRIPT} is missing from {REPO}")
+        return 2
+    try:
+        result = run(["/bin/sh", str(PROBE_SCRIPT), "--probe"], timeout=PROBE_TIMEOUT)
+    except SystemExit as exc:
+        print(f"bench probe: FAIL {exc}")
+        return 2
+    line = next((item.strip() for item in (result.stdout + result.stderr).splitlines()
+                 if item.strip()), "")
+    print(line or "bench probe: FAIL the probe printed nothing")
+    now = int(time.time())
+    if result.returncode == 0:
+        try:
+            if resolve_bench_alert(now):
+                print("bench probe: the open bench alert is resolved")
+        except Exception as exc:  # the probe's answer is still the truth
+            print(f"bench probe: alert not resolved: {exc}")
+        return 0
+    try:
+        open_bench_alert(line or "the probe failed without a line", now)
+    except Exception as exc:  # a delivery failure must not hide the red line
+        print(f"bench probe: alert not delivered: {exc}")
+    return 1
+
+
+# --------------------------------------------------------------------------
 # rollback
 
 
@@ -923,12 +1234,18 @@ def main(argv: list[str] | None = None) -> int:
                         help="the tree to deploy (default: this checkout)")
     parser.add_argument("--rollback", action="store_true",
                         help="return the previous release; changes nothing else")
+    parser.add_argument("--probe-tick", action="store_true",
+                        help="one liveness tick: the probe's one line, and the HQ "
+                             "alert path when it is red (the timer runs this)")
     parser.add_argument("--dns-ip", default="",
                         help="the address to publish (default: this box's own IPv4)")
     args = parser.parse_args(argv)
     global DNS_IP
     if args.dns_ip:
         DNS_IP = args.dns_ip
+
+    if args.probe_tick:
+        return probe_tick()
 
     try:
         require_root()
@@ -937,6 +1254,7 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     if args.rollback:
+        ensure_port_free(args.dry_run)
         return rollback(args.dry_run)
 
     source = Path(args.source).resolve()
@@ -944,8 +1262,10 @@ def main(argv: list[str] | None = None) -> int:
         print(f"error: --source {source} is not a directory", file=sys.stderr)
         return 2
 
+    # The guard precedes the first write (craft: a fence after the write has
+    # already touched the machine it meant to refuse).
+    changed = ensure_port_free(args.dry_run)
     before = snapshot_production() if not args.dry_run else {}
-    changed = False
     changed |= ensure_dirs(args.dry_run)
     env_changed = ensure_env(args.dry_run)
     unit_changed = ensure_units(args.dry_run)
@@ -958,6 +1278,7 @@ def main(argv: list[str] | None = None) -> int:
     changed |= release_changed or switched
     changed |= ensure_services(args.dry_run, unit_changed, env_changed,
                                release_changed or switched)
+    changed |= ensure_probe_timer(args.dry_run)
     changed |= ensure_dns(args.dry_run)
     changed |= ensure_caddy(args.dry_run)
     probe(args.dry_run)
