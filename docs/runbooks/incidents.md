@@ -725,8 +725,9 @@ the user signs in.
 
 A2's claim worker builds a tenant in one run: order, poll, DNS, seed token,
 recovery kit, ready email. If any step after the order fails, that same run
-terminates the machine it created, removes the DNS record and the queued files,
-puts the tenant row back to `claimed`, and writes one `provision_failed` alert.
+terminates the machine it created, removes any DNS record it wrote and any
+queued file, puts the tenant row back to `claimed`, and writes one
+`provision_failed` alert.
 There is no machine to restart and no disk to rebuild; the fix is a retry.
 
 ```sh
@@ -808,13 +809,15 @@ billed. Two failure points: the poll raises after `create` returns a machine, an
 | the provider calls after a failed poll | `create`, `poll`, `terminate` — one terminate, no second order |
 | machines the provider still bills | `0`: the created machine is `terminated` |
 | the tenant row after the failure | `state: claimed`, `server_id: null`, `ipv4: null`, `setup_token_hash: null`, `release: null` |
-| the DNS record and the queued files | none: the record is removed (`{}`), no ready email, no kit |
+| the DNS record | `POST`, then `DELETE` when the failure lands after the DNS write; `{}` after the run |
+| the queued files | none: no ready email, no kit |
 | the event the operator reads | `{"step": "provision_failed", "server_id": "srv-fixture0001", "terminated": true, "reason": "fixture: the build failed"}` |
 | `claim status <slug> --json` | `provision: "failed"`, `tenant_state: "claimed"`, `server_id: null`, `ready_email: null` |
 | the alert | one `[Odile] provision failed — <slug>` email: symptom, server, `cleanup: machine terminated; no billed resource remains`, and the retry line `python3 -m odilectl.claim run --apply <slug>` |
 | the claim token after the failure | replays (`replay: true`) — the account is retryable |
 | the retry on a healthy provider | `ok: true`, exactly one `create`, one live machine, one ready email, `provision: "ready"` |
 | a `create` that never returns | provider calls `create` only, zero machines, `terminated: false`, the same `claimed` row, an alert saying `no machine was created` |
+| a failure after the DNS write (the kit render) | `create`, `poll`, `terminate`; DNS `POST` then `DELETE`; the row `claimed`; the alert's reason is the kit error |
 
 **What it changed.** The runbook had no path for a build that failed before a
 machine existed: §4.1 restarts a machine, §4.6 reads a boot log, and neither
