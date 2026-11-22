@@ -77,15 +77,20 @@ PRUNE_NAMES = {".git", ".worktrees", ".venv", ".fresh-clone", "__pycache__",
 
 #: (token, pattern). The token is what the allowlist names; the pattern is the
 #: surface. Ports are bounded so a build number or a timestamp that happens to
-#: end in 8010/8011 is not a hit.
+#: end in 8010/8011 is not a hit — and so is a **hex digest** that carries the
+#: four digits between hex letters: measured 2026-11-22 (t_e7e5ac73),
+#: `release/release.json` named a manifest whose sha256 read `…a7bb8010bc38…`
+#: and every card's gate failed on the substring with no port in the file. A
+#: port is still caught in every shape it is written in (`:8010`, `--port
+#: 8010`, `8010/tcp`), because those neighbours are not hex letters.
 RETIRED = (
     ("meter/", re.compile(r"\bmeter/")),
     ("meter.py", re.compile(r"\bmeter\.py")),
     ("METER_API_KEY", re.compile(r"\bMETER_API_KEY\b")),
     ("METER_SHA256", re.compile(r"\bMETER_SHA256\b")),
     ("odile-meter", re.compile(r"\bodile-meter\b")),
-    ("8010", re.compile(r"(?<![\d.])8010(?!\d)")),
-    ("8011", re.compile(r"(?<![\d.])8011(?!\d)")),
+    ("8010", re.compile(r"(?<![\d.a-fA-F])8010(?![\da-fA-F])")),
+    ("8011", re.compile(r"(?<![\d.a-fA-F])8011(?![\da-fA-F])")),
     ("meter.env", re.compile(r"\bmeter\.env\b")),
     ("meter.key", re.compile(r"\bmeter\.key\b")),
     ("test-meter", re.compile(r"\btest-meter\b")),
@@ -374,6 +379,32 @@ class PatternTests(unittest.TestCase):
         self.assertEqual(self.tokens("deploy/demo-host/planted.py",
                                      "provider: Near AI\nbase_url: https://cloud-api.near.ai/v1\n"),
                          [])
+
+    def test_a_hex_digest_is_not_a_port(self) -> None:
+        # Measured 2026-11-22 (t_e7e5ac73): this cut's release.json named a
+        # manifest whose sha256 carried `…a7bb8010bc38…`, and the gate failed
+        # on the substring while the file named no port at all.
+        self.assertEqual(
+            self.tokens("release/release.json",
+                        '"sha256": "7740b2456cad87d512cfcc0c1aa82549b6acdac815a7bb8010bc38'
+                        'aeb666009e"'),
+            [])
+        # A number that merely ends in the digits is not a port either — the
+        # bound the pattern already promised.
+        self.assertEqual(self.tokens("deploy/demo-host/planted.py", "build 2026018010"), [])
+
+    def test_the_retired_ports_are_still_caught(self) -> None:
+        # The bound must not make a real 8010/8011 invisible: every shape a
+        # port is written in has a non-hex neighbour.
+        for text, token in (
+            ("127.0.0.1:8010", "8010"),
+            ("--port 8010", "8010"),
+            ("8010/tcp", "8010"),
+            ('listen ":8011"', "8011"),
+            ("localhost:8011 {", "8011"),
+        ):
+            with self.subTest(text=text):
+                self.assertEqual(self.tokens("deploy/demo-host/planted.py", text), [token])
 
 
 class AllowlistTests(unittest.TestCase):
