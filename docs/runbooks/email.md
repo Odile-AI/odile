@@ -601,5 +601,6 @@ Reverse DNS is Servury's; pointing the PTR elsewhere ends sending.
 No webhook, no automatic suppression list, no inbound human mail beyond
 `help@`, no open/click tracking, no relay. The waitlist app still sends nothing
 (ODL-235 is the sender). A public TLS certificate and per-tenant DKIM signing
-are follow-ups; today the certificate is self-signed and pinned by the test
-client.
+are follow-ups; today the certificate is self-signed, a tenant pins it from its
+seed (`mail_relay.tls_ca`, cached at `/etc/odile/mail-ca.pem`), and the test
+client pins the same PEM.

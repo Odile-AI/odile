@@ -1,11 +1,13 @@
 #!/usr/bin/python3
 """Embed the tenant bundle into installer/odile_install.py.
 
-The installer is one printable file, so the tenant's standing context and its
-first-run skill travel inside it, pinned by SHA-256:
+The installer is one printable file, so the tenant's standing context, its
+skills and the two files the brief needs travel inside it, pinned by SHA-256:
 
     templates/tenant-agents.md      -> installed as $HOME/AGENTS.md
     skills/<name>/SKILL.md          -> installed as $HERMES_HOME/skills/<name>/SKILL.md
+    scripts/send_brief.py           -> installed as $HERMES_HOME/scripts/send_brief.py (0755)
+    templates/brief.txt             -> installed as $HERMES_HOME/brief.txt
 
 This tool is the only supported way to refresh those copies, so the embedded
 text and the pins can never disagree:
@@ -15,7 +17,10 @@ text and the pins can never disagree:
 
 A new skill is embedded by adding its directory under skills/ and re-running
 this tool; a skill removed from skills/ is removed from a tenant on the next
-installer run (the installer keeps its own manifest of what it wrote).
+installer run (the installer keeps its own manifest of what it wrote). The two
+files in EXTRA_FILES are the brief's sender and its email template: the
+`Morning brief` job's last step is the installed script, so it has to be on the
+machine, not written by the model.
 
 After a change here, re-sign the installer (see docs/runbooks/install.md).
 """
@@ -30,6 +35,13 @@ ROOT = Path(__file__).resolve().parent.parent
 INSTALLER = ROOT / "installer" / "odile_install.py"
 AGENTS = ROOT / "templates" / "tenant-agents.md"
 SKILLS = ROOT / "skills"
+# (target under $HERMES_HOME, source in the checkout). ODL-469: the brief's
+# sender and the template it renders. The installer owns the mode for each
+# target (TENANT_FILE_MODES); this tool only carries the bytes.
+EXTRA_FILES: tuple[tuple[str, str], ...] = (
+    ("scripts/send_brief.py", "scripts/send_brief.py"),
+    ("brief.txt", "templates/brief.txt"),
+)
 
 BEGIN = "# BEGIN TENANT BUNDLE"
 END = "# END TENANT BUNDLE"
@@ -62,11 +74,23 @@ def skill_sources() -> list[tuple[str, Path]]:
     return found
 
 
+def extra_sources() -> list[tuple[str, Path]]:
+    """The pinned non-skill files, as (target, checkout path)."""
+    found: list[tuple[str, Path]] = []
+    for target, source in EXTRA_FILES:
+        path = ROOT / source
+        if not path.is_file():
+            raise SystemExit(f"error: {source} is missing from the checkout")
+        found.append((target, path))
+    return found
+
+
 def digest(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
-def render_block(agents: bytes, skills: list[tuple[str, Path, bytes]]) -> str:
+def render_block(agents: bytes, skills: list[tuple[str, Path, bytes]],
+                 extras: list[tuple[str, Path, bytes]]) -> str:
     """The generated region, markers included; the installer's constants."""
     lines = [
         BEGIN,
@@ -86,6 +110,16 @@ def render_block(agents: bytes, skills: list[tuple[str, Path, bytes]]) -> str:
             f"        r'''{data.decode('utf-8')}''',",
             "    ),",
         ])
+    lines.extend([")", "", "TENANT_FILES: tuple[tuple[str, str, str, str], ...] = ("])
+    for target, path, data in extras:
+        lines.extend([
+            "    (",
+            f'        "{target}",',
+            f'        "{path.relative_to(ROOT).as_posix()}",',
+            f'        "{digest(data)}",',
+            f"        r'''{data.decode('utf-8')}''',",
+            "    ),",
+        ])
     lines.extend([")", END])
     return "\n".join(lines)
 
@@ -93,15 +127,18 @@ def render_block(agents: bytes, skills: list[tuple[str, Path, bytes]]) -> str:
 def main() -> int:
     agents = read_source(AGENTS)
     skills = [(name, path, read_source(path)) for name, path in skill_sources()]
+    extras = [(target, path, read_source(path)) for target, path in extra_sources()]
     text = INSTALLER.read_text(encoding="utf-8")
     try:
         start = text.index(BEGIN)
         end = text.index(END, start) + len(END)
     except ValueError as exc:
         raise SystemExit(f"error: {INSTALLER} has no TENANT bundle markers") from exc
-    block = render_block(agents, skills)
+    block = render_block(agents, skills, extras)
     INSTALLER.write_text(text[:start] + block + text[end:], encoding="utf-8")
-    for path, data in [(AGENTS, agents)] + [(path, data) for _, path, data in skills]:
+    sources = ([(AGENTS, agents)] + [(path, data) for _, path, data in skills]
+               + [(path, data) for _, path, data in extras])
+    for path, data in sources:
         print(f"embedded {path.relative_to(ROOT).as_posix()} ({len(data)} bytes, "
               f"sha256 {digest(data)})")
     print(f"wrote {INSTALLER.relative_to(ROOT).as_posix()} "

@@ -39,8 +39,8 @@ you already hold.
 - Name, time zone and three things: "Welcome back, <name>. I have your name,
   your time zone and your three things. What time should your brief land? 07:00
   your time is the default — say a time, or 'default'."
-- Everything but email: "Welcome back, <name>. Last one: may I email you the
-  brief too, when that's on?"
+- Everything but email: "Welcome back, <name>. Last one: May I email the brief
+  too? Which address?"
 - All five answers, no `onboarded_at`: finish whatever is missing (the job,
   then `onboarded_at`) and close; do not ask again.
 - Time zone without a name (unusual): "Welcome back. What should I call you?"
@@ -122,10 +122,24 @@ Parse `HH:MM` (24-hour). Default 07:00. Store `Brief: HH:MM <IANA>`.
 
 ## 5. Email
 
-> Last one: may I email you the brief too, when that's on? For now it always
-> lands in `~/briefs/`.
+> Last one: May I email the brief too? Which address?
 
-Store `Email brief: yes|no`. Do not promise an address or a date.
+If they say yes, take the address and check it looks like one — one `@`, a dot
+after it. Ask once more only if it does not. Then write the file the sender
+reads, in this turn:
+
+```sh
+mkdir -p ~/.hermes
+printf '{"to": "%s"}\n' "<address>" > ~/.hermes/brief.json
+chmod 600 ~/.hermes/brief.json
+cat ~/.hermes/brief.json
+```
+
+The file is `{"to": "<address>"}` and nothing else. It stays on this machine;
+the seed carries no address. If they say no, write nothing: the brief stays in
+`~/briefs/` and they can turn email on later by asking.
+
+Store `Email brief: yes|no`.
 
 ## The schedule
 
@@ -145,12 +159,21 @@ the date is today in <zone> (TZ=<zone> date +%F). Include the date; one line of
 weather for <city> from https://wttr.in/<city>?format=3; one short item with a
 link for each of: <thing 1>; <thing 2>; <thing 3>; and one sentence on what you
 will watch tomorrow. Use web_search. Under 200 words. If a lookup fails, say so
-in one line and continue. Write the file even if some lookups fail.
+in one line and continue. Write the file even if some lookups fail. Do not
+re-implement the sender: as your last step run
+`sudo -n /usr/bin/python3 ~/.hermes/scripts/send_brief.py` and report its one
+line.
 ```
 
+The prompt ends with the installed sender. That command is the delivery half —
+do not replace it with your own mail code, and never claim a send it did not
+print.
+
 Verify, do not assume: read `$HOME/.hermes/cron/jobs.json` and confirm the job
-is enabled, its expression is the time asked for, and its timezone is the IANA
-name. If anything is wrong, update it before you speak again.
+is enabled, its expression is the time asked for, its timezone is the IANA
+name, and its prompt ends with the sender command. If they gave an address,
+confirm `~/.hermes/brief.json` holds it. If anything is wrong, update it before
+you speak again.
 
 Then add to memory (target `memory`):
 `onboarded_at: <ISO-8601 UTC>; ritual: complete`.
@@ -158,8 +181,9 @@ Then add to memory (target `memory`):
 ## Close — exactly three sentences
 
 > Saved: your name, your time zone, your three things, and <HH:MM> <zone> for
-> the brief. Tomorrow at <HH:MM> <zone> it will be in `~/briefs/`, and if the
-> machine is locked it runs when you unlock. Ask me for anything in between.
+> the brief. Tomorrow at <HH:MM> <zone> it will be in `~/briefs/` — and in your
+> inbox at <address> if you gave one — and if the machine is locked it runs when
+> you unlock. Ask me for anything in between.
 
 ## Skip
 

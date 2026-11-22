@@ -141,6 +141,9 @@ def fixture_config(slug: str) -> dict:
             "port": 587,
             "username": slug,
             "secret": "bench-mail-secret-not-a-secret",
+            "tls_ca": ("-----BEGIN CERTIFICATE-----\n"
+                       "MIIBhTCCASugAwIBAgIUFIXTURECA000000000000000000\n"
+                       "-----END CERTIFICATE-----\n"),
         },
     }
 

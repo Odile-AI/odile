@@ -58,6 +58,10 @@ SIGNING_KEY = Path("/root/.odile/installer-signing.pem")
 SEED_SIGNING_KEY = Path("/root/.odile/seed-signing.pem")
 NEAR_ENV = Path("/root/.hermes/.env")
 SEED_PY = REPO / "seed" / "seed.py"
+# The relay's certificate, as the test account pins it (ODL-469).
+RELAY_CA_FILE = Path("/etc/ssl/certs/mail.odile.fyi.crt")
+# The relay's submission account, when this host has one (ODL-469).
+MAIL_ACCOUNT = Path("/root/.odile/mail_test_account.json")
 
 DEFAULT_ROOT = Path("/var/tmp/odile-sim")
 DEFAULT_USER = "odiletest"
@@ -187,6 +191,38 @@ def seed_env(db: Path, config: Path) -> dict[str, str]:
     return env
 
 
+def relay_ca() -> str:
+    """The relay's own certificate (ODL-469): the live one, else a marker.
+
+    The sim tenant's seed must carry the same PEM a real seed carries, or the
+    sender's STARTTLS fails against the relay's self-signed certificate. On a
+    host without the relay's certificate the string is a shape marker; the sim's
+    send proof is run where the real one exists.
+    """
+    try:
+        return RELAY_CA_FILE.read_text(encoding="utf-8")
+    except OSError:
+        return ("-----BEGIN CERTIFICATE-----\n"
+                "MIIBhTCCASugAwIBAgIUSIMRELAYCA000000000000000000\n"
+                "-----END CERTIFICATE-----\n")
+
+
+def relay_account(slug: str) -> tuple[str, str]:
+    """The submission login: the live test account when this host has it.
+
+    A simulation that sends for real needs a working SASL account. The
+    per-tenant *from* address is composed by the sender itself
+    (`brief-<slug>@mail.odile.fyi`), so one account serves every simulated
+    tenant; without the file the seed carries an obviously fake pair and the
+    send proof is skipped.
+    """
+    try:
+        account = json.loads(MAIL_ACCOUNT.read_text(encoding="utf-8"))
+        return str(account["username"]), str(account["secret"])
+    except (OSError, ValueError, KeyError):
+        return f"{slug}@mail.odile.fyi", "sim-relay-secret-not-a-real-secret"
+
+
 def seed_setup(root: Path, slug: str, instance: str, seed_port: int) -> tuple[str, Path, Path]:
     """Init the scratch ledger, create the tenant and one setup token."""
     state = Path("/root/.odile/installer-sim")
@@ -215,6 +251,7 @@ def seed_setup(root: Path, slug: str, instance: str, seed_port: int) -> tuple[st
     if not match:
         raise SystemExit(f"error: could not parse the token from: {result.stdout!r}")
     token = match.group(1)
+    mail_user, mail_secret = relay_account(slug)
     config.write_text(json.dumps({
         "near_api_key": near_key(),
         "model": "deepseek-ai/DeepSeek-V4.1-Flash-1017-abliterated",
@@ -222,8 +259,9 @@ def seed_setup(root: Path, slug: str, instance: str, seed_port: int) -> tuple[st
         "backup_repo_url": "sftp:odile-backup@backup.odile.fyi:/tenants/{slug}",
         "hermes_version": "2026.11.1",
         "mail_relay": {"host": "mail.odile.fyi", "port": 587,
-                       "username": "{slug}@mail.odile.fyi",
-                       "secret": "sim-relay-secret-not-a-real-secret"},
+                       "username": mail_user,
+                       "secret": mail_secret,
+                       "tls_ca": relay_ca()},
     }, indent=2) + "\n", encoding="utf-8")
     os.chmod(config, 0o600)
     print(f"seed         {db} · tenant {slug} · instance {instance} · token {token[:8]}…")

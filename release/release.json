@@ -1,8 +1,8 @@
 {
   "artifacts": {
     "installer": {
-      "sha256": "b61d0713d8efa22ca7d53fb2f638cc3a0fd4703960bcda41906628b85cb2d57a",
-      "size": 1527550,
+      "sha256": "87340eeeff8035e34b52ce2cca31a94203e60b59682b157c600f913a48daf8fb",
+      "size": 1557751,
       "url": "odile_install.py"
     },
     "skills": {
@@ -14,14 +14,14 @@
   "boot": {
     "kernel": "6.12.115+deb13.1-amd64"
   },
-  "generated_at": "2026-11-22T01:24:27Z",
+  "generated_at": "2026-11-22T08:47:59Z",
   "manifest": {
-    "sha256": "3a5d4b890198419e0ec079f6ef840c1fc12ee962dc91cf0c8778a35b10b9afc3",
+    "sha256": "566996e736dbfeaba05af279915e6b7661c6730a8a737d0e5efead78d0663ae7",
     "signature_url": "manifest.json.sig",
     "url": "manifest.json"
   },
-  "notes": "t_df24b754 (the boot-key walk follows a private root that is itself a symlink), over 2026.11.21-5 (t_d55b0e47's /verify unit keeps cryptsetup's lock writable). scripts/audit.py now runs `find` with `-H`: without it, a private root that is itself a symlink to a directory printed nothing, which is a well-formed empty stream and reads as a PASS over a planted key, while the Python fallback (os.scandir) followed the root. Odile's installer creates all four roots as real directories, so no shipped or demo shape was affected, and on a real-dir tree the flag costs nothing (fixed 20,000-file tree: 0.354-0.395 s without, 0.369-0.423 s with, four interleaved draws each, the same 20,000 files and 20,000 heads). The row's proof is otherwise unchanged -- same four roots, same 200..65536-byte window, same .pub/authorized_keys*/known_hosts* exclusions, same 48-byte PRIVATE KEY marker, same ssh-keygen -y/.pub-sibling identification, and the Python walk remains the fallback when find cannot answer. Only audit_sha256, installer_sha256, manifest.sha256, generated_at and this note move; the embedded /verify pages, the skills tarball, the odile-help row, the backup row and 2026.11.21-5's ReadWritePaths=/run unit are that cut's.",
+  "notes": "ODL-469 (the brief email is wired into the tenant), re-cut on main's ff1c6b0: the signed installer carries scripts/send_brief.py (now main's 581a9b88, the late-sentence follow-up) and templates/brief.txt, writes the relay's seed-carried CA at /etc/odile/mail-ca.pem, and the Morning-brief prompt ends with the installed sender. A surgical re-cut of 2026.11.21-6: one manifest line, installer_sha256. The manifest's two Odile skill rows and skills.tar.gz stay 2026.11.21-6's until the next fresh-root cut.",
   "product": "odile",
-  "release": "2026.11.21-6",
+  "release": "2026.11.22-2",
   "schema": 1
 }

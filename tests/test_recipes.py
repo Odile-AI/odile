@@ -10,6 +10,9 @@ from __future__ import annotations
 import importlib.util
 import hashlib
 import json
+import os
+import pwd
+import dataclasses
 import re
 import subprocess
 import sys
@@ -28,6 +31,16 @@ RECIPES_DOC = ROOT / "docs/recipes.md"
 INSTALLER = ROOT / "installer/odile_install.py"
 SIGNATURE = ROOT / "installer/odile_install.py.sig"
 PUBKEY = ROOT / "installer/odile-signing-key.pub"
+SEND_BRIEF = ROOT / "scripts/send_brief.py"
+BRIEF_TEMPLATE = ROOT / "templates/brief.txt"
+SENDER_COMMAND = "sudo -n /usr/bin/python3 ~/.hermes/scripts/send_brief.py"
+
+
+def brief_prompt(text: str) -> str:
+    """The one fenced Morning-brief prompt a skill carries."""
+    prompts = re.findall(r"^```\n(Morning brief for .*?)\n```$", text, re.M | re.S)
+    assert len(prompts) == 1, f"expected one fenced prompt, found {len(prompts)}"
+    return prompts[0]
 
 
 def load_module(path: Path, name: str):
@@ -93,6 +106,38 @@ class SkillShape(unittest.TestCase):
         template = json.loads(BRIEF.read_text(encoding="utf-8"))
         normal = lambda value: " ".join(value.split())  # noqa: E731
         self.assertEqual(normal(prompts[0]), normal(template["prompt"]))
+
+    def test_the_brief_prompt_runs_the_installed_sender_as_its_last_step(self) -> None:
+        """ODL-469: the job's last step is one command, never a second sender."""
+        template = json.loads(BRIEF.read_text(encoding="utf-8"))
+        copies = {
+            "templates/cron/morning-brief.json": template["prompt"],
+            "skills/odile-recipes/SKILL.md": brief_prompt(self.text),
+            "skills/odile-first-run/SKILL.md": brief_prompt(FIRST_RUN.read_text(encoding="utf-8")),
+        }
+        normal = lambda value: " ".join(value.split())  # noqa: E731
+        for name, prompt in copies.items():
+            flat = normal(prompt)
+            self.assertEqual(flat.count(SENDER_COMMAND), 1, name)
+            self.assertIn("report its one line", flat, name)
+            self.assertIn("Do not re-implement the sender", flat, name)
+        self.assertEqual({normal(prompt) for prompt in copies.values()},
+                         {normal(copies["templates/cron/morning-brief.json"])})
+
+    def test_the_first_run_asks_for_the_address_and_writes_the_address_file(self) -> None:
+        """ODL-469: the ritual asks one more thing and carries no address in the seed."""
+        text = " ".join(FIRST_RUN.read_text(encoding="utf-8").split())
+        self.assertIn("May I email the brief too?", text)
+        self.assertIn("Which address?", text)
+        self.assertIn("~/.hermes/brief.json", text)
+        self.assertIn('{"to": "<address>"}', text)
+        self.assertIn("chmod 600", text)
+
+    def test_the_recipes_skill_turns_email_on_with_the_same_address_file(self) -> None:
+        section = self.text.split("## 1. Morning brief", 1)[1].split("## 2.", 1)[0]
+        self.assertIn("~/.hermes/brief.json", section)
+        self.assertIn('{"to": "<address>"}', section)
+        self.assertIn(SENDER_COMMAND, section)
 
     def test_the_tenant_context_points_at_the_recipes(self) -> None:
         text = AGENTS.read_text(encoding="utf-8")
@@ -241,10 +286,12 @@ class InstallerBundle(unittest.TestCase):
         embed = load_module(ROOT / "installer/embed_tenant.py", "odile_embed_tenant")
         agents = embed.read_source(ROOT / "templates/tenant-agents.md")
         skills = [(name, path, embed.read_source(path)) for name, path in embed.skill_sources()]
+        extras = [(target, path, embed.read_source(path))
+                  for target, path in embed.extra_sources()]
         names = [name for name, _, _ in skills]
         self.assertIn("odile-recipes", names)
         self.assertIn("odile-first-run", names)
-        expected = embed.render_block(agents, skills)
+        expected = embed.render_block(agents, skills, extras)
         self.assertIn(expected, INSTALLER.read_text(encoding="utf-8"))
 
     def test_the_installer_signature_verifies(self) -> None:
@@ -255,6 +302,123 @@ class InstallerBundle(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn("signature: OK", result.stdout)
         self.assertTrue(SIGNATURE.is_file())
+
+
+class TenantBundle(unittest.TestCase):
+    """ODL-469: the sender and the email template travel in the signed installer."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.embed = load_module(ROOT / "installer/embed_tenant.py", "odile_embed_tenant_469")
+        cls.installer = load_module(INSTALLER, "odile_install_469")
+
+    def layout(self, tmp: str):
+        return self.installer.Layout.scratch(
+            root=Path(tmp), user=pwd.getpwuid(os.geteuid()).pw_name,
+            webapp_port=9151, public_url="http://bundle.test",
+        )
+
+    def test_the_bundle_names_the_two_new_targets_and_their_sources(self) -> None:
+        self.assertEqual(dict(self.embed.extra_sources()), {
+            "scripts/send_brief.py": SEND_BRIEF,
+            "brief.txt": BRIEF_TEMPLATE,
+        })
+
+    def test_the_installer_pins_places_and_modes_each_embedded_file(self) -> None:
+        files = {item.target: item for item in self.installer.tenant_files()}
+        self.assertIn("scripts/send_brief.py", files)
+        self.assertIn("brief.txt", files)
+        self.assertEqual(files["scripts/send_brief.py"].source, "scripts/send_brief.py")
+        self.assertEqual(files["scripts/send_brief.py"].data(), SEND_BRIEF.read_bytes())
+        self.assertEqual(files["scripts/send_brief.py"].mode, 0o755)
+        self.assertEqual(files["brief.txt"].source, "templates/brief.txt")
+        self.assertEqual(files["brief.txt"].data(), BRIEF_TEMPLATE.read_bytes())
+        self.assertEqual(files["brief.txt"].mode, 0o644)
+        with tempfile.TemporaryDirectory() as tmp:
+            layout = self.layout(tmp)
+            self.assertTrue(self.installer.ensure_tenant_files(layout, False))
+            script = layout.hermes_home / "scripts/send_brief.py"
+            brief = layout.hermes_home / "brief.txt"
+            self.assertEqual(script.read_bytes(), SEND_BRIEF.read_bytes())
+            self.assertEqual(script.stat().st_mode & 0o777, 0o755)
+            self.assertEqual(brief.read_bytes(), BRIEF_TEMPLATE.read_bytes())
+            self.assertEqual(brief.stat().st_mode & 0o777, 0o644)
+            self.assertFalse(self.installer.ensure_tenant_files(layout, False))
+
+    def test_the_embedded_skills_carry_the_same_prompt_as_the_cron_template(self) -> None:
+        """The installer's copies are regenerated from the three sources; prove it."""
+        template = json.loads(BRIEF.read_text(encoding="utf-8"))["prompt"]
+        normal = lambda value: " ".join(value.split())  # noqa: E731
+        for name, source, _digest, text in self.installer.TENANT_SKILLS:
+            if name not in ("odile-first-run", "odile-recipes"):
+                continue
+            self.assertEqual(normal(brief_prompt(text)), normal(template), name)
+
+    def test_an_embedded_target_outside_the_allowlist_is_refused(self) -> None:
+        files = list(self.installer.tenant_files())
+        body = b"#!/usr/bin/python3\n"
+        files.append(self.installer.TenantFile(
+            "bin/send_brief.py", "scripts/send_brief.py",
+            hashlib.sha256(body).hexdigest(), body.decode()))
+        with self.assertRaises(SystemExit):
+            self.installer.validate_tenant_files(files)
+
+    def test_two_copies_of_one_target_are_refused(self) -> None:
+        files = list(self.installer.tenant_files())
+        files.append(dataclasses.replace(
+            next(item for item in files if item.target == "brief.txt")))
+        with self.assertRaises(SystemExit):
+            self.installer.validate_tenant_files(files)
+
+
+class RelayCa(unittest.TestCase):
+    """ODL-469: the tenant caches the relay's PEM where the sender reads it."""
+
+    PEM = ("-----BEGIN CERTIFICATE-----\n"
+           "MIIBhTCCASugAwIBAgIUTESTRELAYCA0000000000000000\n"
+           "-----END CERTIFICATE-----\n")
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.installer = load_module(INSTALLER, "odile_install_469_ca")
+
+    def seed(self, **relay) -> dict:
+        mail = {"host": "mail.odile.fyi", "port": 587, "username": "u", "secret": "s"}
+        mail.update(relay)
+        return {
+            "slug": "odl-ca", "instance_id": "srv-ca", "near_api_key": "k",
+            "model": "m", "support_public_key": "ssh-ed25519 x",
+            "backup_repo_url": "sftp:x", "mail_relay": mail, "hermes_version": "v",
+        }
+
+    def layout(self, tmp: str):
+        return self.installer.Layout.scratch(
+            root=Path(tmp), user=pwd.getpwuid(os.geteuid()).pw_name,
+            webapp_port=9152, public_url="http://ca.test",
+        )
+
+    def test_the_ca_is_cached_at_0644_and_the_write_is_idempotent(self) -> None:
+        seed = self.seed(tls_ca=self.PEM)
+        with tempfile.TemporaryDirectory() as tmp:
+            layout = self.layout(tmp)
+            self.assertTrue(self.installer.ensure_mail_ca(layout, seed, False))
+            target = layout.path("/etc/odile/mail-ca.pem")
+            self.assertEqual(target.read_bytes(), self.PEM.encode())
+            self.assertEqual(target.stat().st_mode & 0o777, 0o644)
+            self.assertFalse(self.installer.ensure_mail_ca(layout, seed, False))
+
+    def test_a_cached_seed_without_a_ca_writes_nothing(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            layout = self.layout(tmp)
+            self.assertFalse(self.installer.ensure_mail_ca(layout, self.seed(), False))
+            self.assertFalse(layout.path("/etc/odile/mail-ca.pem").exists())
+
+    def test_a_seed_whose_ca_is_not_a_pem_is_refused(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            layout = self.layout(tmp)
+            with self.assertRaises(SystemExit):
+                self.installer.ensure_mail_ca(layout, self.seed(tls_ca="not a certificate"), False)
+            self.assertFalse(layout.path("/etc/odile/mail-ca.pem").exists())
 
 
 if __name__ == "__main__":

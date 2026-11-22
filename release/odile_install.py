@@ -9350,7 +9350,7 @@ TENANT_SKILLS: tuple[tuple[str, str, str, str], ...] = (
     (
         "odile-first-run",
         "skills/odile-first-run/SKILL.md",
-        "0ca5d154b3156367733ecafd2a50ed833bc939639c20361ed76e86646b0bd412",
+        "1249114236b7071ed28700579e92bd4caf14d93e59ce6d7be4f50cf566960114",
         r'''---
 name: odile-first-run
 description: First run: five questions, a real brief, a schedule.
@@ -9392,8 +9392,8 @@ you already hold.
 - Name, time zone and three things: "Welcome back, <name>. I have your name,
   your time zone and your three things. What time should your brief land? 07:00
   your time is the default — say a time, or 'default'."
-- Everything but email: "Welcome back, <name>. Last one: may I email you the
-  brief too, when that's on?"
+- Everything but email: "Welcome back, <name>. Last one: May I email the brief
+  too? Which address?"
 - All five answers, no `onboarded_at`: finish whatever is missing (the job,
   then `onboarded_at`) and close; do not ask again.
 - Time zone without a name (unusual): "Welcome back. What should I call you?"
@@ -9475,10 +9475,24 @@ Parse `HH:MM` (24-hour). Default 07:00. Store `Brief: HH:MM <IANA>`.
 
 ## 5. Email
 
-> Last one: may I email you the brief too, when that's on? For now it always
-> lands in `~/briefs/`.
+> Last one: May I email the brief too? Which address?
 
-Store `Email brief: yes|no`. Do not promise an address or a date.
+If they say yes, take the address and check it looks like one — one `@`, a dot
+after it. Ask once more only if it does not. Then write the file the sender
+reads, in this turn:
+
+```sh
+mkdir -p ~/.hermes
+printf '{"to": "%s"}\n' "<address>" > ~/.hermes/brief.json
+chmod 600 ~/.hermes/brief.json
+cat ~/.hermes/brief.json
+```
+
+The file is `{"to": "<address>"}` and nothing else. It stays on this machine;
+the seed carries no address. If they say no, write nothing: the brief stays in
+`~/briefs/` and they can turn email on later by asking.
+
+Store `Email brief: yes|no`.
 
 ## The schedule
 
@@ -9498,12 +9512,21 @@ the date is today in <zone> (TZ=<zone> date +%F). Include the date; one line of
 weather for <city> from https://wttr.in/<city>?format=3; one short item with a
 link for each of: <thing 1>; <thing 2>; <thing 3>; and one sentence on what you
 will watch tomorrow. Use web_search. Under 200 words. If a lookup fails, say so
-in one line and continue. Write the file even if some lookups fail.
+in one line and continue. Write the file even if some lookups fail. Do not
+re-implement the sender: as your last step run
+`sudo -n /usr/bin/python3 ~/.hermes/scripts/send_brief.py` and report its one
+line.
 ```
 
+The prompt ends with the installed sender. That command is the delivery half —
+do not replace it with your own mail code, and never claim a send it did not
+print.
+
 Verify, do not assume: read `$HOME/.hermes/cron/jobs.json` and confirm the job
-is enabled, its expression is the time asked for, and its timezone is the IANA
-name. If anything is wrong, update it before you speak again.
+is enabled, its expression is the time asked for, its timezone is the IANA
+name, and its prompt ends with the sender command. If they gave an address,
+confirm `~/.hermes/brief.json` holds it. If anything is wrong, update it before
+you speak again.
 
 Then add to memory (target `memory`):
 `onboarded_at: <ISO-8601 UTC>; ritual: complete`.
@@ -9511,8 +9534,9 @@ Then add to memory (target `memory`):
 ## Close — exactly three sentences
 
 > Saved: your name, your time zone, your three things, and <HH:MM> <zone> for
-> the brief. Tomorrow at <HH:MM> <zone> it will be in `~/briefs/`, and if the
-> machine is locked it runs when you unlock. Ask me for anything in between.
+> the brief. Tomorrow at <HH:MM> <zone> it will be in `~/briefs/` — and in your
+> inbox at <address> if you gave one — and if the machine is locked it runs when
+> you unlock. Ask me for anything in between.
 
 ## Skip
 
@@ -9689,7 +9713,7 @@ user asks for detail beyond this skill.
     (
         "odile-recipes",
         "skills/odile-recipes/SKILL.md",
-        "e7e6cf85139acb7fd2e8f2dfcb5dc331fe40e6a763ea6d9ee84df5d8b23c273a",
+        "4940e2cff26900a4ea0c95ded15351d2d1be4cc35561866dafa30a510ce46464",
         r'''---
 name: odile-recipes
 description: Morning brief, watchdog, research memo, CSV chart.
@@ -9764,8 +9788,27 @@ the job with these fields (the repo template is
   self-contained: the job runs in a fresh session and cannot see this chat.
 
 ```
-Morning brief for <name>, <zone>. Write ~/briefs/<today YYYY-MM-DD>.md, where the date is today in <zone> (TZ=<zone> date +%F). Include the date; one line of weather for <city> from https://wttr.in/<city>?format=3; one short item with a link for each of: <thing 1>; <thing 2>; <thing 3>; and one sentence on what you will watch tomorrow. Use web_search. Under 200 words. If a lookup fails, say so in one line and continue. Write the file even if some lookups fail.
+Morning brief for <name>, <zone>. Write ~/briefs/<today YYYY-MM-DD>.md, where the date is today in <zone> (TZ=<zone> date +%F). Include the date; one line of weather for <city> from https://wttr.in/<city>?format=3; one short item with a link for each of: <thing 1>; <thing 2>; <thing 3>; and one sentence on what you will watch tomorrow. Use web_search. Under 200 words. If a lookup fails, say so in one line and continue. Write the file even if some lookups fail. Do not re-implement the sender: as your last step run `sudo -n /usr/bin/python3 ~/.hermes/scripts/send_brief.py` and report its one line.
 ```
+
+**Email.** If they want the brief in an inbox too — or they said yes at first
+run and want the address changed — ask once: "Which address?" Check the shape
+(one `@`, a dot after it), then write the file the sender reads, in this turn:
+
+```sh
+mkdir -p ~/.hermes
+printf '{"to": "%s"}\n' "<address>" > ~/.hermes/brief.json
+chmod 600 ~/.hermes/brief.json
+cat ~/.hermes/brief.json
+```
+
+`~/.hermes/brief.json` is `{"to": "<address>"}` and nothing else; it stays on
+this machine and the seed carries no address. The job's prompt already ends with
+`sudo -n /usr/bin/python3 ~/.hermes/scripts/send_brief.py`, so there is nothing
+else to change: that command is the delivery, and the one line it prints is what
+you report. Never write your own mail code and never claim a send the sender did
+not print. With no address file the send exits 2 and the brief stays in
+`~/briefs/`; say so in one line if they asked why no email arrived.
 
 Verify, do not assume: read `$HOME/.hermes/cron/jobs.json` and confirm the job
 is enabled, its expression matches the time asked for, its timezone is the IANA
@@ -10148,7 +10191,8 @@ is correct, not a failure.
 **Done.** Say what is watched, how often it is checked, and where the alert
 lands: `~/workspace/watchdog/<slug>.md`, the history in the file browser, and
 the job's run output. They will hear from it only when the value changes or the
-page cannot be read three times. Email delivery is ODL-235. "Pause my watchdog"
+page cannot be read three times. A watchdog has no email of its own; the daily
+brief's sender is the one thing that writes to an inbox. "Pause my watchdog"
 means `cronjob_manage` edit with `enabled: false`; "stop watching" means remove
 the job and leave the files.
 
@@ -10246,6 +10290,535 @@ second chart; one clear chart beats four crowded ones.
 **Done.** `ls -l` both files. In chat: the row count, the one finding that
 matters, and the two paths. Say what the chart does not show if the data is
 thin or has many missing values.
+''',
+    ),
+)
+
+TENANT_FILES: tuple[tuple[str, str, str, str], ...] = (
+    (
+        "scripts/send_brief.py",
+        "scripts/send_brief.py",
+        "581a9b88c899ee1709587fa8b40631a076616a90798ab3832c58bc54f0ab7409",
+        r'''#!/usr/bin/python3
+"""Send today's brief to its owner, and record what happened.
+
+The brief is written on the tenant by the ``Morning brief`` cron job; this
+script is the delivery half. It reads the job's own dispatch record to know the
+owner's zone, the due time and whether this run was late, composes a plain-text
+message from ``~/.hermes/brief.txt``, sends it through Odile's relay as
+``brief-<slug>@mail.odile.fyi`` with a VERP envelope and ``Reply-To:
+help@odile.fyi``, and records the outcome in ``/var/lib/odile/brief.json`` so
+the signed heartbeat carries ``last_sent_at`` to HQ and a missed brief becomes
+``brief_missing``.
+
+Lateness is read from Hermes, never guessed by a model: the job record's
+``last_dispatch`` holds ``scheduled_at``, ``dispatched_at``, ``lateness_seconds``
+and ``kind`` (``on_time``, ``late`` or ``catch_up``). If this dispatch was
+late, the email says so with the time and the size of the delay. The dispatch
+belongs to this brief when its local date is the brief's date, so a slow turn
+keeps its sentence however long the agent ran, and a manual run of a new day's
+brief does not inherit yesterday's.
+
+    sudo -n /usr/bin/python3 ~/.hermes/scripts/send_brief.py
+    ... --dry-run                       # compose and print; no send, no write
+    ... --date 2026-11-10 --now 1794323000 --template templates/brief.txt
+
+Run it with sudo in the tenant: the seed (relay credential) is root-owned and
+``/var/lib/odile`` is root-owned. The owner's home is resolved from
+``$SUDO_USER`` unless ``--home`` is given.
+
+Exit codes: 0 sent; 1 the send failed; 2 a missing or unusable setting (no
+address, no job, no zone); 3 no brief for that date; 4 the relay, seed,
+template or CA could not be read; 5 the status file could not be written.
+"""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import os
+import pwd
+import re
+import secrets
+import smtplib
+import ssl
+import sys
+from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
+from email.message import EmailMessage
+from email.utils import formatdate, make_msgid
+from pathlib import Path
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+
+DEFAULT_SEED = Path("/etc/odile/seed.json")
+DEFAULT_STATUS = Path("/var/lib/odile/brief.json")
+DEFAULT_JOB = "Morning brief"
+DEFAULT_TEMPLATE = Path(".hermes") / "brief.txt"
+REPLY_TO = "help@odile.fyi"
+FROM_DOMAIN = "mail.odile.fyi"
+SMTP_TIMEOUT_SECONDS = 30
+ADDRESS_RE = re.compile(r"^[^@\s<>,;:]+@[^@\s<>,;:]+\.[^@\s<>,;:]+$")
+CRON_DAILY_RE = re.compile(r"^\s*(\d{1,2})\s+(\d{1,2})\s+\*\s+\*\s+\*\s*$")
+
+
+class BriefError(Exception):
+    """A setting or input this run cannot use; carries the exit code."""
+
+    def __init__(self, message: str, code: int) -> None:
+        super().__init__(message)
+        self.code = code
+
+
+@dataclass(frozen=True)
+class Relay:
+    host: str
+    port: int
+    username: str
+    secret: str
+    tls_ca: str | None = None  # a PEM body, or a path to one
+
+
+@dataclass(frozen=True)
+class Job:
+    name: str
+    zone: ZoneInfo
+    due: str | None
+    dispatch: dict | None
+
+
+def owner_home() -> Path:
+    """The home of the user whose brief this is.
+
+    Under sudo (the tenant path) HOME is root's; the invoking owner is
+    SUDO_USER. In a test or a plain run the current home is right.
+    """
+    explicit = os.environ.get("ODILE_BRIEF_HOME")
+    if explicit:
+        return Path(explicit)
+    user = os.environ.get("SUDO_USER")
+    if user and os.geteuid() == 0:
+        try:
+            return Path(pwd.getpwnam(user).pw_dir)
+        except KeyError:
+            pass
+    return Path.home()
+
+
+def load_json(path: Path, what: str) -> dict:
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError as error:
+        raise BriefError(f"cannot read the {what} at {path}: {error}", 4) from None
+    try:
+        value = json.loads(text)
+    except ValueError as error:
+        raise BriefError(f"the {what} at {path} is not valid JSON: {error}", 4) from None
+    if not isinstance(value, dict):
+        raise BriefError(f"the {what} at {path} is not a JSON object", 4)
+    return value
+
+
+def load_relay(seed_path: Path, tls_ca: Path | None) -> tuple[Relay, str]:
+    seed = load_json(seed_path, "signed seed")
+    slug = seed.get("slug")
+    if not isinstance(slug, str) or not slug:
+        raise BriefError(f"the signed seed at {seed_path} has no slug", 4)
+    mail = seed.get("mail_relay")
+    if not isinstance(mail, dict):
+        raise BriefError(f"the signed seed at {seed_path} has no mail_relay", 4)
+    host = mail.get("host")
+    port = mail.get("port")
+    username = mail.get("username")
+    secret = mail.get("secret")
+    if not (isinstance(host, str) and host and isinstance(username, str) and username
+            and isinstance(secret, str) and secret):
+        raise BriefError(f"the signed seed at {seed_path} has an incomplete mail_relay", 4)
+    if not isinstance(port, int) or isinstance(port, bool) or not 0 < port < 65536:
+        raise BriefError(f"the signed seed at {seed_path} has an invalid mail_relay.port", 4)
+    pinned = str(tls_ca) if tls_ca else None
+    if pinned is None:
+        declared = mail.get("tls_ca")
+        if isinstance(declared, str) and declared.strip():
+            pinned = declared.strip()
+    return Relay(host=host, port=port, username=username, secret=secret, tls_ca=pinned), slug
+
+
+def load_job(jobs_path: Path, name: str) -> Job:
+    document = load_json(jobs_path, "cron jobs file")
+    jobs = document.get("jobs")
+    if not isinstance(jobs, list):
+        raise BriefError(f"the cron jobs file at {jobs_path} has no jobs list", 4)
+    for job in jobs:
+        if isinstance(job, dict) and job.get("name") == name:
+            zone_name = job.get("timezone")
+            if not isinstance(zone_name, str) or not zone_name:
+                raise BriefError(f"the {name} job has no timezone", 2)
+            try:
+                zone = ZoneInfo(zone_name)
+            except (ZoneInfoNotFoundError, ValueError):
+                raise BriefError(f"the {name} job names an unknown timezone {zone_name!r}", 2) from None
+            due = None
+            schedule = job.get("schedule")
+            if isinstance(schedule, dict):
+                match = CRON_DAILY_RE.match(str(schedule.get("expr") or ""))
+                if match:
+                    minute, hour = int(match.group(1)), int(match.group(2))
+                    if 0 <= minute < 60 and 0 <= hour < 24:
+                        due = f"{hour:02d}:{minute:02d}"
+            dispatch = job.get("last_dispatch")
+            return Job(
+                name=name,
+                zone=zone,
+                due=due,
+                dispatch=dispatch if isinstance(dispatch, dict) else None,
+            )
+    raise BriefError(f"no job named {name!r} in {jobs_path}", 2)
+
+
+def load_address(path: Path) -> str:
+    if not path.is_file():
+        raise BriefError(f"no brief address file at {path}", 2)
+    document = load_json(path, "brief address file")
+    address = document.get("to")
+    if not isinstance(address, str) or not ADDRESS_RE.match(address.strip()):
+        raise BriefError(f"the brief address file at {path} has no usable 'to'", 2)
+    return address.strip()
+
+
+def reduce_markdown(text: str) -> str:
+    """The brief's markdown as plain text: headings, emphasis, links, code."""
+    lines = []
+    for line in text.splitlines():
+        line = re.sub(r"^\s{0,3}#{1,6}\s+", "", line)
+        line = re.sub(r"!\[([^\]]*)\]\(([^)]+)\)", r"\1 (\2)", line)
+        line = re.sub(r"\[([^\]]+)\]\(([^)]+)\)", r"\1 (\2)", line)
+        line = line.replace("**", "").replace("__", "")
+        line = re.sub(r"(?<!\*)\*([^*\n]+)\*(?!\*)", r"\1", line)
+        line = re.sub(r"`([^`\n]+)`", r"\1", line)
+        lines.append(line.rstrip())
+    body = "\n".join(lines).strip()
+    body = re.sub(r"\n{3,}", "\n\n", body)
+    return body
+
+
+def _dispatch_timestamp(dispatch: dict) -> datetime | None:
+    """The dispatch time as an aware datetime, or None when it is unusable."""
+    try:
+        dispatched_at = datetime.fromisoformat(str(dispatch.get("dispatched_at")))
+    except (TypeError, ValueError):
+        return None
+    if dispatched_at.tzinfo is None:
+        dispatched_at = dispatched_at.replace(tzinfo=timezone.utc)
+    return dispatched_at
+
+
+def _this_runs_dispatch(job: Job, day: str) -> datetime | None:
+    """The dispatch time when the record belongs to the brief for *day*.
+
+    Hermes keeps ``last_dispatch`` across days, so a manual run of a new day's
+    brief still sees yesterday's record. The dispatch's local date — not the
+    distance from ``now`` — decides: a slow turn may run hours after dispatch
+    and still belongs to today's brief, while a next-morning re-run must not
+    inherit yesterday's sentence.
+    """
+    dispatch = job.dispatch
+    if not dispatch or dispatch.get("kind") not in ("late", "catch_up"):
+        return None
+    dispatched_at = _dispatch_timestamp(dispatch)
+    if dispatched_at is None:
+        return None
+    if dispatched_at.astimezone(job.zone).date().isoformat() != day:
+        return None
+    return dispatched_at
+
+
+def late_sentence(job: Job, day: str) -> str:
+    """The one sentence a late brief carries, from Hermes's dispatch record."""
+    dispatch = job.dispatch
+    if not dispatch or not job.due:
+        return ""
+    dispatched_at = _this_runs_dispatch(job, day)
+    if dispatched_at is None:
+        return ""
+    try:
+        lateness = max(0.0, float(dispatch.get("lateness_seconds") or 0))
+    except (TypeError, ValueError):
+        lateness = 0.0
+    minutes = max(1, round(lateness / 60))
+    if minutes < 90:
+        span = f"{minutes} minute" + ("" if minutes == 1 else "s")
+    else:
+        hours, rest = divmod(minutes, 60)
+        span = f"{hours} hour" + ("" if hours == 1 else "s")
+        if rest:
+            span += f" {rest} minute" + ("" if rest == 1 else "s")
+    local = dispatched_at.astimezone(job.zone).strftime("%H:%M")
+    return f"This one ran at {local} — {span} after its {job.due} slot.\n\n"
+
+
+def greeting_for(local: datetime) -> str:
+    """The brief's first line is the run's own clock, never a fixed greeting."""
+    if local.hour < 12:
+        return "Good morning."
+    if local.hour < 18:
+        return "Good afternoon."
+    return "Good evening."
+
+
+def compose(template_text: str, *, brief: str, job: Job, slug: str, now: datetime,
+            late: str) -> tuple[str, str]:
+    local = now.astimezone(job.zone)
+    today = local.date()
+    fields = {
+        "greeting": greeting_for(local),
+        "weekday": today.strftime("%A"),
+        "day": str(today.day),
+        "month": today.strftime("%B"),
+        "brief": brief,
+        "late": late,
+        "url": f"https://{slug}.odile.fyi",
+        "date": today.isoformat(),
+        "time": local.strftime("%H:%M"),
+        "zone": job.zone.key,
+        "slug": slug,
+    }
+    try:
+        rendered = template_text.format(**fields)
+    except KeyError as error:
+        raise BriefError(f"the brief template names an unknown field {error}", 4) from None
+    subject, _, body = rendered.partition("\n")
+    if not subject.startswith("subject: "):
+        raise BriefError("the brief template's first line must be 'subject: …'", 4)
+    return subject[len("subject: "):].strip(), body.lstrip("\n").rstrip() + "\n"
+
+
+def verp_address(slug: str, day: str, recipient: str) -> str:
+    digest = hashlib.sha256(
+        f"{slug}|{day}|{recipient}|{secrets.token_hex(8)}".encode("utf-8")
+    ).hexdigest()[:12]
+    return f"b-{day.replace('-', '')}-{digest}@{FROM_DOMAIN}"
+
+
+def build_message(*, subject: str, body: str, sender: str, recipient: str, now: datetime,
+                  slug: str, day: str) -> EmailMessage:
+    message = EmailMessage()
+    message["From"] = f"Odile <{sender}>"
+    message["To"] = recipient
+    message["Reply-To"] = REPLY_TO
+    message["Subject"] = subject
+    message["Date"] = formatdate(int(now.timestamp()), localtime=False)
+    message["Message-ID"] = make_msgid(
+        idstring=f"brief.{slug}.{day.replace('-', '')}", domain=FROM_DOMAIN
+    )
+    message.set_content(body)
+    return message
+
+
+def read_status(path: Path) -> dict:
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return value if isinstance(value, dict) else {}
+
+
+def write_status(path: Path, record: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    temporary.write_text(json.dumps(record, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    os.replace(temporary, path)
+
+
+def smtp_context(relay: Relay) -> ssl.SSLContext:
+    context = ssl.create_default_context()
+    if relay.tls_ca is None:
+        return context
+    try:
+        if "BEGIN CERTIFICATE" in relay.tls_ca:
+            context.load_verify_locations(cadata=relay.tls_ca)
+        else:
+            context.load_verify_locations(cafile=relay.tls_ca)
+    except (OSError, ssl.SSLError, ValueError) as error:
+        where = "the seed" if "BEGIN CERTIFICATE" in relay.tls_ca else relay.tls_ca
+        raise BriefError(f"cannot load the relay CA from {where}: {error}", 4) from None
+    return context
+
+
+def send(relay: Relay, message: EmailMessage, *, envelope_from: str, recipient: str) -> None:
+    context = smtp_context(relay)
+    with smtplib.SMTP(relay.host, relay.port, timeout=SMTP_TIMEOUT_SECONDS) as client:
+        client.ehlo()
+        client.starttls(context=context)
+        client.ehlo()
+        client.login(relay.username, relay.secret)
+        client.send_message(message, from_addr=envelope_from, to_addrs=[recipient])
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="send_brief.py",
+        description="Send today's brief through Odile's relay and record the outcome.",
+    )
+    parser.add_argument("--home", type=Path, help="the owner's home (default: $SUDO_USER's, else $HOME)")
+    parser.add_argument("--seed", type=Path, default=DEFAULT_SEED, help="signed seed (relay + slug)")
+    parser.add_argument("--jobs", type=Path, help="Hermes cron jobs file (default: <home>/.hermes/cron/jobs.json)")
+    parser.add_argument("--job", default=DEFAULT_JOB, help=f"the job whose dispatch is this run (default: {DEFAULT_JOB})")
+    parser.add_argument("--address", type=Path, help="address file with {\"to\": …} (default: <home>/.hermes/brief.json)")
+    parser.add_argument("--template", type=Path, help="message template (default: <home>/.hermes/brief.txt)")
+    parser.add_argument("--status", type=Path, default=DEFAULT_STATUS, help="status file the heartbeat reads")
+    parser.add_argument("--brief", type=Path, help="the brief file (default: <home>/briefs/<date>.md)")
+    parser.add_argument("--date", help="the brief's date, YYYY-MM-DD (default: today in the job's zone)")
+    parser.add_argument("--now", type=int, help="the run time as an epoch (default: now)")
+    parser.add_argument("--tls-ca", type=Path, help="CA to pin for STARTTLS (overrides the seed)")
+    parser.add_argument("--dry-run", action="store_true", help="compose and print; no send, no status write")
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = build_parser().parse_args(argv)
+    now = datetime.fromtimestamp(args.now if args.now is not None else datetime.now(timezone.utc).timestamp(),
+                                 tz=timezone.utc)
+    home = args.home or owner_home()
+    jobs_path = args.jobs or home / ".hermes" / "cron" / "jobs.json"
+    address_path = args.address or home / ".hermes" / "brief.json"
+    template_path = args.template or home / ".hermes" / "brief.txt"
+
+    try:
+        relay, slug = load_relay(args.seed, args.tls_ca)
+        job = load_job(jobs_path, args.job)
+        recipient = load_address(address_path)
+        day = args.date or now.astimezone(job.zone).date().isoformat()
+        brief_path = args.brief or home / "briefs" / f"{day}.md"
+        previous = read_status(args.status)
+        attempt = {
+            "version": 1,
+            "slug": slug,
+            "date": day,
+            "to": recipient,
+            "last_attempt_at": int(now.timestamp()),
+            "last_sent_at": previous.get("last_sent_at"),
+            "ok": False,
+            "error": None,
+            "late_seconds": 0,
+            "message_id": None,
+        }
+        try:
+            brief_text = brief_path.read_text(encoding="utf-8")
+        except OSError as error:
+            attempt["error"] = f"no brief for {day} at {brief_path}"
+            if not args.dry_run:
+                _record_failure(args.status, attempt)
+            raise BriefError(f"no brief for {day} at {brief_path}: {error}", 3) from None
+        try:
+            template_text = template_path.read_text(encoding="utf-8")
+        except OSError as error:
+            raise BriefError(f"cannot read the brief template at {template_path}: {error}", 4) from None
+        subject, body = compose(
+            template_text,
+            brief=reduce_markdown(brief_text),
+            job=job,
+            slug=slug,
+            now=now,
+            late=late_sentence(job, day),
+        )
+        sender = f"brief-{slug}@{FROM_DOMAIN}"
+        message = build_message(
+            subject=subject, body=body, sender=sender, recipient=recipient,
+            now=now, slug=slug, day=day,
+        )
+        envelope = verp_address(slug, day, recipient)
+
+        if args.dry_run:
+            print(f"From:      {message['From']}")
+            print(f"To:        {message['To']}")
+            print(f"Reply-To:  {message['Reply-To']}")
+            print(f"Subject:   {message['Subject']}")
+            print(f"Date:      {message['Date']}")
+            print(f"Message-ID:{message['Message-ID']}")
+            print(f"Envelope:  {envelope}")
+            print(f"Relay:     {relay.host}:{relay.port} as {relay.username}")
+            print()
+            print(body, end="")
+            return 0
+
+        previous = read_status(args.status)
+        last_sent = previous.get("last_sent_at")
+        attempt.update({"error": None, "last_sent_at": last_sent, "message_id": message["Message-ID"]})
+        try:
+            send(relay, message, envelope_from=envelope, recipient=recipient)
+        except (OSError, smtplib.SMTPException) as error:
+            attempt["error"] = str(error)[:300]
+            try:
+                write_status(args.status, attempt)
+            except OSError as write_error:
+                print(f"brief: send failed ({error}); status not written to {args.status}: {write_error}",
+                      file=sys.stderr)
+                return 5
+            print(f"brief: send failed: {error}", file=sys.stderr)
+            return 1
+
+        attempt["ok"] = True
+        attempt["last_sent_at"] = int(now.timestamp())
+        attempt["late_seconds"] = _lateness_seconds(job, day)
+        try:
+            write_status(args.status, attempt)
+        except OSError as error:
+            print(f"brief: sent to {recipient}, but the status was not written to {args.status}: {error}",
+                  file=sys.stderr)
+            return 5
+        local = now.astimezone(job.zone).strftime("%H:%M")
+        print(f"brief: sent to {recipient} at {local} {job.zone.key} ({message['Message-ID']})")
+        return 0
+    except BriefError as error:
+        print(f"brief: {error}", file=sys.stderr)
+        return error.code
+
+
+def _record_failure(path: Path, record: dict) -> None:
+    """Best effort: a failure record must never mask the failure itself."""
+    try:
+        write_status(path, record)
+    except OSError as error:
+        print(f"brief: status not written to {path}: {error}", file=sys.stderr)
+
+
+def _lateness_seconds(job: Job, day: str) -> int:
+    """The brief's lateness, from the dispatch that produced it.
+
+    ``late_seconds`` names how late the brief was, not how long the send
+    waited after Hermes dispatched the turn: an ``on_time`` dispatch has its
+    own small lag (20 seconds) and records zero here.
+    """
+    if _this_runs_dispatch(job, day) is None:
+        return 0
+    dispatch = job.dispatch or {}
+    try:
+        return max(0, int(float(dispatch.get("lateness_seconds") or 0)))
+    except (TypeError, ValueError):
+        return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
+''',
+    ),
+    (
+        "brief.txt",
+        "templates/brief.txt",
+        "715bf2a2acf516d133b668d9c24d6b03ba9cb95430415e722d18633e798ca7d5",
+        r'''subject: {weekday}, {day} {month} — your brief
+
+{greeting}
+
+{brief}
+
+{late}Open the machine → {url}
+
+— Odile
+
+{date} · {time} {zone} · {slug}
+Brief emails go out through our own mail server at mail.odile.fyi; it carries the message, never your disk.
 ''',
     ),
 )
@@ -11615,15 +12188,26 @@ def config_version(paths: list[Path], default: int = 52) -> int:
 
 MANAGED_SKILLS_MANIFEST = ".odile-managed-skills.json"
 
+# The exact targets the bundle may carry besides `skills/<name>/SKILL.md`, and
+# the mode each one lands with. ODL-469 added the second and third: the sender
+# is executable, the email template is not. A target outside this table and
+# outside the skills shape is refused, so the allowlist cannot grow by accident.
+TENANT_FILE_MODES = {
+    "AGENTS.md": 0o644,
+    "scripts/send_brief.py": 0o755,
+    "brief.txt": 0o644,
+}
+
 
 @dataclasses.dataclass(frozen=True)
 class TenantFile:
     """One embedded file: where it lands, where it came from, and its pin."""
 
-    target: str      # "AGENTS.md" under $HOME, or "skills/<name>/SKILL.md" under $HERMES_HOME
+    target: str      # "AGENTS.md" under $HOME; anything else under $HERMES_HOME
     source: str      # repo path, for audit
     sha256: str
     text: str
+    mode: int = 0o644
 
     def data(self) -> bytes:
         return self.text.encode("utf-8")
@@ -11637,20 +12221,23 @@ class TenantFile:
 
 
 def tenant_files() -> tuple[TenantFile, ...]:
-    """The embedded bundle: standing context first, then every embedded skill."""
+    """The embedded bundle: standing context first, then skills and extras."""
     files = [TenantFile("AGENTS.md", "templates/tenant-agents.md",
                         TENANT_AGENTS_SHA256, TENANT_AGENTS_SOURCE)]
     for name, source, digest, text in TENANT_SKILLS:
         files.append(TenantFile(f"skills/{name}/SKILL.md", source, digest, text))
+    for target, source, digest, text in TENANT_FILES:
+        files.append(TenantFile(target, source, digest, text, TENANT_FILE_MODES[target]))
     return tuple(files)
 
 
 def validate_tenant_files(files: tuple[TenantFile, ...] | list[TenantFile]) -> list[TenantFile]:
-    """Every pin matches, every target is safe, and there is exactly one AGENTS.md.
+    """Every pin matches, every target is known and unique, one AGENTS.md.
 
     Raises SystemExit with the first problem; returns the files for chaining.
     """
-    seen: set[str] = set()
+    seen_targets: set[str] = set()
+    seen_skills: set[str] = set()
     agents = 0
     for item in files:
         path = Path(item.target)
@@ -11662,15 +12249,28 @@ def validate_tenant_files(files: tuple[TenantFile, ...] | list[TenantFile]) -> l
                 f"error: embedded {item.source} has sha256 {actual}, "
                 f"the pinned hash is {item.sha256 or '(missing)'}"
             )
+        if item.target in seen_targets:
+            raise SystemExit(f"error: two embedded files target {item.target!r}")
+        seen_targets.add(item.target)
+        expected_mode = TENANT_FILE_MODES.get(item.target, 0o644)
+        if item.mode != expected_mode:
+            raise SystemExit(
+                f"error: embedded {item.target!r} lands 0o{item.mode:03o}, "
+                f"the contract is 0o{expected_mode:03o}"
+            )
         if item.target == "AGENTS.md":
             agents += 1
             continue
         name = item.skill
-        if name is None or not SKILL_NAME_RE.match(name):
+        if name is None:
+            if item.target not in TENANT_FILE_MODES:
+                raise SystemExit(f"error: unsupported embedded target {item.target!r}")
+            continue
+        if not SKILL_NAME_RE.match(name):
             raise SystemExit(f"error: unsupported embedded target {item.target!r}")
-        if name in seen:
+        if name in seen_skills:
             raise SystemExit(f"error: two embedded skills named {name!r}")
-        seen.add(name)
+        seen_skills.add(name)
     if agents != 1:
         raise SystemExit(f"error: the tenant bundle has {agents} AGENTS.md files, expected 1")
     return list(files)
@@ -11703,10 +12303,10 @@ def ensure_tenant_files(layout: "Layout", dry: bool,
     for item in files:
         base = layout.home if item.target == "AGENTS.md" else layout.hermes_home
         target = base / item.target
-        if item.skill is not None:
+        if "/" in item.target:
             changed |= ensure_dir(target.parent, 0o700, *user_ids(layout), dry=dry,
                                   label=str(target.parent))
-        changed |= ensure_file(target, item.data(), 0o644, *user_ids(layout), dry,
+        changed |= ensure_file(target, item.data(), item.mode, *user_ids(layout), dry,
                                detail=f"({item.source}, sha256 {item.sha256[:12]}…)")
 
     wanted = sorted(name for item in files if (name := item.skill) is not None)
@@ -11774,6 +12374,11 @@ class Layout:
     def key_env(self) -> Path:
         """The seed's per-user inference key, 0600 root, read by the unit."""
         return self.etc / "key.env"
+
+    @property
+    def mail_ca(self) -> Path:
+        """The relay's certificate, carried by the seed (ODL-469)."""
+        return self.etc / "mail-ca.pem"
 
     @property
     def recovery(self) -> Path:
@@ -12699,6 +13304,14 @@ def validate_seed(body: dict, instance_id: str, slug: str | None = None) -> None
     mail = body.get("mail_relay")
     if not isinstance(mail, dict) or not all(k in mail for k in ("host", "port", "username", "secret")):
         raise SystemExit("error: seed mail_relay is incomplete")
+    # ODL-469: present means pinned; a cached seed minted before the field
+    # existed is accepted (and `ensure_mail_ca` says so), but a malformed one
+    # is refused here rather than failing at the first send.
+    ca = mail.get("tls_ca")
+    if ca is not None and (not isinstance(ca, str)
+                           or "-----BEGIN CERTIFICATE-----" not in ca
+                           or "-----END CERTIFICATE-----" not in ca):
+        raise SystemExit("error: seed mail_relay.tls_ca is not a PEM certificate")
 
 
 def seed_signature(headers: dict[str, str]) -> bytes:
@@ -13399,6 +14012,31 @@ def ensure_key_env(layout: Layout, seed: dict, dry: bool) -> bool:
     owner = (0, 0) if layout.mode == "tenant" else current_ids(layout)
     return ensure_file(layout.key_env, data.encode("utf-8"), 0o600, *owner, dry,
                        detail="(the only inference credential; root-only)")
+
+
+def ensure_mail_ca(layout: Layout, seed: dict, dry: bool) -> bool:
+    """Cache the relay's certificate where a reader can pin it (ODL-469).
+
+    The seed carries the relay's own PEM: the relay's certificate is
+    self-signed, so a tenant without it fails at STARTTLS with
+    `CERTIFICATE_VERIFY_FAILED` and the brief never leaves the machine.
+    `~/.hermes/scripts/send_brief.py` reads the PEM from the seed, and this
+    copy at /etc/odile/mail-ca.pem is the one a person or
+    `openssl s_client -CAfile` can point at. A cached seed minted before the
+    field existed writes nothing and says so, so an upgrade keeps working.
+    """
+    mail = seed.get("mail_relay")
+    ca = mail.get("tls_ca") if isinstance(mail, dict) else None
+    if ca is None:
+        print(f"skip         {layout.mail_ca} (the seed carries no mail relay CA)")
+        return False
+    if (not isinstance(ca, str) or "-----BEGIN CERTIFICATE-----" not in ca
+            or "-----END CERTIFICATE-----" not in ca):
+        raise SystemExit("error: seed mail_relay.tls_ca is not a PEM certificate")
+    body = ca if ca.endswith("\n") else ca + "\n"
+    owner = (0, 0) if layout.mode == "tenant" else current_ids(layout)
+    return ensure_file(layout.mail_ca, body.encode("utf-8"), 0o644, *owner, dry,
+                       detail="(the relay's certificate; the seed pins it)")
 
 
 def ensure_installer_copy(layout: Layout, dry: bool) -> bool:
@@ -14971,14 +15609,20 @@ def self_test() -> int:
         # tenant bundle: pins, source parity, write, convergence, removal
         files = tenant_files()
         targets = [item.target for item in files]
-        check.ok("the embedded bundle carries $HOME/AGENTS.md and odile-first-run",
+        check.ok("the embedded bundle carries the context, the skills and the brief files",
                  targets.count("AGENTS.md") == 1
                  and "skills/odile-first-run/SKILL.md" in targets
-                 and all(target == "AGENTS.md"
+                 and "scripts/send_brief.py" in targets and "brief.txt" in targets
+                 and all(target in TENANT_FILE_MODES
                          or (target.startswith("skills/") and target.endswith("/SKILL.md")
                              and SKILL_NAME_RE.match(target.split("/")[1]))
                          for target in targets),
                  str(targets))
+        modes = {item.target: item.mode for item in files}
+        check.ok("the sender lands 0755 and the email template 0644",
+                 modes.get("scripts/send_brief.py") == 0o755
+                 and modes.get("brief.txt") == 0o644,
+                 ", ".join(f"{target} 0o{mode:03o}" for target, mode in sorted(modes.items())))
         try:
             validate_tenant_files(files)
             pins_ok, pin_error = True, ""
@@ -15020,6 +15664,11 @@ def self_test() -> int:
             )
             check.ok("a one-byte edit of an embedded file fails its pin",
                      _raises(SystemExit, validate_tenant_files, tampered))
+            wrong_mode = [dataclasses.replace(item, mode=0o644)
+                          if item.target == "scripts/send_brief.py" else item
+                          for item in files]
+            check.ok("an embedded file with the wrong mode is refused",
+                     _raises(SystemExit, validate_tenant_files, wrong_mode))
             me = pwd.getpwuid(os.geteuid()).pw_name
             bundle_layout = Layout.scratch(root=root / "bundle", user=me,
                                            webapp_port=9142,
@@ -15044,8 +15693,49 @@ def self_test() -> int:
             check.ok("a skill the user added is not removed", own.is_file())
             check.ok("a restored bundle puts the skill back",
                      ensure_tenant_files(bundle_layout, False, files) and skill_path.is_file())
+            sender_path = bundle_layout.hermes_home / "scripts/send_brief.py"
+            brief_path = bundle_layout.hermes_home / "brief.txt"
+            sender_source = repo_root / "scripts/send_brief.py"
+            brief_source = repo_root / "templates" / "brief.txt"
+            check.ok("the sender lands executable and matches its source",
+                     sender_path.is_file()
+                     and (sender_path.stat().st_mode & 0o777) == 0o755
+                     and (not sender_source.is_file()
+                          or sender_path.read_bytes() == sender_source.read_bytes()),
+                     f"mode {oct(sender_path.stat().st_mode & 0o777) if sender_path.is_file() else 'missing'}")
+            check.ok("the email template lands readable and matches its source",
+                     brief_path.is_file()
+                     and (brief_path.stat().st_mode & 0o777) == 0o644
+                     and (not brief_source.is_file()
+                          or brief_path.read_bytes() == brief_source.read_bytes()),
+                     f"mode {oct(brief_path.stat().st_mode & 0o777) if brief_path.is_file() else 'missing'}")
         else:
             print("skip  the bundle write checks: the embedded pins do not verify")
+
+        # the relay's certificate the seed carries (ODL-469)
+        ca_user = pwd.getpwuid(os.geteuid()).pw_name
+        relay_pem = ("-----BEGIN CERTIFICATE-----\n"
+                     "MIIBhTCCASugAwIBAgIUSELFTESTCA000000000000000000\n"
+                     "-----END CERTIFICATE-----\n")
+        relay_seed = {"mail_relay": {"host": "mail.odile.fyi", "port": 587,
+                                     "username": "x", "secret": "y", "tls_ca": relay_pem}}
+        ca_layout = Layout.scratch(root=root / "mail-ca", user=ca_user, webapp_port=9143,
+                                   public_url="http://mail-ca.test")
+        wrote_ca = ensure_mail_ca(ca_layout, relay_seed, False)
+        check.ok("the seed's relay certificate is cached at 0644",
+                 wrote_ca and ca_layout.mail_ca.is_file()
+                 and (ca_layout.mail_ca.stat().st_mode & 0o777) == 0o644
+                 and ca_layout.mail_ca.read_text(encoding="utf-8") == relay_pem)
+        check.ok("a second run reads the relay certificate as `same`",
+                 not ensure_mail_ca(ca_layout, relay_seed, False))
+        bare_layout = Layout.scratch(root=root / "no-mail-ca", user=ca_user, webapp_port=9144,
+                                     public_url="http://no-mail-ca.test")
+        check.ok("a cached seed with no relay CA writes nothing",
+                 not ensure_mail_ca(bare_layout, {"mail_relay": {}}, False)
+                 and not bare_layout.mail_ca.exists())
+        check.ok("a seed whose relay CA is not a PEM is refused",
+                 _raises(SystemExit, ensure_mail_ca, bare_layout,
+                         {"mail_relay": {"tls_ca": "not a certificate"}}, False))
 
         # the Odile skin (ODL-240)
         check.ok("the template names the Odile skin",
@@ -16262,14 +16952,16 @@ def dry_run(args: argparse.Namespace) -> int:
     print("would build the Webapp bundle (first run only)")
     print(f"would write {layout.hermes_home}/config.yaml ({len(MANAGED_KEYS)} managed blocks; "
           f"public_url {layout.webapp_public_url})")
-    print(f"would write {layout.home}/AGENTS.md and {len(TENANT_SKILLS)} embedded skill(s) "
-          f"under {layout.skills}")
+    print(f"would write {layout.home}/AGENTS.md, {len(TENANT_SKILLS)} embedded skill(s) "
+          f"under {layout.skills}, {layout.hermes_home}/scripts/send_brief.py (0755) "
+          f"and {layout.hermes_home}/brief.txt")
     print(f"would write {layout.hermes_home}/skins/{SKIN_NAME}.yaml and display.skin {SKIN_NAME} "
           "(paper and ink; other display keys kept)")
     print(f"would link the Webapp brand script ({BRAND_ASSET}) from {layout.webapp_bundle}")
     print(f"would write {layout.hermes_home}/.env (3 allowlisted keys, mode 0600)")
     print(f"would write {layout.key_env} (the seed's per-user NEAR key, 0600 root:root) and "
           f"EnvironmentFile= on {layout.unit_target}")
+    print(f"would write {layout.mail_ca} (the relay's certificate the seed pins, 0644)")
     if args.first_visit:
         print(f"would write a placeholder sign-in hash; the first-visit page at "
               f"https://{site_name(layout, slug)}/first-visit sets the real one")
@@ -16435,6 +17127,7 @@ def tenant_main(args: argparse.Namespace) -> int:
     changed |= ensure_export_program(layout, args.dry_run)
     key_changed = ensure_key_env(layout, seed, args.dry_run)
     changed |= key_changed
+    changed |= ensure_mail_ca(layout, seed, args.dry_run)
     changed |= ensure_pin_files(layout, seed, args.dry_run)
     changed |= ensure_install(layout, args.dry_run)
     changed |= ensure_webapp_build(layout, args.dry_run)
