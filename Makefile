@@ -118,8 +118,14 @@ test-unit:
 # their sources. Without this step a commit could edit the installer and stay
 # green with a stale pair (ODL-403). The signature check shells out to openssl,
 # which prereqs names.
+#
+# The demo deploy's suite is the only check of its pure functions (Caddy
+# splicing, the DNS way-back line, the lenient YAML read) and of the tenant
+# apply's own self-test: it failed for days with no gate running it, so it runs
+# here too (ODL-901 retired the README table its first check read).
 self-test: prereqs
 	@$(CHECK_LOCK_PY) $(PYTHON) installer/odile_install.py --self-test
+	@$(CHECK_LOCK_PY) $(PYTHON) deploy/demo-host/deploy_demo_public.py --self-test
 
 compile: prereqs
 	@test -n "$(PY_FILES)" || { echo "make compile: no .py files found" >&2; exit 1; }

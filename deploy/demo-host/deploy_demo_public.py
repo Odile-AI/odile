@@ -26,8 +26,9 @@ prints one line per fact:
 
 The first run signs in to the tenant with the account it already has
 (`--access-user tenant --access-password-file PATH`); every later run signs in
-as `judge` with the published password, which this program reads from
-README.md's judge table unless `--judge-password-file` is given.
+as `judge` with the published password, which this program reads from the
+sign-in page's `DEMO_PASSWORD` literal — the one published copy since ODL-901
+retired README.md's judge table — unless `--judge-password-file` is given.
 
     ./deploy/demo-host/deploy_demo_public.py --dry-run
     ./deploy/demo-host/deploy_demo_public.py
@@ -232,16 +233,27 @@ def cleanup_console_sessions() -> None:
 
 
 def published_password(repo: Path = REPO) -> str:
-    """The demo password README.md publishes in its judge table.
+    """The demo password the sign-in page publishes.
 
-    The deploy must not carry a second copy of a public value that README
-    already owns; if the table moves, this fails loudly instead of guessing.
+    ODL-901 retired the README's judge table, so the page the judge lands on
+    is the single published copy: it carries the password as the literal it
+    posts to the gateway, and tests/test_demo_login_page.py pins its sha256.
+    README.md's table stays as the fallback for a checkout from before that
+    retirement.
+
+    This mirrors `deploy_demo_icons.published_password()`: the two deployers
+    sign in to the same machine as the same account, so they must read the
+    same copy.
     """
+    page = (repo / "deploy" / "demo-host" / "login.html").read_text(encoding="utf-8")
+    rows = re.findall(r"var DEMO_PASSWORD = '([^']+)';", page)
+    if len(set(rows)) == 1:
+        return rows[0]
     text = (repo / "README.md").read_text(encoding="utf-8")
-    match = re.search(r"^\|\s*Password\s*\|\s*`([^`]+)`\s*\|", text, re.MULTILINE)
-    if not match:
-        raise SystemExit("error: no `| Password |` row in README.md's judge table")
-    return match.group(1)
+    rows = re.findall(r"^\|\s*Password\s*\|\s*`([^`]+)`\s*\|$", text, re.M)
+    if len(set(rows)) != 1:
+        raise SystemExit("error: deploy/demo-host/login.html has no single DEMO_PASSWORD")
+    return rows[0]
 
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -540,7 +552,7 @@ def self_test() -> int:
 
     password = published_password()
     check(len(password) >= 16 and " " not in password,
-          "README.md's judge table carries the published password")
+          "the sign-in page carries the one published password")
     check(create_dns.switch_back() == "./deploy/demo-host/create_dns.py --target 203.0.113.139",
           "the DNS record's way-back line names HQ's address")
     check(TARGET_IP == "203.0.113.87", "the baseline target is the tenant")
@@ -654,7 +666,8 @@ def _run(argv: list[str] | None = None) -> int:
     parser.add_argument("--no-login", action="store_true",
                         help="keep the live sign-in page (a newer page is installed by another card)")
     parser.add_argument("--judge-password-file", default="",
-                        help="the published judge password (default: README.md's table)")
+                        help="the published judge password (default: the sign-in page's "
+                             "DEMO_PASSWORD)")
     args = parser.parse_args(argv)
 
     if args.self_test:
