@@ -72,16 +72,16 @@ certificate fingerprint.
 
 ### 3. The machine dies
 
-> We rebuild it; you ask the agent to restore last night's backup with your
+> We rebuild it; you ask me to restore last night's backup with your
 > recovery file — the one you downloaded on your first visit. If the machine is
-> still running and you lost your copy, ask the agent to show you the file.
+> still running and you lost your copy, ask me to show you the file.
 > Target under an hour; your last day may be lost. The drill is practiced before
 > you get a machine.
 
 Backed up nightly. Rebuildable in under an hour — without a key. A recovery code
 and a recovery file are the way back: the code resets your sign-in, the file
 opens your backup. Your first visit gives you both; keep them off the machine.
-While the machine is still running, the agent can show it again. If the disk will
+While the machine is still running, I can show it again. If the disk will
 not open, the machine is rebuilt and you restore from your backup.
 
 ### 4. A bill, a charge or a subscription

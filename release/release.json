@@ -1,27 +1,27 @@
 {
   "artifacts": {
     "installer": {
-      "sha256": "87340eeeff8035e34b52ce2cca31a94203e60b59682b157c600f913a48daf8fb",
-      "size": 1557751,
+      "sha256": "85282fd2d919bbdb794510cd4e998ab6892784663c40bfc19d62db956836e4b1",
+      "size": 1557729,
       "url": "odile_install.py"
     },
     "skills": {
-      "sha256": "a813f1de6107812182f2cf7ea7ec5e0504d8e220c22e58102deaa02055a41d53",
-      "size": 852004,
+      "sha256": "57c5f7937b9b5030c455e2cfbbf184216c01078b02ce66662633afab3860edf7",
+      "size": 852657,
       "url": "skills.tar.gz"
     }
   },
   "boot": {
     "kernel": "6.12.115+deb13.1-amd64"
   },
-  "generated_at": "2026-11-22T08:47:59Z",
+  "generated_at": "2026-11-22T12:45:00Z",
   "manifest": {
-    "sha256": "566996e736dbfeaba05af279915e6b7661c6730a8a737d0e5efead78d0663ae7",
+    "sha256": "2c39128bb80bd9096fcc7016bafe42ec3644d2d1b778d42fbf2a71e13966eb4d",
     "signature_url": "manifest.json.sig",
     "url": "manifest.json"
   },
-  "notes": "ODL-469 (the brief email is wired into the tenant), re-cut on main's ff1c6b0: the signed installer carries scripts/send_brief.py (now main's 581a9b88, the late-sentence follow-up) and templates/brief.txt, writes the relay's seed-carried CA at /etc/odile/mail-ca.pem, and the Morning-brief prompt ends with the installed sender. A surgical re-cut of 2026.11.21-6: one manifest line, installer_sha256. The manifest's two Odile skill rows and skills.tar.gz stay 2026.11.21-6's until the next fresh-root cut.",
+  "notes": "t_ab95ec2a (ODL-474's brand follow-up): skills/odile-help/SKILL.md \u00a73 speaks in the first person ('ask me to restore', 'ask me to show you the file', 'I can show it again'), while docs/CLAIMS.md \u00a75 and A9, docs/FAQ.md and templates/emails/support.md keep the deck's 'the agent'; the deck is unchanged. A fresh-root cut over main's 2026.11.22-2: the manifest moves installer_sha256 and the three Odile skill rows (odile-first-run, odile-help, odile-recipes), which -2's surgical re-cut had left at 2026.11.21-6's bytes, and skills.tar.gz is rebuilt from this tree.",
   "product": "odile",
-  "release": "2026.11.22-2",
+  "release": "2026.11.22-3",
   "schema": 1
 }

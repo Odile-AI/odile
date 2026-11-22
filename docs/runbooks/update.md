@@ -1041,6 +1041,30 @@ has the full record; it is committed, not deployed (the URL still serves
 `2026.11.15-9`, `2cdf0801…`, measured 2026-11-19T04:37Z).
 
 
+**The `2026.11.22-3` cut (t_ab95ec2a, the person the help skill speaks in,
+rebuilt on `main`'s `-2`).** The `odile-help` skill's machine-dies answer is
+the one answer the agent says aloud, so §3 speaks in the first person — "you
+ask me to restore", "ask me to show you the file", "I can show it again" —
+while `docs/CLAIMS.md` and the two desk surfaces (`docs/FAQ.md`,
+`templates/emails/support.md`) keep the deck's "the agent". The branch was 652
+commits behind `main`; rebuilt on `main`'s `5fc113c`, it took `main`'s
+installer and eight release names whole, re-ran `installer/embed_support.py`
+byte-identical, re-embedded the tenant bundle with this card's skill and
+re-signed. `install.md` §12.6 has the full record: installer `85282fd2…`
+(1,557,729 bytes), manifest `2c39128b…` (50,044 bytes, 48 skills, audit
+`6d3f7be0…`; its diff against `-2` is `installer_sha256` and the three Odile
+skill rows, which `-1`/`-2`'s surgical re-cuts had left at `2026.11.21-6`'s
+bytes), skills `57c5f793…` (852,657 bytes), built from the fresh scratch root
+`/var/tmp/odile-ab95ec2a/r4/root` (29/29; run 2 `tenant: same`, 0 writes; the
+skill it installs is byte-identical to the checkout), and a second cut
+byte-identical on all eight names. It is committed, not deployed: measured
+2026-11-22T12:38Z, the URL serves the deployed `2026.11.19-5` (installer
+`1d946c44…`, 1,503,889 bytes; manifest `7031d4a0…`). The id ledger: `-2` is
+ODL-469's brief-email cut (08:47Z); `-3` is later than every cut by
+`generated_at` (12:45Z). `main` then moved to `a5e5d7b` (t_7378e496's
+brief-delivery fix), which moves no `installer/`, `release/` or `skills/` byte,
+so the merged tree still carries the `-3` pair.
+
 ### The manifest names the tenant backup program (2026-11-19)
 
 The installer's own `--manifest` has named `backup_sha256` since ODL-215, and
