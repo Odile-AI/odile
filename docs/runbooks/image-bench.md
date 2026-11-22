@@ -30,7 +30,7 @@ idempotency evidence.
 | File | Role |
 |---|---|
 | `deploy/image/install-stack.sh` | the only installer: user, Hermes v0.23.0, config, `.env`, cron job, unit |
-| `deploy/image/config.yaml` | the five config blocks, including `onboarding.run: false` (the tenant first-run pin); `__WEBAPP_HOST__`/`__WEBAPP_PORT__` are substituted |
+| `deploy/image/config.yaml` | the seven managed blocks the installer's tenant template carries, including `auxiliary.vision.model` (the vision lane's pin, ODL-341-F1) and `onboarding.run: false` (the tenant first-run pin); `__WEBAPP_HOST__`/`__WEBAPP_PORT__` are substituted |
 | `deploy/image/tenant.service` | the tenant's systemd unit (the demo host's unit with two names substituted) |
 | `deploy/image/bench-heartbeat.sh` | the body of the one Hermes cron job, `bench-heartbeat`, every minute, no agent |
 | `deploy/image/bench.py` | the five checks, standard library only; `local`, `container`, `image` modes |
@@ -110,9 +110,10 @@ Two container-only details, both stated in the files:
   owner.
 
 The tenant config also carries `onboarding.run: false` and
-`onboarding.profile_build: "off"`, the same fifth block the demo host and
-`templates/config.yaml` carry (ODL-387), so the bench serves the tenant's first
-screen. Measured 2026-11-10: the first run of the updated `install-stack.sh`
+`onboarding.profile_build: "off"`, the same `onboarding` block the installer's
+tenant template and `templates/config.yaml` carry (ODL-387), so the bench serves
+the tenant's first screen. Measured 2026-11-10: the first run of the updated
+`install-stack.sh`
 printed `write /home/tenant/.hermes/config.yaml`, the second printed `same` for
 every piece, and the restarted tenant's first signed-in Webapp load showed
 `Sessions / No sessions yet` with no onboarding chat (`state.db`: 0 sessions);

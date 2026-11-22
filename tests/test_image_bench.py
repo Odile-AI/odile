@@ -276,6 +276,33 @@ class TemplateTests(unittest.TestCase):
         config = (self.IMAGE / "config.yaml").read_text(encoding="utf-8")
         self.assertIn('onboarding:\n  run: false\n  profile_build: "off"', config)
 
+    def test_the_tenant_config_carries_every_block_the_installer_manages(self) -> None:
+        # A bench built from this file is the profile a tenant gets, and its
+        # Webapp is where an image is answered. Every block the installer owns
+        # has to be here: ODL-341-F1 added `auxiliary`, and a bench that kept
+        # the older set served a config whose vision lane rode the text model.
+        # The count is read from the installer, not repeated here, so the next
+        # block the installer gains fails this test instead of being forgotten.
+        installer = (ROOT / "installer" / "odile_install.py").read_text(encoding="utf-8")
+        managed = re.search(r"MANAGED_KEYS = \((.*?)\)", installer, re.S)
+        assert managed is not None, "MANAGED_KEYS is not where this test expects it"
+        keys = re.findall(r'"([a-z_]+)"', managed.group(1))
+        self.assertEqual(len(keys), 7, f"the installer's managed set moved: {keys}")
+        config = (self.IMAGE / "config.yaml").read_text(encoding="utf-8")
+        for key in keys:
+            self.assertIn(f"\n{key}:\n", config, f"the bench config has no {key} block")
+
+    def test_the_tenant_config_pins_the_installers_vision_model(self) -> None:
+        # The pin is one constant: `vision_analyze` describes an image with
+        # THIS model inside NEAR AI's Private TEE tier. Without the block the
+        # lane resolves to `model.default` and the bench answers an image with
+        # the text model (empty at this token budget).
+        installer = (ROOT / "installer" / "odile_install.py").read_text(encoding="utf-8")
+        pin = re.search(r'^VISION_MODEL = "([^"]+)"', installer, re.M)
+        assert pin is not None, "VISION_MODEL is not where this test expects it"
+        config = (self.IMAGE / "config.yaml").read_text(encoding="utf-8")
+        self.assertIn(f'auxiliary:\n  vision:\n    model: "{pin.group(1)}"', config)
+
     def test_every_template_placeholder_has_a_substitution(self) -> None:
         # A raw template installed as a unit is a real failure mode: the first
         # image booted with ODILE_TENANT_USER=__TENANT_USER__ because the unit

@@ -1,6 +1,7 @@
 # Odile image bench — the tenant profile served on the Webapp port.
 #
-# The same five blocks as deploy/demo-host/config.yaml, with two bench-only
+# The same seven managed blocks as the release installer's tenant template
+# (installer/odile_install.py, TENANT_CONFIG_TEMPLATE), with two bench-only
 # changes:
 #   * public_url is a non-loopback name so the Hermes basic-auth gate engages
 #     even on a loopback bind (public_hosts_engage_gate in
@@ -30,6 +31,14 @@ custom_providers:
     key_env: HERMES_CUSTOM_CLOUD_API_NEAR_AI_API_KEY
     model: deepseek-ai/DeepSeek-V4.1-Flash-1017-abliterated
 
+# The machine's public name for the dashboard surface (the Webapp reads
+# `webapp.public_url`, not this one — t_d95b8c13). The bench serves no
+# dashboard; the block is here because the installer's tenant template carries
+# it and a bench that drops a managed block is a profile that cannot answer
+# what a tenant's config carries.
+dashboard:
+  public_url: "http://tenant.odile.test:__WEBAPP_PORT__"
+
 webapp:
   enabled: true
   host: __WEBAPP_HOST__
@@ -42,3 +51,12 @@ webapp:
 onboarding:
   run: false
   profile_build: "off"
+
+# The vision lane's own pin (ODL-341-F1). Without this block the lane rides
+# `model.default` — the text model — and the Webapp on this bench answers an
+# image with an empty description; a Frontier-tier model would take the image
+# out of the enclave. The id is the installer's VISION_MODEL; the self-test
+# reads that constant out of installer/odile_install.py so the two cannot drift.
+auxiliary:
+  vision:
+    model: "Qwen/Qwen3-VL-30B-A3B-Instruct"
