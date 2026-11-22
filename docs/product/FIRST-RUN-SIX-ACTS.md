@@ -76,6 +76,10 @@ unchanged. The privacy-first test is §10.
   interrogation and give the returning user a home; they do not widen
   activation.
 
+**Corrected 22 November 2026:** the shipped ritual keeps five questions and
+writes the brief after answer 3; what the six acts remove is the wait for value,
+not the questions (Act E, §3).
+
 ---
 
 ## 3. The six acts, screen by screen
@@ -459,9 +463,12 @@ dispatcher's gate. The new cards take the next free `ODL-4xx` ids at seeding
 
 > **Corrected 22 November 2026:** the ritual shipped as five questions — name,
 > IANA time zone, three things, brief time (default 07:00), email address —
-> matching `skills/odile-first-run/SKILL.md` at `main`. The DoD below is the
-> 9 November card definition; `ODL-233`'s backlog entry carries the
-> five-question design it built.
+> matching `skills/odile-first-run/SKILL.md` at `main`; `ODL-469` added the
+> address question and its `~/.hermes/brief.json` write (0600). This block's
+> heading ("three questions"), its goal ("not a fifth question", "the
+> three-question skill") and its DoD below are the 9 November card definition;
+> a seeded C3 body takes the five-question text from the skill, not from this
+> block; `ODL-233`'s backlog entry records the ritual it built.
 
 - **Milestone:** M3 · **Lane:** product · **Size:** M
 - **depends_on:** `ODL-233` (done: the five-question ritual is the base),
@@ -761,7 +768,8 @@ dispatcher's gate. The new cards take the next free `ODL-4xx` ids at seeding
   generate one SSH key and paste a command (`REVIEW-UX-2026-11-07.md` §6.4).
   The claim page offers the vault path (1Password/Bitwarden) as one of two
   ways to make the key, but the ceremony is still terminal commands. The six
-  acts remove screens and questions, not the terminal.
+  acts remove screens, not the terminal; the first-run ritual keeps its five
+  questions and writes the brief after answer 3 (Act E).
 
 ## 8. The deferred piece: a per-tenant HQ page
 
