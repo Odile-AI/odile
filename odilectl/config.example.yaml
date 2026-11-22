@@ -14,6 +14,20 @@ support_public_key: /etc/odile/support/odile-support.pub
 default_plan_id: 113
 default_days: 31
 
+# Every instance's inference runs on its own NEAR AI key (ODL-242). The mint
+# needs the account's management credential: a rotating session credential,
+# 0600, never the inference key. `near_account` is the switch — without it no
+# key is minted and the seed carries the config's shared key (the manual/bench
+# path). `near_spend_limit_usd` is the per-key cap passed at mint (A2's
+# envelope: $10). `seed_keys` is the handoff file `odilectl provision` writes
+# the raw key into and the seed service consumes; it must match the service's
+# ODILE_SEED_KEYS (default /var/lib/odile/seed-keys.json).
+# near_account: /root/.odile/near-account.json
+# near_workspace_id: 00000000-0000-0000-0000-000000000000
+# near_org_id: 00000000-0000-0000-0000-000000000000
+# near_spend_limit_usd: 10
+# seed_keys: /var/lib/odile/seed-keys.json
+
 # The account site the invitation email names. When set, the recovery kit
 # prints <host>/forgot instead of pointing at the invitation email; a pasted
 # <host>/forgot is accepted and stripped. Keep the value alone on the line: an

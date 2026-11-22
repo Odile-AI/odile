@@ -31,6 +31,7 @@ from . import (
     export,
     health,
     invite,
+    keys,
     provision,
     purge,
     reconcile,
@@ -50,6 +51,7 @@ __version__ = "0.1.0"
 MODULES = (
     invite,
     provision,
+    keys,
     status,
     health,
     destroy,

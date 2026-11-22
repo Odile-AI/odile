@@ -48,11 +48,14 @@ Success — `200`, `Cache-Control: no-store`, and the signed body:
 ```
 
 These eight fields are the v0 contract; the test suite pins the set. `{slug}` in
-any config string is substituted for the tenant's slug. The body contains **no
-user login credential**: no SSH private key, no passphrase, no Webapp password,
-no LUKS material, and not even the user's public key or email address. The
-inference and mail-relay values are machine API credentials the installer writes
-into local config, not credentials that open the machine.
+any config string is substituted for the tenant's slug. `near_api_key` is the
+**instance's own** key, minted at provision by the provider's API (ODL-242, §2a);
+the config's `near_api_key` is only the shared fallback for a bench or a manual
+seed. The body contains **no user login credential**: no SSH private key, no
+passphrase, no Webapp password, no LUKS material, and not even the user's public
+key or email address. The inference and mail-relay values are machine API
+credentials the installer writes into local config, not credentials that open the
+machine.
 
 Refusals are JSON `{"error": "...", "reason": "..."}`:
 
@@ -65,6 +68,7 @@ Refusals are JSON `{"error": "...", "reason": "..."}`:
 | 410 | `used` | already exchanged (or rotated away) | use the cached seed, or rotate |
 | 410 | `expired` | 24 hours have passed | rotate |
 | 413 | `too_large` | body over 4 KiB | send only the two fields |
+| 503 | `no_inference_key` | no key is waiting for this tenant **and** the config's `near_api_key` is empty | run `odilectl provision <slug> --apply` again; the token is not spent (see §2a) |
 | 500 | `internal` | signing key or config broken | `journalctl -u odile-seed`; the detail is on stderr |
 | 502/curl 7 | — | Caddy route or service down | `systemctl status odile-seed`, then the Caddy block in §3 |
 
@@ -125,6 +129,155 @@ seeds a machine, and neither may be redeemed as the other. Schema v2's
 `tenants.setup_token_hash` is a single hash with no expiry or `used_at`, so it
 cannot express single-use plus expiry; it stays reserved for the invite-stage
 token. If a later card consolidates the two, move the ledger — do not fork it.
+
+## 2a. The inference key — issue, fund, zero, revoke (ODL-242)
+
+Every instance runs inference on **its own** NEAR AI key. There is no meter, no
+proxy and no per-request ledger in the path: the machine calls
+`https://cloud-api.near.ai/v1` directly with the key in `/etc/odile/key.env`
+(0600 root), and the cap is the provider's per-key `spendLimit`, set when the key
+is minted (`docs/product/SPIKE-near-key-api.md` §3.1, §7). This section is the
+operator's part: what HQ holds, what it must not, and the four moments.
+
+### The one config switch
+
+The mint needs the account's management credential — a rotating session
+credential, not the inference key. In `/root/.odile/config.yaml` (0600):
+
+```yaml
+near_account: /root/.odile/near-account.json   # the switch: without it, no mint
+near_workspace_id: 220b244c-…                  # the org's `default` workspace
+near_org_id: dedd2da9-…                        # for `odilectl keys --check`
+near_spend_limit_usd: 10                       # A2's envelope (t_ad1783c4)
+seed_keys: /var/lib/odile/seed-keys.json       # must match ODILE_SEED_KEYS
+```
+
+`/root/.odile/near-account.json` is 0600 and holds `user_agent`,
+`access_token`, `refresh_token` and `refreshed_at`. **The user agent is part of
+the credential**: the console's refresh route answers `401 Failed to refresh
+token` for a different one. `odilectl` refreshes on a `401`, writes the rotated
+pair to that file *before* using it, and refuses a group- or world-readable
+file. Every refresh rotates the refresh token; a human console session holding
+the same one is invalidated, so keep one holder (the control plane).
+
+Without `near_account` nothing is minted and the seed carries the config's
+shared `near_api_key` — alpha.0's manual path and the bench/sim shape. That is
+one line, never a default, so a host with no credential cannot mint by accident.
+
+### 1. Issue — at provision, before the order
+
+```sh
+odilectl provision odl-7f3a2c --key ~/.ssh/ada.pub --apply
+```
+
+The command mints `POST /v1/workspaces/<workspace>/api-keys` with
+`{"name": "odile-odl-7f3a2c", "spendLimit": {"amount": 10000000000, "currency": "USD"}}`
+**before** `provider.create`, so a provider refusal leaves no paid machine
+without a key. A rebuild (a `destroyed` row reopened) mints a new key; a second
+run on a *live* machine keeps the key it is spending with and mints nothing.
+
+What HQ keeps — the account record, one row per key, written once:
+
+```sh
+sqlite3 /var/lib/odile/waitlist.db \
+  "select key_id, slug, label, key_prefix, spend_limit_nano, state, instance_id
+     from tenant_keys order by issued_at;"
+# key_id=…  slug=odl-7f3a2c  label=odile-odl-7f3a2c  key_prefix=sk-…****
+# spend_limit_nano=10000000000  state=issued  instance_id=srv-…
+```
+
+and what the command reports back:
+
+```sh
+odilectl keys odl-7f3a2c            # the record only, offline
+odilectl keys odl-7f3a2c --check    # plus the provider's usage and the balance
+```
+
+The label is `odile-<slug>` (no random suffix: destroy must be able to derive it
+from what HQ holds). The prefix is the provider's own masked `key_prefix`
+(`sk-…****`) — the first characters, never the key.
+
+The **raw** key goes into the seed once, through a second one-shot handoff:
+`odilectl provision` writes it to `/var/lib/odile/seed-keys.json` (0600), bound
+to the setup token's SHA-256. The exchange that spends the token hands the key
+over and removes the entry in the same exchange, so the raw key is at HQ only
+between the mint and the machine's first boot. A key bound to another token is
+not handed over; a seed with no key anywhere refuses `503 no_inference_key`
+**without** spending the token.
+
+### 2. Fund — alpha.0 has no plan price and no monthly credit
+
+Savio buys credit on the account in the console (Stripe or crypto — the only
+console-only operation, SPIKE §4); the key draws on the account's shared pool.
+There is no code path that moves money. The public sentence is
+`docs/CLAIMS.md` §1 Money and place ("the key's prepaid credit is the
+allowance"); this runbook coins none.
+
+### 3. Zero — the provider refuses, the machine keeps running
+
+Two refusals, both from the provider, both `402`:
+
+| The key's `spendLimit` reached | The org has no credit |
+|---|---|
+| `{"error":{"message":"API key spend limit exceeded. Spent: $x, Limit: $y","type":"api_key_limit_exceeded"}}` | `{"error":{"message":"No spending limit configured. Please contact support to set up credits.","type":"no_limit_configured"}}` |
+
+`odilectl keys <slug> --check` derives the same state from the provider's own
+numbers (`at_limit`, `no_credit`, `ok`) and prints one sentence; it stores
+nothing. The check is **post-charge**: the request admitted while usage is under
+the limit is billed in full, so the last admitted request can cross the limit by
+up to its own cost (measured at `2,180` nano-USD over a nominal `$0.05`, SPIKE
+§6–§7). Keep the last request small; do not expect an exact stop.
+
+The user sees the provider's message through the agent, and the machine and its
+cron jobs keep running — inference stops, nothing else does.
+
+### 4. Revoke — destroy, then the old key cannot spend
+
+```sh
+odilectl destroy odl-7f3a2c --export ~/odl-7f3a2c.tar.gz --apply
+```
+
+After the machine is gone, `destroy` lists the workspace's keys
+(`GET /v1/workspaces/<workspace>/api-keys`), finds the one whose `name` **and**
+`key_prefix` match the record, and `DELETE`s that id (`204`). The record is
+marked `revoked` with the reason, and the waiting raw key (if any) is removed
+from the handoff. A second destroy converges: a key the provider no longer lists
+is recorded as revoked without another call. A host with no `near_account` says
+`not revoked (no near_account in the config)` and marks nothing.
+
+A rebuilt machine takes a new key (issue, above), and the old machine's key
+answers `401 invalid_api_key` at its next call — revoke is immediate, with no
+grace period.
+
+### Measured 2026-11-22 (this host, the live account)
+
+- **Issue, twice.** Two `odilectl provision --apply` runs on a scratch root,
+  against a recorded machine provider and the live management API: labels
+  `odile-odl-evida` (`sk-635****`) and `odile-odl-evida2` (`sk-b01****`), each
+  `spendLimit` 10 000 000 000 nano (`$10`), two different key ids. The real
+  seed service signed both seeds; each carried its own key and neither carried
+  the other's; the installer's own `ensure_key_env` wrote each scratch
+  `/etc/odile/key.env` at 0600 and the file matched its seed byte for byte;
+  `seed-keys.json` was `{}` after both exchanges, and the state database
+  contained no raw key.
+- **The wall, live.** A key minted with `$0.001` reached
+  `402 {"message":"API key spend limit exceeded. Spent: $0.001011, Limit: $0.001",
+  "type":"api_key_limit_exceeded"}`; per-key `usage` was `1,011,000` nano (the
+  post-charge overshoot: `11,000` nano over the nominal cap). `hermes chat
+  --oneshot` on that key printed the provider's sentence verbatim plus its
+  billing copy and an "Out of credits — Add credits with Custom" panel.
+- **The machine kept running.** A no-agent cron job (the tenant's watchdog
+  shape) fired on schedule — `Last run … ok`, `Dispatch: on time` — while the
+  chat turn was refused, and fired again the next minute.
+- **The other refusal.** `no_limit_configured` cannot be produced on a funded
+  org, so a scratch Hermes pointed at a local server replaying the provider's
+  *recorded* `402` body (`raw/06-chat-no-credit.json`) printed `HTTP 402: No
+  spending limit configured. Please contact support to set up credits.` with the
+  same billing copy.
+- **Revoke.** `DELETE …/api-keys/<id>` answered `204`; the list no longer named
+  the key; the old key answered `401 invalid_api_key` on
+  `chat/completions`. Two destroys resolved each id from the list call by
+  `name` + `key_prefix` and left the handoff empty.
 
 ## 3. HQ setup (one time)
 
@@ -765,6 +918,8 @@ append-only trigger; a token row is operational state, not the event log).
   (200, `application/x-pem-file`, `Cache-Control: public, max-age=300`), so the
   PEM a stranger fetches is the kit's `signing_public_key`. Writing its
   fingerprint into the recovery file is still later wiring.
-- **Not in v0:** per-tenant NEAR keys (one org key with `{slug}` substitution),
-  email delivery of the token, and a web form. The token is handed over by the
-  ready email; the seed is fetched by the installer.
+- **Not in v0:** email delivery of the token, and a web form. The token is
+  handed over by the ready email; the seed is fetched by the installer.
+  Per-tenant NEAR keys landed with ODL-242 (§2a): one minted key per instance,
+  the raw key through the handoff file, the label and first characters in
+  `tenant_keys`, and the key revoked at destroy.

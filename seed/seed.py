@@ -33,6 +33,15 @@ No user password, passphrase or private key is stored here or returned. The
 only key-shaped values in a seed are machine API credentials (NEAR, mail relay)
 and a public support key.
 
+Each instance's NEAR key (ODL-242) arrives through a second one-shot handoff:
+`odilectl provision` mints it with the provider's management API and writes it
+to `/var/lib/odile/seed-keys.json` (0600) bound to the setup token's hash; the
+redeem that spends the token hands the key over and removes the entry, so the
+raw `sk-…` is on HQ only between the mint and the machine's first boot. A seed
+with no waiting key falls back to the config's shared `near_api_key` (the bench
+and manual path), and a seed with neither is refused `503 no_inference_key`
+without spending the token.
+
 The one exception is a *rebuild* (ODL-215 follow-up): the tenant's old restic
 repository password has to reach the new machine, or `backup.py init` meets the
 existing repository with a new key and re-initialises. HQ still holds no
@@ -67,6 +76,7 @@ Environment:
     ODILE_SEED_BIND             bind address (default 127.0.0.1; Caddy fronts it)
     ODILE_SEED_PORT             port (default 8081)
     ODILE_SEED_CONFIG           service secrets/config, mode 0600
+    ODILE_SEED_KEYS             the issued-key handoff (default /var/lib/odile/seed-keys.json)
     ODILE_SEED_SIGNING_KEY      the seed's Ed25519 private key, mode 0600
     ODILE_SEED_CERT             the release key's signature over its public half
     ODILE_SEED_RELEASE_PUBKEY   the release public key (default: the repo's, then .prev)
@@ -96,6 +106,14 @@ DEFAULT_CONFIG = "/root/.odile/seed-config.json"
 # config at start (LoadCredential), so a config rewrite would be invisible
 # until a restart; this file is read per exchange.
 DEFAULT_REBUILDS = "/var/lib/odile/seed-rebuilds.json"
+# The per-instance inference key waiting for its exchange (ODL-242):
+# `odilectl provision` mints the key with the provider's API and writes it
+# here, bound to the setup token it just minted. The guest takes it *once*, on
+# the redeem that consumes the token, and the entry is removed in the same
+# exchange — so HQ holds the raw `sk-…` only between the mint and the machine's
+# first boot, and never after. A file beside the ledger, like `seed-rebuilds`,
+# because systemd hands the service a copy of the config at start.
+DEFAULT_KEYS = "/var/lib/odile/seed-keys.json"
 # ODL-514: the seed key is not the release key. This one lives on HQ and signs
 # tenant seeds; the release key (offline) signs installers, manifests, releases
 # and the certificate over this key's public half.
@@ -480,7 +498,6 @@ def load_config(path: str | None = None) -> dict:
         raise ConfigError("seed config %s must be a JSON object" % path)
 
     required = {
-        "near_api_key": str,
         "model": str,
         "support_public_key": str,
         "backup_repo_url": str,
@@ -492,6 +509,18 @@ def load_config(path: str | None = None) -> dict:
         if not isinstance(value, kind) or (kind is str and not value.strip()):
             raise ConfigError("seed config %s: field %r is missing or not a non-empty %s"
                               % (path, field, kind.__name__))
+    # `near_api_key` is the shared fallback, not the source (ODL-242): every
+    # instance provisioned by `odilectl` carries its own minted key from the
+    # issued-key handoff, and the config's value is what a bench or a manual
+    # seed uses when no key is waiting. Absent is valid; present must be a
+    # non-empty string. A seed with neither is refused at exchange time, not at
+    # start, so one tenant's missing key does not stop the service for others.
+    shared_key = config.get("near_api_key")
+    if shared_key is not None and (not isinstance(shared_key, str) or not shared_key.strip()):
+        raise ConfigError(
+            "seed config %s: near_api_key is present but not a non-empty string "
+            "(remove it, or give the fallback key)" % path
+        )
     mail = config["mail_relay"]
     for field, kind in (("host", str), ("port", int), ("username", str), ("secret", str)):
         value = mail.get(field)
@@ -573,15 +602,173 @@ def fill(value: str, slug: str) -> str:
     return value.replace("{slug}", slug)
 
 
+def keys_path() -> str:
+    """The issued-key handoff: `ODILE_SEED_KEYS`, else the ledger's directory."""
+    return os.environ.get("ODILE_SEED_KEYS", DEFAULT_KEYS)
+
+
+def validate_key_entry(entry: object, where: str = "seed keys") -> dict:
+    """Check one issued-key entry; return it with normalised lower-case hex.
+
+    The entry holds a raw `sk-…` between the mint and the machine's first boot,
+    so its shape is checked on the way in *and* on the way out: a truncated key
+    would install a machine whose every request is refused, and the seed's own
+    signature would still verify.
+    """
+    if not isinstance(entry, dict):
+        raise ConfigError("%s is not a JSON object" % where)
+    key = entry.get("key")
+    if not isinstance(key, str) or not key.strip():
+        raise ConfigError("%s has no non-empty 'key'" % where)
+    if len(key) > 512 or any(character.isspace() for character in key):
+        raise ConfigError("%s: 'key' is not one token (whitespace or too long)" % where)
+    for field in ("label", "key_id", "prefix", "workspace_id"):
+        value = entry.get(field)
+        if not isinstance(value, str) or not value.strip():
+            raise ConfigError("%s has no non-empty %r" % (where, field))
+    token_hash = entry.get("token_hash")
+    if token_hash is not None and (not isinstance(token_hash, str)
+                                   or not TOKEN_RE.match(token_hash)):
+        raise ConfigError("%s: token_hash is not 64 lowercase hex" % where)
+    instance = entry.get("instance_id")
+    if instance is not None and (not isinstance(instance, str) or not instance.strip()):
+        raise ConfigError("%s: instance_id is not a non-empty string" % where)
+    out = dict(entry)
+    out["key"] = key.strip()
+    if isinstance(token_hash, str):
+        out["token_hash"] = token_hash.lower()
+    return out
+
+
+def load_keys(path: str | None = None) -> dict:
+    """The `{slug: entry}` map of keys waiting for their exchange, or {}."""
+    path = path or keys_path()
+    try:
+        with open(path, encoding="utf-8") as handle:
+            document = json.load(handle)
+    except FileNotFoundError:
+        return {}
+    except ValueError as exc:
+        raise ConfigError("%s is not valid JSON: %s" % (path, exc)) from exc
+    except OSError as exc:
+        raise ConfigError("cannot read %s: %s" % (path, exc)) from exc
+    if not isinstance(document, dict):
+        raise ConfigError("%s must be a JSON object" % path)
+    for slug, entry in document.items():
+        if not isinstance(slug, str) or not slug:
+            raise ConfigError("%s has a non-string slug" % path)
+        validate_key_entry(entry, "%s.%s" % (path, slug))
+    return document
+
+
+def set_issued_key(path: str, slug: str, entry: dict | None) -> None:
+    """Write (or remove) one tenant's waiting key, atomically, at 0600.
+
+    `odilectl provision` is the only writer. A provision that mints a key
+    rewrites the entry (the old one is revoked at the provider first); destroy
+    removes it. The file is 0600 and, written by root, is given to the
+    directory's owner (`odile`) — the user the service runs as.
+    """
+    try:
+        with open(path, encoding="utf-8") as handle:
+            document = json.load(handle)
+    except FileNotFoundError:
+        document = {}
+    if not isinstance(document, dict):
+        raise ConfigError("%s must be a JSON object" % path)
+    if entry is None:
+        document.pop(slug, None)
+    else:
+        document[slug] = validate_key_entry(entry, "%s.%s" % (path, slug))
+    data = (json.dumps(document, indent=2, sort_keys=True) + "\n").encode("utf-8")
+    owner = None
+    if os.geteuid() == 0:
+        try:
+            info = os.stat(os.path.dirname(os.path.abspath(path)) or ".")
+            owner = (info.st_uid, info.st_gid)
+        except OSError:
+            owner = None
+    write_private(path, data, owner)
+
+
+def issued_key_for(keys: dict, slug: str, token_hash: str) -> dict | None:
+    """The waiting key for this slug, matched to the token that will redeem it.
+
+    Matching the token hash is what makes a leftover harmless: a key minted for
+    an earlier token (a run that failed between mint and order) is not handed
+    to a later one. An entry written before the token existed carries no hash
+    and is taken by the slug alone — it is always the latest mint, because
+    `provision` revokes the previous key before it writes a new entry.
+    """
+    entry = (keys or {}).get(slug)
+    if not isinstance(entry, dict):
+        return None
+    checked = validate_key_entry(entry, "seed keys.%s" % slug)
+    bound = checked.get("token_hash")
+    if bound is not None and bound != token_hash:
+        return None
+    return checked
+
+
+def take_issued_key(path: str, slug: str, token_hash: str) -> dict | None:
+    """Read the waiting key and remove it in one write; None when none waits.
+
+    Called only after the token itself has been consumed, so the key and the
+    token are spent together: the machine that exchanged its token gets the one
+    key minted for it, and HQ keeps no raw key afterwards. A crash between the
+    two writes leaves the entry for an already-spent token, which no exchange
+    can reach again (the token is single use); the next provision overwrites it
+    and destroy removes it.
+    """
+    document = load_keys(path)
+    entry = issued_key_for(document, slug, token_hash)
+    if entry is None:
+        return None
+    document.pop(slug, None)
+    data = (json.dumps(document, indent=2, sort_keys=True) + "\n").encode("utf-8")
+    owner = None
+    if os.geteuid() == 0:
+        try:
+            info = os.stat(os.path.dirname(os.path.abspath(path)) or ".")
+            owner = (info.st_uid, info.st_gid)
+        except OSError:
+            owner = None
+    write_private(path, data, owner)
+    return entry
+
+
+def near_api_key(config: dict, entry: dict | None, slug: str) -> str:
+    """The key this seed carries: the instance's own, else the config's shared one.
+
+    Every instance provisioned by `odilectl` gets its own minted key (ODL-242).
+    A seed with neither is refused before it is signed: a machine that boots
+    with no key answers every request `401`, which reads as a broken install
+    rather than a missing key.
+    """
+    if entry is not None:
+        return entry["key"]
+    shared = config.get("near_api_key")
+    if isinstance(shared, str) and shared.strip():
+        return fill(shared, slug)
+    raise SeedError(
+        503,
+        "no_inference_key",
+        "no inference key is waiting for %s and the seed config carries no "
+        "near_api_key; provision the tenant again" % slug,
+    )
+
+
 def build_seed(tenant: sqlite3.Row, instance_id: str, config: dict,
                rebuild: dict | None = None,
-               identity: tuple[bytes, bytes] | None = None) -> dict:
+               identity: tuple[bytes, bytes] | None = None,
+               near_api_key_value: str | None = None) -> dict:
     slug = tenant["slug"]
     mail = config["mail_relay"]
     seed = {
         "slug": slug,
         "instance_id": instance_id,
-        "near_api_key": fill(config["near_api_key"], slug),
+        "near_api_key": near_api_key_value if near_api_key_value is not None
+        else fill(config.get("near_api_key") or "", slug),
         "model": fill(config["model"], slug),
         "support_public_key": fill(config["support_public_key"], slug),
         "backup_repo_url": fill(config["backup_repo_url"], slug),
@@ -922,19 +1109,29 @@ def list_tokens(con: sqlite3.Connection, slug: str, now: datetime | None = None)
 def redeem(con: sqlite3.Connection, token: str, instance_id: str,
            config: dict, rebuilds: dict | None = None,
            now: datetime | None = None,
-           identity: tuple[bytes, bytes] | None = None) -> dict:
+           identity: tuple[bytes, bytes] | None = None,
+           keys: dict | None = None,
+           keys_file: str | None = None) -> dict:
     """Exchange a token for its seed, exactly once.
 
     Checks are ordered so a refused request never burns the token: only the
     final conditional UPDATE consumes it, and SQLite serialises that UPDATE, so
     two simultaneous exchanges yield one seed and one 410.
+
+    The instance's own inference key (ODL-242) is read *before* the token is
+    consumed and removed from the handoff after it, so a seed that cannot be
+    built (no key anywhere) refuses with `503 no_inference_key` and leaves the
+    token spendable — the machine's retry then gets its seed once provision has
+    put a key in place. The key entry is matched to this token's hash, so a
+    key minted for an earlier run cannot ride a later token.
     """
     now = now or utcnow()
     stamp = iso(now)
+    token_hash = hash_token(token)
     row = con.execute(
         "SELECT id, tenant_id, instance_id, expires_at, used_at"
         " FROM seed_tokens WHERE token_hash = ?",
-        (hash_token(token),),
+        (token_hash,),
     ).fetchone()
     if row is None:
         raise SeedError(404, "unknown_token", "no such token")
@@ -944,6 +1141,17 @@ def redeem(con: sqlite3.Connection, token: str, instance_id: str,
         raise SeedError(410, "expired", "token expired")
     if not secrets.compare_digest(row["instance_id"], instance_id):
         raise SeedError(403, "wrong_instance", "token is bound to another instance")
+    tenant = con.execute(
+        "SELECT slug, server_id FROM tenants WHERE id = ?", (row["tenant_id"],)
+    ).fetchone()
+    if tenant is None:
+        raise SeedError(500, "no_tenant", "tenant record disappeared")
+    issued = issued_key_for(keys or {}, tenant["slug"], token_hash)
+    key = near_api_key(config, issued, tenant["slug"])
+    seed = build_seed(tenant, row["instance_id"], config,
+                      rebuild=rebuild_for(rebuilds or {}, tenant["slug"], token_hash),
+                      identity=identity,
+                      near_api_key_value=key)
     cur = con.execute(
         "UPDATE seed_tokens SET used_at = ? WHERE id = ? AND used_at IS NULL AND expires_at > ?",
         (stamp, row["id"], stamp),
@@ -951,14 +1159,11 @@ def redeem(con: sqlite3.Connection, token: str, instance_id: str,
     con.commit()
     if cur.rowcount != 1:
         raise SeedError(410, "used", "token already used")
-    tenant = con.execute(
-        "SELECT slug, server_id FROM tenants WHERE id = ?", (row["tenant_id"],)
-    ).fetchone()
-    if tenant is None:
-        raise SeedError(500, "no_tenant", "tenant record disappeared")
-    return build_seed(tenant, row["instance_id"], config,
-                      rebuild=rebuild_for(rebuilds or {}, tenant["slug"], hash_token(token)),
-                      identity=identity)
+    if issued is not None:
+        # The key travelled; HQ must not keep a copy. A failure here is loud
+        # but does not un-spend the token: the seed above is already built.
+        take_issued_key(keys_file or keys_path(), tenant["slug"], token_hash)
+    return seed
 
 
 def record_for_token(con: sqlite3.Connection, token: str, instance_id: str,
@@ -1127,7 +1332,9 @@ class Handler(BaseHTTPRequestHandler):
             seed = redeem(con, token, instance_id,
                           load_config(getattr(self.server, "config_path", None)),
                           load_rebuilds(getattr(self.server, "rebuilds_path", None)),
-                          identity=getattr(self.server, "identity", None))
+                          identity=getattr(self.server, "identity", None),
+                          keys=load_keys(getattr(self.server, "keys_path", None)),
+                          keys_file=getattr(self.server, "keys_path", None))
         except ConfigError as exc:
             print("seed: config error: %s" % exc, file=sys.stderr, flush=True)
             return self._json(500, {"error": "the seed config or its rebuild entries are invalid",

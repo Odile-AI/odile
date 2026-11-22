@@ -254,6 +254,9 @@ class PlanTest(OffboardTest):
                 "dns.delete",
                 "provider.terminate",
                 "provider.absent",
+                # ODL-242: the inference key is revoked after the machine is
+                # gone and before the row is marked destroyed.
+                "key.revoke",
                 "state.destroy",
                 "backup.retain",
             ],

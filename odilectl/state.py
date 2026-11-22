@@ -201,6 +201,37 @@ BEFORE DELETE ON tenant_state_events
 BEGIN
     SELECT RAISE(ABORT, 'tenant state events are append-only');
 END;
+
+-- The inference key record (ODL-242): one row per key the account was given,
+-- never the key itself. HQ holds the label and the first characters, which is
+-- what `destroy` resolves the provider's id from; the raw `sk-…` goes into the
+-- seed once and is stored nowhere here. Additive, like `seed_tokens`: no
+-- `tenant_state` CHECK changed, so `STATE_SCHEMA_VERSION` stays put. The
+-- partial unique index is the "one per user" rule at the storage layer: a
+-- second live key for a slug cannot exist, so a rebuild must revoke the first.
+CREATE TABLE IF NOT EXISTS tenant_keys (
+    key_id           TEXT    PRIMARY KEY,
+    slug             TEXT    NOT NULL,
+    label            TEXT    NOT NULL,
+    key_prefix       TEXT    NOT NULL,
+    workspace_id     TEXT    NOT NULL,
+    instance_id      TEXT,
+    spend_limit_nano INTEGER,
+    state            TEXT    NOT NULL CHECK (state IN ('issued', 'revoked')),
+    issued_at        TEXT    NOT NULL,
+    revoked_at       TEXT,
+    detail           TEXT    NOT NULL DEFAULT '{}' CHECK (json_valid(detail))
+);
+
+CREATE INDEX IF NOT EXISTS tenant_keys_slug ON tenant_keys(slug, issued_at);
+CREATE UNIQUE INDEX IF NOT EXISTS tenant_keys_one_live
+    ON tenant_keys(slug) WHERE state = 'issued';
+
+CREATE TRIGGER IF NOT EXISTS tenant_keys_written_once
+BEFORE UPDATE OF key_id, slug, label, key_prefix, workspace_id, issued_at ON tenant_keys
+BEGIN
+    SELECT RAISE(ABORT, 'a key record is written once; only its state and detail move');
+END;
 """
 
 # The v2 -> v3 rebuild. The old table's CHECK only accepts the ceremony
@@ -368,6 +399,38 @@ class StateEvent:
 
 
 @dataclass(frozen=True)
+class TenantKey:
+    """One issued inference key: the label and first characters, never the key."""
+
+    key_id: str
+    slug: str
+    label: str
+    key_prefix: str
+    workspace_id: str
+    instance_id: str | None
+    spend_limit_nano: int | None
+    state: str
+    issued_at: str
+    revoked_at: str | None
+    detail: dict[str, Any]
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "key_id": self.key_id,
+            "slug": self.slug,
+            "label": self.label,
+            "key_prefix": self.key_prefix,
+            "workspace_id": self.workspace_id,
+            "instance_id": self.instance_id,
+            "spend_limit_nano": self.spend_limit_nano,
+            "state": self.state,
+            "issued_at": self.issued_at,
+            "revoked_at": self.revoked_at,
+            "detail": dict(self.detail),
+        }
+
+
+@dataclass(frozen=True)
 class Drift:
     """One disagreement between the database and the provider."""
 
@@ -457,6 +520,22 @@ def _event(row: sqlite3.Row) -> StateEvent:
         to_state=row["to_state"],
         detail=_detail(row["detail"]),
         created_at=row["created_at"],
+    )
+
+
+def _tenant_key(row: sqlite3.Row) -> TenantKey:
+    return TenantKey(
+        key_id=row["key_id"],
+        slug=row["slug"],
+        label=row["label"],
+        key_prefix=row["key_prefix"],
+        workspace_id=row["workspace_id"],
+        instance_id=row["instance_id"],
+        spend_limit_nano=row["spend_limit_nano"],
+        state=row["state"],
+        issued_at=row["issued_at"],
+        revoked_at=row["revoked_at"],
+        detail=_detail(row["detail"]),
     )
 
 
@@ -832,6 +911,142 @@ class StateStore:
             self._con.rollback()
             raise
         return self.get(slug)
+
+    # --------------------------------------------------------------- the keys
+
+    def keys(self, slug: str | None = None) -> tuple[TenantKey, ...]:
+        """The key records, oldest first; one slug's, or every tenant's."""
+        if slug is None:
+            rows = self._con.execute(
+                "SELECT * FROM tenant_keys ORDER BY issued_at, key_id"
+            ).fetchall()
+        else:
+            rows = self._con.execute(
+                "SELECT * FROM tenant_keys WHERE slug = ? ORDER BY issued_at, key_id",
+                (slug,),
+            ).fetchall()
+        return tuple(_tenant_key(row) for row in rows)
+
+    def key_for(self, slug: str) -> TenantKey | None:
+        """The tenant's most recent key record — issued or revoked, never the key."""
+        rows = self.keys(slug)
+        return rows[-1] if rows else None
+
+    def record_key(
+        self,
+        slug: str,
+        *,
+        label: str,
+        key_id: str,
+        key_prefix: str,
+        workspace_id: str,
+        instance_id: str | None = None,
+        spend_limit_nano: int | None = None,
+        detail: dict[str, Any] | None = None,
+    ) -> TenantKey:
+        """Write one issued key; a live predecessor for the slug is revoked here.
+
+        Two facts move together, in one transaction: the new record and the
+        ending of the tenant's previous *live* record. Revoke-then-record is
+        what makes a rebuild honest — the provider already dropped the old key
+        in `keys.issue`, and a row that still said `issued` would be a claim
+        about a key nobody can spend.
+
+        Writing the same `key_id` twice is a no-op, down to `issued_at`: a
+        retried provision must not move the moment the key was minted.
+        """
+        stamp = _iso(self.now())
+        payload = json.dumps(detail or {}, sort_keys=True)
+        try:
+            existing = self._con.execute(
+                "SELECT * FROM tenant_keys WHERE key_id = ?", (key_id,)
+            ).fetchone()
+            if existing is not None:
+                other = _tenant_key(existing)
+                if other.slug != slug or other.label != label:
+                    raise StateError(
+                        f"the key id {key_id} is already recorded for {other.slug} "
+                        f"({other.label}); a provider id must name one key"
+                    )
+            if existing is None:
+                self._con.execute(
+                    "UPDATE tenant_keys SET state = 'revoked', revoked_at = ?,"
+                    " detail = ? WHERE slug = ? AND state = 'issued'",
+                    (
+                        stamp,
+                        json.dumps({"reason": "superseded", "by": key_id}, sort_keys=True),
+                        slug,
+                    ),
+                )
+                self._con.execute(
+                    "INSERT INTO tenant_keys (key_id, slug, label, key_prefix, workspace_id,"
+                    " instance_id, spend_limit_nano, state, issued_at, revoked_at, detail)"
+                    " VALUES (?, ?, ?, ?, ?, ?, ?, 'issued', ?, NULL, ?)",
+                    (
+                        key_id,
+                        slug,
+                        label,
+                        key_prefix,
+                        workspace_id,
+                        instance_id,
+                        spend_limit_nano,
+                        stamp,
+                        payload,
+                    ),
+                )
+                self._con.commit()
+            elif instance_id is not None:
+                record = _tenant_key(existing)
+                if record.instance_id != instance_id:
+                    self._con.execute(
+                        "UPDATE tenant_keys SET instance_id = ? WHERE key_id = ?",
+                        (instance_id, key_id),
+                    )
+                    self._con.commit()
+        except Exception:
+            self._con.rollback()
+            raise
+        chosen = self._con.execute(
+            "SELECT * FROM tenant_keys WHERE key_id = ?", (key_id,)
+        ).fetchone()
+        if chosen is None:
+            raise StateError(f"the key record {key_id} did not land for {slug}")
+        return _tenant_key(chosen)
+
+    def revoke_key(self, key_id: str, *, reason: str = "") -> TenantKey | None:
+        """Mark one key revoked; a second call changes nothing.
+
+        The provider's delete is the fact this records. `reason` says how the
+        id was resolved (`destroy`, or `not listed` when the provider had
+        already dropped it), so the transcript can be read without guessing.
+        """
+        row = self._con.execute(
+            "SELECT * FROM tenant_keys WHERE key_id = ?", (key_id,)
+        ).fetchone()
+        if row is None:
+            return None
+        record = _tenant_key(row)
+        if record.state == "revoked":
+            return record
+        stamp = _iso(self.now())
+        try:
+            self._con.execute(
+                "UPDATE tenant_keys SET state = 'revoked', revoked_at = ?, detail = ?"
+                " WHERE key_id = ? AND state = 'issued'",
+                (
+                    stamp,
+                    json.dumps({"reason": reason or "revoked"}, sort_keys=True),
+                    key_id,
+                ),
+            )
+            self._con.commit()
+        except Exception:
+            self._con.rollback()
+            raise
+        chosen = self._con.execute(
+            "SELECT * FROM tenant_keys WHERE key_id = ?", (key_id,)
+        ).fetchone()
+        return _tenant_key(chosen) if chosen is not None else None
 
     def forget_initramfs_host_key(self, slug: str) -> Tenant:
         """Drop the initramfs host key once the strict image has booted.
