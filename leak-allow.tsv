@@ -196,3 +196,11 @@ forbidden-value	docs/runbooks/verify.md	sha256:0cca50f512f3	constant	no	history 
 forbidden-value	tests/test_servury_reinstall.py	sha256:0cca50f512f3	constant	no	history only: the retired tenant's instance id in the blob this path carried before 2026-11-20; the path is pinned	never
 forbidden-value	tests/test_servury_reinstall.py	sha256:95aa03e40369	constant	no	history only: a retired tenant slug in the blob this path carried before 2026-11-20; the path is pinned	never
 forbidden-path	scripts/servury_reseller_key_*	sha256:4014bb9b4e56	constant	no	published history: the planted vendor-key file name of the ODL-513 dry run, added and deleted in 64b5682; the glob keeps the one shape and the digest pins the value	never
+
+# t_d55b0e47's `2026.11.21-3` cut named the live demo tenant in
+# `release/release.json`'s `notes`; its next commit on the same branch
+# (`1e6e15a`) reworded both places to "the demo host", but the cut commit stays
+# in the branch's pushed history, so the pre-push hook's per-commit scan and
+# CI's history job still read the blob. One value at one path; another value
+# there is still a finding.
+forbidden-value	release/release.json	sha256:3890f50e6844	constant	no	published history: the release.json blob t_d55b0e47's 2026.11.21-3 cut carried before its own re-cut said "the demo host"; the path and the value are pinned, so another value there is still a finding	never
