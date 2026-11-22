@@ -315,12 +315,18 @@ answer for `203.0.113.139` is NXDOMAIN at Spamhaus ZEN, SBL, XBL and PBL (at
 `a`–`e.gns.spamhaus.org`; the control returns `127.0.0.2`, `127.0.0.4`,
 `127.0.0.10`), Barracuda BRBL, UCEPROTECT L1/L2/L3 and PSBL. CBL, SpamCop,
 Hostkarma, Invaluement and Mailspike are covered by the resolver matrix alone
-(SpamCop's NS lookup SERVFAILs); it records the same NXDOMAIN for each. SORBS
-no longer answers at all (its zone name is NXDOMAIN at the `net` servers). The
-Validity zones are the one exception: the first resolver pass got NXDOMAIN, and
-from 12:33Z every `+tcp` query gets `127.255.255.255` plus the TXT "Excessive
-Number of Queries", so those are *could not query*, not verdicts — their
-product needs a key.
+(SpamCop's NS lookup SERVFAILs); it records NXDOMAIN for each at the three
+resolvers that answer — the fourth, the CleanBrowsing resolver Spamhaus
+blocks, returns `127.255.255.254` for CBL, a refusal rather than a verdict.
+SORBS no longer answers at all (its zone name is NXDOMAIN at the `net` servers).
+Validity's RPBL is the one dynamic exception: its first resolver pass got
+NXDOMAIN at all four (12:27:58Z), and from 12:32:40Z (spamassassin's
+`dns_block_rule`) every `+tcp` query gets `127.255.255.255` plus the TXT
+"Excessive Number of Queries" — re-asked from all four resolvers at 17:37Z
+(`22-validity-refusal-rerun.txt` in the card's evidence), so RPBL is *could
+not query*, not a verdict; its product needs a key. sa-trusted and sa-accredit
+had already refused in that same first pass (`127.255.255.255` at 12:27:58Z),
+so all three Validity zones are *could not query*.
 
 The /24 that holds the A is not dirty either: it is Servury's own (AS395904,
 ARIN registration 2026-03-25, last changed 2026-04-06), 11 of its 254 addresses
@@ -669,7 +675,7 @@ PASS there and here.
 | `--check-dns` fails for a record `dig @1.1.1.1` shows | Local resolver serving the pre-change NXDOMAIN for the SOA minimum | believe `--check-dns` (it asks the authoritative server); the cache clears on its own |
 | `dkim=fail (bad signature)` at the receiver | Truncated DKIM TXT, or `c=` not relaxed/relaxed | re-publish from `/etc/dkimkeys/odile.txt`; `--verify-dkim` on the sent copy |
 | `spf=pass` but `dmarc=fail` | From domain and envelope domain differ | keep both under `mail.odile.fyi`; `aspf=s` makes that strict |
-| Delivered, but in spam | Reputation starts at zero on a fresh IP, and our two addresses do not have the same reputation | check DMARC first; then which address the relay used (§5.3) — the A was filed to Spam 4/4 and the AAAA to the INBOX 4/4 on 2026-11-22; then the From domain's age (spamassassin's `FROM_FMBLA_NEWDOM28` fired on every copy that day) and engagement. No public list names the A and the /24 is clean, so the remaining difference is Google's own model — §5.3, measured 2026-11-22 |
+| Delivered, but in spam | Reputation starts at zero on a fresh IP, and our two addresses do not have the same reputation | check DMARC first; then which address the relay used (§5.3) — the A was filed to Spam 4/4 and the AAAA to the INBOX 4/4 on 2026-11-22; then the From domain's age (spamassassin's `FROM_FMBLA_NEWDOM28` fired on every copy that day) and engagement. No list that answers names the A (Validity refuses the query) and the /24 is clean, so the remaining difference is Google's own model — §5.3, measured 2026-11-22 |
 | `550-5.7.26 … sender is unauthenticated` | Records missing or a key mismatch | `--check-dns`, then resend (seen on the first attempt from this box) |
 | Mail queues and never leaves | Outbound 25 blocked, or destination greylisting | `postqueue -p`; `telnet gmail-smtp-in.l.google.com 25` |
 | The box is down | Single point of failure | senders retry; queued invites survive on disk, but the waitlist and mail share one host that must stay up |
