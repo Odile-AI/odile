@@ -53,9 +53,10 @@ MEASUREMENT = "cd" * 48
 # odl/ODL-461), verbatim, with v3.11's re-cuts (ODL-577): the operator row is
 # D-3, the HQ data row is D-8, the first-visit sign-in row is D-1 and the
 # after-PASS clause is D-7.
-# ODL-466 §0.2 holds D-3's "only sign-in" tail until ODL-925: before the first
-# visit the image's public bench password opens the workspace. The page keeps
-# the no-standing-key sentence, which is the row's proven half.
+# ODL-466 §0.2 holds D-3's "only sign-in" tail until ODL-925: at this head the
+# first visit still sets the sign-in, and ODL-521/522/523 cleared the image's
+# public bench password that §0.2 named. The page keeps the no-standing-key
+# sentence, which is the row's proven half.
 ROW_NO_LOGIN = ("No one at Odile holds a key to your machine: no standing key, "
                 "no root password, no disk passphrase.")
 # "Not the disk key" is held until the first-boot re-key (t_28dda3b7).

@@ -265,10 +265,10 @@ machine. The table below is what is still held.
 
 | Held sentence or clause | Why it is held | Lands with |
 |---|---|---|
-| D-3, "The password you chose is the only sign-in." | before the first visit the image's public bench password opens the workspace, and the session secret is the image's (§0.2) | ODL-925 |
-| D-1, "It is the only app-layer gate: no 2FA in alpha.0." | same pre-first-visit gate (§0.2) | ODL-925 |
-| §4.2, "the password you chose is the only sign-in" | same (§0.2) | ODL-925 |
-| §2 replacement, "the password you chose is the only sign-in" | same (§0.2) | ODL-925 |
+| D-3, "The password you chose is the only sign-in." | the registration verifier reaches the machine at provision with ODL-925, which also turns the first visit into a login; at this head the visit still sets the sign-in, the setup token is the link to that form and the seed exchange (later the seed badge and the rebuild-seal key), and the gate holds a discarded placeholder until the visit — ODL-521/522/523 cleared the image's public bench password | ODL-925 |
+| D-1, "It is the only app-layer gate: no 2FA in alpha.0." | same window as D-3 | ODL-925 |
+| §4.2, "the password you chose is the only sign-in" | same window as D-3 | ODL-925 |
+| §2 replacement, "the password you chose is the only sign-in" | same window as D-3 | ODL-925 |
 | A3, the whole row | the seal wraps a keyslot key, not the volume key; the published image's key opens the tenant disk (§0.1) | `t_28dda3b7` |
 | A4, "The disk key is sealed to the measured boot, and no one at Odile holds it." | the disk key is the build key (§0.1) | `t_28dda3b7` |
 | D-8, "Not the disk key" | the disk key is recoverable from the published image (§0.1) | `t_28dda3b7` |
@@ -291,11 +291,11 @@ stays a list of sentences a card will publish:
   was never clocked and BRAND forbids an unmeasured number (ODL-466 §2). The row
   and the page now say "Claiming is a form and a confirmation."
 
-**Machine proofs for this cut, and what is pending.** D-1, D-2, D-10 and D-11
-are proved by the tenant's `/verify` sign-in-hash row and by
-`accounts.password_hash` — a scrypt verifier the guest's gate refuses when typed
-as the password (§4.11; a 401). D-3 is proved by `/verify`'s
-operator-key row. D-6 and D-20 are proved by the machine's reset page
+**Machine proofs for this cut, and what is pending.** D-1, D-2, D-9, D-10 and
+D-11 are proved by the tenant's `/verify` sign-in-hash row and by
+`accounts.password_hash` — a scrypt verifier the gate accepts only the typed
+password against (§4.11; the comparison is two-sided, and the endpoint's `401`
+is the anonymous status). D-3 is proved by `/verify`'s operator-key row. D-6 and D-20 are proved by the machine's reset page
 (`/first-visit/reset`, ODL-579) and the stable-code copy ODL-926 writes. D-7 and
 D-18 are proved by the claim and ceremony pages and the `/verify` report. D-5 is
 the support path (§3.4) and has no machine row. **Pending:** D-4's account half
@@ -537,16 +537,19 @@ grep -o 'HERMES_DASHBOARD_BASIC_AUTH[A-Z_]*' "$HERMES_HOME/.env"
 # HERMES_DASHBOARD_BASIC_AUTH_USERNAME, ..._PASSWORD_HASH, ..._SECRET
 H=$(sed -n 's/^HERMES_DASHBOARD_BASIC_AUTH_PASSWORD_HASH=//p' "$HERMES_HOME/.env")
 echo "$H"        # scrypt$16384$8$1$... — a verifier, not the password
-curl -s -o /dev/null -w '%{http_code}\n' -u "<user>:$H" https://<slug>.odile.fyi/api/sessions   # 401
+curl -s -o /dev/null -w '%{http_code}\n' https://<slug>.odile.fyi/api/sessions   # 401 — the anonymous status
 ```
 
-The sessions endpoint answers `401` until you sign in, and it answers `401` to
-the stored verifier typed as the password: the gate recomputes scrypt from what
-you type, so the value in the file opens nothing by itself. The `.env` holds a
-username, a scrypt verifier and a session secret — never the password. HQ's
-`accounts.password_hash` is the same verifier when the machine is built (D-11;
-after that the two change separately), and HQ keeps no plaintext password: the
-sign-in is yours; HQ holds a hash of your password, never the password.
+The sessions endpoint answers `401` to every request that is not a signed-in
+session: that is the anonymous status, not a verdict on what the request
+carries. What proves the value in the file opens nothing by itself is the
+comparison the gate makes: it recomputes scrypt from what you type, so a
+password is accepted against its own hash and the stored verifier, typed as the
+password, is refused. The `.env` holds a username, a scrypt verifier and a
+session secret — never the password. HQ's `accounts.password_hash` is the same
+verifier when the machine is built (D-11; after that the two change separately),
+and HQ keeps no plaintext password: the sign-in is yours; HQ holds a hash of
+your password, never the password.
 
 ---
 
@@ -629,4 +632,4 @@ sign-in is yours; HQ holds a hash of your password, never the password.
 | 2026-11-20 | v3.10m: **the deck's bookkeeping about the installed help follows `t_080f8a83`'s landing; no approved sentence changed.** `a20566d` (merged at `6f4936b`) re-cut the installed help's bill answer to alpha.0's no-price line and re-embedded and re-signed the installer, cutting release `2026.11.20-1` (installer `d48f73aa…`, 1,503,831 B). The installed help — the last tester-facing surface in the repo that carried the v5 price — now states none, and the §1 held note, the §1a intro, the §1a allowance row's reason and lands-with cells, the §5 dated note and `docs/FAQ.md` moment 4's note now name that cut; the v3.10i row's present-tense clause is re-cut to its own date. The allowance row and its hold are unchanged: it stays in §1a until ODL-242 (`t_8ec06788`) proves the zero-balance message and Savio re-cuts the machine-and-price details, and after `a20566d` the held sentence rides on no live surface in the repo, which is why the row stays held, not live. The **served** installer at `odile.fyi/odile_install.py` is still the pre-re-cut build (`1d946c44…`, 1,503,889 B; `/opt/odile` on release `2026.11.19-5`, `release.json` synced 06:46:41Z, before `a20566d` at 08:13:16Z); `t_a5cd44ba` deploys from a clean `main`, which carries the re-cut. **No public sentence changed and no new claim.** Card `t_439f8488`; by the Product Lead under `docs/AGENT-ORG.md` §3 (D-002); verifier review. | Product lead |
 | 2026-11-21 | v3.10n: **§4.4's `sha256sum -c` line names the bundle this tree builds; no approved sentence changed.** The pin is one of the five reviewed files in the archive, so `t_a37c001d`'s 2-vCPU plan (release `2026.11.2`, `vcpu_counts [2, 4, 6]`) moved the tarball from 20,560 B to 20,562 B, and §4.4's command block now checks `99395155ae1d08e67f81e3a64096c918300992700d8fe8ccd3f8b16762073bde`; the block is byte-for-byte `docs/product/CLAIMS-RECUT-STRICT.md` §4.4 and its other three lines are unchanged. **Proof:** at `main` `5d6eb1d` and again at this card's base `da5dce1`, `app.verifier_bundle()` is 20,562 B and hashes to that value; `curl -fsSL https://odile.fyi/odile-verify.tar.gz` returns the same 20,562 B and hash; the demo run prints `release PASS 2026.11.2 is pinned (3 artifacts, vcpu_counts [2, 4, 6])` and exits 0 (`t_a37c001d`'s evidence, 2026-11-20T07:40Z, re-run by its verifier); and `tests/test_verify.py::BundleTests.test_the_published_hash_is_the_bundle_in_this_tree` binds that same hash into `docs/runbooks/verify.md`, `docs/product/CLAIMS-RECUT-STRICT.md` and `docs/security/CLAIMS-VERDICT-strict.md`. The 19 November value it replaces is the one in that verdict's 19 November bundle paragraph; it is not re-quoted here. No public page, installer copy or release changed, so no re-embed and no re-sign. Card `t_b0cc9015`; by the Product Lead under `docs/AGENT-ORG.md` §3 (D-002); verifier review. | Product lead |
 | 2026-11-22 | v3.10o: **§4.10's sample `Received` line carries the relay's AAAA; no approved sentence changed.** t_7378e496 (`5add3da`, merged at `a5e5d7b`) set `smtp_address_preference = ipv6` in `deploy/postfix/main.cf`, and a brief delivered after it reaches Gmail's MX over the AAAA: the delivered receipt at HQ (`docs/evidence/t_7378e496/04-receipts/odl7378r9.eml`, `Received[1]`) names the AAAA, scrubbed in this deck to `2001:0db8:0:1c9::1` as `docs/runbooks/email.md` §3.2 does. The sample's bracketed address moves from the IPv4 address to the IPv6 one, and the paragraph after the block now says the relay prefers IPv6 and names the IPv4 fallback, so a reader whose provider publishes no IPv6 address sees the same claim on the IPv4 line. §4.10's assertions — signed by us, handed straight to the provider's MX, no third-party hop, spf/dkim/dmarc pass — and the `Authentication-Results` and `DKIM-Signature` lines are unchanged. Card `t_78c73053`; by the Product Lead under `docs/AGENT-ORG.md` §3 (D-002); verifier review. | Product lead |
-| 2026-11-22 | v3.11: **B-once and one recovery code for both surfaces** (Savio, 20 November 2026, cards `t_ab499d49` and `t_82979fce`; the model and the rows are `docs/product/DECISION-one-recovery-code.md` §4). The registration password is the machine's sign-in, written once at provision, so the deck retires the first-visit setup row and its clause that the operator had never seen the sign-in; the access row that claimed the operator could not log in at all is replaced by the no-standing-key row (D-3), with the sibling grant row unchanged; the reset row becomes one code for both surfaces (D-4), with its account half published and its proof pending ODL-578; the code's stability (D-20), the disclosure that HQ sees the password and keeps only a hash (D-2), the account inventory (D-10, D-11), the claim page's third step (D-18), the no-other-way-back rule for a lost code (D-5), the after-verification clause without the setup step (D-7), and the data-handling inventory with both hashes (D-8) enter the deck; the §4.11 heading becomes D-9 and its check types the stored verifier as the password (401); the cookie row is re-cut to one first-party session cookie (ADR-006 §2 item 2); the say-this-not-that table no longer recommends the retired absolute; and the reductions D-12 to D-17 and D-19 are recorded in a table of their own. Surfaces: `web/privacy.html`, `web/faq.html`, `web/ceremony.html`, `web/claim.html`, `web/terms.html`, `web/verify.html`, `web/verify-public.html`, `docs/FAQ.md`, `templates/emails/support.md` and `docs/runbooks/ceremony.md`; the embedded verify page and the installed help are ODL-929's release cut, and no re-embed or re-sign happens here. Card `t_ba6ed872` (ODL-577); by the Product Lead under `docs/AGENT-ORG.md` §3 (D-002); verifier review. | Product lead |
+| 2026-11-22 | v3.11: **B-once and one recovery code for both surfaces** (Savio, 20 November 2026, cards `t_ab499d49` and `t_82979fce`; the model and the rows are `docs/product/DECISION-one-recovery-code.md` §4). The registration password is the machine's sign-in, written once at provision, so the deck retires the first-visit setup row and its clause that the operator had never seen the sign-in; the access row that claimed the operator could not log in at all is replaced by the no-standing-key row (D-3), with the sibling grant row unchanged; the reset row becomes one code for both surfaces (D-4), with its account half published and its proof pending ODL-578; the way-back row's tail, which had said the agent could show the same code again, becomes the agent's replacement of the code and its one showing of the new one (D-6); the code's stability (D-20), the disclosure that HQ sees the password and keeps only a hash (D-2), the account inventory (D-10, D-11), the claim page's third step (D-18), the no-other-way-back rule for a lost code (D-5), the after-verification clause without the setup step (D-7), and the data-handling inventory with both hashes (D-8) enter the deck; the §4.11 heading becomes D-9 and its check names the endpoint's 401 as the anonymous status and proves the stored verifier with the gate's two-sided scrypt comparison; the cookie row is re-cut to one first-party session cookie (ADR-006 §2 item 2); the say-this-not-that table no longer recommends the retired absolute; and the reductions D-12 to D-17 and D-19 are recorded in a table of their own. Surfaces: `web/privacy.html`, `web/faq.html`, `web/ceremony.html`, `web/claim.html`, `web/terms.html`, `web/verify.html`, `web/verify-public.html`, `docs/FAQ.md`, `templates/emails/support.md` and `docs/runbooks/ceremony.md`; the embedded verify page and the installed help are ODL-929's release cut, and no re-embed or re-sign happens here. Card `t_ba6ed872` (ODL-577); by the Product Lead under `docs/AGENT-ORG.md` §3 (D-002); verifier review. | Product lead |

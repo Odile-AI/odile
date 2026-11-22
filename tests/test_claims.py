@@ -236,14 +236,16 @@ class ClaimsDeckTests(unittest.TestCase):
 
     def test_a_held_row_is_not_on_a_public_page(self):
         # ODL-466's verdict blocks these on the re-key (t_28dda3b7), the
-        # pre-first-visit gate (t_adcdec31) and the M2 drills; CLAIMS.md §1a
+        # sign-in window (ODL-925) and the M2 drills; CLAIMS.md §1a
         # holds them from the public pages until their card lands. The deck
         # keeps the row, the page does not quote the clause. ODL-474 landed the
         # backup and grant rows as v3.10 and t_5f10dd14 landed the 30-day
         # retention row on 19 November 2026; what is left is the disk-custody
-        # and pre-first-visit clusters, "Backups are off-site" (ADR-004 measures
+        # and sign-in clusters, "Backups are off-site" (ADR-004 measures
         # the destination on HQ's disk until the R2 migration lands), and the
-        # dropped timing.
+        # dropped timing. ODL-521/522/523 cleared the image's public bench
+        # password that §0.2 named; ODL-925 is what writes the registration
+        # verifier at provision and turns the first visit into a login.
         held = (
             "The password you chose is the only sign-in.",
             "It is the only app-layer gate",
