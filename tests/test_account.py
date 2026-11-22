@@ -24,6 +24,7 @@ What is pinned here, in the card's own words:
 
 from __future__ import annotations
 
+import email
 import hashlib
 import http.client
 import os
@@ -36,6 +37,7 @@ import tempfile
 import time
 import unittest
 import urllib.parse
+from email import policy as email_policy
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -216,6 +218,20 @@ class AccountBase(unittest.TestCase):
     def queued_ready(self, slug: str) -> Path:
         return self.outbox / "ready" / ("%s.eml" % slug)
 
+    def queued_confirm(self, account_id: int) -> Path:
+        return self.outbox / "confirm" / ("%d.eml" % int(account_id))
+
+    def confirm_token(self, raw: bytes) -> str:
+        message = email.message_from_bytes(raw, policy=email_policy.default)
+        part = message.get_body(("plain",))
+        self.assertIsNotNone(part, "the confirmation mail has no plain part")
+        assert part is not None
+        body = part.get_content()
+        match = re.search(r"/confirm\?t=([0-9a-f]{64})", body)
+        self.assertIsNotNone(match, "the confirmation mail carries no token link")
+        assert match is not None
+        return match.group(1)
+
 
 class RedirectAndOwnershipTests(AccountBase):
     def test_a_signed_out_request_to_account_redirects_to_login(self):
@@ -243,6 +259,27 @@ class RedirectAndOwnershipTests(AccountBase):
         text = body.decode("utf-8")
         self.assertIn("%s.test.odile.fyi" % self.slug_for(mine), text)
         self.assertNotIn("%s.test.odile.fyi" % self.slug_for(other), text)
+
+    def test_the_signed_in_404_is_a_branded_page_with_one_way_back(self):
+        mine = self.email()
+        other = self.email()
+        self.seed_account(mine, "ready")
+        self.seed_account(other, "ready")
+        cookie = self.sign_in(mine)
+        for path in ("/account/%s" % self.slug_for(other), "/account/"):
+            with self.subTest(path=path):
+                status, headers, body = request(
+                    self.port, "GET", path, cookie=cookie)
+                self.assertEqual(status, 404, body[:200])
+                self.assertTrue(headers.get("Content-Type", "").startswith("text/html"),
+                                headers.get("Content-Type"))
+                text = body.decode("utf-8")
+                self.assertIn("<h1>That page is not here.</h1>", text)
+                self.assertIn('href="/account"', text)
+                self.assertNotEqual(text, "not found\n")
+                # The page is the person's; it names neither machine.
+                self.assertNotIn(self.slug_for(other), text)
+                self.assertNotIn(self.slug_for(mine), text)
 
     def test_the_login_post_signs_in_and_signin_stays_a_working_seam(self):
         email = self.email()
@@ -292,13 +329,15 @@ class FourStateTests(AccountBase):
                 self.assertNotIn("countdown", text.lower())
 
     def test_the_building_state_carries_the_wait_copy_and_no_action(self):
-        _email, _row, cookie = self.state_account("building")
+        _email, row, cookie = self.state_account("building")
         _headers, text = self.page(cookie)
         self.assertIn("We have your address. The machine is being set up.", text)
         self.assertIn("Its first boot prepares the encrypted disk, which is the slow part.", text)
         self.assertIn(WAIT, text)
-        self.assertIn("appears when ready", text)
-        self.assertNotIn("Send the ready email again", text)
+        self.assertIn("Your machine is <strong>%s.test.odile.fyi</strong>. "
+                      "It answers when it is ready." % row["slug"], text)
+        self.assertNotIn("appears when ready", text)
+        self.assertNotIn('action="/account/resend"', text)
         self.assertNotIn("Open your machine", text)
 
     def test_the_ready_state_carries_the_address_report_and_open_action(self):
@@ -325,6 +364,14 @@ class FourStateTests(AccountBase):
         self.assertNotIn("203.0.113.", text)
         self.assertNotIn("Open your machine", text)
         self.assertNotIn("Send the ready email again", text)
+
+    def test_the_confirm_state_offers_one_press_to_send_the_confirmation_again(self):
+        _email, _row, cookie = self.state_account("confirm")
+        _headers, text = self.page(cookie)
+        self.assertIn('action="/account/resend"', text)
+        self.assertIn("Send the confirmation email again", text)
+        self.assertNotIn("Send the ready email again", text)
+        self.assertNotIn("Open your machine", text)
 
     def test_the_trial_line_matches_each_accounts_own_row(self):
         first = self.email()
@@ -382,12 +429,12 @@ class ResendTests(AccountBase):
         self.assertEqual(dict(before_account), dict(after_account))
         self.assertEqual(dict(before_tenant), dict(self.tenant(slug)))
 
-    def test_the_resend_does_nothing_before_the_machine_is_ready(self):
-        for state in ("confirm", "building", "failed"):
+    def test_the_resend_does_nothing_in_building_or_failed(self):
+        for state in ("building", "failed"):
             with self.subTest(state=state):
                 email = self.email()
                 row = self.seed_account(
-                    email, state, verified=(state != "confirm"),
+                    email, state,
                     reason="create: HTTP 404: Plan not found." if state == "failed" else "")
                 cookie = self.sign_in(email)
                 status, headers, _body = self.resend(
@@ -395,6 +442,40 @@ class ResendTests(AccountBase):
                 self.assertEqual(status, 303)
                 self.assertEqual(headers.get("Location"), "/account")
                 self.assertFalse(self.queued_ready(row["slug"]).exists())
+                self.assertFalse(self.queued_confirm(row["id"]).exists())
+
+    def test_the_confirm_resend_sends_a_fresh_token_and_spends_the_old_link(self):
+        email = self.email()
+        row = self.seed_account(email, "confirm", verified=False)
+        cookie = self.sign_in(email)
+        status, headers, _body = self.resend(
+            cookie, origin="http://127.0.0.1:%d" % self.port)
+        self.assertEqual(status, 303, _body[:200])
+        self.assertEqual(headers.get("Location"), "/account")
+        path = self.queued_confirm(row["id"])
+        self.assertTrue(path.is_file())
+        first = self.confirm_token(path.read_bytes())
+        with self.connect() as connection:
+            fresh = connection.execute(
+                "SELECT email_verified_at, confirm_token_hash, confirm_expires_at"
+                " FROM accounts WHERE id = ?", (row["id"],)).fetchone()
+        self.assertIsNone(fresh["email_verified_at"], "the press verified the address")
+        self.assertEqual(fresh["confirm_token_hash"], app.hash_token(first))
+        self.assertGreater(fresh["confirm_expires_at"], "2026-11-21T09:00:00Z")
+        # The mailed link is a live confirmation page, not a dead one.
+        status, _headers, body = request(self.port, "GET", "/confirm?t=" + first)
+        self.assertEqual(status, 200, body[:200])
+        self.assertIn('name="token"', body.decode("utf-8"))
+        # A second press mints a new token; the first link stops working.
+        status, _headers, _body = self.resend(
+            cookie, origin="http://127.0.0.1:%d" % self.port)
+        self.assertEqual(status, 303)
+        second = self.confirm_token(path.read_bytes())
+        self.assertNotEqual(first, second)
+        status, _headers, _body = request(self.port, "GET", "/confirm?t=" + first)
+        self.assertEqual(status, 404, "the spent confirmation link still works")
+        status, _headers, _body = request(self.port, "GET", "/confirm?t=" + second)
+        self.assertEqual(status, 200)
 
     def test_a_cross_site_resend_is_refused(self):
         email = self.email()
@@ -408,6 +489,29 @@ class ResendTests(AccountBase):
                                          body="")
         self.assertEqual(status, 303)
         self.assertEqual(headers.get("Location"), "/login")
+
+
+class BrandSheetTests(AccountBase):
+    """The pairs BRAND.md measures in every brand review, on the served page."""
+
+    def test_the_served_page_carries_the_sheet_selection_pair_and_control_states(self):
+        email = self.email()
+        self.seed_account(email, "building")
+        _headers, text = self.page(self.sign_in(email))
+        self.assertIn(":root{", text)
+        # The pair comes after :root, as every other surface in web/ has it.
+        self.assertLess(text.index(":root{"),
+                        text.index("::selection{background:#1c1813;color:#eadfc4}"))
+        # The ink-filled primary needs the inverted pair: the page pair paints
+        # nothing on it (the label's own background is --ink).
+        self.assertIn(".primary::selection{background:var(--paper);color:var(--ink)}",
+                      text)
+        self.assertIn(".primary:hover{background:var(--ink-hover);"
+                      "border-color:var(--ink-hover)}", text)
+        self.assertIn("button.secondary:hover{background:rgba(28,24,19,.05);"
+                      "border-color:var(--ink)}", text)
+        # The trial line is its own aside, not bound to the password line.
+        self.assertIn(".trial{margin:24px 0 16px;", text)
 
 
 if __name__ == "__main__":

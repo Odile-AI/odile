@@ -1005,12 +1005,13 @@ def signin_body(*, email: str = "", error: str = "",
 # browser. `confirm` is the address that is not verified yet; it wins over
 # `provision_state`, which is still `unverified`.
 ACCOUNT_STATE_RE = re.compile(
-    r"<!--(confirm|building|ready|failed)-->(.*?)<!--/\1-->", re.S)
+    r"<!--(confirm|building|ready|failed|missing)-->(.*?)<!--/\1-->", re.S)
 ACCOUNT_PAGE_TITLES = {
     "confirm": "Check your email \u2014 Odile",
     "building": "Building \u2014 Odile",
     "ready": "Your machine is ready \u2014 Odile",
     "failed": "The machine could not be built \u2014 Odile",
+    "missing": "That page is not here \u2014 Odile",
 }
 
 
@@ -1024,17 +1025,18 @@ def account_state(row: sqlite3.Row) -> str:
     return "ready" if state == "ready" else "failed"
 
 
-def render_account_page(row: sqlite3.Row,
-                        tenant: sqlite3.Row | None = None) -> str:
+def render_account_page(row: sqlite3.Row, tenant: sqlite3.Row | None = None,
+                        state: str | None = None) -> str:
     """The finished account page, server-rendered from the account and tenant.
 
     The machine's address and IPv4 come from the tenant row (the record of the
     machine); the state and the trial come from the account row (the person's
     record). The trial line is one date in the brand's form, read from
     `trial_ends_at`; there is no clock and no countdown. No JavaScript, no
-    third-party request.
+    third-party request. `state="missing"` renders the signed-in 404: the same
+    paper page, one way back to `/account`, no machine named.
     """
-    state = account_state(row)
+    state = state or account_state(row)
     slug = row["slug"]
     host = "%s.%s" % (slug, TENANT_DOMAIN)
     ipv4 = (tenant["ipv4"] if tenant is not None and tenant["ipv4"] else row["ipv4"]) or ""
@@ -1427,11 +1429,13 @@ class Handler(BaseHTTPRequestHandler):
             return self._account_page(head)
         if path.startswith("/account/"):
             # The same page addressed by the machine it belongs to: a
-            # signed-in request for another account's machine is 404.
+            # signed-in request for another account's machine is a branded 404
+            # with one way back, not bare text (Brand gate round 2, should 2).
             slug = path[len("/account/"):].strip("/")
             if path not in ("/account/retry", "/account/resend") and slug \
                     and "/" not in slug:
                 return self._account_page(head, slug)
+            return self._account_missing(head)
         if path == "/claim":
             # The one-time token in the invite is what opens the page. A bare
             # GET keeps the method note ODL-220 pinned for an API caller.
@@ -1882,8 +1886,7 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(303, "", head=head, location="/login",
                               headers={"Set-Cookie": _clear_cookie()})
         if slug is not None and slug != row["slug"]:
-            return self._send(404, "not found\n", "text/plain; charset=utf-8",
-                              head=head)
+            return self._account_missing(head, row)
         con = db()
         try:
             tenant = con.execute("SELECT * FROM tenants WHERE slug = ?",
@@ -1891,6 +1894,19 @@ class Handler(BaseHTTPRequestHandler):
         finally:
             con.close()
         return self._send(200, render_account_page(row, tenant=tenant), head=head)
+
+    def _account_missing(self, head, row=None):
+        """A signed-in 404 in the page's own paper, one link back to /account.
+
+        A signed-out browser gets the same redirect /account gives. The page
+        names no machine: the address asked for may be another account's.
+        """
+        if row is None:
+            row = self._session_account()
+        if row is None:
+            return self._send(303, "", head=head, location="/login",
+                              headers={"Set-Cookie": _clear_cookie()})
+        return self._send(404, render_account_page(row, state="missing"), head=head)
 
     def _account_retry(self):
         """Re-queue a failed provision: the retryable state's one move."""
@@ -1915,12 +1931,15 @@ class Handler(BaseHTTPRequestHandler):
         return self._send(303, "", location="/account")
 
     def _account_resend(self):
-        """Re-queue the ready email; no new token, no row moves.
+        """Re-queue the mail the state owns; no new row, no new machine.
 
-        B-once means the ready email carries no setup token, so this is a plain
-        resend: the same bytes, the same machine URL, the same state. A second
-        press is idempotent in effect. Before `ready` there is no email to
-        send, so the press answers the page and changes nothing.
+        In `ready` this is the plain resend (B-once means the ready email
+        carries no setup token, so the same bytes, the same machine URL, the
+        same state; a second press is idempotent in effect). In `confirm` it
+        re-sends the confirmation email with a fresh 24 h token — the mailed
+        token is the only copy of its raw value, so the previous link stops
+        working. In `building` and `failed` there is no email to send, so the
+        press answers the page and changes nothing.
         """
         if not self._same_origin():
             return self._send(403, "forbidden: cross-site form\n",
@@ -1933,7 +1952,10 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(429, "Too many resends. Try again in ten minutes.\n",
                               "text/plain; charset=utf-8",
                               headers={"Retry-After": str(RATE_WINDOW)})
-        if account_state(row) != "ready":
+        state = account_state(row)
+        if state == "confirm":
+            return self._confirm_resend(row)
+        if state != "ready":
             return self._send(303, "", location="/account")
         con = db()
         try:
@@ -1947,6 +1969,36 @@ class Handler(BaseHTTPRequestHandler):
             traceback.print_exc(file=sys.stderr)
             return self._send(500, "The ready email could not be queued. Try again?\n",
                               "text/plain; charset=utf-8")
+        return self._send(303, "", location="/account")
+
+    def _confirm_resend(self, row):
+        """The confirm state's one action: a fresh token, the same account row.
+
+        The conditional UPDATE refuses a row that was verified between the read
+        and the write, so an account that has just confirmed never has its
+        spent token rotated back into the slot.
+        """
+        token = secrets.token_hex(32)
+        con = db()
+        try:
+            con.execute(
+                "UPDATE accounts SET confirm_token_hash = ?, confirm_expires_at = ?"
+                " WHERE id = ? AND email_verified_at IS NULL",
+                (hash_token(token), confirm_expiry(), int(row["id"])),
+            )
+            con.commit()
+            fresh = con.execute("SELECT * FROM accounts WHERE id = ?",
+                                (int(row["id"]),)).fetchone()
+        finally:
+            con.close()
+        if fresh is None or fresh["email_verified_at"]:
+            return self._send(303, "", location="/account")
+        try:
+            queue_confirm(dict(fresh), token)
+        except (OSError, RuntimeError):
+            traceback.print_exc(file=sys.stderr)
+            return self._send(500, "The confirmation email could not be queued."
+                                   " Try again?\n", "text/plain; charset=utf-8")
         return self._send(303, "", location="/account")
 
     def _register(self, fields):
