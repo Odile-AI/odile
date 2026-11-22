@@ -302,16 +302,21 @@ Run all four; each is also the evidence line for the card.
    EOF
    ```
 
-   Expect the nine tables `app.init_db()` creates — `claims, events, grants,
-   seed_tokens, tenant_keys, tenant_state, tenant_state_events, tenants,
-   waitlist` — and `user_version: 3`. `tenant_keys` is the inference key's
+   Expect the ten tables `app.init_db()` creates — `accounts, claims, events,
+   grants, seed_tokens, tenant_keys, tenant_state, tenant_state_events, tenants,
+   waitlist` — and `user_version: 4`. `tenant_keys` is the inference key's
    record (ODL-242: the label, the first characters and the state; never the
    key), created by `odilectl/state.py`'s additive schema. Schema v2 was the
    same list without the three claim-spine tables, at `user_version: 2`; v3
-   adds the `tenants.release` column and no table. The live database also holds
+   adds the `tenants.release` column and no table; v4 adds the `accounts` table
+   and no column (ODL-341: one row per registered tester — the scrypt verifier,
+   the confirmation token's hash, the trial window written once at registration,
+   the session epoch, and the provision queue: the state, the provider machine
+   id, the IPv4 and the inference key's label and first characters). The live
+   database also holds
    `health_alerts`, `heartbeat_keys` and `heartbeats` once the health ingest
    has run (`odilectl/health.py`); they are not part of `init_db()`, so compare
-   the nine and the version, not equality of the whole list. Compare the signup count and rows with §1. On 2026-11-06
+   the ten and the version, not equality of the whole list. Compare the signup count and rows with §1. On 2026-11-06
    both rows were unchanged (same `id`, `email`, `created_at`, `token`,
    `source`, `unsubscribed`) and `migrate` backfilled exactly one `signup`
    event per row.
