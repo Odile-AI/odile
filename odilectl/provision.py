@@ -242,15 +242,26 @@ def _issue_key(ctx: Context, slug: str, *, keep: bool,
     `_bind_seed_token`'s caller can bind whichever one this run has.
     """
     account = keys.account_from_config(ctx.config)
-    if account is None:
-        return KeyBinding(
-            state="shared",
-            reason="no near_account in the config: the seed carries the config's shared key",
-        ), None, None
     store = StateStore.open(_state_path(ctx))
     replaced = None
     try:
         record = store.key_for(slug)
+        if account is None:
+            # No `near_account` is the bench/manual switch, but it cannot undo a
+            # key a tenant already owns: `seed.bind` refuses to mint a token that
+            # would seed the shared key (ODL-242), so refuse here instead — before
+            # the order, which is the expensive half.
+            if record is not None and record.state == "issued":
+                raise ProviderError(
+                    f"provision: {slug} owns the NEAR AI key {record.key_prefix} "
+                    f"({record.label}), but this config has no `near_account`, so "
+                    "this run could neither re-bind nor replace it; restore the "
+                    "switch or destroy the tenant first"
+                )
+            return KeyBinding(
+                state="shared",
+                reason="no near_account in the config: the seed carries the config's shared key",
+            ), None, None
         if keep and record is not None and record.state == "issued":
             waiting = _waiting_entry(ctx, slug, record.key_id)
             if waiting is not None:
@@ -457,7 +468,8 @@ def _bind_seed_token(ctx: Context, slug: str, instance_id: str,
     try:
         seed.ensure_schema(con)
         issued = seed.bind(
-            con, slug, instance_id=instance_id, ttl_hours=SETUP_TOKEN_TTL_HOURS
+            con, slug, instance_id=instance_id, ttl_hours=SETUP_TOKEN_TTL_HOURS,
+            keys_file=_seed_keys_path(ctx, seed),
         )
         rebuild = _write_rebuild_entry(ctx, seed, slug, issued, backup_password)
         return SeedBinding(

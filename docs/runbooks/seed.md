@@ -68,7 +68,7 @@ Refusals are JSON `{"error": "...", "reason": "..."}`:
 | 410 | `used` | already exchanged (or rotated away) | use the cached seed, or rotate |
 | 410 | `expired` | 24 hours have passed | rotate |
 | 413 | `too_large` | body over 4 KiB | send only the two fields |
-| 503 | `no_inference_key` | no key is waiting for this tenant **and** the config's `near_api_key` is empty | run `odilectl provision <slug> --apply` again; the token is not spent (see §2a) |
+| 503 | `no_inference_key` | no key can ride this token: the tenant owns a key (§2a) but no raw key waits for it, or a tenant with no key record has no config `near_api_key` | run `odilectl provision <slug> --apply` again; the token is not spent (see §2a) |
 | 500 | `internal` | signing key or config broken | `journalctl -u odile-seed`; the detail is on stderr |
 | 502/curl 7 | — | Caddy route or service down | `systemctl status odile-seed`, then the Caddy block in §3 |
 
@@ -119,6 +119,28 @@ d116232c  2026-11-06T12:00:00Z 2026-11-07T12:00:00Z ended    srv-…
 ```
 
 `rotate --dry-run` prints how many live tokens would end and changes nothing.
+
+On a tenant that owns its own inference key (§2a) both mint commands carry that
+key: `issue` and `rotate` re-bind the raw key waiting in the handoff to the
+token they print, so the seed it buys still carries the tenant's own key and
+its `spendLimit`, and the output names the key (`key: odile-<slug> sk-…****`).
+When no raw key waits — the machine already exchanged it, so HQ holds only the
+label and first characters — nothing can be re-bound, and both refuse
+`409 key_left_hq` **before** they end a live token or write a ledger row:
+
+```
+seed: key_left_hq: no raw inference key waits for odl-7f3a2c: its key sk-…****
+is recorded, but the machine already exchanged it, so a token minted here could
+only seed the config's shared key; run `odilectl provision odl-7f3a2c --apply`
+to mint a replacement (the machine must be installed again), then use the token
+it prints
+```
+
+`odilectl provision` is the one command that can mint a replacement, because
+the provider's management credential lives in `odilectl`, not in this service.
+A tenant with no key record — the bench and manual shape — is unchanged, and a
+`--dry-run` answers the same refusal rather than promising a token the real run
+would refuse.
 
 ### Where the ledger lives
 
@@ -179,8 +201,20 @@ and what that costs depends on where the raw key is: if it still waits in the
 handoff, the same key is re-bound to the new token and nothing is minted; if the
 machine already exchanged it, HQ holds no copy, so the run mints a new key —
 `keys.issue` revokes the old one at the provider first and the report says the
-live machine must be installed again with the new token. A tenant with a key
-record never falls back to the config's shared key.
+live machine must be installed again with the new token.
+
+A tenant with a key record never falls back to the config's shared key, on any
+path that mints a token:
+
+| Path | Raw key still waits | Raw key already left HQ |
+|---|---|---|
+| `odilectl provision <slug> --apply` | the same key is re-bound to the new token; nothing minted | a new key is minted (the old one revoked at the provider); install the machine again |
+| `seed.py token rotate` / `token issue` | the same key is re-bound to the token just printed | refused `409 key_left_hq`, nothing minted, no live token ended; run `odilectl provision` |
+| the exchange (`POST /seed`) | the seed carries that key; the entry is removed | refused `503 no_inference_key`, token unspent; run `odilectl provision` |
+
+The exchange line is the last guard: a token minted behind these commands' back
+(a hand-edited ledger row) still cannot put the shared key on a machine that
+owns one.
 
 What HQ keeps — the account record, one row per key, written once:
 
@@ -295,6 +329,20 @@ grace period.
   and the new token's seed carried `sk-6ca****`. Neither seed carried the
   config's `sk-fed…` fallback; both destroys resolved from the list call
   (`204`), the keys then answered `401`, and the handoff ended `{}`.
+- **Re-issue by rotation, both shapes.** `seed.py token rotate` on the same
+  live account (recorded machine provider, real seed service): with the raw key
+  still waiting (`odl-rotd`), nothing was minted — the output named the key
+  (`key: odile-odl-rotd sk-370**** (re-bound to this token)`), the handoff
+  moved to the printed token's hash, that token's seed carried `sk-370****` and
+  not the shared fallback, and the token rotate ended answered `410 used`. With
+  the key already exchanged (`odl-rotc`), `rotate` and `issue` both answered
+  `exit 2` and `key_left_hq: … run odilectl provision odl-rotc --apply`, the
+  ledger was byte-identical before and after, and a token row written behind
+  their back still exchanged to `503 no_inference_key` (no shared key in the
+  body) with the row left `live`. `odilectl provision` then minted `sk-4c7****`
+  (`state: reissued`), the old `sk-3d6****` answered `401 invalid_api_key`, and
+  the new token's seed carried `sk-4c7****`. Both destroys resolved from the
+  list call (`204` → `401`), and the handoff ended `{}` with 0 keys left.
 
 Values differ run to run: a second run of the probes above minted
 `sk-143****`/`sk-f50****` and reached `Spent: $0.0010209`; the shapes were
@@ -751,6 +799,7 @@ PY
 | `410 expired` | more than 24 h between email and install | `rotate`; the ready email's token is dead by design |
 | `403 wrong_instance` | token minted for another instance (rebuild, swap) | `rotate --instance <new id>` |
 | `404 unknown_token` | typo, or a token from before a rotation | `token list --tenant <slug>`; rotate |
+| `key_left_hq` (CLI, exit 2) | `token issue`/`token rotate` on a tenant whose raw key already left HQ (§2a) | `odilectl provision <slug> --apply`, then install the machine again with the token it prints |
 | `502` through Caddy | seed service down or route missing | `systemctl status odile-seed`; `journalctl -u odile-seed`; re-check §3.4 |
 | service exits at boot, `chmod 600` in the log | config or key is group/world-readable | `chmod 600` the file named in the message |
 | service exits at boot, `field … missing` | incomplete config | fix `seed-config.json`; the message names the field, never its value |
@@ -862,7 +911,10 @@ hardware's id, so staging the same image on a new Servury instance is still this
 case — the reset follows the id in the command line (or the token hash), never
 the new server id. A rebuild mints a fresh token bound to the new id
 (`odilectl provision`, or `token rotate --tenant <slug> --instance <new id>`)
-and builds a new line carrying it.
+and builds a new line carrying it. For a tenant that owns an inference key whose
+raw key has already left HQ, `token rotate` refuses `key_left_hq` (§2a): use
+`odilectl provision <slug> --apply`, which mints the replacement key and the
+token that carries it, then install the machine with that token.
 
 ## 7. Security notes
 
@@ -894,7 +946,9 @@ and builds a new line carrying it.
 - **File modes enforced:** config and key 0600 (group/world bits refuse boot);
   `/etc/odile/seed.json` 0600; the service binds loopback only.
 - **Rotation:** `token rotate` ends every live token for the tenant in one
-  transaction, then mints one new token. Do it on rebuild, leak, or expiry.
+  transaction, then mints one new token. Do it on rebuild, leak, or expiry. On a
+  tenant that owns an inference key (§2a) it re-binds the waiting raw key to the
+  new token, or refuses `key_left_hq` when the raw key has already left HQ.
 
 ## 8. Rollback and destroy
 

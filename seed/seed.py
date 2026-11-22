@@ -39,9 +39,12 @@ to `/var/lib/odile/seed-keys.json` (0600) bound to the setup token's hash; the
 redeem that spends the token hands the key over and removes the entry. Exactly
 three paths remove an entry — that redeem, the next `provision` (which rewrites
 it), and destroy — so an ordered machine that is never installed keeps its raw
-key at HQ until one of them runs. A seed with no waiting key falls back to the
-config's shared `near_api_key` (the bench and manual path), and a seed with
-neither is refused `503 no_inference_key` without spending the token.
+key at HQ until one of them runs. A tenant with no live `tenant_keys` record
+(the bench and manual shape) falls back to the config's shared `near_api_key`;
+a tenant that owns a key never does: `issue`, `rotate` and `bind` re-bind the
+waiting raw key to the token they mint, refuse `409 key_left_hq` when the raw
+key has already left HQ, and a seed with neither key is refused `503
+no_inference_key` without spending the token.
 
 The one exception is a *rebuild* (ODL-215 follow-up): the tenant's old restic
 repository password has to reach the new machine, or `backup.py init` meets the
@@ -740,16 +743,111 @@ def take_issued_key(path: str, slug: str, token_hash: str) -> dict | None:
     return entry
 
 
-def near_api_key(config: dict, entry: dict | None, slug: str) -> str:
+def _has_table(con: sqlite3.Connection, name: str) -> bool:
+    row = con.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?", (name,)
+    ).fetchone()
+    return row is not None
+
+
+def key_record(con: sqlite3.Connection, slug: str) -> dict | None:
+    """The tenant's live inference-key record — id, label, prefix — or None.
+
+    `tenant_keys` belongs to the state spine (`odilectl/state.py`); a bench
+    database created by this service alone has no such table, and a tenant with
+    no row (or only `revoked` rows) is the manual shape whose seed may carry the
+    config's shared key. An `issued` row is what makes the tenant's own key the
+    one every seed must carry (ODL-242).
+    """
+    if not _has_table(con, "tenant_keys"):
+        return None
+    row = con.execute(
+        "SELECT key_id, label, key_prefix FROM tenant_keys"
+        " WHERE slug = ? AND state = 'issued'"
+        " ORDER BY issued_at DESC, key_id DESC LIMIT 1",
+        (slug,),
+    ).fetchone()
+    return dict(row) if row is not None else None
+
+
+def waiting_key(path: str, slug: str, record: dict) -> dict:
+    """The raw key waiting for this tenant's record, or a refusal naming the remedy.
+
+    Matched on `key_id`, not on the token hash: the caller is about to mint a
+    token and re-bind the entry to it. A leftover entry for an older, superseded
+    mint is not the tenant's live key, so it does not count as waiting.
+    """
+    entry = load_keys(path).get(slug)
+    if not isinstance(entry, dict) or entry.get("key_id") != record.get("key_id"):
+        raise SeedError(
+            409, "key_left_hq",
+            "key_left_hq: no raw inference key waits for %s: its key %s is "
+            "recorded, but the machine already exchanged it, so a token minted "
+            "here could only seed the config's shared key; run `odilectl provision "
+            "%s --apply` to mint a replacement (the machine must be installed "
+            "again), then use the token it prints"
+            % (slug, record.get("key_prefix") or "", slug),
+        )
+    return entry
+
+
+def rebind_waiting_key(path: str, slug: str, record: dict, token_hash: str,
+                       instance_id: str) -> dict:
+    """Point the tenant's waiting raw key at the token that will redeem it.
+
+    A second token for a tenant that already owns a key must carry that key
+    (ODL-242): `odilectl provision` re-binds on its own path, and this is the
+    same write for `token issue`, `token rotate` and `bind`. Refuses through
+    `waiting_key` when the raw key has already left HQ; the shared fallback is
+    never used for a tenant with an `issued` record.
+    """
+    entry = waiting_key(path, slug, record)
+    updated = dict(entry, token_hash=token_hash, instance_id=instance_id)
+    set_issued_key(path, slug, updated)
+    return updated
+
+
+def pin_key_to_token(con: sqlite3.Connection, slug: str, token_hash: str,
+                     instance_id: str, keys_file: str | None = None) -> dict | None:
+    """Bind the tenant's waiting key to a token this process is about to write.
+
+    Runs *before* the ledger row exists, so a refusal (no raw key at HQ) mints
+    nothing and ends nothing: the tenant keeps the token it had. Returns the
+    entry it wrote, or None for a tenant with no live key record, whose seed
+    keeps whatever path the caller had (the config's shared key, or a 503).
+    """
+    record = key_record(con, slug)
+    if record is None:
+        return None
+    return rebind_waiting_key(keys_file or keys_path(), slug, record, token_hash,
+                              instance_id)
+
+
+def near_api_key(config: dict, entry: dict | None, slug: str,
+                 keyed: bool = False) -> str:
     """The key this seed carries: the instance's own, else the config's shared one.
 
     Every instance provisioned by `odilectl` gets its own minted key (ODL-242).
     A seed with neither is refused before it is signed: a machine that boots
     with no key answers every request `401`, which reads as a broken install
     rather than a missing key.
+
+    `keyed` says the tenant has a live key record, and then the config's shared
+    key is not a fallback at all: a machine that owns a key and boots with the
+    account's shared one loses its own `spendLimit` and its own revoke, so the
+    exchange refuses (`503 no_inference_key`, token unspent) and names the one
+    command that mints a replacement.
     """
     if entry is not None:
         return entry["key"]
+    if keyed:
+        raise SeedError(
+            503,
+            "no_inference_key",
+            "%s owns its own NEAR AI key, but no raw key waits for this token; "
+            "run `odilectl provision %s --apply` again (the token is not spent) "
+            "and redeem the token it prints" % (slug, slug),
+        )
     shared = config.get("near_api_key")
     if isinstance(shared, str) and shared.strip():
         return fill(shared, slug)
@@ -963,8 +1061,10 @@ def verify_seed_bytes(data: bytes, signature: bytes, release_pubkey: str) -> tup
 # ---------------------------------------------------------------------- ledger
 
 def _insert_token(con: sqlite3.Connection, tenant_id: int, instance_id: str,
-                  ttl_hours: int, now: datetime) -> tuple[str, str, str]:
-    token = new_token()
+                  ttl_hours: int, now: datetime,
+                  token: str | None = None) -> tuple[str, str, str]:
+    """Write one ledger row; `token` lets the caller bind a key before the row exists."""
+    token = token or new_token()
     created = iso(now)
     expires = iso(now + timedelta(hours=ttl_hours))
     con.execute(
@@ -997,17 +1097,27 @@ def _instance(tenant: sqlite3.Row, instance_id: str | None) -> str:
 
 
 def issue(con: sqlite3.Connection, slug: str, instance_id: str | None = None,
-          ttl_hours: int = 24, now: datetime | None = None) -> dict:
-    """Mint one token for a tenant. The plaintext is returned here and nowhere else."""
+          ttl_hours: int = 24, now: datetime | None = None,
+          keys_file: str | None = None) -> dict:
+    """Mint one token for a tenant. The plaintext is returned here and nowhere else.
+
+    A tenant with a live key record gets the same treatment as a provision: the
+    waiting raw key is re-bound to this token (`key_left_hq` when none waits), so
+    the seed this token buys carries the tenant's own key and its `spendLimit`
+    (ODL-242).
+    """
     now = now or utcnow()
     if ttl_hours <= 0:
         raise SeedError(400, "bad_ttl", "ttl must be a positive number of hours")
     tenant = _tenant(con, slug)
     instance = _instance(tenant, instance_id)
-    token, created, expires = _insert_token(con, tenant["id"], instance, ttl_hours, now)
+    token = new_token()
+    pinned = pin_key_to_token(con, tenant["slug"], hash_token(token), instance, keys_file)
+    _, created, expires = _insert_token(con, tenant["id"], instance, ttl_hours, now,
+                                        token=token)
     con.commit()
     return {"slug": tenant["slug"], "instance_id": instance, "token": token,
-            "created_at": created, "expires_at": expires}
+            "created_at": created, "expires_at": expires, "key": pinned}
 
 
 def _end_live_tokens(con: sqlite3.Connection, tenant_id: int, stamp: str) -> int:
@@ -1025,8 +1135,15 @@ def _end_live_tokens(con: sqlite3.Connection, tenant_id: int, stamp: str) -> int
 
 def rotate(con: sqlite3.Connection, slug: str, instance_id: str | None = None,
            ttl_hours: int = 24, dry_run: bool = False,
-           now: datetime | None = None) -> dict:
-    """End every live token for a tenant and mint exactly one new one."""
+           now: datetime | None = None,
+           keys_file: str | None = None) -> dict:
+    """End every live token for a tenant and mint exactly one new one.
+
+    A tenant with a live key record gets its waiting raw key re-bound to the new
+    token, and refuses `409 key_left_hq` when none waits — before any ledger
+    write, so a refused rotation leaves the token the tenant had (ODL-242). The
+    dry run answers the same question without writing.
+    """
     now = now or utcnow()
     if ttl_hours <= 0:
         raise SeedError(400, "bad_ttl", "ttl must be a positive number of hours")
@@ -1038,19 +1155,29 @@ def rotate(con: sqlite3.Connection, slug: str, instance_id: str | None = None,
             "SELECT count(*) FROM seed_tokens WHERE tenant_id = ? AND used_at IS NULL AND expires_at > ?",
             (tenant["id"], stamp),
         ).fetchone()[0]
+        # The same refusal the real run would make: a dry run that promised a
+        # token the next command refuses is worse than no dry run.
+        record = key_record(con, tenant["slug"])
+        waiting = (waiting_key(keys_file or keys_path(), tenant["slug"], record)
+                   if record is not None else None)
         return {"slug": tenant["slug"], "instance_id": instance, "revoked": live,
-                "token": None, "expires_at": None, "dry_run": True}
+                "token": None, "expires_at": None, "dry_run": True, "key": waiting}
+    token = new_token()
+    pinned = pin_key_to_token(con, tenant["slug"], hash_token(token), instance, keys_file)
     # One transaction: a rotation either ends the old token and issues the new
     # one, or changes nothing.
     live = _end_live_tokens(con, tenant["id"], stamp)
-    token, created, expires = _insert_token(con, tenant["id"], instance, ttl_hours, now)
+    _, created, expires = _insert_token(con, tenant["id"], instance, ttl_hours, now,
+                                        token=token)
     con.commit()
     return {"slug": tenant["slug"], "instance_id": instance, "revoked": live,
-            "token": token, "created_at": created, "expires_at": expires, "dry_run": False}
+            "token": token, "created_at": created, "expires_at": expires,
+            "dry_run": False, "key": pinned}
 
 
 def bind(con: sqlite3.Connection, slug: str, instance_id: str | None = None,
-         ttl_hours: int = 24, now: datetime | None = None) -> dict:
+         ttl_hours: int = 24, now: datetime | None = None,
+         keys_file: str | None = None) -> dict:
     """Mint one token and write both halves of the binding, atomically.
 
     The provision path knows the machine's instance id the moment the create
@@ -1059,6 +1186,11 @@ def bind(con: sqlite3.Connection, slug: str, instance_id: str | None = None,
     `tenants.setup_token_hash` (the SHA-256, never the token). A reader cannot
     see one without the other, and the previous live token ends in the same
     transaction, so exactly one token works for the tenant.
+
+    A tenant with a live key record also gets its waiting raw key re-bound to
+    this token (`keys_file` names the handoff; `odilectl provision` passes the
+    path its config uses), and refuses `409 key_left_hq` when none waits — before
+    the ledger moves (ODL-242).
 
     The plaintext token is returned here and nowhere else. Callers print it
     once; a later `bind` (or `rotate`) ends it.
@@ -1069,8 +1201,11 @@ def bind(con: sqlite3.Connection, slug: str, instance_id: str | None = None,
     tenant = _tenant(con, slug)
     instance = _instance(tenant, instance_id)
     stamp = iso(now)
+    token = new_token()
+    pinned = pin_key_to_token(con, tenant["slug"], hash_token(token), instance, keys_file)
     revoked = _end_live_tokens(con, tenant["id"], stamp)
-    token, created, expires = _insert_token(con, tenant["id"], instance, ttl_hours, now)
+    _, created, expires = _insert_token(con, tenant["id"], instance, ttl_hours, now,
+                                        token=token)
     token_hash = hash_token(token)
     con.execute(
         "UPDATE tenants SET setup_token_hash = ? WHERE id = ?", (token_hash, tenant["id"])
@@ -1078,7 +1213,7 @@ def bind(con: sqlite3.Connection, slug: str, instance_id: str | None = None,
     con.commit()
     return {"slug": tenant["slug"], "instance_id": instance, "token": token,
             "token_hash": token_hash, "created_at": created, "expires_at": expires,
-            "revoked": revoked}
+            "revoked": revoked, "key": pinned}
 
 
 def list_tokens(con: sqlite3.Connection, slug: str, now: datetime | None = None) -> list[dict]:
@@ -1126,7 +1261,10 @@ def redeem(con: sqlite3.Connection, token: str, instance_id: str,
     built (no key anywhere) refuses with `503 no_inference_key` and leaves the
     token spendable — the machine's retry then gets its seed once provision has
     put a key in place. The key entry is matched to this token's hash, so a
-    key minted for an earlier run cannot ride a later token.
+    key minted for an earlier run cannot ride a later token. A tenant with a
+    live `tenant_keys` record never reaches the config's shared key: with no
+    waiting key the exchange refuses `503 no_inference_key` and names
+    `odilectl provision`, the only command that mints a replacement.
     """
     now = now or utcnow()
     stamp = iso(now)
@@ -1150,7 +1288,8 @@ def redeem(con: sqlite3.Connection, token: str, instance_id: str,
     if tenant is None:
         raise SeedError(500, "no_tenant", "tenant record disappeared")
     issued = issued_key_for(keys or {}, tenant["slug"], token_hash)
-    key = near_api_key(config, issued, tenant["slug"])
+    key = near_api_key(config, issued, tenant["slug"],
+                       keyed=key_record(con, tenant["slug"]) is not None)
     seed = build_seed(tenant, row["instance_id"], config,
                       rebuild=rebuild_for(rebuilds or {}, tenant["slug"], token_hash),
                       identity=identity,
@@ -1436,6 +1575,20 @@ def cmd_keygen(args) -> int:
     return 0
 
 
+def _key_line(result: dict, verb: str) -> str | None:
+    """One line naming the tenant's own key the new token carries, or None.
+
+    A bench tenant has no key record, so nothing is printed; a keyed tenant's
+    token always carries its own key, which is the fact an operator needs to see
+    in the transcript (`odilectl provision` says the same on its own path).
+    """
+    entry = result.get("key")
+    if not isinstance(entry, dict):
+        return None
+    return "key:      %s %s (%s this token)" % (
+        entry.get("label") or "", entry.get("prefix") or "", verb)
+
+
 def cmd_token_issue(args) -> int:
     con = connect()
     try:
@@ -1446,6 +1599,9 @@ def cmd_token_issue(args) -> int:
     print("tenant:   %s" % result["slug"])
     print("instance: %s" % result["instance_id"])
     print("expires:  %s" % result["expires_at"])
+    key_line = _key_line(result, "re-bound to")
+    if key_line:
+        print(key_line)
     print("token:    %s" % result["token"])
     print("(printed once; only its SHA-256 hash is stored)", file=sys.stderr)
     return 0
@@ -1462,12 +1618,18 @@ def cmd_token_rotate(args) -> int:
         print("tenant:       %s" % result["slug"])
         print("would revoke: %d live token(s)" % result["revoked"])
         print("would issue:  1 token for %s" % result["instance_id"])
+        key_line = _key_line(result, "would be re-bound to")
+        if key_line:
+            print(key_line)
         print("dry run only — nothing changed")
         return 0
     print("tenant:   %s" % result["slug"])
     print("instance: %s" % result["instance_id"])
     print("revoked:  %d live token(s)" % result["revoked"])
     print("expires:  %s" % result["expires_at"])
+    key_line = _key_line(result, "re-bound to")
+    if key_line:
+        print(key_line)
     print("token:    %s" % result["token"])
     print("(printed once; only its SHA-256 hash is stored)", file=sys.stderr)
     return 0

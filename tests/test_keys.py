@@ -101,6 +101,15 @@ def iso_now() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+def shared_key(slug: str) -> str:
+    """The seed config's shared fallback for one slug — the value a seed must not carry.
+
+    Built in two pieces so a secret scanner reading this file never mistakes the
+    fixture for a minted key; `SeedFixture.shared_fallback` writes the same one.
+    """
+    return "sk-shared-" + slug
+
+
 def wait_health(port: int, proc, seconds: float = 10.0) -> None:
     deadline = time.time() + seconds
     while time.time() < deadline:
@@ -280,6 +289,9 @@ class SeedFixture(unittest.TestCase):
         ("odl-keyf", "srv-keyf"),
         ("odl-keyg", "srv-keyg"),
         ("odl-keyh", "srv-keyh"),
+        ("odl-keyi", "srv-keyi"),
+        ("odl-keyj", "srv-keyj"),
+        ("odl-keyk", "srv-keyk"),
     )
 
     @classmethod
@@ -506,6 +518,49 @@ class SeedFixture(unittest.TestCase):
         except FileNotFoundError:
             return {}
 
+    def run_seed(self, *args):
+        """Run the real seed CLI against this fixture's database and handoff."""
+        return subprocess.run(
+            [sys.executable, str(SEED), *args], env=self.env(),
+            capture_output=True, text=True, timeout=30,
+        )
+
+    def mint_raw_token_row(self, slug: str, instance_id: str, token: str) -> None:
+        """Write a token row behind the mint commands' back, as a stale ledger would.
+
+        `token issue`/`rotate`/`provision` all bind the tenant's key to the token
+        they mint (ODL-242). A row inserted here is the shape a path that did not
+        (an older release, a hand edit) leaves behind; the exchange must still
+        never hand that machine the config's shared key.
+        """
+        stamp = iso_now()
+        expires = datetime.fromtimestamp(
+            time.time() + 3600, timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        con = sqlite3.connect(self.db)
+        try:
+            tenant_id = con.execute(
+                "SELECT id FROM tenants WHERE slug = ?", (slug,)).fetchone()[0]
+            con.execute(
+                "INSERT INTO seed_tokens (tenant_id, token_hash, instance_id,"
+                " created_at, expires_at) VALUES (?, ?, ?, ?, ?)",
+                (tenant_id, hashlib.sha256(token.encode("ascii")).hexdigest(),
+                 instance_id, stamp, expires),
+            )
+            con.commit()
+        finally:
+            con.close()
+
+    def token_rows(self, slug: str) -> list[tuple]:
+        """(used_at, state) for a tenant's tokens, oldest first, from the ledger."""
+        con = sqlite3.connect(self.db)
+        try:
+            return con.execute(
+                "SELECT used_at, CASE WHEN used_at IS NULL THEN 'live' ELSE 'ended' END"
+                " FROM seed_tokens JOIN tenants ON tenants.id = seed_tokens.tenant_id"
+                " WHERE tenants.slug = ? ORDER BY seed_tokens.id", (slug,)).fetchall()
+        finally:
+            con.close()
+
     def db_bytes(self) -> bytes:
         connection = sqlite3.connect(self.db)
         try:
@@ -712,7 +767,7 @@ class ReissueTest(SeedFixture):
                 self.assertEqual(status, 200, body)
                 seed = json.loads(body)
                 self.assertEqual(seed["near_api_key"], waiting["key"])
-                self.assertNotEqual(seed["near_api_key"], "sk-sha...keyg")
+                self.assertNotEqual(seed["near_api_key"], shared_key("odl-keyg"))
                 self.assertNotIn("odl-keyg", self.handoff(), "the exchange left a raw key at HQ")
 
                 # The replaced token ended with the reissue (`bind` ends it).
@@ -757,7 +812,7 @@ class ReissueTest(SeedFixture):
                 status, body = self.redeem(second_token, "srv-keyh")
                 self.assertEqual(status, 200, body)
                 self.assertEqual(json.loads(body)["near_api_key"], second_key)
-                self.assertNotEqual(json.loads(body)["near_api_key"], "sk-sha...keyh")
+                self.assertNotEqual(json.loads(body)["near_api_key"], shared_key("odl-keyh"))
                 self.assertNotIn("odl-keyh", self.handoff())
 
         store = state.StateStore.open(self.db)
@@ -771,7 +826,132 @@ class ReissueTest(SeedFixture):
         self.assertNotIn(first_key, self.db_bytes().decode("utf-8", "replace"))
 
 
+# ------------------------------------------------- a rotated / issued token
+
+
+class RotateTest(SeedFixture):
+    """`token rotate`/`token issue` on a tenant that owns an inference key.
+
+    The verifier's round-5 must (ODL-242): the runbook prescribes rotation as a
+    re-issue path next to `odilectl provision`, so the mint commands must carry
+    the tenant's own key. When the raw key still waits, they re-bind it to the
+    token they mint; when it has already left HQ, they refuse (`409
+    key_left_hq`) instead of handing out a token whose seed would carry the
+    config's shared key. Both shapes run with the shared fallback present, so a
+    fallback cannot hide.
+    """
+
+    def test_rotate_on_a_keyed_tenant_rebinds_the_waiting_key(self):
+        """The raw key still waits: rotate moves it to the new token, minting nothing."""
+        config = self.make_config()
+        near = FakeNear()
+        with self.shared_fallback():
+            with mock.patch.object(keys, "TRANSPORT", near):
+                code, err, _ = self.provision("odl-keyi", "srv-keyi", config)
+                self.assertEqual(code, 0, err)
+                first_token = self._tokens["odl-keyi"]
+                waiting = self.handoff()["odl-keyi"]
+                minted = near.minted
+
+            rotated = self.run_seed("token", "rotate", "--tenant", "odl-keyi",
+                                    "--instance", "srv-keyi")
+            self.assertEqual(rotated.returncode, 0, rotated.stderr)
+            match = re.search(r"^token:\s+([0-9a-f]{64})$", rotated.stdout, re.M)
+            self.assertIsNotNone(match, rotated.stdout)
+            second_token = match.group(1)
+            self.assertNotEqual(second_token, first_token)
+
+            # The same raw key, bound to the token this run minted.
+            rebound = self.handoff()["odl-keyi"]
+            self.assertEqual(rebound["key"], waiting["key"])
+            self.assertEqual(rebound["key_id"], waiting["key_id"])
+            self.assertEqual(
+                rebound["token_hash"],
+                hashlib.sha256(second_token.encode("utf-8")).hexdigest(),
+            )
+            self.assertEqual(rebound["instance_id"], "srv-keyi")
+            self.assertEqual(near.minted, minted, "the seed service cannot mint a key")
+
+            status, body = self.redeem(second_token, "srv-keyi")
+            self.assertEqual(status, 200, body)
+            seed = json.loads(body)
+            self.assertEqual(seed["near_api_key"], waiting["key"])
+            self.assertNotEqual(seed["near_api_key"], shared_key("odl-keyi"))
+            self.assertNotIn("odl-keyi", self.handoff(), "the exchange left a raw key at HQ")
+
+            # The token rotate ended no longer seeds anything.
+            status_one, body_one = self.redeem(first_token, "srv-keyi")
+            self.assertEqual(status_one, 410, body_one)
+
+    def test_rotate_after_the_key_left_hq_refuses_before_minting_a_token(self):
+        """No raw key waits: rotate and issue refuse, and the live token survives."""
+        config = self.make_config()
+        near = FakeNear()
+        with self.shared_fallback(), mock.patch.object(keys, "TRANSPORT", near):
+            code, err, _ = self.provision("odl-keyj", "srv-keyj", config)
+            self.assertEqual(code, 0, err)
+            first_token = self._tokens["odl-keyj"]
+            status, body = self.redeem(first_token, "srv-keyj")
+            self.assertEqual(status, 200, body)
+            own = json.loads(body)["near_api_key"]
+            self.assertEqual(self.handoff(), {}, "the first exchange left a raw key at HQ")
+
+            # A live token to prove the refusal does not end it, then both verbs.
+            self.mint_raw_token_row("odl-keyj", "srv-keyj", "ef" * 32)
+            for verb in ("rotate", "issue"):
+                refused = self.run_seed("token", verb, "--tenant", "odl-keyj",
+                                        "--instance", "srv-keyj")
+                self.assertNotEqual(refused.returncode, 0, refused.stdout)
+                self.assertIn("key_left_hq", refused.stderr)
+                self.assertIn("odilectl provision", refused.stderr)
+                self.assertNotIn("token:", refused.stdout, refused.stdout)
+
+            # Nothing was minted, and rotate did not end the token it found.
+            rows = self.token_rows("odl-keyj")
+            self.assertEqual(len(rows), 2, rows)
+            self.assertEqual(rows[-1][1], "live", rows)
+            self.assertEqual(self.handoff(), {})
+
+            # `provision` is the remedy the refusal names: a new token that
+            # carries a new key, and the running machine's old key is revoked.
+            code, err, _ = self.provision(
+                "odl-keyj", "srv-keyj", config,
+                provider=self.active_provider("odl-keyj", "srv-keyj").provider,
+            )
+            self.assertEqual(code, 0, err + self._out)
+            replacement = self._tokens["odl-keyj"]
+            status, body = self.redeem(replacement, "srv-keyj")
+            self.assertEqual(status, 200, body)
+            self.assertNotEqual(json.loads(body)["near_api_key"], own)
+            self.assertNotEqual(json.loads(body)["near_api_key"], shared_key("odl-keyj"))
+            self.assertEqual(len(near.mints()), 2, near.actions())
+
+    def test_a_token_minted_behind_the_service_never_carries_the_shared_key(self):
+        """The exchange is the last guard: keyed tenant, no waiting key -> 503, unspent."""
+        config = self.make_config()
+        near = FakeNear()
+        token = "cd" * 32
+        with self.shared_fallback():
+            with mock.patch.object(keys, "TRANSPORT", near):
+                code, err, _ = self.provision("odl-keyk", "srv-keyk", config)
+                self.assertEqual(code, 0, err)
+                status, body = self.redeem(self._tokens["odl-keyk"], "srv-keyk")
+                self.assertEqual(status, 200, body)
+                self.assertEqual(self.handoff(), {})
+            self.mint_raw_token_row("odl-keyk", "srv-keyk", token)
+
+            status, body = self.redeem(token, "srv-keyk")
+            self.assertEqual(status, 503, body)
+            payload = json.loads(body)
+            self.assertEqual(payload["reason"], "no_inference_key")
+            self.assertIn("odilectl provision", payload["error"])
+            self.assertNotIn(shared_key("odl-keyk"), body.decode("utf-8", "replace"))
+            # A refusal never burns the token.
+            self.assertEqual(self.token_rows("odl-keyk")[-1][0], None)
+
+
 # -------------------------------------------------------------------- revoke
+        # -------------------------------------------------------------------- revoke
 
 
 class RevokeTest(SeedFixture):
