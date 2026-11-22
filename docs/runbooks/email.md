@@ -110,25 +110,37 @@ authoritative nameserver for every record (and for the PTR via
 ### 4.1 Packages and files
 
 Ubuntu 26.04 packages: `postfix`, `postfix-pcre`, `opendkim`, `opendkim-tools`,
-`sasl2-bin`. `postfix-pcre` is load-bearing: without it the sender-login map is
-an "unsupported dictionary type" and every authenticated submission is deferred
-with `451 4.3.0` at RCPT time.
+`dovecot-core`, `dovecot-imapd`. `postfix-pcre` is load-bearing: without it the
+sender-login map is an "unsupported dictionary type" and every authenticated
+submission is deferred with `451 4.3.0` at RCPT time. (`sasl2-bin` is no longer
+needed: submission AUTH is Dovecot's. The package may remain installed, but
+nothing reads `/etc/sasldb2`.)
 
-**Postfix and OpenDKIM are captured in git**, not typed by hand:
+**Postfix, OpenDKIM and Dovecot are captured in git**, not typed by hand:
 
 ```
 deploy/postfix/main.cf            deploy/opendkim/opendkim.conf
 deploy/postfix/master.cf          deploy/opendkim/KeyTable
 deploy/postfix/virtual            deploy/opendkim/SigningTable
 deploy/postfix/sender_login.pcre  deploy/opendkim/TrustedHosts
-deploy/postfix/sasl/smtpd.conf    deploy/opendkim/odile.txt   (public key only)
+deploy/postfix/sender_canonical.pcre  deploy/opendkim/odile.txt  (public key only)
+deploy/dovecot/dovecot.conf
 ```
+
+The old `deploy/postfix/sasl/smtpd.conf` (Cyrus auxprop) is deleted: submission
+now asks Dovecot's auth socket (§4.4), and `deploy/postfix/apply.py --apply`
+removes the deployed copy.
 
 ```sh
 ./deploy/postfix/apply.py             # dry run: say what would change
 ./deploy/postfix/apply.py --apply     # write, postmap, create mailboxes, restart
 ./deploy/postfix/apply.py --check     # exit 1 on drift
 ./deploy/postfix/apply.py --self-test # offline checks for the fresh-host path
+
+./deploy/dovecot/apply.py             # dry run: the IMAPS listener and its state
+./deploy/dovecot/apply.py --apply     # write the config, reconcile the service
+./deploy/dovecot/apply.py --check     # exit 1 on drift, or 143 open
+./deploy/dovecot/apply.py --self-test # offline checks, including "no 143"
 
 ./deploy/opendkim/apply.py --check    # every selector in KeyTable: key, mode, TXT
 ./deploy/opendkim/apply.py --apply
@@ -139,6 +151,18 @@ The applier compares content, owner and mode; a second run prints
 `nothing to do`. A Postfix change **restarts** the service rather than
 reloading it, because `postfix reload` re-reads `main.cf` but does not rebuild
 listening sockets — a change to `inet_protocols` would look applied and not be.
+
+**Order matters when the host predates this layout.** Postfix's applier retires
+the old Cyrus `/etc/sasldb2`, and it refuses to delete it until **every** account
+in it already has a `{SHA512-CRYPT}` line in `/etc/dovecot/users` (§4.4). On a
+host where the Dovecot file exists but holds only the mailbox, running Postfix
+first would otherwise delete the only copy of the tenant secret; `--apply` keeps
+the file, names the missing account and exits 1. So on an upgrade: Dovecot
+`--apply`, then the account lines (§5.1), then Postfix `--apply`. On a fresh
+host the first step is reversed — Postfix creates the `help` user and its
+Maildir, so it runs first; its `--check` then still reports
+`/etc/dovecot/users: missing` and exits 1 until the Dovecot account steps have
+run, which is expected.
 
 Two things on a fresh host are *derived* from the committed files, and both are
 reconciled rather than assumed:
@@ -166,14 +190,21 @@ mail. `UserID opendkim:postfix` is what makes the milter socket group-owned by
 has been observed over IPv6 (`relay=…[2607:…]:25`). `mynetworks` includes
 `[::1]/128` for local IPv6 clients.
 
-### 4.2 Secrets — three files, none of them in git
+### 4.2 Secrets — six files, none of them in git
 
 | Secret | Path | Mode | What it can do |
 |---|---|---|---|
 | Submission account (test tenant) | `/root/.odile/mail_test_account.json` | `0600` | `host`, `port`, `username`, `secret`, `tls_ca`; used by `send_test.py` |
-| SASL account database | `/etc/sasldb2` | `0640 root:postfix` | the hashed tenant passwords; written by `saslpasswd2` |
+| IMAP + SMTP account hashes | `/etc/dovecot/users` | `0600 root` | one `{SHA512-CRYPT}` line per account — `help@odile.fyi` (mailbox), `odile-test@mail.odile.fyi` (submission only), and one `<name>@mail.odile.fyi` per tenant (§5.1); read by `auth-worker`, used by IMAP and by Postfix on 587 (§4.4) |
+| Derived IMAP userdb | `/etc/dovecot/userdb` | `0600 root` | the mailbox line only; keeps the submission-only account out of IMAP (§4.4) |
+| Mailbox password (handover) | `/root/.odile/mailbox-help-password.txt` | `0600` | the one plaintext copy of that password; relayed to Savio over Matrix |
 | Cloudflare DNS token | `/root/.odile/cloudflare_dns_token` | `0600` | `Zone.DNS Edit` on `odile.fyi` only; `--apply-dns` |
 | Gmail app password (optional) | `/root/.odile/gmail_app_password` | `0600` | IMAP read for `--gmail-headers` (§10.2) |
+
+There is no `/etc/sasldb2`. It held the same two passwords in cleartext because
+SASL PLAIN/LOGIN authenticates against the stored value; it was retired on
+2026-11-22 when submission moved to Dovecot's passwd-file.
+`db_dump -p /etc/sasldb2` now fails because the file is gone.
 
 The DKIM private key is **not** in git. The generator is:
 
@@ -199,6 +230,120 @@ exits 1 when a user, home or Maildir is absent. `scripts/mail_dsn.py` reads
 `/var/mail/dsn/Maildir`, so a host built without the `dsn` mailbox cannot parse
 a bounce even though the alias resolves.
 
+### 4.4 Reading the mailbox — IMAPS on 993
+
+The support mailbox has a reader: Dovecot 2.4.2 serves the same Maildir over
+IMAPS, and Thunderbird is the first client. Nothing is forwarded and nothing is
+copied; the Maildir is the storage.
+
+| Setting | Value |
+|---|---|
+| IMAP | `mail.odile.fyi`, port **993**, SSL/TLS (implicit TLS, 1.2 minimum) |
+| SMTP | `mail.odile.fyi`, port **587**, STARTTLS (§5) |
+| Username | `help@odile.fyi` — one login for both IMAP and SMTP |
+| Password | one secret; the handover copy is `/root/.odile/mailbox-help-password.txt` (0600 root) |
+| Certificate | `CN=mail.odile.fyi`, the certificate Postfix already serves (self-signed, pinned by tenants — §13) |
+
+There is **no** port 143 listener and no plaintext authentication:
+`service imap-login { inet_listener imap { port = 0 } }` removes the socket and
+`auth_allow_cleartext = no` refuses a plaintext AUTH anyway. The packaged
+`dovecot.socket` binds 143 *and* 993, so it is masked; the daemon owns 993.
+`./deploy/dovecot/apply.py --check` fails if 143 is listening.
+
+The storage is read in place:
+
+```cfg
+mail_driver = maildir
+mail_path = /var/mail/help/Maildir   # Dovecot 2.4's spelling of mail_location
+mail_home = /var/mail/help
+mail_uid = help
+mail_gid = help
+```
+
+Opening INBOX performs Maildir's normal `\Recent` transition: the messages in
+`new/` are renamed into `cur/` with a `:2,` suffix on the first `SELECT`. The
+content does not change — measured 2026-11-22, 14 before and 14 after, the same
+inode, size and SHA-256 for every message. Postfix keeps delivering new mail to
+`new/`; nothing is re-delivered or rewritten.
+
+**The credential.** `/etc/dovecot/users` holds one `{SHA512-CRYPT}` line per
+account at 0600 root: the mailbox account
+`help@odile.fyi:{SHA512-CRYPT}$6$…:1000:1000::/var/mail/help::`, the
+submission-only test account
+`odile-test@mail.odile.fyi:{SHA512-CRYPT}$6$…:65534:65534::/nonexistent::`,
+and one `<name>@mail.odile.fyi` line per tenant (§5.1).
+All of them are read by `auth-worker` (`use_worker = yes`), because the auth process
+runs as `dovecot` and cannot read a 0600 root file. The same store serves IMAP
+and 587: Postfix is configured `smtpd_sasl_type = dovecot` and asks
+`/var/spool/postfix/private/auth`, so submission AUTH checks the same hash.
+`/etc/dovecot/deny.imap` names the submission-only account in a passdb that
+runs first, so its IMAP login is refused with `[AUTHENTICATIONFAILED]`; the
+empty `/etc/dovecot/deny.smtp` means Postfix's `service=smtp` request is not
+denied. `/etc/dovecot/userdb` is derived from the same file and holds only the
+mailbox line as a second layer. Postfix's AUTH request carries `nologin`, so it
+performs no userdb lookup: `odile-test@mail.odile.fyi` authenticates on 587,
+but cannot complete an IMAP login or read the support Maildir. The mailbox
+password's only plaintext copy is the handover file; it is never in git, on a
+command line, or in a log. The submission-only account's plaintext is its
+pre-existing 0600 `mail_test_account.json` (§4.2).
+
+**Two expected log lines, one real failure.** The first lookup in each auth
+process — in practice, each client login — logs, once for each of the two
+passwd-files,
+`auth: Error: passwd-file /etc/dovecot/users:open(...) failed: Permission denied (euid=107(dovecot) …)`
+and the same for `/etc/dovecot/userdb`, then `passdb: … auth succeeded` /
+`imap-login: Logged in`. The parent auth process opens each file before handing
+the lookup to `auth-worker` (root), which does the read that counts; that first
+open is the noise. With `use_worker = yes` these lines are expected, and they
+recur whenever a new auth process starts (measured 2026-11-22 at 18:48, 18:54,
+19:10 and 19:18 with no restart or reload) — not only after a start or reload.
+Only `internal auth failure`, `Authentication failed`, or a missing
+`auth succeeded` means a broken credential.
+
+**Dovecot's own files.** The first `SELECT` writes `dovecot-*` index files
+(`dovecot.index`, `dovecot.index.log`, …) into the Maildir. They are Dovecot's
+cache, not messages: the 14 message files keep their inode, size and SHA-256,
+and the `new/`/`cur/` message contents are unchanged. “No message moves” is
+about the message files, not the directory listing.
+
+**Rotate it** — one command writes the hash, the derived userdb and the
+handover file from one generated secret, then proves the IMAP login:
+
+```sh
+./deploy/dovecot/apply.py --set-password
+./deploy/dovecot/apply.py --check
+```
+
+It prints paths, never the secret. It replaces the mailbox line only: tenant
+lines and their secrets are preserved. There is no second place to change: the
+587 AUTH checks the same hash, so the old password fails on the next AUTH. The
+submission-only account rotates from its own file, without putting the secret
+on a command line:
+
+```sh
+/usr/bin/python3 -c 'import json; print(json.load(open("/root/.odile/mail_test_account.json"))["secret"])' \
+  | ./deploy/dovecot/apply.py --set-account-password odile-test@mail.odile.fyi --password-stdin
+```
+
+**Sending as `help@odile.fyi`.** Thunderbird's From is the apex address; the
+envelope is moved to `help@mail.odile.fyi` before the queue, because
+`odile.fyi` publishes no SPF record (§3.2) and `mail.odile.fyi` is the domain
+that authorises this host and signs with `d=mail.odile.fyi`. Three tracked
+files carry that one decision: `sender_login.pcre` lets the login claim its own
+apex envelope sender, `sender_canonical.pcre` rewrites that envelope, and
+`sender_canonical_classes = envelope_sender` keeps the rewrite away from
+`From:`/`Reply-To:` — the Postfix default rewrites header sender addresses
+too, which on 2026-11-22 delivered the first attempt as
+`From: help@mail.odile.fyi`. `deploy/opendkim/SigningTable` names the apex
+address so the message is signed at all.
+
+Measured 2026-11-22 with a real 587 submission: `From: Odile Help
+<help@odile.fyi>`, `Return-Path: <help@mail.odile.fyi>`, Gmail `spf=pass`,
+`dkim=pass` (`d=mail.odile.fyi`, `s=odile`) and the message in the INBOX.
+`dmarc` is **absent**, not failed: the apex publishes no `_dmarc` record, so
+Gmail has nothing to evaluate for `header.from=odile.fyi`. Adding one is a DNS
+change and was out of scope for this card.
+
 ## 5. Submission — the tenant interface
 
 Tenants do not get a shell and do not talk to port 25. They get one SASL
@@ -223,13 +368,24 @@ interface with one test account.
 # as root; the secret is read from a file, never from argv or the process list
 umask 077
 openssl rand -hex 24 > /root/.odile/tenant-<id>.secret
-saslpasswd2 -c -u mail.odile.fyi -p tenant-<id> < /root/.odile/tenant-<id>.secret
-chown root:postfix /etc/sasldb2 && chmod 640 /etc/sasldb2
+./deploy/dovecot/apply.py --set-account-password tenant-<id>@mail.odile.fyi \
+  --password-stdin < /root/.odile/tenant-<id>.secret
 ```
 
-The realm must be `mail.odile.fyi`: `saslpasswd2` otherwise stores
-`user@<OS hostname>` (here `hostfake`), and authentication fails with a bare
-`535` even though the password is right.
+The command adds one line and reloads Dovecot: `deny.imap` and `userdb` are
+re-derived from the file, so the new account authenticates on 587 and is refused
+IMAP in the same step. `--check` accepts any `<name>@mail.odile.fyi` line beyond
+the two managed accounts (which must stay present), reports an address outside
+that shape as `unexpected account(s)`, and reports two lines for one address as
+`duplicate account(s)`. Rotating one tenant replaces that line only: the mailbox
+password, its handover file and every other tenant line are untouched.
+
+The key is the full address. The realm is unchanged: `auth_default_domain =
+mail.odile.fyi` in `deploy/dovecot/dovecot.conf` makes a client that sends a
+bare `tenant-<id>` resolve to `tenant-<id>@mail.odile.fyi`, the same name
+`saslpasswd2 -u mail.odile.fyi` used to store. There is no `/etc/sasldb2` to
+chmod; the account is one `{SHA512-CRYPT}` line in `/etc/dovecot/users`, and
+`/etc/dovecot/userdb` deliberately omits it so the account cannot open IMAP.
 
 The test account's file is `/root/.odile/mail_test_account.json`; a client
 reads it, the operator never types the secret into a command line.
@@ -240,12 +396,16 @@ reads it, the operator never types the secret into a command line.
 **envelope sender** to `*@mail.odile.fyi`, owned by the authenticated login:
 
 ```text
-/^[^@]+@mail\.odile\.fyi$/   odile-test
+/^[^@]+@mail\.odile\.fyi$/   odile-test@mail.odile.fyi
 ```
 
-A spoofed envelope is rejected at RCPT with `553 5.7.1 Sender address
-rejected: not owned by user …`. Today the map names one login; M1 replaces the
-row with one per tenant. From: is not restricted by this map — the tenant
+Dovecot returns the passwd-file key as `sasl_username`, so a client that sends
+the bare `odile-test` is recorded as `odile-test@mail.odile.fyi`; the map value
+must be that full name (measured 2026-11-22: the bare value produced `553
+Sender address rejected: not owned by user odile-test@mail.odile.fyi`). A
+spoofed envelope is rejected at RCPT with `553 5.7.1 Sender address rejected:
+not owned by user …`. Today the map names one tenant login; M1 replaces the row
+with one per tenant. From: is not restricted by this map — the tenant
 template and the per-tenant DKIM signing table are the M1 controls.
 
 Port 25 stays local-only: `mynetworks = 127.0.0.0/8 [::1]/128`, and SASL is
@@ -370,11 +530,13 @@ record the world uses to reach port 25.
 # 0. offline logic: DNS parsing, SPF/DKIM/DMARC checks, VERP, DKIM verify, soak report
 ./scripts/send_test.py --self-test
 ./deploy/postfix/apply.py --self-test    # alias db, dsn/help mailboxes
+./deploy/dovecot/apply.py --self-test    # 993 only, maildir in place, hash rules
 ./deploy/opendkim/apply.py --self-test   # active selector and its committed TXT
 
-# 1. the machine: services, milter, key, SASL db, submission AUTH, banner
+# 1. the machine: services, milter, key, submission hash store, AUTH, banner
 ./scripts/send_test.py --check-mta
-./deploy/postfix/apply.py --check        # virtual.db, mailboxes, SASL db
+./deploy/postfix/apply.py --check        # virtual.db, mailboxes, Dovecot auth store
+./deploy/dovecot/apply.py --check        # config, 143 closed, 993 open, hash 0600
 ./deploy/opendkim/apply.py --check       # every selector in KeyTable
 
 # 2. the records: A, AAAA, SPF (both families), DKIM (DNS vs local key),
@@ -673,7 +835,12 @@ PASS there and here.
 | Symptom | Cause | Fix |
 |---|---|---|
 | `451 4.3.0 … Temporary lookup failure` at RCPT on 587 | `postfix-pcre` missing; `pcre:/etc/postfix/sender_login.pcre` cannot load | install `postfix-pcre`, restart postfix |
-| `535 5.7.8 Error: authentication failed` with a correct password | Account was stored under the OS hostname realm (`user@hostfake`), not `user@mail.odile.fyi` | recreate with `saslpasswd2 -c -u mail.odile.fyi`; check `sasldblistusers2` |
+| IMAP login is `internal auth failure`, log says `Permission denied` on `/etc/dovecot/users` **and nothing else** | the passdb lookup ran in the auth process (uid `dovecot`) instead of `auth-worker`, so a 0600 root file is unreadable | keep `use_worker = yes` in both passdb and userdb; `Permission denied` lines followed by `auth succeeded` are expected, once per auth process (§4.4) |
+| `postfix --apply` says `kept /etc/sasldb2 (still the only copy of a credential: no /etc/dovecot/users line for …)` and exits 1 | the Cyrus store still holds an account that has no `{SHA512-CRYPT}` line in `/etc/dovecot/users`; deleting it would lose that secret | migrate the named account (`deploy/dovecot/apply.py --set-account-password <address> --password-stdin`, §5.1), then re-run `postfix --apply`; it removes the file once every account in it is covered |
+| `AUTH` on 587 fails (`535 5.7.8`) with a correct password | Postfix cannot reach Dovecot's auth socket, or the bare username does not resolve to a passwd-file key | `ls -l /var/spool/postfix/private/auth` (0660 `postfix:postfix`), `./deploy/dovecot/apply.py --check`; then check `auth_default_domain = mail.odile.fyi` and the full address in `/etc/dovecot/users` |
+| Something listens on 143 | the packaged `dovecot.socket` is enabled; it binds 143 as well as 993 | `./deploy/dovecot/apply.py --apply` masks it; `--check` fails while 143 is open |
+| Thunderbird warns the certificate is not trusted | the certificate is self-signed and pinned (§13); this host's CA store trusts it, a fresh client does not | accept it once for this host, or import `/etc/ssl/certs/mail.odile.fyi.crt` |
+| Mail sent as `help@odile.fyi` arrives with `From: help@mail.odile.fyi` | `sender_canonical_maps` is rewriting header sender addresses as well as the envelope | keep `sender_canonical_classes = envelope_sender` in `main.cf` |
 | `553 5.7.1 Sender address rejected: not owned by user …` | Authenticated tenant used an envelope sender outside `mail.odile.fyi` | send with a VERP sender, or extend `sender_login.pcre` (M1) |
 | `451 4.7.1 Service unavailable` on every connection | Milter socket unreachable: directory or socket not group-owned by `postfix` | `deploy/opendkim/apply.py --apply`; check `UserID opendkim:postfix` |
 | `--check-dns` fails for a record `dig @1.1.1.1` shows | Local resolver serving the pre-change NXDOMAIN for the SOA minimum | believe `--check-dns` (it asks the authoritative server); the cache clears on its own |
@@ -685,6 +852,17 @@ PASS there and here.
 | The box is down | Single point of failure | senders retry; queued invites survive on disk, but the waitlist and mail share one host that must stay up |
 
 ## 12. Rollback
+
+**Stop IMAP** — `systemctl stop dovecot`. Mail on 25 keeps arriving in the
+Maildir; it is simply unread until Dovecot starts again. Submission on 587 also
+stops authenticating while Dovecot is down, because Postfix no longer has a
+credential store of its own (`smtpd_sasl_type = dovecot`): clients get a
+`535`/`451` until it is back. `systemctl disable --now dovecot` also drops it
+across reboots; the config stays tracked in `deploy/dovecot/` for the next
+`--apply`. Rotating the credential is
+`./deploy/dovecot/apply.py --set-password`, which replaces the single IMAP/SMTP
+hash, the derived userdb and the handover file together — the old password
+fails on the next AUTH.
 
 **Stop sending** — `systemctl stop postfix`. There is no vendor to pause, no key
 to revoke. Everything queued waits on disk.

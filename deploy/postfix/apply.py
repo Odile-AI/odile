@@ -21,9 +21,11 @@ committed themselves, and a fresh host is exactly where they go missing:
     `help` for the support spool — each a nologin user with a Maildir. No
     reader consumes the support spool yet.
 
-The SASL account database (/etc/sasldb2) is *state*, not config: it holds
-tenant secrets, is created with saslpasswd2, and never appears in git. This
-script verifies it and fixes its permissions; it does not invent accounts.
+Submission AUTH is Dovecot's, not Postfix's: Postfix connects to
+/var/spool/postfix/private/auth, and the accounts are the {SHA512-CRYPT} lines
+in /etc/dovecot/users. This script verifies that socket and the hash file, and
+retires the old Cyrus /etc/sasldb2 (which held the same passwords in cleartext
+for PLAIN/LOGIN) if it is still present.
 
 Exit codes: 0 clean or applied, 1 drift (with --check) or a failed step,
 2 usage error.
@@ -47,6 +49,11 @@ POSTFIX = Path("/etc/postfix")
 VIRTUAL = POSTFIX / "virtual"
 VIRTUAL_DB = POSTFIX / "virtual.db"
 SASLDB = Path("/etc/sasldb2")
+DOVECOT_USERS = Path("/etc/dovecot/users")
+DOVECOT_AUTH_SOCKET = Path("/var/spool/postfix/private/auth")
+# Submission AUTH must always have these two: the support mailbox (one login
+# for IMAP and 587) and the test tenant scripts/send_test.py submits with.
+DOVECOT_ACCOUNTS = ("help@odile.fyi", "odile-test@mail.odile.fyi")
 
 
 class Mailbox(NamedTuple):
@@ -71,7 +78,14 @@ FILES = [
     ("master.cf", POSTFIX / "master.cf", "root", "root", 0o644),
     ("virtual", VIRTUAL, "root", "root", 0o644),
     ("sender_login.pcre", POSTFIX / "sender_login.pcre", "root", "root", 0o644),
-    ("sasl/smtpd.conf", POSTFIX / "sasl" / "smtpd.conf", "root", "root", 0o644),
+    ("sender_canonical.pcre", POSTFIX / "sender_canonical.pcre", "root", "root", 0o644),
+]
+
+# Files a previous layout deployed that the committed config no longer uses.
+# The Cyrus app config is dead once smtpd_sasl_type = dovecot; deleting it is
+# what keeps an operator from editing a file Postfix never reads.
+REMOVED = [
+    POSTFIX / "sasl" / "smtpd.conf",
 ]
 
 
@@ -210,6 +224,17 @@ def virtual_entries(path: Path | None = None) -> dict[str, str]:
     return entries
 
 
+def pcre_entries(path: Path) -> dict[str, str]:
+    """A pcre table as Postfix reads it: pattern (without /…/) -> result."""
+    entries: dict[str, str] = {}
+    for line in path.read_text(encoding="utf-8").splitlines():
+        line = line.split("#", 1)[0].strip()
+        fields = line.split()
+        if len(fields) >= 2:
+            entries[fields[0].strip("/")] = " ".join(fields[1:])
+    return entries
+
+
 def postmap_entries(path: Path | None = None) -> tuple[dict[str, str], str]:
     """List the live database itself with `postmap -s`. Returns (map, error).
 
@@ -303,26 +328,105 @@ def rebuild_virtual_db() -> tuple[int, str]:
     return run(["postmap", str(VIRTUAL)])
 
 
-def sasldb_problems() -> list[str]:
-    if not SASLDB.exists():
+def sasldb_accounts(path: Path | None = None) -> tuple[list[str], str]:
+    """The accounts still in the retired Cyrus database, and why not if unreadable."""
+    target = path or SASLDB
+    if not target.exists():
+        return [], ""
+    command = ["sasldblistusers2"]
+    if path is not None:
+        command += ["-f", str(path)]
+    code, output = run(command)
+    if code != 0:
+        return [], (output or f"sasldblistusers2 exited {code}")
+    accounts = []
+    for line in output.splitlines():
+        name = line.split(":", 1)[0].strip()
+        if name:
+            accounts.append(name)
+    return accounts, ""
+
+
+def dovecot_accounts(path: Path | None = None) -> set[str]:
+    """The passwd-file keys in /etc/dovecot/users."""
+    target = path or DOVECOT_USERS
+    if not target.exists():
+        return set()
+    names: set[str] = set()
+    for line in target.read_text(encoding="utf-8", errors="replace").splitlines():
+        line = line.split("#", 1)[0].strip()
+        if line:
+            names.add(line.split(":", 1)[0])
+    return names
+
+
+def dovecot_users_problems(path: Path | None = None) -> list[str]:
+    """The hash file submission AUTH depends on: mode, owner, both accounts."""
+    target = path or DOVECOT_USERS
+    if not target.exists():
         return [
-            f"{SASLDB}: missing — create the submission account with saslpasswd2 "
-            "(docs/runbooks/email.md §5.2); the password lives only on HQ"
+            f"{target}: missing — create the submission accounts "
+            "(deploy/dovecot/apply.py; docs/runbooks/email.md §4.4)"
         ]
-    problems = []
-    info = SASLDB.stat()
-    if stat.S_IMODE(info.st_mode) != 0o640:
-        problems.append(f"{SASLDB}: mode {oct(stat.S_IMODE(info.st_mode))[2:]}, want 640")
-    if info.st_gid != grp.getgrnam("postfix").gr_gid:
-        problems.append(f"{SASLDB}: group {info.st_gid}, want postfix")
+    problems: list[str] = []
+    info = target.stat()
+    if stat.S_IMODE(info.st_mode) != 0o600:
+        problems.append(
+            f"{target}: mode {oct(stat.S_IMODE(info.st_mode))[2:]}, want 600"
+        )
+    if (info.st_uid, info.st_gid) != (0, 0):
+        problems.append(f"{target}: owner {info.st_uid}:{info.st_gid}, want root:root")
+    present = dovecot_accounts(target)
+    missing = [account for account in DOVECOT_ACCOUNTS if account not in present]
+    if missing:
+        problems.append(
+            f"{target}: missing account(s) {', '.join(missing)}; submission AUTH "
+            "for them fails (deploy/dovecot/apply.py --set-account-password)"
+        )
     return problems
 
 
-def fix_sasldb() -> None:
-    if not SASLDB.exists():
-        return
-    os.chmod(SASLDB, 0o640)
-    os.chown(SASLDB, 0, grp.getgrnam("postfix").gr_gid)
+def sasl_problems() -> list[str]:
+    """Submission AUTH needs the Dovecot socket and hash file, and no sasldb2."""
+    problems: list[str] = dovecot_users_problems()
+    if not DOVECOT_AUTH_SOCKET.exists():
+        problems.append(
+            f"{DOVECOT_AUTH_SOCKET}: missing — is dovecot running? "
+            "(deploy/dovecot/apply.py --apply)"
+        )
+    else:
+        info = DOVECOT_AUTH_SOCKET.stat()
+        mode = stat.S_IMODE(info.st_mode)
+        if mode != 0o660:
+            problems.append(f"{DOVECOT_AUTH_SOCKET}: mode {oct(mode)[2:]}, want 660")
+        postfix = pwd.getpwnam("postfix")
+        group = grp.getgrnam("postfix")
+        if (info.st_uid, info.st_gid) != (postfix.pw_uid, group.gr_gid):
+            problems.append(
+                f"{DOVECOT_AUTH_SOCKET}: owner {info.st_uid}:{info.st_gid}, "
+                "want postfix:postfix"
+            )
+    accounts, error = sasldb_accounts()
+    if error:
+        problems.append(
+            f"{SASLDB}: cannot list its accounts ({error}); --apply keeps it "
+            "rather than delete the only copy of a credential"
+        )
+    elif accounts:
+        uncovered = sorted(set(accounts) - dovecot_accounts())
+        if uncovered:
+            problems.append(
+                f"{SASLDB}: holds {len(accounts)} account(s), {len(uncovered)} with no "
+                f"{DOVECOT_USERS} line ({', '.join(uncovered)}); migrate each with "
+                "deploy/dovecot/apply.py --set-account-password, then re-run --apply"
+            )
+        else:
+            problems.append(
+                f"{SASLDB}: still holds {len(accounts)} account(s) "
+                f"({', '.join(accounts)}); submission AUTH is the Dovecot passwd-file "
+                "now — remove it with --apply"
+            )
+    return problems
 
 
 def run(command: list[str]) -> tuple[int, str]:
@@ -336,7 +440,7 @@ def run(command: list[str]) -> tuple[int, str]:
 
 def drift() -> list[str]:
     return [problem for entry in FILES for problem in inspect(entry)] + \
-        mailbox_problems() + virtual_db_problems() + sasldb_problems()
+        mailbox_problems() + virtual_db_problems() + sasl_problems()
 
 
 def main_cf_settings(source: Path | None = None) -> dict[str, str]:
@@ -387,8 +491,62 @@ def self_test() -> int:
 
     # Gmail filed the same brief to Spam over the A and to the INBOX over the
     # AAAA, 4 of 4 each way (docs/evidence/t_7378e496/); `any` is a coin flip.
+    settings = main_cf_settings()
     check("the outbound leg prefers the AAAA",
-          main_cf_settings().get("smtp_address_preference"), "ipv6")
+          settings.get("smtp_address_preference"), "ipv6")
+
+    # Submission AUTH is Dovecot's; Postfix has no credential store of its own.
+    # The Cyrus-only knobs would look applied and do nothing, so assert they
+    # are gone rather than carry dead config.
+    check("submission AUTH is Dovecot's", settings.get("smtpd_sasl_type"), "dovecot")
+    check("Postfix reaches the Dovecot auth socket",
+          settings.get("smtpd_sasl_path"), "private/auth")
+    check("the Cyrus-only SASL settings are gone",
+          sorted(name for name in settings
+                 if name.startswith("cyrus_")
+                 or name.startswith("smtpd_sasl_security")
+                 or name.startswith("smtpd_sasl_tls_security")), [])
+    check("the dead Cyrus app config is retired",
+          [path.name for path in REMOVED], ["smtpd.conf"])
+    check("the committed files no longer deploy it",
+          [entry[0] for entry in FILES if "sasl" in entry[0]], [])
+
+    # Retiring /etc/sasldb2 removes the only copy of every credential in it, so
+    # the unlink is gated on each account already having a Dovecot hash line.
+    # A help-only store during a Cyrus upgrade is the case that used to lose the
+    # tenant secret.
+    with tempfile.TemporaryDirectory(prefix="odile-postfix-dovecot-users-") as tmp:
+        store = Path(tmp) / "users"
+        hash_line = "{SHA512-CRYPT}$6$salt$" + "a" * 86
+        store.write_text(
+            f"help@odile.fyi:{hash_line}:1000:1000::/var/mail/help::\n",
+            encoding="utf-8",
+        )
+        store.chmod(0o600)
+        check("a passwd-file line is read as an account",
+              dovecot_accounts(store), {"help@odile.fyi"})
+        check("an sasldb2 account with a Dovecot line is covered",
+              sorted({"help@odile.fyi"} - dovecot_accounts(store)), [])
+        check("an sasldb2 account without a Dovecot line is not covered",
+              sorted({"help@odile.fyi", DOVECOT_ACCOUNTS[1]} - dovecot_accounts(store)),
+              [DOVECOT_ACCOUNTS[1]])
+        check("a help-only store is drift (the tenant account is missing)",
+              any(f"missing account(s) {DOVECOT_ACCOUNTS[1]}" in problem
+                  for problem in dovecot_users_problems(store)), True)
+        store.write_text(
+            "".join(f"{account}:{hash_line}:1000:1000::/var/mail/help::\n"
+                    for account in DOVECOT_ACCOUNTS),
+            encoding="utf-8",
+        )
+        store.chmod(0o600)
+        check("a store with both managed accounts is clean",
+              dovecot_users_problems(store), [])
+
+    # Without this, sender_canonical_maps also rewrites From:/Reply-To: — the
+    # default class list includes header_sender (postconf(5)), measured on
+    # 2026-11-22 when the first submission arrived as help@mail.odile.fyi.
+    check("the envelope rewrite leaves header senders alone",
+          main_cf_settings().get("sender_canonical_classes"), "envelope_sender")
 
     check("both mailboxes are reconciled, not only help",
           [box.user for box in MAILBOXES], ["dsn", "help"])
@@ -397,6 +555,18 @@ def self_test() -> int:
     check("help@odile.fyi routes to help", entries.get("help@odile.fyi"), "help")
     check("abuse@odile.fyi routes to help", entries.get("abuse@odile.fyi"), "help")
     check("postmaster@odile.fyi routes to help", entries.get("postmaster@odile.fyi"), "help")
+
+    # The one apex identity: allowed for its own login, then rewritten onto the
+    # SPF-authorised, DKIM-signed domain. Both halves are one decision.
+    login = pcre_entries(HERE / "sender_login.pcre")
+    canonical = pcre_entries(HERE / "sender_canonical.pcre")
+    check("the support login may claim its own apex envelope sender",
+          login.get(r"^help@odile\.fyi$"), "help@odile.fyi")
+    check("the tenant sender is owned by the canonical Dovecot login",
+          login.get(r"^[^@]+@mail\.odile\.fyi$"), "odile-test@mail.odile.fyi")
+    check("the apex envelope sender is rewritten onto the signed domain",
+          canonical.get(r"^help@odile\.fyi$"), "help@mail.odile.fyi")
+    check("the canonical table rewrites exactly one sender", len(canonical), 1)
 
     real_getpwnam = pwd.getpwnam
     real_run = subprocess.run
@@ -549,7 +719,7 @@ def main(argv: list[str] | None = None) -> int:
             print(f"\n{len(problems)} difference(s) from deploy/postfix")
             return 1
         print("clean: /etc/postfix matches deploy/postfix, virtual.db matches virtual, "
-              "both mailboxes and the SASL database are present")
+              "both mailboxes and the Dovecot auth store are present")
         return 0
 
     if not args.apply:
@@ -585,17 +755,32 @@ def main(argv: list[str] | None = None) -> int:
         for action in ensure_mailbox():
             print(f"wrote  {action}")
 
-    if sasldb_problems():
-        if SASLDB.exists():
-            fix_sasldb()
-            print(f"fixed  {SASLDB} (mode 640, group postfix)")
-        else:
-            print(f"warn   {SASLDB} is missing: run the saslpasswd2 step in the runbook")
-
+    # Validate the committed config before deleting the old store, so a broken
+    # main.cf leaves submission's previous credentials on disk.
     code, output = run(["postfix", "check"])
     if code != 0:
         print(f"postfix check failed:\n{output}")
         return 1
+
+    for path in REMOVED:
+        if path.exists():
+            path.unlink()
+            print(f"removed {path} (superseded by smtpd_sasl_type = dovecot)")
+
+    # Delete the old store only once every account in it has a hash line in the
+    # Dovecot passwd-file. On a Cyrus upgrade /etc/dovecot/users may exist but
+    # hold only the mailbox; unlinking then would take the only copy of the
+    # tenant secret with it.
+    if SASLDB.exists():
+        accounts, error = sasldb_accounts()
+        uncovered = [] if error else sorted(set(accounts) - dovecot_accounts())
+        if error or uncovered:
+            reason = error or (f"no {DOVECOT_USERS} line for {', '.join(uncovered)}")
+            print(f"kept   {SASLDB} (still the only copy of a credential: {reason})")
+        else:
+            held = ", ".join(accounts) if accounts else "no accounts"
+            SASLDB.unlink()
+            print(f"removed {SASLDB} (Cyrus store superseded; held {held} in cleartext)")
 
     left = drift()
     if left:

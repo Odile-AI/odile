@@ -87,17 +87,28 @@ smtpd_milters = unix:/var/spool/postfix/opendkim/opendkim.sock
 non_smtpd_milters = $smtpd_milters
 
 # SASL -----------------------------------------------------------------------
-# Enabled per service in master.cf (submission only). Accounts live in
-# /etc/sasldb2, created with saslpasswd2 — never in git. The Cyrus config
-# file is /etc/postfix/sasl/smtpd.conf.
-cyrus_sasl_config_path = /etc/postfix/sasl
-smtpd_sasl_type = cyrus
-smtpd_sasl_path = smtpd
-smtpd_sasl_security_options = noanonymous
-smtpd_sasl_tls_security_options = noanonymous
+# Enabled per service in master.cf (submission only). Postfix asks Dovecot's
+# auth service over /var/spool/postfix/private/auth; the accounts are the
+# {SHA512-CRYPT} lines in /etc/dovecot/users (0600 root), the same store the
+# IMAP login uses. There is no /etc/sasldb2: Cyrus stored the password in the
+# clear because PLAIN/LOGIN authenticates against it; only the handover file
+# may hold the mailbox password in plaintext. smtpd_tls_auth_only still keeps
+# AUTH off the wire until STARTTLS; Dovecot's mechanisms are PLAIN and LOGIN
+# only, so the Cyrus-only security options are gone.
+smtpd_sasl_type = dovecot
+smtpd_sasl_path = private/auth
 smtpd_tls_auth_only = yes
 
 # An authenticated tenant may only use an envelope sender on our signing
 # domain. Per-tenant ownership (one login per From address) arrives with the
 # tenant table in M1; today the map names the single test account.
 smtpd_sender_login_maps = pcre:/etc/postfix/sender_login.pcre
+
+# One exception, rewritten before the queue: Savio's From: help@odile.fyi has
+# no SPF record at the apex, so the envelope is moved onto mail.odile.fyi (the
+# authorised, signed domain). Envelope only — sender_canonical_classes is what
+# keeps From:/Reply-To: as the person wrote them; the default applies the same
+# map to header sender addresses too, which would rewrite the From: to
+# help@mail.odile.fyi. See deploy/postfix/sender_canonical.pcre.
+sender_canonical_maps = pcre:/etc/postfix/sender_canonical.pcre
+sender_canonical_classes = envelope_sender
