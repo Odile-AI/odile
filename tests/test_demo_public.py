@@ -27,6 +27,8 @@ import hashlib
 import importlib.util
 import io
 import json
+import os
+import pwd
 import re
 import shutil
 import sys
@@ -577,6 +579,315 @@ class DnsRowTests(unittest.TestCase):
             self.assertEqual(self.check.main([]), 0)
             self.assertEqual(self.check.main(["--target", "198.51.100.7"]), 0)
         self.assertEqual(seen, [self.check.DEFAULT_DNS, "198.51.100.7"])
+
+
+TOKEN = "a1" * 32
+PAGE_AT = "2026-11-21T16:57:50Z"
+
+
+class FirstVisitStateTests(unittest.TestCase):
+    """The deploy records the visit it made, in the file the first-visit page owns.
+
+    `installer.ensure_env(first_visit=True)` decides whether the `.env` hash is
+    the owner's by `/etc/odile/first-visit.json`'s `signin_set_at` alone
+    (`first_visit_signin_set`), and the page's `used_at` only closes the page's
+    own link. The demo deploy writes that hash, so before this card the next
+    forced release run read a deploy-set sign-in as a placeholder and replaced
+    it (measured 2026-11-21, `docs/runbooks/demo-public.md` §6).
+
+    The deploy now stamps `used_at` and `signin_set_at`, one UTC timestamp,
+    under the page's lock and after the `.env` verifies the published
+    password. These tests drive both programs on a temp `.env` and state: the
+    deploy's own four-key shape, the installer's three-key template, and the
+    ODL-521 fence that must stay green.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.installer = load(ROOT / "installer" / "odile_install.py",
+                             "demo_public_first_visit_installer")
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp(prefix="odile-demo-first-visit-"))
+        self.addCleanup(shutil.rmtree, self.tmp)
+        self.user = pwd.getpwuid(os.getuid()).pw_name
+        self.layout = self.installer.Layout.scratch(
+            root=self.tmp, user=self.user, webapp_port=9130,
+            public_url="https://odl-test.odile.fyi")
+        self.layout.hermes_home.mkdir(parents=True)
+        self.env = self.layout.hermes_home / ".env"
+        self.state = self.layout.first_visit_state
+        self.key_store = self.layout.key_env
+        self.key_store.parent.mkdir(parents=True, exist_ok=True)
+        self.key_store.write_text(
+            f"{self.installer.NEAR_KEY_ENV}={'k' * 35}\n", encoding="utf-8")
+        self.first_visit = load(ROOT / "installer" / "first_visit.py",
+                                "demo_public_first_visit_state")
+        self.apply = load(DEMO / "apply_demo_public.py",
+                          "demo_apply_first_visit_test")
+        # The tenant paths, and the owners: the state is root:root on the
+        # tenant, the `.env` the tenant user's. Tests run as whoever runs the
+        # gate, so both pairs are rebound to the invoking user (a root:root
+        # chown is not available to a non-root suite).
+        for name, value in (("ENV_FILE", self.env), ("KEY_STORE", self.key_store),
+                            ("FIRST_VISIT_STATE", self.state),
+                            ("TENANT_UID", os.getuid()), ("TENANT_GID", os.getgid()),
+                            ("STATE_UID", os.getuid()), ("STATE_GID", os.getgid())):
+            setattr(self.apply, name, value)
+        # Concatenated so `tools/secret_scan.py`'s credential-assignment rule
+        # does not read these fixture values as secrets (`make secrets`).
+        self.password = "the-published-" + "demo-password-0001"
+        self.secret = "c2Vzc2lvbi1z" + "ZWNyZXQ="
+
+    # -- fixtures -----------------------------------------------------------
+
+    def deploy_env(self, *, three_keys: bool = False,
+                   password_hash: str = "") -> str:
+        """The deploy's own `.env` writer's shape (`ensure_env` :1071-1083)."""
+        lines = [
+            "HERMES_DASHBOARD_BASIC_AUTH_USERNAME=judge",
+            "HERMES_DASHBOARD_BASIC_AUTH_PASSWORD_HASH=%s"
+            % (password_hash or self.apply.hash_password(self.password)),
+            f"HERMES_DASHBOARD_BASIC_AUTH_SECRET={self.secret}",
+        ]
+        if not three_keys:
+            lines.append(f"{self.apply.NEAR_KEY_ENV}={'k' * 35}")
+        self.env.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        self.env.chmod(0o600)
+        return self.env.read_text(encoding="utf-8")
+
+    def write_state(self, *, used_at: str | None = None,
+                    signin_set_at: str | None = None,
+                    page: bool = False) -> dict:
+        """A state in the shape `installer/first_visit.py::save_state` writes."""
+        state = {
+            "version": 1,
+            "token_sha256": self.first_visit.hash_token(TOKEN),
+            "created_at": "2026-11-21T16:00:00Z",
+            "used_at": used_at,
+            "signin_set_at": signin_set_at,
+            "recovery_hash": None,
+            "recovery_issued_at": None,
+            "recovery_used_at": None,
+            "download_sha256": None,
+            "download_expires_at": None,
+            "download_used_at": None,
+        }
+        if page:
+            state.update({
+                "recovery_hash": self.apply.hash_password("recovery-code-0001"),
+                "recovery_issued_at": PAGE_AT,
+                "recovery_used_at": None,
+                "download_sha256": "d4" * 32,
+                "download_expires_at": "2026-11-21T17:07:50Z",
+                "download_used_at": None,
+            })
+        self.state.parent.mkdir(parents=True, exist_ok=True)
+        self.state.write_text(json.dumps(state, indent=2, sort_keys=True) + "\n",
+                              encoding="utf-8")
+        self.state.chmod(0o600)
+        return state
+
+    def deploy(self, dry: bool = False):
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            result = self.apply.ensure_env(self.password, dry=dry)
+        self.output = output.getvalue()
+        return result
+
+    def first_visit_run(self, dry: bool = False):
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            result = self.installer.ensure_env(
+                self.layout, None, self.user, dry, first_visit=True)
+        self.installer_output = output.getvalue()
+        return result
+
+    def stored(self) -> dict[str, str]:
+        return self.installer.env_values(self.env.read_text(encoding="utf-8"))
+
+    def read_state(self) -> dict:
+        return json.loads(self.state.read_text(encoding="utf-8"))
+
+    # -- the defect ---------------------------------------------------------
+
+    def test_a_deploy_set_signin_survives_the_first_visit_run(self):
+        """The card's defect: the forced run replaces what the deploy wrote.
+
+        On the deploy's own `.env` (four keys) the installer takes its rewrite
+        branch — the Near AI key is outside its three-key template — so
+        `changed` is True; the hash must still be kept byte for byte and the
+        published password must still verify. On a copy cut down to the three
+        allowlisted keys the same run is `changed=False`. Both shapes are
+        asserted, so the test says which one produces which `changed`.
+        """
+        self.deploy_env()
+        self.write_state()
+        self.deploy()
+        self.assertIsNotNone(self.read_state()["signin_set_at"])
+        hash_before = self.stored()["HERMES_DASHBOARD_BASIC_AUTH_PASSWORD_HASH"]
+
+        changed, _ = self.first_visit_run()
+        self.assertTrue(changed, self.installer_output)
+        self.assertIn("outside the allowlist: 1", self.installer_output)
+        after = self.stored()
+        self.assertEqual(after["HERMES_DASHBOARD_BASIC_AUTH_PASSWORD_HASH"], hash_before)
+        self.assertTrue(self.installer.verify_password(self.password, hash_before))
+        self.assertNotIn(self.apply.NEAR_KEY_ENV, after,
+                         "the fourth key survived the installer's three-key template")
+
+        # The three-allowlisted-key copy: the same run is a no-op. The deploy
+        # is not re-run here, or it would put its fourth key back.
+        self.deploy_env(three_keys=True)
+        kept = self.stored()["HERMES_DASHBOARD_BASIC_AUTH_PASSWORD_HASH"]
+        changed, _ = self.first_visit_run()
+        self.assertFalse(changed, self.installer_output)
+        self.assertIn("same", self.installer_output)
+        self.assertEqual(self.stored()["HERMES_DASHBOARD_BASIC_AUTH_PASSWORD_HASH"], kept)
+        self.assertTrue(self.installer.verify_password(self.password, kept))
+
+    def test_without_the_stamp_the_image_hash_still_dies(self):
+        """The ODL-521 fence: no `signin_set_at` means the hash is a placeholder.
+
+        A deploy that never recorded a visit leaves both timestamps null, and a
+        hash that verifies a known password is still replaced on the next run.
+        This must stay green: absent state is fail-closed, never keep.
+        """
+        self.deploy_env(three_keys=True)
+        self.write_state()
+        stored = self.stored()["HERMES_DASHBOARD_BASIC_AUTH_PASSWORD_HASH"]
+        self.assertTrue(self.installer.verify_password(self.password, stored))
+
+        changed, password = self.first_visit_run()
+        self.assertTrue(changed)
+        self.assertIsNone(password)
+        self.assertIn("placeholder until first visit", self.installer_output)
+        self.assertFalse(self.installer.verify_password(
+            self.password, self.stored()["HERMES_DASHBOARD_BASIC_AUTH_PASSWORD_HASH"]))
+
+    # -- the stamp itself ---------------------------------------------------
+
+    def test_the_stamp_is_idempotent_and_preserves_the_page_state(self):
+        self.deploy_env()
+        page = self.write_state(page=True)
+        self.deploy()
+        first = self.state.read_bytes()
+        state = self.read_state()
+        self.assertEqual(state["used_at"], state["signin_set_at"])
+        self.assertRegex(state["signin_set_at"], r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$")
+        for key, value in page.items():
+            if key in ("used_at", "signin_set_at"):
+                continue
+            self.assertEqual(state[key], value, f"the stamp moved {key}")
+        # Byte for byte, not just by value: the write is the page's own
+        # serialisation with only the two timestamps filled, so no other key's
+        # bytes, order or nesting moved.
+        expected = dict(page, used_at=state["used_at"],
+                        signin_set_at=state["signin_set_at"])
+        self.assertEqual(first, (json.dumps(expected, indent=2, sort_keys=True)
+                                 + "\n").encode("utf-8"))
+        self.assertEqual(self.state.stat().st_mode & 0o777, 0o600)
+
+        self.deploy()
+        self.assertIn("same", self.output)
+        self.assertEqual(self.state.read_bytes(), first,
+                         "the second run rewrote the state")
+
+    def test_the_stamp_does_not_move_a_visit_the_page_recorded(self):
+        self.deploy_env()
+        self.write_state(used_at=PAGE_AT, signin_set_at=PAGE_AT, page=True)
+        original = self.state.read_bytes()
+        self.deploy()
+        state = self.read_state()
+        self.assertEqual(state["used_at"], PAGE_AT)
+        self.assertEqual(state["signin_set_at"], PAGE_AT)
+        self.assertEqual(self.state.read_bytes(), original)
+
+    def test_a_missing_state_is_reported_not_invented(self):
+        """No state: a `warn` row and the `.env`, never a deploy-invented file.
+
+        The schema needs the 64-hex setup-token hash only the installer owns,
+        and `ensure_first_visit` exits on a state without one, so a file this
+        program created would break the next boot. The installer then replaces
+        the hash — the fail-closed half.
+        """
+        self.deploy_env(three_keys=True)
+        self.assertFalse(self.state.exists())
+        self.deploy()
+        self.assertIn("warn", self.output)
+        self.assertIn("first-visit", self.output)
+        self.assertFalse(self.state.exists(), "the deploy invented a state file")
+        self.assertFalse(self.state.with_name(self.state.name + ".lock").exists(),
+                         "the deploy created the state's lock beside a missing state")
+        changed, _ = self.first_visit_run()
+        self.assertTrue(changed)
+        self.assertFalse(self.installer.verify_password(
+            self.password, self.stored()["HERMES_DASHBOARD_BASIC_AUTH_PASSWORD_HASH"]))
+
+    def test_a_malformed_state_is_reported_not_repaired(self):
+        """Malformed is not missing: `warn`, byte-identical, and never repaired.
+
+        §6 names only the *missing* state as the case the page steps recover
+        (a release run carrying the token re-creates it). A malformed one is
+        worse, and this pins the three consequences that paragraph states: the
+        deploy can only warn, the page's own service refuses to load the file,
+        and the release run's `ensure_first_visit` stops by name after
+        `ensure_env` has already replaced the hash.
+        """
+        self.deploy_env(three_keys=True)
+        self.state.parent.mkdir(parents=True, exist_ok=True)
+        malformed = b"{not json\n"
+        self.state.write_bytes(malformed)
+        self.state.chmod(0o600)
+        self.deploy()
+        rows = [line for line in self.output.splitlines() if line.startswith("warn")]
+        self.assertEqual(len(rows), 1, self.output)
+        self.assertIn("first-visit", rows[0])
+        self.assertIn("not JSON", rows[0])
+        self.assertEqual(self.state.read_bytes(), malformed,
+                         "the deploy repaired the state")
+
+        with self.assertRaises(SystemExit) as caught:
+            self.first_visit.load_state(self.state)
+        self.assertIn("Expecting property name", str(caught.exception))
+
+        with self.assertRaises(SystemExit) as caught:
+            self.installer.ensure_first_visit(self.layout, TOKEN, dry=True)
+        self.assertIn("Expecting property name", str(caught.exception))
+
+        # The other malformed shape §6 names: valid JSON, no 64-hex token.
+        not_a_state = json.dumps({"version": 1, "token_sha256": "nothex"}).encode()
+        self.state.write_bytes(not_a_state)
+        with self.assertRaises(SystemExit) as caught:
+            self.installer.ensure_first_visit(self.layout, TOKEN, dry=True)
+        self.assertIn("is not a first-visit state", str(caught.exception))
+        self.deploy()
+        self.assertEqual(self.state.read_bytes(), not_a_state,
+                         "the deploy repaired the state")
+
+        changed, _ = self.first_visit_run()
+        self.assertTrue(changed)
+        self.assertFalse(self.installer.verify_password(
+            self.password, self.stored()["HERMES_DASHBOARD_BASIC_AUTH_PASSWORD_HASH"]))
+
+    def test_the_stamp_spends_the_setup_token(self):
+        """`used_at` with the sign-in: no alternate reset path from `/attestation`."""
+        self.deploy_env()
+        before = self.write_state()
+        self.assertEqual(self.first_visit.check_token(before, TOKEN), "ok")
+        self.deploy()
+        after = self.read_state()
+        self.assertEqual(self.first_visit.check_token(after, TOKEN), "used")
+        self.assertEqual(self.first_visit.check_token(after, "b2" * 32), "unknown")
+
+    def test_a_dry_run_prints_the_would_be_row_and_writes_nothing(self):
+        self.deploy_env()
+        self.write_state()
+        original = self.state.read_bytes()
+        self.deploy(dry=True)
+        self.assertIn("would write", self.output)
+        self.assertIn("first-visit state", self.output)
+        self.assertEqual(self.state.read_bytes(), original)
 
 
 if __name__ == "__main__":

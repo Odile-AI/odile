@@ -33,7 +33,11 @@ What it owns, each step idempotent and printed as `same` / `write` / `restart`:
   3. the demo's Hermes settings: Near AI direct (no meter in the path), one
      key, and `webapp.public_url` (the Host-header gate);
   4. the judge account in /home/tenant/.hermes/.env, with the cookie secret
-     kept byte-for-byte;
+     kept byte-for-byte, and — once the file verifies the published password —
+     `used_at`/`signin_set_at` in /etc/odile/first-visit.json, so the next
+     `odile-release-setup.sh --force` keeps this sign-in instead of reading it
+     as a placeholder (t_27f378cc; the state stays the first-visit service's
+     file, and a missing one is a `warn` row, never invented);
   5. the one seeded "Start here — Odile demo" session in the tenant's
      state.db — written only when the row is absent, never rewritten.
 
@@ -57,6 +61,8 @@ from __future__ import annotations
 import argparse
 import base64
 from collections import deque
+import contextlib
+import fcntl
 import hashlib
 import json
 import os
@@ -178,6 +184,25 @@ AGENT_LOG_TAIL = 4000
 #: what a machine rebuilt from the release carries when the profile `.env` has
 #: not been written yet; it replaces the retired meter key file.
 KEY_STORE = Path("/etc/odile/key.env")
+#: The first-visit service's state. `installer/first_visit.py` owns its schema
+#: (version, the setup-token SHA-256, every recovery/download field); this
+#: program stamps exactly one fact into it — the judge sign-in it just wrote or
+#: verified. `installer.ensure_env(first_visit=True)` reads only
+#: `signin_set_at` (via `first_visit_signin_set()`), so without this record the
+#: next forced release run reads a deploy-set hash as a placeholder and
+#: replaces it (measured 2026-11-21). `signin_set_at` means "the `.env` holds
+#: a usable sign-in the owner can use", not "the page wrote it":
+#: docs/security/DECISION-first-visit-state.md.
+FIRST_VISIT_STATE = Path("/etc/odile/first-visit.json")
+#: The state's version and the one field that makes it loadable at all. The
+#: service exits on a state whose token hash is not 64 lowercase hex, so a
+#: deploy-invented or half-repaired file would break the next boot.
+STATE_VERSION = 1
+TOKEN_SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+#: The state file is 0600 root:root on the tenant (the page, the installer and
+#: this program all run as root there). Tests rebind both to their own user.
+STATE_UID = 0
+STATE_GID = 0
 TENANT_USER = "tenant"
 TENANT_UID = 1000
 TENANT_GID = 1000
@@ -264,6 +289,11 @@ def run(command: list[str], **kwargs) -> subprocess.CompletedProcess[str]:
 
 def utc_stamp() -> str:
     return datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+
+
+def utc_iso() -> str:
+    """The state's timestamp shape (`installer/first_visit.py::utc_now`)."""
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def say(verb: str, message: str) -> None:
@@ -1045,12 +1075,113 @@ def inference_key(current: dict[str, str] | None = None) -> str:
     raise SystemExit(f"error: {ENV_FILE} has no {NEAR_KEY_ENV} and {KEY_STORE} is missing")
 
 
+def state_format_problem(state: object) -> str:
+    """Why *state* is not a first-visit state this program may stamp; '' if it is.
+
+    The card's rule is "version 1 and a 64-hex ``token_sha256``", which is what
+    `installer/first_visit.py::validate_state` needs before it will load the
+    file at all. The two timestamps this helper writes are checked as well, so a
+    malformed one is reported instead of being carried into the rewrite. Every
+    other key belongs to the service and is preserved byte for byte.
+    """
+    if not isinstance(state, dict):
+        return "the state is not a JSON object"
+    if state.get("version") != STATE_VERSION:
+        return "unsupported state version %r" % (state.get("version"),)
+    token_hash = state.get("token_sha256")
+    if not isinstance(token_hash, str) or not TOKEN_SHA256_RE.match(token_hash):
+        return "token_sha256 is not 64 lowercase hex"
+    for key in ("used_at", "signin_set_at"):
+        value = state.get(key)
+        if value is not None and not isinstance(value, str):
+            return "%s is not a string or null" % key
+    return ""
+
+
+@contextlib.contextmanager
+def state_locked(path: Path):
+    """The lock `installer/first_visit.py::locked` takes: `<state>.lock`.
+
+    Same path and same `fcntl.flock(LOCK_EX)`, so the page's POST and this
+    stamp cannot interleave a read-verify-write. The deploy runs as root on the
+    tenant, like the page and the installer; the lock is against lost updates,
+    not a privilege boundary.
+    """
+    lock_path = path.with_name(path.name + ".lock")
+    handle = open(lock_path, "a+")
+    try:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        yield
+    finally:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+        handle.close()
+
+
+def stamp_first_visit_state(dry: bool) -> bool:
+    """Record the deploy-set sign-in in the first-visit state; True if it wrote.
+
+    `installer.ensure_env(first_visit=True)` decides whether the `.env` hash is
+    the owner's by this file's ``signin_set_at`` alone, so the deploy — which
+    writes that hash — must record its own write or the next forced release run
+    replaces the sign-in with a hash of a password nobody knows (measured
+    2026-11-21, docs/runbooks/demo-public.md §6).
+
+    It stamps ``used_at`` and ``signin_set_at`` together, one UTC timestamp:
+    the setup-token link must not remain an alternate reset path on a machine
+    whose sign-in is already set. An existing timestamp is never moved, so a
+    second run says `same` and a visit the page recorded keeps its own.
+
+    It never creates the file and never writes a recovery field: the schema
+    needs the 64-hex setup-token hash only the installer owns, and
+    `ensure_first_visit` exits on a state without one, so a deploy-invented file
+    would break the next boot. A missing or malformed state is a `warn` row.
+    """
+    path = FIRST_VISIT_STATE
+    if not path.is_file():
+        say("warn", f"{path}: missing (the release installer writes it); "
+                    "the deploy-set sign-in is not recorded")
+        return False
+    with state_locked(path):
+        raw = path.read_text(encoding="utf-8")
+        try:
+            state = json.loads(raw)
+        except ValueError as exc:
+            say("warn", f"{path}: not JSON ({exc}); "
+                        "the deploy-set sign-in is not recorded")
+            return False
+        problem = state_format_problem(state)
+        if problem:
+            say("warn", f"{path}: {problem}; the deploy-set sign-in is not recorded")
+            return False
+        before = (state.get("used_at"), state.get("signin_set_at"))
+        state["used_at"] = state.get("used_at") or utc_iso()
+        state["signin_set_at"] = state.get("signin_set_at") or state["used_at"]
+        recorded = state["signin_set_at"]
+        if (state["used_at"], state["signin_set_at"]) == before:
+            say("same", f"{path} (the deploy-set sign-in is recorded at {recorded})")
+            return False
+        say("would write" if dry else "write",
+            f"{path} (first-visit state: the deploy-set sign-in is recorded at "
+            f"{recorded})")
+        if dry:
+            return True
+        body = json.dumps(state, indent=2, sort_keys=True) + "\n"
+        write_atomic(path, body.encode("utf-8"), 0o600, STATE_UID, STATE_GID)
+        return True
+
+
 def ensure_env(password: str, *, dry: bool) -> tuple[bool, bool]:
     """Write the tenant .env: judge account + the one Near AI key.
 
     Returns (changed, hash_changed). The cookie secret is kept byte-for-byte:
     it is what keeps judges signed in across a restart. The file carries
     exactly one inference credential — the Near AI key — and no meter token.
+
+    Once the `.env` verifies the published password (written now, or already
+    the same bytes) the deploy records the sign-in in the first-visit state, so
+    the next forced release run keeps it. That state write is deliberately not
+    part of `changed`: it changes no file the gateway reads at start, so it must
+    not force `restart_agent`.
     """
     if not ENV_FILE.is_file():
         raise SystemExit(f"error: {ENV_FILE} is missing; run the release installer first")
@@ -1077,14 +1208,19 @@ def ensure_env(password: str, *, dry: bool) -> tuple[bool, bool]:
     rendered = "\n".join(lines) + "\n"
     if rendered == current:
         say("same", f"{ENV_FILE} (judge account, one Near AI key, mode 0600)")
-        return False, False
-    hash_changed = username != "judge" or bool(password and not hash_ok)
-    say("would write" if dry else "write",
-        f"{ENV_FILE} (judge account, one Near AI key)")
-    if dry:
-        return True, hash_changed
-    write_atomic(ENV_FILE, rendered.encode("utf-8"), 0o600, TENANT_UID, TENANT_GID)
-    return True, hash_changed
+        changed = hash_changed = False
+    else:
+        hash_changed = username != "judge" or bool(password and not hash_ok)
+        say("would write" if dry else "write",
+            f"{ENV_FILE} (judge account, one Near AI key)")
+        if not dry:
+            write_atomic(ENV_FILE, rendered.encode("utf-8"), 0o600,
+                         TENANT_UID, TENANT_GID)
+        changed = True
+    # The `.env` first, the state second: a state that says "owner set" over a
+    # placeholder would make the next boot keep the placeholder.
+    stamp_first_visit_state(dry)
+    return changed, hash_changed
 
 
 # ---------------------------------------------------------------------------
