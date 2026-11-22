@@ -569,9 +569,19 @@ machine's own name, and the record propagates in a minute.
   HERMES_CUSTOM_CLOUD_API_NEAR_AI_API_KEY and /etc/odile/key.env is missing`.
   **The deploy below is the recovery either way — it depends on that store, not
   on the `.env` — and the page steps below are only needed where the
-  first-visit state is missing or malformed:** there the deploy prints `warn`
-  and records nothing, and the installer still replaces the hash (the ODL-521
-  fence, unchanged).
+  first-visit state is missing:** there the deploy prints `warn` and records
+  nothing, the installer still replaces the hash (the ODL-521 fence, unchanged),
+  and the next release run that carries the token re-creates the state — which
+  is what makes the page steps work. A state that is *malformed* is not the same
+  case and nothing here repairs it: `install-stack.sh` keeps the file on a
+  re-run ("a spent page stays spent"), the page's own service exits 1 at startup
+  (`error: … Expecting property name …`) so the form is not served at all, and
+  `ensure_first_visit` stops the release run **after** `ensure_env` has already
+  replaced the hash (`error: <state>: Expecting property name …`, or
+  `error: <state> is not a first-visit state` when the JSON parses but carries
+  no 64-hex token hash); the deploy can only `warn`. Repair is to remove the
+  file and let a release run carrying the token re-create it —
+  `odile-release-setup.sh --force` reads that token from `/proc/cmdline`.
 
   1. Open the first-visit page **on the machine's own name**:
      `https://odl-fake01.odile.fyi/first-visit?t=<token>`. On the demo name

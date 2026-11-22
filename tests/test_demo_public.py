@@ -779,6 +779,13 @@ class FirstVisitStateTests(unittest.TestCase):
             if key in ("used_at", "signin_set_at"):
                 continue
             self.assertEqual(state[key], value, f"the stamp moved {key}")
+        # Byte for byte, not just by value: the write is the page's own
+        # serialisation with only the two timestamps filled, so no other key's
+        # bytes, order or nesting moved.
+        expected = dict(page, used_at=state["used_at"],
+                        signin_set_at=state["signin_set_at"])
+        self.assertEqual(first, (json.dumps(expected, indent=2, sort_keys=True)
+                                 + "\n").encode("utf-8"))
         self.assertEqual(self.state.stat().st_mode & 0o777, 0o600)
 
         self.deploy()
@@ -812,6 +819,52 @@ class FirstVisitStateTests(unittest.TestCase):
         self.assertFalse(self.state.exists(), "the deploy invented a state file")
         self.assertFalse(self.state.with_name(self.state.name + ".lock").exists(),
                          "the deploy created the state's lock beside a missing state")
+        changed, _ = self.first_visit_run()
+        self.assertTrue(changed)
+        self.assertFalse(self.installer.verify_password(
+            self.password, self.stored()["HERMES_DASHBOARD_BASIC_AUTH_PASSWORD_HASH"]))
+
+    def test_a_malformed_state_is_reported_not_repaired(self):
+        """Malformed is not missing: `warn`, byte-identical, and never repaired.
+
+        §6 names only the *missing* state as the case the page steps recover
+        (a release run carrying the token re-creates it). A malformed one is
+        worse, and this pins the three consequences that paragraph states: the
+        deploy can only warn, the page's own service refuses to load the file,
+        and the release run's `ensure_first_visit` stops by name after
+        `ensure_env` has already replaced the hash.
+        """
+        self.deploy_env(three_keys=True)
+        self.state.parent.mkdir(parents=True, exist_ok=True)
+        malformed = b"{not json\n"
+        self.state.write_bytes(malformed)
+        self.state.chmod(0o600)
+        self.deploy()
+        rows = [line for line in self.output.splitlines() if line.startswith("warn")]
+        self.assertEqual(len(rows), 1, self.output)
+        self.assertIn("first-visit", rows[0])
+        self.assertIn("not JSON", rows[0])
+        self.assertEqual(self.state.read_bytes(), malformed,
+                         "the deploy repaired the state")
+
+        with self.assertRaises(SystemExit) as caught:
+            self.first_visit.load_state(self.state)
+        self.assertIn("Expecting property name", str(caught.exception))
+
+        with self.assertRaises(SystemExit) as caught:
+            self.installer.ensure_first_visit(self.layout, TOKEN, dry=True)
+        self.assertIn("Expecting property name", str(caught.exception))
+
+        # The other malformed shape §6 names: valid JSON, no 64-hex token.
+        not_a_state = json.dumps({"version": 1, "token_sha256": "nothex"}).encode()
+        self.state.write_bytes(not_a_state)
+        with self.assertRaises(SystemExit) as caught:
+            self.installer.ensure_first_visit(self.layout, TOKEN, dry=True)
+        self.assertIn("is not a first-visit state", str(caught.exception))
+        self.deploy()
+        self.assertEqual(self.state.read_bytes(), not_a_state,
+                         "the deploy repaired the state")
+
         changed, _ = self.first_visit_run()
         self.assertTrue(changed)
         self.assertFalse(self.installer.verify_password(
