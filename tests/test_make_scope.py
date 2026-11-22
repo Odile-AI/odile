@@ -37,7 +37,7 @@ PLANTED_PY = "OTHER = 2\n"
 def scrub_hook_environment() -> dict[str, str]:
     """The environment without the GIT_* variables a pre-commit hook exports.
 
-    `make check` runs from `.githooks/pre-commit`, where git sets GIT_DIR and
+    `make check-fast` runs from `.githooks/pre-commit`, where git sets GIT_DIR and
     GIT_INDEX_FILE; a fixture repository that inherits them commits to the outer
     branch instead of its own.
     """

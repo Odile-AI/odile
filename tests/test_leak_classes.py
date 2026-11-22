@@ -522,7 +522,7 @@ class Drill(unittest.TestCase):
             self.assertIn("PASS:", second.stdout)
 
     def test_the_drill_survives_an_inherited_git_dir(self):
-        # The pre-commit hook runs the suite from the real checkout with
+        # The pre-commit gate runs its test modules from the real checkout with
         # GIT_DIR / GIT_INDEX_FILE set; in a linked worktree both are absolute.
         # The child environment must be scrubbed, or `git init` and the
         # scanner's `git ls-files` read the outer tree and the probe is never

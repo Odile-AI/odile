@@ -32,7 +32,8 @@ forbid list:     absent (docs/ops/leak-forbid.txt) — the forbidden-value and f
 Put the list at that path (HQ `cp`, or `base64 -d` from the secret) to arm the
 local gates. `make hooks` installs three of them: the commit-msg gate, which
 scans the message before the commit object exists and refuses a hit; the
-pre-commit gate (`make check`); and the pre-push gate, which scans the outgoing
+pre-commit gate (`make check-fast`, the full suite runs at `make acceptance`
+and at the merge gate); and the pre-push gate, which scans the outgoing
 diff and commit messages against the same list and blocks on a hit. On a clone
 with no list the commit-msg and pre-push hooks print `forbid list absent` and
 let the commit or push through, because there is nothing to scan against.

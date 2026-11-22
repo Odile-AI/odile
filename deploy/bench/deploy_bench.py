@@ -237,8 +237,8 @@ def require_root() -> None:
 def git_env() -> dict:
     """The environment for a git probe, with the caller's GIT_* removed.
 
-    `make check` runs from `.githooks/pre-commit`, which exports GIT_DIR and
-    GIT_INDEX_FILE; without this a release copy of a fixture tree would list
+    The pre-commit gate runs from `.githooks/pre-commit`, which exports GIT_DIR
+    and GIT_INDEX_FILE; without this a release copy of a fixture tree would list
     the outer checkout's files.
     """
     return {key: value for key, value in os.environ.items()

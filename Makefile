@@ -1,9 +1,10 @@
 # Odile — one command that proves the tree is healthy.
 #
-# `make check` is the gate and `.githooks/pre-commit` runs it on every commit;
-# `.github/workflows/check.yml` runs it on every push and on every pull request
-# to `main`. It needs /usr/bin/python3, shellcheck and openssl; see
-# CONTRIBUTING.md.
+# `make check` is the full gate; `.githooks/pre-commit` runs the fast half
+# (`make check-fast`) on every commit, and `.github/workflows/check.yml` runs
+# the full one on every push and on every pull request to `main`. The full gate
+# still runs at `make acceptance` and at the merge gate. It needs
+# /usr/bin/python3, shellcheck and openssl; see CONTRIBUTING.md.
 
 PYTHON ?= /usr/bin/python3
 SHELLCHECK ?= shellcheck
