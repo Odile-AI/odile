@@ -660,8 +660,15 @@ class ProbeTickTests(unittest.TestCase):
         self.script = self.base / "check_bench.sh"
         self.script.write_text("#!/bin/sh\n", encoding="utf-8")
         self.saved = (deploy.PROBE_SCRIPT, deploy.PROBE_TIMEOUT, deploy.run,
-                      deploy.open_bench_alert, deploy.resolve_bench_alert)
+                      deploy.open_bench_alert, deploy.resolve_bench_alert,
+                      deploy.port_holders, deploy.is_bench_unit, deploy.terminate)
         deploy.PROBE_SCRIPT = self.script
+        # The tick looks at the live port before it probes; keep the test off
+        # this host's 8082 unless a test puts a holder there.
+        deploy.port_holders = lambda port: []
+        deploy.is_bench_unit = lambda pid: False
+        self.terminated: list[int] = []
+        deploy.terminate = lambda pid: self.terminated.append(pid)
         self.opened: list[str] = []
         self.resolved: list[int] = []
         deploy.open_bench_alert = lambda line, now: self.opened.append(line)
@@ -669,7 +676,8 @@ class ProbeTickTests(unittest.TestCase):
 
     def tearDown(self) -> None:
         (deploy.PROBE_SCRIPT, deploy.PROBE_TIMEOUT, deploy.run,
-         deploy.open_bench_alert, deploy.resolve_bench_alert) = self.saved
+         deploy.open_bench_alert, deploy.resolve_bench_alert,
+         deploy.port_holders, deploy.is_bench_unit, deploy.terminate) = self.saved
         self.tmp.cleanup()
 
     def tick(self, returncode: int, text: str) -> tuple[int, str]:
@@ -729,6 +737,76 @@ class ProbeTickTests(unittest.TestCase):
             deploy.run = deploy_run
         self.assertEqual(code, 0)
         self.assertEqual(calls, [])
+
+    def test_a_free_port_adds_no_line_to_the_probe(self) -> None:
+        deploy.resolve_bench_alert = lambda now: False  # no open alert
+        line = ("bench probe: OK https://test.odile.fyi/ -> 200 server: odile-bench; "
+                "127.0.0.1:8082 pid 9 /usr/bin/python3 /opt/odile-test/current/app.py")
+        code, out = self.tick(0, line)
+        self.assertEqual(code, 0)
+        self.assertEqual(out, line + "\n")
+
+    def test_the_tick_reaps_a_deleted_worktrees_orphan_and_starts_the_unit(self) -> None:
+        """The 2026-11-21 orphan must die with its worktree, not with a deploy."""
+        worktree = self.base / ".worktrees" / "t_gone"
+        (worktree / "sub").mkdir(parents=True)
+        cwd = worktree / "sub"
+        shutil.rmtree(worktree)
+        state = {"held": True}
+        deploy.port_holders = lambda port: (
+            [{"pid": 4242, "command": "seed.py serve", "cwd": str(cwd)}]
+            if state["held"] else []
+        )
+
+        def terminate(pid: int) -> None:
+            self.terminated.append(pid)
+            state["held"] = False
+
+        deploy.terminate = terminate
+        line = ("bench probe: OK https://test.odile.fyi/ -> 200 server: odile-bench; "
+                "127.0.0.1:8082 pid 9 /usr/bin/python3 /opt/odile-test/current/app.py")
+        commands: list[list[str]] = []
+
+        def fake_run(command, **kwargs):
+            commands.append(command)
+            if command[0] == deploy.SYSTEMCTL and command[1:2] == ["is-active"]:
+                return subprocess.CompletedProcess(
+                    args=command, returncode=0, stdout="active\n", stderr="")
+            if command[0] == deploy.SYSTEMCTL and command[1:2] == ["start"]:
+                return subprocess.CompletedProcess(
+                    args=command, returncode=0, stdout="", stderr="")
+            return subprocess.CompletedProcess(
+                args=command, returncode=0, stdout=line + "\n", stderr="")
+
+        deploy.run = fake_run
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            code = deploy.probe_tick()
+        shown = out.getvalue()
+        self.assertEqual(code, 0)
+        self.assertEqual(self.terminated, [4242])
+        self.assertIn("whose worktree is gone", shown)
+        self.assertIn([deploy.SYSTEMCTL, "start", deploy.UNIT_SITE_NAME], commands)
+        self.assertEqual(shown.count(line), 1)
+        self.assertLess(shown.index("whose worktree is gone"), shown.index(line))
+        self.assertEqual(self.opened, [])
+        self.assertEqual(len(self.resolved), 1)
+
+    def test_the_tick_leaves_a_foreign_holder_to_the_deployers_refusal(self) -> None:
+        """A stranger on 8082 is not the tick's to kill: it probes red and alerts."""
+        deploy.port_holders = lambda port: [{
+            "pid": 5151, "command": "python3 -m http.server 8082",
+            "cwd": str(self.base)}]
+        line = ("bench probe: FAIL https://test.odile.fyi/ -> 200 server: odile-bench, "
+                "account page: no (want 200, server: odile-bench, the join form); "
+                "127.0.0.1:8082 pid 5151 python3 -m http.server 8082")
+        code, out = self.tick(1, line)
+        self.assertEqual(code, 1)
+        self.assertEqual(self.terminated, [])
+        self.assertEqual(out.count(line), 1)
+        self.assertIn("pid 5151", out)
+        self.assertEqual(self.opened, [line])
+        self.assertEqual(self.resolved, [])
 
 
 if __name__ == "__main__":

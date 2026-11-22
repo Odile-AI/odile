@@ -203,12 +203,19 @@ command that hold the port (or `nobody listening`). `BENCH_URL` and
 
 **The timer.** `deploy/bench/deploy_bench.py` installs and enables
 `odile-bench-probe.service` and `odile-bench-probe.timer`; the timer runs the
-probe every five minutes (`OnCalendar=*:0/5`, `Persistent=true`). A red tick
-raises one alert in the existing HQ path — the `odilectl.health` ledger, the
-outbox and the configured transports, `slug bench`, `kind down` — with the
-probe's line as the symptom; the same alert stays open (no repeat) until a
-green tick resolves it. A stopped unit and a foreign listener each produce a
-red line and one ledger row.
+probe every five minutes (`OnCalendar=*:0/5`, `Persistent=true`). Before it
+probes, the tick clears the 2026-11-21 orphan from 8082 — a holder whose
+working directory is a `.worktrees/<card>` that no longer exists — and starts
+`odile-bench` when it did, so a scratch service removed with its worktree is
+repaired inside five minutes instead of waiting for a human to run the deployer.
+A foreign holder is left alone: the apply's exit 2 and the probe's red line are
+its answers. A red tick raises one alert in the existing HQ path — the
+`odilectl.health` ledger, the outbox and the configured transports, `slug
+bench`, `kind down` — with the probe's line as the symptom; the same alert stays
+open (no repeat) until a green tick resolves it. A stopped unit and a foreign
+listener each produce a red line and one ledger row. A red tick exits 1, so
+systemd shows `odile-bench-probe.service` failed until the next green tick; the
+timer keeps firing, so it is a status cosmetic, not a stall.
 
 ```sh
 systemctl list-timers odile-bench-probe.timer
@@ -239,6 +246,8 @@ check is 16/16, in that card:
 ```
 
 The record is a capture: it also holds the three production pages as served and
-`NRestarts`. Never edit it by hand; `--record` writes it atomically. The current
-value at 2026-11-22 is `2caf4a5b…` (the 2026.11.21 image), up from `674cc40d…`;
+`NRestarts`. Never edit it by hand; `--record` replaces it in one rename (a
+sibling temp file, `fsync`, `os.replace`), so an interrupted record leaves the
+whole previous baseline behind rather than half a file. The current value at
+2026-11-22 is `2caf4a5b…` (the 2026.11.21 image), up from `674cc40d…`;
 `docs/evidence/a1-bench.md` §12 carries the transcript.

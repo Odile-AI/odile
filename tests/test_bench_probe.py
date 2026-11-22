@@ -17,9 +17,11 @@ The tests are medium: a loopback HTTP server, a real subprocess and no sleep.
 from __future__ import annotations
 
 import http.server
+import json
 import os
 import socket
 import subprocess
+import tempfile
 import threading
 import unittest
 from pathlib import Path
@@ -121,6 +123,74 @@ class ProbeTests(unittest.TestCase):
         self.assertEqual(len(lines), 1, result.stderr)
         self.assertIn("bench probe: FAIL", lines[0])
         self.assertIn("nobody listening", lines[0])
+
+
+class RecordTests(unittest.TestCase):
+    """ODL-936: `--record` replaces the baseline, never truncates it in place."""
+
+    EXPECT = "2caf4a5bcea82189" + "0" * 80
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.base = Path(self.tmp.name)
+        self.bin = self.base / "bin"
+        self.bin.mkdir()
+        self.baseline = self.base / "a1-bench-baseline.json"
+        stub = self.bin / "stub"
+        stub.write_text("#!/bin/sh\n", encoding="utf-8")
+        stub.chmod(0o755)
+        # curl writes a body to -o and prints 200; dig answers an address;
+        # systemctl reports NRestarts 0. The record path asks for nothing else.
+        (self.bin / "curl").write_text(
+            "#!/bin/sh\n"
+            "while [ $# -gt 0 ]; do\n"
+            "  case \"$1\" in -o) body=$2; shift 2 ;;\n"
+            "    -w) shift 2 ;;\n"
+            "    *) url=$1; shift ;;\n"
+            "  esac\n"
+            "done\n"
+            "[ -n \"$body\" ] && printf 'page %s\\n' \"$url\" > \"$body\"\n"
+            "printf '200'\n", encoding="utf-8")
+        (self.bin / "dig").write_text("#!/bin/sh\nprintf '203.0.113.7\\n'\n",
+                                      encoding="utf-8")
+        (self.bin / "sqlite3").write_text("#!/bin/sh\nprintf '0\\n'\n",
+                                          encoding="utf-8")
+        (self.bin / "systemctl").write_text("#!/bin/sh\nprintf '0\\n'\n",
+                                            encoding="utf-8")
+        for name in ("curl", "dig", "sqlite3", "systemctl"):
+            (self.bin / name).chmod(0o755)
+
+    def tearDown(self) -> None:
+        self.tmp.cleanup()
+
+    def record(self) -> subprocess.CompletedProcess:
+        return subprocess.run(
+            ["/bin/sh", str(SCRIPT), "--record", "--expect", self.EXPECT],
+            capture_output=True, text=True, timeout=60,
+            env={**os.environ, "PATH": f"{self.bin}:{os.environ['PATH']}",
+                 "BASELINE": str(self.baseline),
+                 "PROD_DB": str(self.base / "prod.db"),
+                 "BENCH_DB": str(self.base / "bench.db"),
+                 "PROD_ROADMAP": str(self.base / "roadmap.html"),
+                 "PROD_ATTEST": str(self.base / "attestation.json")})
+
+    def test_the_record_is_one_complete_file_and_replaces_the_old_one(self) -> None:
+        self.baseline.write_text('{"schema": "old", "production": {}}\n',
+                                 encoding="utf-8")
+        before = self.baseline.stat().st_ino
+        result = self.record()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        record = json.loads(self.baseline.read_text(encoding="utf-8"))
+        self.assertEqual(record["schema"], "odile.a1-bench-baseline.v1")
+        self.assertEqual(record["expected_measurement"], self.EXPECT)
+        self.assertEqual(set(record["production"]), {"/", "/roadmap", "/attestation"})
+        self.assertEqual(record["production_nrestarts"], "0")
+        # a rename, not a truncate-in-place: a failed record leaves the whole
+        # old baseline behind, and no half-written temp file survives success
+        self.assertNotEqual(self.baseline.stat().st_ino, before)
+        self.assertEqual(sorted(path.name for path in self.base.iterdir()),
+                         ["a1-bench-baseline.json", "bin"])
+        self.assertEqual(self.baseline.stat().st_mode & 0o777, 0o644)
 
 
 if __name__ == "__main__":

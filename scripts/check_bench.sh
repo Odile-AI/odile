@@ -225,7 +225,9 @@ if [ "$RECORD" = 1 ]; then
     } > "$tmp/baseline.txt"
     "$PYTHON" - "$tmp/baseline.txt" "$BASELINE" <<'PY'
 import json
+import os
 import sys
+import tempfile
 
 lines = [line.rstrip("\n") for line in open(sys.argv[1], encoding="utf-8") if line.strip()]
 record = {"schema": "odile.a1-bench-baseline.v1", "production": {}, "production_nrestarts": None}
@@ -244,10 +246,25 @@ record["note"] = ("The record is a capture, not the DoD's baseline for productio
                   "addresses, and NRestarts. The check asserts / against the ODL-339 pre-deploy value (PRE_DEPLOY_ROOT) "
                   "and requires this record to agree with it; /roadmap and /attestation regenerate every fifteen and five "
                   "minutes, so for those two the property is that the served bytes are production's own state file.")
-with open(sys.argv[2], "w", encoding="utf-8") as handle:
-    json.dump(record, handle, indent=2, sort_keys=True)
-    handle.write("\n")
-print("recorded %s" % sys.argv[2])
+# Atomic: a reader (the check, a reviewer, git) sees either the old record or
+# the complete new one. An interrupted record must never leave half a baseline.
+target = os.path.abspath(sys.argv[2])
+fd, temporary = tempfile.mkstemp(prefix=".a1-bench-baseline.", dir=os.path.dirname(target))
+try:
+    with os.fdopen(fd, "w", encoding="utf-8") as handle:
+        json.dump(record, handle, indent=2, sort_keys=True)
+        handle.write("\n")
+        handle.flush()
+        os.fsync(handle.fileno())
+    os.chmod(temporary, 0o644)
+    os.replace(temporary, target)
+except BaseException:
+    try:
+        os.unlink(temporary)
+    except FileNotFoundError:
+        pass
+    raise
+print("recorded %s" % target)
 for path, digest in sorted(record["production"].items()):
     print("  %s  %s" % (digest, path))
 print("  nrestarts=%s" % record["production_nrestarts"])

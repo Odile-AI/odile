@@ -48,7 +48,10 @@ ODL-936. Two additions keep a dead bench from reading as healthy:
     is the orphan that took the bench down on 2026-11-21: it is reaped and
     named, because its worktree is gone and nothing will ever stop it.
   * `odile-bench-probe.timer` runs `--probe-tick` every five minutes. The
-    tick runs `scripts/check_bench.sh --probe` (one line) and, when the line
+    tick first clears the 2026-11-21 orphan from 127.0.0.1:8082 (a holder whose
+    `.worktrees/<card>` is gone) and starts `odile-bench` when it did; a
+    foreign holder is left to the apply's exit 2 and the probe names it. It
+    then runs `scripts/check_bench.sh --probe` (one line) and, when the line
     is red, raises the bench's own alert in the existing HQ ledger, outbox and
     transports (odilectl.health); a green tick resolves that alert.
 
@@ -383,7 +386,7 @@ def terminate(pid: int) -> None:
 
 
 def ensure_port_free(dry: bool, ports: tuple[int, ...] = (APP_PORT, SEED_PORT),
-                     *, holders=None) -> bool:
+                     *, holders=None, orphans_only: bool = False) -> bool:
     """Refuse or reap a bench-port holder before any write.
 
     A holder inside the bench's own unit is the healthy case. A holder whose
@@ -391,19 +394,26 @@ def ensure_port_free(dry: bool, ports: tuple[int, ...] = (APP_PORT, SEED_PORT),
     2026-11-21 orphan — its worktree was deleted and its process was not — so
     it is killed here (SIGTERM, then SIGKILL) and named. Anything else is
     refused with its pid and command before the first write.
+
+    `orphans_only` is the five-minute tick's mode: reap the orphan, name a
+    foreign holder and leave it alone, say nothing about a free port, and never
+    exit. The refusal stays the deployer's (exit 2), so a red tick can still
+    print the probe's one line naming the same holder.
     """
     changed = False
     holders = port_holders if holders is None else holders
     for port in ports:
         held = holders(port)
         if not held:
-            print(f"same         port {port} free")
+            if not orphans_only:
+                print(f"same         port {port} free")
             continue
         reaped = False
         for holder in held:
             pid, command, cwd = holder["pid"], holder["command"], holder.get("cwd", "")
             if is_bench_unit(pid):
-                print(f"same         port {port} held by {UNIT_SITE_NAME} (pid {pid})")
+                if not orphans_only:
+                    print(f"same         port {port} held by {UNIT_SITE_NAME} (pid {pid})")
                 continue
             worktree = worktree_of(cwd)
             if worktree is not None and not worktree.exists():
@@ -412,6 +422,10 @@ def ensure_port_free(dry: bool, ports: tuple[int, ...] = (APP_PORT, SEED_PORT),
                 if not dry:
                     terminate(pid)
                 changed = reaped = True
+                continue
+            if orphans_only:
+                print(f"foreign      port {port} held by pid {pid} {command} "
+                      f"(cwd {cwd or 'unknown'}), not {UNIT_SITE_NAME}; not reaped")
                 continue
             print(f"error: port {port} is held by pid {pid} {command} "
                   f"(cwd {cwd or 'unknown'}), not {UNIT_SITE_NAME}; stop it before "
@@ -1141,14 +1155,38 @@ def resolve_bench_alert(now: int) -> bool:
 
 
 def probe_tick() -> int:
-    """One liveness tick: run the probe, print its line, feed the alert path.
+    """One liveness tick: clear the bench's orphan, probe, feed the alert path.
 
     Exit 0 is a green bench (any open bench alert resolved), 1 is red after
     the alert was raised, 2 is a probe that could not run at all.
+
+    A holder of 127.0.0.1:8082 whose `.worktrees/<card>` is gone is the
+    2026-11-21 orphan: it is killed here and `odile-bench` is started, so the
+    orphan dies with its worktree inside five minutes instead of waiting for a
+    human to run the deployer. A foreign holder is left alone — killing it is
+    the deployer's refusal (exit 2) — and the probe's red line names it.
     """
     if not PROBE_SCRIPT.is_file():
         print(f"bench probe: FAIL {PROBE_SCRIPT} is missing from {REPO}")
         return 2
+    reaped = False
+    try:
+        reaped = ensure_port_free(False, (APP_PORT,), orphans_only=True)
+    except (SystemExit, OSError) as exc:  # the probe's red line is still the truth
+        print(f"bench probe: the bench port did not clear: {exc}")
+    if reaped:
+        print(f"start        {UNIT_SITE_NAME} (port {APP_PORT} was held by an orphan from a deleted worktree)")
+        try:
+            run([SYSTEMCTL, "start", UNIT_SITE_NAME], check=True)
+            deadline = time.monotonic() + PROBE_SECONDS
+            while True:
+                active = run([SYSTEMCTL, "is-active", UNIT_SITE_NAME]).stdout.strip()
+                if active == "active" or time.monotonic() >= deadline:
+                    break
+                time.sleep(0.25)
+            print(f"active       {UNIT_SITE_NAME} {active}")
+        except SystemExit as exc:
+            print(f"bench probe: {UNIT_SITE_NAME} did not start: {exc}")
     try:
         result = run(["/bin/sh", str(PROBE_SCRIPT), "--probe"], timeout=PROBE_TIMEOUT)
     except SystemExit as exc:
