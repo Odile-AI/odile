@@ -34,6 +34,7 @@ SURFACE_GLOBS = (
     "webapp/*.html",
     "emails/*.html",
     "templates/*.html",
+    "templates/*.txt",
     "templates/emails/*.txt",
     "docs/brand/*.html",
     "demo/local/*.html",
