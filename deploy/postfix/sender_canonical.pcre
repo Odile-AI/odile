@@ -1,0 +1,16 @@
+# sender_canonical_maps — source of truth: deploy/postfix/sender_canonical.pcre
+#
+# Envelope-sender rewriting only; the From: header is untouched
+# (`sender_canonical_classes = envelope_sender` in main.cf — the Postfix
+# default also rewrites header sender addresses). Exactly one address maps:
+# the support mailbox's apex identity. Savio sends as help@odile.fyi from
+# Thunderbird, but odile.fyi publishes no SPF record (it
+# never sends, docs/runbooks/email.md §3.2), so the envelope is moved to
+# help@mail.odile.fyi — the domain SPF authorises and OpenDKIM signs — before
+# the message enters the queue. Return-Path therefore stays on mail.odile.fyi,
+# and a bounce to help@mail.odile.fyi lands in the same Maildir via
+# deploy/postfix/virtual.
+#
+# Keep this table to that one line: it is applied to every envelope sender,
+# local and remote, so a broader pattern would rewrite other people's mail.
+/^help@odile\.fyi$/   help@mail.odile.fyi

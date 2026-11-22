@@ -71,6 +71,7 @@ FILES = [
     ("master.cf", POSTFIX / "master.cf", "root", "root", 0o644),
     ("virtual", VIRTUAL, "root", "root", 0o644),
     ("sender_login.pcre", POSTFIX / "sender_login.pcre", "root", "root", 0o644),
+    ("sender_canonical.pcre", POSTFIX / "sender_canonical.pcre", "root", "root", 0o644),
     ("sasl/smtpd.conf", POSTFIX / "sasl" / "smtpd.conf", "root", "root", 0o644),
 ]
 
@@ -207,6 +208,17 @@ def virtual_entries(path: Path | None = None) -> dict[str, str]:
         fields = line.split()
         if len(fields) >= 2:
             entries[fields[0]] = " ".join(fields[1:])
+    return entries
+
+
+def pcre_entries(path: Path) -> dict[str, str]:
+    """A pcre table as Postfix reads it: pattern (without /…/) -> result."""
+    entries: dict[str, str] = {}
+    for line in path.read_text(encoding="utf-8").splitlines():
+        line = line.split("#", 1)[0].strip()
+        fields = line.split()
+        if len(fields) >= 2:
+            entries[fields[0].strip("/")] = " ".join(fields[1:])
     return entries
 
 
@@ -390,6 +402,12 @@ def self_test() -> int:
     check("the outbound leg prefers the AAAA",
           main_cf_settings().get("smtp_address_preference"), "ipv6")
 
+    # Without this, sender_canonical_maps also rewrites From:/Reply-To: — the
+    # default class list includes header_sender (postconf(5)), measured on
+    # 2026-11-22 when the first submission arrived as help@mail.odile.fyi.
+    check("the envelope rewrite leaves header senders alone",
+          main_cf_settings().get("sender_canonical_classes"), "envelope_sender")
+
     check("both mailboxes are reconciled, not only help",
           [box.user for box in MAILBOXES], ["dsn", "help"])
     entries = virtual_entries(HERE / "virtual")
@@ -397,6 +415,16 @@ def self_test() -> int:
     check("help@odile.fyi routes to help", entries.get("help@odile.fyi"), "help")
     check("abuse@odile.fyi routes to help", entries.get("abuse@odile.fyi"), "help")
     check("postmaster@odile.fyi routes to help", entries.get("postmaster@odile.fyi"), "help")
+
+    # The one apex identity: allowed for its own login, then rewritten onto the
+    # SPF-authorised, DKIM-signed domain. Both halves are one decision.
+    login = pcre_entries(HERE / "sender_login.pcre")
+    canonical = pcre_entries(HERE / "sender_canonical.pcre")
+    check("the support login may claim its own apex envelope sender",
+          login.get(r"^help@odile\.fyi$"), "help@odile.fyi")
+    check("the apex envelope sender is rewritten onto the signed domain",
+          canonical.get(r"^help@odile\.fyi$"), "help@mail.odile.fyi")
+    check("the canonical table rewrites exactly one sender", len(canonical), 1)
 
     real_getpwnam = pwd.getpwnam
     real_run = subprocess.run

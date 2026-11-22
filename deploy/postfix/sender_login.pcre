@@ -1,7 +1,15 @@
 # smtpd_sender_login_maps — source of truth: deploy/postfix/sender_login.pcre
 #
 # An authenticated submission client may only use an envelope sender on
-# mail.odile.fyi (which is also the only domain OpenDKIM signs). The value is
-# the SASL login that owns it. There is one account today; M1 replaces this
-# line with one row per tenant.
+# mail.odile.fyi (which is also the only domain OpenDKIM signs), or the one
+# apex identity the support mailbox owns. The value is the SASL login that owns
+# it. There is one tenant account today; M1 replaces this table with one row per
+# tenant.
+#
+# help@odile.fyi is the address Savio sends as from Thunderbird. It is allowed
+# for the login that is the same string, and it is rewritten by
+# sender_canonical.pcre onto mail.odile.fyi before the queue, so SPF is still
+# evaluated on the domain whose record authorises this host. The generic line
+# below still means "any other mail.odile.fyi sender belongs to odile-test".
+/^help@odile\.fyi$/           help@odile.fyi
 /^[^@]+@mail\.odile\.fyi$/   odile-test

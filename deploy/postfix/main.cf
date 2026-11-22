@@ -50,6 +50,12 @@ smtpd_relay_restrictions = permit_mynetworks permit_sasl_authenticated defer_una
 # shape held constant. The default `any` picks between them at random, so a
 # tenant's first brief was a coin flip. Prefer IPv6; Postfix still tries IPv4
 # when the destination publishes no AAAA or the IPv6 connection fails.
+# Postfix documents the cost of this value: "all deliveries will suffer delays
+# during an IPv6 outage, even while the destination is still reachable over
+# IPv4" (postconf(5)). So a brief queues rather than fails while this host has
+# no IPv6, and `postqueue -p` / `grep gmail-smtp-in /var/log/mail.log` show it
+# moving again once IPv6 returns. 3.10.6 implements smtp_balance_inet_protocols
+# (Postfix 3.3), so it is delayed, not stuck as a < 3.3 relay could be.
 # Measurement: docs/evidence/t_7378e496/.
 smtp_address_preference = ipv6
 
@@ -95,3 +101,12 @@ smtpd_tls_auth_only = yes
 # domain. Per-tenant ownership (one login per From address) arrives with the
 # tenant table in M1; today the map names the single test account.
 smtpd_sender_login_maps = pcre:/etc/postfix/sender_login.pcre
+
+# One exception, rewritten before the queue: Savio's From: help@odile.fyi has
+# no SPF record at the apex, so the envelope is moved onto mail.odile.fyi (the
+# authorised, signed domain). Envelope only — sender_canonical_classes is what
+# keeps From:/Reply-To: as the person wrote them; the default applies the same
+# map to header sender addresses too, which would rewrite the From: to
+# help@mail.odile.fyi. See deploy/postfix/sender_canonical.pcre.
+sender_canonical_maps = pcre:/etc/postfix/sender_canonical.pcre
+sender_canonical_classes = envelope_sender
