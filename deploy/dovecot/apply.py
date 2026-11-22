@@ -17,9 +17,10 @@ which is what the packaged defaults give.
 Credential handling is *state*, not configuration:
 
   * `/etc/dovecot/users` (0600 root) is the passdb — one `{SHA512-CRYPT}` line
-    per account: the mailbox login `help@odile.fyi` and the submission-only
-    tenant account `odile-test@mail.odile.fyi`. It is the only credential
-    store; Postfix asks this auth service over
+    per account: the mailbox login `help@odile.fyi`, the submission-only test
+    account `odile-test@mail.odile.fyi`, and one `<name>@mail.odile.fyi` line
+    per tenant (`--set-account-password`). It is the only credential store;
+    Postfix asks this auth service over
     /var/spool/postfix/private/auth, so 587 is hash-only too. It never appears
     in git.
   * `/etc/dovecot/userdb` (0600 root) is derived from that file and holds only
@@ -79,6 +80,9 @@ TENANT_HOME = Path("/nonexistent")
 HANDOVER = Path("/root/.odile/mailbox-help-password.txt")
 HASH_PREFIX = "{SHA512-CRYPT}"
 HASH_RE = re.compile(r"^\{SHA512-CRYPT\}\$6\$[^:\s]{1,200}$")
+# A submission-only account: any local part under the signing domain. The
+# mailbox is the one exception; M1 adds one line per tenant with this shape.
+TENANT_RE = re.compile(r"^[^@\s:]+@mail\.odile\.fyi$")
 
 FILES = [
     # source, destination, owner, group, mode
@@ -285,23 +289,27 @@ def users_problems(path: Path | None = None) -> list[str]:
         problems.append(f"{target}: owner {info.st_uid}:{info.st_gid}, want root:root")
     entries = parse_users(target)
     found = [fields[0] for fields in entries if fields]
+    # The two managed accounts must be present; any further line must be a
+    # submission-only account under the signing domain, which is what
+    # `--set-account-password tenant-<id>@mail.odile.fyi` writes. Anything else
+    # is an account nobody meant to create, and a duplicate is two hashes
+    # racing for one login.
     missing = sorted(set(ACCOUNTS) - set(found))
-    extra = sorted(set(found) - set(ACCOUNTS))
-    if len(entries) != len(ACCOUNTS):
-        problems.append(
-            f"{target}: holds {len(entries)} account(s), want exactly "
-            f"{len(ACCOUNTS)} ({', '.join(ACCOUNTS)})"
-        )
     if missing:
         problems.append(f"{target}: missing account(s) {', '.join(missing)}")
-    if extra:
-        problems.append(f"{target}: unexpected account(s) {', '.join(extra)}")
+    duplicates = sorted({name for name in found if found.count(name) > 1})
+    if duplicates:
+        problems.append(f"{target}: duplicate account(s) {', '.join(duplicates)}")
+    unexpected = sorted({name for name in found
+                         if name not in ACCOUNTS and not TENANT_RE.match(name)})
+    if unexpected:
+        problems.append(f"{target}: unexpected account(s) {', '.join(unexpected)}")
     try:
         account = pwd.getpwnam(MAILBOX_USER)
     except KeyError:
         return problems + [f"system user {MAILBOX_USER!r} is missing (deploy/postfix/apply.py --apply)"]
     for fields in entries:
-        if fields and fields[0] in ACCOUNTS:
+        if fields and (fields[0] in ACCOUNTS or TENANT_RE.match(fields[0])):
             problems.extend(f"{target}: {problem}" for problem in
                             entry_problems(fields, account.pw_uid, account.pw_gid,
                                            account=fields[0]))
@@ -553,9 +561,11 @@ def account_fields(account: str) -> tuple[int, int, Path]:
     if account == ACCOUNT:
         entry = pwd.getpwnam(MAILBOX_USER)
         return entry.pw_uid, entry.pw_gid, HOME
-    if account == TENANT_ACCOUNT:
+    if TENANT_RE.match(account):
         return NOBODY_UID, NOBODY_GID, TENANT_HOME
-    raise SystemExit(f"unknown account {account!r}; want one of {', '.join(ACCOUNTS)}")
+    raise SystemExit(
+        f"unknown account {account!r}; want {ACCOUNT} or <name>@mail.odile.fyi"
+    )
 
 
 def write_account(account: str, password: str) -> None:
@@ -611,16 +621,17 @@ def reload_and_test(account: str, password: str) -> int:
 
 def set_password(password: str) -> int:
     write_account(ACCOUNT, password)
-    print(f"wrote  {USERS} (0600 root, {HASH_PREFIX}, "
-          f"{len(ACCOUNTS)} account lines)")
+    print(f"wrote  {USERS} (0600 root, {ACCOUNT}, {HASH_PREFIX}; "
+          f"{len(parse_users(USERS))} line(s), tenant accounts preserved)")
     atomic_write(HANDOVER, f"{password}\n".encode("utf-8"), 0o600)
     print(f"wrote  {HANDOVER} (0600 root — the handover copy, not printed here)")
     return reload_and_test(ACCOUNT, password)
 
 
 def set_account_password(account: str, password: str) -> int:
-    if account not in ACCOUNTS:
-        print(f"unknown account {account!r}; want one of {', '.join(ACCOUNTS)}")
+    if account != ACCOUNT and not TENANT_RE.match(account):
+        print(f"unknown account {account!r}; want {ACCOUNT} or "
+              "<name>@mail.odile.fyi")
         return 2
     write_account(account, password)
     print(f"wrote  {USERS} (0600 root, {account}, {HASH_PREFIX})")
@@ -711,6 +722,73 @@ def self_test() -> int:
               ACCOUNT in deny.decode().splitlines(), False)
         check("the SMTP deny list is empty", expected_deny("smtp", source, uid, gid), b"")
 
+    # Tenant accounts are first-class: --set-account-password adds a line under
+    # the signing domain without touching the two managed ones, and --check must
+    # keep passing afterwards. The mailbox's real uid/gid are what
+    # users_problems() compares against, so those cases need the system user.
+    tenant_name = "tenant-7@mail.odile.fyi"
+    tenant_line = [tenant_name, "{SHA512-CRYPT}$6$salt$" + "a" * 86,
+                   str(NOBODY_UID), str(NOBODY_GID), "", str(TENANT_HOME), ""]
+    check("a tenant account under the signing domain is accepted",
+          entry_problems(tenant_line, uid, gid, account=tenant_name), [])
+    check("a tenant account is matched by TENANT_RE",
+          bool(TENANT_RE.match(tenant_name)), True)
+    check("an apex address that is not the mailbox is not a tenant account",
+          bool(TENANT_RE.match("abuse@odile.fyi")), False)
+
+    try:
+        mailbox = pwd.getpwnam(MAILBOX_USER)
+    except KeyError:
+        mailbox = None
+        print(f"skip  users-file checks: system user {MAILBOX_USER!r} is missing")
+    if mailbox is not None and os.geteuid() != 0:
+        print("skip  users-file checks: /etc/dovecot/users is root-owned")
+    elif mailbox is not None:
+        store_mailbox = [ACCOUNT, "{SHA512-CRYPT}$6$salt$" + "a" * 86,
+                         str(mailbox.pw_uid), str(mailbox.pw_gid), "", str(HOME), ""]
+        with tempfile.TemporaryDirectory(prefix="odile-dovecot-users-") as tmp:
+            store = Path(tmp) / "users"
+            store.touch()
+            store.chmod(0o600)
+
+            def write_store(*lines: list[str]) -> None:
+                store.write_text("\n".join(":".join(line) for line in lines) + "\n",
+                                 encoding="utf-8")
+
+            write_store(store_mailbox, tenant, tenant_line)
+            check("a store with both managed accounts and a tenant is clean",
+                  users_problems(store), [])
+            check("a tenant account is absent from the userdb",
+                  any(tenant_name in line for line in
+                      expected_userdb(store, mailbox.pw_uid, mailbox.pw_gid).decode().splitlines()),
+                  False)
+            check("a tenant account is denied IMAP",
+                  tenant_name in expected_deny("imap", store, mailbox.pw_uid,
+                                               mailbox.pw_gid).decode().splitlines(),
+                  True)
+
+            write_store(store_mailbox, tenant_line)
+            check("a store missing a managed account is drift",
+                  any("missing account(s) odile-test@mail.odile.fyi" in problem
+                      for problem in users_problems(store)), True)
+
+            write_store(store_mailbox, tenant, tenant_line,
+                        ["abuse@odile.fyi", *tenant_line[1:]])
+            check("an address outside the signing domain is drift",
+                  any("unexpected account(s) abuse@odile.fyi" in problem
+                      for problem in users_problems(store)), True)
+
+            write_store(store_mailbox, tenant, tenant_line, tenant_line)
+            check("a duplicate account is drift",
+                  any(f"duplicate account(s) {tenant_name}" in problem
+                      for problem in users_problems(store)), True)
+
+            plaintext_tenant = list(tenant_line)
+            plaintext_tenant[1] = "hunter2"
+            write_store(store_mailbox, tenant, plaintext_tenant)
+            check("a plaintext tenant password is drift",
+                  any("plaintext" in problem for problem in users_problems(store)), True)
+
     hashed = hash_password("self-test-only")
     check("doveadm pw produces a {SHA512-CRYPT} line", hashed.startswith(HASH_PREFIX + "$6$"), True)
     check("the hash is not the password", "self-test-only" in hashed, False)
@@ -735,8 +813,8 @@ def main(argv: list[str] | None = None) -> int:
     group.add_argument("--set-password", action="store_true",
                        help="mint or rotate the mailbox password (generated, never printed)")
     group.add_argument("--set-account-password", metavar="ADDRESS",
-                       help="set one account's password from stdin (one of "
-                            f"{', '.join(ACCOUNTS)}); never printed")
+                       help=f"set one account's password from stdin ({ACCOUNT} or "
+                            "<name>@mail.odile.fyi); never printed")
     parser.add_argument("--password-stdin", action="store_true",
                         help="with --set-password or --set-account-password: read the secret from stdin")
     args = parser.parse_args(argv)
