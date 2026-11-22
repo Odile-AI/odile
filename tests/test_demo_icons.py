@@ -20,6 +20,7 @@ machine is touched, and what the machine must end up carrying:
 from __future__ import annotations
 
 import hashlib
+import re
 import shutil
 import sys
 import tempfile
@@ -65,6 +66,18 @@ class DemoIconFilesTests(unittest.TestCase):
 
     def test_the_local_checks_pass_on_this_tree(self) -> None:
         deploy.local_checks()
+
+    def test_both_deployers_read_the_one_published_password(self) -> None:
+        # ODL-901 retired README.md's judge table and moved the published
+        # password onto the sign-in page. Both deployers open a console on the
+        # same machine as `judge`; a parser that read a second copy could
+        # sign in with a stale value while the other converged.
+        literal = re.search(r"var DEMO_PASSWORD = '([^']*)';",
+                            LOGIN_PAGE.read_text(encoding="utf-8"))
+        self.assertIsNotNone(literal)
+        assert literal is not None
+        self.assertEqual(deploy.published_password(), literal.group(1))
+        self.assertEqual(deploy_public.published_password(), literal.group(1))
 
 
 class DemoLoginIconTests(unittest.TestCase):

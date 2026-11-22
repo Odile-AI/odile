@@ -136,6 +136,30 @@ class LoginPageTests(unittest.TestCase):
         self.assertEqual(user_literal.group(1), username)
         self.assertIn("password: DEMO_PASSWORD", LOGIN_HTML)
 
+    def test_the_deploy_reads_that_same_published_password(self) -> None:
+        # ODL-901 retired README.md's judge table; this page is the single
+        # published copy. deploy_demo_public.py signs in as `judge` with it,
+        # so its parser must read this page and nothing else.
+        pw_literal = re.search(r"var DEMO_PASSWORD = '([^']*)';", LOGIN_HTML)
+        self.assertIsNotNone(pw_literal)
+        assert pw_literal is not None
+        self.assertEqual(deploy.published_password(), pw_literal.group(1))
+        self.assertEqual(
+            hashlib.sha256(deploy.published_password().encode("utf-8")).hexdigest(),
+            PUBLISHED_PASSWORD_SHA256,
+        )
+
+    def test_the_deploy_needs_no_readme_for_the_password(self) -> None:
+        # The fallback is for a checkout from before ODL-901, never a second
+        # live copy: a tree with the page and no README at all still resolves.
+        with tempfile.TemporaryDirectory(prefix="odile-published-password-") as tmp:
+            repo = Path(tmp)
+            page = repo / "deploy" / "demo-host" / "login.html"
+            page.parent.mkdir(parents=True)
+            page.write_text(LOGIN_HTML, encoding="utf-8")
+            self.assertTrue(deploy.published_password(repo))
+            self.assertFalse((repo / "README.md").exists())
+
     def test_the_error_copy_names_nothing_the_judge_can_change(self) -> None:
         # With no fields, "invalid username or password" names nothing the
         # judge can act on; the 429 sentence is kept.
