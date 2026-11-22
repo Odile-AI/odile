@@ -1,5 +1,12 @@
 #!/bin/sh
-# Odile pre-commit gate: no commit lands on a tree that fails `make check`.
+# Odile pre-commit gate: the fast half of `make check`, and no host lock.
+#
+# Why not the full suite here: one suite is ~660 s of exclusive host time and
+# the lock is host-wide, so a busy board made every commit queue behind whole
+# suites (ODL-346: a commit waited 29 minutes and its caller was killed; the
+# orphaned hook then ran 897 s of tests at 03:30). The full suite still runs at
+# `make acceptance` and at the merge gate — the two points where a tree lands on
+# `main` — and the trade is recorded in docs/ops/WORKFLOW-CHANGES.md.
 #
 # Git does not version hook installation, so enable it once per clone:
 #
@@ -12,8 +19,18 @@ set -eu
 
 cd "$(git rev-parse --show-toplevel)"
 
-if ! "${MAKE:-make}" check; then
-    printf '\npre-commit: make check failed; the commit was not made.\n' >&2
+# The hook is a child of `git commit`. If the caller's terminal cap kills git,
+# the hook (and the suite it started) would otherwise keep running; passing the
+# caller's pid lets tools/check_lock.py leave the queue and stop the child when
+# that caller is gone. The fast gate takes no lock, so this matters for any
+# nested full gate (`make acceptance`) a commit may run.
+ODILE_GATE_PARENT_PID="${PPID:-0}"
+export ODILE_GATE_PARENT_PID
+ODILE_GATE_EVENT_LOG="${ODILE_GATE_EVENT_LOG:-/var/lock/odile-check-waits.jsonl}"
+export ODILE_GATE_EVENT_LOG
+
+if ! "${MAKE:-make}" check-fast; then
+    printf '\npre-commit: make check-fast failed; the commit was not made.\n' >&2
     printf 'pre-commit: fix the tree, or bypass with: git commit --no-verify\n' >&2
     exit 1
 fi
