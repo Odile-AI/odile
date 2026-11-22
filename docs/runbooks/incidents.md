@@ -975,10 +975,11 @@ against `In-service time 2.4 machine-days`. That is the discriminator §4.1 puts
 second, and it is why "down" in this page means *the heartbeat stopped*.
 
 The defect was ODL-561's, and it landed on 15 November (`371d5d1`): on
-22 November the demo's last heartbeat is 24 seconds old and `health` classifies
-it `ok`. The same poll now plans one `brief_missing` alert — "the 07:00 brief
-did not arrive; heartbeats are live" — which is the brief job, not the machine,
-and is the live counterpart of §4.1's second command.
+22 November the demo's heartbeat is live — the poll at `00:41:37Z` read a last
+beat of `2026-11-22 00:40:46Z`, 51 seconds earlier — and `health` classifies it
+`ok`. The same poll now plans one `brief_missing` alert —
+"the 07:00 brief did not arrive; heartbeats are live" — which is the brief job,
+not the machine, and is the live counterpart of §4.1's second command.
 
 ## 7. Limits
 
@@ -1008,8 +1009,9 @@ and is the live counterpart of §4.1's second command.
 6. **The demo tenant is now the counter-example that closed.** Its heartbeat
    stopped on 13 November while the machine served `/verify` (§6.5); ODL-561
    (`371d5d1`) restored the timers and took the demo off `/status` on
-   15 November. On 22 November its last heartbeat is 24 seconds old and
-   `health` classifies it `ok`. The live defect the same poll now plans is a
+   15 November. On 22 November its heartbeat is live — the `00:41:37Z` poll read
+   a last beat of `2026-11-22 00:40:46Z`, 51 seconds earlier — and `health`
+   classifies it `ok`. The live defect the same poll now plans is a
    `brief_missing` alert — "the 07:00 brief did not arrive; heartbeats are
    live" — and the alert's `first_command` is still `ssh -i ~/.ssh/odile …`,
    the key that does not exist (`odilectl/health.py`).
@@ -1018,12 +1020,14 @@ and is the live counterpart of §4.1's second command.
    because an orphaned `seed.py serve` from a deleted worktree (started
    21 November 11:39) held `127.0.0.1:8082`; `https://test.odile.fyi/` answered
    `404` while `/health` answered `200`. The orphan was killed and the unit
-   restarted, and `check_bench.sh` then read 14/16. The repair, if it recurs:
-   `ss -ltnp | grep ':8082'` names the holder, kill that pid, then
-   `systemctl restart odile-bench.service`. The two remaining failures
-   are the tenant's recorded measurement, not the machine: the 21 November image
-   moved it to `2caf4a5b…` while `docs/evidence/a1-bench-baseline.json` still
-   records `674cc40d…`. ODL-936 (`t_921b50d0`, A2/infra/S) owns the probe, the
-   timer, the re-record and the orphan rule. Its `/verify` also carries a
+   restarted; at `00:41:37Z` `check_bench.sh` read 14/16, and both failures were
+   the tenant's recorded measurement, not the machine — the 21 November image was
+   serving `2caf4a5b…` while `docs/evidence/a1-bench-baseline.json` still
+   recorded `674cc40d…`. ODL-936 (`t_921b50d0`, A2/infra/S) re-recorded the
+   baseline at `2026-11-22T00:48:56Z` (`expected_measurement 2caf4a5b…`), and
+   `check_bench.sh` passes 16/16 (re-run at `02:22:45Z`). ODL-936 owns the
+   probe, the timer, the re-record and the orphan rule. The repair, if the
+   orphan recurs: `ss -ltnp | grep ':8082'` names the holder, kill that pid,
+   then `systemctl restart odile-bench.service`. Its `/verify` also carries a
    `LUKS FAIL` row — the unit's `ProtectSystem=strict` blocks `cryptsetup`'s
    lock on every machine; `t_d55b0e47` owns that, and the machine is serving.
