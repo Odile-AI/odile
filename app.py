@@ -752,6 +752,24 @@ def _atomic_write(path: str, data: bytes) -> None:
 _ready_lock = threading.Lock()
 
 
+def _ready_boundary(slug: str, body: str, kit: bytes) -> str:
+    """The multipart boundary for one ready email: fixed, and absent from its parts.
+
+    The resend's contract is that a second press writes the same bytes, so the
+    boundary may not be drawn at random. It also may not occur in the body or
+    the kit, or the message would split at the wrong line; the suffix loop is
+    deterministic, so two builds from the same facts still hash equal.
+    """
+    base = "odile-ready.%s" % slug
+    kit_text = kit.decode("utf-8", "replace")
+    candidate = base
+    suffix = 0
+    while candidate in body or candidate in kit_text:
+        suffix += 1
+        candidate = "%s-%d" % (base, suffix)
+    return candidate
+
+
 def queue_ready(row: sqlite3.Row, tenant: sqlite3.Row | None) -> str:
     """Queue the ready email for one ready account, with no setup token.
 
@@ -759,9 +777,11 @@ def queue_ready(row: sqlite3.Row, tenant: sqlite3.Row | None) -> str:
     the token keeps its machine-side jobs — the seed badge and the rebuild-seal
     key — and no link here carries it. The message is rebuilt from the facts
     sidecar on every press, so a second press re-queues byte-for-byte the same
-    message: same Date, same Message-ID, same body, same attachment. A press
-    after the mailer removed the `.eml` restores those same bytes rather than
-    minting a new message.
+    message: same Date, same Message-ID, same body, same attachment and the
+    same multipart boundary (pinned below). That holds on the installed,
+    kit-bearing outbox too, where the recovery kit makes the message
+    multipart. A press after the mailer removed the `.eml` restores those same
+    bytes rather than minting a new message.
     """
     slug = row["slug"]
     outbox = claim.ReadyOutbox(OUTBOX)
@@ -823,8 +843,15 @@ def queue_ready(row: sqlite3.Row, tenant: sqlite3.Row | None) -> str:
         message.set_content(body)
         if kit_path.is_file() and kit_path.stat().st_size:
             filename = "odile-%s-recovery-kit.txt" % slug
-            message.add_attachment(kit_path.read_bytes(), maintype="text",
+            kit_bytes = kit_path.read_bytes()
+            message.add_attachment(kit_bytes, maintype="text",
                                    subtype="plain", filename=filename)
+            # Pin the boundary. `add_attachment` leaves it unset, and each
+            # `as_bytes()` would then draw a fresh random one, so the same mail
+            # would be written with different bytes on every press (the
+            # verifier's round-1 must). The installed outbox always has the
+            # kit, so this is the shape that matters.
+            message.set_boundary(_ready_boundary(slug, body, kit_bytes))
             facts["kit_filename"] = filename
         facts["at_iso"] = datetime.fromtimestamp(
             at, timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")

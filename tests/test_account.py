@@ -15,7 +15,9 @@ What is pinned here, in the card's own words:
 * the ready state carries the machine's address, the report link and
   "Open your machine", plus the one resend action;
 * the resend queues a tokenless ready email, keeps the machine's URL, and a
-  second press leaves the same bytes and the same state;
+  second press leaves the same bytes and the same state — measured on the
+  installed, kit-bearing outbox, where the recovery kit makes the message
+  multipart and an unpinned boundary would move on every serialization;
 * the failed state carries the retry copy and no machine id;
 * no state carries JavaScript or a third-party request.
 
@@ -44,6 +46,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 import app  # noqa: E402
+from odilectl import claim  # noqa: E402
 
 SIGN_IN = "a long enough password"
 TRIAL_START = "2026-11-20T09:00:00Z"
@@ -221,6 +224,63 @@ class AccountBase(unittest.TestCase):
     def queued_confirm(self, account_id: int) -> Path:
         return self.outbox / "confirm" / ("%d.eml" % int(account_id))
 
+    def seed_provisioned_ready(self, row: sqlite3.Row, *,
+                               at: int = 1795379886) -> tuple[str, str]:
+        """Write the outbox the provisioner writes: kit, facts, then the `.eml`.
+
+        This is the installed shape the verifier reproduced: the ready email
+        carries the recovery kit as an attachment, and the kit is where the
+        setup token still lives (B-once retires it from the mail's own links,
+        not from the seed badge). It is also the shape that made every
+        serialization pick a fresh random MIME boundary. Returns the token and
+        the kit text, so a test can assert where each one went.
+        """
+        slug = row["slug"]
+        host = "%s.test.odile.fyi" % slug
+        url = "https://" + host
+        token = "ab" * 32
+        first_visit_url = url + "/first-visit?t=" + token
+        measurement = app.pinned_measurement()
+        kit_text = claim.render_recovery_kit(
+            slug=slug,
+            ipv4="203.0.113.42",
+            instance_id=row["server_id"],
+            token=token,
+            measurement=measurement,
+            first_visit_url=first_visit_url,
+            expires_at="2026-11-21T09:00:00Z",
+            release="2026.11.1",
+            vcpus=2,
+            backup_repo_url=None,
+            written_at="2026-11-20T09:00:00Z",
+        )
+        claim.ReadyOutbox(self.outbox).queue(
+            slug=slug,
+            recipient=row["email"],
+            subject=claim.READY_SUBJECT,
+            body=claim.ready_body(url=url, measurement=measurement,
+                                  first_visit_url=first_visit_url),
+            kit_text=kit_text,
+            facts={
+                "kind": "ready",
+                "slug": slug,
+                "to": row["email"],
+                "subject": claim.READY_SUBJECT,
+                "host": host,
+                "url": url,
+                "server_id": row["server_id"],
+                "ipv4": "203.0.113.42",
+                "measurement": measurement,
+                "guide_url": claim.READY_GUIDE_URL,
+                "release": "2026.11.1",
+                "instance_id": row["server_id"],
+                "token_expires": "2026-11-21T09:00:00Z",
+                "kit_filename": "odile-%s-recovery-kit.txt" % slug,
+            },
+            at=at,
+        )
+        return token, kit_text
+
     def confirm_token(self, raw: bytes) -> str:
         message = email.message_from_bytes(raw, policy=email_policy.default)
         part = message.get_body(("plain",))
@@ -352,6 +412,11 @@ class FourStateTests(AccountBase):
         self.assertIn("203.0.113.42", text)
         self.assertNotIn("203.0.113.41", text)
         self.assertEqual(text.count('action="/account/resend"'), 1)
+        # One label line at 320/390/1440 (the sheet's button text row): the
+        # 22 November product re-cut of PR/FAQ §4 (t_188e2dd9) shortened this
+        # label, closing the 320 px Should the Designer recorded in round 3.
+        self.assertIn("Send the email again", text)
+        self.assertNotIn("Send the ready email again", text)
 
     def test_the_failed_state_shows_the_retry_copy_and_no_machine_id(self):
         email, row, cookie = self.state_account("failed")
@@ -390,38 +455,92 @@ class FourStateTests(AccountBase):
 
 class ResendTests(AccountBase):
     def test_the_resend_queues_a_tokenless_ready_email_and_repeats_byte_for_byte(self):
-        email = self.email()
-        row = self.seed_account(email, "ready", tenant_ipv4="203.0.113.42")
-        cookie = self.sign_in(email)
+        address = self.email()
+        row = self.seed_account(address, "ready", tenant_ipv4="203.0.113.42")
+        cookie = self.sign_in(address)
         slug = row["slug"]
         before_account = self.connect().execute(
             "SELECT slug, ipv4, provision_state, trial_ends_at FROM accounts WHERE id = ?",
             (row["id"],)).fetchone()
         before_tenant = self.tenant(slug)
+        path = self.queued_ready(slug)
+
+        # The installed shape: the provisioner's kit, facts and .eml are on
+        # disk before the first press, so the message is multipart from the
+        # start. An empty outbox would hide the boundary bug (round 1).
+        token, kit_text = self.seed_provisioned_ready(row)
+        seeded = path.read_bytes()
+        seeded_part = email.message_from_bytes(
+            seeded, policy=email_policy.default).get_body(("plain",))
+        self.assertIsNotNone(seeded_part, "the provisioner's mail has no plain part")
+        assert seeded_part is not None
+        self.assertIn("first-visit?t=" + token, seeded_part.get_content())
 
         status, headers, _body = self.resend(
             cookie, origin="http://127.0.0.1:%d" % self.port)
         self.assertEqual(status, 303, _body[:200])
         self.assertEqual(headers.get("Location"), "/account")
-        path = self.queued_ready(slug)
-        self.assertTrue(path.is_file())
         first = path.read_bytes()
+        self.assertNotEqual(first, seeded,
+                            "the first press is the tokenless re-cut, not the "
+                            "provisioner's own .eml")
+
+        message = email.message_from_bytes(first, policy=email_policy.default)
+        self.assertEqual(message["Subject"], claim.READY_SUBJECT)
+        part = message.get_body(("plain",))
+        self.assertIsNotNone(part, "the ready mail has no plain part")
+        assert part is not None
+        body = part.get_content()
+        self.assertIn("https://%s.test.odile.fyi" % slug, body)
+        self.assertIn("https://%s.test.odile.fyi/verify" % slug, body)
+        self.assertNotIn("first-visit?t=", body,
+                         "the ready email's own link carries a setup token")
+        self.assertIsNone(re.search(r"\b[0-9a-f]{64}\b", body),
+                          "the resend minted a setup token in the body")
+
+        # The kit rides along byte-for-byte, and it is where the token stays
+        # (the seed badge and the rebuild-seal key; B-once, Savio 2026-11-20).
+        attachments = list(message.iter_attachments())
+        self.assertEqual(len(attachments), 1, "the kit is not attached")
+        attachment = attachments[0]
+        self.assertEqual(attachment.get_filename(),
+                         "odile-%s-recovery-kit.txt" % slug)
+        self.assertEqual(attachment.get_payload(decode=True),
+                         kit_text.encode("utf-8"))
+        self.assertIn("first-visit?t=" + token, kit_text)
+
+        # Two independent serializations of the same facts agree. The old
+        # assertion here hashed the same file read twice, so it could not fail.
+        original_outbox = app.OUTBOX
+        app.OUTBOX = str(self.outbox)
+        try:
+            rebuilt = Path(app.queue_ready(row, self.tenant(slug))).read_bytes()
+        finally:
+            app.OUTBOX = original_outbox
         self.assertEqual(hashlib.sha256(first).hexdigest(),
-                         hashlib.sha256(path.read_bytes()).hexdigest())
+                         hashlib.sha256(rebuilt).hexdigest(),
+                         "a rebuild from the facts sidecar is a different mail")
 
-        message = first.decode("utf-8", "replace")
-        self.assertIn("Subject: Your machine is waiting.", message)
-        self.assertIn("https://%s.test.odile.fyi" % slug, message)
-        self.assertIn("https://%s.test.odile.fyi/verify" % slug, message)
-        self.assertNotIn("first-visit?t=", message)
-        self.assertIsNone(re.search(r"\b[0-9a-f]{64}\b", message),
-                          "the resend minted a setup token")
+        # Three presses, one sha256, with the kit attached.
+        digests = [hashlib.sha256(first).hexdigest()]
+        for _press in (2, 3):
+            status, headers, _body = self.resend(
+                cookie, origin="http://127.0.0.1:%d" % self.port)
+            self.assertEqual(status, 303)
+            self.assertEqual(headers.get("Location"), "/account")
+            digests.append(hashlib.sha256(path.read_bytes()).hexdigest())
+        self.assertEqual(len(set(digests)), 1,
+                         "the presses wrote different bytes: %s" % digests)
 
-        status, headers, _body = self.resend(
+        # A press after the mailer removed the .eml restores the same bytes.
+        path.unlink()
+        status, _headers, _body = self.resend(
             cookie, origin="http://127.0.0.1:%d" % self.port)
         self.assertEqual(status, 303)
-        self.assertEqual(headers.get("Location"), "/account")
-        self.assertEqual(first, path.read_bytes(), "the second press changed the bytes")
+        self.assertEqual(digests[0],
+                         hashlib.sha256(path.read_bytes()).hexdigest(),
+                         "the restored mail is not the queued mail")
+
         _headers, text = self.page(cookie)
         self.assertIn("Your machine is ready.", text)
         self.assertIn(D17, text)
