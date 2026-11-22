@@ -27,6 +27,7 @@ localhost with a throwaway database, signing key and release certificate.
 
 from __future__ import annotations
 
+import contextlib
 import http.client
 import hashlib
 import importlib.util
@@ -277,6 +278,8 @@ class SeedFixture(unittest.TestCase):
         ("odl-keyd", "srv-keyd"),
         ("odl-keye", "srv-keye"),
         ("odl-keyf", "srv-keyf"),
+        ("odl-keyg", "srv-keyg"),
+        ("odl-keyh", "srv-keyh"),
     )
 
     @classmethod
@@ -439,7 +442,52 @@ class SeedFixture(unittest.TestCase):
         if code == 0:
             self.assertIsNotNone(match, out.getvalue())
             self._tokens[slug] = match.group(1)
+        self._out = out.getvalue()
         return code, err.getvalue(), machine
+
+    def active_provider(self, slug: str, server_id: str):
+        """A provider that lists this machine as active, for the reuse path."""
+        class Reader:
+            def __init__(self):
+                self.transport = RecordedTransport({
+                    ("GET", "servers"): [(200, {"success": True, "data": {
+                        "servers": [{
+                            "id": server_id, "hostname": slug, "plan_id": 113,
+                            "ipv4_address": "203.0.113.120", "status": "active",
+                            "powered_on": True, "snp_enabled": True,
+                            "fde_enabled": True, "measured_boot": True,
+                            "expiration_date": 1792000000, "expired": False,
+                        }], "total": 1}})],
+                    ("GET", "server"): [(200, server_row(hostname=slug, id=server_id))],
+                })
+
+            def provider(self, _config):
+                return servury.ServuryProvider(TEST_KEY, transport=self.transport)
+
+        return Reader()
+
+    @contextlib.contextmanager
+    def shared_fallback(self, value: str = "sk-shared-{slug}"):
+        """Put the seed config's shared key in place for one test, then remove it.
+
+        The fixture's config deliberately carries none, so the 503 path can be
+        tested; a re-issued token must still never reach this value.
+        """
+        with open(self.config, encoding="utf-8") as handle:
+            document = json.load(handle)
+        document["near_api_key"] = value
+        with open(self.config, "w", encoding="utf-8") as handle:
+            json.dump(document, handle)
+        os.chmod(self.config, 0o600)
+        try:
+            yield value
+        finally:
+            with open(self.config, encoding="utf-8") as handle:
+                document = json.load(handle)
+            document.pop("near_api_key", None)
+            with open(self.config, "w", encoding="utf-8") as handle:
+                json.dump(document, handle)
+            os.chmod(self.config, 0o600)
 
     def redeem(self, token: str, instance_id: str):
         connection = http.client.HTTPConnection("127.0.0.1", self.port, timeout=20)
@@ -575,6 +623,7 @@ class ProvisionIssueTest(SeedFixture):
         self.assertFalse(installer.ensure_key_env(layout, seed, False))
 
     def test_a_live_machine_keeps_its_key_and_a_second_run_mints_nothing(self):
+        """A second run with the raw key still waiting re-binds it; it does not mint."""
         config = self.make_config()
         near = FakeNear()
         with mock.patch.object(keys, "TRANSPORT", near):
@@ -613,6 +662,113 @@ def load_installer():
     sys.modules["odile_install"] = module
     spec.loader.exec_module(module)
     return module
+
+
+# ------------------------------------------------------- a re-issued token
+
+
+class ReissueTest(SeedFixture):
+    """A second run on a live machine: the re-issued token still seeds its own key.
+
+    The verifier's round-4 must (ODL-242): `provision` mints a new setup token
+    on a live machine, so the key in the handoff must be re-bound to that token
+    — and when the raw key has already left HQ, a new key must be minted rather
+    than falling back to the config's shared key. Both shapes are redeemed here,
+    with the shared fallback present, so a fallback would be invisible no longer.
+    """
+
+    def test_a_reissued_token_rebinds_the_waiting_key_and_mints_nothing(self):
+        """Shape B: the raw key still waits, so it moves to the new token."""
+        config = self.make_config()
+        near = FakeNear()
+        with self.shared_fallback():
+            with mock.patch.object(keys, "TRANSPORT", near):
+                code, err, _ = self.provision("odl-keyg", "srv-keyg", config)
+                self.assertEqual(code, 0, err)
+                first_token = self._tokens["odl-keyg"]
+                waiting = self.handoff()["odl-keyg"]
+                minted = near.minted
+
+                code, err, _ = self.provision(
+                    "odl-keyg", "srv-keyg", config,
+                    provider=self.active_provider("odl-keyg", "srv-keyg").provider,
+                )
+                self.assertEqual(code, 0, err)
+                second_token = self._tokens["odl-keyg"]
+                self.assertNotEqual(second_token, first_token)
+                self.assertEqual(near.minted, minted, "the reuse path minted a second key")
+                self.assertEqual(near.deletes(), [], "the reuse path revoked the live key")
+
+                rebound = self.handoff()["odl-keyg"]
+                self.assertEqual(rebound["key"], waiting["key"])
+                self.assertEqual(rebound["key_id"], waiting["key_id"])
+                self.assertEqual(
+                    rebound["token_hash"],
+                    hashlib.sha256(second_token.encode("utf-8")).hexdigest(),
+                )
+                self.assertEqual(rebound["instance_id"], "srv-keyg")
+
+                status, body = self.redeem(second_token, "srv-keyg")
+                self.assertEqual(status, 200, body)
+                seed = json.loads(body)
+                self.assertEqual(seed["near_api_key"], waiting["key"])
+                self.assertNotEqual(seed["near_api_key"], "sk-sha...keyg")
+                self.assertNotIn("odl-keyg", self.handoff(), "the exchange left a raw key at HQ")
+
+                # The replaced token ended with the reissue (`bind` ends it).
+                status_one, body_one = self.redeem(first_token, "srv-keyg")
+                self.assertEqual(status_one, 410, body_one)
+
+    def test_a_reissued_token_after_the_key_left_hq_mints_a_new_one(self):
+        """Shape A: no raw key waits, so the reissue mints, revokes, and says so."""
+        config = self.make_config()
+        near = FakeNear()
+        with self.shared_fallback():
+            with mock.patch.object(keys, "TRANSPORT", near):
+                code, err, _ = self.provision("odl-keyh", "srv-keyh", config)
+                self.assertEqual(code, 0, err)
+                first_token = self._tokens["odl-keyh"]
+                status, body = self.redeem(first_token, "srv-keyh")
+                self.assertEqual(status, 200, body)
+                first_key = json.loads(body)["near_api_key"]
+                self.assertEqual(self.handoff(), {}, "the first exchange left a raw key at HQ")
+                store = state.StateStore.open(self.db)
+                try:
+                    first_record = store.key_for("odl-keyh")
+                finally:
+                    store.close()
+                self.assertIsNotNone(first_record)
+
+                code, err, _ = self.provision(
+                    "odl-keyh", "srv-keyh", config,
+                    provider=self.active_provider("odl-keyh", "srv-keyh").provider,
+                )
+                self.assertEqual(code, 0, err)
+                second_token = self._tokens["odl-keyh"]
+                self.assertNotEqual(second_token, first_token)
+                self.assertEqual(len(near.mints()), 2, near.actions())
+                # The key the running machine spends with was revoked at the
+                # provider before the new one was minted: one live key per tenant.
+                self.assertEqual(near.deletes(), [first_record.key_id], near.actions())
+                self.assertIn("installed again", self._out)
+
+                second_key = self.handoff()["odl-keyh"]["key"]
+                self.assertNotEqual(second_key, first_key)
+                status, body = self.redeem(second_token, "srv-keyh")
+                self.assertEqual(status, 200, body)
+                self.assertEqual(json.loads(body)["near_api_key"], second_key)
+                self.assertNotEqual(json.loads(body)["near_api_key"], "sk-sha...keyh")
+                self.assertNotIn("odl-keyh", self.handoff())
+
+        store = state.StateStore.open(self.db)
+        try:
+            history = store.keys("odl-keyh")
+        finally:
+            store.close()
+        self.assertEqual([record.state for record in history], ["revoked", "issued"])
+        self.assertEqual(history[0].detail.get("reason"), "superseded")
+        self.assertEqual(history[1].key_prefix, second_key[:6] + "****")
+        self.assertNotIn(first_key, self.db_bytes().decode("utf-8", "replace"))
 
 
 # -------------------------------------------------------------------- revoke

@@ -36,11 +36,12 @@ and a public support key.
 Each instance's NEAR key (ODL-242) arrives through a second one-shot handoff:
 `odilectl provision` mints it with the provider's management API and writes it
 to `/var/lib/odile/seed-keys.json` (0600) bound to the setup token's hash; the
-redeem that spends the token hands the key over and removes the entry, so the
-raw `sk-…` is on HQ only between the mint and the machine's first boot. A seed
-with no waiting key falls back to the config's shared `near_api_key` (the bench
-and manual path), and a seed with neither is refused `503 no_inference_key`
-without spending the token.
+redeem that spends the token hands the key over and removes the entry. Exactly
+three paths remove an entry — that redeem, the next `provision` (which rewrites
+it), and destroy — so an ordered machine that is never installed keeps its raw
+key at HQ until one of them runs. A seed with no waiting key falls back to the
+config's shared `near_api_key` (the bench and manual path), and a seed with
+neither is refused `503 no_inference_key` without spending the token.
 
 The one exception is a *rebuild* (ODL-215 follow-up): the tenant's old restic
 repository password has to reach the new machine, or `backup.py init` meets the
@@ -110,9 +111,10 @@ DEFAULT_REBUILDS = "/var/lib/odile/seed-rebuilds.json"
 # `odilectl provision` mints the key with the provider's API and writes it
 # here, bound to the setup token it just minted. The guest takes it *once*, on
 # the redeem that consumes the token, and the entry is removed in the same
-# exchange — so HQ holds the raw `sk-…` only between the mint and the machine's
-# first boot, and never after. A file beside the ledger, like `seed-rebuilds`,
-# because systemd hands the service a copy of the config at start.
+# exchange. The other two removals are the next `provision` (a rewrite) and
+# destroy — HQ holds the raw `sk-…` from the mint until one of the three runs.
+# A file beside the ledger, like `seed-rebuilds`, because systemd hands the
+# service a copy of the config at start.
 DEFAULT_KEYS = "/var/lib/odile/seed-keys.json"
 # ODL-514: the seed key is not the release key. This one lives on HQ and signs
 # tenant seeds; the release key (offline) signs installers, manifests, releases
@@ -610,8 +612,9 @@ def keys_path() -> str:
 def validate_key_entry(entry: object, where: str = "seed keys") -> dict:
     """Check one issued-key entry; return it with normalised lower-case hex.
 
-    The entry holds a raw `sk-…` between the mint and the machine's first boot,
-    so its shape is checked on the way in *and* on the way out: a truncated key
+    The entry holds a raw `sk-…` from the mint until its machine's first boot
+    (or until the next provision or destroy, when it is never installed), so
+    its shape is checked on the way in *and* on the way out: a truncated key
     would install a machine whose every request is refused, and the seed's own
     signature would still verify.
     """

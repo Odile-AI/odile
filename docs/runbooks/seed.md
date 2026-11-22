@@ -173,8 +173,14 @@ odilectl provision odl-7f3a2c --key ~/.ssh/ada.pub --apply
 The command mints `POST /v1/workspaces/<workspace>/api-keys` with
 `{"name": "odile-odl-7f3a2c", "spendLimit": {"amount": 10000000000, "currency": "USD"}}`
 **before** `provider.create`, so a provider refusal leaves no paid machine
-without a key. A rebuild (a `destroyed` row reopened) mints a new key; a second
-run on a *live* machine keeps the key it is spending with and mints nothing.
+without a key. A rebuild (a `destroyed` row reopened) mints a new key. A second
+run on a *live* machine re-issues the setup token without ordering a machine,
+and what that costs depends on where the raw key is: if it still waits in the
+handoff, the same key is re-bound to the new token and nothing is minted; if the
+machine already exchanged it, HQ holds no copy, so the run mints a new key —
+`keys.issue` revokes the old one at the provider first and the report says the
+live machine must be installed again with the new token. A tenant with a key
+record never falls back to the config's shared key.
 
 What HQ keeps — the account record, one row per key, written once:
 
@@ -200,10 +206,11 @@ from what HQ holds). The prefix is the provider's own masked `key_prefix`
 The **raw** key goes into the seed once, through a second one-shot handoff:
 `odilectl provision` writes it to `/var/lib/odile/seed-keys.json` (0600), bound
 to the setup token's SHA-256. The exchange that spends the token hands the key
-over and removes the entry in the same exchange, so the raw key is at HQ only
-between the mint and the machine's first boot. A key bound to another token is
-not handed over; a seed with no key anywhere refuses `503 no_inference_key`
-**without** spending the token.
+over and removes the entry in the same exchange. Exactly three paths remove an
+entry — that redeem, the next `provision` (which rewrites it), and destroy — so
+an ordered machine that is never installed keeps its raw key at HQ until one of
+them runs. A key bound to another token is not handed over; a seed with no key
+anywhere refuses `503 no_inference_key` **without** spending the token.
 
 ### 2. Fund — alpha.0 has no plan price and no monthly credit
 
@@ -249,7 +256,7 @@ A rebuilt machine takes a new key (issue, above), and the old machine's key
 answers `401 invalid_api_key` at its next call — revoke is immediate, with no
 grace period.
 
-### Measured 2026-11-22 (this host, the live account)
+### Measured 2026-11-22 (this host, the live account; first run)
 
 - **Issue, twice.** Two `odilectl provision --apply` runs on a scratch root,
   against a recorded machine provider and the live management API: labels
@@ -278,6 +285,20 @@ grace period.
   the key; the old key answered `401 invalid_api_key` on
   `chat/completions`. Two destroys resolved each id from the list call by
   `name` + `key_prefix` and left the handoff empty.
+- **Re-issue, both shapes** (a later run against the same account). On a live
+  machine, `provision` mints a new setup token without ordering. With the raw
+  key still waiting (`odl-reisb`), nothing was minted: the entry was re-bound
+  to the new token, that token's seed carried the same `sk-485****`, and the
+  replaced token answered `410 used`. With the key already exchanged
+  (`odl-reisa`), HQ had no copy: the run minted `sk-6ca****`, the old
+  `sk-0b5****` vanished from the list call and answered `401 invalid_api_key`,
+  and the new token's seed carried `sk-6ca****`. Neither seed carried the
+  config's `sk-fed…` fallback; both destroys resolved from the list call
+  (`204`), the keys then answered `401`, and the handoff ended `{}`.
+
+Values differ run to run: a second run of the probes above minted
+`sk-143****`/`sk-f50****` and reached `Spent: $0.0010209`; the shapes were
+identical.
 
 ## 3. HQ setup (one time)
 

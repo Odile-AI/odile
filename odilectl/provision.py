@@ -179,8 +179,11 @@ class KeyBinding:
 
     * ``issued``  — minted by this run, recorded with the label and first
       characters, and waiting in the seed handoff for this token;
-    * ``kept``    — the tenant already had a live key and no machine was
-      ordered, so the running machine's key was left alone;
+    * ``reissued`` — a second run on a live machine whose raw key had already
+      left HQ: a new key was minted (the old one revoked at the provider), and
+      the report says the machine must be installed again with the new token;
+    * ``kept``    — the tenant already had a live key and the raw key still
+      waits, so it was re-bound to this run's token and nothing was minted;
     * ``shared``  — no ``near_account`` in the config: alpha.0's manual path,
       where the seed carries the config's shared key.
     """
@@ -215,38 +218,52 @@ def _seed_keys_path(ctx: Context, seed) -> str:
     return str(configured) if configured is not None else seed.keys_path()
 
 
-def _issue_key(ctx: Context, slug: str, *, keep: bool) -> tuple[KeyBinding, "keys.Issued | None"]:
-    """Mint this instance's key before the machine is ordered, or keep the live one.
+def _issue_key(ctx: Context, slug: str, *, keep: bool,
+               ) -> tuple[KeyBinding, "keys.Issued | None", dict | None]:
+    """Mint this instance's key before the machine is ordered, or reissue the live one.
 
     The mint happens *before* `provider.create` so a provider refusal leaves no
     paid machine without a key: the order is the expensive half. `keep` is the
     reuse path — a second run on a tenant whose machine is already up must not
-    revoke the key that machine is spending with, so the live record wins and
-    nothing is minted.
+    revoke the key that machine is spending with. The raw key decides what that
+    means (verifier round 4, ODL-242):
+
+    * it still waits in the handoff -> the same key is re-bound to the token
+      this run mints, so a re-issued token seeds the instance's own key;
+    * it has already left HQ (the machine exchanged it) -> the record's raw key
+      is unrecoverable, so this run mints a new key. `keys.issue` revokes the
+      live one at the provider first, and the report says the running machine
+      must be installed again to pick the new key up. The config's shared key is
+      never substituted for a tenant that has a record.
 
     The record (label, first characters, id, cap) is written to the state
     database here; the raw key goes to the seed handoff, never to the record.
-    Returns the raw `Issued` too, because binding it to the token that
-    `_bind_seed_token` mints is a second write.
+    Returns the raw `Issued` (None on the keep path) and the waiting entry, so
+    `_bind_seed_token`'s caller can bind whichever one this run has.
     """
     account = keys.account_from_config(ctx.config)
     if account is None:
         return KeyBinding(
             state="shared",
             reason="no near_account in the config: the seed carries the config's shared key",
-        ), None
+        ), None, None
     store = StateStore.open(_state_path(ctx))
+    replaced = None
     try:
         record = store.key_for(slug)
         if keep and record is not None and record.state == "issued":
-            return KeyBinding(
-                state="kept",
-                label=record.label,
-                prefix=record.key_prefix,
-                key_id=record.key_id,
-                spend_limit_nano=record.spend_limit_nano,
-                workspace_id=record.workspace_id,
-            ), None
+            waiting = _waiting_entry(ctx, slug, record.key_id)
+            if waiting is not None:
+                return KeyBinding(
+                    state="kept",
+                    label=record.label,
+                    prefix=record.key_prefix,
+                    key_id=record.key_id,
+                    spend_limit_nano=record.spend_limit_nano,
+                    workspace_id=record.workspace_id,
+                    reason="the waiting raw key is re-bound to this run's setup token",
+                ), None, waiting
+            replaced = record
         try:
             issued = keys.issue(account, slug)
         except ProviderError as error:
@@ -254,6 +271,12 @@ def _issue_key(ctx: Context, slug: str, *, keep: bool) -> tuple[KeyBinding, "key
                 f"provision: {slug}'s inference key was not minted, so nothing was "
                 f"ordered: {error}"
             ) from None
+        detail = {"source": "odilectl provision", "by": "the provider's mint call"}
+        if replaced is not None:
+            detail.update({
+                "reason": "reissued: the live machine's raw key had already left HQ",
+                "replaces": replaced.key_id,
+            })
         store.record_key(
             slug,
             label=issued.label,
@@ -261,20 +284,46 @@ def _issue_key(ctx: Context, slug: str, *, keep: bool) -> tuple[KeyBinding, "key
             key_prefix=issued.key_prefix,
             workspace_id=issued.workspace_id,
             spend_limit_nano=issued.spend_limit_nano,
-            detail={"source": "odilectl provision", "by": "the provider's mint call"},
+            detail=detail,
         )
     finally:
         store.close()
     seed = _seed_service()
     _write_waiting_key(ctx, seed, slug, issued, token_hash=None, instance_id=None)
     return KeyBinding(
-        state="issued",
+        state="reissued" if replaced is not None else "issued",
         label=issued.label,
         prefix=issued.key_prefix,
         key_id=issued.key_id,
         spend_limit_nano=issued.spend_limit_nano,
         workspace_id=issued.workspace_id,
-    ), issued
+        reason=(
+            f"it replaces {replaced.key_prefix}, which was revoked at the provider; "
+            "the live machine must be installed again with the new setup token to "
+            "pick the new key up"
+            if replaced is not None else ""
+        ),
+    ), issued, None
+
+
+def _waiting_entry(ctx: Context, slug: str, key_id: str) -> dict | None:
+    """The raw key waiting for this tenant and this record, or None.
+
+    Not matched to a token hash on purpose: this is the path where the entry is
+    about to be *re-bound* to the token this run mints. The key id must match
+    the record, so a leftover entry for an earlier, superseded mint is not
+    handed over.
+    """
+    seed = _seed_service()
+    path = _seed_keys_path(ctx, seed)
+    try:
+        document = seed.load_keys(path)
+    except (seed.ConfigError, OSError) as error:
+        raise ProviderError(f"provision: cannot read the seed handoff at {path}: {error}") from None
+    entry = document.get(slug)
+    if not isinstance(entry, dict) or entry.get("key_id") != key_id:
+        return None
+    return entry
 
 
 def _write_waiting_key(ctx: Context, seed, slug: str, issued, *,
@@ -326,20 +375,61 @@ def _bind_key_to_token(ctx: Context, slug: str, issued: "keys.Issued",
         store.close()
 
 
+def _rebind_waiting_key(ctx: Context, slug: str, binding: KeyBinding, waiting: dict,
+                        token_hash: str, instance_id: str) -> None:
+    """Point the kept raw key at the token this run minted, and at this instance.
+
+    A re-issued setup token must seed the instance's own key (verifier round 4,
+    ODL-242): `seed.bind` ends the previous token in the same transaction, so
+    exactly one token is live and this entry must name it. The raw key is the
+    same one the record already names; only its binding moves.
+    """
+    seed = _seed_service()
+    path = _seed_keys_path(ctx, seed)
+    updated = dict(waiting, token_hash=token_hash, instance_id=instance_id)
+    try:
+        seed.set_issued_key(path, slug, updated)
+    except (seed.ConfigError, OSError, ValueError) as error:
+        raise ProviderError(
+            f"provision: {slug}'s setup token was minted but its waiting key was not "
+            f"re-bound at {path}: {error}"
+        ) from None
+    store = StateStore.open(_state_path(ctx))
+    try:
+        store.record_key(
+            slug,
+            label=str(binding.label),
+            key_id=str(binding.key_id),
+            key_prefix=str(binding.prefix),
+            workspace_id=str(binding.workspace_id),
+            instance_id=instance_id,
+            spend_limit_nano=binding.spend_limit_nano,
+        )
+    finally:
+        store.close()
+
+
 def _key_lines(binding: KeyBinding) -> list[str]:
     if binding.state == "shared":
         return [f"  inference: shared key ({binding.reason})"]
     if binding.state == "kept":
         return [
             f"  inference: {binding.label} {binding.prefix} kept "
-            "(the live machine's key; nothing was minted)"
+            "(the live machine's key; nothing was minted)",
+            "  inference: the waiting raw key was re-bound to this run's setup token, "
+            "so the re-issued token seeds this instance's own key",
         ]
-    return [
+    lines = [
         f"  inference: {binding.label} {binding.prefix} "
         f"(cap {keys.money(binding.spend_limit_nano)}; the provider's spendLimit)",
-        "  inference: the raw key is in the seed handoff for this token, and the "
-        "record holds only the label and first characters",
     ]
+    if binding.reason:
+        lines.append(f"  inference: {binding.reason}")
+    lines.append(
+        "  inference: the raw key is in the seed handoff for this token, and the "
+        "record holds only the label and first characters"
+    )
+    return lines
 
 
 def _bind_seed_token(ctx: Context, slug: str, instance_id: str,
@@ -916,7 +1006,8 @@ def run(ctx: Context, args) -> Report:
             "workspace": account.workspace_id,
             "spend_limit": keys.money(account.spend_limit_nano),
             "spend_limit_nano": account.spend_limit_nano,
-            "when": "before the order; a live machine's key is kept, not re-minted",
+            "when": ("before the order; a live machine's waiting key is re-bound to the "
+                     "new token, and a key that already left HQ is re-minted"),
             "credential": account.credential_path,
         })
     actions += [
@@ -1049,9 +1140,11 @@ def run(ctx: Context, args) -> Report:
 
     # The instance's inference key is minted *before* the order: a provider
     # refusal here leaves no paid machine without a key (ODL-242). A machine
-    # that is already up keeps the key it is spending with — a reopen is the
-    # exception, because destroy revoked that key.
-    key_binding, issued_key = _issue_key(
+    # that is already up re-issues its setup token without revoking the key it
+    # is spending with — the raw key is re-bound to the new token when it still
+    # waits, and re-minted (old one revoked) when it has already left HQ. A
+    # reopen is always a re-mint: destroy revoked that key.
+    key_binding, issued_key, waiting_key = _issue_key(
         ctx, spec.hostname, keep=bool(existing) and not reopened
     )
 
@@ -1059,8 +1152,12 @@ def run(ctx: Context, args) -> Report:
         """Bind the token, then pin this instance's key to it."""
         binding = _bind_seed_token(ctx, spec.hostname, instance_id,
                                    backup_password=backup_password)
-        if issued_key is not None and binding.bound and binding.token_hash:
-            _bind_key_to_token(ctx, spec.hostname, issued_key, binding.token_hash, instance_id)
+        if binding.bound and binding.token_hash:
+            if issued_key is not None:
+                _bind_key_to_token(ctx, spec.hostname, issued_key, binding.token_hash, instance_id)
+            elif waiting_key is not None:
+                _rebind_waiting_key(ctx, spec.hostname, key_binding, waiting_key,
+                                    binding.token_hash, instance_id)
         return binding
 
     if existing:
