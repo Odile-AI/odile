@@ -523,7 +523,12 @@ quote them.
   `e933b541…`), re-cut at the head that merges ODL-522's `-3` (the per-machine
   session secret), so the branch's earlier `-2` is demoted; it was built from a
   fresh scratch root the merged installer made (24/24, run 2 `tenant: same`);
-  `docs/runbooks/install.md` §12.6 carries the full record.
+  `docs/runbooks/install.md` §12.6 carries the full record. ODL-474's follow-up
+  t_ab95ec2a re-cuts the same tree as `2026.11.22-3` because
+  `skills/odile-help/SKILL.md` called the agent "the agent" in the one answer
+  the agent says aloud; rebuilt on `main`'s `5fc113c`, installer `85282fd2…`,
+  manifest `2c39128b…`, and `docs/CLAIMS.md` and the two desk surfaces are
+  unchanged. §12.6 carries that record too.
 
 Still held, and named in `docs/CLAIMS.md` §1a: "Backups are off-site" — its
 page is `web/faq.html`, and ADR-004 §1 measures the bytes on HQ's disk, the

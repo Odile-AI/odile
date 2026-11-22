@@ -9564,7 +9564,7 @@ Never ask again after a skip. Never ask "are you sure?".
     (
         "odile-help",
         "skills/odile-help/SKILL.md",
-        "ace83094cd8bff6eea9170ec1bbf714b0f36b72f278c2b550a80cd2d8fd90f16",
+        "cec38dc201c4a7bace23f44298ac40145a296192af09bbf6964a252374facd82",
         r'''---
 name: odile-help
 description: Odile price, bill, subscription? odile.fyi/faq · odile-diag.
@@ -9639,16 +9639,16 @@ certificate fingerprint.
 
 ### 3. The machine dies
 
-> We rebuild it; you ask the agent to restore last night's backup with your
+> We rebuild it; you ask me to restore last night's backup with your
 > recovery file — the one you downloaded on your first visit. If the machine is
-> still running and you lost your copy, ask the agent to show you the file.
+> still running and you lost your copy, ask me to show you the file.
 > Target under an hour; your last day may be lost. The drill is practiced before
 > you get a machine.
 
 Backed up nightly. Rebuildable in under an hour — without a key. A recovery code
 and a recovery file are the way back: the code resets your sign-in, the file
 opens your backup. Your first visit gives you both; keep them off the machine.
-While the machine is still running, the agent can show it again. If the disk will
+While the machine is still running, I can show it again. If the disk will
 not open, the machine is rebuilt and you restore from your backup.
 
 ### 4. A bill, a charge or a subscription

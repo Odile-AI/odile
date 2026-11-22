@@ -15,6 +15,13 @@ mechanical half: the old ceremony is gone from all three surfaces, and the
 machine-dies moment promises last night's backup — on the help surfaces, not on
 `web/faq.html`.
 
+t_ab95ec2a (ODL-474's follow-up) splits the machine-dies answer's person by
+surface: `docs/FAQ.md` and `templates/emails/support.md` are read by a third
+party, so they keep the deck's "ask the agent"; `skills/odile-help/SKILL.md` is
+the surface the agent *speaks from*, so it says "ask me" — BRAND.md §Voice and
+the skill's own rule ("Say 'I'"). Both forms are pinned here, and the spoken
+form is proved to carry the deck's words and facts unchanged.
+
 These are the mechanical half of "the five answers exist and match the deck";
 the round trip and the transcript are in `docs/evidence/odl-238/`.
 """
@@ -55,6 +62,35 @@ MACHINE_DIES = (
     "is still running and you lost your copy, ask the agent to show you the "
     "file. Target under an hour; your last day may be lost. The drill is "
     "practiced before you get a machine."
+)
+# The same answer where the agent is the speaker (`skills/odile-help/SKILL.md`):
+# "ask the agent" becomes "ask me", and nothing else moves. `third_person()`
+# below turns this back into `MACHINE_DIES` exactly, so a re-worded sentence —
+# a changed fact, a dropped clause, a new promise — fails the test that pins it.
+MACHINE_DIES_SPOKEN = (
+    "We rebuild it; you ask me to restore last night's backup with your "
+    "recovery file — the one you downloaded on your first visit. If the machine "
+    "is still running and you lost your copy, ask me to show you the file. "
+    "Target under an hour; your last day may be lost. The drill is practiced "
+    "before you get a machine."
+)
+# A9's row, which the skill's briefing paragraph under §3 quotes. Its last
+# clause is the same self-reference, so the spoken form says "I can show it".
+WAY_BACK = (
+    "A recovery code and a recovery file are the way back: the code resets "
+    "your sign-in, the file opens your backup. Your first visit gives you "
+    "both; keep them off the machine. While the machine is still running, the "
+    "agent can show it again."
+)
+WAY_BACK_SPOKEN = WAY_BACK.replace(
+    "the agent can show it again", "I can show it again")
+# The clauses a speaking surface must not use about itself, kept in a tuple so
+# this file can name them without tripping its own assertion.
+SELF_REFERENCE = re.compile(r"\b(?:me|I)\b")
+THIRD_PERSON_CLAUSES = (
+    "ask the agent to restore",
+    "ask the agent to show you the file",
+    "the agent can show it again",
 )
 RESET_RESTORE = (
     "No. There is no escrow and no passphrase. A lost sign-in is reset on the "
@@ -166,6 +202,11 @@ def plain(text: str) -> str:
     return flat(re.sub(r"<[^>]+>", " ", text))
 
 
+def third_person(text: str) -> str:
+    """The deck's person restored: `me`/`I` -> `the agent`."""
+    return SELF_REFERENCE.sub("the agent", text)
+
+
 class SupportAnswers(unittest.TestCase):
     def test_every_deck_citation_is_an_approved_sentence(self):
         deck = flat(DECK.read_text(encoding="utf-8"))
@@ -227,9 +268,11 @@ class SupportAnswers(unittest.TestCase):
     def test_the_landed_answers_are_verbatim(self):
         # ODL-474's DoD says "verbatim", not "the same fact": the first writer
         # shipped "ask me" where the deck says "ask the agent". Each passage is
-        # checked against the surface the DoD names, with markup removed.
+        # checked against the surface the DoD names, with markup removed. The
+        # machine-dies answer is pinned only on the two desk surfaces here; the
+        # skill speaks it in the first person and is pinned by the next test.
         for label, answer, surfaces in (
-            ("the machine-dies answer", MACHINE_DIES, (FAQ, SKILL, EMAIL)),
+            ("the machine-dies answer", MACHINE_DIES, (FAQ, EMAIL)),
             ("the reset/unlock answer", RESET_RESTORE, (FAQ, PAGE)),
             ("the support-grant answer", SUPPORT_GRANT, (PAGE, EMAIL)),
         ):
@@ -237,6 +280,26 @@ class SupportAnswers(unittest.TestCase):
             for path in surfaces:
                 self.assertIn(needle, plain(path.read_text(encoding="utf-8")),
                               f"{path.relative_to(ROOT)} does not carry {label} verbatim")
+
+    def test_the_skill_says_the_machine_dies_answer_in_the_first_person(self):
+        # t_ab95ec2a: `skills/odile-help/SKILL.md` is the surface the agent
+        # speaks from, so it says "ask me" and "I can show it again" — BRAND.md
+        # §Voice ("the agent is *I*") and the skill's own rule at line 13. The
+        # deck is unchanged, so nothing but the person may move: turning the
+        # spoken form's pronouns back must reproduce the deck's sentence and
+        # A9's row word for word.
+        self.assertEqual(third_person(flat(MACHINE_DIES_SPOKEN)), flat(MACHINE_DIES),
+                         "the spoken machine-dies answer is not the deck's answer with only the person changed")
+        self.assertEqual(third_person(flat(WAY_BACK_SPOKEN)), flat(WAY_BACK),
+                         "the spoken way-back row is not the deck's row with only the person changed")
+        skill = plain(SKILL.read_text(encoding="utf-8"))
+        self.assertIn(flat(MACHINE_DIES_SPOKEN), skill,
+                      "skills/odile-help/SKILL.md does not speak the machine-dies answer in the first person")
+        self.assertIn(flat(WAY_BACK_SPOKEN), skill,
+                      "the skill's briefing paragraph does not say 'I can show it again'")
+        still_third_person = [clause for clause in THIRD_PERSON_CLAUSES if clause in skill]
+        self.assertEqual(still_third_person, [],
+                         "the skill still speaks about itself in the third person")
 
     def test_no_reliability_fact_escapes_the_deck(self):
         # A fact stated in the guidance prose is not covered by a **Deck:**
