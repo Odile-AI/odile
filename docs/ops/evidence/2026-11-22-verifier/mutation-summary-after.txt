@@ -1,5 +1,0 @@
-# mutmut run — handoff_check.py, after BaseSentinelTests was added
-# command: mutmut run --max-children 4   (scratch tree /root/.hermes/cache/scratch/mut-v2b)
-# observed (last counts line):
-⠋ 265/265  🎉 199 🫥 0  ⏰ 0  🤔 0  🙁 66  🔇 0  🧙 0
-5.92 mutations/second
