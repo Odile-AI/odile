@@ -812,7 +812,7 @@ is written.
 | the provider calls after a failed poll | `create`, `poll`, `terminate` — one terminate, no second order |
 | machines the provider still bills | `0`: the created machine is `terminated` |
 | the tenant row after the failure | `state: claimed`, `server_id: null`, `ipv4: null`, `setup_token_hash: null`, `release: null` |
-| the DNS record | none after the run (`{}`); when the failure lands after the DNS write, the record is `DELETE`d (case C below) |
+| the DNS record | none after the run (`{}`); when the failure lands after the DNS write, the record is `DELETE`d (the kit-render row below) |
 | the queued files | none: no ready email, no kit |
 | the event the operator reads | `{"step": "provision_failed", "server_id": "srv-fixture0001", "terminated": true, "reason": "fixture: the build failed"}` |
 | `claim status <slug> --json` | `provision: "failed"`, `tenant_state: "claimed"`, `server_id: null`, `ready_email: null` |
