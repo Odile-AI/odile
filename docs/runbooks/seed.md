@@ -355,7 +355,8 @@ grace period.
 
 - **The §6a re-arm, both shapes** (the card's fixtures: the real seed service,
   a recorded machine provider; `probe6a.py`). *A tenant that owns its key*
-  (`odl-keya`, the shape every provision leaves): the first exchange answered
+  (`odl-keya`, the shape every `near_account`-configured provision leaves): the
+  first exchange answered
   `200` with the instance's own key and emptied the handoff; un-ending that
   token's row (`used_at = NULL`, expiry +30 days) made it `live` again, and the
   reinstall's exchange answered
@@ -873,8 +874,11 @@ done marker anyway, carrying `rc=1`, so every later boot prints
 Caddy block only and serves nothing.
 
 Which repair applies depends on one thing: does the tenant own its own NEAR AI
-key? Every tenant `odilectl provision` creates has one (ODL-242); a bench or
-manual tenant with no key record does not.
+key? Every tenant `odilectl provision` creates on a config with a `near_account`
+has one (ODL-242). A config without `near_account` — alpha.0's manual path
+(§2a) — mints nothing, so its provisions create the tenant with no key record
+and the seed carries the shared `near_api_key`; a bench or manual tenant with no
+key record is the same shape.
 
 | The tenant | After the reset, the reinstall's exchange answers | The repair |
 |---|---|---|
