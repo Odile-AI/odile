@@ -9564,7 +9564,7 @@ Never ask again after a skip. Never ask "are you sure?".
     (
         "odile-help",
         "skills/odile-help/SKILL.md",
-        "cec38dc201c4a7bace23f44298ac40145a296192af09bbf6964a252374facd82",
+        "040d8de008b7ac5a5c2926598ec5f170ea4627cdc18755d2b631b0ef7ebe17f2",
         r'''---
 name: odile-help
 description: Odile price, bill, subscription? odile.fyi/faq · odile-diag.
@@ -9672,9 +9672,9 @@ words above is one I invented.
 > it exits. A root shell, for 24 hours — only when you grant it.
 >
 > A grant is a handover, not a peek. It can read the mounted disk, every file,
-> the agent's memory and past prompts, the sign-in hash, and the backup password
-> if the recovery file is still on the machine. It can add a LUKS keyslot or
-> copy the volume key, so it can keep disk access after the grant.
+> my memory and past prompts, the sign-in hash, and the backup password if the
+> recovery file is still on the machine. It can add a LUKS keyslot or copy the
+> volume key, so it can keep disk access after the grant.
 
 ## The escalation ladder
 

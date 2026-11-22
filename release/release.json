@@ -1,27 +1,27 @@
 {
   "artifacts": {
     "installer": {
-      "sha256": "85282fd2d919bbdb794510cd4e998ab6892784663c40bfc19d62db956836e4b1",
-      "size": 1557729,
+      "sha256": "f67617706f4a6e1524c8a821a849ad21abcaf0ea60c1283dc1386095ad190fee",
+      "size": 1557720,
       "url": "odile_install.py"
     },
     "skills": {
-      "sha256": "57c5f7937b9b5030c455e2cfbbf184216c01078b02ce66662633afab3860edf7",
-      "size": 852657,
+      "sha256": "27d98728253480e7e5262d0440e61303b5e6ab25d9f5236f8454c4d3adbddcbe",
+      "size": 852651,
       "url": "skills.tar.gz"
     }
   },
   "boot": {
     "kernel": "6.12.115+deb13.1-amd64"
   },
-  "generated_at": "2026-11-22T12:45:00Z",
+  "generated_at": "2026-11-22T15:30:00Z",
   "manifest": {
-    "sha256": "2c39128bb80bd9096fcc7016bafe42ec3644d2d1b778d42fbf2a71e13966eb4d",
+    "sha256": "3e7c99a47e805f7ed937cec3110bbf69e513aed7d49917808f88092f8b74fd5e",
     "signature_url": "manifest.json.sig",
     "url": "manifest.json"
   },
-  "notes": "t_ab95ec2a (ODL-474's brand follow-up): skills/odile-help/SKILL.md \u00a73 speaks in the first person ('ask me to restore', 'ask me to show you the file', 'I can show it again'), while docs/CLAIMS.md \u00a75 and A9, docs/FAQ.md and templates/emails/support.md keep the deck's 'the agent'; the deck is unchanged. A fresh-root cut over main's 2026.11.22-2: the manifest moves installer_sha256 and the three Odile skill rows (odile-first-run, odile-help, odile-recipes), which -2's surgical re-cut had left at 2026.11.21-6's bytes, and skills.tar.gz is rebuilt from this tree.",
+  "notes": "t_509f85e4 (ODL-474's second brand follow-up): skills/odile-help/SKILL.md \u00a75 speaks in the first person ('my memory and past prompts') while the deck's A10 row and docs/FAQ.md, web/faq.html and templates/emails/support.md keep 'the agent's memory'; the deck is unchanged. A fresh-root cut over 2026.11.22-3: the manifest moves installer_sha256 and the odile-help skill row, and skills.tar.gz is rebuilt from this tree.",
   "product": "odile",
-  "release": "2026.11.22-3",
+  "release": "2026.11.22-4",
   "schema": 1
 }
