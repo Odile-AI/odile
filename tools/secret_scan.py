@@ -213,7 +213,7 @@ ALLOW: tuple[Allow, ...] = (
     Allow(
         "credential-assignment",
         "docs/product/REVIEW-UX-2026-11-07.md",
-        "the published demo password — public by design in README.md's judge table",
+        "the published demo password — public by design",
     ),
     Allow(
         "credential-assignment",
@@ -233,8 +233,8 @@ ALLOW: tuple[Allow, ...] = (
     Allow(
         "credential-assignment",
         "deploy/demo-host/login.html",
-        "the published demo password — public by design in README.md's judge table; the "
-        "one-button sign-in posts it, and tests/test_demo_host.py fails if the two drift",
+        "the published demo password — public by design; the one-button sign-in posts "
+        "it, and tests/test_demo_login_page.py fails if the two drift",
     ),
     Allow(
         "high-entropy",
