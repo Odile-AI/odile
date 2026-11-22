@@ -1092,7 +1092,7 @@ class Migration(unittest.TestCase):
                 (1, "signup", "2026-11-04T06:12:06Z", {"source": "web"}),
                 (2, "signup", "2026-11-04T08:34:06Z", {"source": "web"}),
             ])
-        self.assertEqual(version, 3)
+        self.assertEqual(version, 4)
         self.assertIn("backfilled 2 signup event(s)", result.stdout)
 
     def test_migrate_twice_changes_nothing(self):
@@ -1160,12 +1160,13 @@ class Migration(unittest.TestCase):
             con.close()
         self.assertIn("release", columns)
         self.assertEqual(row, ("odl-aa11bb", "ada@example.com", "invited", "plus", None))
-        self.assertEqual(version, 3)
+        self.assertEqual(version, 4)
 
     def test_migrate_on_an_empty_file_creates_the_whole_schema(self):
         self.migrate()
         self.assertEqual(
-            self.tables(), {"waitlist", "tenants", "claims", "events", "grants"})
+            self.tables(),
+            {"waitlist", "tenants", "claims", "events", "grants", "accounts"})
         funnel = run_manage(self.db, "funnel")
         self.assertEqual(funnel.returncode, 0, funnel.stderr)
         self.assertIn("signups", funnel.stdout)
@@ -1184,7 +1185,7 @@ class Migration(unittest.TestCase):
             self.assertEqual(con.execute("SELECT count(*) FROM waitlist").fetchone()[0], 1)
             self.assertEqual(
                 con.execute("SELECT count(*) FROM events WHERE kind = 'signup'").fetchone()[0], 1)
-            self.assertEqual(con.execute("PRAGMA user_version").fetchone()[0], 3)
+            self.assertEqual(con.execute("PRAGMA user_version").fetchone()[0], 4)
         finally:
             con.close()
 

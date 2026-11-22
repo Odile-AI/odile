@@ -129,6 +129,10 @@ class KeyboardContractTests(unittest.TestCase):
     SHAPE = {
         "ceremony.html": (1, ["visit", "machine", "support"], 1),
         "claim.html": (3, ["who", "next", "next"], 1),
+        # ODL-341: the register page is claim.html's three-state shape — the
+        # form, the check-your-email page and the confirm button, one visible
+        # per render — with no aria-labelledby regions of its own.
+        "register.html": (3, [], 1),
         "faq.html": (1, ["short", "gaps", "keys", "failure", "support", "place", "when"], 0),
         "first-visit-preview.html": (1, ["signin-name"], 1),
         "index.html": (1, [], 0),

@@ -101,16 +101,22 @@ ENV_FILE = ETC / "bench.env"
 UNIT_DIR = Path("/etc/systemd/system")
 UNIT_SITE = UNIT_DIR / "odile-bench.service"
 UNIT_SEED = UNIT_DIR / "odile-bench-seed.service"
+UNIT_REGISTER = UNIT_DIR / "odile-bench-register.service"
+TIMER_REGISTER = UNIT_DIR / "odile-bench-register.timer"
 UNIT_PROBE = UNIT_DIR / "odile-bench-probe.service"
 TIMER_PROBE = UNIT_DIR / "odile-bench-probe.timer"
 UNIT_SITE_NAME = "odile-bench"
 UNIT_SEED_NAME = "odile-bench-seed"
+UNIT_REGISTER_NAME = "odile-bench-register"
 UNIT_PROBE_NAME = "odile-bench-probe"
 TIMER_PROBE_NAME = "odile-bench-probe"
 #: The two units an apply starts and restarts; the probe is timer-driven.
 UNIT_NAMES = (UNIT_SITE_NAME, UNIT_SEED_NAME)
 
 CONFIG_FILE = Path("/root/.odile/seed-config.test.json")
+#: The bench's own control-plane config (provider, DNS, outbox, trial keys).
+#: `odile-bench-register.service` reads it; it stays root-only and host-local.
+WORKER_CONFIG = Path("/root/.odile/config.test.yaml")
 PROD_CONFIG = Path("/root/.odile/seed-config.json")
 SEED_KEY_FILE = Path("/root/.odile/seed-signing.pem")
 TOKEN_FILE = Path("/root/.odile/cloudflare_dns_token")
@@ -180,6 +186,58 @@ EXCLUDE_DIRS = {".git", ".worktrees", "__pycache__", "build", ".fresh-clone",
                 ".venv", "node_modules", ".mypy_cache", ".pytest_cache"}
 EXCLUDE_PREFIXES = ("docs/growth/",)
 EXCLUDE_FILES = {"IDEA.md", "PROJECT.md"}
+
+#: The registration worker (ODL-341). A oneshot that drains the confirmed
+#: account queue: the web app runs as `odile` and the provider, DNS, NEAR and
+#: seed credentials are root-only, so the order happens here, on a two-minute
+#: timer, through the same `odilectl.provision` code the operator CLI calls.
+#: Kept inline (not a `.in` file) so the deployer's own bytes describe the two
+#: units it writes; `render_unit` fills the same slots.
+WORKER_SERVICE = """[Unit]
+Description=Odile test bench — the account queue: one confirmed account becomes one machine (ODL-341)
+Documentation=https://test.odile.fyi/
+# The queue lives in the bench app's database. A queue file created by root
+# would be root-owned, and SQLite copies the database owner onto -wal/-shm, so
+# uid odile would then fail with "attempt to write a readonly database".
+ConditionPathExists={{STATE}}/waitlist.db
+After=odile-bench.service
+
+[Service]
+Type=oneshot
+User=root
+WorkingDirectory={{ROOT}}/current
+# The bench's own control plane: provider and DNS credentials, the trial's
+# inference-key switch, the bench outbox and the seed handoff.
+EnvironmentFile={{ETC}}/bench.env
+Environment=PYTHONUNBUFFERED=1
+Environment=ODILECTL_CONFIG={{WORKER_CONFIG}}
+ExecStart=/usr/bin/python3 -m odilectl.provision --worker --apply --config {{WORKER_CONFIG}}
+# provision polls a machine for up to 900 s; systemd's oneshot default is 90 s.
+TimeoutStartSec=1800
+Nice=10
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=read-only
+# The state database, the outbox and the seed-key handoff; the host root is
+# read-only so a bug cannot rewrite the config it was given.
+ReadWritePaths={{STATE}} /var/lib/odile
+"""
+
+WORKER_TIMER = """[Unit]
+Description=Odile test bench — drain the account queue every two minutes (ODL-341)
+
+[Timer]
+OnCalendar=*:0/2
+AccuracySec=15s
+RandomizedDelaySec=0
+# A missed run (host down, deploy restart) is caught up once after boot.
+Persistent=true
+Unit={{UNIT}}
+
+[Install]
+WantedBy=timers.target
+"""
 
 
 # --------------------------------------------------------------------------
@@ -631,11 +689,11 @@ def render_env(state: Path | None = None, app_port: int | None = None,
     return _render_env(state, app_port, seed_port)
 
 
-def render_unit(template: Path, *, root: Path | None = None, state: Path | None = None,
+def render_unit(template, *, root: Path | None = None, state: Path | None = None,
                 etc: Path | None = None, config: Path | None = None,
                 seed_key: Path | None = None) -> str:
     state = STATE if state is None else state
-    text = template.read_text(encoding="utf-8")
+    text = template.read_text(encoding="utf-8") if isinstance(template, Path) else template
     return render(text, {
         "ROOT": ROOT if root is None else root,
         "STATE": state,
@@ -643,6 +701,8 @@ def render_unit(template: Path, *, root: Path | None = None, state: Path | None 
         "ETC": ETC if etc is None else etc,
         "CONFIG": CONFIG_FILE if config is None else config,
         "SEED_KEY": SEED_KEY_FILE if seed_key is None else seed_key,
+        "WORKER_CONFIG": WORKER_CONFIG,
+        "UNIT": UNIT_REGISTER_NAME,
     })
 
 
@@ -694,6 +754,10 @@ def ensure_units(dry: bool) -> bool:
              "User=odile, EnvironmentFile=bench.env, app.py from current"),
             (HERE / "odile-bench-seed.service.in", UNIT_SEED,
              "User=odile, two LoadCredential lines, seed.py from current"),
+            (WORKER_SERVICE, UNIT_REGISTER,
+             "User=root, oneshot: odilectl.provision --worker (the account queue)"),
+            (WORKER_TIMER, TIMER_REGISTER,
+             "every two minutes, Persistent, starts the registration worker"),
             (HERE / "odile-bench-probe.service.in", UNIT_PROBE,
              "User=root, the five-minute liveness probe; red feeds the HQ alert path"),
             (HERE / "odile-bench-probe.timer.in", TIMER_PROBE,
@@ -963,6 +1027,25 @@ def ensure_probe_timer(dry: bool) -> bool:
     active = run([SYSTEMCTL, "is-active", name]).stdout.strip()
     if enabled == "enabled" and active == "active":
         print(f"same         {name} enabled, active (every five minutes)")
+        return False
+    print(f"{'would enable' if dry else 'enable':<12} {name} (enable --now)")
+    if dry:
+        return True
+    run([SYSTEMCTL, "enable", "--now", name], check=True)
+    state = run([SYSTEMCTL, "is-enabled", name]).stdout.strip()
+    if state != "enabled":
+        raise SystemExit(f"error: systemctl enable {name} left it {state!r}; "
+                         "the timer has no usable [Install] section")
+    return True
+
+
+def ensure_register_timer(dry: bool) -> bool:
+    """Enable the two-minute account-queue timer; a second apply prints `same`."""
+    name = f"{UNIT_REGISTER_NAME}.timer"
+    enabled = run([SYSTEMCTL, "is-enabled", name]).stdout.strip()
+    active = run([SYSTEMCTL, "is-active", name]).stdout.strip()
+    if enabled == "enabled" and active == "active":
+        print(f"same         {name} enabled, active (every two minutes)")
         return False
     print(f"{'would enable' if dry else 'enable':<12} {name} (enable --now)")
     if dry:
@@ -1316,6 +1399,7 @@ def main(argv: list[str] | None = None) -> int:
     changed |= ensure_services(args.dry_run, unit_changed, env_changed,
                                release_changed or switched)
     changed |= ensure_probe_timer(args.dry_run)
+    changed |= ensure_register_timer(args.dry_run)
     changed |= ensure_dns(args.dry_run)
     changed |= ensure_caddy(args.dry_run)
     probe(args.dry_run)
