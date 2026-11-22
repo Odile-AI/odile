@@ -339,6 +339,34 @@ def drift() -> list[str]:
         mailbox_problems() + virtual_db_problems() + sasldb_problems()
 
 
+def main_cf_settings(source: Path | None = None) -> dict[str, str]:
+    """The committed main.cf as a parameter map.
+
+    The applier compares the file byte-for-byte, which catches drift but not a
+    parameter Postfix would silently ignore (`smtp_address_preferance = ipv6`
+    is accepted by the file and does nothing). Parsing it here gives the
+    offline self-test something to assert on a fresh host: one name, one value,
+    no duplicates, no line Postfix would reject.
+    """
+    path = HERE / "main.cf" if source is None else source
+    settings: dict[str, str] = {}
+    for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        if "=" not in stripped:
+            raise ValueError(f"{path}:{number}: not a `name = value` line: {line!r}")
+        name, _, value = stripped.partition("=")
+        name, value = name.strip(), value.strip()
+        if not name:
+            raise ValueError(f"{path}:{number}: empty parameter name: {line!r}")
+        # An empty value is how main.cf clears a setting (`mailbox_command =`).
+        if name in settings:
+            raise ValueError(f"{path}:{number}: {name} is set twice")
+        settings[name] = value
+    return settings
+
+
 def self_test() -> int:
     """Offline checks for the fresh-host path. No network, no /etc writes.
 
@@ -356,6 +384,11 @@ def self_test() -> int:
         else:
             failures += 1
             print(f"FAIL  {name}: got {got!r}, want {want!r}")
+
+    # Gmail filed the same brief to Spam over the A and to the INBOX over the
+    # AAAA, 4 of 4 each way (docs/evidence/t_7378e496/); `any` is a coin flip.
+    check("the outbound leg prefers the AAAA",
+          main_cf_settings().get("smtp_address_preference"), "ipv6")
 
     check("both mailboxes are reconciled, not only help",
           [box.user for box in MAILBOXES], ["dsn", "help"])

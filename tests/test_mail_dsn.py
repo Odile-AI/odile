@@ -340,6 +340,36 @@ class RealReportTests(unittest.TestCase):
         self.assertTrue(any("gmail.com" in (record["recipient"] or "") for record in hard))
 
 
+class OutboundAddressFamilyTests(unittest.TestCase):
+    """Which of our two addresses the relay hands a message to decides Gmail's verdict.
+
+    Measured 2026-11-22 (`docs/evidence/t_7378e496/`): the same brief, from the
+    same sender to the same recipient, delivered over the A was filed to Spam
+    4 of 4 times, and over the AAAA to the INBOX 4 of 4, with SPF, DKIM and
+    DMARC passing on every copy. (The two addresses are the relay's A and AAAA,
+    scrubbed to 203.0.113.139 and 2001:0db8:0:1c9::1 here as in every committed
+    page.) Postfix picks between them at random by default
+    (`smtp_address_preference = any`), so a tenant's first brief was a coin
+    flip.
+    """
+
+    def test_the_committed_config_prefers_ipv6(self):
+        settings = POSTFIX_APPLY.main_cf_settings()
+        self.assertEqual(settings.get("smtp_address_preference"), "ipv6")
+
+    def test_the_live_config_carries_the_committed_setting(self):
+        live = Path("/etc/postfix/main.cf")
+        if not live.is_file():
+            self.skipTest("not on the mail host: /etc/postfix/main.cf is absent")
+        settings = POSTFIX_APPLY.main_cf_settings(live)
+        if settings.get("myhostname") != "mail.odile.fyi":
+            self.skipTest("not Odile's relay: this host's main.cf has another myhostname")
+        # A hand edit to /etc/postfix is drift the applier exists to remove, so
+        # the live file must already say what the committed file says -- after
+        # `deploy/postfix/apply.py --apply`, never `postconf -e` alone.
+        self.assertEqual(settings.get("smtp_address_preference"), "ipv6")
+
+
 class DeployCaptureTests(unittest.TestCase):
     """The deploy trees must fail on a fresh host's missing pieces, not say clean.
 
