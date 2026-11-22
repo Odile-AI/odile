@@ -1080,8 +1080,40 @@ fresh scratch root `/var/tmp/odile-509f85e4/root` (29/29; run 2 `tenant: same`,
 second cut byte-identical on all eight names. It is committed, not deployed:
 measured 2026-11-22T15:22Z, the URL serves the deployed `2026.11.19-5`
 (`1d946c44…`, 1,503,889 bytes; manifest `7031d4a0…`). The id ledger: `-3` is
-t_ab95ec2a's first-person cut (12:45Z); `-4` is later than every cut by
-`generated_at` (15:30Z).
+t_ab95ec2a's first-person cut (12:45Z); `-4` was later than every cut when it
+was cut by `generated_at` (15:30Z), and `-5`/`-6` (t_e7e5ac73) follow it.
+
+**The `2026.11.22-6` cut (t_e7e5ac73 / ODL-341-F1, a tenant's image rides a
+Private TEE vision model).** The tenant config gains a seventh managed block,
+`auxiliary.vision.model` = `Qwen/Qwen3-VL-30B-A3B-Instruct`, so `vision_analyze`
+stops riding `model.default` (the text model, which returns an empty description
+at this budget) and the image is described inside an enclave. The model is chosen
+for its answer, not its uniqueness: `https://near.ai/pricing`'s Privacy column
+lists Qwen3.8-27B and its abliterated variant, GLM-5.3-Flash and
+DeepSeek-V4.1-Flash-1017 too, but on a real render asking for every heading and
+button label Qwen3-VL answered 7/7 + 3/3 in 4/4 runs at 0.56–2.49 s where
+GLM-5.3-Flash needed ≥1,200 output tokens (5–7 s) and Qwen3.8-27B returned no
+content. `merge_block` compares dotted key paths, so a re-run replaces the pin
+and keeps `auxiliary.compression.*`. Review corrected the first version's "the
+only vision model in the tier" wording in the installer's comment, the template
+header, `install.md` §4 and `release.json`'s notes — which is why this cut is
+`-6` and not `-5`. `install.md` §12.6 has the full record: installer
+`5d9e9e76…` (1,563,199 bytes), manifest `7c138f5a…` (50,044 bytes, 48 skills,
+audit `6d3f7be0…`; its diff against `-5` is `installer_sha256` alone), skills
+`27d98728…` (852,651 bytes, unchanged), `release.json` `c1bd54a3…` (1,867 bytes)
+naming `2026.11.22-6` at `2026-11-22T17:45:00Z`, `--verify-signature` OK on the
+checkout's installer (`signature: OK (sha256 5d9e9e76…)`), a one-byte edit
+`93b849bb…` (1,563,200 bytes) and `signature: BAD`, exit 3, and
+`tools/recut_release.py --check` eleven `ok` lines. A fresh scratch root made by
+this installer ran 29/29 (run 1 exited 0 in 3m 51s; run 2 `tenant: same`, 0
+writes), and its own `state.db` records
+`Qwen/Qwen3-VL-30B-A3B-Instruct|vision|1|1277|16|712` for a 1,440×900
+landing-page screenshot — 1,293 prompt tokens, 4.479 s from the tool-call message
+to its result. It is committed, not deployed: measured 2026-11-22T17:41Z, the URL
+serves the deployed `2026.11.19-5` (installer `1d946c44…`, 1,503,889 bytes;
+manifest `7031d4a0…`). The id ledger: `-4` is t_509f85e4's support-grant help cut
+(15:30Z), `-5` was this card's pre-review cut (16:35Z), and `-6` is later than
+every cut by `generated_at` (17:45Z).
 
 ### The manifest names the tenant backup program (2026-11-19)
 

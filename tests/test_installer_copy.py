@@ -174,6 +174,93 @@ class TenantConfigTrustedHostTest(TempRoot):
         self.assertIsNone(self.mod.merge_config(merged, self.text))
 
 
+class TenantAuxiliaryVisionTest(TempRoot):
+    """Images ride a Private TEE vision model, not the text model (ODL-341-F1).
+
+    An explicit ``auxiliary.vision`` backend is what makes Hermes route
+    ``vision_analyze`` to the auxiliary lane (``decide_image_input_mode``
+    answers ``text``) and what names the model on that lane. With the key
+    absent the lane resolves to ``model.default`` — the text model — which
+    returns an empty description at this token budget.
+
+    The pin must be a managed block so a re-run writes it, and must keep the
+    keys Hermes writes under the same block (``auxiliary.compression.*``).
+    """
+
+    VISION = "Qwen/Qwen3-VL-30B-A3B-Instruct"
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.mod = load_module(INSTALLER, "odile_install_aux_vision")
+        self.layout = tenant_layout_for(self.mod, self.tmp / "root")
+        self.seed = {"slug": "odl-test", "instance_id": "i-test",
+                     "model": "deepseek-ai/DeepSeek-V4.1-Flash-1017-abliterated"}
+        self.text = self.mod.render_tenant_config(self.layout, self.seed)
+        self.preamble, self.blocks = self.mod.split_blocks(self.text)
+
+    def six_block_tenant(self, auxiliary: str = "") -> str:
+        """The config this program wrote before this card: six blocks, no auxiliary."""
+        order = ("model", "agent", "custom_providers", "dashboard", "webapp", "onboarding")
+        lines = [*self.preamble, "_config_version: 52"]
+        lines += [line for key in order for line in self.blocks[key]]
+        lines += self.blocks["display"]
+        if auxiliary:
+            lines += auxiliary.splitlines()
+        return "\n".join(lines) + "\n"
+
+    def test_the_template_pins_the_private_tee_vision_model(self) -> None:
+        self.assertIn("auxiliary", self.blocks, "the tenant config carries no auxiliary block")
+        self.assertIn(f"model: {self.VISION}",
+                      settings_of(self.mod, self.blocks["auxiliary"]))
+
+    def test_the_block_carries_only_the_model_id(self) -> None:
+        # No key, no path, no second value: the model id is the whole pin.
+        self.assertEqual(settings_of(self.mod, self.blocks["auxiliary"]),
+                         ["auxiliary:", "vision:", f"model: {self.VISION}"])
+
+    def test_auxiliary_is_a_managed_block(self) -> None:
+        self.assertIn("auxiliary", self.mod.MANAGED_KEYS)
+
+    def test_the_header_comment_names_every_managed_block(self) -> None:
+        # The header rides the `_config_version` block once rendered (the first
+        # top-level key ends the preamble), so read the whole text.
+        listed = [line.split("*")[1].strip().split()[0]
+                  for line in self.text.splitlines() if line.startswith("#   * ")]
+        self.assertEqual(sorted(listed), sorted(self.mod.MANAGED_KEYS))
+        self.assertIn("Seven managed blocks", self.text)
+
+    def test_a_six_block_tenant_gains_the_pin_and_keeps_compression(self) -> None:
+        old = self.six_block_tenant(
+            "auxiliary:\n  compression:\n    enabled: true\n"
+            "    model: vendor/compress-1")
+        merged = self.mod.merge_config(old, self.text)
+        self.assertIsNotNone(merged, "the upgrade read as converged and wrote nothing")
+        _, blocks = self.mod.split_blocks(merged)
+        self.assertIn(f"model: {self.VISION}", settings_of(self.mod, blocks["auxiliary"]))
+        self.assertIn("  compression:", merged)
+        self.assertIn("    enabled: true", merged)
+        # `compression.model` sits at the same depth as `vision.model`: the
+        # merge must tell the two paths apart and keep Hermes's value.
+        self.assertIn("    model: vendor/compress-1", merged)
+        self.assertIn("_config_version: 52", merged)
+        self.assertEqual(merged.count("auxiliary:"), 1)
+        self.assertIsNone(self.mod.merge_config(merged, self.text),
+                          "the upgrade does not converge on the second read")
+
+    def test_a_frontier_vision_pin_is_replaced_and_compression_stays(self) -> None:
+        # The pin was briefly a Frontier-tier model, which is not a TEE.
+        old = self.six_block_tenant(
+            "auxiliary:\n  vision:\n    model: anthropic/claude-haiku-4-5\n"
+            "  compression:\n    enabled: true")
+        merged = self.mod.merge_config(old, self.text)
+        self.assertIsNotNone(merged)
+        _, blocks = self.mod.split_blocks(merged)
+        self.assertEqual([line for line in settings_of(self.mod, blocks["auxiliary"])
+                          if line.startswith("model:")], [f"model: {self.VISION}"])
+        self.assertNotIn("claude-haiku", merged)
+        self.assertIn("    enabled: true", merged)
+
+
 class OptionalUnitToleranceTest(TempRoot):
     """A failed report must not stop the agent restart that makes config live."""
 

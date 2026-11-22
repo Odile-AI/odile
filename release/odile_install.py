@@ -268,12 +268,34 @@ BOOT_REPORT_VERSION = 5
 MEASUREMENT_OFFSET = 0x90
 MEASUREMENT_END = 0xC0
 
-MANAGED_KEYS = ("model", "agent", "custom_providers", "dashboard", "webapp", "onboarding")
+MANAGED_KEYS = ("model", "agent", "custom_providers", "dashboard", "webapp", "onboarding",
+                "auxiliary")
 # A config written before the onboarding block existed carries exactly these
 # four; a re-run adds the missing blocks in place instead of replacing the
-# whole file. `dashboard` (t_d95b8c13) is the later addition: a config this
-# program wrote before it has the four and no dashboard block.
+# whole file. `dashboard` (t_d95b8c13) and `auxiliary` (ODL-341-F1) are the
+# later additions: a config this program wrote before one of them still carries
+# these four, so the upgrade path below appends what is missing and keeps what
+# Hermes wrote.
 PRE_ONBOARDING_KEYS = ("model", "agent", "custom_providers", "webapp")
+# The vision model the auxiliary lane pins (ODL-341-F1). It is inside NEAR
+# AI's Private TEE tier (text + image, 16K context, $0.15/$0.55 per 1M tokens),
+# and it is chosen for its answer, not because it is alone in the tier:
+# Qwen3.8-27B and its abliterated variant, GLM-5.3-Flash and
+# DeepSeek-V4.1-Flash-1017 read images in the same tier. Measured 2026-11-22 on
+# a real render, asking for every heading and button label, this one answered
+# 7/7 headings + 3/3 labels in 4/4 runs at 0.56-2.49 s; GLM-5.3-Flash needed
+# >=1,200 output tokens (at 400 it truncated to 2 of 7 headings) and took 5-7 s;
+# Qwen3.8-27B returned no content in any run (4,848 chars of reasoning).
+# Setting `auxiliary.vision.model` is what forces the auxiliary lane:
+# `decide_image_input_mode` answers "text" when an explicit auxiliary.vision
+# backend exists, so `vision_analyze` describes the image with THIS model,
+# inside an enclave. Without the key the lane resolves to `model.default` — the
+# text model — which returns an empty description at this token budget
+# (measured 2026-11-22: 1 of 4 samples non-empty). Claude, GPT and Gemini on
+# the same gateway are the Frontier tier: an upstream provider's API, not a
+# TEE, so pinning one would falsify docs/CLAIMS.md §1 for every image.
+# Source: https://near.ai/pricing, the Privacy-tier column (ODL-341-F1).
+VISION_MODEL = "Qwen/Qwen3-VL-30B-A3B-Instruct"
 TOP_LEVEL_KEY = re.compile(r"^([A-Za-z_][A-Za-z0-9_-]*):")
 
 # The tenant's boot-report transformer begins here (ODL-397).
@@ -10828,10 +10850,12 @@ TENANT_CONFIG_TEMPLATE = """\
 # Odile tenant profile — written by odile-install (ODL-203); never hand-edited.
 #
 # The installer carries this file byte-for-byte and renders the model, the
-# Webapp port and the public URL from the seed and the layout.
+# Webapp port and the public URL from the seed and the layout. The vision
+# model is its own pin: a vision model in the Private TEE tier, chosen for its
+# answer.
 # `--self-test` fails if the embedded copy and this file differ.
 #
-# Six managed blocks. Everything else in the written file belongs to Hermes
+# Seven managed blocks. Everything else in the written file belongs to Hermes
 # and survives a re-run: the installer merges these blocks in place.
 #   * model            — provider "custom" needs base_url to resolve.
 #   * agent            — this model rejects Hermes's default reasoning effort.
@@ -10843,6 +10867,16 @@ TENANT_CONFIG_TEMPLATE = """\
 #                        checks every Host and Origin against.
 #   * onboarding       — Hermes's own first-run chat is off; Odile's ritual is
 #                        the first run, and no profile-build offer is made.
+#   * auxiliary        — an image is described on the auxiliary lane by a
+#                        vision model in NEAR AI's Private TEE tier, chosen
+#                        because its answer is not eaten by a reasoning phase:
+#                        Qwen3.8-27B, its abliterated variant, GLM-5.3-Flash
+#                        and DeepSeek-V4.1-Flash-1017 read images in the same
+#                        tier (near.ai/pricing, Privacy column). Without this
+#                        pin the lane rides model.default (the text model) and
+#                        returns an empty description, and a Frontier-tier
+#                        model would take the image out of the enclave
+#                        (ODL-341-F1).
 #
 # The display block is not managed the same way: it carries the Odile skin
 # (ODL-240), whose file the installer writes beside this config at
@@ -10882,6 +10916,10 @@ webapp:
 onboarding:
   run: false
   profile_build: "off"
+
+auxiliary:
+  vision:
+    model: "{vision_model}"
 
 display:
   skin: odile
@@ -12114,22 +12152,46 @@ def block_contains(desired: list[str], current: list[str]) -> bool:
     return all(line in have for line in settings(desired))
 
 
+def line_paths(block: list[str]) -> list[str | None]:
+    """The dotted key path of each line (`None` for a comment or a blank line).
+
+    `model` sits at the same indentation under `auxiliary.vision` and under
+    `auxiliary.compression`, so a merge that compares bare keys cannot tell
+    them apart and drops the one it does not mean to replace. The path is the
+    mapping the line actually sits in.
+    """
+    paths: list[str | None] = []
+    stack: list[tuple[int, str]] = []
+    for line in block:
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            paths.append(None)
+            continue
+        indent = len(line) - len(line.lstrip())
+        key = stripped.partition(":")[0].strip()
+        while stack and stack[-1][0] >= indent:
+            stack.pop()
+        stack.append((indent, key))
+        paths.append(".".join(name for _, name in stack))
+    return paths
+
+
 def merge_block(desired: list[str], current: list[str]) -> list[str]:
     """`desired`'s settings, then every current line the template does not name.
 
-    A current line whose key the template does name is dropped even if its
+    A current line whose key path the template does name is dropped even if its
     value differs, so a drifted value cannot survive as a duplicate key. Lines
-    Hermes owns (`models:`, `models_discovered:`, …) are kept; they are
-    indented, so appending them at the end of the block leaves them inside the
-    same mapping.
+    Hermes owns (`models:`, `models_discovered:`, `auxiliary.compression:`, …)
+    are kept; they are indented, so appending them at the end of the block
+    leaves them inside the same mapping.
     """
-    desired_keys = {setting_line(line).partition(":")[0] for line in settings(desired)}
+    desired_paths = {path for path in line_paths(desired) if path is not None}
     extra = [
         line.rstrip()
-        for line in current
+        for line, path in zip(current, line_paths(current))
         if line.strip()
         and not line.lstrip().startswith("#")
-        and setting_line(line).partition(":")[0] not in desired_keys
+        and path not in desired_paths
     ]
     tail = []
     for line in reversed(current):
@@ -14384,7 +14446,7 @@ def render_tenant_config(layout: Layout, seed: dict) -> str:
     model = seed.get("model") or "deepseek-ai/DeepSeek-V4.1-Flash-1017"
     body = TENANT_CONFIG_TEMPLATE.format(
         model=model, webapp_port=layout.webapp_port,
-        public_url=layout.webapp_public_url,
+        public_url=layout.webapp_public_url, vision_model=VISION_MODEL,
     )
     version = config_version([
         layout.hermes_home / "config.yaml",
@@ -15565,6 +15627,40 @@ def self_test() -> int:
                  and "_config_version: 52" in upgraded
                  and upgraded.count("dashboard:") == 1
                  and merge_config(upgraded, desired) is None)
+
+        # the image lane (ODL-341-F1): an explicit `auxiliary.vision.model` is
+        # what forces Hermes's auxiliary lane and pins the model on it. The
+        # six-block tenant this program wrote before the block existed gains it
+        # in place, keeps whatever Hermes wrote under `auxiliary` (compression),
+        # and a drifted pin is replaced instead of duplicated.
+        aux_settings = [setting_line(line).strip() for line in settings(blocks["auxiliary"])]
+        check.ok("the template pins the Private TEE vision model",
+                 f"model: {VISION_MODEL}" in aux_settings, VISION_MODEL)
+        check.ok("the auxiliary block carries only the model id",
+                 aux_settings == ["auxiliary:", "vision:", f"model: {VISION_MODEL}"],
+                 " ".join(aux_settings))
+        six_block = "_config_version: 52\n" + "".join(
+            line + "\n" for key in order for line in blocks[key]) + (
+            "auxiliary:\n  compression:\n    enabled: true\n"
+            "    model: " + seed["model"] + "\n")
+        upgraded = merge_config(six_block, desired)
+        check.ok("an existing tenant gains the vision pin and keeps compression",
+                 upgraded is not None
+                 and f'model: "{VISION_MODEL}"' in upgraded
+                 and "  compression:\n    enabled: true" in upgraded
+                 and f"    model: {seed['model']}" in upgraded
+                 and upgraded.count("auxiliary:") == 1
+                 and merge_config(upgraded, desired) is None)
+        frontier = six_block.replace(
+            "auxiliary:\n  compression:\n    enabled: true\n",
+            "auxiliary:\n  vision:\n    model: anthropic/claude-haiku-4-5\n"
+            "  compression:\n    enabled: true\n")
+        merged = merge_config(frontier, desired)
+        check.ok("a Frontier-tier vision pin is replaced and compression kept",
+                 merged is not None
+                 and "claude-haiku" not in merged
+                 and f'    model: "{VISION_MODEL}"' in merged
+                 and "    enabled: true" in merged)
 
         # boot-report transformer: pin, checkout parity, and a round trip
         embedded_attest = ATTEST_SOURCE.encode("utf-8")
