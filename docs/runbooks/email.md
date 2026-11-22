@@ -251,6 +251,51 @@ template and the per-tenant DKIM signing table are the M1 controls.
 Port 25 stays local-only: `mynetworks = 127.0.0.0/8 [::1]/128`, and SASL is
 enabled only on the submission service in `master.cf`.
 
+### 5.3 Which of our two addresses carries the message
+
+`mail.odile.fyi` publishes an A and an AAAA, both with a forward-confirmed PTR
+and both in the SPF record (§3.2), and Postfix will use either. Gmail's verdict
+is not the same on the two: measured 2026-11-22, the same brief text — sent as
+a tenant sends it, from a fresh `brief-<slug>@mail.odile.fyi` address, to a
+Gmail alias that had never received one — was filed to **Spam 4 times of 4**
+when the relay connected over the A (`203.0.113.139`) and to the **INBOX 4
+times of 4** over the AAAA (`2001:0db8:0:1c9::1`), with `spf=pass`, `dkim=pass`
+and `dmarc=pass` on every copy. The message shape was held constant across
+those eight sends — two forms (bare URLs on their own lines, and inline links)
+each sent both ways — and the address, not the form, decided the folder. The
+scorer agrees that the message is not the variable: the two families' copies
+score the same (spamassassin 0.8, rule for rule) while Gmail files them on
+opposite sides.
+
+The relay therefore prefers IPv6:
+
+```cfg
+# deploy/postfix/main.cf  (the source of truth; /etc/postfix is a copy)
+smtp_address_preference = ipv6
+```
+
+Postfix still tries IPv4 when a destination publishes no AAAA or the IPv6
+connection fails, so this is a preference and not a v6-only path. Apply it the
+supported way and prove it:
+
+```sh
+./deploy/postfix/apply.py --apply     # writes /etc/postfix/main.cf, reloads
+./deploy/postfix/apply.py --check     # exit 0
+postconf smtp_address_preference      # smtp_address_preference = ipv6
+```
+
+**Which address did a delivered message use?** The relay's log line and the
+receiver's `Received` header both name it:
+
+```sh
+grep "gmail-smtp-in" /var/log/mail.log | tail -1    # relay=…[2001:…]:25
+./scripts/send_test.py --gmail-headers "<subject>"  # placement, plus the address in spf=pass
+```
+
+A `relay=…[203.0.113.139]` (an IPv4 literal) after this change means the
+setting is not in effect — most likely `/etc/postfix/main.cf` was edited by
+hand and the applier has not run since.
+
 ## 6. First run and the daily check
 
 ```sh
@@ -442,10 +487,13 @@ There are two paths; the IMAP one is the working default.
   ./scripts/send_test.py --gmail-placement "Odile soak"
   ```
 
-  Both read `[Gmail]/All Mail` over IMAP and print Gmail's labels, so
-  "delivered" and "in the inbox" are two different answers and both are
-  recorded. An em-dash subject is searched by its longest ASCII run, because
-  IMAP SEARCH is ASCII-only.
+  `--gmail-headers` reads `[Gmail]/All Mail` first and asks `[Gmail]/Spam` when
+  nothing matches there; `--gmail-placement` asks both. So "delivered" and "in
+  the inbox" are two different answers and both are recorded. A copy in
+  `[Gmail]/Spam` answers `X-GM-LABELS ()`: Spam is a folder and not a label
+  (measured 2026-11-22 on two quarantined briefs), so the folder a copy came
+  from is part of the verdict and the tool prints it. An em-dash subject is
+  searched by its longest ASCII run, because IMAP SEARCH is ASCII-only.
 - **Paste (fallback).** Gmail → the message → `⋮` → **Show original** → copy
   `Authentication-Results`, `DKIM-Signature`, `Return-Path` and the first
   `Received:`, with the recipient redacted.
@@ -563,7 +611,7 @@ PASS there and here.
 | `--check-dns` fails for a record `dig @1.1.1.1` shows | Local resolver serving the pre-change NXDOMAIN for the SOA minimum | believe `--check-dns` (it asks the authoritative server); the cache clears on its own |
 | `dkim=fail (bad signature)` at the receiver | Truncated DKIM TXT, or `c=` not relaxed/relaxed | re-publish from `/etc/dkimkeys/odile.txt`; `--verify-dkim` on the sent copy |
 | `spf=pass` but `dmarc=fail` | From domain and envelope domain differ | keep both under `mail.odile.fyi`; `aspf=s` makes that strict |
-| Delivered, but in spam | Reputation starts at zero on a fresh IP | check DMARC first, then volume and engagement; the soak is the measurement |
+| Delivered, but in spam | Reputation starts at zero on a fresh IP, and our two addresses do not have the same reputation | check DMARC first; then which address the relay used (§5.3) — the A was filed to Spam 4/4 and the AAAA to the INBOX 4/4 on 2026-11-22; then the From domain's age (spamassassin's `FROM_FMBLA_NEWDOM28` fired on every copy that day) and engagement |
 | `550-5.7.26 … sender is unauthenticated` | Records missing or a key mismatch | `--check-dns`, then resend (seen on the first attempt from this box) |
 | Mail queues and never leaves | Outbound 25 blocked, or destination greylisting | `postqueue -p`; `telnet gmail-smtp-in.l.google.com 25` |
 | The box is down | Single point of failure | senders retry; queued invites survive on disk, but the waitlist and mail share one host that must stay up |

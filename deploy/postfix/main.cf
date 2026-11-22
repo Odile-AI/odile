@@ -42,6 +42,17 @@ mynetworks_style = host
 mynetworks = 127.0.0.0/8 [::1]/128
 smtpd_relay_restrictions = permit_mynetworks permit_sasl_authenticated defer_unauth_destination
 
+# Outbound leg ---------------------------------------------------------------
+# Gmail filed the same brief to Spam over our A and to the INBOX over our AAAA
+# (the two addresses of docs/runbooks/email.md §3.2, scrubbed to 203.0.113.139
+# and 2001:0db8:0:1c9::1 the way every committed page is): 4 of 4 each way on
+# 2026-11-22, with SPF, DKIM and DMARC passing on every copy and the message
+# shape held constant. The default `any` picks between them at random, so a
+# tenant's first brief was a coin flip. Prefer IPv6; Postfix still tries IPv4
+# when the destination publishes no AAAA or the IPv6 connection fails.
+# Measurement: docs/evidence/t_7378e496/.
+smtp_address_preference = ipv6
+
 # Domains accepted here ------------------------------------------------------
 # mail.odile.fyi is local (mydestination). odile.fyi is a virtual alias
 # domain so that help@odile.fyi lands in a local mailbox and every other

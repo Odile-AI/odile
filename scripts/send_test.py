@@ -823,12 +823,20 @@ def gmail_labels(client: imaplib.IMAP4_SSL, uid: bytes) -> list[str]:
     return [label.replace("\\\\", "\\") for label in re.findall(r'"((?:[^"\\]|\\.)*)"', text)]
 
 
-def placement_of(labels: list[str]) -> str:
-    """Where Gmail filed a message: INBOX, SPAM or elsewhere."""
+def placement_of(labels: list[str], folder: str | None = None) -> str:
+    """Where Gmail filed a message: INBOX, SPAM or elsewhere.
+
+    A message in ``[Gmail]/Spam`` answers ``X-GM-LABELS ()`` — it carries no
+    ``\\Spam`` label, because Spam is a folder and not a label (measured
+    2026-11-22 on two quarantined briefs, card t_7378e496). Reading labels
+    alone called those messages OTHER, so the folder the copy came from is part
+    of the verdict.
+    """
     folded = {label.lower().lstrip("\\") for label in labels}
-    if "inbox" in folded:
+    where = (folder or "").lower().strip('"')
+    if "inbox" in folded or where == "inbox":
         return "INBOX"
-    if "spam" in folded:
+    if "spam" in folded or where.endswith("/spam"):
         return "SPAM"
     return "OTHER"
 
@@ -845,8 +853,8 @@ def gmail_search_folder(client: imaplib.IMAP4_SSL, folder: str, query: str) -> l
     return data[0].split()
 
 
-def gmail_fetch(query: str, user: str) -> tuple[bytes, list[str]]:
-    """Find a message by subject in All Mail or Spam; return raw bytes and labels."""
+def gmail_fetch(query: str, user: str) -> tuple[bytes, list[str], str]:
+    """Find a message by subject in All Mail or Spam; return bytes, labels, folder."""
     password = read_secret_file(GMAIL_PASSWORD_FILE, "Gmail app password")
     client = imaplib.IMAP4_SSL("imap.gmail.com", 993)
     try:
@@ -854,9 +862,11 @@ def gmail_fetch(query: str, user: str) -> tuple[bytes, list[str]]:
         # Gmail's "All Mail" deliberately excludes Spam and Trash, so a message
         # filed to Spam is invisible unless Spam is searched too.
         uids: list[bytes] = []
-        for folder in (GMAIL_ALL_MAIL, GMAIL_SPAM):
-            uids = gmail_search_folder(client, folder, query)
+        folder = GMAIL_ALL_MAIL
+        for candidate in (GMAIL_ALL_MAIL, GMAIL_SPAM):
+            uids = gmail_search_folder(client, candidate, query)
             if uids:
+                folder = candidate
                 break
         if not uids:
             raise Fail(f"no message in {user} with subject {query!r} (All Mail and Spam)")
@@ -866,7 +876,7 @@ def gmail_fetch(query: str, user: str) -> tuple[bytes, list[str]]:
                                        "(RFC822)")
         if status != "OK" or not payload or not isinstance(payload[0], tuple):
             raise Fail(f"could not fetch message {newest!r}")
-        return payload[0][1], labels
+        return payload[0][1], labels, folder
     finally:
         try:
             client.logout()
@@ -875,11 +885,11 @@ def gmail_fetch(query: str, user: str) -> tuple[bytes, list[str]]:
 
 
 def cmd_gmail_headers(args: argparse.Namespace) -> int:
-    raw, labels = gmail_fetch(args.gmail_headers, args.user)
+    raw, labels, folder = gmail_fetch(args.gmail_headers, args.user)
     fields = evidence_headers(raw)
     results = verdicts(fields["Authentication-Results"])
     print(f"search:    {args.gmail_headers!r} as {args.user}")
-    print(f"placement: {placement_of(labels)}  ({', '.join(labels) or 'no labels'})")
+    print(f"placement: {placement_of(labels, folder)}  ({', '.join(labels) or 'no labels'}; found in {folder})")
     for name in ("Authentication-Results", "DKIM-Signature", "Return-Path", "Received"):
         print(f"{name}: {fields[name] or '(absent)'}")
     print()
@@ -888,7 +898,7 @@ def cmd_gmail_headers(args: argparse.Namespace) -> int:
     for key, value in expected.items():
         got = results.get(key, "missing")
         print(f"{'PASS' if got == value else 'FAIL'}  {key:<6} {got}")
-    placement = placement_of(labels)
+    placement = placement_of(labels, folder)
     print(f"{'PASS' if placement == 'INBOX' else 'FAIL'}  inbox  {placement}")
     return 0 if ok and placement == "INBOX" else 1
 
@@ -1330,6 +1340,14 @@ def self_test() -> int:
           {"spf": "pass", "dkim": "pass", "dmarc": "pass"})
     check("placement prefers the inbox", placement_of(["\\Inbox", "\\All", "\\Important"]), "INBOX")
     check("placement sees spam", placement_of(["\\Spam", "\\All"]), "SPAM")
+    # Measured 2026-11-22 (t_7378e496): a copy in [Gmail]/Spam answers
+    # X-GM-LABELS (), so labels alone called a quarantined brief OTHER.
+    check("an unlabelled copy in the Spam folder is spam",
+          placement_of([], '"[Gmail]/Spam"'), "SPAM")
+    check("an unlabelled copy in the INBOX folder is the inbox",
+          placement_of([], "INBOX"), "INBOX")
+    check("an unlabelled copy in All Mail is still other",
+          placement_of([], '"[Gmail]/All Mail"'), "OTHER")
     check("an em dash subject falls back to its ASCII run",
           ascii_search_term("Odile — test invite (ODL-102)"), "test invite (ODL-102)")
     check("a folded DKIM header is unfolded",
