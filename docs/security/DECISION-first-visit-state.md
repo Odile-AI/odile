@@ -1,7 +1,8 @@
 # DECISION — the first-visit state: `signin_set_at` is a fact about the `.env`, not about the page
 
 **Status:** decision record · 22 November 2026 · Security seat · card `t_10bd80a6`
-(from `t_1e7bb06b`, the runbook card that measured the trap).
+(from `t_1e7bb06b`, the runbook card that measured the trap). Round 2 names the
+fixture's key set and the deploy's own four-key `.env` (§2, §4, §6–§8).
 **Changes:** none to an approved sentence. This is a mechanism decision: one
 demo-host program, its tests, and the runbook paragraph that describes the trap.
 `docs/CLAIMS.md` is untouched; the claims and brand lints stay green.
@@ -46,13 +47,15 @@ creates the file unless it owns the token hash.**
 
 ## 2. What was measured
 
-The defect, on fixtures built from this tree (the probe is attached to the card
-as `probe_marker.py` / `probe_marker.out`):
+The defect, on fixtures built from this tree (the probes are attached to the
+card as `probe_marker.py` / `probe_marker.out` for A–D and
+`probe_marker_round2.py` / `probe_marker_round2.out` for B′):
 
 | # | Fixture | Result |
 |---|---|---|
-| A | `.env` with a scrypt hash of a known password, a session secret; state with a 64-hex token hash, `used_at` and `signin_set_at` **null** | `ensure_env(first_visit=True)` prints `rewrite … (the sign-in hash is a placeholder until first visit)`; the stored hash is replaced; the known password **no longer verifies**; the state is unchanged |
-| B | the same `.env` and state, with `signin_set_at` set | `changed=False`; the hash is kept byte for byte |
+| A | `.env` with **exactly the three allowlisted keys** — a scrypt hash of a known password, a session secret — and a state with a 64-hex token hash, `used_at` and `signin_set_at` **null** | `ensure_env(first_visit=True)` prints `rewrite … (the sign-in hash is a placeholder until first visit)`; the stored hash is replaced; the known password **no longer verifies**; the state is unchanged |
+| B | the same `.env` (three allowlisted keys) and state, with `signin_set_at` set | `changed=False` (`same … 3 allowlisted keys`); the hash is kept byte for byte |
+| B′ | the deploy's own `.env` — B plus the fourth key `HERMES_CUSTOM_CLOUD_API_NEAR_AI_API_KEY`, which `deploy/demo-host/apply_demo_public.py:1071-1076` writes — and the same stamped state | `changed=True` (`rewrite … outside the allowlist: 1; seat secrets: 0`); the hash is **still** kept byte for byte and the published password verifies; the fourth key is gone (the installer writes its three-key template) |
 | C | a marked image `.env` (`# odile-signin-placeholder: 1`), then the page's own `write_env_hash` | the marker **survives** the write: `render_env` replaces the hash line in place and preserves comments (`installer/first_visit.py:643-670`) |
 | D | state with `signin_set_at` set, `used_at` null | `check_token` answers `ok` — the setup-token page is still open (`installer/first_visit.py:1118-1124`) |
 
@@ -60,15 +63,33 @@ Measured on the live demo machine, 2026-11-22:
 
 - `GET https://demo.odile.fyi/attestation` → `cmdline` carries a 64-hex
   `odile.token=` (value elided here; the Caddy site template calls `/attestation`
-  "public", `installer/odile_install.py:10962`).
+  "public", `installer/odile_install.py:10962`). Its SHA-256 is exactly the
+  state's `token_sha256` (`20fd4bf9…`), so the link the 410 below closes is the
+  published token's.
 - On the machine's own name, `GET /first-visit?t=<that token>` → **410** (the
-  token was spent by the 2026-11-22 recovery POST), an unknown 64-hex token →
-  **404**, no token → **404**; on `demo.odile.fyi` `/first-visit` → **302**
-  into the Webapp's Host gate. A 200 form is the open state.
+  token was spent by the 2026-11-21T16:57:50Z recovery POST — the state's
+  `used_at` and `signin_set_at`), an unknown 64-hex token → **404**, no token →
+  **404**; on `demo.odile.fyi` `/first-visit` → **302** into the Webapp's Host
+  gate. A 200 form is the open state.
+- The state itself (`sudo cat /etc/odile/first-visit.json`, over the tenant
+  console, 2026-11-22): `used_at` and `signin_set_at` are both
+  `2026-11-21T16:57:50Z`, with `recovery_hash`/`recovery_issued_at` from the
+  same second and the `download_*` fields still the page's (a 17:07:50Z link,
+  unused). That is the page's recovery POST, not the deploy's: the deploy's own
+  hash write (before that POST) left no trace in this file — the defect this
+  card closes.
+- `/etc/odile/key.env` is present on the demo: 0600 `root:root`, 76 bytes, one
+  35-byte `HERMES_CUSTOM_CLOUD_API_NEAR_AI_API_KEY`; the `.env` carries the
+  same 35-byte key, so today both the authoritative `.env` copy and the
+  deploy's fallback exist.
 
 The card's second measurement — the 19:59Z forced run kept the hash when the
-state carried `signin_set_at` — is the same mechanism as fixture B, measured on
-the machine.
+state carried `signin_set_at` — is fixture B's **decision** (the installer reads
+the state, not the file) measured on the machine, but not B's `same` path: after
+the 2026-11-21 recovery the deploy had put the fourth key back, so that run took
+B′'s rewrite branch. What the report's sign-in-hash row measured is the hash
+column — PASS before and after — not `changed=False`; the same run also took the
+Near AI key out of the `.env` (§4, §8).
 
 ## 3. Why not the other two options
 
@@ -111,9 +132,27 @@ installer keeps reading `signin_set_at` alone.
 state has no `signin_set_at` is a placeholder and is replaced on every run —
 **including a hash that verifies a known password**. Absent or malformed state is
 fail-closed: replace, never keep. The fence is
-`tests/test_first_visit.py::FirstVisitEnvTests.test_the_images_bench_hash_is_replaced_before_the_visit`
-and its two siblings (every-run rewrite, session secret kept), and the live
-evidence is the image's own `.env` (`docs/runbooks/image.md` §13).
+`tests/test_first_visit.py::FirstVisitEnvTests` — five tests: the image bench
+hash is replaced, every boot before the visit rewrites the placeholder, the
+session secret is kept, the owner's hash survives the next boot, and a dry run
+changes nothing — and the live evidence is the image's own `.env`
+(`docs/runbooks/image.md` §13).
+
+**What a forced run does to a deploy-written `.env`.** The installer's file is
+exactly the three allowlisted keys (`TENANT_ENV_KEYS`,
+`installer/odile_install.py:238-242`; template `:10840-10854`). The deploy's
+`.env` carries a fourth key, `HERMES_CUSTOM_CLOUD_API_NEAR_AI_API_KEY`
+(`apply_demo_public.py:1071-1076`), so on the demo (and any machine whose
+`.env` the deploy wrote) **every** forced run takes the rewrite branch: the
+hash is kept once the state is stamped (B/B′), but the fourth key leaves the
+file. The next deploy re-adds it only from `/etc/odile/key.env`
+(`inference_key()`, `apply_demo_public.py:1027-1045`); when that store is
+missing, `inference_key()` raises `error: … has no
+HERMES_CUSTOM_CLOUD_API_NEAR_AI_API_KEY and /etc/odile/key.env is missing`
+(measured: `SystemExit` code 1) from `ensure_env`, and the deploy stops at its
+tenant **dry run** with `error: the tenant dry run failed` before the apply's
+write path starts. On the demo the store is present (§2), so the deploy is still
+the recovery — the recovery depends on the store, not on the `.env`.
 
 **The writer rules this decision adds:**
 
@@ -164,10 +203,19 @@ Closing it sooner than A2 is Savio's call.
 `apply_demo_public.py` and `installer/odile_install.py` (the module's own
 fixture style), with a temp `.env` + state:
 
-1. `test_a_deploy_set_signin_survives_the_first_visit_run` — fixture A, run the
-   deploy's stamp, then `installer.ensure_env(first_visit=True)`: `changed` is
-   False, the hash is byte-identical, the published password still verifies.
-   **This is the defect; it fails before the fix.**
+1. `test_a_deploy_set_signin_survives_the_first_visit_run` — the fixture `.env`
+   carries the deploy's own shape: **four keys**, the three allowlisted plus
+   `HERMES_CUSTOM_CLOUD_API_NEAR_AI_API_KEY` (`ensure_env`,
+   `apply_demo_public.py:1071-1076`; point `apply.ENV_FILE`/`apply.KEY_STORE`
+   at the temp files, as `TenantProgramTests` points its paths); the state is
+   stamped by the deploy. Run `installer.ensure_env(first_visit=True)`:
+   `changed` is **True** (`rewrite … outside the allowlist: 1` — the fourth key
+   is outside the installer's three-key template), the hash is
+   **byte-identical**, the published password still verifies, and the Near AI key
+   is no longer in the `.env`. On a copy cut down to the three allowlisted keys
+   the same run is `changed=False`; assert both, so the test says which shape
+   produces which `changed`. **This is the defect; the hash assertion fails
+   before the fix.**
 2. `test_without_the_stamp_the_image_hash_still_dies` — fixture A without the
    deploy: the installer replaces the hash and the image password stops
    verifying. **The ODL-521 fence; it must stay green.**
@@ -185,8 +233,13 @@ fixture style), with a temp `.env` + state:
 
 The builder's live checks on the demo: the forced run's report row for the
 sign-in hash reads PASS before and after; `GET /first-visit?t=<token>` answers
-410 after a deploy-set sign-in; `check_demo_public.py --password-file …` is
-73/0; the judge sign-in over loopback is 200.
+410 after a deploy-set sign-in; the forced run's `.env` line reads
+`rewrite … (outside the allowlist: 1)` and the file then has three keys, so
+`check_demo_public.py`'s "the .env carries the one Near AI key" row (`:649`) is
+red until the deploy re-adds it from `/etc/odile/key.env`; the deploy's dry run
+prints the first-visit state's `same`/`would write` row and the apply writes it;
+`check_demo_public.py --password-file …` is 73/0; the judge sign-in over
+loopback is 200.
 
 ## 7. Files the builder card touches
 
@@ -196,9 +249,15 @@ sign-in hash reads PASS before and after; `GET /first-visit?t=<token>` answers
 - `tests/test_demo_public.py` — the class in §6.
 - `docs/runbooks/demo-public.md` §6 — re-cut the "forced run shuts the sign-in"
   paragraph: the trap is the **pre-fix** record (measured 2026-11-21); after
-  this card a forced run keeps the deploy-set sign-in, and the page recovery
-  steps remain only for a machine whose state is missing. Keep the
-  `webapp.public_url` paragraph unchanged — this card does not touch it.
+  this card a forced run keeps the deploy-set sign-in hash, and the page
+  recovery steps remain only for a machine whose state is missing. It must also
+  say that the run still rewrites the `.env` to the installer's three keys
+  (`rewrite … outside the allowlist: 1`): the Near AI key leaves the file, and
+  the deploy re-adds it from `/etc/odile/key.env` (present on the demo,
+  measured 2026-11-22; the deploy stops at its tenant dry run when the store is
+  missing), so §6's "the deploy is the recovery either way" depends on that
+  store. Keep the `webapp.public_url` paragraph unchanged — this card does not
+  touch it.
 - Not `installer/odile_install.py` in this cut: the docstring's "the page has
   written" becomes "a writer of the owner's sign-in has recorded it" in ODL-925's
   re-sign, where the installer is re-embedded anyway.
@@ -216,6 +275,12 @@ sign-in hash reads PASS before and after; `GET /first-visit?t=<token>` answers
   (`deploy/demo-host/apply_demo_public.py` docstring).
 - **The tenant token window** of §5 remains until ODL-925; it is a schedule
   decision (A2), not this card's to accept.
+- **A forced run takes the Near AI key out of a deploy-written `.env`.** The
+  installer rewrites the file to its three-key template, so the fourth key
+  leaves; the next deploy re-adds it from `/etc/odile/key.env` (measured
+  present on the demo, §2) and stops at its tenant dry run when that store is
+  missing. This is true before and after this card; the stamp changes only
+  whether the hash survives.
 - The state file is a 0600 root file on the guest; the deploy, the page and the
   installer all run as root there, so the lock is against lost updates, not
   against a local privilege boundary. No non-root writer exists.
