@@ -63,13 +63,12 @@ Hello,
 
 One recovery code resets both: your account password at the account page and
 your machine's sign-in on the machine. There is no emailed reset. A lost Odile
-sign-in is reset on the machine with your recovery code; HQ cannot reset your
-machine's sign-in. Open
-https://<slug>.odile.fyi/first-visit/reset, enter the recovery code you saved at
-your first sign-in, then choose a new sign-in. This changes this machine's
-sign-in; your account password is reset at the account page with the same code.
-Your recovery code works at both places until you replace it; using it does not
-spend it.
+sign-in is reset on the machine with your recovery code; HQ cannot reset your machine's sign-in.
+Open https://<slug>.odile.fyi/first-visit/reset, enter the recovery code you
+saved at your first sign-in, then choose a new sign-in. This changes this
+machine's sign-in; your account password is reset at the account page with the
+same code. Your recovery code works at both places until you replace it; using
+it does not spend it.
 
 If you lose your recovery code there is no other way back: you start a new
 account, and a backup is the only way to bring the files.
