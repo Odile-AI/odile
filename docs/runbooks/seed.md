@@ -185,6 +185,15 @@ the same one is invalidated, so keep one holder (the control plane).
 Without `near_account` nothing is minted and the seed carries the config's
 shared `near_api_key` — alpha.0's manual path and the bench/sim shape. That is
 one line, never a default, so a host with no credential cannot mint by accident.
+It reaches only a tenant with **no** key record: a tenant that already owns a key
+cannot be put back on the shared one. `odilectl provision` on such a tenant
+refuses **before** the order — `exit 4`, zero `POST …/create` calls:
+
+> provision: odl-keyc owns the NEAR AI key sk-…**** (odile-odl-keyc), but this
+> config has no `near_account`, so this run could neither re-bind nor replace it;
+> restore the switch or destroy the tenant first
+
+A token minted behind its back still exchanges to `503 no_inference_key`.
 
 ### 1. Issue — at provision, before the order
 
@@ -209,7 +218,7 @@ path that mints a token:
 | Path | Raw key still waits | Raw key already left HQ |
 |---|---|---|
 | `odilectl provision <slug> --apply` | the same key is re-bound to the new token; nothing minted | a new key is minted (the old one revoked at the provider); install the machine again |
-| `seed.py token rotate` / `token issue` | the same key is re-bound to the token just printed | refused `409 key_left_hq`, nothing minted, no live token ended; run `odilectl provision` |
+| `seed.py token rotate` / `token issue` | the same key is re-bound to the token just printed; an earlier live token for the tenant then answers `503 no_inference_key` (it no longer owns the key) | refused `409 key_left_hq`, nothing minted, no live token ended; run `odilectl provision` |
 | the exchange (`POST /seed`) | the seed carries that key; the entry is removed | refused `503 no_inference_key`, token unspent; run `odilectl provision` |
 
 The exchange line is the last guard: a token minted behind these commands' back
@@ -343,6 +352,38 @@ grace period.
   (`state: reissued`), the old `sk-3d6****` answered `401 invalid_api_key`, and
   the new token's seed carried `sk-4c7****`. Both destroys resolved from the
   list call (`204` → `401`), and the handoff ended `{}` with 0 keys left.
+
+- **The §6a re-arm, both shapes** (the card's fixtures: the real seed service,
+  a recorded machine provider; `probe6a.py`). *A tenant that owns its key*
+  (`odl-keya`, the shape every provision leaves): the first exchange answered
+  `200` with the instance's own key and emptied the handoff; un-ending that
+  token's row (`used_at = NULL`, expiry +30 days) made it `live` again, and the
+  reinstall's exchange answered
+
+  ```
+  503 {"error":"odl-keya owns its own NEAR AI key, but no raw key waits for
+  this token; run `odilectl provision odl-keya --apply` again (the token is not
+  spent) and redeem the token it prints","reason":"no_inference_key"}
+  ```
+
+  with the row still **unspent**. `provision --apply` then reported
+
+  ```
+  "state": "reissued", "key_prefix": "sk-…****"
+  "reason": "it replaces sk-…****, which was revoked at the provider; the live
+  machine must be installed again with the new setup token to pick the new key
+  up"
+  ```
+
+  with one provider `DELETE` recorded for the old key, and the new token's seed
+  carried the new key only (the old one and the shared fallback both `False`;
+  handoff `{}`). *A tenant with no key record* (`odl-keyb`, the bench/manual
+  shape): the same reset replayed the seed, which carried the config's shared
+  key. §6a now says which repair applies.
+- **The `near_account` switch refuses a keyed tenant before the order.**
+  `provision` with the switch removed on a tenant that owns a key exits `4`
+  with the message quoted in §2a above and made **zero**
+  `POST …/create` calls.
 
 Values differ run to run: a second run of the probes above minted
 `sk-143****`/`sk-f50****` and reached `Spent: $0.0010209`; the shapes were
@@ -795,7 +836,7 @@ PY
 | Symptom | Likely cause | Fix |
 |---|---|---|
 | `410 used` on the first attempt | the installer retried or reused an old token | use the cached `/etc/odile/seed.json`; otherwise `rotate` and re-email |
-| `410 used` on a **reinstall** of an image already built | the token baked into that image's command line was spent by its first boot | un-end that row (§6a) — `rotate` mints a plaintext the sealed command line does not carry |
+| `410 used` on a **reinstall** of an image already built | the token baked into that image's command line was spent by its first boot | tenant with no key record: un-end that row (§6a). Tenant that owns a key: the exchange answers `503 no_inference_key` instead (§6a) — `odilectl provision <slug> --apply` mints the replacement key and the token that carries it, and the machine is installed with that token; `rotate` mints a plaintext the sealed command line does not carry |
 | `410 expired` | more than 24 h between email and install | `rotate`; the ready email's token is dead by design |
 | `403 wrong_instance` | token minted for another instance (rebuild, swap) | `rotate --instance <new id>` |
 | `404 unknown_token` | typo, or a token from before a rotation | `token list --tenant <slug>`; rotate |
@@ -831,8 +872,17 @@ done marker anyway, carrying `rc=1`, so every later boot prints
 ([`demo-public.md`](demo-public.md) §6). The box comes up with the tenant's own
 Caddy block only and serves nothing.
 
-The repair is to un-end the row of the token that image carries, **before** the
-reinstall and in the same maintenance window:
+Which repair applies depends on one thing: does the tenant own its own NEAR AI
+key? Every tenant `odilectl provision` creates has one (ODL-242); a bench or
+manual tenant with no key record does not.
+
+| The tenant | After the reset, the reinstall's exchange answers | The repair |
+|---|---|---|
+| **owns a key** (a live `tenant_keys` row) | `503 no_inference_key` — "… owns its own NEAR AI key, but no raw key waits for this token; run `odilectl provision <slug> --apply` again (the token is not spent) …" — and the row stays **unspent** | mint again and install with the new token (below) |
+| **no key record** (bench/manual) | `200`; the seed carries the config's shared `near_api_key` (`503` if the config has none) | un-end the row, below |
+
+For a tenant with **no** key record the repair is to un-end the row of the token
+that image carries, **before** the reinstall and in the same maintenance window:
 
 ```sh
 # 1. a copy you can put back. The database is WAL, so a plain cp of the .db
@@ -869,9 +919,49 @@ sudo -u odile sqlite3 /var/lib/odile/waitlist.db \
 ```
 
 That one un-ends **every** token the instance ever held, including the ones
-`rotate` and `bind` ended. Each still redeems only this tenant's own seed (§7),
-so it is not a cross-tenant hole — it is a wider set of plaintexts that can
-replay the seed, some of them in old ready emails. Name the hash when you can.
+`rotate` and `bind` ended. For a tenant with no key record each still redeems
+only this tenant's own seed (§7), so it is not a cross-tenant hole — it is a
+wider set of plaintexts that can replay the seed, some of them in old ready
+emails. For a tenant that owns a key every un-ended token answers `503`
+instead (below), so there the blunt form only leaves rows `live` that seed
+nothing. Name the hash when you can.
+
+**A tenant that owns its key: mint again, and install with the new token.** The
+reset cannot repair that tenant. Its first boot removed the raw key from the
+seed handoff (`take_issued_key`) and HQ keeps no copy, so the un-ended row has
+nothing to hand over — the exchange refuses `503 no_inference_key` rather than
+seeding the config's shared key, because a machine that owns a key must keep its
+own `spendLimit` and its own revoke. The key is minted again:
+
+```sh
+odilectl provision <slug> --apply     # a live machine: re-issues, orders nothing
+#   inference: odile-… sk-…**** (cap $10.00; the provider's spendLimit)
+#   inference: it replaces sk-…****, which was revoked at the provider; the live
+#              machine must be installed again with the new setup token to pick
+#              the new key up
+#   setup token: <64 hex>
+```
+
+The run revokes the old key at the provider — the running machine's next
+inference call answers `401 invalid_api_key` — and mints the new one with this
+instance's `spendLimit`. The token it prints must reach the command line the
+machine boots, because the token being exchanged is the one on that line:
+
+- **A per-release UKI** (the production shape): the line is entered in the panel
+  ([`image.md`](image.md) §9 step 2), so replace `odile.token=` there and
+  reinstall; the boot exchanges the new token and installs with the new key.
+- **A UKI with the line baked in**: the disk is sealed to exactly the bytes the
+  UKI measures, so rebuild it with a line carrying the new `odile.token=`
+  (`sealed-image.sh --cmdline-file FILE`, [`image.md`](image.md) §5,
+  "Rebuilding to an existing line") and boot that.
+
+Measured 2026-11-22 on this host with the card's fixtures (`probe6a.py`; the
+transcript is in §2a's Measured block): the first exchange answered `200` with
+the instance's own key and left the handoff `{}`; after the reset the exchange
+answered `503 no_inference_key` with the row still unspent; `provision --apply`
+minted a second key and the provider recorded one `DELETE` for the first; the
+new token's seed carried the new key only. The same reset on a tenant with no
+key record replayed the seed with the config's shared key.
 
 What the reset does and does not move:
 
@@ -887,8 +977,12 @@ What the reset does and does not move:
 - **Reset and reinstall in one window.** While `used_at` is NULL the
   *still-running* machine's boot-record POST is refused `409 not_redeemed`
   (`record_for_token` requires a spent token). The **log** line says so — on a
-  converged boot the console is exactly `odile-firstboot: same` — the machine
-  keeps serving, and the reinstall's own exchange spends the row again.
+  converged boot the console is exactly `odile-firstboot: same` — and the
+  machine keeps serving. For a tenant with no key record the reinstall's own
+  exchange spends the row again; for a tenant that owns a key the exchange
+  refuses `503 no_inference_key` and the row stays unspent, so the reinstall
+  that follows `provision` (with the token it printed) leaves the un-ended row
+  live and unused — harmless.
 - **An expired row does not break a running machine, but it silences the boot
   record.** The exchange installs once; the same token is also the bearer for
   the boot-record POST on every boot, and `record_for_token` answers an expired
@@ -897,11 +991,14 @@ What the reset does and does not move:
   `recorded_at` never moves on a replay — it is the first record's stamp, like
   `installed_at` (ODL-218 follow-up). Nothing on the box changes until the next
   reinstall, and a reset re-arms the record along with the token.
-- **A replay hands over machine credentials.** The seed carries the NEAR key and
-  the mail relay secret, and a tenant provisioned as a rebuild also gets its
-  `rebuild` block, sealed under this same token (`/var/lib/odile/seed-rebuilds.json`,
-  the restic repository password). The reset re-arms a machine's credentials,
-  not just its install: whoever holds that image holds the token.
+- **A replay hands over machine credentials — for a tenant with no key record.**
+  That seed carries the mail relay secret, the config's shared NEAR key, and a
+  tenant provisioned as a rebuild also gets its `rebuild` block, sealed under
+  this same token (`/var/lib/odile/seed-rebuilds.json`, the restic repository
+  password): the reset re-arms a machine's credentials, not just its install,
+  and whoever holds that image holds the token. A tenant that owns its own key
+  is the exception: its exchange refuses `503 no_inference_key` (above) and
+  hands over nothing at all until `provision` has minted a replacement key.
 
 A machine booted from an image **built with someone else's `bb.iid`** answers
 `403 wrong_instance` only while that token is unspent; once the token has been
