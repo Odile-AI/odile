@@ -1115,6 +1115,26 @@ manifest `7031d4a0…`). The id ledger: `-4` is t_509f85e4's support-grant help 
 (15:30Z), `-5` was this card's pre-review cut (16:35Z), and `-6` is later than
 every cut by `generated_at` (17:45Z).
 
+**The `2026.11.22-7` cut (t_69a749f0, the installer's docstring names the
+deployer that runs).** The module docstring said the tenant install's pure
+helpers "are the same ones `deploy/demo-host/deploy_demo_host.py` calls"; that
+path is on no ref (`git ls-files` and `git log --all` both empty). It now names
+the demo host's live deployer, `deploy/demo-host/apply_demo_public.py`, and says
+which helpers are really shared: the scrypt password format and the atomic write
+have independent copies there, while the `.env` allowlist and the managed-block
+config merge exist only in the installer. `install.md` §12.6 has the full
+record: installer `430d31a7…` (1,563,383 bytes), manifest `80ccb90b…` (50,044
+bytes, 48 skills, audit `6d3f7be0…`; its diff against `-6` is `installer_sha256`
+alone), skills `27d98728…` (852,651 bytes, unchanged), `release.json`
+`76fb23a7…` (1,378 bytes) naming `2026.11.22-7` at `2026-11-22T20:32:00Z`,
+`--verify-signature` OK on the checkout's installer (`signature: OK (sha256
+430d31a7…)`), a one-byte edit `fd890e30…` (1,563,384 bytes) and `signature:
+BAD`, exit 3, and `tools/recut_release.py --check` eleven `ok` lines. It is
+committed, not deployed: measured 2026-11-22T20:26Z, the URL serves the deployed
+`2026.11.19-5` (installer `1d946c44…`, 1,503,889 bytes; manifest `7031d4a0…`).
+The id ledger: `-6` is t_e7e5ac73's vision-pin cut (17:45Z), and `-7` is later
+than every cut by `generated_at` (20:32Z).
+
 ### The manifest names the tenant backup program (2026-11-19)
 
 The installer's own `--manifest` has named `backup_sha256` since ODL-215, and
