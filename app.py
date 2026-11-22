@@ -705,6 +705,135 @@ def trial_end(start: str) -> str:
     return (at + timedelta(days=TRIAL_DAYS)).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+# The brand's date form is `6 November 2026`: no ordinal, no comma
+# (BRAND.md §Voice, dates and times). The month names are literal rather than
+# `%B`, so the service's locale cannot change a public page.
+MONTHS = ("January", "February", "March", "April", "May", "June", "July",
+          "August", "September", "October", "November", "December")
+
+
+def brand_date(stamp: str) -> str:
+    """An ISO timestamp as the brand's date: `4 December 2026`."""
+    try:
+        at = datetime.strptime((stamp or "")[:10], "%Y-%m-%d")
+    except ValueError:
+        return stamp or ""
+    return "%d %s %d" % (at.day, MONTHS[at.month - 1], at.year)
+
+
+def pinned_measurement() -> str:
+    """The 96-hex launch measurement the release pin promises.
+
+    The account page's resend writes the ready email from the rows; the
+    measurement is the same pin the verifier and `odilectl claim` use, so the
+    tester compares one value, not two.
+    """
+    with open(os.path.join(ROOT, "odile-verify.pin"), encoding="utf-8") as handle:
+        value = str(json.load(handle).get("measurement", "")).strip().lower()
+    if not re.fullmatch(r"[0-9a-f]{96}", value):
+        raise RuntimeError("the release pin carries no 96-hex measurement")
+    return value
+
+
+def _atomic_write(path: str, data: bytes) -> None:
+    """Write one queue file at 0600, replaced atomically under the lock."""
+    directory = os.path.dirname(path)
+    os.makedirs(directory, exist_ok=True)
+    try:
+        os.chmod(directory, 0o700)
+    except OSError:
+        pass
+    fd = os.open(path + ".tmp", os.O_CREAT | os.O_TRUNC | os.O_WRONLY, 0o600)
+    with os.fdopen(fd, "wb") as handle:
+        handle.write(data)
+    os.replace(path + ".tmp", path)
+
+
+_ready_lock = threading.Lock()
+
+
+def queue_ready(row: sqlite3.Row, tenant: sqlite3.Row | None) -> str:
+    """Queue the ready email for one ready account, with no setup token.
+
+    B-once retires the setup token from the ready email (Savio, 2026-11-20);
+    the token keeps its machine-side jobs — the seed badge and the rebuild-seal
+    key — and no link here carries it. The message is rebuilt from the facts
+    sidecar on every press, so a second press re-queues byte-for-byte the same
+    message: same Date, same Message-ID, same body, same attachment. A press
+    after the mailer removed the `.eml` restores those same bytes rather than
+    minting a new message.
+    """
+    slug = row["slug"]
+    outbox = claim.ReadyOutbox(OUTBOX)
+    facts_path = str(outbox.facts_path(slug))
+    message_path = str(outbox.message_path(slug))
+    kit_path = outbox.kit_path(slug)
+    with _ready_lock:
+        facts = None
+        if os.path.isfile(facts_path):
+            try:
+                with open(facts_path, encoding="utf-8") as handle:
+                    facts = json.load(handle)
+            except (OSError, ValueError):
+                facts = None
+        if facts is None and os.path.isfile(message_path):
+            # A message with no facts sidecar is already the queued bytes;
+            # re-queue it as it stands and mint nothing.
+            os.utime(message_path, None)
+            return message_path
+        if facts is None:
+            host = "%s.%s" % (slug, TENANT_DOMAIN)
+            url = "https://" + host
+            facts = {
+                "kind": "ready",
+                "slug": slug,
+                "to": row["email"],
+                "subject": claim.READY_SUBJECT,
+                "host": host,
+                "url": url,
+                "first_visit": url + "/first-visit",
+                "guide_url": claim.READY_GUIDE_URL,
+                "measurement": pinned_measurement(),
+                "ipv4": (tenant["ipv4"] if tenant is not None else row["ipv4"]),
+                "server_id": (tenant["server_id"] if tenant is not None
+                              else row["server_id"]),
+                "release": (tenant["release"] if tenant is not None else None),
+                "at": int(time.time()),
+                "message_id": make_msgid(idstring="odile-ready.%s" % slug,
+                                         domain="odile.fyi"),
+            }
+        at = int(facts.get("at") or time.time())
+        message_id = facts.get("message_id") or make_msgid(
+            idstring="odile-ready.%s" % slug, domain="odile.fyi")
+        url = str(facts.get("url") or "https://%s.%s" % (slug, TENANT_DOMAIN))
+        first_visit = str(facts.get("first_visit") or (url + "/first-visit"))
+        body = claim.ready_body(
+            url=url,
+            measurement=str(facts.get("measurement") or pinned_measurement()),
+            first_visit_url=first_visit,
+            guide_url=str(facts.get("guide_url") or claim.READY_GUIDE_URL),
+        )
+        message = EmailMessage()
+        message["From"] = claim.READY_SENDER
+        message["Reply-To"] = claim.READY_REPLY_TO
+        message["To"] = str(facts.get("to") or row["email"])
+        message["Subject"] = str(facts.get("subject") or claim.READY_SUBJECT)
+        message["Date"] = formatdate(at, usegmt=True)
+        message["Message-ID"] = message_id
+        message.set_content(body)
+        if kit_path.is_file() and kit_path.stat().st_size:
+            filename = "odile-%s-recovery-kit.txt" % slug
+            message.add_attachment(kit_path.read_bytes(), maintype="text",
+                                   subtype="plain", filename=filename)
+            facts["kit_filename"] = filename
+        facts["at_iso"] = datetime.fromtimestamp(
+            at, timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        _atomic_write(facts_path, (json.dumps(
+            facts, indent=2, sort_keys=True) + "\n").encode("utf-8"))
+        _atomic_write(message_path, message.as_bytes())
+        return message_path
+
+
 def queue_confirm(account: dict, token: str) -> str:
     """Write the confirmation mail once per account; return its path.
 
@@ -840,22 +969,22 @@ button:focus-visible{outline:2px solid var(--ink);outline-offset:3px}
 
 
 def render_account(*, title: str, body: str) -> str:
-    """The account page seam (ODL-583 owns the page; this card owns its states).
+    """The sign-in seam's shell (the finished account page is account.html).
 
-    Deliberately small and server-rendered: the four states are the wait copy
-    (confirm, building, ready, failed), the trial's end date is read from the
-    account row, and the retry action is a plain form POST. No JavaScript.
+    Deliberately small and server-rendered: /login and /signin are one form,
+    and the same shell carries a page-level error. No JavaScript.
     """
     return ACCOUNT_FORM.replace("{{TITLE}}", html.escape(title)).replace("{{BODY}}", body)
 
 
-def signin_body(*, email: str = "", error: str = "") -> str:
+def signin_body(*, email: str = "", error: str = "",
+                action: str = "/signin") -> str:
     slot = err_slot(error, "signin-err") if error else ""
     invalid = ' aria-invalid="true" aria-describedby="signin-err"' if error else ""
     return (
         "<h1>Open your account.</h1>"
         '<p class="lede">Your account page holds your machine\'s address and its state.</p>'
-        '<form method="post" action="/signin" novalidate>'
+        '<form method="post" action="%s" novalidate>'
         '<label for="email">Email</label>'
         '<input id="email" name="email" type="email" value="%s" maxlength="254" '
         'autocomplete="email" inputmode="email" spellcheck="false"%s>'
@@ -866,44 +995,65 @@ def signin_body(*, email: str = "", error: str = "") -> str:
         '<button type="submit">Sign in</button>'
         "</form>"
         '<p class="note"><a href="/register">Register</a></p>'
-        % (html.escape(email), invalid, PASSWORD_MIN,
-           ' aria-describedby="signin-err"' if error else "", slot)
+        % (html.escape(action, quote=True), html.escape(email), invalid,
+           PASSWORD_MIN, ' aria-describedby="signin-err"' if error else "", slot)
     )
 
 
-def account_body(row: sqlite3.Row, *, tenant_domain: str) -> str:
-    """The four signed-in states, with the wait copy and the trial's end date."""
-    state = row["provision_state"]
-    trial = "Your trial ends on %s." % html.escape((row["trial_ends_at"] or "")[:10])
-    head = "<h1>%s</h1>"
+# Four states, one page. The block names are the row's state, not a URL: the
+# unused blocks are removed on the server, so no unsubstituted slot reaches a
+# browser. `confirm` is the address that is not verified yet; it wins over
+# `provision_state`, which is still `unverified`.
+ACCOUNT_STATE_RE = re.compile(
+    r"<!--(confirm|building|ready|failed)-->(.*?)<!--/\1-->", re.S)
+ACCOUNT_PAGE_TITLES = {
+    "confirm": "Check your email \u2014 Odile",
+    "building": "Building \u2014 Odile",
+    "ready": "Your machine is ready \u2014 Odile",
+    "failed": "The machine could not be built \u2014 Odile",
+}
+
+
+def account_state(row: sqlite3.Row) -> str:
+    """The one state the page shows, from the account row alone."""
     if not row["email_verified_at"]:
-        return (head % "Check your email."
-                + '<p class="lede">We emailed a link to confirm the address. '
-                "The machine is ordered after you confirm.</p>"
-                + '<p class="note">%s</p>' % html.escape(row["email"])
-                + '<p class="note">%s</p>' % trial)
+        return "confirm"
+    state = row["provision_state"]
     if state in ("unverified", "queued", "building"):
-        return (head % "Building."
-                + '<p class="lede">You can close this page. We email you when it is '
-                "ready.</p>"
-                + '<p class="note">The first boot prepares the encrypted disk, which '
-                "is the slow part.</p>"
-                + '<p class="note">%s</p>' % trial)
-    if state == "ready":
-        name = "%s.%s" % (row["slug"], tenant_domain)
-        return (head % "Your machine is ready."
-                + '<p class="lede">%s</p>' % html.escape(name)
-                + '<p class="note">The address is %s. Check its report at '
-                "<a href=\"https://%s/verify\">https://%s/verify</a>.</p>"
-                % (html.escape(row["ipv4"] or "-"), html.escape(name), html.escape(name))
-                + '<p class="note">%s</p>' % trial)
-    return (head % "The machine could not be built."
-            + '<p class="lede">The order did not complete. Nothing was billed.</p>'
-            + ('<p class="note">%s</p>' % html.escape(row["provision_reason"] or "")
-               if row["provision_reason"] else "")
-            + '<form method="post" action="/account/retry">'
-            '<button type="submit">Try again</button></form>'
-            + '<p class="note">%s</p>' % trial)
+        return "building"
+    return "ready" if state == "ready" else "failed"
+
+
+def render_account_page(row: sqlite3.Row,
+                        tenant: sqlite3.Row | None = None) -> str:
+    """The finished account page, server-rendered from the account and tenant.
+
+    The machine's address and IPv4 come from the tenant row (the record of the
+    machine); the state and the trial come from the account row (the person's
+    record). The trial line is one date in the brand's form, read from
+    `trial_ends_at`; there is no clock and no countdown. No JavaScript, no
+    third-party request.
+    """
+    state = account_state(row)
+    slug = row["slug"]
+    host = "%s.%s" % (slug, TENANT_DOMAIN)
+    ipv4 = (tenant["ipv4"] if tenant is not None and tenant["ipv4"] else row["ipv4"]) or ""
+    body = page("account.html", TITLE=html.escape(ACCOUNT_PAGE_TITLES[state]))
+    body = ACCOUNT_STATE_RE.sub(
+        lambda match: match.group(2) if match.group(1) == state else "", body)
+    values = {
+        "EMAIL": html.escape(row["email"]),
+        "MACHINE": html.escape(host),
+        "IPV4": html.escape(ipv4),
+        "REPORT": html.escape("https://%s/verify" % host, quote=True),
+        "OPEN": html.escape("https://%s/login" % host, quote=True),
+        "TRIAL": html.escape(brand_date(row["trial_ends_at"])),
+    }
+    for key, value in values.items():
+        body = body.replace("{{%s}}" % key, value)
+    if "{{" in body:
+        raise RuntimeError("the account page has an unfilled slot")
+    return body
 
 
 # The claim form has two fields, and each owns one error slot: the message
@@ -1269,11 +1419,19 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(405, "method not allowed: POST a confirmation token\n",
                                   "text/plain; charset=utf-8", head=head)
             return self._confirm_page(token, head)
-        if path == "/signin":
-            return self._send(200, render_account(title="Sign in \u2014 Odile",
-                                                  body=signin_body()), head=head)
+        if path in ("/login", "/signin"):
+            return self._send(200, render_account(
+                title="Sign in \u2014 Odile",
+                body=signin_body(action=path)), head=head)
         if path == "/account":
             return self._account_page(head)
+        if path.startswith("/account/"):
+            # The same page addressed by the machine it belongs to: a
+            # signed-in request for another account's machine is 404.
+            slug = path[len("/account/"):].strip("/")
+            if path not in ("/account/retry", "/account/resend") and slug \
+                    and "/" not in slug:
+                return self._account_page(head, slug)
         if path == "/claim":
             # The one-time token in the invite is what opens the page. A bare
             # GET keeps the method note ODL-220 pinned for an API caller.
@@ -1421,16 +1579,16 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         path = urlparse(self.path).path
         if path not in ("/waitlist", "/claim", "/register", "/confirm", "/signin",
-                        "/account/retry"):
+                        "/login", "/account/retry", "/account/resend"):
             return self._send(405, "method not allowed\n", "text/plain; charset=utf-8")
 
         try:
             length = int(self.headers.get("Content-Length", "0"))
         except ValueError:
             length = 0
-        # The retry action is a form with no fields: an empty body is the
-        # request, not a malformed one (the page's button is the whole POST).
-        empty_ok = path == "/account/retry"
+        # The retry and resend actions are forms with no fields: an empty body
+        # is the request, not a malformed one (the page's button is the POST).
+        empty_ok = path in ("/account/retry", "/account/resend")
         if length < 0 or length > MAX_BODY or (length == 0 and not empty_ok):
             if path == "/claim":
                 return self._send(413, "That request was too large.\n",
@@ -1442,7 +1600,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(413, render_register(
                     state="confirm", error="That request was too large."))
             return self._send(413, render_account(
-                title="Sign in — Odile", body=signin_body(
+                title="Sign in \u2014 Odile", body=signin_body(
+                    action=path if path in ("/login", "/signin") else "/signin",
                     error="That request was too large.")))
 
         raw = self.rfile.read(length).decode("utf-8", "replace")
@@ -1453,10 +1612,12 @@ class Handler(BaseHTTPRequestHandler):
             return self._register(fields)
         if path == "/confirm":
             return self._confirm(fields)
-        if path == "/signin":
+        if path in ("/login", "/signin"):
             return self._signin(fields)
         if path == "/account/retry":
             return self._account_retry()
+        if path == "/account/resend":
+            return self._account_resend()
         email_raw = (fields.get("email") or [""])[0]
 
         # honeypot: filled only by bots. Pretend everything went fine.
@@ -1651,14 +1812,6 @@ class Handler(BaseHTTPRequestHandler):
 
     # -- accounts ---------------------------------------------------------
 
-    ACCOUNT_TITLES_BY_STATE = {
-        "unverified": "Check your email \u2014 Odile",
-        "queued": "Building \u2014 Odile",
-        "building": "Building \u2014 Odile",
-        "ready": "Your machine is ready \u2014 Odile",
-        "failed": "The machine could not be built \u2014 Odile",
-    }
-
     def _secure(self) -> bool:
         """True when the browser reached the app over TLS (Caddy's header)."""
         proto = (self.headers.get("X-Forwarded-Proto") or "").split(",")[0]
@@ -1717,24 +1870,36 @@ class Handler(BaseHTTPRequestHandler):
             return None
         return row
 
-    def _account_page(self, head):
+    def _account_page(self, head, slug: str | None = None):
+        """The finished page, read from the account row and its tenant row.
+
+        A signed-out request goes to /login. A signed-in request naming a
+        machine other than this account's is 404: the page is the person's, not
+        a directory of tenants.
+        """
         row = self._session_account()
         if row is None:
-            return self._send(303, "", head=head, location="/signin",
+            return self._send(303, "", head=head, location="/login",
                               headers={"Set-Cookie": _clear_cookie()})
-        return self._send(200, render_account(
-            title=self.ACCOUNT_TITLES_BY_STATE.get(row["provision_state"],
-                                                   "Your account \u2014 Odile"),
-            body=account_body(row, tenant_domain=TENANT_DOMAIN)), head=head)
+        if slug is not None and slug != row["slug"]:
+            return self._send(404, "not found\n", "text/plain; charset=utf-8",
+                              head=head)
+        con = db()
+        try:
+            tenant = con.execute("SELECT * FROM tenants WHERE slug = ?",
+                                 (row["slug"],)).fetchone()
+        finally:
+            con.close()
+        return self._send(200, render_account_page(row, tenant=tenant), head=head)
 
     def _account_retry(self):
-        """Re-queue a failed provision: the retryable state's one action."""
+        """Re-queue a failed provision: the retryable state's one move."""
         if not self._same_origin():
             return self._send(403, "forbidden: cross-site form\n",
                               "text/plain; charset=utf-8")
         row = self._session_account()
         if row is None:
-            return self._send(303, "", location="/signin",
+            return self._send(303, "", location="/login",
                               headers={"Set-Cookie": _clear_cookie()})
         con = db()
         try:
@@ -1747,6 +1912,41 @@ class Handler(BaseHTTPRequestHandler):
             con.commit()
         finally:
             con.close()
+        return self._send(303, "", location="/account")
+
+    def _account_resend(self):
+        """Re-queue the ready email; no new token, no row moves.
+
+        B-once means the ready email carries no setup token, so this is a plain
+        resend: the same bytes, the same machine URL, the same state. A second
+        press is idempotent in effect. Before `ready` there is no email to
+        send, so the press answers the page and changes nothing.
+        """
+        if not self._same_origin():
+            return self._send(403, "forbidden: cross-site form\n",
+                              "text/plain; charset=utf-8")
+        row = self._session_account()
+        if row is None:
+            return self._send(303, "", location="/login",
+                              headers={"Set-Cookie": _clear_cookie()})
+        if not allow(self._client_ip(), "resend"):
+            return self._send(429, "Too many resends. Try again in ten minutes.\n",
+                              "text/plain; charset=utf-8",
+                              headers={"Retry-After": str(RATE_WINDOW)})
+        if account_state(row) != "ready":
+            return self._send(303, "", location="/account")
+        con = db()
+        try:
+            tenant = con.execute("SELECT * FROM tenants WHERE slug = ?",
+                                 (row["slug"],)).fetchone()
+        finally:
+            con.close()
+        try:
+            queue_ready(row, tenant)
+        except (OSError, ValueError, RuntimeError):
+            traceback.print_exc(file=sys.stderr)
+            return self._send(500, "The ready email could not be queued. Try again?\n",
+                              "text/plain; charset=utf-8")
         return self._send(303, "", location="/account")
 
     def _register(self, fields):
@@ -1957,11 +2157,14 @@ class Handler(BaseHTTPRequestHandler):
         if not self._same_origin():
             return self._send(403, "forbidden: cross-site form\n",
                               "text/plain; charset=utf-8")
+        action = urlparse(self.path).path
+        if action not in ("/login", "/signin"):
+            action = "/signin"
         email_raw = (fields.get("email") or [""])[0]
         if not allow(self._client_ip(), "signin"):
             return self._send(429, render_account(
                 title="Sign in \u2014 Odile",
-                body=signin_body(email=email_raw,
+                body=signin_body(email=email_raw, action=action,
                                  error="Too many sign-ins from here. Try again in ten minutes.")),
                 headers={"Retry-After": str(RATE_WINDOW)})
         email = valid_email(email_raw)
@@ -1976,7 +2179,7 @@ class Handler(BaseHTTPRequestHandler):
         if row is None or not verify_password_or_dummy(password, row["password_hash"]):
             return self._send(401, render_account(
                 title="Sign in \u2014 Odile",
-                body=signin_body(email=email_raw,
+                body=signin_body(email=email_raw, action=action,
                                  error="That email and password do not match.")))
         return self._send(303, "", location="/account", headers=self._cookie_pair(row))
 
