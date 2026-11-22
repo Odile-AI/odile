@@ -311,14 +311,19 @@ class SeedFixture(unittest.TestCase):
         os.chmod(cls.credential, 0o600)
 
         # The seed config deliberately carries *no* near_api_key: every seed in
-        # these tests must come from the per-instance handoff.
+        # these tests must come from the per-instance handoff. ODL-469 made
+        # mail_relay.tls_ca required, so the fixture carries a shape-valid PEM
+        # (the relay's certificate is what a tenant pins).
         config = {
             "model": "deepseek-ai/DeepSeek-V4.1-Flash-1017",
             "support_public_key": KEY_TEXT,
             "backup_repo_url": "sftp:odile-backup@backup.example:/tenants/{slug}",
             "hermes_version": "2026.11.1",
             "mail_relay": {"host": "smtp.example", "port": 587,
-                           "username": "{slug}@mail.example", "secret": "relay-test"},
+                           "username": "{slug}@mail.example", "secret": "relay-test",
+                           "tls_ca": ("-----BEGIN CERTIFICATE-----\n"
+                                      "MIIBhTCCASugAwIBAgIUTESTRELAYCA0000000000000000\n"
+                                      "-----END CERTIFICATE-----\n")},
         }
         with open(cls.config, "w", encoding="utf-8") as handle:
             json.dump(config, handle)

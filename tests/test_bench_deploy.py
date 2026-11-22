@@ -97,7 +97,10 @@ PRODUCTION_CONFIG = {
     "backup_repo_url": "sftp:odile-backup@backup.odile.fyi:/tenants/{slug}",
     "hermes_version": "2026.11.1",
     "mail_relay": {"host": "smtp.mail.odile.fyi", "port": 587,
-                   "username": "{slug}@mail.odile.fyi", "secret": "relay-fixture"},
+                   "username": "{slug}@mail.odile.fyi", "secret": "relay-fixture",
+                   "tls_ca": ("-----BEGIN CERTIFICATE-----\n"
+                              "MIIBhTCCASugAwIBAgIUBENCHCA000000000000000000\n"
+                              "-----END CERTIFICATE-----\n")},
 }
 
 

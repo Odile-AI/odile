@@ -117,6 +117,10 @@ SEED_CONFIG = {
         "port": 587,
         "username": "{slug}@mail.odile.fyi",
         "secret": "relay-credential-0001",
+        # ODL-469: a seed without the relay's PEM cannot send the brief.
+        "tls_ca": ("-----BEGIN CERTIFICATE-----\n"
+                   "MIIBhTCCASugAwIBAgIURECIPECA000000000000000000\n"
+                   "-----END CERTIFICATE-----\n"),
     },
 }
 

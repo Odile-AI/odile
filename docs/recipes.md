@@ -1,6 +1,8 @@
 # The four recipes
 
-**Status:** M3 · **Card:** ODL-234 · **Tested:** a fresh scratch tenant, 9 November 2026 (`docs/evidence/odl-234/`).
+**Status:** A2 · **Card:** ODL-234 (the recipes), ODL-235 (the sender), ODL-469 (the tenant
+wiring) · **Tested:** a fresh scratch tenant, 22 November 2026 (`docs/evidence/odl-469/`,
+`docs/evidence/odl-234/`).
 
 Four things Odile does on day one without an API key, an OAuth app or an
 integration. Each one is a skill recipe with a tested prompt; two have a cron
@@ -9,7 +11,7 @@ open in the file browser.
 
 | Recipe | They ask | It lands in | Runs |
 |---|---|---|---|
-| Morning brief | "run my brief", "set up my brief" | `~/briefs/YYYY-MM-DD.md` | On demand, and daily at the time they chose |
+| Morning brief | "run my brief", "set up my brief" | `~/briefs/YYYY-MM-DD.md`, and the user's inbox when an address is on file | On demand, and daily at the time they chose |
 | Silent watchdog | "watch this page", "tell me when it changes" | `~/.hermes/watch/<slug>.json`, `~/.hermes/scripts/watch-<slug>.py`, `~/workspace/watchdog/<slug>.md` | A no-agent cron job; silent until the value changes |
 | Research memo | "research X", "look into X" | `~/workspace/memos/YYYY-MM-DD-<slug>.md` | On demand |
 | CSV chart | "analyse this CSV", "chart this file" | `~/workspace/analysis/<stem>-report.md` and `<stem>-chart.svg` | On demand |
@@ -28,6 +30,14 @@ standing context in `templates/tenant-agents.md` points at it.
   on what it will watch tomorrow. Under 200 words.
 - **File:** `~/briefs/YYYY-MM-DD.md`. The first-run ritual writes the first
   one; this recipe regenerates it or repairs the schedule.
+- **Email:** the job's last step is the installed sender —
+  `sudo -n /usr/bin/python3 ~/.hermes/scripts/send_brief.py` — which composes
+  the message from `~/.hermes/brief.txt`, sends it through Odile's relay as
+  `brief-<slug>@mail.odile.fyi`, and records the outcome. The address lives in
+  `~/.hermes/brief.json` (`{"to": "…"}`, 0600, written at first run or when
+  the user turns email on later); with no file the send exits 2 and the brief
+  stays in `~/briefs/`. The prompt tells the agent to report the sender's one
+  line, never to write its own mail code.
 - **Schedule:** one job named `Morning brief`, created from
   `templates/cron/morning-brief.json` with the user's IANA zone, the local
   time, `deliver: local` and the toolsets `web` and `terminal`. The prompt must
@@ -38,8 +48,9 @@ standing context in `templates/tenant-agents.md` points at it.
 - **Failure:** a failed lookup becomes one honest line in the brief; the file
   is still written. A failed cron create is reported as "the file is there, the
   schedule needs one more try", never as a schedule that does not exist.
-- **Not email:** the brief lands in `~/briefs/`. Delivery to an inbox is
-  ODL-235.
+- **Not email:** the brief lands in `~/briefs/` even when the send fails; the
+  inbox is the sender's half, and a failed send is recorded where the heartbeat
+  reads it rather than retried silently.
 
 ## Silent watchdog
 
@@ -67,7 +78,8 @@ standing context in `templates/tenant-agents.md` points at it.
   local`.
 - **Alerts:** each alert is appended to `~/workspace/watchdog/<slug>.md` and
   kept in the job's run output; both are visible in the file browser and the
-  cron panel. Email delivery is ODL-235. `deliver: origin` is deliberately not
+  cron panel. A watchdog has no email of its own; the brief's sender is the one
+  thing that writes to an inbox. `deliver: origin` is deliberately not
   used: the Webapp/API session is stateless, and a delivery that cannot resolve
   marks a correct alert as a failed run.
 - **Test before scheduling:** `--print-value` shows the compared value;
@@ -110,7 +122,7 @@ standing context in `templates/tenant-agents.md` points at it.
 
 | Not in V0.1 | Why | Earliest |
 |---|---|---|
-| Email delivery of the brief | The sender, per-tenant from-address and SPF/DKIM/DMARC are ODL-235 | M3, ODL-235 |
+| HTML email or attachments | The brief is plain text: the relay sees the message, and nothing renders on the far side | V0.2 |
 | Integrations (Gmail, Calendar, Drive) | The computer is the integration; OAuth is V0.2 | V0.2 |
 | A model picker or BYO key | One curated model, straight to NEAR AI | V0.2 |
 | Scheduled research or scheduled charts | On-demand is the job; a schedule is a feature the user has to want | V0.3 |
@@ -122,7 +134,11 @@ standing context in `templates/tenant-agents.md` points at it.
 - **The brief did not arrive.** Check the job in `cronjob_manage` (enabled,
   timezone, next run), then `ls -l ~/briefs/`. If the machine was locked at the
   scheduled time, the job runs on unlock; a missed brief is the
-  "waiting for owner" signal (ODL-235 will email it).
+  "waiting for owner" signal. When the file is there but the inbox is empty,
+  run the sender by hand (`sudo -n /usr/bin/python3
+  ~/.hermes/scripts/send_brief.py`) and read its one line; the record in
+  `/var/lib/odile/brief.json` carries the last error and travels in the signed
+  heartbeat.
 - **The watchdog is silent.** That is correct when nothing changed. Run
   `python3 ~/.hermes/scripts/watch-<slug>.py --debug`; the state file shows the
   last value, the failure count and the last check. If `--print-value` fails,

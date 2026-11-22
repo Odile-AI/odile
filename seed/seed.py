@@ -527,7 +527,8 @@ def load_config(path: str | None = None) -> dict:
             "(remove it, or give the fallback key)" % path
         )
     mail = config["mail_relay"]
-    for field, kind in (("host", str), ("port", int), ("username", str), ("secret", str)):
+    for field, kind in (("host", str), ("port", int), ("username", str), ("secret", str),
+                        ("tls_ca", str)):
         value = mail.get(field)
         if kind is int:
             ok = isinstance(value, int) and not isinstance(value, bool) and 0 < value < 65536
@@ -535,6 +536,12 @@ def load_config(path: str | None = None) -> dict:
             ok = isinstance(value, str) and bool(value.strip())
         if not ok:
             raise ConfigError("seed config %s: mail_relay.%s is missing or invalid" % (path, field))
+    # ODL-469: the relay's certificate is self-signed, so the seed has to carry
+    # the PEM or every tenant's brief fails at STARTTLS. A missing CA is refused
+    # here, at the only place a seed is minted, rather than discovered in an inbox.
+    ca = mail["tls_ca"]
+    if "-----BEGIN CERTIFICATE-----" not in ca or "-----END CERTIFICATE-----" not in ca:
+        raise ConfigError("seed config %s: mail_relay.tls_ca is not a PEM certificate" % path)
     return config
 
 
@@ -878,6 +885,8 @@ def build_seed(tenant: sqlite3.Row, instance_id: str, config: dict,
             "port": mail["port"],
             "username": fill(mail["username"], slug),
             "secret": fill(mail["secret"], slug),
+            # ODL-469: the relay's own certificate, so the tenant can pin it.
+            "tls_ca": fill(mail["tls_ca"], slug),
         },
         "hermes_version": fill(config["hermes_version"], slug),
     }

@@ -72,8 +72,27 @@ the job with these fields (the repo template is
   self-contained: the job runs in a fresh session and cannot see this chat.
 
 ```
-Morning brief for <name>, <zone>. Write ~/briefs/<today YYYY-MM-DD>.md, where the date is today in <zone> (TZ=<zone> date +%F). Include the date; one line of weather for <city> from https://wttr.in/<city>?format=3; one short item with a link for each of: <thing 1>; <thing 2>; <thing 3>; and one sentence on what you will watch tomorrow. Use web_search. Under 200 words. If a lookup fails, say so in one line and continue. Write the file even if some lookups fail.
+Morning brief for <name>, <zone>. Write ~/briefs/<today YYYY-MM-DD>.md, where the date is today in <zone> (TZ=<zone> date +%F). Include the date; one line of weather for <city> from https://wttr.in/<city>?format=3; one short item with a link for each of: <thing 1>; <thing 2>; <thing 3>; and one sentence on what you will watch tomorrow. Use web_search. Under 200 words. If a lookup fails, say so in one line and continue. Write the file even if some lookups fail. Do not re-implement the sender: as your last step run `sudo -n /usr/bin/python3 ~/.hermes/scripts/send_brief.py` and report its one line.
 ```
+
+**Email.** If they want the brief in an inbox too — or they said yes at first
+run and want the address changed — ask once: "Which address?" Check the shape
+(one `@`, a dot after it), then write the file the sender reads, in this turn:
+
+```sh
+mkdir -p ~/.hermes
+printf '{"to": "%s"}\n' "<address>" > ~/.hermes/brief.json
+chmod 600 ~/.hermes/brief.json
+cat ~/.hermes/brief.json
+```
+
+`~/.hermes/brief.json` is `{"to": "<address>"}` and nothing else; it stays on
+this machine and the seed carries no address. The job's prompt already ends with
+`sudo -n /usr/bin/python3 ~/.hermes/scripts/send_brief.py`, so there is nothing
+else to change: that command is the delivery, and the one line it prints is what
+you report. Never write your own mail code and never claim a send the sender did
+not print. With no address file the send exits 2 and the brief stays in
+`~/briefs/`; say so in one line if they asked why no email arrived.
 
 Verify, do not assume: read `$HOME/.hermes/cron/jobs.json` and confirm the job
 is enabled, its expression matches the time asked for, its timezone is the IANA
@@ -456,7 +475,8 @@ is correct, not a failure.
 **Done.** Say what is watched, how often it is checked, and where the alert
 lands: `~/workspace/watchdog/<slug>.md`, the history in the file browser, and
 the job's run output. They will hear from it only when the value changes or the
-page cannot be read three times. Email delivery is ODL-235. "Pause my watchdog"
+page cannot be read three times. A watchdog has no email of its own; the daily
+brief's sender is the one thing that writes to an inbox. "Pause my watchdog"
 means `cronjob_manage` edit with `enabled: false`; "stop watching" means remove
 the job and leave the files.
 

@@ -41,8 +41,9 @@ Success — `200`, `Cache-Control: no-store`, and the signed body:
   "model": "deepseek-ai/DeepSeek-V4.1-Flash-1017",
   "support_public_key": "ssh-ed25519 AAAA… support@odile.fyi",
   "backup_repo_url": "sftp:odile-backup@backup.odile.fyi:/tenants/odl-7f3a2c",
-  "mail_relay": {"host": "smtp.mail.odile.fyi", "port": 587,
-                 "username": "odl-7f3a2c@mail.odile.fyi", "secret": "…"},
+  "mail_relay": {"host": "mail.odile.fyi", "port": 587,
+                 "username": "odl-7f3a2c@mail.odile.fyi", "secret": "…",
+                 "tls_ca": "-----BEGIN CERTIFICATE-----\n…\n-----END CERTIFICATE-----\n"},
   "hermes_version": "2026.11.1"
 }
 ```
@@ -56,6 +57,12 @@ passphrase, no Webapp password, no LUKS material, and not even the user's public
 key or email address. The inference and mail-relay values are machine API
 credentials the installer writes into local config, not credentials that open the
 machine.
+
+The relay's own certificate travels inside `mail_relay.tls_ca` (ODL-469). It is
+not a secret: the relay's certificate is self-signed, so a tenant without it
+fails STARTTLS with `CERTIFICATE_VERIFY_FAILED` and the brief never leaves the
+machine. The installer caches it at `/etc/odile/mail-ca.pem` (0644) and the
+installed sender reads the same PEM out of the seed.
 
 Refusals are JSON `{"error": "...", "reason": "..."}`:
 
@@ -516,8 +523,9 @@ $ sha256sum deploy/seed/seed-key.pub deploy/seed/seed-key.crt
      "support_public_key": "ssh-ed25519 AAAA… support@odile.fyi",
      "backup_repo_url": "sftp:odile-backup@backup.odile.fyi:/tenants/{slug}",
      "hermes_version": "2026.11.1",
-     "mail_relay": {"host": "smtp.mail.odile.fyi", "port": 587,
-                    "username": "{slug}@mail.odile.fyi", "secret": "…"}
+     "mail_relay": {"host": "mail.odile.fyi", "port": 587,
+                    "username": "{slug}@mail.odile.fyi", "secret": "…",
+                    "tls_ca": "-----BEGIN CERTIFICATE-----\n…\n-----END CERTIFICATE-----\n"}
    }
    JSON
    chmod 600 /root/.odile/seed-config.json
@@ -525,6 +533,32 @@ $ sha256sum deploy/seed/seed-key.pub deploy/seed/seed-key.crt
 
    The service refuses to start on a config or key that is group- or
    world-readable, so a bad `umask` fails loudly instead of leaking the NEAR key.
+
+   **The host is `mail.odile.fyi`** (ODL-469). The live config named
+   `smtp.mail.odile.fyi` until 22 November 2026; that name is NXDOMAIN, and the
+   submission host is `mail.odile.fyi` (the same machine, port 587). `tls_ca` is
+   that host's own certificate — it is self-signed, so `openssl s_client` is
+   where the PEM comes from, not a public bundle:
+
+   ```sh
+   openssl s_client -connect mail.odile.fyi:587 -starttls smtp \
+     -servername mail.odile.fyi </dev/null 2>/dev/null |
+     openssl x509 > /tmp/mail-ca.pem
+   /usr/bin/python3 - <<'PY'   # inline the PEM into the 0600 config
+   import json, pathlib
+   path = pathlib.Path("/root/.odile/seed-config.json")
+   config = json.loads(path.read_text())
+   config["mail_relay"]["host"] = "mail.odile.fyi"
+   config["mail_relay"]["tls_ca"] = pathlib.Path("/tmp/mail-ca.pem").read_text()
+   path.write_text(json.dumps(config, indent=2) + "\n")
+   PY
+   ```
+
+   The service **requires** `mail_relay.tls_ca` and refuses a config without
+   it (or with something that is not a PEM): a seed minted without the CA is a
+   tenant whose brief silently cannot send. Make the edit with a `.bak` beside
+   the file, and restart the unit so `LoadCredential=` hands the service the new
+   copy.
 
 3. **Unit** — `/etc/systemd/system/odile-seed.service`, committed at
    `deploy/seed/odile-seed.service`; `./scripts/deploy.sh` installs it. It runs as `odile`
@@ -744,8 +778,9 @@ cat > "$ODILE_SEED_CONFIG" <<'JSON'
   "support_public_key": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIREHEARSAL support@odile.fyi",
   "backup_repo_url": "sftp:odile-backup@backup.odile.fyi:/tenants/{slug}",
   "hermes_version": "2026.11.1",
-  "mail_relay": {"host": "smtp.mail.odile.fyi", "port": 587,
-                 "username": "{slug}@mail.odile.fyi", "secret": "rehearsal-relay"}
+  "mail_relay": {"host": "mail.odile.fyi", "port": 587,
+                 "username": "{slug}@mail.odile.fyi", "secret": "rehearsal-relay",
+                 "tls_ca": "-----BEGIN CERTIFICATE-----\nREHEARSAL\n-----END CERTIFICATE-----\n"}
 }
 JSON
 /usr/bin/python3 seed/seed.py init

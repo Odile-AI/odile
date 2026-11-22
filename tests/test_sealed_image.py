@@ -1455,7 +1455,11 @@ class FirstbootExchangeTests(unittest.TestCase):
             "near_api_key": "bench-near-key", "model": "bench-model",
             "support_public_key": "ssh-ed25519 bench", "backup_repo_url": "sftp:bench",
             "hermes_version": "v0.23.0",
-            "mail_relay": {"host": "h", "port": 587, "username": "u", "secret": "s"},
+            # ODL-469: a seed config without the relay's PEM is refused now.
+            "mail_relay": {"host": "h", "port": 587, "username": "u", "secret": "s",
+                           "tls_ca": ("-----BEGIN CERTIFICATE-----\n"
+                                      "MIIBhTCCASugAwIBAgIUTESTCA00000000000000000000\n"
+                                      "-----END CERTIFICATE-----\n")},
         }))
         os.chmod(config, 0o600)
         con = self.seed.connect(str(db))

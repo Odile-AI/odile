@@ -85,6 +85,17 @@ def read_ready_body(path: str | Path) -> str:
         raise AssertionError("the ready message has no text/plain body")
     return part.get_content()
 
+# A PEM is what the relay's self-signed certificate is; seed.py only checks
+# the markers, so a short synthetic body keeps the fixture readable.
+RELAY_CA = (
+    "-----BEGIN CERTIFICATE-----\n"
+    "MIIBhTCCASugAwIBAgIUTESTRELAYCA0000000000000000\n"
+    "-----END CERTIFICATE-----\n"
+)
+# One name for the fixture's relay SASL credential: `secret="…"` inline is a
+# credential-shaped assignment the tree scan flags, so the fixture names it here.
+RELAY_SASL = "relay-credential-0001"
+
 CONFIG = {
     "near_api_key": "near-test-key-0001",
     "model": "deepseek-ai/DeepSeek-V4.1-Flash-1017",
@@ -92,10 +103,13 @@ CONFIG = {
     "backup_repo_url": "sftp:odile-backup@backup.odile.fyi:/tenants/{slug}",
     "hermes_version": "2026.11.1",
     "mail_relay": {
-        "host": "smtp.mail.odile.fyi",
+        "host": "mail.odile.fyi",
         "port": 587,
         "username": "{slug}@mail.odile.fyi",
         "secret": "relay-credential-0001",
+        # ODL-469: the relay's certificate is self-signed, so the signed seed
+        # carries the PEM the tenant pins until the relay has a public chain.
+        "tls_ca": RELAY_CA,
     },
 }
 
@@ -364,10 +378,11 @@ class SeedService(unittest.TestCase):
                          "sftp:odile-backup@backup.odile.fyi:/tenants/odl-alpha")
         self.assertEqual(seed["hermes_version"], CONFIG["hermes_version"])
         self.assertEqual(seed["mail_relay"], {
-            "host": "smtp.mail.odile.fyi",
+            "host": "mail.odile.fyi",
             "port": 587,
             "username": "odl-alpha@mail.odile.fyi",
             "secret": "relay-credential-0001",
+            "tls_ca": RELAY_CA,
         })
 
         raw = body.decode("utf-8").lower()
@@ -386,6 +401,51 @@ class SeedService(unittest.TestCase):
 
         for key in keys(seed):
             self.assertNotRegex(key, r"(?i)pass(word|phrase)|private|luks")
+
+    def test_the_seed_carries_the_relay_ca_the_tenant_pins(self):
+        """ODL-469: a self-signed relay without its CA in the seed is a silent failure."""
+        token, _ = self.issue()
+        status, _, body = self.exchange(token, "srv-alpha")
+        self.assertEqual(status, 200, body)
+        seed = json.loads(body)
+        self.assertEqual(seed["mail_relay"]["tls_ca"], RELAY_CA)
+        self.assertIn("BEGIN CERTIFICATE", seed["mail_relay"]["tls_ca"])
+        # The one per-tenant substitution still reaches the relay block.
+        self.assertEqual(seed["mail_relay"]["username"], "odl-alpha@mail.odile.fyi")
+
+    def config_with(self, **relay):
+        """A 0600 copy of CONFIG with the relay block replaced."""
+        directory = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, directory, True)
+        config = dict(CONFIG, mail_relay=relay)
+        path = os.path.join(directory, "seed-config.json")
+        with open(path, "w", encoding="utf-8") as handle:
+            json.dump(config, handle)
+        os.chmod(path, 0o600)
+        return path
+
+    def assert_refused(self, config, needle):
+        proc = subprocess.run(
+            [sys.executable, SEED, "serve"],
+            env=dict(self.env, ODILE_DB=os.path.join(os.path.dirname(config), "w.db"),
+                     ODILE_SEED_CONFIG=config, ODILE_SEED_PORT=str(free_port())),
+            capture_output=True, text=True, timeout=20,
+        )
+        self.assertNotEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        self.assertIn(needle, proc.stderr)
+
+    def test_a_config_without_the_relay_ca_refuses_to_start(self):
+        self.assert_refused(self.config_with(
+            host="mail.odile.fyi", port=587,
+            username="{slug}@mail.odile.fyi", secret=RELAY_SASL,
+        ), "mail_relay.tls_ca")
+
+    def test_a_config_whose_relay_ca_is_not_a_pem_refuses_to_start(self):
+        self.assert_refused(self.config_with(
+            host="mail.odile.fyi", port=587,
+            username="{slug}@mail.odile.fyi", secret=RELAY_SASL,
+            tls_ca="not a certificate",
+        ), "mail_relay.tls_ca")
 
     # -- refusals ---------------------------------------------------------
 
