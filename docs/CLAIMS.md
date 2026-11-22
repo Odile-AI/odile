@@ -271,14 +271,13 @@ machine. The table below is what is still held.
 | §2 replacement, "the password you chose is the only sign-in" | same (§0.2) | ODL-925 |
 | A3, the whole row | the seal wraps a keyslot key, not the volume key; the published image's key opens the tenant disk (§0.1) | `t_28dda3b7` |
 | A4, "The disk key is sealed to the measured boot, and no one at Odile holds it." | the disk key is the build key (§0.1) | `t_28dda3b7` |
-| A8, "Not the disk key" | the disk key is recoverable from the published image (§0.1) | `t_28dda3b7` |
+| D-8, "Not the disk key" | the disk key is recoverable from the published image (§0.1) | `t_28dda3b7` |
 | §3 disk row, "its key is sealed to the measured boot" | a keyslot key is sealed, not the disk key (§0.1) | `t_28dda3b7` |
 | §4.3, "No human keyslot; the seal." / "Odile never had a key or a passphrase." | Odile built the keyslot passphrase and published it on the image; the master key is the build key (§0.1) | `t_28dda3b7` |
 | §4.8, "The host sees ciphertext" | the disk half: the host holds the bytes and the published image's key opens them (§0.1) | `t_28dda3b7` |
 | gap 3, "A changed image or firmware breaks the seal; the machine is rebuilt." | a changed image carrying the recovered key reads the disk without the seal (§0.1) | `t_28dda3b7` |
 | "Can Odile log in to my machine?", "We can stop or delete the machine, but we cannot read it." | the disk half (§0.1) | `t_28dda3b7` |
 | "Can Servury read my disk?" | the disk half (§0.1) | `t_28dda3b7` |
-| "What do you store?", "Not the disk key" | the disk half (§0.1) | `t_28dda3b7` |
 | "We can stop it. We cannot read it." | the disk half (§0.1) | `t_28dda3b7` |
 | "On a tenant machine, Odile cannot read the disk, the prompts or the files; a support grant can." | the disk half (§0.1) | `t_28dda3b7` |
 | "Memory is encrypted by the CPU. The hosting provider sees ciphertext.", the second sentence | the disk half (§0.1) | `t_28dda3b7` |
