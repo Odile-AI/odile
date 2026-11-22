@@ -1024,4 +1024,6 @@ and is the live counterpart of §4.1's second command.
    are the tenant's recorded measurement, not the machine: the 21 November image
    moved it to `2caf4a5b…` while `docs/evidence/a1-bench-baseline.json` still
    records `674cc40d…`. ODL-936 (`t_921b50d0`, A2/infra/S) owns the probe, the
-   timer, the re-record and the orphan rule.
+   timer, the re-record and the orphan rule. Its `/verify` also carries a
+   `LUKS FAIL` row — the unit's `ProtectSystem=strict` blocks `cryptsetup`'s
+   lock on every machine; `t_d55b0e47` owns that, and the machine is serving.
