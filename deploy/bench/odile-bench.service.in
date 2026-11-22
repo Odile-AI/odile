@@ -12,6 +12,15 @@ WorkingDirectory={{ROOT}}/current
 StateDirectory={{STATE_NAME}}
 StateDirectoryMode=0700
 EnvironmentFile={{ETC}}/bench.env
+# The account site's own values (ODL-341). They are app-only — the seed
+# service reads none of them — so they live here rather than in the shared
+# bench.env: where a confirmation mail is queued, the key that signs the one
+# session cookie, the host a mailed link points at (never the request's Host
+# header) and the suffix the machine's name is built from.
+Environment=ODILE_OUTBOX={{STATE}}/outbox
+Environment=ODILE_SESSION_KEY_FILE={{STATE}}/account-session.key
+Environment=ODILE_ACCOUNT_HOST=https://test.odile.fyi
+Environment=ODILE_TENANT_DOMAIN=test.odile.fyi
 Environment=PYTHONUNBUFFERED=1
 # runs as root (the + prefix) because /dev/sev-guest is 0600; the bench writes
 # its own report, never the production one

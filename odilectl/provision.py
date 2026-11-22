@@ -80,17 +80,20 @@ import importlib.util
 import json
 import os
 import sqlite3
+import sys
 from argparse import ArgumentParser
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from functools import lru_cache
 from pathlib import Path
+from types import SimpleNamespace
 
 from . import keys
+from .config import Config
 from .core import Context, Report, applied, plan, render_datetime
-from .errors import ProviderError, UsageError
+from .errors import ConfigError, ProviderError, UsageError
 from .providers import configured_name
-from .providers.base import CreateSpec, Machine
+from .providers.base import CreateSpec, Machine, Provider
 from .state import (
     DEFAULT_STATE_DB,
     MACHINE_STATES,
@@ -967,7 +970,11 @@ def run(ctx: Context, args) -> Report:
     plan_id = _plan_id(ctx, args)
     days = _days(ctx, args)
     key_path = _key_path(args)
-    key_label = str(key_path) if key_path else "<the tenant record>"
+    # A worker passes the tenant row's public key directly: the account path has
+    # no operator shell and no key file (ODL-341). The CLI keeps `--key`.
+    key_text = (getattr(args, "key_text", "") or "").strip() or None
+    key_label = str(key_path) if key_path else (
+        "the tenant row's public key" if key_text else "<the tenant record>")
     # A rebuild: the old password is read before anything is ordered, so a
     # missing or unreadable recovery file is a usage error, not a half-done
     # provision. The value never reaches argv, the plan or the report.
@@ -981,7 +988,7 @@ def run(ctx: Context, args) -> Report:
         spec = CreateSpec(
             hostname=args.slug,
             plan_id=plan_id,
-            ssh_key=_read_key(key_path) if key_path else _placeholder_key(),
+            ssh_key=_read_key(key_path) if key_path else (key_text or _placeholder_key()),
             days=days,
             preorder=args.preorder,
         )
@@ -1127,7 +1134,7 @@ def run(ctx: Context, args) -> Report:
             backup_password_file=backup_label,
         )
 
-    if key_path is None:
+    if key_path is None and not key_text:
         raise UsageError(
             "provision --apply needs --key PATH until the tenant record holds the key"
         )
@@ -1322,3 +1329,292 @@ def _placeholder_key() -> str:
         "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAICFh7hQkST5vRDolO3yqwCARRugZahMdc+WgR69JsoXG "
         "dry-run@odile"
     )
+
+
+# --------------------------------------------------------------- the account queue
+#
+# ODL-341: a confirmed registration becomes a machine with no operator command.
+# The web app writes one `accounts` row and moves it to `queued` on the
+# confirmation POST; this worker is the root half, because the provider, DNS and
+# key credentials are root-only. It calls the same `run()` the CLI calls, with
+# the tenant row's one public key and the pin's release, and it keeps the
+# existing no-bill rule: a failure terminates whatever this run created before
+# the row is marked `failed`.
+
+QUEUED = "queued"
+MAX_REASON = 500
+
+
+class _RecordingProvider(Provider):
+    """A provider that delegates every call and remembers what `create` returned.
+
+    The worker needs the id of a machine it must terminate when a later step
+    fails. `run()` raises before returning the report, so the only place the id
+    exists is the call that made it. `list` is passed through untouched, so
+    adoption and the existing reuse paths behave exactly as they do from the
+    CLI.
+    """
+
+    def __init__(self, inner: Provider) -> None:
+        self.inner = inner
+        self.created: list[Machine] = []
+
+    def create(self, spec: CreateSpec) -> Machine:
+        machine = self.inner.create(spec)
+        self.created.append(machine)
+        return machine
+
+    def poll(self, server_id: str, *, timeout: float = 900.0,
+             interval: float = 10.0) -> Machine:
+        return self.inner.poll(server_id, timeout=timeout, interval=interval)
+
+    def power(self, server_id: str, action: str) -> Machine:
+        return self.inner.power(server_id, action)
+
+    def terminate(self, server_id: str) -> bool:
+        return self.inner.terminate(server_id)
+
+    def list(self) -> list[Machine]:
+        return self.inner.list()
+
+
+def _stamp() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _state_path_for(config) -> Path:
+    return config.path_value("state_db", DEFAULT_STATE_DB) or Path(DEFAULT_STATE_DB)
+
+
+def _queue_rows(connection: sqlite3.Connection, slug: str | None) -> list[sqlite3.Row]:
+    """Confirmed accounts whose one provision has not been claimed yet."""
+    sql = ("SELECT id, slug, email FROM accounts"
+           " WHERE provision_state = ? AND email_verified_at IS NOT NULL")
+    values: list[object] = [QUEUED]
+    if slug is not None:
+        sql += " AND slug = ?"
+        values.append(slug)
+    sql += " ORDER BY id"
+    return connection.execute(sql, values).fetchall()
+
+
+def _claim_queued(connection: sqlite3.Connection, account_id: int, stamp: str) -> bool:
+    """Move one row `queued -> building`; True for exactly one run."""
+    changed = connection.execute(
+        "UPDATE accounts SET provision_state = 'building', provision_started_at = ?"
+        " WHERE id = ? AND provision_state = ?",
+        (stamp, account_id, QUEUED),
+    ).rowcount
+    connection.commit()
+    return changed == 1
+
+
+def _finish(connection: sqlite3.Connection, account_id: int, state: str, stamp: str,
+            *, server_id: str | None = None, ipv4: str | None = None,
+            key_label: str | None = None, key_prefix: str | None = None,
+            reason: str | None = None) -> None:
+    connection.execute(
+        "UPDATE accounts SET provision_state = ?, provision_finished_at = ?,"
+        " server_id = COALESCE(?, server_id), ipv4 = COALESCE(?, ipv4),"
+        " key_label = COALESCE(?, key_label), key_prefix = COALESCE(?, key_prefix),"
+        " provision_reason = ? WHERE id = ?",
+        (state, stamp, server_id, ipv4, key_label, key_prefix,
+         (reason or None) and reason[:MAX_REASON], account_id),
+    )
+    connection.commit()
+
+
+def _dns_name(config, slug: str) -> str:
+    zone = (config.get("tenant_domain") or config.get("dns_zone") or "odile.fyi").strip()
+    return "%s.%s" % (slug, zone)
+
+
+def _ensure_dns(config, slug: str, ipv4: str) -> str:
+    """Write the tenant's DNS-only A record through the existing client.
+
+    The name is the tenant's own (`<slug>.<tenant_domain>`), and the client
+    talks to the zone that owns it (`dns_zone`), so a bench record lands in
+    `odile.fyi` under `test.odile.fyi` without a second provider path.
+    """
+    from .dns import DEFAULT_TOKEN_FILE, PROVISION_TTL, CloudflareDNS, validate_zone
+
+    token_path = config.path_value("dns_token_file", DEFAULT_TOKEN_FILE)
+    try:
+        token = Path(str(token_path)).read_text(encoding="utf-8").strip()
+    except OSError as error:
+        raise ProviderError(f"dns: cannot read the token at {token_path}: {error}") from None
+    client = CloudflareDNS(
+        token,
+        validate_zone(config.get("dns_zone") or "odile.fyi"),
+        zone_id=config.get("dns_zone_id"),
+    )
+    return client.ensure(_dns_name(config, slug), ipv4, PROVISION_TTL, apply=True).action
+
+
+def _provision_one(connection: sqlite3.Connection, config, row: sqlite3.Row, *,
+                   timeout: float, interval: float,
+                   provider_factory=None) -> dict[str, object]:
+    """Order one account's machine, record it, and never leave a billed orphan.
+
+    The steps are the CLI's `run()`; what this adds is the queue's bookkeeping:
+    the row is claimed before the first provider call, the machine id, IPv4 and
+    key label/first characters are written back on success, and a failure
+    terminates anything this run created before the reason is stored.
+    """
+    slug = row["slug"]
+    tenant = connection.execute(
+        "SELECT ssh_public_key FROM tenants WHERE slug = ?", (slug,)
+    ).fetchone()
+    if tenant is None or not (tenant["ssh_public_key"] or "").strip():
+        reason = "no tenants row with a public key; nothing was ordered"
+        _finish(connection, int(row["id"]), "failed", _stamp(), reason=reason)
+        return {"slug": slug, "ok": False, "reason": reason, "terminated": False}
+
+    factory = provider_factory or _build_provider
+    recorder = _RecordingProvider(factory(config))
+    ctx = Context(config=config, apply=True, dry_run=False,
+                  provider_factory=lambda _config: recorder)
+    args = SimpleNamespace(
+        slug=slug, key=None, key_text=tenant["ssh_public_key"], plan=None,
+        days=None, pin=None, backup_password_file=None, preorder=False,
+        timeout=timeout, interval=interval,
+    )
+    try:
+        report = run(ctx, args)
+    except (ProviderError, UsageError, StateError) as error:
+        reason = str(error).strip()[:MAX_REASON] or error.__class__.__name__
+        terminated = False
+        for machine in recorder.created:
+            try:
+                recorder.terminate(machine.server_id)
+                terminated = True
+            except Exception as cleanup:  # a cleanup failure must not hide the reason
+                reason += f"; terminate failed: {str(cleanup)[:120]}"
+        _finish(connection, int(row["id"]), "failed", _stamp(), reason=reason)
+        return {"slug": slug, "ok": False, "reason": reason,
+                "machine": recorder.created[-1].server_id if recorder.created else None,
+                "terminated": terminated}
+
+    machine = report.payload.get("machine") or {}
+    keyinfo = report.payload.get("key") or {}
+    server_id = machine.get("server_id")
+    ipv4 = machine.get("ipv4")
+    dns = "skipped (no IPv4)"
+    if ipv4:
+        try:
+            dns = _ensure_dns(config, slug, ipv4)
+        except (ProviderError, ValueError, OSError) as error:
+            # The machine exists and is recorded; DNS is one more step a later
+            # run (or `odilectl dns create`) can finish. It is named, not
+            # swallowed, and it does not turn a built machine into a failure.
+            dns = f"failed: {str(error)[:200]}"
+    _finish(connection, int(row["id"]), "ready", _stamp(),
+            server_id=server_id, ipv4=ipv4,
+            key_label=keyinfo.get("label"), key_prefix=keyinfo.get("key_prefix"))
+    return {
+        "slug": slug,
+        "ok": True,
+        "server_id": server_id,
+        "ipv4": ipv4,
+        "release": report.payload.get("release"),
+        "key_label": keyinfo.get("label"),
+        "key_prefix": keyinfo.get("key_prefix"),
+        "dns": dns,
+        "seed_expires": (report.payload.get("seed") or {}).get("expires_at"),
+    }
+
+
+def _build_provider(config) -> Provider:
+    from .providers import build
+
+    return build(config)
+
+
+def provision_queue(config, *, apply: bool = True, slug: str | None = None,
+                    limit: int | None = None, timeout: float = DEFAULT_TIMEOUT,
+                    interval: float = DEFAULT_INTERVAL, provider_factory=None,
+                    out=print) -> list[dict[str, object]]:
+    """Drain the confirmed-account queue, one row at a time. Safe to re-run.
+
+    Without `apply` nothing is claimed and nothing is ordered: the plan names
+    every row the next run would provision. A row is claimed with a
+    conditional UPDATE before the first provider call, so two workers on one
+    database order one machine, not two.
+    """
+    db_path = _state_path_for(config)
+    try:
+        connection = sqlite3.connect(str(db_path), timeout=5.0)
+    except sqlite3.Error as error:
+        raise ProviderError(f"provision: cannot open the state database {db_path}: {error}") from None
+    connection.row_factory = sqlite3.Row
+    results: list[dict[str, object]] = []
+    try:
+        rows = _queue_rows(connection, slug)
+        if not apply:
+            for row in rows[:limit] if limit else rows:
+                out(f"would provision {row['slug']} ({row['email']})")
+            return results
+        for row in rows[:limit] if limit else rows:
+            stamp = _stamp()
+            if not _claim_queued(connection, int(row["id"]), stamp):
+                continue
+            out(f"provision {row['slug']}: queued at {stamp}")
+            result = _provision_one(connection, config, row, timeout=timeout,
+                                    interval=interval, provider_factory=provider_factory)
+            results.append(result)
+            if result["ok"]:
+                out("provision %(slug)s: server %(server_id)s at %(ipv4)s; "
+                    "key %(key_label)s %(key_prefix)s; dns %(dns)s; "
+                    "setup token bound until %(seed_expires)s" % result)
+            else:
+                out("provision %(slug)s: FAILED - %(reason)s; machine %(machine)s "
+                    "terminated=%(terminated)s" % {"machine": "-", **result})
+        return results
+    finally:
+        connection.close()
+
+
+def main(argv: list[str] | None = None) -> int:
+    """`python3 -m odilectl.provision --worker` — the account queue's root half."""
+    parser = ArgumentParser(
+        prog="odilectl.provision",
+        description="The account queue: order the machine a confirmed account queued.",
+    )
+    parser.add_argument("--worker", action="store_true",
+                        help="drain the confirmed-account queue (required)")
+    parser.add_argument("--config", metavar="PATH", default=None,
+                        help="config file, mode 0600")
+    parser.add_argument("--dry-run", action="store_true",
+                        help="name every row the next run would provision")
+    parser.add_argument("--apply", action="store_true",
+                        help="execute (without it nothing is ordered)")
+    parser.add_argument("--json", action="store_true", help="print one JSON object")
+    parser.add_argument("--slug", default=None, help="one account, by its slug")
+    parser.add_argument("--limit", type=int, default=None, help="at most N rows")
+    parser.add_argument("--timeout", type=float, default=DEFAULT_TIMEOUT)
+    parser.add_argument("--interval", type=float, default=DEFAULT_INTERVAL)
+    args = parser.parse_args(argv)
+    if not args.worker:
+        parser.error("pass --worker: this entry point drains the account queue")
+    try:
+        config = Config.load(args.config)
+    except ConfigError as error:
+        print(f"provision: {error}", file=sys.stderr)
+        return 2
+    try:
+        results = provision_queue(
+            config, apply=bool(args.apply and not args.dry_run), slug=args.slug,
+            limit=args.limit, timeout=args.timeout, interval=args.interval,
+            out=(lambda line: None) if args.json else print,
+        )
+    except ProviderError as error:
+        print(f"provision: {error}", file=sys.stderr)
+        return 1
+    if args.json:
+        print(json.dumps({"ok": all(r["ok"] for r in results), "count": len(results),
+                          "results": results}, sort_keys=True, default=str))
+    return 0 if all(r["ok"] for r in results) else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

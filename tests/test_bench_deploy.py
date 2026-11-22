@@ -166,8 +166,22 @@ class UnitRenderTests(unittest.TestCase):
         self.assertIn("LoadCredential=seed-key:/root/.odile/seed-signing.pem", unit)
         self.assertNotIn("seed-config.json\n", unit,
                          "the bench must not load production's seed config")
+        self.assertIn("Environment=ODILE_SEED_KEYS=/var/lib/odile-test/seed-keys.json", unit)
         self.assertIn("ExecStart=/usr/bin/python3 /opt/odile-test/current/seed/seed.py serve", unit)
         self.assertIn("StateDirectory=odile-test", unit)
+
+    def test_the_register_unit_drains_the_queue_as_root(self) -> None:
+        # ODL-341: the app runs as `odile`, the provider/DNS/key credentials do
+        # not, so the queue's only order happens in this root oneshot.
+        unit = deploy.render_unit(deploy.WORKER_SERVICE)
+        self.assertNotIn("{{", unit)
+        self.assertIn("User=root", unit)
+        self.assertIn("ExecStart=/usr/bin/python3 -m odilectl.provision --worker --apply", unit)
+        self.assertIn("--config /root/.odile/config.test.yaml", unit)
+        self.assertIn("ReadWritePaths=/var/lib/odile-test /var/lib/odile", unit)
+        timer = deploy.render_unit(deploy.WORKER_TIMER)
+        self.assertIn("Unit=odile-bench-register", timer)
+        self.assertIn("WantedBy=timers.target", timer)
 
     def test_rendering_twice_is_identical_and_follows_the_values(self) -> None:
         first = deploy.render_unit(SITE_TEMPLATE)
@@ -309,6 +323,8 @@ class DeployerTests(unittest.TestCase):
         self.unit_seed = base / "etc/systemd/system/odile-bench-seed.service"
         self.unit_probe = base / "etc/systemd/system/odile-bench-probe.service"
         self.timer_probe = base / "etc/systemd/system/odile-bench-probe.timer"
+        self.unit_register = base / "etc/systemd/system/odile-bench-register.service"
+        self.timer_register = base / "etc/systemd/system/odile-bench-register.timer"
         self.caddyfile = base / "etc/caddy/Caddyfile"
         self.config = base / "root/.odile/seed-config.test.json"
         self.prod_config = base / "root/.odile/seed-config.json"
@@ -339,7 +355,7 @@ class DeployerTests(unittest.TestCase):
             "ROOT", "RELEASES", "CURRENT", "PREVIOUS", "STATE", "DB_PATH",
             "ATTEST_PATH", "ROADMAP_PATH", "ROADMAP_SOURCE", "SEED_REBUILDS",
             "ETC", "ENV_FILE", "UNIT_SITE", "UNIT_SEED", "UNIT_PROBE",
-            "TIMER_PROBE", "CADDYFILE",
+            "TIMER_PROBE", "UNIT_REGISTER", "TIMER_REGISTER", "CADDYFILE",
             "CONFIG_FILE", "PROD_CONFIG", "SEED_KEY_FILE", "TOKEN_FILE",
             "DNS_IP", "ROADMAP_CANDIDATES", "run", "require_root",
             "service_ids", "chown", "resolve_a", "primary_ipv4",
@@ -361,6 +377,8 @@ class DeployerTests(unittest.TestCase):
         deploy.UNIT_SEED = self.unit_seed
         deploy.UNIT_PROBE = self.unit_probe
         deploy.TIMER_PROBE = self.timer_probe
+        deploy.UNIT_REGISTER = self.unit_register
+        deploy.TIMER_REGISTER = self.timer_register
         deploy.CADDYFILE = self.caddyfile
         deploy.CONFIG_FILE = self.config
         deploy.PROD_CONFIG = self.prod_config
@@ -440,7 +458,14 @@ class DeployerTests(unittest.TestCase):
                          deploy.render_unit(PROBE_TEMPLATE))
         self.assertEqual(self.timer_probe.read_text(encoding="utf-8"),
                          deploy.render_unit(TIMER_TEMPLATE))
+        self.assertEqual(self.unit_register.read_text(encoding="utf-8"),
+                         deploy.render_unit(deploy.WORKER_SERVICE))
+        self.assertEqual(self.timer_register.read_text(encoding="utf-8"),
+                         deploy.render_unit(deploy.WORKER_TIMER))
         self.assertIn("OnCalendar=*:0/5", self.timer_probe.read_text(encoding="utf-8"))
+        self.assertIn("OnCalendar=*:0/2", self.timer_register.read_text(encoding="utf-8"))
+        self.assertIn(["systemctl", "enable", "--now", "odile-bench-register.timer"],
+                      self.recorder.calls)
         self.assertIn(["systemctl", "enable", "--now", "odile-bench-probe.timer"],
                       self.recorder.calls)
         # The bench database: its own path, empty, 0600 — production is not copied.

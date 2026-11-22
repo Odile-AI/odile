@@ -862,7 +862,8 @@ def near_api_key(config: dict, entry: dict | None, slug: str,
 def build_seed(tenant: sqlite3.Row, instance_id: str, config: dict,
                rebuild: dict | None = None,
                identity: tuple[bytes, bytes] | None = None,
-               near_api_key_value: str | None = None) -> dict:
+               near_api_key_value: str | None = None,
+               sign_in_hash: str | None = None) -> dict:
     slug = tenant["slug"]
     mail = config["mail_relay"]
     seed = {
@@ -881,6 +882,14 @@ def build_seed(tenant: sqlite3.Row, instance_id: str, config: dict,
         },
         "hermes_version": fill(config["hermes_version"], slug),
     }
+    # B-once (Savio, 2026-11-20, card t_ab499d49): the account's scrypt
+    # verifier is the machine's first sign-in. It is the installer's own
+    # `scrypt$n$r$p$salt$dk` string, byte-equal to `accounts.password_hash` at
+    # this instant; after the seed is signed the two change separately (D-11).
+    # A tenant with no account (the manual/claim path) omits the field, and
+    # ODL-925's contract is what refuses a seed without it.
+    if sign_in_hash:
+        seed["sign_in_hash"] = sign_in_hash
     # A rebuild: the old repository password, sealed under this exchange's
     # setup token. Absent on a first install, so the guest mints one.
     if rebuild is not None:
@@ -1290,10 +1299,17 @@ def redeem(con: sqlite3.Connection, token: str, instance_id: str,
     issued = issued_key_for(keys or {}, tenant["slug"], token_hash)
     key = near_api_key(config, issued, tenant["slug"],
                        keyed=key_record(con, tenant["slug"]) is not None)
+    # The account's verifier travels as the machine's first sign-in (ODL-341).
+    # Read at signing time, so the seed and the account agree byte for byte; a
+    # tenant with no account row (the manual path) omits the field.
+    account = con.execute(
+        "SELECT password_hash FROM accounts WHERE slug = ?", (tenant["slug"],)
+    ).fetchone()
     seed = build_seed(tenant, row["instance_id"], config,
                       rebuild=rebuild_for(rebuilds or {}, tenant["slug"], token_hash),
                       identity=identity,
-                      near_api_key_value=key)
+                      near_api_key_value=key,
+                      sign_in_hash=account["password_hash"] if account is not None else None)
     cur = con.execute(
         "UPDATE seed_tokens SET used_at = ? WHERE id = ? AND used_at IS NULL AND expires_at > ?",
         (stamp, row["id"], stamp),
