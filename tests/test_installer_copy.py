@@ -175,7 +175,7 @@ class TenantConfigTrustedHostTest(TempRoot):
 
 
 class TenantAuxiliaryVisionTest(TempRoot):
-    """Images ride the one Private TEE vision model, not the text model (ODL-341-F1).
+    """Images ride a Private TEE vision model, not the text model (ODL-341-F1).
 
     An explicit ``auxiliary.vision`` backend is what makes Hermes route
     ``vision_analyze`` to the auxiliary lane (``decide_image_input_mode``

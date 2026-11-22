@@ -277,15 +277,23 @@ MANAGED_KEYS = ("model", "agent", "custom_providers", "dashboard", "webapp", "on
 # these four, so the upgrade path below appends what is missing and keeps what
 # Hermes wrote.
 PRE_ONBOARDING_KEYS = ("model", "agent", "custom_providers", "webapp")
-# The one vision model NEAR AI serves in its Private TEE tier (text + image,
-# 16K context, $0.15/$0.55 per 1M tokens). Setting `auxiliary.vision.model` is
-# what forces the auxiliary lane: `decide_image_input_mode` answers "text" when
-# an explicit auxiliary.vision backend exists, so `vision_analyze` describes the
-# image with THIS model, inside an enclave. Without the key the lane resolves to
-# `model.default` — the text model — which returns an empty description at this
-# token budget (measured 2026-11-22: 1 of 4 samples non-empty). Claude, GPT and
-# Gemini on the same gateway are the Frontier tier: an upstream provider's API,
-# not a TEE, so pinning one would falsify docs/CLAIMS.md §1 for every image.
+# The vision model the auxiliary lane pins (ODL-341-F1). It is inside NEAR
+# AI's Private TEE tier (text + image, 16K context, $0.15/$0.55 per 1M tokens),
+# and it is chosen for its answer, not because it is alone in the tier:
+# Qwen3.8-27B and its abliterated variant, GLM-5.3-Flash and
+# DeepSeek-V4.1-Flash-1017 read images in the same tier. Measured 2026-11-22 on
+# a real render, asking for every heading and button label, this one answered
+# 7/7 headings + 3/3 labels in 4/4 runs at 0.56-2.49 s; GLM-5.3-Flash needed
+# >=1,200 output tokens (at 400 it truncated to 2 of 7 headings) and took 5-7 s;
+# Qwen3.8-27B returned no content in any run (4,848 chars of reasoning).
+# Setting `auxiliary.vision.model` is what forces the auxiliary lane:
+# `decide_image_input_mode` answers "text" when an explicit auxiliary.vision
+# backend exists, so `vision_analyze` describes the image with THIS model,
+# inside an enclave. Without the key the lane resolves to `model.default` — the
+# text model — which returns an empty description at this token budget
+# (measured 2026-11-22: 1 of 4 samples non-empty). Claude, GPT and Gemini on
+# the same gateway are the Frontier tier: an upstream provider's API, not a
+# TEE, so pinning one would falsify docs/CLAIMS.md §1 for every image.
 # Source: https://near.ai/pricing, the Privacy-tier column (ODL-341-F1).
 VISION_MODEL = "Qwen/Qwen3-VL-30B-A3B-Instruct"
 TOP_LEVEL_KEY = re.compile(r"^([A-Za-z_][A-Za-z0-9_-]*):")
@@ -10843,7 +10851,8 @@ TENANT_CONFIG_TEMPLATE = """\
 #
 # The installer carries this file byte-for-byte and renders the model, the
 # Webapp port and the public URL from the seed and the layout. The vision
-# model is its own pin: one vision model exists in the Private TEE tier.
+# model is its own pin: a vision model in the Private TEE tier, chosen for its
+# answer.
 # `--self-test` fails if the embedded copy and this file differ.
 #
 # Seven managed blocks. Everything else in the written file belongs to Hermes
@@ -10858,12 +10867,16 @@ TENANT_CONFIG_TEMPLATE = """\
 #                        checks every Host and Origin against.
 #   * onboarding       — Hermes's own first-run chat is off; Odile's ritual is
 #                        the first run, and no profile-build offer is made.
-#   * auxiliary        — an image is described on the auxiliary lane by the one
-#                        vision model in NEAR AI's Private TEE tier. Without
-#                        this pin the lane rides model.default (the text
-#                        model) and returns an empty description, and a
-#                        Frontier-tier model would take the image out of the
-#                        enclave (ODL-341-F1).
+#   * auxiliary        — an image is described on the auxiliary lane by a
+#                        vision model in NEAR AI's Private TEE tier, chosen
+#                        because its answer is not eaten by a reasoning phase:
+#                        Qwen3.8-27B, its abliterated variant, GLM-5.3-Flash
+#                        and DeepSeek-V4.1-Flash-1017 read images in the same
+#                        tier (near.ai/pricing, Privacy column). Without this
+#                        pin the lane rides model.default (the text model) and
+#                        returns an empty description, and a Frontier-tier
+#                        model would take the image out of the enclave
+#                        (ODL-341-F1).
 #
 # The display block is not managed the same way: it carries the Odile skin
 # (ODL-240), whose file the installer writes beside this config at
