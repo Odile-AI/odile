@@ -28,7 +28,7 @@ accepted 14/14). The product's information architecture is six acts:
 | B | Reserve | the same URL, reserved state; the payment link in the email | **Open the sample report** (V0.1 alpha); **Pay $49/month** from M4 (`ODL-241`) | Price before commitment; a sample proof before payment |
 | C | Build + ready | `odile.fyi/ready/<slug>` (HQ, no JS) + the ready email | **Run the verifier** | The wait is a state; the four steps and the three gaps |
 | D | Ceremony | the `/ready` checklist, four copy blocks; the user's terminal | **Run the verifier** (step 1; **Open the terminal** is its link) | Verify → encrypt → unlock → install → recovery file |
-| E | First run | the Webapp's first session | **Open today's brief** | Three questions, then a real artifact; one scheduled job |
+| E | First run | the Webapp's first session | **Open today's brief** | Five questions, a real brief, one scheduled job |
 | F | Your machine | `https://<slug>.odile.fyi/#/hub` (Webapp plugin) and the pinned “Your machine” session (C3) | **Ask the agent** | One bookmarkable home: workspace, proof, reboot, support |
 
 Twelve screens become **four product surfaces — claim, reserved, ready, hub —
@@ -75,6 +75,10 @@ unchanged. The privacy-first test is §10.
   (`docs/backlog.yaml` meta). The six acts remove the five-question
   interrogation and give the returning user a home; they do not widen
   activation.
+
+**Corrected 22 November 2026:** the shipped ritual keeps five questions and
+writes the brief after answer 3; what the six acts remove is the wait for value,
+not the questions (Act E, §3).
 
 ---
 
@@ -168,18 +172,30 @@ JavaScript). The Webapp and the hub are inside the app and may use its JS.
 
 ### Act E — First run (the Webapp's first session)
 
+> **Corrected 22 November 2026 (follow-up to ODL-469):** the ritual ships as
+> five questions, not three, and the brief email ships with it. The bullets
+> below are the as-shipped record; `skills/odile-first-run/SKILL.md` at `main`
+> is the source. PF-05 (§4) and C3 (§6) keep the 9 November decision text with
+> their own dated notes.
+
 - **Entry:** the first sign-in at the URL the installer printed.
 - **First-run screen — the agent's first turn.** The agent introduces itself as
-  Odile, says it runs as `odile` with sudo, and asks **three questions, one at a
-  time**: what to call you; your IANA time zone; three things to handle. After
-  the third answer it writes today's brief **for real** (`~/briefs/YYYY-MM-DD.md`,
-  with a fetched fact), schedules the repeat at 07:00 local, and says what
-  happens next. Brief time and email are defaults, not questions; the user can
-  change them in chat.
+  Odile, says it runs as `odile` with sudo, and asks **five questions, one per
+  message**: what to call you; where you are (a city sets the IANA time zone);
+  three things to handle; what time the brief should land, 07:00 local by
+  default; and, last, whether it may email the brief too, and to which address.
+  After the third answer it writes today's brief **for real**
+  (`~/briefs/YYYY-MM-DD.md`, with a fetched fact) while it asks the last two.
+  It then schedules one repeat job at the time from answer 4 in the IANA zone
+  from answer 2, with the installed sender as the job's last step, and says
+  what happens next in three sentences. A yes to email writes
+  `~/.hermes/brief.json` (`{"to": "…"}`, mode 0600) on the machine; a no writes
+  nothing and the brief stays in `~/briefs/`. Only the brief time has a default.
 - **One primary:** **Open today's brief** — today's file, not a promise.
 - **Skippable**, writes `onboarded_at`, never nags.
-- **Replaces:** prototype screens 07 (First run), 08 (Brief) — the brief email
-  itself is `ODL-235`.
+- **Replaces:** prototype screens 07 (First run), 08 (Brief). The brief email
+  is shipped: `ODL-235` built the sender, and `ODL-469` wired the sender into
+  the tenant and the address question into this ritual.
 
 ### Act F — Your machine (`/#/hub`, or the pinned session)
 
@@ -225,6 +241,13 @@ JavaScript). The Webapp and the hub are inside the app and may use its JS.
 | PF-06 | **Accept, scoped** | The invite link is the acquisition path; after the claim, the reserved URL and then the hub URL are bookmarkable and repeated in the ready email, so a closed tab has a way back. A lost invite before the claim is an alpha resend by Savio; a stranger seeing the flow before joining stays the demo's job (MH), not V0.1. | Acts A and F |
 | PF-07 | **Defer to M2** | Support stays a hub section and the CLI in M3; the in-workspace grant button needs `ODL-217` (a running tenant) and a UI hook. | Act F's Support section; `ODL-217` |
 | PF-08 | **Accept** | The skin (`ODL-240`), the onboarding-off installer (`ODL-387`) and the hub make the first screen say Odile. No new card; both are dependencies, and the acceptance card checks the first screen at 1440 and 390. | `ODL-240`, `ODL-387`, Act F |
+
+**Corrected 22 November 2026:** PF-05's "five questions become three" did not
+ship that way. `ODL-233`'s five-question ritual shipped as five (name, zone,
+three things, brief time, email), and `ODL-469` turned the last into an address
+question that writes `~/.hermes/brief.json` (0600). Only the brief time is a
+default, and the brief is written after the third answer. The row stays as the
+9 November decision record; Act E (§3) carries the shipped text.
 
 No finding is rejected. The two scoped accepts are scope notes, not softened
 findings: PF-03 keeps the hub and states why the waiting state lives in the
@@ -309,7 +332,7 @@ table. It adds no claim.
 | “It ran when you unlocked.” (brief headline) | `BRAND.md` §Email, Brief email | Brand copy (the timing sentence is the deck's “Jobs that were due while the machine was locked run when you unlock.”) |
 | “Jobs that were due while the machine was locked run when you unlock.” | §1 Access | Deck |
 | “The $12 inference allowance is included and hard-capped; at the cap the agent stops and tells you.” | §1 Money and place | Deck |
-| “What should I call you?” / “Three questions, then today's brief.” / “Open today's brief” | — | Label |
+| “Five short questions, then I'll get to work.” / “What should I call you?” / “May I email the brief too? Which address?” / “Open today's brief” | — | Label |
 
 ### Act F — the hub
 
@@ -437,6 +460,15 @@ dispatcher's gate. The new cards take the next free `ODL-4xx` ids at seeding
   `make check`.
 
 ### C3 — new: Act E, three questions, one artifact, one home
+
+> **Corrected 22 November 2026:** the ritual shipped as five questions — name,
+> IANA time zone, three things, brief time (default 07:00), email address —
+> matching `skills/odile-first-run/SKILL.md` at `main`; `ODL-469` added the
+> address question and its `~/.hermes/brief.json` write (0600). This block's
+> heading ("three questions"), its goal ("not a fifth question", "the
+> three-question skill") and its DoD below are the 9 November card definition;
+> a seeded C3 body takes the five-question text from the skill, not from this
+> block; `ODL-233`'s backlog entry records the ritual it built.
 
 - **Milestone:** M3 · **Lane:** product · **Size:** M
 - **depends_on:** `ODL-233` (done: the five-question ritual is the base),
@@ -736,7 +768,8 @@ dispatcher's gate. The new cards take the next free `ODL-4xx` ids at seeding
   generate one SSH key and paste a command (`REVIEW-UX-2026-11-07.md` §6.4).
   The claim page offers the vault path (1Password/Bitwarden) as one of two
   ways to make the key, but the ceremony is still terminal commands. The six
-  acts remove screens and questions, not the terminal.
+  acts remove screens, not the terminal; the first-run ritual keeps its five
+  questions and writes the brief after answer 3 (Act E).
 
 ## 8. The deferred piece: a per-tenant HQ page
 
