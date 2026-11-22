@@ -1,8 +1,8 @@
 #!/usr/bin/python3
 """The local gate must run the publication gate.
 
-`make check` is the only gate every commit passes — `.githooks/pre-commit` runs
-it — so the publication scan has to be one of its prerequisites, not a CI-only
+`make check-fast` is the only gate every commit passes — `.githooks/pre-commit`
+runs it — so the publication scan has to be one of its prerequisites, not a CI-only
 job. On 2026-11-15 `main` was red on `tools/leak_scan.py --tree` for a day
 while every local gate was green, because `check` did not include the scan and
 only the `publish-lint` job would have seen the next push.

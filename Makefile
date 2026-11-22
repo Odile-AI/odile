@@ -1,9 +1,10 @@
 # Odile — one command that proves the tree is healthy.
 #
-# `make check` is the gate and `.githooks/pre-commit` runs it on every commit;
-# `.github/workflows/check.yml` runs it on every push and on every pull request
-# to `main`. It needs /usr/bin/python3, shellcheck and openssl; see
-# CONTRIBUTING.md.
+# `make check` is the full gate; `.githooks/pre-commit` runs the fast half
+# (`make check-fast`) on every commit, and `.github/workflows/check.yml` runs
+# the full one on every push and on every pull request to `main`. The full gate
+# still runs at `make acceptance` and at the merge gate. It needs
+# /usr/bin/python3, shellcheck and openssl; see CONTRIBUTING.md.
 
 PYTHON ?= /usr/bin/python3
 SHELLCHECK ?= shellcheck
@@ -36,7 +37,7 @@ PY_FILES = $(shell find . $(PRUNE) -o -name '*.py' -print | sort)
 SH_FILES = $(shell find . $(PRUNE) -o \( -name '*.sh' -o -path './.githooks/pre-commit' -o -path './.githooks/commit-msg' -o -path './.githooks/pre-push' \) -print | sort)
 endif
 
-.PHONY: check check-hq check-inner acceptance prereqs test test-unit self-test compile lint claims brand roadmap secrets leak hooks fresh-check deploy-dry \
+.PHONY: check check-fast check-hq check-inner acceptance prereqs test test-fast test-unit self-test compile lint claims brand roadmap secrets leak hooks fresh-check deploy-dry \
 	demo demo-check demo-reset uki-cycle release-sign seed-cert
 
 # `make check` is the CPU ceiling on this host: the sealed-image fixture drives
@@ -47,13 +48,58 @@ endif
 # exercise the mechanism: a distinct path stops serializing the host.
 CHECK_LOCK ?= /var/lock/odile-check.lock
 CHECK_LOCK_WAIT ?= 3600
+# The wait journal: one JSON line per acquisition, with the exact wait, the
+# holder pid and the outcome. `make check` announces a wait once and is silent
+# until it takes the lock, so this is the only exact per-run wait there is.
+# Empty disables it; tests pass their own path.
+CHECK_LOCK_EVENT ?= /var/lock/odile-check-waits.jsonl
 # `$(MAKE)` in a recipe is executed even under `make -n`, and would take the
 # real lock during a dry run. An alias keeps the recursion but lets -n print.
 MAKE_BIN := $(MAKE)
-CHECK_LOCK_PY := $(PYTHON) tools/check_lock.py --lock "$(CHECK_LOCK)" --wait "$(CHECK_LOCK_WAIT)" --
+CHECK_LOCK_PY := $(PYTHON) tools/check_lock.py --lock "$(CHECK_LOCK)" --wait "$(CHECK_LOCK_WAIT)" --event-log "$(CHECK_LOCK_EVENT)" --
 
 check:
 	@$(CHECK_LOCK_PY) $(MAKE_BIN) --no-print-directory check-inner
+
+# The fast gate `.githooks/pre-commit` runs. It is deliberately *not* under the
+# host lock: the one heavy module (`tests/test_sealed_image.py`, cryptsetup
+# re-encrypt at about four cores) is excluded, so a commit can neither queue
+# behind a full suite nor hold the lock for 11 minutes. The full suite still
+# runs at `make acceptance` and at the merge gate — the two points where a tree
+# lands on `main` — and the trade is recorded in docs/ops/WORKFLOW-CHANGES.md.
+# The test set is the modules the index touches (by basename), plus a smoke set
+# that covers the app, the claims/brand linters and the lock/machinery code.
+FAST_SMOKE ?= tests/test_flow.py tests/test_claims.py tests/test_brand.py tests/test_check_lock.py
+FAST_HEAVY ?= tests/test_sealed_image.py
+check-fast: prereqs secrets leak compile lint claims brand roadmap
+	@$(MAKE_BIN) --no-print-directory test-fast
+
+test-fast:
+	@set -eu; \
+	changed=$$( { $(GIT) diff --cached --name-only --diff-filter=ACMR; \
+	              $(GIT) diff --name-only --diff-filter=ACMR; } | sort -u ); \
+	mods=$$( \
+	  for f in $$changed; do \
+	    case "$$f" in \
+	      tests/test_*.py) echo "$$f" ;; \
+	      *.py) base=$$(basename "$$f" .py); \
+	            if [ -f "tests/test_$$base.py" ]; then echo "tests/test_$$base.py"; fi ;; \
+	    esac; \
+	  done; \
+	  for f in $(FAST_SMOKE); do if [ -f "$$f" ]; then echo "$$f"; fi; done; \
+	); \
+	mods=$$(printf '%s\n' "$$mods" | sort -u | sed '/^$$/d'); \
+	run=""; skipped=""; heavy=" $(FAST_HEAVY) "; \
+	for f in $$mods; do \
+	  case "$$heavy" in *" $$f "*) skipped="$$skipped $$f" ;; *) run="$$run $$f" ;; esac; \
+	done; \
+	if [ -z "$$run" ]; then echo "check-fast: no test module to run" >&2; exit 1; fi; \
+	names=$$(printf '%s\n' $$run | sed 's|/|.|g; s|\.py$$||'); \
+	echo "check-fast: $$(printf '%s ' $$names)"; \
+	$(PYTHON) -m unittest $$names; \
+	if [ -n "$$skipped" ]; then \
+	  echo "check-fast: heavy module(s) left to the full gate:$$skipped"; \
+	fi
 
 # The gate proper. Separate from `check` so the lock spans every step -- the
 # light linters as well as `test` and `self-test` -- and two runs cannot

@@ -19,12 +19,14 @@ here too, so a fix cannot buy a second uid the lock by deadlocking the gate.
 from __future__ import annotations
 
 import fcntl
+import json
 import os
 import shutil
 import stat
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unittest
 from pathlib import Path
@@ -64,7 +66,7 @@ class TwoUidLockTest(unittest.TestCase):
 
     def env(self, extra: dict[str, str] | None = None) -> dict[str, str]:
         env = {key: value for key, value in os.environ.items()
-               if key != "ODILE_CHECK_LOCK"}
+               if key not in ("ODILE_CHECK_LOCK", "ODILE_GATE_EVENT_LOG", "ODILE_GATE_PARENT_PID")}
         env["HOME"] = str(self.tmp)
         if extra:
             env.update(extra)
@@ -149,7 +151,7 @@ class LockContractTest(unittest.TestCase):
 
     def env(self, extra: dict[str, str] | None = None) -> dict[str, str]:
         env = {key: value for key, value in os.environ.items()
-               if key != "ODILE_CHECK_LOCK"}
+               if key not in ("ODILE_CHECK_LOCK", "ODILE_GATE_EVENT_LOG", "ODILE_GATE_PARENT_PID")}
         env["HOME"] = str(self.tmp)
         if extra:
             env.update(extra)
@@ -190,6 +192,110 @@ class LockContractTest(unittest.TestCase):
         self.assertTrue(marker.exists(), "the nested run did not reach its command")
         self.assertNotIn(WAIT_LINE, result.stdout,
                          "the nested run queued on a lock it already holds")
+
+
+class QueueInstrumentTest(unittest.TestCase):
+    """The wait journal and the caller's pid — the two ODL-346 instruments."""
+
+    def setUp(self) -> None:
+        self.tmp = Path(tempfile.mkdtemp(prefix="odile-check-queue-", dir="/var/tmp"))
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.lock = self.tmp / "lock"
+        self.journal = self.tmp / "journal.jsonl"
+
+    def env(self) -> dict[str, str]:
+        env = {key: value for key, value in os.environ.items()
+               if key not in ("ODILE_CHECK_LOCK", "ODILE_GATE_EVENT_LOG", "ODILE_GATE_PARENT_PID")}
+        env["HOME"] = str(self.tmp)
+        return env
+
+    def command(self, marker: Path, *, wait: int = 30,
+                parent: int | None = None) -> list[str]:
+        command = [PYTHON, str(HELPER), "--lock", str(self.lock),
+                   "--wait", str(wait), "--event-log", str(self.journal)]
+        if parent is not None:
+            command += ["--parent-pid", str(parent)]
+        return command + ["--", PYTHON, "-c",
+                          "import pathlib, sys; pathlib.Path(sys.argv[1]).write_text('ran')",
+                          str(marker)]
+
+    def records(self) -> list[dict]:
+        if not self.journal.exists():
+            return []
+        return [json.loads(line) for line in self.journal.read_text().splitlines() if line]
+
+    def test_the_journal_records_the_exact_wait_and_the_holder(self) -> None:
+        fd = os.open(self.lock, os.O_RDWR | os.O_CREAT, 0o666)
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        os.write(fd, b"424242\n")
+        os.lseek(fd, 0, os.SEEK_SET)
+
+        def release() -> None:
+            try:
+                os.close(fd)
+            except OSError:
+                pass  # the timer already released it
+
+        self.addCleanup(release)
+        timer = threading.Timer(1.2, release)
+        timer.start()
+        self.addCleanup(timer.cancel)
+        marker = self.tmp / "ran"
+        result = subprocess.run(self.command(marker), capture_output=True, text=True,
+                                timeout=120, env=self.env())
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue(marker.exists())
+        acquire = [row for row in self.records() if row["event"] == "acquire"]
+        self.assertEqual(len(acquire), 1, self.records())
+        self.assertEqual(acquire[0]["outcome"], "acquired")
+        self.assertTrue(acquire[0]["queued"], "the run did not record that it queued")
+        self.assertGreaterEqual(acquire[0]["waited_s"], 0.8,
+                                "the recorded wait is shorter than the hold")
+        self.assertEqual(acquire[0]["holder_pid"], 424242,
+                         "the holder pid was not recorded")
+        self.assertEqual(stat.S_IMODE(os.stat(self.journal).st_mode) & 0o666, 0o666,
+                         "the journal is not appendable by the next uid")
+
+    def test_a_waiter_leaves_the_queue_when_its_caller_dies(self) -> None:
+        fd = os.open(self.lock, os.O_RDWR | os.O_CREAT, 0o666)
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        self.addCleanup(os.close, fd)
+        parent = subprocess.Popen(["/bin/sleep", "30"])
+        threading.Timer(0.6, parent.terminate).start()
+        marker = self.tmp / "ran"
+        started = time.monotonic()
+        result = subprocess.run(self.command(marker, parent=parent.pid),
+                                capture_output=True, text=True, timeout=30, env=self.env())
+        parent.wait(timeout=10)
+        self.assertEqual(result.returncode, TIMEOUT_EXIT, result.stderr)
+        self.assertLess(time.monotonic() - started, 10, "the waiter did not notice")
+        self.assertFalse(marker.exists(), "the command ran after its caller died")
+        self.assertIn("is gone", result.stderr)
+        acquire = [row for row in self.records() if row["event"] == "acquire"]
+        self.assertEqual(acquire[-1]["outcome"], "caller-gone", self.records())
+
+    def test_a_running_suite_is_stopped_when_its_caller_dies(self) -> None:
+        parent = subprocess.Popen(["/bin/sleep", "30"])
+        child_pid_file = self.tmp / "child.pid"
+        command = [PYTHON, str(HELPER), "--lock", str(self.lock), "--wait", "10",
+                   "--parent-pid", str(parent.pid), "--event-log", str(self.journal),
+                   "--", "/bin/sh", "-c",
+                   f"echo $$ > {child_pid_file}; exec sleep 30"]
+        waiter = subprocess.Popen(command, stdout=subprocess.PIPE,
+                                  stderr=subprocess.STDOUT, text=True, env=self.env())
+        deadline = time.monotonic() + 20
+        while not child_pid_file.exists() and time.monotonic() < deadline:
+            time.sleep(0.05)
+        self.assertTrue(child_pid_file.exists(), "the suite never started")
+        child_pid = int(child_pid_file.read_text().strip())
+        parent.terminate()
+        parent.wait(timeout=10)
+        out, _ = waiter.communicate(timeout=20)
+        self.assertEqual(waiter.returncode, TIMEOUT_EXIT, out)
+        self.assertIn("stopped the suite", out)
+        time.sleep(0.2)
+        self.assertFalse(Path(f"/proc/{child_pid}").exists(),
+                         "the suite outlived its caller")
 
 
 if __name__ == "__main__":

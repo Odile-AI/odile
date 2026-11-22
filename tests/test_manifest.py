@@ -186,8 +186,8 @@ def sha256(data: bytes) -> str:
 def git_env() -> dict[str, str]:
     """A child git must not inherit the outer repo's index or work tree.
 
-    `make check` runs from the pre-commit hook, where `GIT_INDEX_FILE` points
-    at the repository being committed; a fixture repo inheriting it fails to
+    `make check-fast` runs from the pre-commit hook, where `GIT_INDEX_FILE`
+    points at the repository being committed; a fixture repo inheriting it fails to
     commit. The same scrub protects `manifest.py` when an operator runs it from
     a git hook or a script with GIT_* exported.
     """

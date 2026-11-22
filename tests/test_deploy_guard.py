@@ -36,8 +36,8 @@ GIT_IDENTITY = (
 def git_env() -> dict[str, str]:
     """The ambient environment minus every inherited git handle.
 
-    `make check` runs from `.githooks/pre-commit`, which exports `GIT_DIR` and
-    `GIT_INDEX_FILE` for the outer repository. A fixture that inherits them
+    `make check-fast` runs from `.githooks/pre-commit`, which exports `GIT_DIR`
+    and `GIT_INDEX_FILE` for the outer repository. A fixture that inherits them
     commits onto the card's branch or reads the wrong ref, so both the fixture
     git calls and the script under test get a scrubbed environment.
     """
