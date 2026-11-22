@@ -1,0 +1,29 @@
+# Odile — the bench liveness probe: one line, every five minutes. ODL-936.
+#
+# On 2026-11-21 the bench answered 404 for half a day while /health answered
+# 200: odile-bench.service had restarted 17,060 times because an orphaned
+# seed.py serve from a deleted card worktree held 127.0.0.1:8082. This oneshot
+# runs `scripts/check_bench.sh --probe`; a red line is raised in the existing
+# HQ alert ledger and outbox (odilectl.health), so a dead bench is an alert
+# rather than a page nobody reads.
+#
+# ExecStart is `--probe-tick`, not the probe itself: the tick prints the one
+# line and feeds the alert path, while the probe stays a plain manual script.
+[Unit]
+Description=Odile bench liveness probe — test.odile.fyi (ODL-936)
+Documentation=https://odile.fyi
+Wants=network-online.target
+After=network-online.target odile-bench.service
+
+[Service]
+Type=oneshot
+User=root
+WorkingDirectory={{ROOT}}/current
+ExecStart=/usr/bin/python3 {{ROOT}}/current/deploy/bench/deploy_bench.py --probe-tick
+Nice=10
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/var/lib/odile
+TimeoutStartSec=120

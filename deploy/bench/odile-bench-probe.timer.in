@@ -1,0 +1,17 @@
+# Odile — run the bench liveness probe every five minutes. ODL-936.
+#
+# The same cadence as HQ's other five-minute checks (odile-claim.timer,
+# odile-attest-refresh.timer). Persistent=true catches one missed tick after a
+# host reboot: a bench must not read healthy merely because the box restarted.
+[Unit]
+Description=Odile bench liveness probe — every five minutes (ODL-936)
+
+[Timer]
+OnCalendar=*:0/5
+AccuracySec=15s
+RandomizedDelaySec=0
+Persistent=true
+Unit=odile-bench-probe.service
+
+[Install]
+WantedBy=timers.target

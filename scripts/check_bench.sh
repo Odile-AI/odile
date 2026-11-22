@@ -36,12 +36,24 @@
 #   ./scripts/check_bench.sh
 #   TENANT=odl-340a1e.test.odile.fyi ./scripts/check_bench.sh
 #
-# Exit codes: 0 every check passed, 1 a check failed, 2 a prerequisite or the
-# record is missing.
+# ODL-936 adds `--probe`: one line, no record needed, and a non-zero exit
+# when https://test.odile.fyi/ is not 200 with `server: odile-bench`. The
+# line names the pid and command listening on the bench's port (8082 from
+# deploy/bench/bench.env), because the 21 November outage was an orphaned
+# `seed.py serve` holding that port while the unit restarted 17,060 times.
+# `deploy/bench/deploy_bench.py --probe-tick` runs this every five minutes
+# and feeds the existing HQ alert path when it is red.
+#
+#   ./scripts/check_bench.sh --probe
+#
+# Exit codes: 0 every check passed (the probe is green), 1 a check failed
+# (the probe is red), 2 a prerequisite or the record is missing.
 set -eu
 
 REPO=$(cd "$(dirname "$0")/.." && pwd)
 BENCH_HOST=${BENCH_HOST:-test.odile.fyi}
+BENCH_URL=${BENCH_URL:-https://$BENCH_HOST/}
+BENCH_PORT=${BENCH_PORT:-8082}
 TENANT_HOST=${TENANT:-odl-340a1e.test.odile.fyi}
 PROD=${PROD:-https://odile.fyi}
 BASELINE=${BASELINE:-$REPO/docs/evidence/a1-bench-baseline.json}
@@ -60,18 +72,85 @@ PYTHON=${PYTHON:-/usr/bin/python3}
 PRE_DEPLOY_ROOT=${PRE_DEPLOY_ROOT:-c8b0a25039b91776cd26c06a37ae32735365b7248c3136ad72d0f5354164b6dc}
 
 RECORD=0
+PROBE=0
 EXPECT=""
 while [ $# -gt 0 ]; do
     case "$1" in
         --record) RECORD=1; shift ;;
+        --probe) PROBE=1; shift ;;
         --expect) EXPECT=$2; shift 2 ;;
         --expect=*) EXPECT=${1#--expect=}; shift ;;
         -h|--help)
-            sed -n '2,40p' "$0" | sed 's/^# \{0,1\}//'
+            sed -n '2,51p' "$0" | sed 's/^# \{0,1\}//'
             exit 0 ;;
         *) printf 'check_bench: unknown argument: %s\n' "$1" >&2; exit 2 ;;
     esac
 done
+
+# ------------------------------------------------------------ the liveness probe
+# One line, no baseline and no tenant: is the bench itself answering, and if
+# not, which process owns its port? The 21 November outage was a green
+# /health beside a 404 landing page, so /health is not part of this answer.
+port_holder() {
+    # port_holder PORT -> "pid N <command>" or "nobody listening"
+    _port=$1
+    if ! command -v ss >/dev/null 2>&1; then
+        printf 'nobody named (ss is not installed)'
+        return 0
+    fi
+    _pid=$(ss -ltnpH "sport = :$_port" 2>/dev/null \
+        | sed -n 's/.*pid=\([0-9][0-9]*\).*/\1/p' | head -n 1)
+    if [ -z "$_pid" ]; then
+        printf 'nobody listening'
+        return 0
+    fi
+    _cmd=$(tr '\0' ' ' < "/proc/$_pid/cmdline" 2>/dev/null | sed 's/ *$//' || true)
+    printf 'pid %s %s' "$_pid" "${_cmd:-unknown}"
+}
+
+probe() {
+    # probe -> exactly one line on stdout; 0 green, 1 red
+    #
+    # The header is Caddy's (`Server odile-bench` is set in the bench block),
+    # so it proves the name reached the bench site, not that the bench app is
+    # the thing behind it. On 2026-11-21 the holder was a same-port stranger;
+    # today a foreign `http.server` on 8082 answers 200 through the same
+    # Caddy. The page's own join form is the app's identity, and the holder
+    # is named either way.
+    _body_file=$(mktemp)
+    _headers=$(curl -sS --max-time 20 -o "$_body_file" -D - "$BENCH_URL" 2>/dev/null || true)
+    _code=$(printf '%s\n' "$_headers" | tr -d '\r' \
+        | awk 'tolower($1) ~ /^http\// { print $2; exit }')
+    _server=$(printf '%s\n' "$_headers" | tr -d '\r' \
+        | awk 'tolower($1) == "server:" { print tolower($2); exit }')
+    _account_page=no
+    grep -qs 'id="join"' "$_body_file" 2>/dev/null && _account_page=yes
+    rm -f "$_body_file"
+    _holder=$(port_holder "$BENCH_PORT")
+    if [ "$_code" = 200 ] && [ "$_server" = odile-bench ] && [ "$_account_page" = yes ]; then
+        printf 'bench probe: OK %s -> 200 server: odile-bench (the account site); 127.0.0.1:%s %s\n' \
+            "$BENCH_URL" "$BENCH_PORT" "$_holder"
+        return 0
+    fi
+    printf 'bench probe: FAIL %s -> %s server: %s, account page: %s (want 200, server: odile-bench, the join form); 127.0.0.1:%s %s\n' \
+        "$BENCH_URL" "${_code:-000}" "${_server:-none}" "$_account_page" "$BENCH_PORT" "$_holder"
+    return 1
+}
+
+if [ "$PROBE" = 1 ]; then
+    for bin in curl ss mktemp; do
+        command -v "$bin" >/dev/null 2>&1 || {
+            printf 'prerequisite: %s is not installed\n' "$bin" >&2
+            exit 2
+        }
+    done
+    if line=$(probe); then
+        printf '%s\n' "$line"
+        exit 0
+    fi
+    printf '%s\n' "$line" >&2
+    exit 1
+fi
 
 for bin in curl dig openssl sha256sum sqlite3 mktemp; do
     if ! command -v "$bin" >/dev/null 2>&1; then
@@ -146,7 +225,9 @@ if [ "$RECORD" = 1 ]; then
     } > "$tmp/baseline.txt"
     "$PYTHON" - "$tmp/baseline.txt" "$BASELINE" <<'PY'
 import json
+import os
 import sys
+import tempfile
 
 lines = [line.rstrip("\n") for line in open(sys.argv[1], encoding="utf-8") if line.strip()]
 record = {"schema": "odile.a1-bench-baseline.v1", "production": {}, "production_nrestarts": None}
@@ -165,10 +246,25 @@ record["note"] = ("The record is a capture, not the DoD's baseline for productio
                   "addresses, and NRestarts. The check asserts / against the ODL-339 pre-deploy value (PRE_DEPLOY_ROOT) "
                   "and requires this record to agree with it; /roadmap and /attestation regenerate every fifteen and five "
                   "minutes, so for those two the property is that the served bytes are production's own state file.")
-with open(sys.argv[2], "w", encoding="utf-8") as handle:
-    json.dump(record, handle, indent=2, sort_keys=True)
-    handle.write("\n")
-print("recorded %s" % sys.argv[2])
+# Atomic: a reader (the check, a reviewer, git) sees either the old record or
+# the complete new one. An interrupted record must never leave half a baseline.
+target = os.path.abspath(sys.argv[2])
+fd, temporary = tempfile.mkstemp(prefix=".a1-bench-baseline.", dir=os.path.dirname(target))
+try:
+    with os.fdopen(fd, "w", encoding="utf-8") as handle:
+        json.dump(record, handle, indent=2, sort_keys=True)
+        handle.write("\n")
+        handle.flush()
+        os.fsync(handle.fileno())
+    os.chmod(temporary, 0o644)
+    os.replace(temporary, target)
+except BaseException:
+    try:
+        os.unlink(temporary)
+    except FileNotFoundError:
+        pass
+    raise
+print("recorded %s" % target)
 for path, digest in sorted(record["production"].items()):
     print("  %s  %s" % (digest, path))
 print("  nrestarts=%s" % record["production_nrestarts"])
