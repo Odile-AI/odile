@@ -6,7 +6,7 @@
 # wraps `odile-audit --json` and `odile-support status --json`. The audit reads
 # /etc/shadow and sshd's journal, so the unit runs as root; it binds loopback
 # only and Caddy (or the bench's socket-proxyd stand-in) is the listener. It
-# writes nothing.
+# writes nothing of its own; the one writable path below is cryptsetup's.
 [Unit]
 Description=Odile verify — the machine's own /verify page
 After=network-online.target
@@ -22,6 +22,13 @@ NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=read-only
+# `cryptsetup luksDump` takes its read lock in /run/cryptsetup, and
+# ProtectSystem=strict mounts /run read-only: without this line the LUKS row
+# reads FAIL on a machine whose header is perfectly readable (t_d55b0e47).
+# `/run` rather than `/run/cryptsetup`: systemd refuses to start a unit whose
+# ReadWritePaths= path is missing, and a machine with no LUKS container has no
+# /run/cryptsetup at boot.
+ReadWritePaths=/run
 
 [Install]
 WantedBy=multi-user.target
