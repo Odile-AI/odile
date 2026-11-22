@@ -339,11 +339,51 @@ class BriefTest(unittest.TestCase):
                 local = datetime(2026, 11, 20, hour, minute, tzinfo=zone)
                 self.assertEqual(send_brief.greeting_for(local), expected)
 
-    def test_a_dispatch_older_than_the_window_is_not_this_run(self) -> None:
+    def test_a_dispatch_for_another_day_is_not_this_run(self) -> None:
         self.write_jobs(kind="late", lateness=840, dispatched_at="2026-11-08T23:14:00+00:00")
         self.run_sender()
         body = self.message().message.get_content()
         self.assertNotIn("after its 07:00 slot", body)
+
+    def test_a_late_run_an_hour_and_three_quarters_after_dispatch_keeps_its_sentence(self) -> None:
+        """A slow agent turn is not a stale dispatch: 08:59 is still 10 November's brief."""
+        self.write_jobs(kind="late", lateness=840, dispatched_at="2026-11-09T23:14:00+00:00")
+        now = int(datetime(2026, 11, 10, 0, 59, tzinfo=timezone.utc).timestamp())
+        code, _out, err = self.run_sender("--now", str(now))
+        self.assertEqual(code, 0, err)
+        body = self.message().message.get_content()
+        self.assertIn("This one ran at 07:14 — 14 minutes after its 07:00 slot.", body)
+
+    def test_a_slow_catch_up_keeps_its_sentence(self) -> None:
+        self.write_jobs(kind="catch_up", lateness=10920,
+                        dispatched_at="2026-11-10T01:02:00+00:00")
+        now = int(datetime(2026, 11, 10, 3, 30, tzinfo=timezone.utc).timestamp())
+        code, _out, err = self.run_sender("--now", str(now))
+        self.assertEqual(code, 0, err)
+        body = self.message().message.get_content()
+        self.assertIn("This one ran at 09:02 — 3 hours 2 minutes after its 07:00 slot.", body)
+
+    def test_a_dispatch_whose_local_date_is_another_day_carries_no_sentence(self) -> None:
+        """The dispatch's local date is the test, not the distance from now."""
+        (self.home / "briefs" / "2026-11-11.md").write_text(
+            "# Morning brief — Wednesday 11 November 2026\n\nThe quote came back signed.\n",
+            encoding="utf-8",
+        )
+        cases = [
+            # The next morning's manual re-run of a new day's brief.
+            ("2026-11-09T23:14:00+00:00", datetime(2026, 11, 10, 23, 30, tzinfo=timezone.utc)),
+            # A midnight crossing forty minutes after yesterday's dispatch.
+            ("2026-11-09T15:20:00+00:00", datetime(2026, 11, 9, 16, 0, tzinfo=timezone.utc)),
+        ]
+        for dispatched_at, now in cases:
+            with self.subTest(dispatched_at=dispatched_at, now=now.isoformat()):
+                self.write_jobs(kind="late", lateness=840, dispatched_at=dispatched_at)
+                FakeSMTP.instances = []
+                code, _out, err = self.run_sender("--now", str(int(now.timestamp())))
+                self.assertEqual(code, 0, err)
+                body = self.message().message.get_content()
+                self.assertNotIn("after its 07:00 slot", body)
+                self.assertNotIn("This one ran at", body)
 
     def test_a_job_with_no_dispatch_record_is_not_marked_late(self) -> None:
         self.write_jobs(kind=None)
@@ -364,6 +404,42 @@ class BriefTest(unittest.TestCase):
         self.assertEqual(record["date"], "2026-11-10")
         self.assertEqual(record["late_seconds"], 0)
         self.assertIn("@mail.odile.fyi", record["message_id"])
+
+    def test_an_on_time_dispatch_records_zero_late_seconds(self) -> None:
+        """`late_seconds` is the brief's lateness, not Hermes's dispatch lag."""
+        self.write_jobs(kind="on_time", lateness=20, dispatched_at=DISPATCHED)
+        code, _out, err = self.run_sender()
+        self.assertEqual(code, 0, err)
+        record = json.loads(self.status.read_text(encoding="utf-8"))
+        self.assertEqual(record["late_seconds"], 0)
+
+    def test_a_late_or_catch_up_dispatch_records_its_lateness_seconds(self) -> None:
+        cases = [
+            ("late", 840.0, "2026-11-09T23:14:00+00:00",
+             datetime(2026, 11, 9, 23, 14, 30, tzinfo=timezone.utc)),
+            ("catch_up", 10920.0, "2026-11-10T01:02:00+00:00",
+             datetime(2026, 11, 10, 1, 2, 30, tzinfo=timezone.utc)),
+        ]
+        for kind, lateness, dispatched_at, now in cases:
+            with self.subTest(kind=kind):
+                self.write_jobs(kind=kind, lateness=lateness, dispatched_at=dispatched_at)
+                if self.status.exists():
+                    self.status.unlink()
+                FakeSMTP.instances = []
+                code, _out, err = self.run_sender("--now", str(int(now.timestamp())))
+                self.assertEqual(code, 0, err)
+                record = json.loads(self.status.read_text(encoding="utf-8"))
+                self.assertEqual(record["late_seconds"], int(lateness))
+
+    def test_a_slow_late_run_records_the_lateness_its_sentence_names(self) -> None:
+        self.write_jobs(kind="late", lateness=840, dispatched_at="2026-11-09T23:14:00+00:00")
+        now = int(datetime(2026, 11, 10, 0, 59, tzinfo=timezone.utc).timestamp())
+        code, _out, err = self.run_sender("--now", str(now))
+        self.assertEqual(code, 0, err)
+        body = self.message().message.get_content()
+        self.assertIn("This one ran at 07:14 — 14 minutes after its 07:00 slot.", body)
+        record = json.loads(self.status.read_text(encoding="utf-8"))
+        self.assertEqual(record["late_seconds"], 840)
 
     def test_a_failed_send_records_the_error_and_keeps_the_last_sent_at(self) -> None:
         self.status.parent.mkdir(parents=True)

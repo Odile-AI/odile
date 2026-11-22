@@ -13,7 +13,10 @@ the signed heartbeat carries ``last_sent_at`` to HQ and a missed brief becomes
 Lateness is read from Hermes, never guessed by a model: the job record's
 ``last_dispatch`` holds ``scheduled_at``, ``dispatched_at``, ``lateness_seconds``
 and ``kind`` (``on_time``, ``late`` or ``catch_up``). If this dispatch was
-late, the email says so with the time and the size of the delay.
+late, the email says so with the time and the size of the delay. The dispatch
+belongs to this brief when its local date is the brief's date, so a slow turn
+keeps its sentence however long the agent ran, and a manual run of a new day's
+brief does not inherit yesterday's.
 
     sudo -n /usr/bin/python3 ~/.hermes/scripts/send_brief.py
     ... --dry-run                       # compose and print; no send, no write
@@ -50,7 +53,6 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 DEFAULT_SEED = Path("/etc/odile/seed.json")
 DEFAULT_STATUS = Path("/var/lib/odile/brief.json")
 DEFAULT_JOB = "Morning brief"
-DEFAULT_DISPATCH_WINDOW_SECONDS = 3600
 DEFAULT_TEMPLATE = Path(".hermes") / "brief.txt"
 REPLY_TO = "help@odile.fyi"
 FROM_DOMAIN = "mail.odile.fyi"
@@ -199,20 +201,44 @@ def reduce_markdown(text: str) -> str:
     return body
 
 
-def late_sentence(job: Job, now: datetime) -> str:
+def _dispatch_timestamp(dispatch: dict) -> datetime | None:
+    """The dispatch time as an aware datetime, or None when it is unusable."""
+    try:
+        dispatched_at = datetime.fromisoformat(str(dispatch.get("dispatched_at")))
+    except (TypeError, ValueError):
+        return None
+    if dispatched_at.tzinfo is None:
+        dispatched_at = dispatched_at.replace(tzinfo=timezone.utc)
+    return dispatched_at
+
+
+def _this_runs_dispatch(job: Job, day: str) -> datetime | None:
+    """The dispatch time when the record belongs to the brief for *day*.
+
+    Hermes keeps ``last_dispatch`` across days, so a manual run of a new day's
+    brief still sees yesterday's record. The dispatch's local date — not the
+    distance from ``now`` — decides: a slow turn may run hours after dispatch
+    and still belongs to today's brief, while a next-morning re-run must not
+    inherit yesterday's sentence.
+    """
+    dispatch = job.dispatch
+    if not dispatch or dispatch.get("kind") not in ("late", "catch_up"):
+        return None
+    dispatched_at = _dispatch_timestamp(dispatch)
+    if dispatched_at is None:
+        return None
+    if dispatched_at.astimezone(job.zone).date().isoformat() != day:
+        return None
+    return dispatched_at
+
+
+def late_sentence(job: Job, day: str) -> str:
     """The one sentence a late brief carries, from Hermes's dispatch record."""
     dispatch = job.dispatch
     if not dispatch or not job.due:
         return ""
-    try:
-        dispatched_at = datetime.fromisoformat(str(dispatch.get("dispatched_at")))
-    except (TypeError, ValueError):
-        return ""
-    if dispatched_at.tzinfo is None:
-        dispatched_at = dispatched_at.replace(tzinfo=timezone.utc)
-    if abs((now - dispatched_at).total_seconds()) > DEFAULT_DISPATCH_WINDOW_SECONDS:
-        return ""
-    if dispatch.get("kind") not in ("late", "catch_up"):
+    dispatched_at = _this_runs_dispatch(job, day)
+    if dispatched_at is None:
         return ""
     try:
         lateness = max(0.0, float(dispatch.get("lateness_seconds") or 0))
@@ -393,7 +419,7 @@ def main(argv: list[str] | None = None) -> int:
             job=job,
             slug=slug,
             now=now,
-            late=late_sentence(job, now),
+            late=late_sentence(job, day),
         )
         sender = f"brief-{slug}@{FROM_DOMAIN}"
         message = build_message(
@@ -433,7 +459,7 @@ def main(argv: list[str] | None = None) -> int:
 
         attempt["ok"] = True
         attempt["last_sent_at"] = int(now.timestamp())
-        attempt["late_seconds"] = _lateness_seconds(job, now)
+        attempt["late_seconds"] = _lateness_seconds(job, day)
         try:
             write_status(args.status, attempt)
         except OSError as error:
@@ -456,18 +482,16 @@ def _record_failure(path: Path, record: dict) -> None:
         print(f"brief: status not written to {path}: {error}", file=sys.stderr)
 
 
-def _lateness_seconds(job: Job, now: datetime) -> int:
-    dispatch = job.dispatch
-    if not dispatch:
+def _lateness_seconds(job: Job, day: str) -> int:
+    """The brief's lateness, from the dispatch that produced it.
+
+    ``late_seconds`` names how late the brief was, not how long the send
+    waited after Hermes dispatched the turn: an ``on_time`` dispatch has its
+    own small lag (20 seconds) and records zero here.
+    """
+    if _this_runs_dispatch(job, day) is None:
         return 0
-    try:
-        dispatched_at = datetime.fromisoformat(str(dispatch.get("dispatched_at")))
-    except (TypeError, ValueError):
-        return 0
-    if dispatched_at.tzinfo is None:
-        dispatched_at = dispatched_at.replace(tzinfo=timezone.utc)
-    if abs((now - dispatched_at).total_seconds()) > DEFAULT_DISPATCH_WINDOW_SECONDS:
-        return 0
+    dispatch = job.dispatch or {}
     try:
         return max(0, int(float(dispatch.get("lateness_seconds") or 0)))
     except (TypeError, ValueError):
