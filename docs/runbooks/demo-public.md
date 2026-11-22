@@ -527,30 +527,51 @@ machine's own name, and the record propagates in a minute.
   2026-11-14). A forced run appends a new run block to the log and writes the
   marker with its exit code, so the next boot reads `already converged` again.
 
-  **The forced run shuts the sign-in on a machine whose first visit was
-  completed by the deploy, not the page** (measured 2026-11-21 on this
-  machine). The script runs the release installer with `--first-visit` and
-  `--first-visit-token`, and `ensure_env` decides whether the `.env` hash is
-  the owner's by `/etc/odile/first-visit.json`'s `signin_set_at` alone:
-  `used_at` only closes the page's own link (`check_token`), and
-  `first_visit_signin_set()` never reads it. `apply_demo_public.py` writes the
-  `.env` directly, so a machine whose sign-in the deploy set carries the
-  owner's hash with **no** `signin_set_at`; the forced run reads that as a
-  fresh machine and replaces the hash with a scrypt hash of a discarded random
-  password (it prints `write the sign-in hash is a placeholder until first
-  visit`), which nobody knows. The same run also puts `webapp.public_url` back
-  to the machine's slug, so `demo.odile.fyi` answered `400 Invalid Host
-  header` and the machine's own name `401 Invalid credentials` — and the
-  deploy could not run either, because it opens its console with that same
-  account.
+  **The forced run shut the sign-in on a machine whose first visit was
+  completed by the deploy, not the page** — the pre-fix record, measured
+  2026-11-21 on this machine. The script runs the release installer with
+  `--first-visit` and `--first-visit-token`, and `ensure_env` decided whether
+  the `.env` hash was the owner's by `/etc/odile/first-visit.json`'s
+  `signin_set_at` alone: `used_at` only closes the page's own link
+  (`check_token`), and `first_visit_signin_set()` never read it.
+  `apply_demo_public.py` wrote the `.env` directly and recorded nothing in the
+  state, so a machine whose sign-in the deploy set carried the owner's hash
+  with **no** `signin_set_at`; the forced run read that as a fresh machine and
+  replaced the hash with a scrypt hash of a discarded random password (it
+  printed `write the sign-in hash is a placeholder until first visit`), which
+  nobody knows. The same run also put `webapp.public_url` back to the
+  machine's slug, so `demo.odile.fyi` answered `400 Invalid Host header` and
+  the machine's own name `401 Invalid credentials` — and the deploy could not
+  run either, because it opens its console with that same account.
 
-  A state file that *does* carry `signin_set_at` keeps its sign-in through the
-  forced run — the report's sign-in-hash row read PASS before and after,
-  measured 2026-11-21T19:59Z — but the run still resets
+  **After t_27f378cc the deploy records the visit it made, so a forced run
+  keeps a deploy-set sign-in.** Once `ensure_env` has written or verified the
+  judge hash, it stamps `used_at` and `signin_set_at`, one UTC timestamp, in
+  `/etc/odile/first-visit.json` — under the page's own `<state>.lock`, with
+  every other key preserved, and never by creating the file. The state row the
+  deploy prints is `write` on the first run and `same` afterwards, and `warn`
+  when the state is missing. The report's sign-in-hash row read PASS before
+  and after the forced run (measured 2026-11-21T19:59Z, and again
+  2026-11-22T05:29Z with the deploy's own stamp); that row measures the hash,
+  not `changed`. A state file that *does* carry `signin_set_at` keeps its
+  sign-in through the forced run, but the run still resets
   `webapp.public_url`, so `demo.odile.fyi` answers 400 until a deploy re-sets
-  it, while the machine's own name answers throughout. **The deploy below is
-  the recovery either way; the first two steps are only needed where the
-  sign-in is shut.**
+  it, while the machine's own name answers throughout.
+
+  The forced run still rewrites the `.env` to the installer's three-key
+  template (`rewrite … (outside the allowlist: 1)`): the deploy's fourth key,
+  `HERMES_CUSTOM_CLOUD_API_NEAR_AI_API_KEY`, leaves the file, so
+  `check_demo_public.py`'s "the .env carries the one Near AI key" row is red
+  until the next deploy re-adds it from `/etc/odile/key.env` (present on this
+  machine: 0600 root:root, one 35-byte key, measured 2026-11-22). That store
+  is what `inference_key()` falls back to; when it is missing the deploy stops
+  at its tenant dry run with `error: … has no
+  HERMES_CUSTOM_CLOUD_API_NEAR_AI_API_KEY and /etc/odile/key.env is missing`.
+  **The deploy below is the recovery either way — it depends on that store, not
+  on the `.env` — and the page steps below are only needed where the
+  first-visit state is missing or malformed:** there the deploy prints `warn`
+  and records nothing, and the installer still replaces the hash (the ODL-521
+  fence, unchanged).
 
   1. Open the first-visit page **on the machine's own name**:
      `https://odl-fake01.odile.fyi/first-visit?t=<token>`. On the demo name
