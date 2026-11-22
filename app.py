@@ -550,8 +550,12 @@ ACCOUNT_BLOCK_RE = re.compile(
 # could work, so it offers the way back instead (Brand gate round 1, must 2).
 CONFIRM_FORM_RE = re.compile(r"<!--confirmform-->(.*?)<!--/confirmform-->", re.S)
 CONFIRM_NEXT = {
-    "register": '<p class="note"><a href="/register">Register again</a></p>',
-    "signin": '<p class="note">Already confirmed? <a href="/signin">Sign in</a></p>',
+    # The way back is the whole content of its paragraph, so it is a target,
+    # not an inline prose link: the class carries BRAND.md's 44 px rule
+    # (`p.note a`) and the 8 px gap above it (`p.next`). Round 2 measured the
+    # bare link at 118x19 and 57x19 on the two dead-link screens.
+    "register": '<p class="note next"><a href="/register">Register again</a></p>',
+    "signin": '<p class="note next"><a href="/signin">Sign in to your account</a></p>',
 }
 
 ACCOUNT_TITLES = {
@@ -809,6 +813,9 @@ p{margin:0 0 16px;max-width:66ch}
 a{color:var(--ink);text-decoration-color:var(--soft);text-underline-offset:2px}
 .lede{color:var(--soft)}
 .note{margin:0 0 12px;font-size:16px;line-height:1.6;color:var(--soft)}
+/* Same rule as web/register.html: a standalone way-back link in a note is a
+   44 px target, not an inline prose link (Brand gate round 2, nit 2). */
+p.note a{display:inline-flex;align-items:center;min-height:44px}
 form{display:flex;flex-direction:column;gap:16px;margin:24px 0 0}
 label{font-weight:600;line-height:1.3}
 input[type=email],input[type=password]{width:100%;min-width:0;border-radius:0;min-height:44px;background:transparent;border:0;border-bottom:1px solid var(--edge);font:400 16.8px/1.4 var(--text);color:var(--ink);padding:9px 2px 11px}
@@ -1784,8 +1791,9 @@ class Handler(BaseHTTPRequestHandler):
                       "before you create the account.",
                 email=email_raw, field="consent"))
 
-        con = db()
+        con = None
         try:
+            con = db()
             row = con.execute("SELECT * FROM accounts WHERE email = ?", (email,)).fetchone()
             if row is not None:
                 return self._resend(con, row)
@@ -1830,8 +1838,17 @@ class Handler(BaseHTTPRequestHandler):
                     consent=consent_ticked))
             account = con.execute(
                 "SELECT * FROM accounts WHERE id = ?", (cur.lastrowid,)).fetchone()
+        except sqlite3.Error:
+            # A database that will not open or read is still a screen, not a
+            # closed connection: the same page-level slot as the exhausted
+            # retry loop, so the button never appears to do nothing (Brand gate
+            # round 2, should 3 — measured as RemoteDisconnected).
+            return self._send(500, render_register(
+                error="Something broke. Try again?", email=email_raw,
+                consent=consent_ticked))
         finally:
-            con.close()
+            if con is not None:
+                con.close()
         queue_confirm(dict(account), token)
         return self._send(200, render_register(state="done", email=email))
 

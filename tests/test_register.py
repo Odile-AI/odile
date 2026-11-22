@@ -311,6 +311,37 @@ class RegistrationTests(FlowBase):
         self.assertEqual(status, 200)
         self.assertIsNone(self.account(email))
 
+    def test_a_database_error_still_answers_the_page(self):
+        """A sqlite3 failure is a 500 screen, not a closed connection.
+
+        Round 2 measured POST /register with the database swapped under the
+        live instance: RemoteDisconnected, no body — the button appeared to do
+        nothing. The retry loop's own 500 covered only exhaustion; the open and
+        the reads now land in the same page-level slot.
+        """
+        email = self.email()
+        moved = self.db.with_name(self.db.name + ".moved")
+        if moved.exists():
+            moved.unlink()
+        os.replace(self.db, moved)
+        self.db.mkdir()
+        try:
+            status, _headers, body = self.register(email)
+        finally:
+            self.db.rmdir()
+            os.replace(moved, self.db)
+        self.assertEqual(status, 500, body[:300])
+        text = body.decode("utf-8")
+        self.assertIn('id="register-err"', text)
+        self.assertIn('role="alert"', text)
+        self.assertIn("Something broke. Try again?", text)
+        self.assertEqual(text.count('role="alert"'), 1)
+        self.assertIn('value="%s"' % email, text)
+        self.assertIn("Create account", text)
+        # The service is healthy again: the same POST now makes the row.
+        self.assertEqual(self.register(email)[0], 200)
+        self.assertIsNotNone(self.account(email))
+
 
 class ConfirmTests(FlowBase):
     def test_confirm_spends_once_sets_verified_and_queues_one_provision(self):
@@ -321,6 +352,9 @@ class ConfirmTests(FlowBase):
         status, _headers, body = request(self.port, "GET", "/confirm?t=" + token)
         self.assertEqual(status, 200)
         self.assertIn(b"Confirm my address", body)
+        # The sentence that tells the reader to click renders only with the
+        # button (Brand gate round 2, should 2).
+        self.assertIn(b"One click. After you confirm", body)
         status, headers, body = request(self.port, "POST", "/confirm",
                                         form(token=token))
         self.assertEqual(status, 303, body[:300])
@@ -378,6 +412,9 @@ class ConfirmTests(FlowBase):
         self.assertIn("That confirmation link is not valid.", text)
         self.assertNotIn("<form", text)
         self.assertNotIn("Confirm my address", text)
+        # The sentence about the button goes with the button.
+        self.assertNotIn("One click", text)
+        self.assertIn('class="note next"', text)
         self.assertIn('href="/register"', text)
         self.assertIn("Register again", text)
 
@@ -400,6 +437,8 @@ class ConfirmTests(FlowBase):
         self.assertIn("That confirmation link has expired.", text)
         self.assertNotIn("<form", text)
         self.assertNotIn("Confirm my address", text)
+        self.assertNotIn("One click", text)
+        self.assertIn('class="note next"', text)
         self.assertIn('href="/register"', text)
         self.assertIn("Register again", text)
         # The POST of the same spent-by-time link says the same thing.
@@ -408,6 +447,7 @@ class ConfirmTests(FlowBase):
         self.assertEqual(status, 410)
         text = body.decode("utf-8")
         self.assertNotIn("<form", text)
+        self.assertNotIn("One click", text)
         self.assertIn('href="/register"', text)
 
     def test_an_already_confirmed_link_points_at_sign_in(self):
@@ -422,8 +462,30 @@ class ConfirmTests(FlowBase):
         self.assertIn("This address is already confirmed.", text)
         self.assertNotIn("<form", text)
         self.assertNotIn("Confirm my address", text)
+        self.assertNotIn("One click", text)
+        # The question would repeat the sentence above it; the link is the
+        # whole sentence (Brand gate round 2, nit 1).
+        self.assertNotIn("Already confirmed?", text)
+        self.assertIn('class="note next"', text)
         self.assertIn('href="/signin"', text)
-        self.assertIn("Sign in", text)
+        self.assertIn("Sign in to your account", text)
+
+    def test_the_way_back_is_a_full_size_target(self):
+        """The way back is the whole content of its paragraph, so 44 px applies.
+
+        BRAND.md §Accessibility tokens excepts only inline prose links; round 2
+        measured these at 118×19 and 57×19. The rendered box is measured in
+        the evidence probe; here the rule that produces it is pinned, so
+        deleting the rule or the class fails this test.
+        """
+        status, _headers, body = request(self.port, "GET", "/confirm?t=" + "f" * 64)
+        self.assertEqual(status, 404)
+        text = body.decode("utf-8")
+        self.assertIn('<p class="note next"><a href="/register">Register again</a></p>',
+                      text)
+        self.assertIn(
+            "p.note a{display:inline-flex;align-items:center;min-height:44px}", text)
+        self.assertIn("p.next{margin:8px 0 12px}", text)
 
     def test_a_machine_that_already_exists_is_not_queued_again(self):
         """A replayed confirmation on an existing machine lands `ready`."""
@@ -497,6 +559,20 @@ class SessionTests(FlowBase):
         status, headers, _body = request(self.port, "GET", "/account", cookie=cookie)
         self.assertEqual(status, 303)
         self.assertEqual(headers.get("Location"), "/signin")
+
+    def test_the_sign_in_seam_way_back_is_a_full_size_target(self):
+        """The same 44 px rule reaches the seam's standalone "Register" link.
+
+        Nit 2 of the brand round: the link is the whole content of its
+        paragraph, so the inline-prose exception does not apply (ODL-583 owns
+        the finished page; this is the rule in passing).
+        """
+        status, _headers, body = request(self.port, "GET", "/signin")
+        self.assertEqual(status, 200)
+        text = body.decode("utf-8")
+        self.assertIn('<p class="note"><a href="/register">Register</a></p>', text)
+        self.assertIn(
+            "p.note a{display:inline-flex;align-items:center;min-height:44px}", text)
 
     def test_a_wrong_password_is_401(self):
         email, _account = self.confirmed()

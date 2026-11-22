@@ -39,6 +39,12 @@ a{color:var(--ink);text-decoration-color:var(--soft);text-underline-offset:2px}
 a:focus-visible{outline:2px solid var(--ink);outline-offset:3px}
 .lede{font-size:18px;line-height:1.6;color:var(--soft)}
 .note{margin:0 0 12px;font-size:16px;line-height:1.6;color:var(--soft)}
+/* A way-back link is the whole content of its paragraph, so it is a target:
+   BRAND.md §Accessibility tokens excepts only inline prose links. Written as
+   `p.note a` so the same rule reaches the sign-in seam's standalone link
+   (Brand gate round 2, must 1 and nit 2). */
+p.note a{display:inline-flex;align-items:center;min-height:44px}
+p.next{margin:8px 0 12px}
 .invite{margin:16px 0 24px;font-size:17px;line-height:1.5}
 .invite strong{font-weight:600;overflow-wrap:anywhere}
 section{margin:48px 0 0;padding-top:24px;border-top:1px solid var(--line)}
@@ -142,9 +148,9 @@ h1,h2,h3,.brand,.mark,.wordmark,.focus{font-family:var(--serif)}
 
   <!--confirm-->
   <h1>Confirm your address.</h1>
-  <p class="note">One click. After you confirm, the machine is built and starts itself.</p>
   {{CONFIRM_ERROR}}
   <!--confirmform-->
+  <p class="note">One click. After you confirm, the machine is built and starts itself.</p>
   <form id="confirm" method="post" action="/confirm" novalidate>
     <input type="hidden" name="token" value="{{TOKEN}}">
     <button type="submit">Confirm my address</button>
