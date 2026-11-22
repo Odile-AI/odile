@@ -22,6 +22,11 @@ the surface the agent *speaks from*, so it says "ask me" — BRAND.md §Voice an
 the skill's own rule ("Say 'I'"). Both forms are pinned here, and the spoken
 form is proved to carry the deck's words and facts unchanged.
 
+t_509f85e4 extends the same rule to the support-grant answer: the skill's §5
+blockquote says "my memory and past prompts" while A10's row on the three desk
+surfaces keeps "the agent's memory". The same reversal equality proves the
+spoken paragraph is the deck's facts with only the person moved.
+
 These are the mechanical half of "the five answers exist and match the deck";
 the round trip and the transcript are in `docs/evidence/odl-238/`.
 """
@@ -91,6 +96,21 @@ THIRD_PERSON_CLAUSES = (
     "ask the agent to restore",
     "ask the agent to show you the file",
     "the agent can show it again",
+    "the agent's memory and past prompts",
+)
+# §5's handover paragraph as A10 and the deck's §5 row state it; the skill
+# speaks the same facts with the agent's own mouth. The reversal equality below
+# turns the spoken form back into this literal, so a changed fact fails here.
+GRANT_HANDOVER = (
+    "A grant is a handover, not a peek. It can read the mounted disk, every "
+    "file, the agent's memory and past prompts, the sign-in hash, and the "
+    "backup password if the recovery file is still on the machine."
+)
+GRANT_HANDOVER_SPOKEN = GRANT_HANDOVER.replace(
+    "the agent's memory and past prompts", "my memory and past prompts")
+GRANT_FACTS = (
+    "the agent's memory and past prompts, the sign-in hash, and the backup "
+    "password if the recovery file is still on the machine"
 )
 RESET_RESTORE = (
     "No. There is no escrow and no passphrase. A lost sign-in is reset on the "
@@ -203,7 +223,8 @@ def plain(text: str) -> str:
 
 
 def third_person(text: str) -> str:
-    """The deck's person restored: `me`/`I` -> `the agent`."""
+    """The deck's person restored: `my` -> `the agent's`, `me`/`I` -> `the agent`."""
+    text = re.sub(r"\bmy\b", "the agent's", text)
     return SELF_REFERENCE.sub("the agent", text)
 
 
@@ -274,7 +295,7 @@ class SupportAnswers(unittest.TestCase):
         for label, answer, surfaces in (
             ("the machine-dies answer", MACHINE_DIES, (FAQ, EMAIL)),
             ("the reset/unlock answer", RESET_RESTORE, (FAQ, PAGE)),
-            ("the support-grant answer", SUPPORT_GRANT, (PAGE, EMAIL)),
+            ("the support-grant answer", SUPPORT_GRANT, (FAQ, PAGE, EMAIL)),
         ):
             needle = flat(answer).replace("`", "")
             for path in surfaces:
@@ -300,6 +321,25 @@ class SupportAnswers(unittest.TestCase):
         still_third_person = [clause for clause in THIRD_PERSON_CLAUSES if clause in skill]
         self.assertEqual(still_third_person, [],
                          "the skill still speaks about itself in the third person")
+
+    def test_the_skill_says_the_support_grant_answer_in_the_first_person(self):
+        # t_509f85e4: §5 is the other answer the agent says aloud, and it still
+        # called the agent "the agent". The skill speaks the same handover with
+        # "my memory and past prompts"; A10's row on `docs/FAQ.md`,
+        # `web/faq.html` and `templates/emails/support.md` keeps the deck's
+        # third person because the reader there is a stranger. Reversing the
+        # spoken pronouns must reproduce the deck's paragraph exactly, and the
+        # facts it must not lose are asserted against the deck row itself.
+        self.assertEqual(third_person(flat(GRANT_HANDOVER_SPOKEN)), flat(GRANT_HANDOVER),
+                         "the spoken support-grant answer is not the deck's answer with only the person changed")
+        deck = flat(DECK.read_text(encoding="utf-8"))
+        self.assertIn(flat(GRANT_FACTS), deck,
+                      "the support-grant facts the skill speaks are not in docs/CLAIMS.md")
+        self.assertIn("A grant is a handover, not a peek.", deck,
+                      "the deck no longer carries the handover sentence the skill says")
+        skill = plain(SKILL.read_text(encoding="utf-8"))
+        self.assertIn(flat(GRANT_HANDOVER_SPOKEN), skill,
+                      "skills/odile-help/SKILL.md does not speak the support-grant answer in the first person")
 
     def test_no_reliability_fact_escapes_the_deck(self):
         # A fact stated in the guidance prose is not covered by a **Deck:**

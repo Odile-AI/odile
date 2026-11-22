@@ -105,9 +105,9 @@ words above is one I invented.
 > it exits. A root shell, for 24 hours — only when you grant it.
 >
 > A grant is a handover, not a peek. It can read the mounted disk, every file,
-> the agent's memory and past prompts, the sign-in hash, and the backup password
-> if the recovery file is still on the machine. It can add a LUKS keyslot or
-> copy the volume key, so it can keep disk access after the grant.
+> my memory and past prompts, the sign-in hash, and the backup password if the
+> recovery file is still on the machine. It can add a LUKS keyslot or copy the
+> volume key, so it can keep disk access after the grant.
 
 ## The escalation ladder
 
