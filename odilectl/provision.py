@@ -86,6 +86,7 @@ from datetime import datetime, timezone
 from functools import lru_cache
 from pathlib import Path
 
+from . import keys
 from .core import Context, Report, applied, plan, render_datetime
 from .errors import ProviderError, UsageError
 from .providers import configured_name
@@ -170,6 +171,278 @@ def _seed_db(ctx: Context) -> Path:
     return ctx.config.path_value("state_db", DEFAULT_STATE_DB) or Path(DEFAULT_STATE_DB)
 
 
+@dataclass(frozen=True)
+class KeyBinding:
+    """The instance's inference key, or why the seed carries the shared one.
+
+    `state` is one of:
+
+    * ``issued``  — minted by this run, recorded with the label and first
+      characters, and waiting in the seed handoff for this token;
+    * ``reissued`` — a second run on a live machine whose raw key had already
+      left HQ: a new key was minted (the old one revoked at the provider), and
+      the report says the machine must be installed again with the new token;
+    * ``kept``    — the tenant already had a live key and the raw key still
+      waits, so it was re-bound to this run's token and nothing was minted;
+    * ``shared``  — no ``near_account`` in the config: alpha.0's manual path,
+      where the seed carries the config's shared key.
+    """
+
+    state: str
+    label: str | None = None
+    prefix: str | None = None
+    key_id: str | None = None
+    spend_limit_nano: int | None = None
+    workspace_id: str | None = None
+    reason: str = ""
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "state": self.state,
+            "label": self.label,
+            "key_prefix": self.prefix,
+            "key_id": self.key_id,
+            "spend_limit_nano": self.spend_limit_nano,
+            "workspace": self.workspace_id,
+            "reason": self.reason,
+        }
+
+
+def _state_path(ctx: Context) -> Path:
+    return ctx.config.path_value("state_db", DEFAULT_STATE_DB) or Path(DEFAULT_STATE_DB)
+
+
+def _seed_keys_path(ctx: Context, seed) -> str:
+    """The issued-key handoff the seed service reads per exchange."""
+    configured = ctx.config.path_value("seed_keys")
+    return str(configured) if configured is not None else seed.keys_path()
+
+
+def _issue_key(ctx: Context, slug: str, *, keep: bool,
+               ) -> tuple[KeyBinding, "keys.Issued | None", dict | None]:
+    """Mint this instance's key before the machine is ordered, or reissue the live one.
+
+    The mint happens *before* `provider.create` so a provider refusal leaves no
+    paid machine without a key: the order is the expensive half. `keep` is the
+    reuse path — a second run on a tenant whose machine is already up must not
+    revoke the key that machine is spending with. The raw key decides what that
+    means (verifier round 4, ODL-242):
+
+    * it still waits in the handoff -> the same key is re-bound to the token
+      this run mints, so a re-issued token seeds the instance's own key;
+    * it has already left HQ (the machine exchanged it) -> the record's raw key
+      is unrecoverable, so this run mints a new key. `keys.issue` revokes the
+      live one at the provider first, and the report says the running machine
+      must be installed again to pick the new key up. The config's shared key is
+      never substituted for a tenant that has a record.
+
+    The record (label, first characters, id, cap) is written to the state
+    database here; the raw key goes to the seed handoff, never to the record.
+    Returns the raw `Issued` (None on the keep path) and the waiting entry, so
+    `_bind_seed_token`'s caller can bind whichever one this run has.
+    """
+    account = keys.account_from_config(ctx.config)
+    store = StateStore.open(_state_path(ctx))
+    replaced = None
+    try:
+        record = store.key_for(slug)
+        if account is None:
+            # No `near_account` is the bench/manual switch, but it cannot undo a
+            # key a tenant already owns: `seed.bind` refuses to mint a token that
+            # would seed the shared key (ODL-242), so refuse here instead — before
+            # the order, which is the expensive half.
+            if record is not None and record.state == "issued":
+                raise ProviderError(
+                    f"provision: {slug} owns the NEAR AI key {record.key_prefix} "
+                    f"({record.label}), but this config has no `near_account`, so "
+                    "this run could neither re-bind nor replace it; restore the "
+                    "switch or destroy the tenant first"
+                )
+            return KeyBinding(
+                state="shared",
+                reason="no near_account in the config: the seed carries the config's shared key",
+            ), None, None
+        if keep and record is not None and record.state == "issued":
+            waiting = _waiting_entry(ctx, slug, record.key_id)
+            if waiting is not None:
+                return KeyBinding(
+                    state="kept",
+                    label=record.label,
+                    prefix=record.key_prefix,
+                    key_id=record.key_id,
+                    spend_limit_nano=record.spend_limit_nano,
+                    workspace_id=record.workspace_id,
+                    reason="the waiting raw key is re-bound to this run's setup token",
+                ), None, waiting
+            replaced = record
+        try:
+            issued = keys.issue(account, slug)
+        except ProviderError as error:
+            raise ProviderError(
+                f"provision: {slug}'s inference key was not minted, so nothing was "
+                f"ordered: {error}"
+            ) from None
+        detail = {"source": "odilectl provision", "by": "the provider's mint call"}
+        if replaced is not None:
+            detail.update({
+                "reason": "reissued: the live machine's raw key had already left HQ",
+                "replaces": replaced.key_id,
+            })
+        store.record_key(
+            slug,
+            label=issued.label,
+            key_id=issued.key_id,
+            key_prefix=issued.key_prefix,
+            workspace_id=issued.workspace_id,
+            spend_limit_nano=issued.spend_limit_nano,
+            detail=detail,
+        )
+    finally:
+        store.close()
+    seed = _seed_service()
+    _write_waiting_key(ctx, seed, slug, issued, token_hash=None, instance_id=None)
+    return KeyBinding(
+        state="reissued" if replaced is not None else "issued",
+        label=issued.label,
+        prefix=issued.key_prefix,
+        key_id=issued.key_id,
+        spend_limit_nano=issued.spend_limit_nano,
+        workspace_id=issued.workspace_id,
+        reason=(
+            f"it replaces {replaced.key_prefix}, which was revoked at the provider; "
+            "the live machine must be installed again with the new setup token to "
+            "pick the new key up"
+            if replaced is not None else ""
+        ),
+    ), issued, None
+
+
+def _waiting_entry(ctx: Context, slug: str, key_id: str) -> dict | None:
+    """The raw key waiting for this tenant and this record, or None.
+
+    Not matched to a token hash on purpose: this is the path where the entry is
+    about to be *re-bound* to the token this run mints. The key id must match
+    the record, so a leftover entry for an earlier, superseded mint is not
+    handed over.
+    """
+    seed = _seed_service()
+    path = _seed_keys_path(ctx, seed)
+    try:
+        document = seed.load_keys(path)
+    except (seed.ConfigError, OSError) as error:
+        raise ProviderError(f"provision: cannot read the seed handoff at {path}: {error}") from None
+    entry = document.get(slug)
+    if not isinstance(entry, dict) or entry.get("key_id") != key_id:
+        return None
+    return entry
+
+
+def _write_waiting_key(ctx: Context, seed, slug: str, issued, *,
+                       token_hash: str | None, instance_id: str | None) -> None:
+    """Put the raw key where the next redeem for this token will find it.
+
+    Written twice on purpose: once right after the mint (so a machine that is
+    already ordered can be seeded even if the bookkeeping below fails), and
+    again once the token exists, carrying its hash and the instance id. The
+    second write is what binds the key to *this* token.
+    """
+    path = _seed_keys_path(ctx, seed)
+    entry = {
+        "key": issued.raw_key,
+        "label": issued.label,
+        "key_id": issued.key_id,
+        "prefix": issued.key_prefix,
+        "workspace_id": issued.workspace_id,
+        "token_hash": token_hash,
+        "instance_id": instance_id,
+        "created_at": seed.iso(seed.utcnow()),
+    }
+    try:
+        seed.set_issued_key(path, slug, entry)
+    except (seed.ConfigError, OSError, ValueError) as error:
+        raise ProviderError(
+            f"provision: {slug}'s key was minted but not written to the seed handoff "
+            f"at {path}: {error}"
+        ) from None
+
+
+def _bind_key_to_token(ctx: Context, slug: str, issued: "keys.Issued",
+                       token_hash: str, instance_id: str) -> None:
+    """Bind the waiting key to the token and the instance that will redeem it."""
+    seed = _seed_service()
+    _write_waiting_key(ctx, seed, slug, issued, token_hash=token_hash, instance_id=instance_id)
+    store = StateStore.open(_state_path(ctx))
+    try:
+        store.record_key(
+            slug,
+            label=issued.label,
+            key_id=issued.key_id,
+            key_prefix=issued.key_prefix,
+            workspace_id=issued.workspace_id,
+            instance_id=instance_id,
+            spend_limit_nano=issued.spend_limit_nano,
+        )
+    finally:
+        store.close()
+
+
+def _rebind_waiting_key(ctx: Context, slug: str, binding: KeyBinding, waiting: dict,
+                        token_hash: str, instance_id: str) -> None:
+    """Point the kept raw key at the token this run minted, and at this instance.
+
+    A re-issued setup token must seed the instance's own key (verifier round 4,
+    ODL-242): `seed.bind` ends the previous token in the same transaction, so
+    exactly one token is live and this entry must name it. The raw key is the
+    same one the record already names; only its binding moves.
+    """
+    seed = _seed_service()
+    path = _seed_keys_path(ctx, seed)
+    updated = dict(waiting, token_hash=token_hash, instance_id=instance_id)
+    try:
+        seed.set_issued_key(path, slug, updated)
+    except (seed.ConfigError, OSError, ValueError) as error:
+        raise ProviderError(
+            f"provision: {slug}'s setup token was minted but its waiting key was not "
+            f"re-bound at {path}: {error}"
+        ) from None
+    store = StateStore.open(_state_path(ctx))
+    try:
+        store.record_key(
+            slug,
+            label=str(binding.label),
+            key_id=str(binding.key_id),
+            key_prefix=str(binding.prefix),
+            workspace_id=str(binding.workspace_id),
+            instance_id=instance_id,
+            spend_limit_nano=binding.spend_limit_nano,
+        )
+    finally:
+        store.close()
+
+
+def _key_lines(binding: KeyBinding) -> list[str]:
+    if binding.state == "shared":
+        return [f"  inference: shared key ({binding.reason})"]
+    if binding.state == "kept":
+        return [
+            f"  inference: {binding.label} {binding.prefix} kept "
+            "(the live machine's key; nothing was minted)",
+            "  inference: the waiting raw key was re-bound to this run's setup token, "
+            "so the re-issued token seeds this instance's own key",
+        ]
+    lines = [
+        f"  inference: {binding.label} {binding.prefix} "
+        f"(cap {keys.money(binding.spend_limit_nano)}; the provider's spendLimit)",
+    ]
+    if binding.reason:
+        lines.append(f"  inference: {binding.reason}")
+    lines.append(
+        "  inference: the raw key is in the seed handoff for this token, and the "
+        "record holds only the label and first characters"
+    )
+    return lines
+
+
 def _bind_seed_token(ctx: Context, slug: str, instance_id: str,
                      backup_password: str | None = None) -> SeedBinding:
     """Mint one single-use token bound to the machine that was just ordered.
@@ -195,7 +468,8 @@ def _bind_seed_token(ctx: Context, slug: str, instance_id: str,
     try:
         seed.ensure_schema(con)
         issued = seed.bind(
-            con, slug, instance_id=instance_id, ttl_hours=SETUP_TOKEN_TTL_HOURS
+            con, slug, instance_id=instance_id, ttl_hours=SETUP_TOKEN_TTL_HOURS,
+            keys_file=_seed_keys_path(ctx, seed),
         )
         rebuild = _write_rebuild_entry(ctx, seed, slug, issued, backup_password)
         return SeedBinding(
@@ -729,6 +1003,25 @@ def run(ctx: Context, args) -> Report:
                 "reason": REPROVISION_REASON,
             }
         )
+    account = keys.account_from_config(ctx.config)
+    if account is None:
+        actions.append({
+            "action": "keys.shared",
+            "slug": spec.hostname,
+            "reason": "no near_account in the config; the seed carries the shared key",
+        })
+    else:
+        actions.append({
+            "action": "keys.issue",
+            "slug": spec.hostname,
+            "label": keys.label_for(spec.hostname),
+            "workspace": account.workspace_id,
+            "spend_limit": keys.money(account.spend_limit_nano),
+            "spend_limit_nano": account.spend_limit_nano,
+            "when": ("before the order; a live machine's waiting key is re-bound to the "
+                     "new token, and a key that already left HQ is re-minted"),
+            "credential": account.credential_path,
+        })
     actions += [
         {
             "action": "provider.list",
@@ -766,6 +1059,13 @@ def run(ctx: Context, args) -> Report:
             "ttl_hours": SETUP_TOKEN_TTL_HOURS,
         },
         {
+            "action": "seed.key.handoff",
+            "slug": spec.hostname,
+            "file": str(ctx.config.path_value("seed_keys") or "<the seed service's default>"),
+            "bound_to": "the setup token the bind above mints",
+            "consumed_by": "the redeem that spends the token; HQ keeps no raw key after it",
+        },
+        {
             "action": "seed.rebuild.seal",
             "slug": spec.hostname,
             "file": backup_label,
@@ -790,6 +1090,14 @@ def run(ctx: Context, args) -> Report:
         "the setup token is bound to the instance id the create call returns, "
         "before the machine is polled: single-use, and refused on any other instance",
         "the token is printed once; the seed service stores only its SHA-256 hash",
+        (
+            "the inference key is minted for this instance before the order and "
+            "written once into the seed: HQ keeps the label and the first characters, "
+            "never the raw key"
+            if account is not None
+            else "no near_account in the config: the seed carries the config's shared "
+            "key (alpha.0's manual path)"
+        ),
         f"rebuild password: {backup_label} (its 'Backup password:' line is sealed "
         "under the token; `/var/lib/odile/seed-rebuilds.json` holds ciphertext, "
         "never the password)",
@@ -841,18 +1149,39 @@ def run(ctx: Context, args) -> Report:
     # Before the paid call: a live row can only record its own machine. A
     # missing machine is `reconcile`'s finding to make, not this command's.
     _refuse_an_unrecordable_order(spec.hostname, state_now, machine_now, existing)
+
+    # The instance's inference key is minted *before* the order: a provider
+    # refusal here leaves no paid machine without a key (ODL-242). A machine
+    # that is already up re-issues its setup token without revoking the key it
+    # is spending with — the raw key is re-bound to the new token when it still
+    # waits, and re-minted (old one revoked) when it has already left HQ. A
+    # reopen is always a re-mint: destroy revoked that key.
+    key_binding, issued_key, waiting_key = _issue_key(
+        ctx, spec.hostname, keep=bool(existing) and not reopened
+    )
+
+    def bind(instance_id: str) -> SeedBinding:
+        """Bind the token, then pin this instance's key to it."""
+        binding = _bind_seed_token(ctx, spec.hostname, instance_id,
+                                   backup_password=backup_password)
+        if binding.bound and binding.token_hash:
+            if issued_key is not None:
+                _bind_key_to_token(ctx, spec.hostname, issued_key, binding.token_hash, instance_id)
+            elif waiting_key is not None:
+                _rebind_waiting_key(ctx, spec.hostname, key_binding, waiting_key,
+                                    binding.token_hash, instance_id)
+        return binding
+
     if existing:
         machine = existing[0]
         if _is_queued(machine):
-            seed = _bind_seed_token(ctx, spec.hostname, machine.server_id,
-                                    backup_password=backup_password)
+            seed = bind(machine.server_id)
             return _queued_report(
                 ctx, machine, created=False, release=release, seed=seed,
-                reopened=reopened,
+                reopened=reopened, key=key_binding,
             )
         if machine.state == "active" and machine.ipv4:
-            seed = _bind_seed_token(ctx, spec.hostname, machine.server_id,
-                                    backup_password=backup_password)
+            seed = bind(machine.server_id)
             record = _record(ctx, spec, machine, release)
             return applied(
                 NAME,
@@ -862,6 +1191,7 @@ def run(ctx: Context, args) -> Report:
                     *([_reopen_line(spec.hostname)] if reopened else []),
                     *([_web_row_line(machine)] if record["web_row"] == "repointed" else []),
                     f"  release:   {record['release']} (from the pin, recorded with the tenant)",
+                    *_key_lines(key_binding),
                     *_seed_lines(seed),
                 ],
                 head="provision: nothing ordered (the machine already exists)",
@@ -872,6 +1202,7 @@ def run(ctx: Context, args) -> Report:
                 web_row=record["web_row"],
                 release=record["release"],
                 tenant_state=record["tenant_state"],
+                key=key_binding.to_dict(),
                 seed=seed.to_dict(),
             )
         if machine.state not in ("pending", "active"):
@@ -879,20 +1210,18 @@ def run(ctx: Context, args) -> Report:
                 f"provision: {machine.server_id} exists in state {machine.state}; "
                 "destroy it or inspect it instead of ordering a second machine"
             )
-        seed = _bind_seed_token(ctx, spec.hostname, machine.server_id,
-                                backup_password=backup_password)
+        seed = bind(machine.server_id)
         machine = ctx.provider.poll(machine.server_id, timeout=args.timeout, interval=args.interval)
         created = False
     else:
         machine = ctx.provider.create(spec)
         # The order's id is in the create response and the machine is still
         # deploying, so the token exists before the guest can boot (ODL-455).
-        seed = _bind_seed_token(ctx, spec.hostname, machine.server_id,
-                                backup_password=backup_password)
+        seed = bind(machine.server_id)
         if _is_queued(machine):
             return _queued_report(
                 ctx, machine, created=True, release=release, seed=seed,
-                reopened=reopened,
+                reopened=reopened, key=key_binding,
             )
         # `create` may answer active before the address is filled in; the poll
         # is what guarantees the tenant actually has somewhere to connect.
@@ -912,6 +1241,7 @@ def run(ctx: Context, args) -> Report:
         f"  ipv4:      {machine.ipv4 or '-'}",
         f"  expires:   {render_datetime(machine.expires_at)}",
         f"  release:   {record['release']} (from the pin, recorded with the tenant)",
+        *_key_lines(key_binding),
         *_seed_lines(seed),
     ]
     return applied(
@@ -925,6 +1255,7 @@ def run(ctx: Context, args) -> Report:
         web_row=record["web_row"],
         release=record["release"],
         tenant_state=record["tenant_state"],
+        key=key_binding.to_dict(),
         seed=seed.to_dict(),
     )
 
@@ -942,6 +1273,7 @@ def _queued_report(
     release: str,
     seed: SeedBinding,
     reopened: bool = False,
+    key: KeyBinding | None = None,
 ) -> Report:
     """A queued preorder is a success: the money left, the order exists."""
     position = machine.detail.get("queue_position")
@@ -953,6 +1285,7 @@ def _queued_report(
         f"  queue:     {position if position is not None else 'position not reported'}",
         f"  release:   {release} (from the pin; recorded when the machine is active)",
         "  the order is paid; the provider builds the machine when the queue clears",
+        *(_key_lines(key) if key is not None else []),
         *_seed_lines(seed),
     ]
     head = (
@@ -973,6 +1306,7 @@ def _queued_report(
         reopened=reopened,
         release=release,
         note="the release is recorded when the machine becomes active",
+        key=key.to_dict() if key is not None else None,
         seed=seed.to_dict(),
     )
 

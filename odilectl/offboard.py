@@ -18,10 +18,13 @@ step is a line in the plan before the first one happens:
    machines with the same name is a refusal, never a guess.
 5. `provider.absent` — the account's `?action=servers` no longer lists the id.
    The provider answers 404 on `?action=server&id=` within a minute.
-6. `state.destroy` — the tenant row moves to `destroyed` with one event that
+6. `key.revoke` — the tenant's NEAR AI key (ODL-242): the id is resolved from
+   the provider's key list by the label and the first characters HQ holds, and
+   deleted; the waiting raw key is removed from the seed handoff.
+7. `state.destroy` — the tenant row moves to `destroyed` with one event that
    carries the bundle's facts, the grant report, the DNS record and the
    retention date.
-7. `backup.retain` — the encrypted repository is kept for 30 days, then
+8. `backup.retain` — the encrypted repository is kept for 30 days, then
    deleted. HQ cannot read it (the password is the user's) and, in alpha.0,
    cannot delete it either: the plan names the date, the repository and the
    box the operator deletes it on.
@@ -49,6 +52,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from . import dns as dns_module
+from . import keys as keys_module
 from .core import Context, Report, applied, plan
 from .errors import ProviderError, UsageError
 from .health import HeartbeatStore
@@ -375,6 +379,8 @@ class Survey:
     bundle: Bundle | None
     backup: dict[str, Any]
     skip_export: bool
+    key_record: Any | None = None
+    key_account: Any | None = None
 
 
 def _state_path(ctx: Context, args) -> Path:
@@ -423,9 +429,11 @@ def _survey(ctx: Context, args, bundle: Bundle | None) -> Survey:
     state_db = _state_path(ctx, args)
     store = StateStore.open(state_db)
     try:
-        tenant = store.get(slug)
-    except UnknownTenant:
-        tenant = None
+        try:
+            tenant = store.get(slug)
+        except UnknownTenant:
+            tenant = None
+        key_record = store.key_for(slug)
     finally:
         store.close()
 
@@ -444,6 +452,8 @@ def _survey(ctx: Context, args, bundle: Bundle | None) -> Survey:
         bundle=bundle,
         backup=backup_facts(ctx, slug, Path(heartbeat_db), recorded=recorded),
         skip_export=skip_export,
+        key_record=key_record,
+        key_account=keys_module.account_from_config(ctx.config),
     )
 
 
@@ -529,7 +539,30 @@ def _actions(survey: Survey, args) -> list[dict[str, Any]]:
         "days": RETENTION_DAYS,
         "then": "delete the repository on the backup box",
     }
-    return [export, grant, dns_action, terminate, absent, state, backup]
+    if survey.key_record is None:
+        key_action: dict[str, Any] = {
+            "action": "key.revoke",
+            "slug": survey.slug,
+            "result": "no key record for this tenant",
+        }
+    elif survey.key_account is None:
+        key_action = {
+            "action": "key.revoke",
+            "label": survey.key_record.label,
+            "key_prefix": survey.key_record.key_prefix,
+            "result": "skipped (no near_account in the config)",
+        }
+    else:
+        key_action = {
+            "action": "key.revoke",
+            "label": survey.key_record.label,
+            "key_prefix": survey.key_record.key_prefix,
+            "state": survey.key_record.state,
+            "workspace": survey.key_account.workspace_id,
+            "resolve": "the list call's id where name and key_prefix both match",
+            "then": "remove the waiting raw key from the seed handoff",
+        }
+    return [export, grant, dns_action, terminate, absent, key_action, state, backup]
 
 
 def _notes(survey: Survey, args) -> list[str]:
@@ -540,6 +573,9 @@ def _notes(survey: Survey, args) -> list[str]:
         "`odile-support revoke` on the guest",
         "the encrypted backup is kept for "
         f"{RETENTION_DAYS} days, then deleted; HQ holds no password for it",
+        "the tenant's NEAR AI key is revoked after the machine is gone: the id is "
+        "resolved from the provider's list by the label and first characters HQ "
+        "holds, and the old machine's key cannot spend afterwards",
     ]
     if survey.bundle is None and not survey.skip_export:
         notes.append("pass --export PATH (the downloaded bundle) or --skip-export")
@@ -555,7 +591,8 @@ def _notes(survey: Survey, args) -> list[str]:
     return notes
 
 
-def _detail(survey: Survey, *, dns_result: str, absent_at: str | None, reason: str) -> dict[str, Any]:
+def _detail(survey: Survey, *, dns_result: str, absent_at: str | None, reason: str,
+            key_result: dict[str, Any] | None = None) -> dict[str, Any]:
     detail: dict[str, Any] = {
         "reason": reason,
         "grant": {"status": survey.grant["status"], "source": survey.grant["source"]},
@@ -572,6 +609,8 @@ def _detail(survey: Survey, *, dns_result: str, absent_at: str | None, reason: s
             "days": RETENTION_DAYS,
         },
     }
+    if key_result is not None:
+        detail["key"] = key_result
     if survey.bundle is not None:
         detail["export"] = survey.bundle.to_dict()
     else:
@@ -601,6 +640,66 @@ def _wait_absent(ctx: Context, server_id: str, *, timeout: float, interval: floa
             return None
         SLEEP(interval)
         waited += interval
+
+
+def _revoke_key(ctx: Context, survey: Survey, lines: list[str], state_db: Path) -> dict[str, Any]:
+    """Revoke the tenant's inference key after its machine is gone.
+
+    The provider's list call is the id resolver: HQ holds the label and the
+    first characters, and a key is only deleted when both match — so a label
+    reused by another key cannot revoke the wrong one. The waiting raw key in
+    the seed handoff is removed too: nothing at HQ should outlive the instance
+    it belonged to.
+
+    A host with no `near_account` has no management credential, so it says so
+    and marks nothing; the record still names the key a later `destroy` on a
+    configured host will revoke.
+    """
+    record = survey.key_record
+    if record is None:
+        lines.append("  key:        no key record for this tenant; nothing to revoke")
+        return {"result": "none", "slug": survey.slug}
+    account = survey.key_account
+    if account is None:
+        lines.append(
+            f"  key:        {record.label} {record.key_prefix} not revoked "
+            "(no near_account in the config)"
+        )
+        return {
+            "result": "skipped",
+            "reason": "no near_account in the config",
+            "label": record.label,
+            "key_prefix": record.key_prefix,
+            "state": record.state,
+        }
+    store = StateStore.open(state_db)
+    try:
+        try:
+            revoked = keys_module.revoke_for(account, store, survey.slug)
+        except ProviderError as error:
+            raise ProviderError(
+                f"destroy: {record.label} was not revoked, so the old machine's key "
+                f"can still spend: {error}"
+            ) from None
+    finally:
+        store.close()
+    dropped = keys_module.drop_waiting_key(ctx.config, survey.slug)
+    if revoked is None:
+        lines.append(f"  key:        {record.label} has no record to revoke")
+        return {"result": "none", "label": record.label, "key_prefix": record.key_prefix}
+    if revoked.resolved == "list":
+        lines.append(
+            f"  key:        {revoked.label} {revoked.key_prefix} revoked at the provider "
+            f"(id {revoked.key_id} resolved from the list call)"
+        )
+    else:
+        lines.append(
+            f"  key:        {revoked.label} {revoked.key_prefix} was already absent at "
+            "the provider; the record is marked revoked"
+        )
+    if dropped:
+        lines.append("  key:        the waiting raw key was removed from the seed handoff")
+    return {**revoked.to_dict(), "waiting_key_removed": dropped}
 
 
 # --------------------------------------------------------------------- the run
@@ -709,6 +808,7 @@ def execute(ctx: Context, args, *, name: str = "destroy") -> Report:
         lines.append(f"  machine:    {slug} is already gone (no machine at {ctx.provider.name})")
 
     reason = getattr(args, "reason", None) or "offboard"
+    key_result = _revoke_key(ctx, survey, lines, _state_path(ctx, args))
     state_db = _state_path(ctx, args)
     store = StateStore.open(state_db)
     try:
@@ -727,6 +827,7 @@ def execute(ctx: Context, args, *, name: str = "destroy") -> Report:
                 dns_result=dns_result,
                 absent_at=absent_at,
                 reason=reason,
+                key_result=key_result,
             )
             store.transition(slug, "destroyed", detail=detail)
             lines.append(f"  state:      {slug}: {tenant.state} -> destroyed (one event)")
@@ -754,6 +855,7 @@ def execute(ctx: Context, args, *, name: str = "destroy") -> Report:
         },
         "grant": survey.grant,
         "backup": survey.backup,
+        "key": key_result,
     }
     if survey.bundle is not None:
         payload["export"] = survey.bundle.to_dict()

@@ -4,9 +4,13 @@ The machine is found by its hostname, which is the slug we set at provision.
 The command refuses to guess when two machines answer to one name, and treats
 "already gone" as success: the first support instruction is "run it again".
 
+The tenant's inference key goes with the machine: after the machine is gone the
+key is revoked at the provider (its id resolved from the list call by the label
+and first characters HQ holds), so the old machine cannot spend.
+
 This module is the command's surface; `offboard.py` is the path it runs — the
-bundle check, the grant check, the DNS record, the machine, the row and the
-backup's retention date, in that order, each one a line of the plan.
+bundle check, the grant check, the DNS record, the machine, the key, the row
+and the backup's retention date, in that order, each one a line of the plan.
 """
 
 from __future__ import annotations
