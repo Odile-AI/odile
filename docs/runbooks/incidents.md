@@ -365,8 +365,10 @@ incident.
 ### 4.2 Machine waiting for owner
 
 **Detect.** The tenant is `ready` (or `installed`) but no user sign-in exists:
-`/first-visit/reset` answers `409`, the ready email's link answers `404` or
-`410`, and the machine heartbeats (or, if it does not, this is §4.1).
+`/first-visit/reset` answers `409` (the state has no recovery hash), and the
+ready email's link answers `200` while its token is unspent, `410` once it was
+spent, or `404` when it is not this machine's. The machine heartbeats (or, if
+it does not, this is §4.1).
 `waiting_for_owner` is a legacy state: the sealed image boots without a
 passphrase, so the poll no longer parks a tenant there (`odilectl/health.py`,
 ODL-467). Measured on the bench tenant `odl-340a1e.test.odile.fyi` on
@@ -799,8 +801,9 @@ the tenant is back in a state the worker can retry.
 kit renderer, alert writer and outbox. The two external services are the
 shipping suite's own fixtures (`tests/test_claim.py`): an in-memory provider and
 a stateful Cloudflare transport. No vendor order was placed, so nothing was
-billed. Two failure points: the poll raises after `create` returns a machine, and
-`create` itself raises.
+billed. Three failure points: the poll raises after `create` returns a machine,
+`create` itself raises, and the recovery-kit render raises after the DNS record
+is written.
 
 **What it measured.**
 
@@ -809,7 +812,7 @@ billed. Two failure points: the poll raises after `create` returns a machine, an
 | the provider calls after a failed poll | `create`, `poll`, `terminate` — one terminate, no second order |
 | machines the provider still bills | `0`: the created machine is `terminated` |
 | the tenant row after the failure | `state: claimed`, `server_id: null`, `ipv4: null`, `setup_token_hash: null`, `release: null` |
-| the DNS record | `POST`, then `DELETE` when the failure lands after the DNS write; `{}` after the run |
+| the DNS record | none after the run (`{}`); when the failure lands after the DNS write, the record is `DELETE`d (case C below) |
 | the queued files | none: no ready email, no kit |
 | the event the operator reads | `{"step": "provision_failed", "server_id": "srv-fixture0001", "terminated": true, "reason": "fixture: the build failed"}` |
 | `claim status <slug> --json` | `provision: "failed"`, `tenant_state: "claimed"`, `server_id: null`, `ready_email: null` |
@@ -821,8 +824,8 @@ billed. Two failure points: the poll raises after `create` returns a machine, an
 
 **What it changed.** The runbook had no path for a build that failed before a
 machine existed: §4.1 restarts a machine, §4.6 reads a boot log, and neither
-exists here. §0 now says the state is not a class, §5.0 is the retry, and C-6 carries
-the user copy. See §6.3.
+exists here. §0 now says the state is not a class, §5.0 is the retry, and C-6
+carries the user copy. See §6.3.
 
 ### 6.2 Drill 2 — a lost sign-in (re-cut for A2, 22 November 2026)
 
@@ -979,11 +982,11 @@ and is the live counterpart of §4.1's second command.
 
 ## 7. Limits
 
-1. **Two drills are not a live failed tenant.** Drill 1 runs the shipping claim
-   spine against the fixtures the shipping suite uses — no vendor order was
-   placed, so "billed" means the provider's own live set, and the terminate call
-   is what empties it. Drill 2's live half is the bench and demo tenants'
-   endpoints; its reset half is the shipped first-visit service on a scratch
+1. **The re-cut drills are not a live failed tenant.** Drill 1 runs the
+   shipping claim spine against the fixtures the shipping suite uses — no vendor
+   order was placed, so "billed" means the provider's own live set, and the
+   terminate call is what empties it. Drill 2's live half is the bench and demo
+   tenants' endpoints; its reset half is the shipped first-visit service on a scratch
    guest root, because the bench tenant's first visit was never completed after
    its 21 November image (`/first-visit/reset` `409`) and there is no sign-in
    there to lose. Neither drill powers off a tenant; the live stopped-VM check is
