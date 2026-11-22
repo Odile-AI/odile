@@ -275,8 +275,14 @@ smtp_address_preference = ipv6
 ```
 
 Postfix still tries IPv4 when a destination publishes no AAAA or the IPv6
-connection fails, so this is a preference and not a v6-only path. Apply it the
-supported way and prove it:
+connection fails, so this is a preference and not a v6-only path. It is not a
+free one: `postconf(5)` says of this value that "all deliveries will suffer
+delays during an IPv6 outage, even while the destination is still reachable
+over IPv4", so a brief queues instead of failing when the relay has no IPv6,
+and `postqueue -p` plus `grep gmail-smtp-in /var/log/mail.log` show it moving
+again once IPv6 returns (3.10.6 here implements `smtp_balance_inet_protocols`,
+which Postfix 3.3 added, so nothing is stuck the way a < 3.3 relay could be).
+Apply it the supported way and prove it:
 
 ```sh
 ./deploy/postfix/apply.py --apply     # writes /etc/postfix/main.cf, reloads
@@ -292,9 +298,67 @@ grep "gmail-smtp-in" /var/log/mail.log | tail -1    # relay=…[2001:…]:25
 ./scripts/send_test.py --gmail-headers "<subject>"  # placement, plus the address in spf=pass
 ```
 
-A `relay=…[203.0.113.139]` (an IPv4 literal) after this change means the
-setting is not in effect — most likely `/etc/postfix/main.cf` was edited by
-hand and the applier has not run since.
+For a destination that publishes an AAAA, such as Gmail, a
+`relay=…[203.0.113.139]` (an IPv4 literal) after this change means the setting
+is not in effect — most likely `/etc/postfix/main.cf` was edited by hand and
+the applier has not run since. A destination that publishes only an A is
+expected to show the literal, by design.
+
+**Why the A is quarantined — measured 2026-11-22 (`t_6b6ac0dd`).** Not because
+of a list, so **there is nothing to delist**. Every list below was queried
+through four resolvers (`05-blocklist-matrix.txt`), and the nine zones that
+publish a resolvable NS were also asked directly of that nameserver
+(`dig +norecurse @<its NS>`, `12-authoritative-ns.txt`; of its 13 recorded
+zones, SORBS, SpamCop and both Validity zones answer `NS: (none)`) with the
+published control `2.0.0.127.zen.spamhaus.org` in the same batch. The direct
+answer for `203.0.113.139` is NXDOMAIN at Spamhaus ZEN, SBL, XBL and PBL (at
+`a`–`e.gns.spamhaus.org`; the control returns `127.0.0.2`, `127.0.0.4`,
+`127.0.0.10`), Barracuda BRBL, UCEPROTECT L1/L2/L3 and PSBL. CBL, SpamCop,
+Hostkarma, Invaluement and Mailspike are covered by the resolver matrix alone
+(SpamCop's NS lookup SERVFAILs); it records NXDOMAIN for each at the three
+resolvers that answer — the fourth, the CleanBrowsing resolver Spamhaus
+blocks, returns `127.255.255.254` for CBL, a refusal rather than a verdict.
+SORBS no longer answers at all (its zone name is NXDOMAIN at the `net` servers).
+Validity's RPBL is the one dynamic exception: its first resolver pass got
+NXDOMAIN at all four (12:27:58Z), and from 12:32:40Z (spamassassin's
+`dns_block_rule`) every `+tcp` query gets `127.255.255.255` plus the TXT
+"Excessive Number of Queries" — re-asked from all four resolvers at 17:37Z
+(`22-validity-refusal-rerun.txt` in the card's evidence), so RPBL is *could
+not query*, not a verdict; its product needs a key. sa-trusted and sa-accredit
+had already refused in that same first pass (`127.255.255.255` at 12:27:58Z),
+so all three Validity zones are *could not query*.
+
+The /24 that holds the A is not dirty either: it is Servury's own (AS395904,
+ARIN registration 2026-03-25, last changed 2026-04-06), 11 of its 254 addresses
+publish a PTR, and 0 of the 254 are in Spamhaus ZEN — asked through a resolver
+that returns real listings (its control answered `127.0.0.2 127.0.0.10
+127.0.0.4` in the same batch). UCEPROTECT's /24 (L2) and ASN (L3) lists are
+clean too.
+
+What is left is Google's own per-IP model, which only Postmaster Tools shows,
+and the From domain's age — a penalty that fires on *both* legs and so cannot
+explain the split. **`odile.fyi` is not registered in Postmaster Tools**: for
+the account that manages our mail, `postmaster.google.com` answers "You are not
+authorized to view data for this domain. Please ensure you have verified
+yourself as an owner, or an owner has granted you read access." Registering it
+needs a TXT record on `odile.fyi` (or a Search Console verification), so until
+someone does that the A's reputation is unreadable — and Google publishes no
+delisting form to submit against an IP, only Postmaster's own view.
+
+`FROM_FMBLA_NEWDOM28` ("From domain was registered in last 14-28 days") stops
+firing for `odile.fyi` at **2026-12-02T08:11Z** — RDAP registration event
+2026-11-04T08:11:02Z. Re-test the A with one controlled pair after that date
+before concluding anything about the address; the numbers, the control queries
+and the reproduce commands are in `docs/evidence/t_6b6ac0dd/README.md`.
+
+**Retiring the A is a DNS change: proposed, not applied.** Deleting
+`mail.odile.fyi A` would also delete the IPv4 path into the MX that `odile.fyi`
+points at: in the frozen log slice of 2026-11-22 (00:45–14:29Z,
+`docs/evidence/t_6b6ac0dd/mail-log-2026-11-22T1455Z.log`, 94 `smtpd connect`
+lines), 72 of the 75 connections that were not the relay itself arrived over
+IPv4, and only 2 over IPv6. If the A is ever retired from *outbound*, it should
+be retired with a second AAAA-only name and its own PTR — not by deleting the
+record the world uses to reach port 25.
 
 ## 6. First run and the daily check
 
@@ -611,7 +675,7 @@ PASS there and here.
 | `--check-dns` fails for a record `dig @1.1.1.1` shows | Local resolver serving the pre-change NXDOMAIN for the SOA minimum | believe `--check-dns` (it asks the authoritative server); the cache clears on its own |
 | `dkim=fail (bad signature)` at the receiver | Truncated DKIM TXT, or `c=` not relaxed/relaxed | re-publish from `/etc/dkimkeys/odile.txt`; `--verify-dkim` on the sent copy |
 | `spf=pass` but `dmarc=fail` | From domain and envelope domain differ | keep both under `mail.odile.fyi`; `aspf=s` makes that strict |
-| Delivered, but in spam | Reputation starts at zero on a fresh IP, and our two addresses do not have the same reputation | check DMARC first; then which address the relay used (§5.3) — the A was filed to Spam 4/4 and the AAAA to the INBOX 4/4 on 2026-11-22; then the From domain's age (spamassassin's `FROM_FMBLA_NEWDOM28` fired on every copy that day) and engagement |
+| Delivered, but in spam | Reputation starts at zero on a fresh IP, and our two addresses do not have the same reputation | check DMARC first; then which address the relay used (§5.3) — the A was filed to Spam 4/4 and the AAAA to the INBOX 4/4 on 2026-11-22; then the From domain's age (spamassassin's `FROM_FMBLA_NEWDOM28` fired on every copy that day) and engagement. No list that answers names the A (Validity refuses the query) and the /24 is clean, so the remaining difference is Google's own model — §5.3, measured 2026-11-22 |
 | `550-5.7.26 … sender is unauthenticated` | Records missing or a key mismatch | `--check-dns`, then resend (seen on the first attempt from this box) |
 | Mail queues and never leaves | Outbound 25 blocked, or destination greylisting | `postqueue -p`; `telnet gmail-smtp-in.l.google.com 25` |
 | The box is down | Single point of failure | senders retry; queued invites survive on disk, but the waitlist and mail share one host that must stay up |
