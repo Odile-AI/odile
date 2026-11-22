@@ -10,6 +10,13 @@
 # for the login that is the same string, and it is rewritten by
 # sender_canonical.pcre onto mail.odile.fyi before the queue, so SPF is still
 # evaluated on the domain whose record authorises this host. The generic line
-# below still means "any other mail.odile.fyi sender belongs to odile-test".
+# below still means "any other mail.odile.fyi sender belongs to the tenant
+# account".
+#
+# Dovecot returns the passwd-file key as sasl_username — the full
+# odile-test@mail.odile.fyi, even when the client sends the bare odile-test —
+# so the map value is that canonical name, not the bare login Postfix used to
+# record with Cyrus. Measured 2026-11-22: a bare login with the value
+# `odile-test` was rejected 553 "not owned by user odile-test@mail.odile.fyi".
 /^help@odile\.fyi$/           help@odile.fyi
-/^[^@]+@mail\.odile\.fyi$/   odile-test
+/^[^@]+@mail\.odile\.fyi$/   odile-test@mail.odile.fyi

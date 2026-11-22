@@ -9,23 +9,33 @@
 
 The committed `dovecot.conf` is the source of truth: one IMAPS listener on 993,
 no plaintext listener at all, the Maildir at /var/mail/help/Maildir read in
-place, and one passwd-file account. This script copies it to /etc/dovecot,
-fixes the modes the auth path depends on, and proves the listener set is exactly
-`993` — not `993 and 143`, which is what the packaged defaults give.
+place, and a passwd-file credential store shared with Postfix's submission
+service. This script copies it to /etc/dovecot, fixes the modes the auth path
+depends on, and proves the listener set is exactly `993` — not `993 and 143`,
+which is what the packaged defaults give.
 
-Credential handling is deliberately split from configuration:
+Credential handling is *state*, not configuration:
 
-  * `/etc/dovecot/users` (0600 root) is the IMAP account — one line, a
-    `{SHA512-CRYPT}` hash and the help uid/gid/home. It is *state*, like
-    /etc/sasldb2, and never appears in git.
-  * `/etc/sasldb2` (0640 root:postfix) is the same password's hash for
-    submission on 587, created with `saslpasswd2` under the same account name,
-    so Thunderbird has one username and one secret for IMAP and SMTP.
+  * `/etc/dovecot/users` (0600 root) is the passdb — one `{SHA512-CRYPT}` line
+    per account: the mailbox login `help@odile.fyi` and the submission-only
+    tenant account `odile-test@mail.odile.fyi`. It is the only credential
+    store; Postfix asks this auth service over
+    /var/spool/postfix/private/auth, so 587 is hash-only too. It never appears
+    in git.
+  * `/etc/dovecot/userdb` (0600 root) is derived from that file and holds only
+    `help@odile.fyi`; a submission-only login authenticates at passdb and then
+    fails the IMAP userdb step, so it cannot read the support Maildir.
+  * `/etc/dovecot/deny.imap` (0600 root) names the submission-only account in
+    the passdb that runs before the real one, so its IMAP login is refused with
+    AUTHENTICATIONFAILED. `/etc/dovecot/deny.smtp` is empty, so 587 still
+    authenticates it; the userdb file is the second layer.
   * `/root/.odile/mailbox-help-password.txt` (0600 root) is the one plaintext
-    copy, written for the handover to Savio. `--set-password` writes all three
-    from the same generated secret, hashes it through `doveadm pw` and
-    `saslpasswd2 -p` on stdin, and never prints it or puts it on a command
-    line (argv is visible in the process list).
+    copy of the mailbox password, written for the handover to Savio.
+    `--set-password` writes the hash, the derived userdb and the handover from
+    one generated secret, hashes it through `doveadm pw` on stdin, and never
+    prints it or puts it on a command line (argv is visible in the process
+    list). The old Cyrus `/etc/sasldb2` held the same password in cleartext
+    (PLAIN/LOGIN authenticates against it) and has been retired.
 
 The packaged `dovecot.socket` is masked: it binds 143 *and* 993, so leaving it
 enabled would silently reintroduce the plaintext port. The daemon
@@ -52,16 +62,21 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 CONFIG = Path("/etc/dovecot/dovecot.conf")
 USERS = Path("/etc/dovecot/users")
+USERDB = Path("/etc/dovecot/userdb")
+DENY = {protocol: Path(f"/etc/dovecot/deny.{protocol}") for protocol in ("imap", "smtp")}
+AUTH_SOCKET = Path("/var/spool/postfix/private/auth")
 HOME = Path("/var/mail/help")
 MAILDIR = HOME / "Maildir"
 MAILBOX_USER = "help"
 ACCOUNT = "help@odile.fyi"
+# Postfix's submission account. It authenticates at passdb; the userdb file
+# omits it, so it cannot complete an IMAP login and read the support Maildir.
+TENANT_ACCOUNT = "odile-test@mail.odile.fyi"
+ACCOUNTS = (ACCOUNT, TENANT_ACCOUNT)
+NOBODY_UID = 65534
+NOBODY_GID = 65534
+TENANT_HOME = Path("/nonexistent")
 HANDOVER = Path("/root/.odile/mailbox-help-password.txt")
-SASLDB = Path("/etc/sasldb2")
-# One username for IMAP and SMTP. `saslpasswd2 -u odile.fyi help` stores
-# `help@odile.fyi`; the card's `-u mail.odile.fyi` would store a second name.
-SASL_REALM = "odile.fyi"
-SASL_USER = "help"
 HASH_PREFIX = "{SHA512-CRYPT}"
 HASH_RE = re.compile(r"^\{SHA512-CRYPT\}\$6\$[^:\s]{1,200}$")
 
@@ -77,6 +92,7 @@ REQUIRED = [
     ((), "protocols", "imap"),
     ((), "ssl", "required"),
     ((), "auth_allow_cleartext", "no"),
+    ((), "auth_default_domain", "mail.odile.fyi"),
     ((), "mail_driver", "maildir"),
     ((), "mail_path", str(MAILDIR)),
     ((), "mail_uid", MAILBOX_USER),
@@ -85,11 +101,20 @@ REQUIRED = [
     ((), "ssl_server_key_file", "/etc/ssl/private/mail.odile.fyi.key"),
     (("service imap-login", "inet_listener imap"), "port", "0"),
     (("service imap-login", "inet_listener imaps"), "port", "993"),
-    (("passdb passwd-file",), "passwd_file_path", str(USERS)),
-    (("passdb passwd-file",), "default_password_scheme", "SHA512-CRYPT"),
-    (("passdb passwd-file",), "use_worker", "yes"),
-    (("userdb passwd-file",), "passwd_file_path", str(USERS)),
-    (("userdb passwd-file",), "use_worker", "yes"),
+    (("passdb deny",), "driver", "passwd-file"),
+    (("passdb deny",), "passwd_file_path", "/etc/dovecot/deny.%{protocol}"),
+    (("passdb deny",), "deny", "yes"),
+    (("passdb deny",), "use_worker", "yes"),
+    (("passdb users",), "driver", "passwd-file"),
+    (("passdb users",), "passwd_file_path", str(USERS)),
+    (("passdb users",), "default_password_scheme", "SHA512-CRYPT"),
+    (("passdb users",), "use_worker", "yes"),
+    (("userdb users",), "driver", "passwd-file"),
+    (("userdb users",), "passwd_file_path", str(USERDB)),
+    (("userdb users",), "use_worker", "yes"),
+    (("service auth", f"unix_listener {AUTH_SOCKET}"), "mode", "0660"),
+    (("service auth", f"unix_listener {AUTH_SOCKET}"), "user", "postfix"),
+    (("service auth", f"unix_listener {AUTH_SOCKET}"), "group", "postfix"),
 ]
 
 
@@ -210,19 +235,22 @@ def parse_users(path: Path) -> list[list[str]]:
     return entries
 
 
-def entry_problems(fields: list[str], uid: int, gid: int) -> list[str]:
-    """The rules for the one credential line, independent of /etc/dovecot/users.
+def entry_problems(fields: list[str], uid: int, gid: int,
+                   account: str = ACCOUNT) -> list[str]:
+    """The rules for one credential line, independent of /etc/dovecot/users.
 
     Split out so `--self-test` can exercise a good line and the failure shapes
-    (plaintext, wrong scheme, a second account, wrong owner) without touching
-    root-owned state.
+    (plaintext, wrong scheme, an unknown account, wrong owner) without touching
+    root-owned state. The mailbox account must carry the help uid/gid/home; the
+    submission-only account has no mailbox, so it carries nobody:/nonexistent
+    and can never pass the userdb step.
     """
     if len(fields) < 7:
         return [f"line has {len(fields)} colon-separated fields, want 7 (user:hash:uid:gid:gecos:home:shell)"]
     problems: list[str] = []
     user, password, owner, group, _gecos, home, shell = fields[:7]
-    if user != ACCOUNT:
-        problems.append(f"account {user!r}, want {ACCOUNT!r}")
+    if user != account:
+        problems.append(f"account {user!r}, want {account!r}")
     if not HASH_RE.match(password):
         if password.startswith(HASH_PREFIX):
             problems.append("password is a {SHA512-CRYPT} line that is not a $6$ crypt hash")
@@ -230,10 +258,16 @@ def entry_problems(fields: list[str], uid: int, gid: int) -> list[str]:
             problems.append(f"password uses {password.split('$', 1)[0]}, want {HASH_PREFIX}")
         else:
             problems.append("password has no {SCHEME} prefix — looks like plaintext")
-    if (owner, group) != (str(uid), str(gid)):
-        problems.append(f"uid:gid {owner}:{group}, want {uid}:{gid} ({MAILBOX_USER})")
-    if home != str(HOME):
-        problems.append(f"home {home!r}, want {HOME!r}")
+    if account == ACCOUNT:
+        want_owner, want_group, want_home = uid, gid, HOME
+    else:
+        want_owner, want_group, want_home = NOBODY_UID, NOBODY_GID, TENANT_HOME
+    if (owner, group) != (str(want_owner), str(want_group)):
+        problems.append(
+            f"uid:gid {owner}:{group}, want {want_owner}:{want_group} ({account})"
+        )
+    if home != str(want_home):
+        problems.append(f"home {home!r}, want {want_home!r}")
     if shell not in ("", "/usr/sbin/nologin", "/bin/false"):
         problems.append(f"shell {shell!r}, want nologin")
     return problems
@@ -250,16 +284,142 @@ def users_problems(path: Path | None = None) -> list[str]:
     if (info.st_uid, info.st_gid) != (0, 0):
         problems.append(f"{target}: owner {info.st_uid}:{info.st_gid}, want root:root")
     entries = parse_users(target)
-    if len(entries) != 1:
-        problems.append(f"{target}: holds {len(entries)} account(s), want exactly 1 ({ACCOUNT})")
+    found = [fields[0] for fields in entries if fields]
+    missing = sorted(set(ACCOUNTS) - set(found))
+    extra = sorted(set(found) - set(ACCOUNTS))
+    if len(entries) != len(ACCOUNTS):
+        problems.append(
+            f"{target}: holds {len(entries)} account(s), want exactly "
+            f"{len(ACCOUNTS)} ({', '.join(ACCOUNTS)})"
+        )
+    if missing:
+        problems.append(f"{target}: missing account(s) {', '.join(missing)}")
+    if extra:
+        problems.append(f"{target}: unexpected account(s) {', '.join(extra)}")
     try:
         account = pwd.getpwnam(MAILBOX_USER)
     except KeyError:
         return problems + [f"system user {MAILBOX_USER!r} is missing (deploy/postfix/apply.py --apply)"]
     for fields in entries:
-        problems.extend(f"{target}: {problem}" for problem in
-                        entry_problems(fields, account.pw_uid, account.pw_gid))
+        if fields and fields[0] in ACCOUNTS:
+            problems.extend(f"{target}: {problem}" for problem in
+                            entry_problems(fields, account.pw_uid, account.pw_gid,
+                                           account=fields[0]))
     return problems
+
+
+def expected_userdb(path: Path | None = None,
+                    uid: int | None = None, gid: int | None = None) -> bytes:
+    """The userdb file: exactly the mailbox line from the passdb file.
+
+    A submission-only account is in /etc/dovecot/users but not here, so SMTP
+    AUTH succeeds (Postfix does no userdb lookup) and IMAP login fails at the
+    userdb step. Derived rather than hand-maintained so the two files cannot
+    disagree.
+    """
+    source = path or USERS
+    if not source.exists():
+        return b""
+    if uid is None or gid is None:
+        try:
+            account = pwd.getpwnam(MAILBOX_USER)
+        except KeyError:
+            return b""
+        uid, gid = account.pw_uid, account.pw_gid
+    lines: list[str] = []
+    for fields in parse_users(source):
+        if len(fields) < 7:
+            continue
+        _user, _password, owner, group, _gecos, home, _shell = fields[:7]
+        if (owner, group, home) == (str(uid), str(gid), str(HOME)):
+            lines.append(":".join(fields))
+    return ("\n".join(lines) + "\n").encode("utf-8") if lines else b""
+
+
+def userdb_problems(path: Path | None = None) -> list[str]:
+    target = path or USERDB
+    if not target.exists():
+        return [f"{target}: missing — run --apply to derive it from {USERS}"]
+    problems: list[str] = []
+    info = target.stat()
+    if stat.S_IMODE(info.st_mode) != 0o600:
+        problems.append(f"{target}: mode {oct(stat.S_IMODE(info.st_mode))[2:]}, want 600")
+    if (info.st_uid, info.st_gid) != (0, 0):
+        problems.append(f"{target}: owner {info.st_uid}:{info.st_gid}, want root:root")
+    wanted = expected_userdb()
+    if not wanted:
+        return problems + [f"{target}: cannot derive a mailbox line from {USERS}"]
+    entries = parse_users(target)
+    names = [fields[0] for fields in entries if fields]
+    if names != [ACCOUNT]:
+        problems.append(f"{target}: holds {names or 'no accounts'}, want only {ACCOUNT}")
+    if target.read_bytes() != wanted:
+        problems.append(f"{target}: content differs from the {ACCOUNT} line in {USERS}")
+    return problems
+
+
+def write_userdb() -> bool:
+    wanted = expected_userdb()
+    if not wanted:
+        return False
+    changed = not USERDB.exists() or USERDB.read_bytes() != wanted
+    atomic_write(USERDB, wanted, 0o600)
+    return changed
+
+
+def expected_deny(protocol: str, path: Path | None = None,
+                  uid: int | None = None, gid: int | None = None) -> bytes:
+    """Usernames the deny passdb refuses for one protocol.
+
+    IMAP denies every account that is not the mailbox; SMTP denies nobody,
+    because Postfix's submission service must authenticate the tenant account.
+    Postfix's request carries `service=smtp`, which is what selects deny.smtp.
+    """
+    if protocol == "smtp":
+        return b""
+    source = path or USERS
+    if not source.exists():
+        return b""
+    if uid is None or gid is None:
+        try:
+            account = pwd.getpwnam(MAILBOX_USER)
+        except KeyError:
+            return b""
+        uid, gid = account.pw_uid, account.pw_gid
+    names: list[str] = []
+    for fields in parse_users(source):
+        if len(fields) < 7:
+            continue
+        user, _password, owner, group, _gecos, home, _shell = fields[:7]
+        if (owner, group, home) != (str(uid), str(gid), str(HOME)):
+            names.append(user)
+    return ("\n".join(names) + "\n").encode("utf-8") if names else b""
+
+
+def deny_problems() -> list[str]:
+    problems: list[str] = []
+    for protocol, target in DENY.items():
+        if not target.exists():
+            problems.append(f"{target}: missing — run --apply to derive it from {USERS}")
+            continue
+        info = target.stat()
+        if stat.S_IMODE(info.st_mode) != 0o600:
+            problems.append(f"{target}: mode {oct(stat.S_IMODE(info.st_mode))[2:]}, want 600")
+        if (info.st_uid, info.st_gid) != (0, 0):
+            problems.append(f"{target}: owner {info.st_uid}:{info.st_gid}, want root:root")
+        if target.read_bytes() != expected_deny(protocol):
+            problems.append(f"{target}: content differs from the derived deny list")
+    return problems
+
+
+def write_deny_files() -> list[Path]:
+    written: list[Path] = []
+    for protocol, target in DENY.items():
+        wanted = expected_deny(protocol)
+        if not target.exists() or target.read_bytes() != wanted:
+            atomic_write(target, wanted, 0o600)
+            written.append(target)
+    return written
 
 
 def maildir_problems() -> list[str]:
@@ -319,11 +479,27 @@ def service_problems() -> list[str]:
         problems.append("nothing listens on 993")
     if "143" in ports:
         problems.append(f"plaintext IMAP listens on 143 ({', '.join(ports['143'])})")
+    if not AUTH_SOCKET.exists():
+        problems.append(
+            f"{AUTH_SOCKET}: missing — Postfix submission (587) cannot authenticate"
+        )
+    else:
+        info = AUTH_SOCKET.stat()
+        mode = stat.S_IMODE(info.st_mode)
+        if mode != 0o660:
+            problems.append(f"{AUTH_SOCKET}: mode {oct(mode)[2:]}, want 660")
+        postfix = pwd.getpwnam("postfix")
+        group = grp.getgrnam("postfix")
+        if (info.st_uid, info.st_gid) != (postfix.pw_uid, group.gr_gid):
+            problems.append(
+                f"{AUTH_SOCKET}: owner {info.st_uid}:{info.st_gid}, want postfix:postfix"
+            )
     return problems
 
 
 def drift() -> list[str]:
-    return config_problems() + users_problems() + maildir_problems() + service_problems()
+    return (config_problems() + users_problems() + userdb_problems()
+            + deny_problems() + maildir_problems() + service_problems())
 
 
 def ensure_maildir() -> list[str]:
@@ -353,10 +529,10 @@ def write_config() -> bool:
     return changed
 
 
-def wait_for_993(timeout: float = 5.0) -> bool:
+def wait_for_ready(timeout: float = 5.0) -> bool:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
-        if "993" in listeners() and "143" not in listeners():
+        if "993" in listeners() and "143" not in listeners() and AUTH_SOCKET.exists():
             return True
         time.sleep(0.1)
     return False
@@ -373,40 +549,85 @@ def hash_password(password: str) -> str:
     return line
 
 
-def set_password(password: str) -> int:
-    account = pwd.getpwnam(MAILBOX_USER)
+def account_fields(account: str) -> tuple[int, int, Path]:
+    if account == ACCOUNT:
+        entry = pwd.getpwnam(MAILBOX_USER)
+        return entry.pw_uid, entry.pw_gid, HOME
+    if account == TENANT_ACCOUNT:
+        return NOBODY_UID, NOBODY_GID, TENANT_HOME
+    raise SystemExit(f"unknown account {account!r}; want one of {', '.join(ACCOUNTS)}")
+
+
+def write_account(account: str, password: str) -> None:
+    """Replace (or add) one hashed line, preserving every other line."""
+    uid, gid, home = account_fields(account)
     hashed = hash_password(password)
-    atomic_write(
-        USERS, f"{ACCOUNT}:{hashed}:{account.pw_uid}:{account.pw_gid}"
-               f"::{HOME}::\n".encode("utf-8"),
-        0o600,
-    )
-    print(f"wrote  {USERS} (0600 root, {HASH_PREFIX}, one line)")
+    lines = USERS.read_text(encoding="utf-8").splitlines() if USERS.exists() else []
+    wanted = f"{account}:{hashed}:{uid}:{gid}::{home}::"
+    output: list[str] = []
+    replaced = False
+    for line in lines:
+        if line.split(":", 1)[0] == account:
+            output.append(wanted)
+            replaced = True
+        else:
+            output.append(line)
+    if not replaced:
+        output.append(wanted)
+    atomic_write(USERS, ("\n".join(output) + "\n").encode("utf-8"), 0o600)
 
-    atomic_write(HANDOVER, f"{password}\n".encode("utf-8"), 0o600)
-    print(f"wrote  {HANDOVER} (0600 root — the handover copy, not printed here)")
 
-    code, output = run(["saslpasswd2", "-c", "-p", "-u", SASL_REALM, SASL_USER],
-                       input_text=f"{password}\n")
-    if code != 0:
-        print(f"saslpasswd2 failed: {output}")
-        return 1
-    if SASLDB.exists():
-        os.chmod(SASLDB, 0o640)
-        os.chown(SASLDB, 0, grp.getgrnam("postfix").gr_gid)
-    print(f"wrote  {SASLDB} ({ACCOUNT} for submission 587, 0640 root:postfix)")
+def auth_test(account: str, password: str, timeout: float = 5.0) -> tuple[int, str]:
+    """`doveadm auth test`, retrying while a reload recreates its socket."""
+    deadline = time.monotonic() + timeout
+    while True:
+        code, output = run(["doveadm", "auth", "test", account],
+                           input_text=f"{password}\n")
+        if code == 0 and "auth succeeded" in output:
+            return code, output
+        if (time.monotonic() >= deadline
+                or "Couldn't connect to auth socket" not in output):
+            return code, output
+        time.sleep(0.1)
 
+
+def reload_and_test(account: str, password: str) -> int:
+    if write_userdb():
+        print(f"wrote  {USERDB} (0600 root, derived: {ACCOUNT} only)")
+    for path in write_deny_files():
+        print(f"wrote  {path} (0600 root, derived deny list)")
     if run(["systemctl", "is-active", "dovecot"])[1] == "active":
         code, output = run(["systemctl", "reload", "dovecot"])
         if code != 0:
             print(f"dovecot reload failed: {output}")
             return 1
-    code, output = run(["doveadm", "auth", "test", ACCOUNT], input_text=f"{password}\n")
+    code, output = auth_test(account, password)
     if code != 0 or "auth succeeded" not in output:
         print(f"doveadm auth test failed: {output}")
         return 1
-    print(f"ok     doveadm auth test {ACCOUNT}: auth succeeded")
+    print(f"ok     doveadm auth test {account}: auth succeeded")
     return 0
+
+
+def set_password(password: str) -> int:
+    write_account(ACCOUNT, password)
+    print(f"wrote  {USERS} (0600 root, {HASH_PREFIX}, "
+          f"{len(ACCOUNTS)} account lines)")
+    atomic_write(HANDOVER, f"{password}\n".encode("utf-8"), 0o600)
+    print(f"wrote  {HANDOVER} (0600 root — the handover copy, not printed here)")
+    return reload_and_test(ACCOUNT, password)
+
+
+def set_account_password(account: str, password: str) -> int:
+    if account not in ACCOUNTS:
+        print(f"unknown account {account!r}; want one of {', '.join(ACCOUNTS)}")
+        return 2
+    write_account(account, password)
+    print(f"wrote  {USERS} (0600 root, {account}, {HASH_PREFIX})")
+    if account == ACCOUNT:
+        atomic_write(HANDOVER, f"{password}\n".encode("utf-8"), 0o600)
+        print(f"wrote  {HANDOVER} (0600 root — the handover copy, not printed here)")
+    return reload_and_test(account, password)
 
 
 def self_test() -> int:
@@ -434,14 +655,19 @@ def self_test() -> int:
     check("the config is the only tracked file the applier copies",
           [entry[0] for entry in FILES], ["dovecot.conf"])
 
-    # One username for IMAP and SMTP: the realm the SASL account is created in
-    # must produce the same string the passwd-file and Thunderbird use.
-    check("the SASL account name equals the IMAP login", f"{SASL_USER}@{SASL_REALM}", ACCOUNT)
+    # Two accounts in one passdb; the userdb is derived with only the mailbox
+    # line, so the submission-only login cannot open the Maildir over IMAP.
+    check("the passdb account list is mailbox + submission-only",
+          list(ACCOUNTS), [ACCOUNT, TENANT_ACCOUNT])
 
     uid, gid = os.getuid(), os.getgid()
     good = [ACCOUNT, "{SHA512-CRYPT}$6$salt$" + "a" * 86, str(uid), str(gid), "",
             str(HOME), ""]
-    check("a well-formed credential line passes", entry_problems(good, uid, gid), [])
+    check("a well-formed mailbox line passes", entry_problems(good, uid, gid), [])
+    tenant = [TENANT_ACCOUNT, "{SHA512-CRYPT}$6$salt$" + "a" * 86,
+              str(NOBODY_UID), str(NOBODY_GID), "", str(TENANT_HOME), ""]
+    check("a well-formed submission-only line passes",
+          entry_problems(tenant, uid, gid, account=TENANT_ACCOUNT), [])
     plaintext = list(good)
     plaintext[1] = "hunter2"
     check("a plaintext password is rejected",
@@ -453,16 +679,37 @@ def self_test() -> int:
               entry_problems(wrong_scheme, uid, gid)), True)
     wrong_user = list(good)
     wrong_user[0] = "someone@odile.fyi"
-    check("a second account is rejected",
+    check("an unknown account is rejected",
           entry_problems(wrong_user, uid, gid), [f"account 'someone@odile.fyi', want {ACCOUNT!r}"])
     wrong_home = list(good)
     wrong_home[5] = "/root"
-    check("a credential pointing at another home is rejected",
+    check("a mailbox credential pointing at another home is rejected",
           any("home" in problem for problem in entry_problems(wrong_home, uid, gid)), True)
     wrong_owner = list(good)
     wrong_owner[2] = str(uid + 1)
     check("a credential for another uid is rejected",
           any("uid:gid" in problem for problem in entry_problems(wrong_owner, uid, gid)), True)
+    wrong_tenant_home = list(tenant)
+    wrong_tenant_home[5] = str(HOME)
+    check("the submission-only account cannot carry a mailbox home",
+          any("home" in problem for problem in
+              entry_problems(wrong_tenant_home, uid, gid, account=TENANT_ACCOUNT)), True)
+
+    with tempfile.TemporaryDirectory(prefix="odile-dovecot-userdb-") as tmp:
+        source = Path(tmp) / "users"
+        source.write_text(":".join(good) + "\n" + ":".join(tenant) + "\n",
+                          encoding="utf-8")
+        derived = expected_userdb(source, uid, gid)
+        check("the userdb is derived with only the mailbox line",
+              derived.decode().strip().splitlines(), [":".join(good)])
+        check("the submission-only account is absent from the userdb",
+              any(TENANT_ACCOUNT in line for line in derived.decode().splitlines()), False)
+        deny = expected_deny("imap", source, uid, gid)
+        check("the IMAP deny list names the submission-only account",
+              deny.decode().strip().splitlines(), [TENANT_ACCOUNT])
+        check("the mailbox account is not denied IMAP",
+              ACCOUNT in deny.decode().splitlines(), False)
+        check("the SMTP deny list is empty", expected_deny("smtp", source, uid, gid), b"")
 
     hashed = hash_password("self-test-only")
     check("doveadm pw produces a {SHA512-CRYPT} line", hashed.startswith(HASH_PREFIX + "$6$"), True)
@@ -487,14 +734,26 @@ def main(argv: list[str] | None = None) -> int:
     group.add_argument("--self-test", action="store_true", help="offline checks")
     group.add_argument("--set-password", action="store_true",
                        help="mint or rotate the mailbox password (generated, never printed)")
-    group.add_argument("--password-stdin", action="store_true",
-                       help="with --set-password: read the secret from stdin instead of generating")
+    group.add_argument("--set-account-password", metavar="ADDRESS",
+                       help="set one account's password from stdin (one of "
+                            f"{', '.join(ACCOUNTS)}); never printed")
+    parser.add_argument("--password-stdin", action="store_true",
+                        help="with --set-password or --set-account-password: read the secret from stdin")
     args = parser.parse_args(argv)
 
     if args.self_test:
         return self_test()
-    if args.password_stdin and not args.set_password:
-        parser.error("--password-stdin is only meaningful with --set-password")
+    if args.password_stdin and not (args.set_password or args.set_account_password):
+        parser.error("--password-stdin is only meaningful with --set-password or --set-account-password")
+
+    if args.set_account_password:
+        if not args.password_stdin:
+            parser.error("--set-account-password needs --password-stdin "
+                         "(the secret is never on argv)")
+        password = sys.stdin.readline().rstrip("\n")
+        if not password:
+            parser.error("--password-stdin read an empty line")
+        return set_account_password(args.set_account_password, password)
 
     if args.set_password:
         if args.password_stdin:
@@ -512,8 +771,8 @@ def main(argv: list[str] | None = None) -> int:
         if problems:
             print(f"\n{len(problems)} difference(s) from deploy/dovecot")
             return 1
-        print("clean: /etc/dovecot matches deploy/dovecot, one hashed account, "
-              "the Maildir is in place, and the only listener is 993")
+        print("clean: /etc/dovecot matches deploy/dovecot, the hashed account store "
+              "is intact, the Maildir is in place, and the only listener is 993")
         return 0
 
     problems = drift()
@@ -538,6 +797,10 @@ def main(argv: list[str] | None = None) -> int:
     if USERS.exists():
         os.chmod(USERS, 0o600)
         os.chown(USERS, 0, 0)
+        if write_userdb():
+            print(f"wrote  {USERDB} (0600 root, derived: {ACCOUNT} only)")
+        for path in write_deny_files():
+            print(f"wrote  {path} (0600 root, derived deny list)")
     else:
         print(f"warn   {USERS} is missing: run --set-password before clients can log in")
 
@@ -555,15 +818,18 @@ def main(argv: list[str] | None = None) -> int:
             print(f"dovecot restart failed:\n{output}")
             return 1
         print("restarted dovecot")
-        if not wait_for_993():
-            print("dovecot is not listening on 993 (or 143 is still open)")
+        if not wait_for_ready():
+            print("dovecot is not ready: 993, 143 or the Postfix auth socket is wrong")
             return 1
 
     left = drift()
-    # A missing users file is state --set-password owns, like /etc/sasldb2 in
-    # deploy/postfix/apply.py: warn, do not fail the config reconciliation.
-    left = [problem for problem in left
-            if not problem.startswith(f"{USERS}: missing")]
+    # A missing users file is state --set-password owns: warn, do not fail the
+    # config reconciliation. The derived userdb and deny files follow from it.
+    if not USERS.exists():
+        prefixes = [f"{USERS}: missing", f"{USERDB}: missing"] + [
+            f"{path}: missing" for path in DENY.values()]
+        left = [problem for problem in left
+                if not any(problem.startswith(prefix) for prefix in prefixes)]
     if left:
         for problem in left:
             print(f"still  {problem}")

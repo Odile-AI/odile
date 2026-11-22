@@ -21,9 +21,11 @@ committed themselves, and a fresh host is exactly where they go missing:
     `help` for the support spool — each a nologin user with a Maildir. No
     reader consumes the support spool yet.
 
-The SASL account database (/etc/sasldb2) is *state*, not config: it holds
-tenant secrets, is created with saslpasswd2, and never appears in git. This
-script verifies it and fixes its permissions; it does not invent accounts.
+Submission AUTH is Dovecot's, not Postfix's: Postfix connects to
+/var/spool/postfix/private/auth, and the accounts are the {SHA512-CRYPT} lines
+in /etc/dovecot/users. This script verifies that socket and the hash file, and
+retires the old Cyrus /etc/sasldb2 (which held the same passwords in cleartext
+for PLAIN/LOGIN) if it is still present.
 
 Exit codes: 0 clean or applied, 1 drift (with --check) or a failed step,
 2 usage error.
@@ -47,6 +49,8 @@ POSTFIX = Path("/etc/postfix")
 VIRTUAL = POSTFIX / "virtual"
 VIRTUAL_DB = POSTFIX / "virtual.db"
 SASLDB = Path("/etc/sasldb2")
+DOVECOT_USERS = Path("/etc/dovecot/users")
+DOVECOT_AUTH_SOCKET = Path("/var/spool/postfix/private/auth")
 
 
 class Mailbox(NamedTuple):
@@ -72,7 +76,13 @@ FILES = [
     ("virtual", VIRTUAL, "root", "root", 0o644),
     ("sender_login.pcre", POSTFIX / "sender_login.pcre", "root", "root", 0o644),
     ("sender_canonical.pcre", POSTFIX / "sender_canonical.pcre", "root", "root", 0o644),
-    ("sasl/smtpd.conf", POSTFIX / "sasl" / "smtpd.conf", "root", "root", 0o644),
+]
+
+# Files a previous layout deployed that the committed config no longer uses.
+# The Cyrus app config is dead once smtpd_sasl_type = dovecot; deleting it is
+# what keeps an operator from editing a file Postfix never reads.
+REMOVED = [
+    POSTFIX / "sasl" / "smtpd.conf",
 ]
 
 
@@ -315,26 +325,62 @@ def rebuild_virtual_db() -> tuple[int, str]:
     return run(["postmap", str(VIRTUAL)])
 
 
-def sasldb_problems() -> list[str]:
+def sasldb_accounts() -> list[str]:
+    """The accounts still in the retired Cyrus database."""
     if not SASLDB.exists():
-        return [
-            f"{SASLDB}: missing — create the submission account with saslpasswd2 "
-            "(docs/runbooks/email.md §5.2); the password lives only on HQ"
-        ]
-    problems = []
-    info = SASLDB.stat()
-    if stat.S_IMODE(info.st_mode) != 0o640:
-        problems.append(f"{SASLDB}: mode {oct(stat.S_IMODE(info.st_mode))[2:]}, want 640")
-    if info.st_gid != grp.getgrnam("postfix").gr_gid:
-        problems.append(f"{SASLDB}: group {info.st_gid}, want postfix")
+        return []
+    code, output = run(["sasldblistusers2"])
+    if code != 0:
+        return [f"<unreadable: {output or code}>"]
+    accounts = []
+    for line in output.splitlines():
+        name = line.split(":", 1)[0].strip()
+        if name:
+            accounts.append(name)
+    return accounts
+
+
+def sasl_problems() -> list[str]:
+    """Submission AUTH needs the Dovecot socket and hash file, and no sasldb2."""
+    problems: list[str] = []
+    if not DOVECOT_USERS.exists():
+        problems.append(
+            f"{DOVECOT_USERS}: missing — create the submission accounts "
+            "(deploy/dovecot/apply.py; docs/runbooks/email.md §4.4)"
+        )
+    else:
+        info = DOVECOT_USERS.stat()
+        if stat.S_IMODE(info.st_mode) != 0o600:
+            problems.append(
+                f"{DOVECOT_USERS}: mode {oct(stat.S_IMODE(info.st_mode))[2:]}, want 600"
+            )
+        if (info.st_uid, info.st_gid) != (0, 0):
+            problems.append(f"{DOVECOT_USERS}: owner {info.st_uid}:{info.st_gid}, want root:root")
+    if not DOVECOT_AUTH_SOCKET.exists():
+        problems.append(
+            f"{DOVECOT_AUTH_SOCKET}: missing — is dovecot running? "
+            "(deploy/dovecot/apply.py --apply)"
+        )
+    else:
+        info = DOVECOT_AUTH_SOCKET.stat()
+        mode = stat.S_IMODE(info.st_mode)
+        if mode != 0o660:
+            problems.append(f"{DOVECOT_AUTH_SOCKET}: mode {oct(mode)[2:]}, want 660")
+        postfix = pwd.getpwnam("postfix")
+        group = grp.getgrnam("postfix")
+        if (info.st_uid, info.st_gid) != (postfix.pw_uid, group.gr_gid):
+            problems.append(
+                f"{DOVECOT_AUTH_SOCKET}: owner {info.st_uid}:{info.st_gid}, "
+                "want postfix:postfix"
+            )
+    accounts = sasldb_accounts()
+    if accounts:
+        problems.append(
+            f"{SASLDB}: still holds {len(accounts)} account(s) "
+            f"({', '.join(accounts)}); submission AUTH is the Dovecot passwd-file "
+            "now — remove it with --apply"
+        )
     return problems
-
-
-def fix_sasldb() -> None:
-    if not SASLDB.exists():
-        return
-    os.chmod(SASLDB, 0o640)
-    os.chown(SASLDB, 0, grp.getgrnam("postfix").gr_gid)
 
 
 def run(command: list[str]) -> tuple[int, str]:
@@ -348,7 +394,7 @@ def run(command: list[str]) -> tuple[int, str]:
 
 def drift() -> list[str]:
     return [problem for entry in FILES for problem in inspect(entry)] + \
-        mailbox_problems() + virtual_db_problems() + sasldb_problems()
+        mailbox_problems() + virtual_db_problems() + sasl_problems()
 
 
 def main_cf_settings(source: Path | None = None) -> dict[str, str]:
@@ -399,8 +445,25 @@ def self_test() -> int:
 
     # Gmail filed the same brief to Spam over the A and to the INBOX over the
     # AAAA, 4 of 4 each way (docs/evidence/t_7378e496/); `any` is a coin flip.
+    settings = main_cf_settings()
     check("the outbound leg prefers the AAAA",
-          main_cf_settings().get("smtp_address_preference"), "ipv6")
+          settings.get("smtp_address_preference"), "ipv6")
+
+    # Submission AUTH is Dovecot's; Postfix has no credential store of its own.
+    # The Cyrus-only knobs would look applied and do nothing, so assert they
+    # are gone rather than carry dead config.
+    check("submission AUTH is Dovecot's", settings.get("smtpd_sasl_type"), "dovecot")
+    check("Postfix reaches the Dovecot auth socket",
+          settings.get("smtpd_sasl_path"), "private/auth")
+    check("the Cyrus-only SASL settings are gone",
+          sorted(name for name in settings
+                 if name.startswith("cyrus_")
+                 or name.startswith("smtpd_sasl_security")
+                 or name.startswith("smtpd_sasl_tls_security")), [])
+    check("the dead Cyrus app config is retired",
+          [path.name for path in REMOVED], ["smtpd.conf"])
+    check("the committed files no longer deploy it",
+          [entry[0] for entry in FILES if "sasl" in entry[0]], [])
 
     # Without this, sender_canonical_maps also rewrites From:/Reply-To: — the
     # default class list includes header_sender (postconf(5)), measured on
@@ -422,6 +485,8 @@ def self_test() -> int:
     canonical = pcre_entries(HERE / "sender_canonical.pcre")
     check("the support login may claim its own apex envelope sender",
           login.get(r"^help@odile\.fyi$"), "help@odile.fyi")
+    check("the tenant sender is owned by the canonical Dovecot login",
+          login.get(r"^[^@]+@mail\.odile\.fyi$"), "odile-test@mail.odile.fyi")
     check("the apex envelope sender is rewritten onto the signed domain",
           canonical.get(r"^help@odile\.fyi$"), "help@mail.odile.fyi")
     check("the canonical table rewrites exactly one sender", len(canonical), 1)
@@ -577,7 +642,7 @@ def main(argv: list[str] | None = None) -> int:
             print(f"\n{len(problems)} difference(s) from deploy/postfix")
             return 1
         print("clean: /etc/postfix matches deploy/postfix, virtual.db matches virtual, "
-              "both mailboxes and the SASL database are present")
+              "both mailboxes and the Dovecot auth store are present")
         return 0
 
     if not args.apply:
@@ -613,17 +678,23 @@ def main(argv: list[str] | None = None) -> int:
         for action in ensure_mailbox():
             print(f"wrote  {action}")
 
-    if sasldb_problems():
-        if SASLDB.exists():
-            fix_sasldb()
-            print(f"fixed  {SASLDB} (mode 640, group postfix)")
-        else:
-            print(f"warn   {SASLDB} is missing: run the saslpasswd2 step in the runbook")
-
+    # Validate the committed config before deleting the old store, so a broken
+    # main.cf leaves submission's previous credentials on disk.
     code, output = run(["postfix", "check"])
     if code != 0:
         print(f"postfix check failed:\n{output}")
         return 1
+
+    for path in REMOVED:
+        if path.exists():
+            path.unlink()
+            print(f"removed {path} (superseded by smtpd_sasl_type = dovecot)")
+
+    if SASLDB.exists():
+        accounts = sasldb_accounts()
+        SASLDB.unlink()
+        held = ", ".join(accounts) if accounts else "no accounts"
+        print(f"removed {SASLDB} (Cyrus store superseded; held {held} in cleartext)")
 
     left = drift()
     if left:

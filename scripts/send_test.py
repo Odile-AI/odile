@@ -28,6 +28,7 @@ import grp
 import hashlib
 import json
 import os
+import pwd
 import re
 import smtplib
 import ssl
@@ -53,7 +54,8 @@ SOAK_SUBJECT = "Odile soak"
 ACCOUNT_FILE = "/root/.odile/mail_test_account.json"
 DKIM_KEY = "/etc/dkimkeys/odile.private"
 DKIM_TXT = "/etc/dkimkeys/odile.txt"
-SASLDB = "/etc/sasldb2"
+DOVECOT_USERS = "/etc/dovecot/users"
+DOVECOT_AUTH_SOCKET = "/var/spool/postfix/private/auth"
 SENDER_LOGIN_MAP = "/etc/postfix/sender_login.pcre"
 MILTER_SOCKET = "/var/spool/postfix/opendkim/opendkim.sock"
 MAIL_LOG = "/var/log/mail.log"
@@ -363,14 +365,16 @@ def check_mta() -> list[tuple[bool, str, str]]:
     mode = oct(os.stat(DKIM_KEY).st_mode & 0o777)[2:] if present else "-"
     rows.append((present and mode == "600", "dkim private key", f"{DKIM_KEY} mode {mode}"))
 
-    if os.path.exists(SASLDB):
-        info = os.stat(SASLDB)
-        group = grp.getgrgid(info.st_gid).gr_name
+    if os.path.exists(DOVECOT_USERS):
+        info = os.stat(DOVECOT_USERS)
+        owner = pwd.getpwuid(info.st_uid).pw_name
         mode = oct(info.st_mode & 0o777)[2:]
-        rows.append((mode == "640" and group == "postfix", "sasl account db",
-                     f"{SASLDB} mode {mode} group {group}"))
+        rows.append((mode == "600" and owner == "root", "submission auth store",
+                     f"{DOVECOT_USERS} mode {mode} owner {owner}"))
     else:
-        rows.append((False, "sasl account db", f"{SASLDB} missing"))
+        rows.append((False, "submission auth store", f"{DOVECOT_USERS} missing"))
+    rows.append((os.path.exists(DOVECOT_AUTH_SOCKET), "dovecot auth socket",
+                 DOVECOT_AUTH_SOCKET))
 
     rows.append((os.path.exists(SENDER_LOGIN_MAP), "sender login map", SENDER_LOGIN_MAP))
 
