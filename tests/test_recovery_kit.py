@@ -411,6 +411,12 @@ class RenderTests(unittest.TestCase):
         text = flat(kit_text())
         decks = deck_flat((ROOT / "docs" / "CLAIMS.md").read_text(encoding="utf-8")) + " "
         decks += deck_flat(DECIDED.read_text(encoding="utf-8"))
+        # G13 renamed the deck's live version tag from V0.1 to alpha.0; the
+        # decided v3.9 draft is the historical record and keeps the old tag,
+        # while the kit quotes the live one. ODL-577 retired the kit's
+        # first-visit and after-PASS rows from the deck (D-1, D-7), so until
+        # ODL-925 re-cuts templates/recovery-kit.md the draft is their approval.
+        decks = decks.replace("V0.1", "alpha.0")
         for sentence in DECK_SENTENCES:
             self.assertIn(flat(sentence), text)
             self.assertIn(flat(sentence).lower(), decks.lower(),

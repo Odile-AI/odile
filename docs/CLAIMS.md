@@ -1,8 +1,8 @@
-# Odile — claims deck (v3.10, the strict bar: no user SSH key, no passphrase, sealed boot, sign-in at first visit; one NEAR key per user, no meter)
+# Odile — claims deck (v3.11, the strict bar: no user SSH key, no passphrase, sealed boot, one password written once at provision; one recovery code for both surfaces; one NEAR key per user, no meter)
 
 **Rule:** no public sentence about privacy, security or reliability ships unless it is in this file. If a sentence is not here, it is not approved. `docs/MVP-V0.1.md` §7 is the rationale; this is the copy.
 
-**Last reviewed:** 19 November 2026 · **Owner:** Savio · **Lint:** `tests/test_claims.py` (M0)
+**Last reviewed:** 22 November 2026 · **Owner:** Savio · **Lint:** `tests/test_claims.py` (M0)
 
 **Evidence verdict:** `docs/security/CLAIMS-VERDICT-strict.md` (ODL-466, evidence base `main` `8c2ad99`). Every access row carries its verdict there. A row marked **BLOCK** is approved here and **held from the public pages** until its card lands — the list is §1a, and the rule is the re-cut's §6: a row whose proof has not run is not published.
 
@@ -49,20 +49,23 @@ mechanism sentence with its "outsider access" clause re-cut) are retired by the
 
 ### Access — the core claim
 
-- "No one at Odile can log in to a tenant machine. The only sign-in is yours."
+- "No one at Odile holds a key to your machine: no standing key, no root password, no disk passphrase. The password you chose is the only sign-in."
 - "No one at Odile can log in unless you grant it: no standing key, no root password, no disk passphrase."
 - "The boot key in the command line is a public key with no private half. It is plumbing, not a credential."
 - "The disk unlocks only on the boot you verify. Change the image, and it stays locked."
 - "There is no passphrase to type. The disk key is sealed to the measured boot, and no one at Odile holds it."
 - "After a reboot, it starts itself. The seal is the key."
-- "Your Odile sign-in is set on your machine at first visit and hashed there. We never see it. It is the only app-layer gate: no 2FA in alpha.0."
+- "Your Odile password opens your machine and your account page. You chose it when you registered. It is the only app-layer gate: no 2FA in alpha.0."
+- "Odile sees your password when you register and when you sign in at the account page and keeps only a hash of it. Your machine is built with a copy of that hash; after that, changing one does not change the other."
+- "The sign-in is yours; HQ holds a hash of your password, never the password."
+- "A recovery code and a recovery file are the way back: the code resets your sign-in, the file opens your backup. Your first visit gives you both; keep them off the machine. While the machine is still running, the agent can replace the code and show you the new one."
+- "Your recovery code works at both places until you replace it; using it does not spend it."
 - "Support access exists only when you grant it, for as long as you grant it."
 - "A root shell, for 24 hours — only when you grant it."
 - "We can stop it. We cannot read it."
 - "A grant is a handover, not a peek."
 - "On a tenant machine, Odile cannot read the disk, the prompts or the files; a support grant can."
 - "A support grant is a time-boxed door into the running machine. It ends for new logins when it expires or you revoke it."
-- "A recovery code and a recovery file are the way back: the code resets your sign-in, the file opens your backup. Your first visit gives you both; keep them off the machine. While the machine is still running, the agent can show it again."
 - "The recovery file holds the backup password and the certificate fingerprint."
 - "A repeating job — the morning brief, a watchdog — runs when the machine comes back up if it was due while it was down."
 - "The status page counts uptime and names no tenant."
@@ -102,10 +105,12 @@ row stays approved here and has no public home until a card publishes it;
 ### First run and support
 
 - "A machine is reserved for you. When you claim it, it is built and starts itself."
-- "Claiming is a form and a confirmation. Then the machine builds itself: you check the report, set your sign-in, and start."
+- "Claiming is a form and a confirmation. Then the machine builds itself: you check the report, sign in with the password you chose when you registered, and start."
+- "Your Odile account holds your email and a hash of your password; that password opens your account page and, until you change it, your machine too."
+- "Your password is the same at both places until you change it in one of them."
+- "One recovery code resets both: your account password at the account page and your machine's sign-in on the machine. There is no emailed reset."
+- "If you lose your recovery code there is no other way back: you start a new account, and a backup is the only way to bring the files."
 - "The installer sends only the setup token and the instance id to odile.fyi to fetch the signed seed."
-- "Your Odile sign-in is the username and password that open the workspace; only its hash is stored, on the machine. There is no password and no account at HQ."
-- "A lost Odile sign-in is reset on the machine with your recovery code. There is no HQ reset."
 - "`odile-diag` bundles logs, versions, disk usage and service state. No password, no key, no prompt history, no file contents."
 - "The agent runs as `odile` with sudo; it can read every file on the machine."
 - "Invite and brief emails go out through our own mail server at mail.odile.fyi; it carries the message, never your disk."
@@ -172,7 +177,7 @@ last home.
 - "The machine is an AMD SEV-SNP confidential VM. The report is served live at `/attestation`."
 - "The boot is measured: firmware, kernel, initramfs and command line are hashed into a value the CPU signs."
 - "The disk is encrypted with LUKS2. Its key is sealed to the measured boot."
-- "Check the machine before you trust it: the verify page shows PASS or FAIL, and you set your sign-in only after PASS."
+- "Check the machine before you trust it: the verify page shows PASS or FAIL."
 - "Each row is tagged: checked from your laptop, or read from the machine. A root shell can change the machine rows."
 
 ### Inference
@@ -183,9 +188,9 @@ last home.
 
 ### Data handling
 
-- "No cookies, no trackers, no third-party requests."
+- "No trackers, no third-party requests. One first-party cookie keeps you signed in to your account page."
 - "We store your email address, your payment record at Stripe, and the metadata needed to run your machine."
-- "At HQ we hold your email, the record of your machine, and a boot key with no private half. Not the disk key, not your sign-in."
+- "At HQ we hold your email, the record of your machine, a boot key with no private half, a hash of your password and a hash of your recovery code. Not the disk key. Not your password itself."
 - "Your prompts are not used to train models, per our inference provider's terms." *(Conditional: publish only after NEAR AI confirms this in writing.)*
 
 The inventory below is the exact item list the privacy page carries (ODL-243).
@@ -210,6 +215,22 @@ column in any store is missing from `web/privacy.html`.
 
 - "Runs around the clock. Uptime is published on the status page."
 - "Backed up nightly. Rebuildable in under an hour — without a key."
+
+### Reductions — the shorter form a surface may use
+
+A reduction is one of the rows above, said for one surface; it is not a new
+claim and no surface may coin a fourth wording. `docs/product/DECISION-one-recovery-code.md`
+§4 carries the same table.
+
+| Row | Where | Sentence |
+|---|---|---|
+| **D-12** | the account page's change form | "This changes your account password. Your machine's sign-in is unchanged; change it on the machine." (D-11) |
+| **D-13** | `/forgot` | "Enter your email and your recovery code, then choose a new account password. This changes your account password only; your machine's sign-in is reset on the machine with the same code." (D-4) |
+| **D-14** | the machine's reset page | "Enter the recovery code you saved at your first sign-in, then choose a new sign-in. This changes this machine's sign-in; your account password is reset at the account page with the same code." (D-4) |
+| **D-15** | the register page | "One password opens your machine and your account page. Your first sign-in shows you a recovery code — keep it somewhere off the machine." (D-1, D-6) |
+| **D-16** | the `/forgot` and account-page lost-code block | "Lost your code? There is no other way back: ask us to delete your account and machine, then register again. Your backup is the only way to bring the files." (D-5) |
+| **D-17** | the account page's one line | "Your Odile password opens your machine too." (D-10) |
+| **D-19** | the FAQ's answer 2, its support answer and §5's same answer | "A lost Odile sign-in is reset on the machine with your recovery code; HQ cannot reset your machine's sign-in." (D-4) |
 
 ## 1a. Held from the public pages — the row is approved, its proof or its landing has not run
 
@@ -244,21 +265,19 @@ machine. The table below is what is still held.
 
 | Held sentence or clause | Why it is held | Lands with |
 |---|---|---|
-| A1, "The only sign-in is yours." | before the first visit the image's public bench password opens the workspace, and the session secret is the image's (§0.2) | `t_adcdec31` |
-| A7, "It is the only app-layer gate: no 2FA in alpha.0." | same pre-first-visit gate (§0.2) | `t_adcdec31` |
-| §4.2, "the only sign-in is yours" | same (§0.2) | `t_adcdec31` |
-| §2 replacement, "the only sign-in is yours" | same (§0.2) | `t_adcdec31` |
-| §5 "What is the Odile sign-in?", the only-gate sentence | same (§0.2) | `t_adcdec31` |
+| D-3, "The password you chose is the only sign-in." | the registration verifier reaches the machine at provision with ODL-925, which also turns the first visit into a login; at this head the visit still sets the sign-in, the setup token is the link to that form and the seed exchange (later the seed badge and the rebuild-seal key), and the gate holds a discarded placeholder until the visit — ODL-521/522/523 cleared the image's public bench password | ODL-925 |
+| D-1, "It is the only app-layer gate: no 2FA in alpha.0." | same window as D-3 | ODL-925 |
+| §4.2, "the password you chose is the only sign-in" | same window as D-3 | ODL-925 |
+| §2 replacement, "the password you chose is the only sign-in" | same window as D-3 | ODL-925 |
 | A3, the whole row | the seal wraps a keyslot key, not the volume key; the published image's key opens the tenant disk (§0.1) | `t_28dda3b7` |
 | A4, "The disk key is sealed to the measured boot, and no one at Odile holds it." | the disk key is the build key (§0.1) | `t_28dda3b7` |
-| A8, "Not the disk key" | the disk key is recoverable from the published image (§0.1) | `t_28dda3b7` |
+| D-8, "Not the disk key" | the disk key is recoverable from the published image (§0.1) | `t_28dda3b7` |
 | §3 disk row, "its key is sealed to the measured boot" | a keyslot key is sealed, not the disk key (§0.1) | `t_28dda3b7` |
 | §4.3, "No human keyslot; the seal." / "Odile never had a key or a passphrase." | Odile built the keyslot passphrase and published it on the image; the master key is the build key (§0.1) | `t_28dda3b7` |
 | §4.8, "The host sees ciphertext" | the disk half: the host holds the bytes and the published image's key opens them (§0.1) | `t_28dda3b7` |
 | gap 3, "A changed image or firmware breaks the seal; the machine is rebuilt." | a changed image carrying the recovered key reads the disk without the seal (§0.1) | `t_28dda3b7` |
 | "Can Odile log in to my machine?", "We can stop or delete the machine, but we cannot read it." | the disk half (§0.1) | `t_28dda3b7` |
 | "Can Servury read my disk?" | the disk half (§0.1) | `t_28dda3b7` |
-| "What do you store?", "Not the disk key" | the disk half (§0.1) | `t_28dda3b7` |
 | "We can stop it. We cannot read it." | the disk half (§0.1) | `t_28dda3b7` |
 | "On a tenant machine, Odile cannot read the disk, the prompts or the files; a support grant can." | the disk half (§0.1) | `t_28dda3b7` |
 | "Memory is encrypted by the CPU. The hosting provider sees ciphertext.", the second sentence | the disk half (§0.1) | `t_28dda3b7` |
@@ -271,6 +290,19 @@ stays a list of sentences a card will publish:
 - **"Claiming takes 3 minutes" is dropped, not held.** The claim page's timing
   was never clocked and BRAND forbids an unmeasured number (ODL-466 §2). The row
   and the page now say "Claiming is a form and a confirmation."
+
+**Machine proofs for this cut, and what is pending.** D-1, D-2, D-9, D-10 and
+D-11 are proved by the tenant's `/verify` sign-in-hash row and by
+`accounts.password_hash` — a scrypt verifier the gate accepts only the typed
+password against (§4.11; the comparison is two-sided, and the endpoint's `401`
+is the anonymous status). D-3 is proved by `/verify`'s operator-key row. D-6 and D-20 are proved by the machine's reset page
+(`/first-visit/reset`, ODL-579) and the stable-code copy ODL-926 writes. D-7 and
+D-18 are proved by the claim and ceremony pages and the `/verify` report. D-5 is
+the support path (§3.4) and has no machine row. **Pending:** D-4's account half
+and D-8's "hash of your recovery code" need ODL-578's `/forgot`, the
+`accounts.recovery_hash` column, the receiving endpoint and their transcript;
+they are published because the model is decided and A5 lands before a tester can
+use `/forgot`, and the proof joins the deck at ODL-578's merge.
 
 The two status rows were re-cut, not held: ODL-467 removed owner-waiting from
 the uptime sentence and from the status-page sentence, and the page's uptime
@@ -292,10 +324,10 @@ math no longer carries an owner-wait bucket. `templates/status.html` and
 | "trustless" | You trust AMD, NEAR, Servury and Odile's provisioning | "Verifiable" |
 | "military-grade encryption" | Meaningless | "AES-256-XTS for disk, SEV-SNP for memory" |
 | "provably private" | Only parts are proven | "Measured boot; live attestation; published evidence" |
-| "we hold your keys" | False in alpha.0 | "There is no user key; the only sign-in is yours." |
-| "we can log in" | False by default | "No one at Odile can log in" |
+| "we hold your keys" | False in alpha.0 | "There is no user key; the password you chose is the only sign-in." |
+| "we can log in" | False by default | "No one at Odile holds a key to your machine" |
 | "operator access" as a feature | It is the thing we removed | "User-only access" |
-| "no one can access your machine" | The host console exists | "No one at Odile can log in" |
+| "no one can access your machine" | The host console exists | "No one at Odile holds a key to your machine" |
 | "we can't see your data" | We see metadata and can stop the machine | "We cannot read the disk or the prompts" |
 | "your data never leaves the machine" | It goes to inference | "Prompts go only to the inference enclave" |
 | "fully audited" | One external audit, scoped | "Audited for X; findings published" |
@@ -316,7 +348,7 @@ Put these in the FAQ and on `/verify`, in this order:
 
 1. **"The app layer is not hardware-measured yet."** Measured boot covers firmware, kernel, initramfs and command line. Hermes, the installer and the skills are pinned by a signed manifest and a published hash, but the CPU does not measure them. The installer is signed, inspectable and audited at handoff for keys, passwords and keyslots; only a measured image can prove there is no hidden backdoor. The manifest records the machine as provisioned; anything you install afterwards is yours.
 2. **"The console passes through the host."** Serial and VNC can be watched. Never type a secret there; the sign-in goes over TLS to the guest, after the report checks out.
-3. **"Odile keeps three powers."** We can stop or delete the machine (availability, not confidentiality); we control DNS for your slug (pin the certificate fingerprint in your recovery file — the one your machine first served; a renewal changes it) and we can set a different boot image from the panel (detectable via the measurement — compare it to the one in your ready email before you set your sign-in). A changed image or firmware breaks the seal; the machine is rebuilt.
+3. **"Odile keeps three powers."** We can stop or delete the machine (availability, not confidentiality); we control DNS for your slug (pin the certificate fingerprint in your recovery file — the one your machine first served; a renewal changes it) and we can set a different boot image from the panel (detectable via the measurement — compare it to the one in your ready email before you sign in). A changed image or firmware breaks the seal; the machine is rebuilt.
 
 > **15 November 2026 — the boot-image mechanism is broader than the panel; no
 > approved sentence changes.** The third power is unchanged: whoever holds the
@@ -366,7 +398,8 @@ getent passwd | grep -i odile      # only the agent's unprivileged user, if inst
 ```
 
 Servury's panel has no guest agent and cannot reset root. There is no
-operator account; the only sign-in is yours, unless you grant support (§4.7).
+operator account; the password you chose is the only sign-in, unless you grant
+support (§4.7).
 
 ### 4.3 No human keyslot; the seal.
 
@@ -497,19 +530,26 @@ address instead. Either way the `Received` line goes from `mail.odile.fyi` to
 the recipient's MX; there is no third-party relay between them. Our mail server
 is the only hop it adds, and it carries the message, not the disk.
 
-### 4.11 The sign-in is yours; HQ holds no password
+### 4.11 The sign-in is yours; HQ holds a hash of your password, never the password
 
 ```sh
-curl -s -o /dev/null -w '%{http_code}\n' https://<slug>.odile.fyi/api/sessions   # 401
 grep -o 'HERMES_DASHBOARD_BASIC_AUTH[A-Z_]*' "$HERMES_HOME/.env"
 # HERMES_DASHBOARD_BASIC_AUTH_USERNAME, ..._PASSWORD_HASH, ..._SECRET
+H=$(sed -n 's/^HERMES_DASHBOARD_BASIC_AUTH_PASSWORD_HASH=//p' "$HERMES_HOME/.env")
+echo "$H"        # scrypt$16384$8$1$... — a verifier, not the password
+curl -s -o /dev/null -w '%{http_code}\n' https://<slug>.odile.fyi/api/sessions   # 401 — the anonymous status
 ```
 
-The sessions endpoint answers `401` until you sign in. The `.env` holds a
-username, a scrypt hash and a session secret — never the password. HQ stores the
-throwaway public key, a hash of your setup token and the row that is your
-machine; there is no private half and no passphrase, and the sign-in hash is on
-the machine.
+The sessions endpoint answers `401` to every request that is not a signed-in
+session: that is the anonymous status, not a verdict on what the request
+carries. What proves the value in the file opens nothing by itself is the
+comparison the gate makes: it recomputes scrypt from what you type, so a
+password is accepted against its own hash and the stored verifier, typed as the
+password, is refused. The `.env` holds a username, a scrypt verifier and a
+session secret — never the password. HQ's `accounts.password_hash` is the same
+verifier when the machine is built (D-11; after that the two change separately),
+and HQ keeps no plaintext password: the sign-in is yours; HQ holds a hash of
+your password, never the password.
 
 ---
 
@@ -519,11 +559,11 @@ the machine.
 
 **"What is the boot key?"** A public key in the measured command line whose private half was thrown away. It is plumbing, not a credential.
 
-**"What is the Odile sign-in?"** The username and password that open your workspace. You set it on your machine at first visit, and it is hashed there; we never see it. It is the only app-layer gate: no 2FA in alpha.0. A lost sign-in is reset with your recovery code.
+**"What is the Odile sign-in?"** The username and password that open your workspace. You chose it when you registered; the machine holds a hash of it. A lost sign-in is reset with your recovery code. HQ cannot reset your machine's sign-in.
 
-**"Do I need the boot key?"** No. You never see it. The boot is sealed; your sign-in is the only thing you set.
+**"Do I need the boot key?"** No. You never see it. The boot is sealed.
 
-**"Can you reset my sign-in or unlock my disk?"** No. There is no escrow and no passphrase. A lost sign-in is reset on the machine with your recovery code; if the disk will not open, the machine is rebuilt and you restore from your backup.
+**"Can you reset my sign-in or unlock my disk?"** Not the machine's sign-in. There is no escrow and no passphrase. A lost Odile sign-in is reset on the machine with your recovery code; HQ cannot reset your machine's sign-in. Your account password is reset at the account page with the same code. If the disk will not open, the machine is rebuilt and you restore from your backup.
 
 **"Can Servury read my disk?"** After your first boot, no. Memory is encrypted by the CPU and the disk is LUKS2; they see ciphertext. They run the console, so never type a secret there.
 
@@ -541,9 +581,9 @@ the machine.
 
 **"Where is the machine?"** The machine is in Montreal, Canada. Backups are off-site. The encrypted backup is kept 30 days after cancellation, then deleted. Odile can delete it, not read it. *(Held 19 November 2026, card `t_66fcaa02`: "Backups are off-site" is not true at this head — ADR-004 measures the bytes on HQ's disk, the same provider and the same city as the machine. Give the two live sentences and leave the middle one out until the R2 migration and its drill land.)*
 
-**"What do you store?"** We store your email address, your payment record at Stripe, and the metadata needed to run your machine. At HQ we hold the boot key with no private half, a hash of your setup token, and the record of your machine. Not the disk key, not your sign-in.
+**"What do you store?"** We store your email address, your payment record at Stripe, and the metadata needed to run your machine. At HQ we hold your email, the record of your machine, a boot key with no private half, a hash of your password and a hash of your recovery code. Not your password itself.
 
-**"Do you track me?"** No cookies, no trackers, no third-party requests.
+**"Do you track me?"** No trackers, no third-party requests. One first-party cookie keeps you signed in to your account page.
 
 **"Do you train on my data?"** No — per our inference provider's terms. (Do not publish until the written confirmation is on file.)
 
@@ -592,3 +632,4 @@ the machine.
 | 2026-11-20 | v3.10m: **the deck's bookkeeping about the installed help follows `t_080f8a83`'s landing; no approved sentence changed.** `a20566d` (merged at `6f4936b`) re-cut the installed help's bill answer to alpha.0's no-price line and re-embedded and re-signed the installer, cutting release `2026.11.20-1` (installer `d48f73aa…`, 1,503,831 B). The installed help — the last tester-facing surface in the repo that carried the v5 price — now states none, and the §1 held note, the §1a intro, the §1a allowance row's reason and lands-with cells, the §5 dated note and `docs/FAQ.md` moment 4's note now name that cut; the v3.10i row's present-tense clause is re-cut to its own date. The allowance row and its hold are unchanged: it stays in §1a until ODL-242 (`t_8ec06788`) proves the zero-balance message and Savio re-cuts the machine-and-price details, and after `a20566d` the held sentence rides on no live surface in the repo, which is why the row stays held, not live. The **served** installer at `odile.fyi/odile_install.py` is still the pre-re-cut build (`1d946c44…`, 1,503,889 B; `/opt/odile` on release `2026.11.19-5`, `release.json` synced 06:46:41Z, before `a20566d` at 08:13:16Z); `t_a5cd44ba` deploys from a clean `main`, which carries the re-cut. **No public sentence changed and no new claim.** Card `t_439f8488`; by the Product Lead under `docs/AGENT-ORG.md` §3 (D-002); verifier review. | Product lead |
 | 2026-11-21 | v3.10n: **§4.4's `sha256sum -c` line names the bundle this tree builds; no approved sentence changed.** The pin is one of the five reviewed files in the archive, so `t_a37c001d`'s 2-vCPU plan (release `2026.11.2`, `vcpu_counts [2, 4, 6]`) moved the tarball from 20,560 B to 20,562 B, and §4.4's command block now checks `99395155ae1d08e67f81e3a64096c918300992700d8fe8ccd3f8b16762073bde`; the block is byte-for-byte `docs/product/CLAIMS-RECUT-STRICT.md` §4.4 and its other three lines are unchanged. **Proof:** at `main` `5d6eb1d` and again at this card's base `da5dce1`, `app.verifier_bundle()` is 20,562 B and hashes to that value; `curl -fsSL https://odile.fyi/odile-verify.tar.gz` returns the same 20,562 B and hash; the demo run prints `release PASS 2026.11.2 is pinned (3 artifacts, vcpu_counts [2, 4, 6])` and exits 0 (`t_a37c001d`'s evidence, 2026-11-20T07:40Z, re-run by its verifier); and `tests/test_verify.py::BundleTests.test_the_published_hash_is_the_bundle_in_this_tree` binds that same hash into `docs/runbooks/verify.md`, `docs/product/CLAIMS-RECUT-STRICT.md` and `docs/security/CLAIMS-VERDICT-strict.md`. The 19 November value it replaces is the one in that verdict's 19 November bundle paragraph; it is not re-quoted here. No public page, installer copy or release changed, so no re-embed and no re-sign. Card `t_b0cc9015`; by the Product Lead under `docs/AGENT-ORG.md` §3 (D-002); verifier review. | Product lead |
 | 2026-11-22 | v3.10o: **§4.10's sample `Received` line carries the relay's AAAA; no approved sentence changed.** t_7378e496 (`5add3da`, merged at `a5e5d7b`) set `smtp_address_preference = ipv6` in `deploy/postfix/main.cf`, and a brief delivered after it reaches Gmail's MX over the AAAA: the delivered receipt at HQ (`docs/evidence/t_7378e496/04-receipts/odl7378r9.eml`, `Received[1]`) names the AAAA, scrubbed in this deck to `2001:0db8:0:1c9::1` as `docs/runbooks/email.md` §3.2 does. The sample's bracketed address moves from the IPv4 address to the IPv6 one, and the paragraph after the block now says the relay prefers IPv6 and names the IPv4 fallback, so a reader whose provider publishes no IPv6 address sees the same claim on the IPv4 line. §4.10's assertions — signed by us, handed straight to the provider's MX, no third-party hop, spf/dkim/dmarc pass — and the `Authentication-Results` and `DKIM-Signature` lines are unchanged. Card `t_78c73053`; by the Product Lead under `docs/AGENT-ORG.md` §3 (D-002); verifier review. | Product lead |
+| 2026-11-22 | v3.11: **B-once and one recovery code for both surfaces** (Savio, 20 November 2026, cards `t_ab499d49` and `t_82979fce`; the model and the rows are `docs/product/DECISION-one-recovery-code.md` §4). The registration password is the machine's sign-in, written once at provision, so the deck retires the first-visit setup row and its clause that the operator had never seen the sign-in; the access row that claimed the operator could not log in at all is replaced by the no-standing-key row (D-3), with the sibling grant row unchanged; the reset row becomes one code for both surfaces (D-4), with its account half published and its proof pending ODL-578; the way-back row's tail, which had said the agent could show the same code again, becomes the agent's replacement of the code and its one showing of the new one (D-6); the code's stability (D-20), the disclosure that HQ sees the password and keeps only a hash (D-2), the account inventory (D-10, D-11), the claim page's third step (D-18), the no-other-way-back rule for a lost code (D-5), the after-verification clause without the setup step (D-7), and the data-handling inventory with both hashes (D-8) enter the deck; the §4.11 heading becomes D-9 and its check names the endpoint's 401 as the anonymous status and proves the stored verifier with the gate's two-sided scrypt comparison; the cookie row is re-cut to one first-party session cookie (ADR-006 §2 item 2); the say-this-not-that table no longer recommends the retired absolute; and the reductions D-12 to D-17 and D-19 are recorded in a table of their own. Surfaces: `web/privacy.html`, `web/faq.html`, `web/ceremony.html`, `web/claim.html`, `web/terms.html`, `web/verify.html`, `web/verify-public.html`, `docs/FAQ.md`, `templates/emails/support.md` and `docs/runbooks/ceremony.md`; the embedded verify page and the installed help are ODL-929's release cut, and no re-embed or re-sign happens here. Card `t_ba6ed872` (ODL-577); by the Product Lead under `docs/AGENT-ORG.md` §3 (D-002); verifier review. | Product lead |

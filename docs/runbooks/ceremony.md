@@ -239,17 +239,14 @@ installer reads the signature from `odile_install.py.sig` beside it — that is 
 the `.sig` is copied. A kit carries no private key and no passphrase; under the
 strict bar the first boot supplies the tenant facts itself.
 
-`<measurement>` is the 96-hex `measurement` line from §1, copied exactly. The
-sign-in is 16 characters or more, or blank to generate 32 and print them once.
-It is hashed on the machine with scrypt; only the hash reaches `.env`
-(`docs/CLAIMS.md` §1 Access). Odile never sees it.
+`<measurement>` is the 96-hex `measurement` line from §1, copied exactly. Your Odile password opens your machine and your account page. You chose it when you registered. It is hashed on the machine with scrypt at provision; only the hash reaches `.env` (`docs/CLAIMS.md` §1 Access). HQ sees the password at registration and at account sign-in and keeps only the hash (deck D-2).
 
 The installer's step-by-step contract is `docs/runbooks/install.md`.
 
 ## 5. The first product moment
 
-Open `https://<slug>.odile.fyi`, sign in with the Odile sign-in you just set,
-and the workspace opens. That is the product gate.
+Open `https://<slug>.odile.fyi`, sign in with the password you chose when you
+registered, and the workspace opens. That is the product gate.
 
 **The boot key got you into the machine. It is not the login.** The boot key is
 plumbing for the boot chain; the Odile sign-in is the front door
@@ -276,10 +273,7 @@ line — and a support grant cannot reach it.
 - After a reboot without the boot key, the recovery is the backup password you
   saved off the machine, plus a rebuild (`docs/CLAIMS.md` §5, "Can you reset my
   password or unlock my disk?").
-- A lost **Odile sign-in** is reset on the machine with the boot key. There is
-  no HQ reset. (Strict bar: with no usable boot key, the reset is the recovery
-  code printed once at the first visit — the done page's recovery file, or the
-  reset form. A broken seal is rebuild plus restore.)
+- A lost **Odile sign-in** is reset on the machine with your recovery code; HQ cannot reset your machine's sign-in. The boot key is only the way to reach the machine while it still runs. (Strict bar: with no usable boot key, the reset is the recovery code printed once at the first visit — the done page's recovery file, or the reset form. A broken seal is rebuild plus restore.)
 
 ## 7. The pin — for whoever ships the next machine
 

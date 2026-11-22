@@ -1,12 +1,12 @@
 # Support email — the reply template
 
-**Card:** ODL-238 · **Re-cut for the sealed boot:** ODL-470 · **Used by:** a
+**Card:** ODL-238 · **Re-cut for the sealed boot:** ODL-470 · **Re-cut for B-once:** ODL-577 · **Used by:** a
 person answering `help@odile.fyi` · **Answers:** `docs/FAQ.md`.
 
 A support reply is a page, not a room: plain text, one column, no image, no
 tracking pixel, no third-party request. It leaves from Odile's own mail server
 and comes back to `help@odile.fyi` when the user answers. The five bodies below
-are subsets of `docs/CLAIMS.md` (v3.10) and `docs/FAQ.md`; do not add a sentence
+are subsets of `docs/CLAIMS.md` (v3.11) and `docs/FAQ.md`; do not add a sentence
 that is not in either.
 
 ## Envelope
@@ -61,11 +61,17 @@ with you.
 ```text
 Hello,
 
-A lost Odile sign-in is reset on the machine with your recovery code. There is
-no HQ reset. Open https://<slug>.odile.fyi/first-visit/reset, enter the code you
-saved from the first visit and choose a new password; a new code is shown once.
+One recovery code resets both: your account password at the account page and
+your machine's sign-in on the machine. There is no emailed reset. A lost Odile
+sign-in is reset on the machine with your recovery code; HQ cannot reset your machine's sign-in.
+Open https://<slug>.odile.fyi/first-visit/reset, enter the recovery code you
+saved at your first sign-in, then choose a new sign-in. This changes this
+machine's sign-in; your account password is reset at the account page with the
+same code. Your recovery code works at both places until you replace it; using
+it does not spend it.
 
-If the recovery code is lost too, reply and the machine is rebuilt.
+If you lose your recovery code there is no other way back: you start a new
+account, and a backup is the only way to bring the files.
 
 — Odile
 ```
@@ -107,10 +113,10 @@ the target is an answer within 24 hours.
 ```text
 Hello,
 
-No one at Odile can log in to a tenant machine. The only sign-in is yours. A
-support grant is a time-boxed door into the running machine. It ends for new
-logins when it expires or you revoke it. A root shell, for 24 hours — only when
-you grant it.
+No one at Odile holds a key to your machine: no standing key, no root password,
+no disk passphrase. A support grant is a time-boxed door into the running
+machine. It ends for new logins when it expires or you revoke it. A root shell,
+for 24 hours — only when you grant it.
 
 Ask the agent to run odile-diag and email the bundle to help@odile.fyi. If that
 is not enough, ask it to run odile-support grant --hours 24; it prints the expiry
@@ -138,7 +144,7 @@ a recovery code or a token, tell the user to rotate it and say which file.
 
 | Never | Why |
 |---|---|
-| Ask for the sign-in password or the recovery code | Neither has a copy at HQ; a leaked one is the machine |
+| Ask for the sign-in password or the recovery code | HQ holds only hashes of them; a leaked one is the machine |
 | Promise a reset at HQ, a refund, a credit or a restore of anything not backed up | No row in `docs/CLAIMS.md`; money is Savio's |
 | Say Odile can log in | False by default |
 | Send an HTML template, a logo, a tracking pixel or a third-party font | The no-tracker rule applies to mail too |
