@@ -1065,6 +1065,24 @@ ODL-469's brief-email cut (08:47Z); `-3` is later than every cut by
 brief-delivery fix), which moves no `installer/`, `release/` or `skills/` byte,
 so the merged tree still carries the `-3` pair.
 
+**The `2026.11.22-4` cut (t_509f85e4, the support-grant answer's person).**
+The `odile-help` skill's §5 reply is said aloud, so it now says "my memory and
+past prompts" where A10's row and the three desk surfaces (`docs/CLAIMS.md` §5,
+`docs/FAQ.md`, `web/faq.html`, `templates/emails/support.md`) keep "the
+agent's memory"; the deck is unchanged. The branch is cut from `main`'s
+`06773fe` (the `-3` merge), `installer/embed_tenant.py` re-embedded the bundle
+and the installer was re-signed. `install.md` §12.6 has the full record:
+installer `f6761770…` (1,557,720 bytes), manifest `3e7c99a4…` (50,044 bytes,
+48 skills, audit `6d3f7be0…`; its diff against `-3` is `installer_sha256` and
+the `odile-help` row), skills `27d98728…` (852,651 bytes), built from the
+fresh scratch root `/var/tmp/odile-509f85e4/root` (29/29; run 2 `tenant: same`,
+0 writes; the skill it installs is byte-identical to the checkout), and a
+second cut byte-identical on all eight names. It is committed, not deployed:
+measured 2026-11-22T15:22Z, the URL serves the deployed `2026.11.19-5`
+(`1d946c44…`, 1,503,889 bytes; manifest `7031d4a0…`). The id ledger: `-3` is
+t_ab95ec2a's first-person cut (12:45Z); `-4` is later than every cut by
+`generated_at` (15:30Z).
+
 ### The manifest names the tenant backup program (2026-11-19)
 
 The installer's own `--manifest` has named `backup_sha256` since ODL-215, and

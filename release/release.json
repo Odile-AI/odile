@@ -1,27 +1,27 @@
 {
   "artifacts": {
     "installer": {
-      "sha256": "aa4adc095cf03924f69cfbe05913f3dcf772470b184481a8267350589193efcc",
-      "size": 1562333,
+      "sha256": "915d760a6ea57560323835da63a1454c389e66a2e0b6dae64dd61111b722c610",
+      "size": 1562324,
       "url": "odile_install.py"
     },
     "skills": {
-      "sha256": "57c5f7937b9b5030c455e2cfbbf184216c01078b02ce66662633afab3860edf7",
-      "size": 852657,
+      "sha256": "27d98728253480e7e5262d0440e61303b5e6ab25d9f5236f8454c4d3adbddcbe",
+      "size": 852651,
       "url": "skills.tar.gz"
     }
   },
   "boot": {
     "kernel": "6.12.115+deb13.1-amd64"
   },
-  "generated_at": "2026-11-22T15:35:00Z",
+  "generated_at": "2026-11-22T16:35:00Z",
   "manifest": {
-    "sha256": "7740b2456cad87d512cfcc0c1aa82549b6acdac815a7bb8010bc38aeb666009e",
+    "sha256": "a99cc9a4529e1c4f46844bed24027006e586fd0c2c0feeeb9b35312b6587374f",
     "signature_url": "manifest.json.sig",
     "url": "manifest.json"
   },
-  "notes": "t_e7e5ac73 (ODL-341-F1): the tenant config gains a seventh managed block, `auxiliary.vision.model` = Qwen/Qwen3-VL-30B-A3B-Instruct \u2014 the one vision model NEAR AI serves in its Private TEE tier (near.ai/pricing, Privacy column) \u2014 so an image is described inside an enclave instead of by the text model, which returns an empty description at this budget; a Frontier-tier model would take the image out of the enclave. merge_block now compares key paths, not bare keys, so a re-run replaces the pin and keeps `auxiliary.compression.*`. A surgical re-cut of main's 2026.11.22-3: installer_sha256 moves; the manifest's audit/backup rows and skills.tar.gz are unchanged.",
+  "notes": "t_e7e5ac73 (ODL-341-F1): the tenant config gains a seventh managed block, `auxiliary.vision.model` = Qwen/Qwen3-VL-30B-A3B-Instruct \u2014 the one vision model NEAR AI serves in its Private TEE tier (near.ai/pricing, Privacy column) \u2014 so an image is described inside an enclave instead of by the text model, which returns an empty description at this budget; a Frontier-tier model would take the image out of the enclave. merge_block now compares key paths, not bare keys, so a re-run replaces the pin and keeps `auxiliary.compression.*`. A surgical re-cut of main's 2026.11.22-4 (t_509f85e4's support-grant help cut): installer_sha256 moves; the manifest's audit/backup rows, skill rows and skills.tar.gz are unchanged.",
   "product": "odile",
-  "release": "2026.11.22-4",
+  "release": "2026.11.22-5",
   "schema": 1
 }
