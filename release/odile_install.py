@@ -2,10 +2,12 @@
 """Odile tenant installer — one signed command, run by the user as root.
 
 ODL-203. The tenant install is the demo host's stack plus the tenant legs, built
-once by extraction: the pure helpers below are the same ones
-``deploy/demo-host/deploy_demo_host.py`` calls, so the demo host and a tenant
-cannot drift apart in the parts that matter (scrypt format, .env allowlist,
-config merge, atomic writes, service handling).
+once by extraction. The pure helpers below are this file's own: the demo host's
+live deployer, ``deploy/demo-host/apply_demo_public.py``, keeps independent
+copies of the scrypt password format and the atomic write, so those two are made
+in both places; the three-key ``.env`` allowlist and the managed-block config
+merge exist only here. The ``deploy/demo-host/deploy_demo_host.py`` this
+paragraph used to name is on no ref (measured 2026-11-22).
 
 What this file is
 -----------------

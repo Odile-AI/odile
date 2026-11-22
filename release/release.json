@@ -1,8 +1,8 @@
 {
   "artifacts": {
     "installer": {
-      "sha256": "5d9e9e765688633073163ebe8a2f13cd1113529afa5dbc3fc770527d2c9d5415",
-      "size": 1563199,
+      "sha256": "430d31a7c480944851382af4c9c26b47c671546a347cd68749ca3c7b3a70eb0d",
+      "size": 1563383,
       "url": "odile_install.py"
     },
     "skills": {
@@ -14,14 +14,14 @@
   "boot": {
     "kernel": "6.12.115+deb13.1-amd64"
   },
-  "generated_at": "2026-11-22T17:45:00Z",
+  "generated_at": "2026-11-22T20:32:00Z",
   "manifest": {
-    "sha256": "7c138f5a9c53f522af1b4ab751419809adf31601feace91624c2558476b023f5",
+    "sha256": "80ccb90b89b9804694b2da959b7f1bcc7b78101bf59fc2a8e9e4f1a0aadda0ff",
     "signature_url": "manifest.json.sig",
     "url": "manifest.json"
   },
-  "notes": "t_e7e5ac73 (ODL-341-F1): the tenant config gains a seventh managed block, `auxiliary.vision.model` = Qwen/Qwen3-VL-30B-A3B-Instruct \u2014 a vision model in NEAR AI's Private TEE tier (near.ai/pricing, Privacy column), chosen because its answer is not eaten by a reasoning phase: Qwen3.8-27B (and its abliterated variant), GLM-5.3-Flash and DeepSeek-V4.1-Flash-1017 read images in the same tier, but on a real render asking for every heading and button label Qwen3-VL answered 7/7 + 3/3 in 4/4 runs at 0.56-2.49 s where GLM-5.3-Flash needed >=1,200 output tokens (5-7 s) and Qwen3.8-27B returned no content \u2014 so an image is described inside an enclave instead of by the text model, which returns an empty description at this budget; a Frontier-tier model would take the image out of the enclave. merge_block now compares key paths, not bare keys, so a re-run replaces the pin and keeps `auxiliary.compression.*`. A re-cut of the 2026.11.22-5 tree (itself main's 2026.11.22-4 plus this card) after review corrected the tier wording: installer_sha256, the manifest and this document move; the manifest's audit/backup rows, skill rows and skills.tar.gz are unchanged.",
+  "notes": "t_69a749f0: the shipped installer's module docstring named a demo-host deployer file that exists on no ref of this repository (git ls-files and git log --all both return nothing). The docstring now says what is true: the pure helpers live in the installer, and the demo host's live deployer, deploy/demo-host/apply_demo_public.py, keeps its own copies of the scrypt password format and the atomic write, while the .env allowlist and the managed-block config merge have no second copy. Docstring bytes only: the managed config blocks, the tenant bundle, the skill rows and skills.tar.gz are unchanged, so this surgical re-cut moves installer_sha256, the manifest and this document.",
   "product": "odile",
-  "release": "2026.11.22-6",
+  "release": "2026.11.22-7",
   "schema": 1
 }
