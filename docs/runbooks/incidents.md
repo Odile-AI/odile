@@ -638,9 +638,9 @@ credit is the ceiling (`CLAIMS.md` §1 Money).
 5. ./tools/spend.py --json                                    # HQ's own budget, not the tenant's
 ```
 
-`tools/spend.py` is Odile's HQ inference budget ($100/day across profiles). It is
-never the tenant's number; quoting it in a tenant incident is how the wrong
-figure reaches a user.
+`tools/spend.py` is Odile's HQ inference meter (today's total across every
+profile; there is no standing cap since 2026-11-22). It is never the tenant's
+number; quoting it in a tenant incident is how the wrong figure reaches a user.
 
 **What the user is told.** C-8.
 
