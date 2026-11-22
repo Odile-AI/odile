@@ -50,6 +50,12 @@ smtpd_relay_restrictions = permit_mynetworks permit_sasl_authenticated defer_una
 # shape held constant. The default `any` picks between them at random, so a
 # tenant's first brief was a coin flip. Prefer IPv6; Postfix still tries IPv4
 # when the destination publishes no AAAA or the IPv6 connection fails.
+# Postfix documents the cost of this value: "all deliveries will suffer delays
+# during an IPv6 outage, even while the destination is still reachable over
+# IPv4" (postconf(5)). So a brief queues rather than fails while this host has
+# no IPv6, and `postqueue -p` / `grep gmail-smtp-in /var/log/mail.log` show it
+# moving again once IPv6 returns. 3.10.6 implements smtp_balance_inet_protocols
+# (Postfix 3.3), so it is delayed, not stuck as a < 3.3 relay could be.
 # Measurement: docs/evidence/t_7378e496/.
 smtp_address_preference = ipv6
 

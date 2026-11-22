@@ -275,8 +275,14 @@ smtp_address_preference = ipv6
 ```
 
 Postfix still tries IPv4 when a destination publishes no AAAA or the IPv6
-connection fails, so this is a preference and not a v6-only path. Apply it the
-supported way and prove it:
+connection fails, so this is a preference and not a v6-only path. It is not a
+free one: `postconf(5)` says of this value that "all deliveries will suffer
+delays during an IPv6 outage, even while the destination is still reachable
+over IPv4", so a brief queues instead of failing when the relay has no IPv6,
+and `postqueue -p` plus `grep gmail-smtp-in /var/log/mail.log` show it moving
+again once IPv6 returns (3.10.6 here implements `smtp_balance_inet_protocols`,
+which Postfix 3.3 added, so nothing is stuck the way a < 3.3 relay could be).
+Apply it the supported way and prove it:
 
 ```sh
 ./deploy/postfix/apply.py --apply     # writes /etc/postfix/main.cf, reloads
@@ -292,9 +298,11 @@ grep "gmail-smtp-in" /var/log/mail.log | tail -1    # relay=…[2001:…]:25
 ./scripts/send_test.py --gmail-headers "<subject>"  # placement, plus the address in spf=pass
 ```
 
-A `relay=…[203.0.113.139]` (an IPv4 literal) after this change means the
-setting is not in effect — most likely `/etc/postfix/main.cf` was edited by
-hand and the applier has not run since.
+For a destination that publishes an AAAA, such as Gmail, a
+`relay=…[203.0.113.139]` (an IPv4 literal) after this change means the setting
+is not in effect — most likely `/etc/postfix/main.cf` was edited by hand and
+the applier has not run since. A destination that publishes only an A is
+expected to show the literal, by design.
 
 ## 6. First run and the daily check
 
