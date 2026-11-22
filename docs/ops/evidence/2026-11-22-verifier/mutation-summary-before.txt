@@ -1,0 +1,12 @@
+# mutmut run — handoff_check.py, before the new test
+# command: mutmut run --max-children 4   (scratch tree /root/.hermes/cache/scratch/mut-v2)
+# config:
+#   [mutmut]
+#   source_paths=handoff_check.py
+#   pytest_add_cli_args_test_selection=tests/test_card_acceptance.py
+#   also_copy =
+#       conftest.py
+#       tools/
+# observed (last counts line):
+⠦ 265/265  🎉 195 🫥 0  ⏰ 0  🤔 0  🙁 70  🔇 0  🧙 0
+5.85 mutations/second

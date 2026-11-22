@@ -1,0 +1,12 @@
+# mutant handoff_check.x_main__mutmut_116: startswith(base) or startswith(current)  ->  and
+# mutmut marked it 'survived' against the 32-test suite.
+209:        if current and not (current.startswith(base) and base.startswith(current)):
+
+## the existing suite (BaseSentinel excluded): 32 tests
+................................                                         [100%]
+32 passed, 2 deselected in 2.92s
+
+## the proposed test:
+E       AssertionError: 1 != 0 : handoff-check: FAIL — the stamp's base is 031f1e1, main is 031f1e1 (main moved since the stamp; re-run make acceptance)
+tests/test_card_acceptance.py:800: AssertionError
+1 failed, 1 passed in 0.20s

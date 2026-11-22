@@ -1,0 +1,34 @@
+--- a/tests/test_card_acceptance.py
++++ b/tests/test_card_acceptance.py
+@@ -771,3 +771,31 @@
+ 
+ if __name__ == "__main__":
+     unittest.main()
++
++
++class BaseSentinelTests(GateFixture):
++    """The base line the gate itself writes must not fail its own check.
++
++    `card_acceptance.py` stamps `base: none` when no `main` could be resolved
++    (the stamp is still a READY fact about the head), and `BASE_RE` accepts a
++    7-char sha; `handoff_check.py` skips a `none` base and matches a short one
++    by prefix. Neither shape is in the suite above, so a mutation that turns
++    "skip" into "compare" or "or" into "and" leaves every test green and makes
++    the verifier reject a legitimate handoff.
++    """
++
++    def test_a_stamp_written_without_a_base_still_passes(self) -> None:
++        self.insert_stamp("READY", self.head, base="none")
++
++        code, output = self.run_check()
++
++        self.assertEqual(code, 0, output)
++        self.assertIn("handoff-check: PASS", output)
++
++    def test_a_short_base_naming_main_still_passes(self) -> None:
++        self.insert_stamp("READY", self.head, base=self.head[:7])
++
++        code, output = self.run_check()
++
++        self.assertEqual(code, 0, output)
++        self.assertIn("handoff-check: PASS", output)
