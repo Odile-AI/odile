@@ -365,11 +365,14 @@ class FourStateTests(AccountBase):
         self.assertNotIn("Open your machine", text)
         self.assertNotIn("Send the ready email again", text)
 
-    def test_the_confirm_state_offers_one_press_to_send_the_confirmation_again(self):
+    def test_the_confirm_state_offers_one_press_to_send_the_email_again(self):
         _email, _row, cookie = self.state_account("confirm")
         _headers, text = self.page(cookie)
         self.assertIn('action="/account/resend"', text)
-        self.assertIn("Send the confirmation email again", text)
+        # One label line: the sheet's button text row says "one line", and the
+        # round-2 label needed 334 px in a 290-304 px control (ODL-583 round 3).
+        self.assertIn("Send the email again", text)
+        self.assertNotIn("Send the confirmation email again", text)
         self.assertNotIn("Send the ready email again", text)
         self.assertNotIn("Open your machine", text)
 
@@ -510,8 +513,10 @@ class BrandSheetTests(AccountBase):
                       "border-color:var(--ink-hover)}", text)
         self.assertIn("button.secondary:hover{background:rgba(28,24,19,.05);"
                       "border-color:var(--ink)}", text)
-        # The trial line is its own aside, not bound to the password line.
-        self.assertIn(".trial{margin:24px 0 16px;", text)
+        # The trial line is its own aside, not bound to the password line, and
+        # it takes the sheet's 17 px line-height (1.6, not 1.5).
+        self.assertIn(".trial{margin:24px 0 16px;font-size:17px;line-height:1.6;",
+                      text)
 
 
 if __name__ == "__main__":
