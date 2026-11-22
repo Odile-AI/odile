@@ -1,8 +1,10 @@
-# Incidents — the ten classes, the first five commands, and two drills
+# Incidents — the ten classes, the first five commands, and the drills
 
-**Status:** v1.1 — corrected from two drills run for real on 15 November 2026
-(§6). §6.3 is every line the drills changed, with the measurement that changed
-it. **Card:** ODL-244, M4.
+**Status:** v1.2 — corrected from four drills: two re-cut for alpha.0 and run on
+22 November 2026 (§6.1, §6.2), and two run on 15 November 2026 and kept because
+the recovery and seed classes still cite them (§6.4). §6.3 is every line a drill
+changed, with the measurement that changed it. **Card:** ODL-244, A2 (re-cut
+17 November 2026, ODL-573).
 **Read with:** `alerting.md` (the heartbeat and the five alerts), `support.md`
 (the grant and the diag bundle), `backup.md` (restic and the restore),
 `seed.md` (the token and `/seed`), `provision.md` (the provider API),
@@ -22,8 +24,8 @@ needed, it is the grant the user starts (§2.4) — never a key we keep.
 | # | Class | The first command | Who acts |
 |---|---|---|---|
 | 4.1 | Machine down (unexpected) | `odilectl status <slug> --json` | HQ |
-| 4.2 | Machine waiting for owner | `odilectl status <slug> --json`, then the first-visit page | HQ + user |
-| 4.3 | User locked out | `curl https://<slug>.odile.fyi/verify` | user |
+| 4.2 | Machine waiting for owner | `odilectl status <slug> --json`, then `/first-visit/reset` (`409` = never set) | HQ + user |
+| 4.3 | User locked out | `curl https://<slug>.odile.fyi/first-visit/reset` (`200` = a code exists) | user |
 | 4.4 | Lost recovery kit | the recovery page, then the backup repo | user + HQ |
 | 4.5 | Seed failure | `seed.py token list --tenant <slug>` | HQ |
 | 4.6 | Installer failure | the provider's console log | HQ |
@@ -31,6 +33,13 @@ needed, it is the grant the user starts (§2.4) — never a key we keep.
 | 4.8 | Spend spike | the NEAR console, then `odilectl status` | HQ |
 | 4.9 | Provider outage | `odilectl reconcile --json` | HQ |
 | 4.10 | Boot loop | the provider's console log | HQ |
+
+**One state is not a class.** A build that failed before a machine existed — the
+claim worker's `provision_failed` — is neither a down machine nor an installer
+failure: there is no machine to restart and nothing to read a boot log from. The
+first command is `odilectl claim status <slug> --json`, the alert carries the
+retry line, and §5.0 is the whole path. It is A2's fourth exit criterion, and
+drill 1 measures it (§6.1).
 
 **The three facts that decide most incidents.** Ask them in this order and write
 the answers in the incident note; every class below is a consequence of one of
@@ -115,9 +124,9 @@ Two `odilectl` habits that bite:
 | URL | What it proves |
 |---|---|
 | `https://<slug>.odile.fyi/verify` | The machine's own access report: measurement, boot key, seal, sign-in hash, operator key, grant. `200` with `PASS — five checks` means the machine is up and serving. |
-| `https://<slug>.odile.fyi/first-visit` | `200` the sign-in form; `410` the token is spent; `404` the token is unknown. |
-| `https://<slug>.odile.fyi/first-visit/reset` | The sign-in reset form; it wants the recovery code. |
-| `https://<slug>.odile.fyi/first-visit/recovery?c=<code>` | The recovery file, with the code as the key. |
+| `https://<slug>.odile.fyi/first-visit?t=<token>` | `200` the sign-in form; `410` the token was spent (the sign-in is set); `404` the token is unknown. The token is the whole address: the bare path without `?t=` is always `404`, so test the ready email's link. |
+| `https://<slug>.odile.fyi/first-visit/reset` | `200` the reset form when a sign-in was set; `409` (`This link is closed.`) when the state has no recovery hash — a machine whose first visit was never completed, which is §4.2, not §4.3. |
+| `https://<slug>.odile.fyi/first-visit/recovery` | `GET` the form; `POST` the code (no `?c=` any more) and get a page with a one-time download link (`?d=`, ten minutes, one use). The old permanent `?c=<code>` URL returns the form and never the file (ODL-579). |
 | `https://odile.fyi/manifest.json` | The signed manifest: release, versions, hashes. (`/manifest` answers 404.) |
 
 `/health` on a tenant is the Webapp route; it answers `302` to `/login`, not a
@@ -180,8 +189,8 @@ page uses the agent or the grant instead.
 * **No HQ reset of the sign-in and no disk unlock.** The recovery code resets
   the sign-in on the machine; a disk that will not open is a rebuild.
 * **No reading of the backup without the user's recovery file.** Measured in
-  §6.1: restic answers `wrong password or no key found`, and HQ's own key is not
-  accepted by the backup box.
+  §6.4.1: restic answers `wrong password or no key found`, and HQ's own key is
+  not accepted by the backup box.
 * **No repair of a broken seal in place.** Change the image or the firmware and
   the disk stays locked; the exit is rebuild + restore (`image.md` §8).
 
@@ -245,12 +254,13 @@ configuration once before failing, it does not need the token at all — tell us
 and we will use the copy it already has. The new token works once and expires in
 24 hours.
 
-**C-6.** The machine's install stopped before it reached your workspace. We are reading
-its boot log and will restart it once; the installer runs again by itself on the
-next boot. If it stops at the same line, we rebuild the machine, which takes
-under an hour and needs no key from you. Nothing on the disk is at risk: the
-disk is encrypted and the install writes no user data before it finishes. We
-will tell you which of the two happened.
+**C-6.** The build stopped before your workspace. If a machine was created, we read
+its boot log and restart it once; the installer runs again by itself on the next
+boot. If no machine was made, we retry the build. Either way you do not need to
+do anything, nothing is billed while the build is failing, and nothing of yours
+is lost: the disk is encrypted and the install writes no user data before it
+finishes. We will tell you which happened. If it stops twice we rebuild, which
+takes under an hour and needs no key from you.
 
 **C-7.** The machine's disk is <n>% full, past the 80% warning line. The agent keeps
 running, but new writes can fail, including the morning brief and the nightly
@@ -292,7 +302,7 @@ starts; the last day may be lost.
 | C-3 | 79 |
 | C-4 | 90 |
 | C-5 | 86 |
-| C-6 | 82 |
+| C-6 | 99 |
 | C-7 | 87 |
 | C-8 | 81 |
 | C-9 | 78 |
@@ -354,45 +364,53 @@ incident.
 
 ### 4.2 Machine waiting for owner
 
-**Detect.** The tenant is `ready` but the owner has not set a sign-in: the
-first-visit page answers `200`, the ready email's link is unused, and the
-machine heartbeats (or, if it does not, this is §4.1). `waiting_for_owner` is a
-legacy state: the sealed image boots without a passphrase, so the poll no longer
-parks a tenant there (`odilectl/health.py`, ODL-467).
+**Detect.** The tenant is `ready` (or `installed`) but no user sign-in exists:
+`/first-visit/reset` answers `409`, the ready email's link answers `404` or
+`410`, and the machine heartbeats (or, if it does not, this is §4.1).
+`waiting_for_owner` is a legacy state: the sealed image boots without a
+passphrase, so the poll no longer parks a tenant there (`odilectl/health.py`,
+ODL-467). Measured on the bench tenant `odl-340a1e.test.odile.fyi` on
+22 November 2026: `/first-visit/reset` `409`, bare `/first-visit` `404`,
+`/login` `200`, and `/verify`'s sign-in row `PASS` — the row proves a hash is
+present, not that a user chose it.
 
-**Blast radius.** None technically. The user paid for a machine they have not
-opened; the setup token dies after 24 hours and the link stops working.
+**Blast radius.** None technically. The user has a machine they have not opened;
+the setup token dies after 24 hours and the link stops working.
 
 **First five commands.**
 
 ```sh
 1. /usr/bin/python3 -m odilectl status <slug> --json
-2. curl -sS -o /dev/null -w '%{http_code}\n' https://<slug>.odile.fyi/first-visit
+2. curl -sS -o /dev/null -w '%{http_code}\n' https://<slug>.odile.fyi/first-visit/reset   # 409 = no sign-in yet
 3. /usr/bin/python3 /opt/odile/seed/seed.py token list --tenant <slug>
 4. /usr/bin/python3 /opt/odile/seed/seed.py token rotate --tenant <slug>
 5. curl -sS https://<slug>.odile.fyi/verify | grep -i 'sign-in'
 ```
 
-`200` on the first-visit page means the form is still waiting; `410` means the
-token was spent (the sign-in is set, so the user has a different problem);
-`404` means the token is unknown. The token ledger says `live`, `ended` or
-`expired`. Step 4 mints a new token but sends nothing: the ready email
-(`templates/emails/ready.txt`) is a separate send, with the token in it.
+`409` on the reset form is the discriminator: the state has no recovery hash, so
+the first visit never wrote a sign-in. A bare `/first-visit` is always `404` —
+the token is the whole address — so check the ready email's link, not the path;
+`410` there means the token was spent, which means the sign-in *is* set and the
+user has a different problem (§4.3). Step 4 mints a new token but sends nothing:
+the ready email (`templates/emails/ready.txt`) is a separate send, with the
+token in it.
 
 **What the user is told.** C-2.
 
 **Escalate when.** The user says they never received the ready email and a
 resend does not arrive → the mail relay (`email.md`), not the machine.
 
-**Exit.** `https://<slug>.odile.fyi/first-visit` answers `410` (the token is
-spent, the sign-in is set) and the user is in the workspace.
+**Exit.** The user's link accepts a password (`POST` `200`, the done page) and
+`/first-visit/reset` answers `200` instead of `409`.
 
 ---
 
 ### 4.3 User locked out
 
-**Detect.** The user says "I cannot sign in". The machine is healthy; the
-`sign-in hash` row on `/verify` reads PASS.
+**Detect.** The user says "I cannot sign in". The machine is healthy and
+`/first-visit/reset` answers `200` (a recovery hash exists — a `409` is §4.2,
+the sign-in was never set). The `/verify` sign-in row reads `PASS` in both
+cases; it proves a hash is present, not that the user's password is the one.
 
 **Blast radius.** The user, not the machine: the agent keeps running, cron jobs
 fire, the backup runs. The recovery code resets the sign-in; without it there is
@@ -401,24 +419,37 @@ no reset at HQ.
 **First five commands.**
 
 ```sh
-1. curl -sS -o /dev/null -w '%{http_code}\n' https://<slug>.odile.fyi/verify
-2. curl -sS https://<slug>.odile.fyi/verify | grep -i 'sign-in'
-3. # the user opens https://<slug>.odile.fyi/first-visit/reset with the code
-4. curl -sS -o /dev/null -w '%{http_code}\n' https://<slug>.odile.fyi/first-visit/reset
+1. curl -sS -o /dev/null -w '%{http_code}\n' https://<slug>.odile.fyi/first-visit/reset   # 200 = a code exists
+2. # the user opens https://<slug>.odile.fyi/first-visit/reset and enters the code
+3. # a wrong code answers 200 with "That recovery code does not match." — test the text, not the status
+4. curl -sS -o /dev/null -w '%{http_code}\n' https://<slug>.odile.fyi/verify
 5. # code lost: §4.4's rebuild path; the recovery file still opens the backup
 ```
 
-`/verify` answering `200` proves the machine and the Webapp are up; the reset
-form is the only in-place way back. We never hold the password and there is no
-HQ reset (`CLAIMS.md` §5).
+The reset form is the only in-place way back; we never hold the password and
+there is no HQ reset (`CLAIMS.md` §5). Four things the drill measured (§6.2):
+
+* a **wrong or used code answers `200`** and re-renders the form with `That
+  recovery code does not match.` — a check on the status code alone reads a
+  refusal as a success;
+* the **right code** sets the new sign-in, shows a **new code once**, and the
+  old code is dead immediately: both `POST /first-visit/reset` and `POST
+  /first-visit/recovery` spend a code and rotate it;
+* the reset **signs out every other browser** (the session secret is replaced)
+  and **restarts the gateway** to load the new hash: the workspace answers `502`
+  for a few seconds, so wait for `/` to answer `302` before calling a login a
+  refusal (measured at 3.6–4.2 s in `docs/evidence/m1-tenant.md` §10);
+* the **recovery page** is a `POST` now, and its answer carries a one-time
+  download link (`?d=`, ten minutes); the old `?c=<code>` URL returns the form.
 
 **What the user is told.** C-3.
 
 **Escalate when.** The code is lost *and* the user cannot reach the agent: this
 becomes the rebuild path (§5), with §4.4's file question first.
 
-**Exit.** The user signs in; the `sign-in hash` row on `/verify` changes (a
-reset writes a new hash and rotates the code).
+**Exit.** The user signs in with the new password — a `200` from the login, not
+the `/verify` row (which never changes: it proves a hash is present) — and the
+new code the page showed is the one they save.
 
 ---
 
@@ -437,8 +468,10 @@ copy (`CLAIMS.md` A9; `backup.md` §1).
 **First five commands.**
 
 ```sh
-1. # machine alive, code in hand: the file is behind the code
-   curl -sS -o recovery.txt -w '%{http_code}\n' 'https://<slug>.odile.fyi/first-visit/recovery?c=<code>'
+1. # machine alive, code in hand: POST the code; the answer carries a one-time link
+   curl -sS -o form.html -w '%{http_code}\n' -X POST -d 'code=<code>' \
+     https://<slug>.odile.fyi/first-visit/recovery
+   # then GET the ?d=<token> link the page shows (ten minutes, one use)
 2. # code lost too: ask the agent (the file stays on the machine)
    #   in the chat: "show me my recovery file"
 3. # machine dead: does the file we have open the repo?
@@ -452,10 +485,12 @@ copy (`CLAIMS.md` A9; `backup.md` §1).
 `restic` answers `Fatal: wrong password or no key found` (exit 12) for a wrong
 password and `an empty password is not allowed` (exit 1) for none. `odilectl
 restore --verify` without `--password-file` exits 2 and says the recovery file
-is the only copy. Step 4 is the HQ check, and for a live tenant it fails before
-the password is read: `backup.odile.fyi` does not resolve and HQ's key is not in
-the backup box's `authorized_keys`. The restore is the rebuilt machine's job
-(§5). All of it is measured in §6.1.
+is the only copy. Step 1 is a `POST` since ODL-579: the old permanent
+`?c=<code>` URL answers `200` with the *form* and never the file (measured on
+the demo tenant, 22 November 2026). Step 4 is the HQ check, and for a live
+tenant it fails before the password is read: `backup.odile.fyi` does not resolve
+and HQ's key is not in the backup box's `authorized_keys`. The restore is the
+rebuilt machine's job (§5). All of it is measured in §6.4.1.
 
 **What the user is told.** C-4.
 
@@ -512,7 +547,9 @@ verified`) and the machine reaches first visit.
 **Detect.** No first visit after a boot; the serial log shows the installer
 stopping; `/verify` answers `500` or `FAIL`; the ready page never appears. The
 installer runs itself on every boot (`odile-release-setup.service`), so a
-transient failure is often a reboot away.
+transient failure is often a reboot away. If there is no machine at all, the
+build failed before this class began: `claim status <slug> --json` says
+`provision: "failed"` and §5.0 is the path.
 
 **Blast radius.** One machine, no user data. A bad release is all new machines
 (§4.9's cousin) and is a rollback, not a repair.
@@ -682,7 +719,36 @@ the user signs in.
 
 ---
 
-## 5. The rebuild path
+## 5. The rebuild and re-run paths
+
+### 5.0 A build that failed before a machine existed
+
+A2's claim worker builds a tenant in one run: order, poll, DNS, seed token,
+recovery kit, ready email. If any step after the order fails, that same run
+terminates the machine it created, removes the DNS record and the queued files,
+puts the tenant row back to `claimed`, and writes one `provision_failed` alert.
+There is no machine to restart and no disk to rebuild; the fix is a retry.
+
+```sh
+1. /usr/bin/python3 -m odilectl.claim status <slug> --json   # provision: "failed"
+2. # the alert carries the retry line, e.g. under the operator's outbox:
+   #   retry: python3 -m odilectl.claim run --apply <slug>
+3. /usr/bin/python3 -m odilectl.claim run --apply <slug>
+4. /usr/bin/python3 -m odilectl.claim status <slug> --json   # provision: "ready"
+5. # the user's claim token still replays; the account page's `failed` state
+   # (ODL-583) reads this event
+```
+
+`claim status` derives `provision` from the last append-only event, so a failed
+attempt is visible without rewriting the row; `tenant_state` stays `claimed`,
+which is the retryable state. The drill measured the whole path (§6.1): the
+provider calls `create → poll → terminate`, zero live machines remain, no DNS
+record and no recovery kit or ready email is left, one alert is written, and a
+retry orders exactly one machine and produces the ready email. The alert prints
+its retry as `python3 -m odilectl.claim run --apply <slug>`; at HQ `python3` is
+the Hermes virtualenv, so run the `/usr/bin/python3` form above.
+
+### 5.1 The rebuild: a new machine on the same slug
 
 Shared by 4.1 (`status: failed`), 4.4 (file lost, or the disk will not open),
 4.6 and 4.10. A rebuild is a new machine with the same slug; addresses change,
@@ -707,7 +773,7 @@ tenant).
 
 The restore runs on the machine that holds the recovery file. From HQ,
 `odilectl restore --apply` needs `--repo`, the backup box's `--ssh-key` and
-`--known-hosts`; HQ holds neither for a live tenant (drill 1), so HQ is the
+`--known-hosts`; HQ holds neither for a live tenant (§6.4.1), so HQ is the
 fallback for a bench, not the plan. The last day may be lost; the approved row
 is "Rebuildable in under an hour — without a key" (`backup.md` §5).
 
@@ -715,11 +781,115 @@ is "Rebuildable in under an hour — without a key" (`backup.md` §5).
 
 ## 6. The drills
 
-Two drills, run for real on 15 November 2026, at the head of ODL-244's branch.
-Each transcript is attached to the card. The rule for a drill: it must exercise
-the **shipping** program, not a mock, and it must be able to fail.
+Four drills, each run for real against a shipping program and each able to fail.
+The two re-cut for alpha.0 were run on 22 November 2026 (§6.1, §6.2); the two of
+15 November 2026 are kept because §4.4 and §4.5 still cite them (§6.4). Every
+transcript is attached to the card. The rule for a drill: it must exercise the
+**shipping** program, not a mock, and it must be able to fail.
 
-### 6.1 Drill 1 — a lost key
+### 6.1 Drill 1 — a failed provision (re-cut for A2, 22 November 2026)
+
+**Scenario.** A paid, claimed tenant's build fails after the machine exists. A2's
+fourth exit criterion is what the drill is for: no billed machine remains, and
+the tenant is back in a state the worker can retry.
+
+**What ran.** The shipping claim spine — `odilectl/claim.py`'s
+`provision_tenant` — against a throwaway SQLite database, with its own recovery
+kit renderer, alert writer and outbox. The two external services are the
+shipping suite's own fixtures (`tests/test_claim.py`): an in-memory provider and
+a stateful Cloudflare transport. No vendor order was placed, so nothing was
+billed. Two failure points: the poll raises after `create` returns a machine, and
+`create` itself raises.
+
+**What it measured.**
+
+| Check | Result |
+|---|---|
+| the provider calls after a failed poll | `create`, `poll`, `terminate` — one terminate, no second order |
+| machines the provider still bills | `0`: the created machine is `terminated` |
+| the tenant row after the failure | `state: claimed`, `server_id: null`, `ipv4: null`, `setup_token_hash: null`, `release: null` |
+| the DNS record and the queued files | none: the record is removed (`{}`), no ready email, no kit |
+| the event the operator reads | `{"step": "provision_failed", "server_id": "srv-fixture0001", "terminated": true, "reason": "fixture: the build failed"}` |
+| `claim status <slug> --json` | `provision: "failed"`, `tenant_state: "claimed"`, `server_id: null`, `ready_email: null` |
+| the alert | one `[Odile] provision failed — <slug>` email: symptom, server, `cleanup: machine terminated; no billed resource remains`, and the retry line `python3 -m odilectl.claim run --apply <slug>` |
+| the claim token after the failure | replays (`replay: true`) — the account is retryable |
+| the retry on a healthy provider | `ok: true`, exactly one `create`, one live machine, one ready email, `provision: "ready"` |
+| a `create` that never returns | provider calls `create` only, zero machines, `terminated: false`, the same `claimed` row, an alert saying `no machine was created` |
+
+**What it changed.** The runbook had no path for a build that failed before a
+machine existed: §4.1 restarts a machine, §4.6 reads a boot log, and neither
+exists here. §0 now says the state is not a class, §5.0 is the retry, and C-6 carries
+the user copy. See §6.3.
+
+### 6.2 Drill 2 — a lost sign-in (re-cut for A2, 22 November 2026)
+
+**Scenario.** A tester on the bench forgets the sign-in. The recovery code is the
+only reset; there is no HQ reset.
+
+**What ran.** Two halves.
+
+* The live bench tenant `odl-340a1e.test.odile.fyi` and the live demo tenant
+  `odl-7971a8.odile.fyi`, driven over HTTPS: the endpoints §4.2 and §4.3 use,
+  and a wrong-code `POST` to the demo's reset form (non-destructive — a refused
+  code changes nothing).
+* The shipped `installer/first_visit.py` as a real HTTP service on a scratch
+  guest root (real state file, real 0600 `.env`, real page): set a sign-in, lose
+  it, present a wrong code, present the right one, then read what changed.
+
+**What it measured.**
+
+| Check | Result |
+|---|---|
+| the bench tenant's `/first-visit/reset` | `409` — no recovery hash: its first visit was never completed after the 21 November image |
+| the bench tenant's bare `/first-visit` | `404` — the token is the whole address |
+| the bench tenant's `/login`, `/verify` | `200`, `200`; the sign-in row reads `PASS` even though no user set a sign-in |
+| the demo tenant's `/first-visit/reset` (sign-in set) | `200` |
+| a wrong code on the live demo tenant | `200` with `That recovery code does not match.` |
+| `POST /first-visit` (set the sign-in) | `200`, the code shown once; the old password verifies |
+| `GET /first-visit/reset` | `200`, the form |
+| a wrong code on the scratch guest | `200`, `refused: true`, `That recovery code does not match.`; the old password still works |
+| the right code | `200`, `Your sign-in is changed.`; the new password verifies, the old does not |
+| the session secret | replaced (32 fresh bytes) — every other browser is signed out |
+| the gateway reload | invoked; the workspace answers `502` for a few seconds (3.6–4.2 s, `docs/evidence/m1-tenant.md` §10) |
+| the old code after the reset | dead; the new code is live |
+| `POST /first-visit/recovery` with the new code | `200`, a one-time `?d=` link; the link opens the file with the backup password and shows a third code |
+| the same code again | refused with the same text |
+
+**What it changed.** The 15 November runbook said a wrong recovery code answers
+`404` and that a reset changes the `/verify` sign-in row; the drill measures
+`200` + text, and a row that reads `PASS` before and after. It also measured that
+the reset signs out other browsers and restarts the gateway, that a `409` on the
+reset form is the "never set" branch, and that the bare `/first-visit` is always
+`404`. The live half is why §4.4's `?c=` URL is gone: the old permanent URL
+returns the form, never the file. See §6.3.
+
+### 6.3 Every line the drills changed
+
+| # | Drill | v1.x said | The drill measured | v1.2 says |
+|---|---|---|---|---|
+| 1 | 6.1 | a failed build had no path: §4.1 restarts a machine, §4.6 reads a boot log | the claim worker terminates the machine, removes the DNS record and the queued files, leaves the row `claimed`, and writes one alert; the retry orders one machine | §0, §5.0, C-6 |
+| 2 | 6.1 | a failed provision leaves a machine to find | `create → poll → terminate`, `0` live, no DNS record, no kit or ready email | the worker cleans up; the fix is a retry |
+| 3 | 6.2 | a wrong recovery code answers `404` (15 Nov, the permanent `?c=` URL) | `200` with `That recovery code does not match.` — on the live demo and on the scratch guest | `200` + text; never test the status alone |
+| 4 | 6.2 | the `/verify` sign-in row changes after a reset | it reads `PASS` before and after — it proves a hash is present | the exit is a login `200` |
+| 5 | 6.2 | (unstated) a reset keeps other sessions | the secret is replaced, the other browsers are signed out, the gateway restarts (`502` for seconds) | §4.3 |
+| 6 | 6.2 | `/first-visit` answers `200` while the form waits | the bare path is `404`; the ready link's token is the whole address | test the ready link; `409` on reset = never set |
+| 7 | 6.2 | `/first-visit/recovery?c=<code>` downloads the file | `?c=` returns the form; the code is `POST`ed and the file is behind a one-time `?d=` link | §2.2 and §4.4 |
+| 8 | 6.4.1 | HQ can run the tenant's restore with `--repo` and the backup key | `NXDOMAIN`; HQ's key is not accepted by the backup box | the rebuilt machine restores |
+| 9 | 6.4.1 | `/health` is `200` on a live tenant | `302` to `/login` | `/verify` is the liveness page |
+| 10 | 6.4.2 | the seed refusal exits 2 | exit 1 | exit 1 |
+| 11 | 6.4.2 | `odilectl rotate-token --apply` | `NotWired`; `seed.py token rotate` works | `seed.py token rotate` |
+| 12 | 6.4.2 | an expired token blocks the install | cache-first: a machine that already fetched never re-exchanges | the cache is a way out |
+| 13 | 6.4.2 | `/manifest` is the manifest URL | `404`; `/manifest.json` is `200` | `/manifest.json` |
+| 14 | 6.4.2 | `status --json` proves a slug exists | exits 0, `ok: true`, `machines: []` | read `count` |
+| 15 | 6.4.2 | a stopped heartbeat means the machine is down | the demo tenant's heartbeat is 2 d 7 h stale while `/verify` answers `200` with `PASS — five checks`; the poll plans `down` and `backup` alerts (15 Nov 10:51:05Z) | `/verify` first, then the heartbeat job |
+
+### 6.4 The earlier drills (15 November 2026)
+
+Kept because §4.4 and §4.5 cite them. Their route measurements predate ODL-579
+(19 November), which replaced the recovery file's permanent URL with a `POST` and
+a one-time `?d=` link — row 3 of §6.3 is the current measurement.
+
+#### 6.4.1 A lost key
 
 **Scenario.** The user has lost the recovery file; one half with the machine
 alive and the code in hand, one half with the machine gone.
@@ -734,7 +904,7 @@ then `restic` and `odilectl restore` against the live tenant's repository
 | Check | Result |
 |---|---|
 | the code the user saved opens the file | `200`, `text/plain`, `attachment; filename="odile-recovery-odl-drill1a.txt"`, 538 bytes, `Backup password:` present |
-| a mistyped code | `404` `The recovery file is not available on this machine.` |
+| a mistyped code | `404` `The recovery file is not available on this machine.` (the permanent `?c=` URL; ODL-579 replaced it) |
 | no code at all | `404`, the same body — the page does not distinguish |
 | the code without dashes, lower case | `200` — the code is normalised, so the user may type it either way |
 | the file on the machine | mode `0600`, root, 538 bytes — the agent can show it again |
@@ -747,11 +917,11 @@ then `restic` and `odilectl restore` against the live tenant's repository
 | `odilectl restore` from HQ, any password | exit 5 — the transport fails first: `backup.odile.fyi` is `NXDOMAIN` and HQ's key is not in the backup box's `authorized_keys` |
 
 **What it changed.** v1 said the recovery page answers `400` for a bad code, and
-that an HQ restore proves the file opens the repository. v1.1 says `404` (the
-page never says which part was wrong) and names the restore as the rebuilt
-machine's job. See §6.3, rows 1–3.
+that an HQ restore proves the file opens the repository. v1.1 said `404` (the
+page never said which part was wrong) and named the restore as the rebuilt
+machine's job. See §6.3, rows 3, 8 and 9.
 
-### 6.2 Drill 2 — a failed seed
+#### 6.4.2 A failed seed
 
 **Scenario.** A machine's setup token is expired before the install finishes;
 then HQ rotates it and the same machine retries.
@@ -781,62 +951,71 @@ key, driven by `curl` and by the shipping installer
 **What it changed.** v1 said the refusal exits 2 and gave
 `odilectl rotate-token --apply` as the rotation command. The refusal exits 1, the
 command is `seed.py token rotate` (the `odilectl` wrapper still raises
-`NotWired`), and the cache-first rule is the fastest way out. See §6.3, rows 4–7.
+`NotWired`), and the cache-first rule is the fastest way out. See §6.3,
+rows 10–13.
 
-### 6.3 Every line the drills changed
+### 6.5 A live measurement beside the drills
 
-| # | v1 said | The drill measured | v1.1 says |
-|---|---|---|---|
-| 1 | a wrong recovery code answers `400` | `404`, same body as no code | `404` |
-| 2 | HQ can run the tenant's restore with `--repo` and the backup key | `NXDOMAIN`; HQ's key is not accepted by the backup box | the rebuilt machine restores |
-| 3 | `/health` is `200` on a live tenant | `302` to `/login` | `/verify` is the liveness page |
-| 4 | the seed refusal exits 2 | exit 1 | exit 1 |
-| 5 | `odilectl rotate-token --apply` | `NotWired`; `seed.py token rotate` works | `seed.py token rotate` |
-| 6 | an expired token blocks the install | cache-first: a machine that already fetched never re-exchanges | the cache is a way out |
-| 7 | `/manifest` is the manifest URL | `404`; `/manifest.json` is `200` | `/manifest.json` |
-| 8 | `status --json` proves a slug exists | exits 0, `ok: true`, `machines: []` | read `count` |
-| 9 | a stopped heartbeat means the machine is down | the demo tenant's heartbeat is 2 d 7 h stale while `/verify` answers `200` with `PASS — five checks`; the poll plans `down` and `backup` alerts (15 Nov 10:51:05Z) | `/verify` first, then the heartbeat job |
-
-### 6.4 A live measurement beside the drills
-
-While the drills ran, the poll's own view of the demo tenant was recorded: its
-last heartbeat is `2026-11-13 03:01:14Z` (`odilectl health --json`:
+On 15 November 2026 the poll's own view of the demo tenant was recorded: its
+last heartbeat was `2026-11-13 03:01:14Z` (`odilectl health --json`:
 `heartbeat_age_seconds: 200,991` when the poll ran at `10:51:05Z`,
-classification `down`, brief missed), while
-`/verify` answers `200` with `measurement 9f01725a…` and `PASS — five checks`.
-The poll plans a `down` alert ("heartbeat stopped 2d 7h ago; port 22 answers
-host key …") and a `backup` alert ("last backup 2d 7h ago (threshold 1d 12h)").
-The machine is up; the heartbeat job is what stopped — on the day the demo was
-reinstalled (13 November). The public `/status` page counts it: `Downtime 3,421
-min` against `In-service time 2.4 machine-days`. That is the discriminator §4.1
-now puts second, it is why "down" in this page means *the heartbeat stopped*,
-and it is a live defect ODL-561 owns (§7, limit 6).
+classification `down`, brief missed), while `/verify` answered `200` with
+`measurement 9f01725a…` and `PASS — five checks`. The poll planned a `down`
+alert ("heartbeat stopped 2d 7h ago; port 22 answers host key …") and a `backup`
+alert ("last backup 2d 7h ago (threshold 1d 12h)"). The machine was up; the
+heartbeat job was what stopped — on the day the demo was reinstalled
+(13 November). The public `/status` page counted it: `Downtime 3,421 min`
+against `In-service time 2.4 machine-days`. That is the discriminator §4.1 puts
+second, and it is why "down" in this page means *the heartbeat stopped*.
+
+The defect was ODL-561's, and it landed on 15 November (`371d5d1`): on
+22 November the demo's last heartbeat is 24 seconds old and `health` classifies
+it `ok`. The same poll now plans one `brief_missing` alert — "the 07:00 brief
+did not arrive; heartbeats are live" — which is the brief job, not the machine,
+and is the live counterpart of §4.1's second command.
 
 ## 7. Limits
 
-1. **The drills are a scratch root and a live repository, not a live failed
-   tenant.** Drill 1's first half runs the shipping first-visit program; its
-   second half runs the real repo. Drill 2 runs the shipping seed service and
-   the shipping installer. Neither drill powers off a tenant; the live
-   stopped-VM check is ODL-332's.
+1. **Two drills are not a live failed tenant.** Drill 1 runs the shipping claim
+   spine against the fixtures the shipping suite uses — no vendor order was
+   placed, so "billed" means the provider's own live set, and the terminate call
+   is what empties it. Drill 2's live half is the bench and demo tenants'
+   endpoints; its reset half is the shipped first-visit service on a scratch
+   guest root, because the bench tenant's first visit was never completed after
+   its 21 November image (`/first-visit/reset` `409`) and there is no sign-in
+   there to lose. Neither drill powers off a tenant; the live stopped-VM check is
+   ODL-332's.
 2. **`waiting_for_owner` is legacy.** The state remains in the machine; the
    poll no longer parks a tenant there (`odilectl/health.py`, ODL-467). §4.2 is
    about the sign-in, not about a parked boot.
 3. **The `spend` alert is dormant** until a heartbeat carries `facts.spend`;
    ODL-242 owns the per-user key and the zero-balance message. §4.8 says what
-   to read instead.
+   to read instead. C-8 still quotes the `$12` allowance row, which
+   `CLAIMS.md` §1a holds and alpha.0's envelope replaces with a ten-dollar cap
+   (Savio, 20 November, D2); ODL-577 lands the copy.
 4. **A grant is root, and the log is on the machine.** A root shell can edit
    `authorized_keys` and the log; the five post-revoke checks are how the user
    sees what it left (`CLAIMS.md` A10).
 5. **The provider console is a door we do not control.** It shows the boot and
    can restart or power off; it is not a shell and it does not decrypt anything
    (`CLAIMS.md` §3, gap 2).
-6. **The demo tenant is the counter-example in §6.4.** Its heartbeat stopped on
-   13 November (2 d 7 h stale at the time of writing) while the machine serves
-   `/verify`, so the poll reports the demo `down`, its backup stale, and the
-   public `/status` page counts `3,421 min` of downtime for a working machine.
-   ODL-561 (`t_665ad87b`) owns the demo's heartbeat and backup timers and the
-   status page's demo row. Two smaller follow-ups the same measurement exposed: the
-   `down`/`backup` alert's `first_command` is still
-   `ssh -i ~/.ssh/odile …` (the key does not exist; `odilectl/health.py`), and
-   the `spend` alert is dormant (§4.8).
+6. **The demo tenant is now the counter-example that closed.** Its heartbeat
+   stopped on 13 November while the machine served `/verify` (§6.5); ODL-561
+   (`371d5d1`) restored the timers and took the demo off `/status` on
+   15 November. On 22 November its last heartbeat is 24 seconds old and
+   `health` classifies it `ok`. The live defect the same poll now plans is a
+   `brief_missing` alert — "the 07:00 brief did not arrive; heartbeats are
+   live" — and the alert's `first_command` is still `ssh -i ~/.ssh/odile …`,
+   the key that does not exist (`odilectl/health.py`).
+7. **The bench's account site was down for the first half of the A2 window.**
+   `odile-bench.service` had restarted 17,060 times by 22 November 00:26Z
+   because an orphaned `seed.py serve` from a deleted worktree (started
+   21 November 11:39) held `127.0.0.1:8082`; `https://test.odile.fyi/` answered
+   `404` while `/health` answered `200`. The orphan was killed and the unit
+   restarted, and `check_bench.sh` then read 14/16. The repair, if it recurs:
+   `ss -ltnp | grep ':8082'` names the holder, kill that pid, then
+   `systemctl restart odile-bench.service`. The two remaining failures
+   are the tenant's recorded measurement, not the machine: the 21 November image
+   moved it to `2caf4a5b…` while `docs/evidence/a1-bench-baseline.json` still
+   records `674cc40d…`. ODL-936 (`t_921b50d0`, A2/infra/S) owns the probe, the
+   timer, the re-record and the orphan rule.
