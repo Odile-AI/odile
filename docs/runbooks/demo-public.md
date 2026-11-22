@@ -527,6 +527,65 @@ machine's own name, and the record propagates in a minute.
   2026-11-14). A forced run appends a new run block to the log and writes the
   marker with its exit code, so the next boot reads `already converged` again.
 
+  **The forced run shuts the sign-in on a machine whose first visit was
+  completed by the deploy, not the page** (measured 2026-11-21 on this
+  machine). The script runs the release installer with `--first-visit` and
+  `--first-visit-token`, and `ensure_env` decides whether the `.env` hash is
+  the owner's by `/etc/odile/first-visit.json`'s `signin_set_at` alone:
+  `used_at` only closes the page's own link (`check_token`), and
+  `first_visit_signin_set()` never reads it. `apply_demo_public.py` writes the
+  `.env` directly, so a machine whose sign-in the deploy set carries the
+  owner's hash with **no** `signin_set_at`; the forced run reads that as a
+  fresh machine and replaces the hash with a scrypt hash of a discarded random
+  password (it prints `write the sign-in hash is a placeholder until first
+  visit`), which nobody knows. The same run also puts `webapp.public_url` back
+  to the machine's slug, so `demo.odile.fyi` answered `400 Invalid Host
+  header` and the machine's own name `401 Invalid credentials` — and the
+  deploy could not run either, because it opens its console with that same
+  account.
+
+  A state file that *does* carry `signin_set_at` keeps its sign-in through the
+  forced run — the report's sign-in-hash row read PASS before and after,
+  measured 2026-11-21T19:59Z — but the run still resets
+  `webapp.public_url`, so `demo.odile.fyi` answers 400 until a deploy re-sets
+  it, while the machine's own name answers throughout. **The deploy below is
+  the recovery either way; the first two steps are only needed where the
+  sign-in is shut.**
+
+  1. Open the first-visit page **on the machine's own name**:
+     `https://odl-fake01.odile.fyi/first-visit?t=<token>`. On the demo name
+     `/first-visit` reaches the Webapp, which answers
+     `302 /login?next=%2Ffirst-visit` and so back into the Host gate. The
+     token is the `odile.token=` value sealed in the image's command line; HQ
+     keeps this machine's at `/root/.odile/demo-setup-token`, and §10 has the
+     `objcopy` read of the UKI for a machine whose file is gone. A token that
+     has already set a sign-in answers 410 `This link is closed` and an
+     unknown one 404, so a 200 form is the state that needs this step
+     (measured 2026-11-21: the form was 200 on the machine's name and the demo
+     name answered the 302; measured 2026-11-22, the spent token answers 410
+     and a missing one 404).
+  2. POST `t`, `password` and `password2` with the published password. The
+     page answers "Your sign-in is set", writes the `.env` hash — the
+     username and the session secret are kept byte for byte — restarts
+     `odile-agent`, and shows the recovery code in that one response, so save
+     it.
+  3. Re-run the deploy from the machine's own base. It re-sets
+     `webapp.public_url`, re-injects the `/verify` lede and its `--expect`
+     section, and re-asserts the judge hash. The console account is `judge` —
+     the apply wrote that username and the forced run keeps it; a machine that
+     never ran the demo deploy opens it as `tenant` (§10):
+
+     ```sh
+     ./deploy/demo-host/deploy_demo_public.py --base https://odl-fake01.odile.fyi \
+       --access-user judge --access-password-file <published> \
+       --judge-password-file <published> --target "$(dig +short demo.odile.fyi)"
+     ```
+
+     After the recovery `check_demo_public.py --password-file <published>
+     --target "$(dig +short demo.odile.fyi)"` passed 73/0 (measured
+     2026-11-22T01:24Z), as it did on the run that first recovered the machine
+     on 2026-11-21.
+
   The demo's old boot unit (`odile-demo-public`, which re-ran `apply --tune`
   after every boot) is removed by the apply and does not exist on the machine.
   Nothing re-asserts the demo config or the `/verify` lede at boot; the
