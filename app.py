@@ -1,10 +1,13 @@
 #!/usr/bin/python3
-"""odile — waitlist service.
+"""odile — waitlist service and the account site.
 
-Standard library only. No JavaScript, no cookies, no access logs, no third-party
-requests. Stores one row per signup: email, timestamp, confirmation token, and
-an append-only event for the funnel. Schema v2 adds the claim-first spine:
-tenants, claims, events and support grants.
+Standard library only. No JavaScript, no third-party requests, no access log.
+Stores one row per signup (email, timestamp, confirmation token, and an
+append-only event for the funnel). Schema v2 adds the claim-first spine:
+tenants, claims, events and support grants. Schema v4 adds `accounts`: the
+account the alpha tester signs in to, its scrypt verifier (the same value the
+machine's sign-in is written from, ODL-341/ODL-925), its confirmed address,
+its 14-day trial and the one provision it may queue.
 
 It also serves the proof surfaces: the cached attestation, the verifier bundle,
 the published signing key and the signed release the guest's `odile-update`
@@ -15,6 +18,7 @@ fetches (docs/runbooks/update.md).
 import base64
 import gzip
 import hashlib
+import hmac
 import html
 import io
 import json
@@ -28,7 +32,9 @@ import tarfile
 import threading
 import time
 import traceback
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+from email.message import EmailMessage
+from email.utils import formatdate, make_msgid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, quote, urlparse
 
@@ -85,6 +91,46 @@ MAX_BODY = 8 * 1024
 RATE_LIMIT = int(os.environ.get("ODILE_RATE_LIMIT", "6"))   # signups per IP
 RATE_WINDOW = 600       # seconds
 
+# ------------------------------------------------------------------ accounts
+#
+# The tester's account (ODL-341). One password is minted here as a scrypt
+# verifier; the same value travels to the machine as the seed's `sign_in_hash`
+# (B-once, Savio 2026-11-20, card t_ab499d49), so the account and the machine
+# start from one secret and change separately afterwards.
+def _account_host() -> str:
+    """The configured account host: never the request's `Host` header.
+
+    `docs/product/DECISION-password-reset.md` §3.1: a link in a mail is built
+    from the site's own name, so a forged Host cannot make the confirmation
+    point at another machine.
+    """
+    raw = (os.environ.get("ODILE_ACCOUNT_HOST") or "https://odile.fyi").strip()
+    return raw.rstrip("/")
+
+
+ACCOUNT_HOST = _account_host()
+# The confirmation mail is queued as a file and sent by the existing mailer;
+# the format is the claim worker's (`<outbox>/confirm/<id>.eml`, 0600).
+OUTBOX = os.environ.get("ODILE_OUTBOX", "/var/lib/odile/outbox")
+CONFIRM_SUBJECT = "Confirm your email address"
+CONFIRM_SENDER = "Odile <invite@mail.odile.fyi>"
+CONFIRM_TTL_HOURS = 24
+TRIAL_DAYS = 14
+# One scrypt verifier for the account and the machine (the installer's format,
+# n=2**14 r=8 p=1, 16-byte salt, 32-byte key); `hashlib.scrypt` is stdlib.
+SCRYPT_N, SCRYPT_R, SCRYPT_P, SCRYPT_DKLEN, SCRYPT_SALT = 2**14, 8, 1, 32, 16
+PASSWORD_MIN = 16
+# The session cookie is first-party and HttpOnly; its value carries the
+# account's `session_epoch`, so a password change (ODL-578) or a reset can end
+# every other browser by bumping one integer.
+SESSION_COOKIE = "odile_account"
+SESSION_VERSION = "v1"
+SESSION_KEY_PATH = os.environ.get("ODILE_SESSION_KEY_FILE",
+                                  "/var/lib/odile/account-session.key")
+# The suffix a machine's name is built from: `odile.fyi` in production, the
+# bench's `test.odile.fyi` on the bench (deploy/bench/bench.env).
+TENANT_DOMAIN = os.environ.get("ODILE_TENANT_DOMAIN", "odile.fyi")
+
 # The retired demo front door. `/judge` is printed on the title and end cards
 # of the posted demo cut (docs/ops/evidence/2026-11-07-demo/demo-final.mp4), so
 # the address must keep answering after the page is gone: a permanent redirect
@@ -132,11 +178,19 @@ _lock = threading.Lock()
 # `PRAGMA table_info`, because `CREATE TABLE IF NOT EXISTS` cannot add a
 # column to a table that already exists.
 #
-# No passwords, passphrases, private keys or IP history are stored. A token is
-# kept as a hash, never as itself; the only key material is the throwaway boot
-# key, whose private half was never written.
-SCHEMA_VERSION = 3
-SCHEMA_TABLES = ("waitlist", "tenants", "claims", "events", "grants")
+# v4 adds `accounts` (ODL-341): the tester's account, its confirmation, the
+# 14-day trial and the one provision it may queue. The account's password_hash
+# is a scrypt verifier, never a password; the same value is what the seed
+# carries as `sign_in_hash`, so the machine and the account share one initial
+# secret (B-once). The account is the identity; `tenants` is the machine.
+#
+# No passwords, passphrases, private keys or IP history are stored. The one
+# password-shaped value is the account's scrypt verifier (`accounts.
+# password_hash`), which cannot be typed back into anything. A token is kept as
+# a hash, never as itself; the only key material is the throwaway boot key,
+# whose private half was never written.
+SCHEMA_VERSION = 4
+SCHEMA_TABLES = ("waitlist", "tenants", "claims", "events", "grants", "accounts")
 
 SCHEMA = """
 PRAGMA journal_mode=WAL;
@@ -238,6 +292,51 @@ CREATE TABLE IF NOT EXISTS grants (
 );
 
 CREATE INDEX IF NOT EXISTS grants_tenant ON grants(tenant_id, expires_at);
+
+-- The tester's account (ODL-341). Keyed by the address it was registered
+-- with; `slug` is the machine's name, made at registration so the account has
+-- something to point at before the tenant row is filled.
+--
+-- The trial is written once, in the same INSERT as the row: `trial_ends_at` is
+-- `trial_started_at` + 14 days (Savio, 2026-11-20, card t_ad1783c4). Nothing
+-- later updates either column.
+--
+-- `provision_state` is the queue: registration writes 'unverified', the
+-- confirmation POST moves it to 'queued' exactly once, the root worker claims
+-- a queued row as 'building' and lands 'ready' with the machine id, the IPv4
+-- and the key's label and first characters, or 'failed' with the provider's
+-- reason (retryable by the account page's retry action).
+CREATE TABLE IF NOT EXISTS accounts (
+    id                    INTEGER PRIMARY KEY,
+    slug                  TEXT    NOT NULL UNIQUE,
+    email                 TEXT    NOT NULL UNIQUE,
+    -- a scrypt verifier (`scrypt$n$r$p$salt$dk`), never a password
+    password_hash         TEXT    NOT NULL,
+    -- the one confirmation token, as a SHA-256; never the token itself
+    confirm_token_hash    TEXT    NOT NULL UNIQUE,
+    confirm_expires_at    TEXT    NOT NULL,
+    email_verified_at     TEXT,
+    -- bumped to end every other browser's session (ODL-578 owns the bump)
+    session_epoch         INTEGER NOT NULL DEFAULT 1,
+    trial_started_at      TEXT    NOT NULL,
+    trial_ends_at         TEXT    NOT NULL,
+    provision_state       TEXT    NOT NULL DEFAULT 'unverified'
+                          CHECK (provision_state IN ('unverified', 'queued',
+                                                     'building', 'ready', 'failed')),
+    provision_queued_at   TEXT,
+    provision_started_at  TEXT,
+    provision_finished_at TEXT,
+    provision_reason      TEXT,
+    -- what the machine is: the provider's id, its address and the inference
+    -- key's label and first characters (the raw key is never stored, ODL-242)
+    server_id             TEXT,
+    ipv4                  TEXT,
+    key_label             TEXT,
+    key_prefix            TEXT,
+    created_at            TEXT    NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS accounts_provision ON accounts(provision_state);
 """
 
 # One signup event per waitlist row, with the signup's own timestamp. The WHERE
@@ -334,9 +433,15 @@ def attested():
     return "unavailable"
 
 
-def allow(ip: str) -> bool:
-    """In-memory rate limit. The IP is hashed and never touches disk."""
-    key = hashlib.sha256(ip.encode()).hexdigest()[:16]
+def allow(ip: str, bucket: str = "") -> bool:
+    """In-memory rate limit, one bucket per route. The IP never touches disk.
+
+    `bucket` separates routes that must not spend each other's budget: a burst
+    on the public registration POST cannot exhaust the confirmation POST's
+    (ADR-006 §7 gates both), and the waitlist keeps its old one-bucket shape
+    because its call site passes no bucket.
+    """
+    key = hashlib.sha256((bucket + "\x00" + ip).encode("utf-8", "replace")).hexdigest()[:16]
     now = time.time()
     with _lock:
         q = [t for t in _hits.get(key, []) if now - t < RATE_WINDOW]
@@ -434,6 +539,371 @@ def throwaway_boot_key() -> str:
     blob = struct.pack(">I", len(b"ssh-ed25519")) + b"ssh-ed25519"
     blob += struct.pack(">I", 32) + secrets.token_bytes(32)
     return "ssh-ed25519 %s odile-throwaway" % base64.b64encode(blob).decode("ascii")
+
+
+# ------------------------------------------------------------------- accounts
+
+ACCOUNT_BLOCK_RE = re.compile(
+    r"<!--(form|done|confirm)-->(.*?)<!--/\1-->", re.S)
+# The confirm button is its own block inside the confirm state: it is rendered
+# only for a live token. An expired, spent or unknown link has no action that
+# could work, so it offers the way back instead (Brand gate round 1, must 2).
+CONFIRM_FORM_RE = re.compile(r"<!--confirmform-->(.*?)<!--/confirmform-->", re.S)
+CONFIRM_NEXT = {
+    # The way back is the whole content of its paragraph, so it is a target,
+    # not an inline prose link: the class carries BRAND.md's 44 px rule
+    # (`p.note a`) and the 8 px gap above it (`p.next`). Round 2 measured the
+    # bare link at 118x19 and 57x19 on the two dead-link screens.
+    "register": '<p class="note next"><a href="/register">Register again</a></p>',
+    "signin": '<p class="note next"><a href="/signin">Sign in to your account</a></p>',
+}
+
+ACCOUNT_TITLES = {
+    "form": "Register — Odile",
+    "done": "Check your email — Odile",
+    "confirm": "Confirm your address — Odile",
+}
+ACCOUNT_FIELDS = ("email", "password", "password2", "consent")
+
+
+def hash_password(password: str) -> str:
+    """The installer's scrypt format, stdlib only (`scrypt$n$r$p$salt$dk`).
+
+    This is deliberately the same format the guest's first-visit service writes
+    (installer/odile_install.py:hash_password, n=2**14 r=8 p=1); the seed's
+    `sign_in_hash` is byte-equal to this value at signing time (ODL-341), so
+    the account and the machine start from one verifier.
+    """
+    salt = secrets.token_bytes(SCRYPT_SALT)
+    derived = hashlib.scrypt(
+        password.encode("utf-8"), salt=salt, n=SCRYPT_N, r=SCRYPT_R,
+        p=SCRYPT_P, dklen=SCRYPT_DKLEN, maxmem=0,
+    )
+    return "scrypt${}${}${}${}${}".format(
+        SCRYPT_N, SCRYPT_R, SCRYPT_P,
+        base64.b64encode(salt).decode(), base64.b64encode(derived).decode(),
+    )
+
+
+def verify_password(password: str, encoded: str) -> bool:
+    """Constant-time check of a stored verifier; False on any malformed input."""
+    try:
+        scheme, n_s, r_s, p_s, salt_b64, dk_b64 = (encoded or "").split("$")
+        if scheme != "scrypt":
+            return False
+        salt = base64.b64decode(salt_b64.encode(), validate=True)
+        wanted = base64.b64decode(dk_b64.encode(), validate=True)
+        derived = hashlib.scrypt(
+            password.encode("utf-8"), salt=salt, n=int(n_s), r=int(r_s),
+            p=int(p_s), dklen=len(wanted), maxmem=0,
+        )
+    except (ValueError, TypeError):
+        return False
+    return hmac.compare_digest(derived, wanted)
+
+
+# One verifier for an address that has no account, so a sign-in with an
+# unknown email spends the same scrypt work as a known one (no timing oracle
+# for "is this address registered?", ASVS V2.2.1). Built once, lazily.
+_DUMMY_HASH: str | None = None
+
+
+def verify_password_or_dummy(password: str, encoded: str | None) -> bool:
+    global _DUMMY_HASH
+    if not encoded:
+        if _DUMMY_HASH is None:
+            _DUMMY_HASH = hash_password("x" * PASSWORD_MIN)
+        verify_password(password, _DUMMY_HASH)
+        return False
+    return verify_password(password, encoded)
+
+
+def new_slug() -> str:
+    """`odl-` plus six random hex characters, the tenant slug the DNS owns."""
+    return "odl-" + secrets.token_hex(3)
+
+
+def hash_token(token: str) -> str:
+    return hashlib.sha256((token or "").encode("utf-8")).hexdigest()
+
+
+def _session_key() -> bytes:
+    """The HMAC key for the account cookie: a 0600 file, created once.
+
+    Not a credential a person holds and not a per-tenant secret; it only signs
+    a first-party cookie, so a restart keeps every browser signed in. The file
+    is read per request so a host can rotate it by replacing one file (a
+    rotation ends every session, which is the intended effect).
+    """
+    try:
+        with open(SESSION_KEY_PATH, "rb") as handle:
+            key = handle.read()
+        if len(key) >= 32:
+            return key
+    except OSError:
+        pass
+    parent = os.path.dirname(SESSION_KEY_PATH)
+    if parent:
+        os.makedirs(parent, exist_ok=True)
+    key = secrets.token_bytes(32)
+    try:
+        fd = os.open(SESSION_KEY_PATH, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+    except FileExistsError:
+        with open(SESSION_KEY_PATH, "rb") as handle:
+            return handle.read()
+    try:
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(key)
+    except OSError:
+        pass
+    return key
+
+
+def session_value(account_id: int, epoch: int) -> str:
+    """`v1.<id>.<epoch>.<mac>`: the epoch is the row's, never the cookie's."""
+    body = "%s.%d.%d" % (SESSION_VERSION, int(account_id), int(epoch))
+    mac = hmac.new(_session_key(), body.encode("ascii"), hashlib.sha256).hexdigest()
+    return "%s.%s" % (body, mac)
+
+
+def read_session(value: str | None) -> tuple[int, int] | None:
+    """(account id, epoch) from a cookie value, or None if it is forged/old."""
+    if not value:
+        return None
+    parts = value.strip().split(".")
+    if len(parts) != 4 or parts[0] != SESSION_VERSION:
+        return None
+    body = ".".join(parts[:3])
+    mac = hmac.new(_session_key(), body.encode("ascii"), hashlib.sha256).hexdigest()
+    if not hmac.compare_digest(mac, parts[3]):
+        return None
+    try:
+        return int(parts[1]), int(parts[2])
+    except ValueError:
+        return None
+
+
+def cookie_header(account_id: int, epoch: int, *, secure: bool) -> str:
+    """The one first-party cookie: HttpOnly, Lax, no domain, path `/account`."""
+    cookie = "%s=%s; Path=/; HttpOnly; SameSite=Lax; Max-Age=2592000" % (
+        SESSION_COOKIE, session_value(account_id, epoch))
+    return cookie + ("; Secure" if secure else "")
+
+
+def _clear_cookie() -> str:
+    return "%s=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0" % SESSION_COOKIE
+
+
+def confirm_expiry(now: datetime | None = None) -> str:
+    when = (now or datetime.now(timezone.utc)) + timedelta(hours=CONFIRM_TTL_HOURS)
+    return when.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def trial_end(start: str) -> str:
+    """`trial_ends_at`: registration's instant plus 14 days, written once."""
+    at = datetime.strptime(start, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+    return (at + timedelta(days=TRIAL_DAYS)).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def queue_confirm(account: dict, token: str) -> str:
+    """Write the confirmation mail once per account; return its path.
+
+    The bytes are ODL-581's template; this only fills its one `{{CONFIRM}}`
+    slot with the configured account host. There is no Reply-To in alpha.0:
+    `help@odile.fyi` has no reader yet (the Designer's ODL-581 nit), and a
+    reply to a transactional sender is the honest default. The link is the
+    only place the token travels.
+    """
+    with open(os.path.join(ROOT, "templates", "emails", "confirm.txt"),
+              encoding="utf-8") as handle:
+        body = handle.read()
+    link = "%s/confirm?t=%s" % (ACCOUNT_HOST, token)
+    body = body.replace("{{CONFIRM}}", link)
+    if "{{" in body:
+        raise RuntimeError("the confirmation template has an unfilled slot")
+    directory = os.path.join(OUTBOX, "confirm")
+    os.makedirs(directory, exist_ok=True)
+    try:
+        os.chmod(directory, 0o700)
+    except OSError:
+        pass
+    path = os.path.join(directory, "%d.eml" % int(account["id"]))
+    message = EmailMessage()
+    message["From"] = CONFIRM_SENDER
+    message["To"] = account["email"]
+    message["Subject"] = CONFIRM_SUBJECT
+    message["Date"] = formatdate(usegmt=True)
+    message["Message-ID"] = make_msgid(idstring="odile-confirm.%s" % account["slug"],
+                                       domain="odile.fyi")
+    message.set_content(body)
+    fd = os.open(path + ".tmp", os.O_CREAT | os.O_TRUNC | os.O_WRONLY, 0o600)
+    with os.fdopen(fd, "wb") as handle:
+        handle.write(message.as_bytes())
+    os.replace(path + ".tmp", path)
+    return path
+
+
+def render_register(*, state: str = "form", email: str = "", token: str = "",
+                    error: str = "", field: str = "", consent: bool = False,
+                    next_action: str = "") -> str:
+    """One page, three states: the form, the check-your-email page, the confirm button.
+
+    Each of the four fields owns one error slot; only the invalid field
+    carries the ARIA pair. A message that names no field (a rate limit, a
+    database failure) lands in the form's own page-level slot, so no error is
+    ever silent (Brand gate round 1, must 1). The confirm state carries the
+    token in a hidden input, so the link in the mail opens a page and the
+    confirmation itself is the POST ADR-006 §7 gates; it renders its button
+    only for a live token, and `next_action` is the way back for the rest.
+    """
+    body = page("register.html", TITLE=html.escape(ACCOUNT_TITLES[state]),
+                ROBOTS="noindex" if state != "form" else "index")
+    body = ACCOUNT_BLOCK_RE.sub(
+        lambda match: match.group(2) if match.group(1) == state else "", body)
+    body = CONFIRM_FORM_RE.sub(
+        lambda match: match.group(1) if token else "", body)
+    body = body.replace("{{TOKEN}}", html.escape(token, quote=True))
+    body = body.replace("{{CONFIRM_NEXT}}", CONFIRM_NEXT.get(next_action, ""))
+    body = body.replace(
+        "{{CONFIRM_ERROR}}",
+        err_slot(error, "confirm-err") if error and state == "confirm" else "",
+    )
+    owner = field if field in ACCOUNT_FIELDS else ""
+    body = body.replace(
+        "{{FORM_ERROR}}",
+        err_slot(error, "register-err")
+        if error and state == "form" and not owner else "",
+    )
+    body = body.replace("{{CONSENT_CHECKED}}", " checked" if consent else "")
+    for name in ACCOUNT_FIELDS:
+        hit = bool(error) and state == "form" and owner == name
+        slot_id = "%s-err" % name
+        body = body.replace(
+            "{{%s_INVALID}}" % name.upper(),
+            ' aria-invalid="true" aria-describedby="%s"' % slot_id if hit else "",
+        )
+        body = body.replace(
+            "{{%s_ERROR}}" % name.upper(),
+            err_slot(error, slot_id) if hit else "",
+        )
+    body = body.replace("{{EMAIL}}", html.escape(email))
+    if "{{" in body:
+        raise RuntimeError("the registration page has an unfilled slot")
+    return body
+
+
+ACCOUNT_FORM = """<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{TITLE}}</title>
+<meta name="robots" content="noindex">
+<meta name="color-scheme" content="light">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; img-src 'self' data:; form-action 'self'; base-uri 'none'; frame-ancestors 'none'">
+<style>
+*{box-sizing:border-box}
+:root{--serif:"Cormorant Garamond","Iowan Old Style","Palatino Linotype",Palatino,Georgia,serif;--text:"Iowan Old Style","Palatino Linotype",Palatino,Georgia,"DejaVu Serif",serif;--paper:#eadfc4;--ink:#1c1813;--soft:#4a4136;--line:rgba(28,24,19,.18);--edge:rgba(28,24,19,.55);--error:#6e2a2a;--ink-hover:#2a241c}
+body{margin:0;background:var(--paper);color:var(--ink);font:400 18px/1.6 var(--text);-webkit-font-smoothing:antialiased}
+main{max-width:680px;margin:0 auto;padding:32px 24px 64px}
+.brand{display:inline-block;padding:12px 0;margin:-12px 0 24px;color:var(--ink);text-decoration:none;font-size:1.5rem;font-weight:500;letter-spacing:-.03em;line-height:.88;font-family:var(--serif)}
+h1{margin:0 0 16px;font-size:clamp(2.2rem,5vw,3.4rem);line-height:1.04;letter-spacing:-.025em;font-weight:500;font-family:var(--serif)}
+h2{margin:0 0 12px;font-size:1.34rem;line-height:1.2;font-weight:600}
+p{margin:0 0 16px;max-width:66ch}
+a{color:var(--ink);text-decoration-color:var(--soft);text-underline-offset:2px}
+.lede{color:var(--soft)}
+.note{margin:0 0 12px;font-size:16px;line-height:1.6;color:var(--soft)}
+/* Same rule as web/register.html: a standalone way-back link in a note is a
+   44 px target, not an inline prose link (Brand gate round 2, nit 2). */
+p.note a{display:inline-flex;align-items:center;min-height:44px}
+form{display:flex;flex-direction:column;gap:16px;margin:24px 0 0}
+label{font-weight:600;line-height:1.3}
+input[type=email],input[type=password]{width:100%;min-width:0;border-radius:0;min-height:44px;background:transparent;border:0;border-bottom:1px solid var(--edge);font:400 16.8px/1.4 var(--text);color:var(--ink);padding:9px 2px 11px}
+input[type=email]:focus,input[type=password]:focus{outline:0;border-bottom-color:var(--ink)}
+input[type=email][aria-invalid=true],input[type=password][aria-invalid=true]{border-bottom-color:var(--error)}
+button{background:var(--ink);color:var(--paper);border:1px solid var(--ink);min-height:44px;font:600 10px/1 var(--text);text-transform:uppercase;letter-spacing:.28em;padding:15px 24px 14px 26px;width:340px;cursor:pointer}
+button:hover{background:var(--ink-hover)}
+button:focus-visible{outline:2px solid var(--ink);outline-offset:3px}
+.err{margin:-8px 0 0;font-size:16px;line-height:1.5;font-style:italic;color:var(--error)}
+.foot{margin:32px 0 0;padding-top:16px;border-top:1px solid var(--line);font-size:16px;color:var(--soft)}
+@media (max-width:560px){main{padding:24px 18px 48px}button{width:100%}}
+</style>
+</head>
+<body>
+<main id="main">
+  <a class="brand" href="/">Odile</a>
+  {{BODY}}
+</main>
+</body>
+</html>
+"""
+
+
+def render_account(*, title: str, body: str) -> str:
+    """The account page seam (ODL-583 owns the page; this card owns its states).
+
+    Deliberately small and server-rendered: the four states are the wait copy
+    (confirm, building, ready, failed), the trial's end date is read from the
+    account row, and the retry action is a plain form POST. No JavaScript.
+    """
+    return ACCOUNT_FORM.replace("{{TITLE}}", html.escape(title)).replace("{{BODY}}", body)
+
+
+def signin_body(*, email: str = "", error: str = "") -> str:
+    slot = err_slot(error, "signin-err") if error else ""
+    invalid = ' aria-invalid="true" aria-describedby="signin-err"' if error else ""
+    return (
+        "<h1>Open your account.</h1>"
+        '<p class="lede">Your account page holds your machine\'s address and its state.</p>'
+        '<form method="post" action="/signin" novalidate>'
+        '<label for="email">Email</label>'
+        '<input id="email" name="email" type="email" value="%s" maxlength="254" '
+        'autocomplete="email" inputmode="email" spellcheck="false"%s>'
+        '<label for="password">Password</label>'
+        '<input id="password" name="password" type="password" minlength="%d" '
+        'autocomplete="current-password"%s>'
+        "%s"
+        '<button type="submit">Sign in</button>'
+        "</form>"
+        '<p class="note"><a href="/register">Register</a></p>'
+        % (html.escape(email), invalid, PASSWORD_MIN,
+           ' aria-describedby="signin-err"' if error else "", slot)
+    )
+
+
+def account_body(row: sqlite3.Row, *, tenant_domain: str) -> str:
+    """The four signed-in states, with the wait copy and the trial's end date."""
+    state = row["provision_state"]
+    trial = "Your trial ends on %s." % html.escape((row["trial_ends_at"] or "")[:10])
+    head = "<h1>%s</h1>"
+    if not row["email_verified_at"]:
+        return (head % "Check your email."
+                + '<p class="lede">We emailed a link to confirm the address. '
+                "The machine is ordered after you confirm.</p>"
+                + '<p class="note">%s</p>' % html.escape(row["email"])
+                + '<p class="note">%s</p>' % trial)
+    if state in ("unverified", "queued", "building"):
+        return (head % "Building."
+                + '<p class="lede">You can close this page. We email you when it is '
+                "ready.</p>"
+                + '<p class="note">The first boot prepares the encrypted disk, which '
+                "is the slow part.</p>"
+                + '<p class="note">%s</p>' % trial)
+    if state == "ready":
+        name = "%s.%s" % (row["slug"], tenant_domain)
+        return (head % "Your machine is ready."
+                + '<p class="lede">%s</p>' % html.escape(name)
+                + '<p class="note">The address is %s. Check its report at '
+                "<a href=\"https://%s/verify\">https://%s/verify</a>.</p>"
+                % (html.escape(row["ipv4"] or "-"), html.escape(name), html.escape(name))
+                + '<p class="note">%s</p>' % trial)
+    return (head % "The machine could not be built."
+            + '<p class="lede">The order did not complete. Nothing was billed.</p>'
+            + ('<p class="note">%s</p>' % html.escape(row["provision_reason"] or "")
+               if row["provision_reason"] else "")
+            + '<form method="post" action="/account/retry">'
+            '<button type="submit">Try again</button></form>'
+            + '<p class="note">%s</p>' % trial)
 
 
 # The claim form has two fields, and each owns one error slot: the message
@@ -744,11 +1214,13 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Date", self.date_time_string())
 
     def _send(self, code, body, ctype="text/html; charset=utf-8", head=False, cache="no-store",
-              location=None):
+              location=None, headers=None):
         data = body.encode("utf-8") if isinstance(body, str) else body
         self.send_response(code)
         if location is not None:
             self.send_header("Location", location)
+        for name, value in (headers or {}).items():
+            self.send_header(name, value)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(data)))
         self.send_header("Cache-Control", cache)
@@ -789,6 +1261,19 @@ class Handler(BaseHTTPRequestHandler):
                         done=True, email=row["email"],
                         title="You're on the list \u2014 Odile", robots="noindex"), head=head)
             return self._send(200, render_index(), head=head)
+        if path == "/register":
+            return self._send(200, render_register(), head=head)
+        if path == "/confirm":
+            token = (qs.get("t") or [""])[0].strip()
+            if not token:
+                return self._send(405, "method not allowed: POST a confirmation token\n",
+                                  "text/plain; charset=utf-8", head=head)
+            return self._confirm_page(token, head)
+        if path == "/signin":
+            return self._send(200, render_account(title="Sign in \u2014 Odile",
+                                                  body=signin_body()), head=head)
+        if path == "/account":
+            return self._account_page(head)
         if path == "/claim":
             # The one-time token in the invite is what opens the page. A bare
             # GET keeps the method note ODL-220 pinned for an API caller.
@@ -935,23 +1420,43 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         path = urlparse(self.path).path
-        if path not in ("/waitlist", "/claim"):
+        if path not in ("/waitlist", "/claim", "/register", "/confirm", "/signin",
+                        "/account/retry"):
             return self._send(405, "method not allowed\n", "text/plain; charset=utf-8")
 
         try:
             length = int(self.headers.get("Content-Length", "0"))
         except ValueError:
             length = 0
-        if length <= 0 or length > MAX_BODY:
+        # The retry action is a form with no fields: an empty body is the
+        # request, not a malformed one (the page's button is the whole POST).
+        empty_ok = path == "/account/retry"
+        if length < 0 or length > MAX_BODY or (length == 0 and not empty_ok):
             if path == "/claim":
                 return self._send(413, "That request was too large.\n",
                                   "text/plain; charset=utf-8")
-            return self._send(413, render_index(error="That request was too large."))
+            if path == "/register":
+                return self._send(413, render_register(
+                    error="That request was too large."))
+            if path == "/confirm":
+                return self._send(413, render_register(
+                    state="confirm", error="That request was too large."))
+            return self._send(413, render_account(
+                title="Sign in — Odile", body=signin_body(
+                    error="That request was too large.")))
 
         raw = self.rfile.read(length).decode("utf-8", "replace")
         fields = parse_qs(raw, keep_blank_values=True)
         if path == "/claim":
             return self._claim(fields)
+        if path == "/register":
+            return self._register(fields)
+        if path == "/confirm":
+            return self._confirm(fields)
+        if path == "/signin":
+            return self._signin(fields)
+        if path == "/account/retry":
+            return self._account_retry()
         email_raw = (fields.get("email") or [""])[0]
 
         # honeypot: filled only by bots. Pretend everything went fine.
@@ -1143,6 +1648,337 @@ class Handler(BaseHTTPRequestHandler):
             "We will email you when the machine is ready.\n",
             "text/plain; charset=utf-8",
         )
+
+    # -- accounts ---------------------------------------------------------
+
+    ACCOUNT_TITLES_BY_STATE = {
+        "unverified": "Check your email \u2014 Odile",
+        "queued": "Building \u2014 Odile",
+        "building": "Building \u2014 Odile",
+        "ready": "Your machine is ready \u2014 Odile",
+        "failed": "The machine could not be built \u2014 Odile",
+    }
+
+    def _secure(self) -> bool:
+        """True when the browser reached the app over TLS (Caddy's header)."""
+        proto = (self.headers.get("X-Forwarded-Proto") or "").split(",")[0]
+        return proto.strip().lower() == "https"
+
+    def _same_origin(self) -> bool:
+        """Refuse a cross-site POST when the browser names its origin.
+
+        A no-JS form post carries `Origin` in every current browser and
+        `Referer` under the default policy; a browser that sends neither (a
+        strict privacy setting) is allowed, so the page works without JS. The
+        comparison is against the request's own `Host`, which Caddy sets from
+        the site it matched, not from the client.
+        """
+        origin = (self.headers.get("Origin") or "").strip()
+        if not origin or origin == "null":
+            origin = (self.headers.get("Referer") or "").strip()
+            if not origin:
+                return True
+        host = (self.headers.get("Host") or "").strip().lower()
+        try:
+            named = urlparse(origin).netloc.strip().lower()
+        except ValueError:
+            return False
+        return bool(host) and named == host
+
+    def _cookie_pair(self, row) -> dict:
+        return {"Set-Cookie": cookie_header(int(row["id"]), int(row["session_epoch"]),
+                                            secure=self._secure())}
+
+    def _cookie_value(self) -> str | None:
+        raw = self.headers.get("Cookie") or ""
+        for part in raw.split(";"):
+            name, _, value = part.strip().partition("=")
+            if name == SESSION_COOKIE:
+                return value.strip()
+        return None
+
+    def _session_account(self):
+        """The account row a signed-in browser names, or None. Read-only.
+
+        The cookie's epoch must equal the row's: a bump (ODL-578's password
+        change) ends every browser that was signed in before it, including a
+        second one that never sees the new value.
+        """
+        parsed = read_session(self._cookie_value())
+        if parsed is None:
+            return None
+        account_id, epoch = parsed
+        con = db()
+        try:
+            row = con.execute("SELECT * FROM accounts WHERE id = ?", (account_id,)).fetchone()
+        finally:
+            con.close()
+        if row is None or int(row["session_epoch"]) != epoch:
+            return None
+        return row
+
+    def _account_page(self, head):
+        row = self._session_account()
+        if row is None:
+            return self._send(303, "", head=head, location="/signin",
+                              headers={"Set-Cookie": _clear_cookie()})
+        return self._send(200, render_account(
+            title=self.ACCOUNT_TITLES_BY_STATE.get(row["provision_state"],
+                                                   "Your account \u2014 Odile"),
+            body=account_body(row, tenant_domain=TENANT_DOMAIN)), head=head)
+
+    def _account_retry(self):
+        """Re-queue a failed provision: the retryable state's one action."""
+        if not self._same_origin():
+            return self._send(403, "forbidden: cross-site form\n",
+                              "text/plain; charset=utf-8")
+        row = self._session_account()
+        if row is None:
+            return self._send(303, "", location="/signin",
+                              headers={"Set-Cookie": _clear_cookie()})
+        con = db()
+        try:
+            con.execute(
+                "UPDATE accounts SET provision_state = 'queued', provision_queued_at = ?,"
+                " provision_reason = NULL, provision_finished_at = NULL"
+                " WHERE id = ? AND provision_state = 'failed'",
+                (now_iso(), int(row["id"])),
+            )
+            con.commit()
+        finally:
+            con.close()
+        return self._send(303, "", location="/account")
+
+    def _register(self, fields):
+        """The public registration POST: one account row, one confirmation mail.
+
+        Nothing is ordered here. The row is written with its trial in the same
+        INSERT (start, and start + 14 days); the trial columns are never
+        updated by anything this route does again. A second identical POST
+        creates no second row — it re-sends the same one confirmation mail with
+        a fresh token (the resend path) — and an already-confirmed address gets
+        the confirmation page that points at sign-in.
+        """
+        email_raw = (fields.get("email") or [""])[0]
+        consent_raw = (fields.get("consent") or [""])[0].strip().lower()
+        consent_ticked = consent_raw in ("yes", "on", "1", "true")
+        # honeypot: filled only by bots. Pretend everything went fine.
+        if (fields.get("hp") or [""])[0].strip():
+            return self._send(200, render_register(state="done", email=email_raw))
+        if not allow(self._client_ip(), "register"):
+            return self._send(429, render_register(
+                error="Too many registrations from here. Try again in ten minutes.",
+                email=email_raw, consent=consent_ticked),
+                headers={"Retry-After": str(RATE_WINDOW)})
+        email = valid_email(email_raw)
+        if not email:
+            return self._send(422, render_register(
+                error="That doesn't look like an email address.",
+                email=email_raw, field="email", consent=consent_ticked))
+        password = (fields.get("password") or [""])[0]
+        repeat = (fields.get("password2") or [""])[0]
+        if len(password) < PASSWORD_MIN:
+            return self._send(422, render_register(
+                error="Use at least %d characters." % PASSWORD_MIN,
+                email=email_raw, field="password", consent=consent_ticked))
+        if password != repeat:
+            return self._send(422, render_register(
+                error="The two passwords do not match.",
+                email=email_raw, field="password2", consent=consent_ticked))
+        if not consent_ticked:
+            return self._send(422, render_register(
+                error='Tick "I agree to the terms and the privacy policy." '
+                      "before you create the account.",
+                email=email_raw, field="consent"))
+
+        con = None
+        try:
+            con = db()
+            row = con.execute("SELECT * FROM accounts WHERE email = ?", (email,)).fetchone()
+            if row is not None:
+                return self._resend(con, row)
+            tenant = con.execute(
+                "SELECT slug FROM tenants WHERE email = ?", (email,)).fetchone()
+            stamp = now_iso()
+            token = secrets.token_hex(32)
+            slug = tenant["slug"] if tenant is not None else None
+            for _attempt in range(5):
+                try:
+                    if slug is None:
+                        slug = new_slug()
+                        con.execute(
+                            "INSERT INTO tenants (slug, email, ssh_public_key, state,"
+                            " plan, created_at) VALUES (?, ?, ?, 'invited', 'alpha', ?)",
+                            (slug, email, throwaway_boot_key(), stamp),
+                        )
+                    cur = con.execute(
+                        "INSERT INTO accounts (slug, email, password_hash,"
+                        " confirm_token_hash, confirm_expires_at, trial_started_at,"
+                        " trial_ends_at, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                        (slug, email, hash_password(password), hash_token(token),
+                         confirm_expiry(), stamp, trial_end(stamp), stamp),
+                    )
+                    con.commit()
+                    break
+                except sqlite3.IntegrityError:
+                    con.rollback()
+                    # The address or the slug was taken between the read and the
+                    # write. An address is a resend; a slug collision only
+                    # matters on the branch that made one.
+                    again = con.execute(
+                        "SELECT * FROM accounts WHERE email = ?", (email,)).fetchone()
+                    if again is not None:
+                        return self._resend(con, again)
+                    if tenant is not None:
+                        raise
+                    slug = None
+            else:
+                return self._send(500, render_register(
+                    error="Something broke. Try again?", email=email_raw,
+                    consent=consent_ticked))
+            account = con.execute(
+                "SELECT * FROM accounts WHERE id = ?", (cur.lastrowid,)).fetchone()
+        except sqlite3.Error:
+            # A database that will not open or read is still a screen, not a
+            # closed connection: the same page-level slot as the exhausted
+            # retry loop, so the button never appears to do nothing (Brand gate
+            # round 2, should 3 — measured as RemoteDisconnected).
+            return self._send(500, render_register(
+                error="Something broke. Try again?", email=email_raw,
+                consent=consent_ticked))
+        finally:
+            if con is not None:
+                con.close()
+        queue_confirm(dict(account), token)
+        return self._send(200, render_register(state="done", email=email))
+
+    def _resend(self, con, row):
+        """A repeat registration: no second row; one fresh confirmation mail."""
+        if row["email_verified_at"]:
+            return self._send(200, render_register(state="done", email=row["email"]))
+        token = secrets.token_hex(32)
+        con.execute(
+            "UPDATE accounts SET confirm_token_hash = ?, confirm_expires_at = ? WHERE id = ?",
+            (hash_token(token), confirm_expiry(), int(row["id"])),
+        )
+        con.commit()
+        queue_confirm(dict(row), token)
+        return self._send(200, render_register(state="done", email=row["email"]))
+
+    def _confirm_page(self, token, head):
+        """GET the mailed link: the confirm button, or what already happened.
+
+        A GET never spends the token; the confirmation is the POST below.
+        """
+        row = self._account_for_token(token)
+        if row is None:
+            return self._send(404, render_register(
+                state="confirm", error="That confirmation link is not valid.",
+                next_action="register"), head=head)
+        if row["email_verified_at"]:
+            return self._send(200, render_register(
+                state="confirm", error="This address is already confirmed.",
+                next_action="signin"), head=head)
+        if row["confirm_expires_at"] <= now_iso():
+            return self._send(410, render_register(
+                state="confirm", error="That confirmation link has expired.",
+                next_action="register"), head=head)
+        return self._send(200, render_register(state="confirm", token=token), head=head)
+
+    def _account_for_token(self, token):
+        if not re.fullmatch(r"[0-9a-f]{64}", token or ""):
+            return None
+        con = db()
+        try:
+            return con.execute("SELECT * FROM accounts WHERE confirm_token_hash = ?",
+                               (hash_token(token),)).fetchone()
+        finally:
+            con.close()
+
+    def _confirm(self, fields):
+        """The confirmation POST: spend the token once, then queue one provision.
+
+        The conditional UPDATE is what makes a double click harmless: only the
+        run that flips `email_verified_at` from NULL queues. A machine that is
+        already recorded (an adopted or replayed row) lands `ready` instead of
+        queueing a second order.
+        """
+        token = (fields.get("token") or [""])[0].strip()
+        if not allow(self._client_ip(), "confirm"):
+            return self._send(429, render_register(
+                state="confirm", token=token,
+                error="Too many confirmations from here. Try again in ten minutes."),
+                headers={"Retry-After": str(RATE_WINDOW)})
+        row = self._account_for_token(token)
+        if row is None:
+            return self._send(404, render_register(
+                state="confirm", error="That confirmation link is not valid.",
+                next_action="register"))
+        if row["email_verified_at"]:
+            # Harmless: the third and every later click answers the same page.
+            return self._send(200, render_register(state="done", email=row["email"]))
+        if row["confirm_expires_at"] <= now_iso():
+            return self._send(410, render_register(
+                state="confirm", error="That confirmation link has expired.",
+                next_action="register"))
+        stamp = now_iso()
+        con = db()
+        try:
+            tenant = con.execute(
+                "SELECT server_id, ipv4 FROM tenants WHERE slug = ?", (row["slug"],)
+            ).fetchone()
+            existing = tenant["server_id"] if tenant is not None else None
+            state = "ready" if existing else "queued"
+            cur = con.execute(
+                "UPDATE accounts SET email_verified_at = ?, provision_state = ?,"
+                " provision_queued_at = ?, server_id = COALESCE(server_id, ?),"
+                " ipv4 = COALESCE(ipv4, ?) WHERE id = ? AND email_verified_at IS NULL",
+                (stamp, state, None if existing else stamp,
+                 tenant["server_id"] if tenant is not None else None,
+                 tenant["ipv4"] if tenant is not None else None,
+                 int(row["id"])),
+            )
+            con.execute(
+                "UPDATE tenants SET claimed_at = COALESCE(claimed_at, ?) WHERE slug = ?",
+                (stamp, row["slug"]),
+            )
+            con.commit()
+            if cur.rowcount != 1:
+                # A concurrent click won; its queue entry is this account's.
+                return self._send(200, render_register(state="done", email=row["email"]))
+        finally:
+            con.close()
+        fresh = self._account_for_token(token)
+        headers = self._cookie_pair(fresh) if fresh is not None else {}
+        return self._send(303, "", location="/account", headers=headers)
+
+    def _signin(self, fields):
+        """Email and password in, one session cookie out (no user enumeration)."""
+        if not self._same_origin():
+            return self._send(403, "forbidden: cross-site form\n",
+                              "text/plain; charset=utf-8")
+        email_raw = (fields.get("email") or [""])[0]
+        if not allow(self._client_ip(), "signin"):
+            return self._send(429, render_account(
+                title="Sign in \u2014 Odile",
+                body=signin_body(email=email_raw,
+                                 error="Too many sign-ins from here. Try again in ten minutes.")),
+                headers={"Retry-After": str(RATE_WINDOW)})
+        email = valid_email(email_raw)
+        password = (fields.get("password") or [""])[0]
+        con = db()
+        try:
+            row = None
+            if email:
+                row = con.execute("SELECT * FROM accounts WHERE email = ?", (email,)).fetchone()
+        finally:
+            con.close()
+        if row is None or not verify_password_or_dummy(password, row["password_hash"]):
+            return self._send(401, render_account(
+                title="Sign in \u2014 Odile",
+                body=signin_body(email=email_raw,
+                                 error="That email and password do not match.")))
+        return self._send(303, "", location="/account", headers=self._cookie_pair(row))
 
     def _permanent_redirect(self, location):
         """A retired address answers 301: the page now lives at `location`.

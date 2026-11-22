@@ -17,6 +17,10 @@ Environment=PYTHONUNBUFFERED=1
 # LoadCredential — neither file is copied into the release or into git.
 LoadCredential=seed-config:{{CONFIG}}
 LoadCredential=seed-key:{{SEED_KEY}}
+# The issued-key handoff is the bench's, not production's: the registration
+# worker writes the tenant's raw key here (its config's `seed_keys`), so the
+# service that hands it to the guest must read the same file (ODL-341).
+Environment=ODILE_SEED_KEYS={{STATE}}/seed-keys.json
 ExecStart=/usr/bin/python3 {{ROOT}}/current/seed/seed.py serve
 Restart=always
 RestartSec=2
