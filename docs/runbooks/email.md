@@ -304,6 +304,47 @@ is not in effect — most likely `/etc/postfix/main.cf` was edited by hand and
 the applier has not run since. A destination that publishes only an A is
 expected to show the literal, by design.
 
+**Why the A is quarantined — measured 2026-11-22 (`t_6b6ac0dd`).** Not because
+of a list, so **there is nothing to delist**. Every list below was asked
+directly of its own nameserver (`dig +norecurse @<its NS>`), with the published
+control `2.0.0.127.zen.spamhaus.org` in the same batch, and it answers
+NXDOMAIN for `203.0.113.139`: Spamhaus ZEN, SBL, XBL and PBL (at
+`a`–`e.gns.spamhaus.org`; the control returns `127.0.0.2`, `127.0.0.4`,
+`127.0.0.10`), Barracuda BRBL, UCEPROTECT L1/L2/L3, CBL, PSBL, SpamCop,
+Hostkarma, Invaluement and Mailspike. SORBS no longer answers at all (its zone
+name is NXDOMAIN at the `net` servers). The Validity zones are the one
+exception: every resolver gets `127.255.255.255` plus the TXT "Excessive Number
+of Queries", so those are *could not query*, not verdicts — their product needs
+a key.
+
+The /24 that holds the A is not dirty either: it is Servury's own (AS395904,
+ARIN registration event 2026-03-30), 11 of its 254 addresses publish a PTR, and
+0 of the 254 are in Spamhaus ZEN — asked through a resolver that returns real
+listings (its control answered `127.0.0.2 127.0.0.10 127.0.0.4` in the same
+batch). UCEPROTECT's /24 (L2) and ASN (L3) lists are clean too.
+
+What is left is Google's own per-IP model, which only Postmaster Tools shows,
+and the From domain's age — a penalty that fires on *both* legs and so cannot
+explain the split. **`odile.fyi` is not registered in Postmaster Tools**: for
+the account that manages our mail, `postmaster.google.com` answers "You are not
+authorized to view data for this domain. Please ensure you have verified
+yourself as an owner, or an owner has granted you read access." Registering it
+needs a TXT record on `odile.fyi` (or a Search Console verification), so until
+someone does that the A's reputation is unreadable — and Google publishes no
+delisting form to submit against an IP, only Postmaster's own view.
+
+`FROM_FMBLA_NEWDOM28` ("From domain was registered in last 14-28 days") stops
+firing for `odile.fyi` at **2026-12-02T08:11Z** — RDAP registration event
+2026-11-04T08:11:02Z. Re-test the A with one controlled pair after that date
+before concluding anything about the address; the numbers, the control queries
+and the reproduce commands are in `docs/evidence/t_6b6ac0dd/README.md`.
+
+**Retiring the A is a DNS change: proposed, not applied.** Deleting
+`mail.odile.fyi A` would also delete the IPv4 path into the MX that `odile.fyi`
+points at (94 of the 98 inbound connections in the log were IPv4). If the A is
+ever retired from *outbound*, it should be retired with a second AAAA-only name
+and its own PTR — not by deleting the record the world uses to reach port 25.
+
 ## 6. First run and the daily check
 
 ```sh
@@ -619,7 +660,7 @@ PASS there and here.
 | `--check-dns` fails for a record `dig @1.1.1.1` shows | Local resolver serving the pre-change NXDOMAIN for the SOA minimum | believe `--check-dns` (it asks the authoritative server); the cache clears on its own |
 | `dkim=fail (bad signature)` at the receiver | Truncated DKIM TXT, or `c=` not relaxed/relaxed | re-publish from `/etc/dkimkeys/odile.txt`; `--verify-dkim` on the sent copy |
 | `spf=pass` but `dmarc=fail` | From domain and envelope domain differ | keep both under `mail.odile.fyi`; `aspf=s` makes that strict |
-| Delivered, but in spam | Reputation starts at zero on a fresh IP, and our two addresses do not have the same reputation | check DMARC first; then which address the relay used (§5.3) — the A was filed to Spam 4/4 and the AAAA to the INBOX 4/4 on 2026-11-22; then the From domain's age (spamassassin's `FROM_FMBLA_NEWDOM28` fired on every copy that day) and engagement |
+| Delivered, but in spam | Reputation starts at zero on a fresh IP, and our two addresses do not have the same reputation | check DMARC first; then which address the relay used (§5.3) — the A was filed to Spam 4/4 and the AAAA to the INBOX 4/4 on 2026-11-22; then the From domain's age (spamassassin's `FROM_FMBLA_NEWDOM28` fired on every copy that day) and engagement. No public list names the A and the /24 is clean, so the remaining difference is Google's own model — §5.3, measured 2026-11-22 |
 | `550-5.7.26 … sender is unauthenticated` | Records missing or a key mismatch | `--check-dns`, then resend (seen on the first attempt from this box) |
 | Mail queues and never leaves | Outbound 25 blocked, or destination greylisting | `postqueue -p`; `telnet gmail-smtp-in.l.google.com 25` |
 | The box is down | Single point of failure | senders retry; queued invites survive on disk, but the waitlist and mail share one host that must stay up |
