@@ -5,7 +5,7 @@
 | [`verify.html`](verify.html) | the claim table `verify/verify.py` renders (ODL-236): every verification claim, with where it was checked | via `verify.py --out` / `--serve`; the guest's `/verify` is `web/verify.html`, rendered by `installer/first_visit.py` |
 | [`recovery-kit.md`](recovery-kit.md) | the operator's recovery kit, rendered by `scripts/recovery_kit.py` at install time | the kit the operator hands over |
 | [`tenant-agents.md`](tenant-agents.md) | the tenant's standing context, embedded in the installer | `$HOME/AGENTS.md` |
-| [`config.yaml`](config.yaml) | the Hermes tenant profile, six managed blocks merged in place | `$HERMES_HOME/config.yaml` |
+| [`config.yaml`](config.yaml) | the Hermes tenant profile, seven managed blocks merged in place | `$HERMES_HOME/config.yaml` |
 | [`skin.yaml`](skin.yaml) | the Webapp's Odile skin, merged with `display.skin: odile` | `$HERMES_HOME/skins/odile.yaml` |
 | [`status.html`](status.html) | the public status page: uptime counts, no tenant named | `/var/lib/odile/status.html`, served at `/status` |
 | [`webapp-brand.js`](webapp-brand.js) | the Webapp's brand re-assertion, after every Hermes build | `odile-brand.js` in the Webapp bundle, beside the `index.html` it links |
