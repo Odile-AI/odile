@@ -221,8 +221,10 @@ if [ -n "$NODE_BIN" ]; then
 fi
 
 # --------------------------------------------------------------------------
-# 3. config.yaml — the five managed blocks, and the schema version Hermes
-#    itself seeded, so a future schema bump does not need an edit here.
+# 3. config.yaml — the seven managed blocks (the installer's tenant template
+#    carries all seven; a bench that dropped one would not serve the profile a
+#    tenant gets), and the schema version Hermes itself seeded, so a future
+#    schema bump does not need an edit here.
 
 if [ -f "$HERMES_HOME/config.yaml" ]; then
     CONFIG_VERSION=$(sed -n 's/^_config_version:[[:space:]]*//p' "$HERMES_HOME/config.yaml" | head -n 1)

@@ -18,10 +18,15 @@
 # **It converges once** (t_ee5aac66). After its first run it writes a done
 # marker under /var/lib/odile; every later boot reads the marker and exits
 # without running the installer. That is what makes the owner's config survive
-# a reboot: the installer's managed blocks (model, agent, custom_providers,
-# dashboard, webapp, onboarding) and its .env allowlist are written on the
-# first boot only, so a key the owner changed afterwards — `webapp.public_url`,
-# the provider row, a key in `.env` — is not rewritten. The marker records the
+# a reboot: the installer's seven managed blocks (model, agent,
+# custom_providers, dashboard, webapp, onboarding, auxiliary) and its .env
+# allowlist are written on the first boot only, so a key the owner changed
+# afterwards — `webapp.public_url`, the provider row, a key in `.env` — is not
+# rewritten. The other direction is the same fact: a block the installer gains
+# later is **not** merged into a machine that already ran this script, because
+# no later boot reaches the installer at all — an existing demo or tenant gains
+# `auxiliary.vision.model` (ODL-341-F1) by a re-image or by running this script
+# with `--force`, never by a plain deploy. The marker records the
 # run's exit code. A failed first run is not retried automatically; to retry it
 # on purpose, remove the marker and run this script with `--force` (or
 # ODILE_RELEASE_FORCE=1) — the log's earlier run line would otherwise make the
