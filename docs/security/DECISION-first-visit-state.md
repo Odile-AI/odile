@@ -66,7 +66,7 @@ Measured on the live demo machine, 2026-11-22:
   **404**, no token → **404**; on `demo.odile.fyi` `/first-visit` → **302**
   into the Webapp's Host gate. A 200 form is the open state.
 
-Row 2 of the card's own evidence — the 19:59Z forced run kept the hash when the
+The card's second measurement — the 19:59Z forced run kept the hash when the
 state carried `signin_set_at` — is the same mechanism as fixture B, measured on
 the machine.
 
@@ -132,7 +132,7 @@ evidence is the image's own `.env` (`docs/runbooks/image.md` §13).
 The demo deploy's shape: load the state, validate it (version, token hash),
 `state["used_at"] = state["used_at"] or now`, `state["signin_set_at"] =
 state["signin_set_at"] or state["used_at"]`, save. A dry run prints the would-be
-write and changes nothing. The report gains one row (`first-visit stale:
+write and changes nothing. The report gains one row (`first-visit state:
 the deploy-set sign-in is recorded at …`), so the live check can see it.
 
 ## 5. The adjacent gap this closes on the demo — and does not close for a tenant
