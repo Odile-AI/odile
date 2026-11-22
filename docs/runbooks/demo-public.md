@@ -23,7 +23,7 @@ page a judge should be sent to. It does not demonstrate a user-held key.
 | Host check | Hermes refuses a Host header that is not the bound host or `webapp.public_url` (`400 Invalid Host header`); the demo host *is* the public_url, so the machine's own name `odl-fake01.odile.fyi` still answers `/verify`, `/first-visit` and `/manifest`, but its Webapp path is refused |
 | Gate | Hermes dashboard basic-auth provider (`HERMES_DASHBOARD_BASIC_AUTH_*` in `/home/tenant/.hermes/.env`, mode 0600) |
 | Account | `judge`; the password is carried by the sign-in page's form (`deploy/demo-host/login.html`), never here |
-| Sign-in page | `/srv/odile-demo/login.html`, Caddy's `handle /login*`. Committed and live are **one file**: sha256 `077f47d541b8a9daab33cf7e607f1a2e7e03c561342230f62fa5f25437b89253` (167,642 B), t_9896a577's artwork page with ODL-504's icon head (three links + the credit comment) and ODL-505's three paths (t_6b25f6e5), installed from `deploy/demo-host/login.html`. `--no-login` remains for a deploy that must keep the machine's current page |
+| Sign-in page | `/srv/odile-demo/login.html`, Caddy's `handle /login*`. Committed and live are **one file**: sha256 `af9baa05282529991831dced9eab3b08751476581a5c99dd4f66160e5f180a70` (167,682 B), installed from `deploy/demo-host/login.html` by the demo deploy; until that deploy runs, the live copy is the pre-re-cut `077f47d541b8a9daab33cf7e607f1a2e7e03c561342230f62fa5f25437b89253` (167,642 B). It is t_9896a577's artwork page with ODL-504's icon head (three links + the credit comment) and ODL-505's three paths (t_6b25f6e5); t_56e20a53 re-cut three `//` comment lines inside the inline script and moved no rendered byte. `--no-login` remains for a deploy that must keep the machine's current page |
 | Tab icon | three files beside the page — `web/favicon.ico` 11,790 B, `web/icon-32.png` 2,302 B, `web/apple-touch-icon.png` 47,543 B — put in `/srv/odile-demo` by the apply and answered by Caddy's `@tabicons` handle (`image/x-icon` for the `.ico`; one-year immutable). `/icon-192.png` and `/icon-512.png` stay the page server's, for the Webapp shell (§4) |
 | Caddy block | `deploy/caddy/demo-tenant-site.caddy`, sha256 `4ee4e9c87bd547cb3a8934950cc26be938c39519902cf570d32e6e4883846184`, 4,641 B; no mutation matcher and no self-update matcher — every write reaches Hermes (§4) |
 | Report refresh | `odile-attest-refresh.timer` on the tenant: every five minutes, root runs `/usr/local/lib/odile/attest.py` into `/var/lib/odile/attestation.json` (atomic rename). This is the row's "refreshes every five minutes" made true (t_145ca49c); the check fails any served `fetched_at` older than ten minutes |
@@ -724,7 +724,8 @@ a `data:image/svg+xml` favicon while every `web/` page carried the painted
 head. At this head the page carries ODL-504's head — the three links and the
 credit comment, no `data:` favicon — and the three files sit beside it in
 `/srv/odile-demo`, answered by the block's `@tabicons` handle. The two blobs:
-block `4ee4e9c8…` (4,641 B), `login.html` `077f47d5…` (167,642 B).
+block `4ee4e9c8…` (4,641 B), `login.html` `af9baa05…` (167,682 B after t_56e20a53's
+comment re-cut; `077f47d5…`, 167,642 B, at this card's head).
 `caddy validate` on the rendered block prints `Valid configuration`;
 `tests/test_demo_tenant_caddy.py` starts that block over a scratch root and
 measures each path 200 with the committed bytes, `image/x-icon` / `image/png`,

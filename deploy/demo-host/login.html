@@ -237,8 +237,9 @@ h1,h2,h3,.brand,.mark,.wordmark,.focus{font-family:var(--serif)}
   var error = document.getElementById('form-error');
   var button = form.querySelector('button[type=submit]');
 
-  // The demo account is published in README.md; this page signs in with it and
-  // nothing else. tests/test_demo_login_page.py fails if the two drift apart.
+  // This page is the one published copy of the demo account, and it signs in
+  // with nothing else. tests/test_demo_login_page.py fails if the page and the
+  // deployers that read it drift apart.
   var DEMO_USERNAME = 'judge';
   var DEMO_PASSWORD = 'odile-demo-kestrel-2026';
 
