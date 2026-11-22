@@ -230,11 +230,21 @@ def late_sentence(job: Job, now: datetime) -> str:
     return f"This one ran at {local} — {span} after its {job.due} slot.\n\n"
 
 
+def greeting_for(local: datetime) -> str:
+    """The brief's first line is the run's own clock, never a fixed greeting."""
+    if local.hour < 12:
+        return "Good morning."
+    if local.hour < 18:
+        return "Good afternoon."
+    return "Good evening."
+
+
 def compose(template_text: str, *, brief: str, job: Job, slug: str, now: datetime,
             late: str) -> tuple[str, str]:
     local = now.astimezone(job.zone)
     today = local.date()
     fields = {
+        "greeting": greeting_for(local),
         "weekday": today.strftime("%A"),
         "day": str(today.day),
         "month": today.strftime("%B"),

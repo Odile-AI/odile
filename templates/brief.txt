@@ -1,6 +1,6 @@
 subject: {weekday}, {day} {month} — your brief
 
-Good morning.
+{greeting}
 
 {brief}
 

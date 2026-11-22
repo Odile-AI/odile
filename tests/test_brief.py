@@ -26,6 +26,7 @@ from contextlib import redirect_stderr, redirect_stdout
 from datetime import datetime, timezone
 from pathlib import Path
 from unittest import mock
+from zoneinfo import ZoneInfo
 
 ROOT = Path(__file__).resolve().parent.parent
 SCRIPT = ROOT / "scripts" / "send_brief.py"
@@ -310,6 +311,33 @@ class BriefTest(unittest.TestCase):
         self.assertEqual(code, 0, err)
         body = self.message().message.get_content()
         self.assertIn("This one ran at 09:02 — 3 hours 2 minutes after its 07:00 slot.", body)
+
+    def test_a_mid_afternoon_catch_up_opens_good_afternoon(self) -> None:
+        """The greeting is the run's own clock, not the 07:00 slot: 15:02 is afternoon."""
+        self.write_jobs(kind="catch_up", lateness=28920,
+                        dispatched_at="2026-11-20T07:02:00+00:00")
+        (self.home / "briefs" / "2026-11-20.md").write_text(
+            "# Morning brief — Friday 20 November 2026\n\n"
+            "The supplier quote came back signed.\n",
+            encoding="utf-8",
+        )
+        now = int(datetime(2026, 11, 20, 7, 2, 30, tzinfo=timezone.utc).timestamp())
+        code, _out, err = self.run_sender("--now", str(now))
+        self.assertEqual(code, 0, err)
+        body = self.message().message.get_content()
+        self.assertTrue(body.startswith("Good afternoon.\n"), body)
+        self.assertNotIn("Good morning.", body)
+        self.assertIn("This one ran at 15:02 — 8 hours 2 minutes after its 07:00 slot.", body)
+
+    def test_the_greeting_changes_at_noon_and_six_in_the_owners_zone(self) -> None:
+        """BRAND.md §Brief email: morning <12:00, afternoon 12:00–17:59, evening ≥18:00."""
+        zone = ZoneInfo("Asia/Hong_Kong")
+        cases = [(11, 59, "Good morning."), (12, 0, "Good afternoon."),
+                 (17, 59, "Good afternoon."), (18, 0, "Good evening.")]
+        for hour, minute, expected in cases:
+            with self.subTest(hour=hour, minute=minute):
+                local = datetime(2026, 11, 20, hour, minute, tzinfo=zone)
+                self.assertEqual(send_brief.greeting_for(local), expected)
 
     def test_a_dispatch_older_than_the_window_is_not_this_run(self) -> None:
         self.write_jobs(kind="late", lateness=840, dispatched_at="2026-11-08T23:14:00+00:00")
