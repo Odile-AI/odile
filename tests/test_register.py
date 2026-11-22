@@ -278,7 +278,19 @@ class RegistrationTests(FlowBase):
                       if name != field]
             for name in others:
                 self.assertNotIn('aria-describedby="%s-err"' % name, text)
+            # A field's message owns its own slot; the page-level slot stays
+            # empty, so one submit never shows the same sentence twice.
+            self.assertNotIn('id="register-err"', text)
         self.assertIsNone(self.account(email))
+
+    def test_the_consent_tick_survives_a_rejected_form(self):
+        """One mistyped password must not cost the reader their consent tick."""
+        email = self.email()
+        status, _headers, body = self.register(email, repeat="something else entirely")
+        self.assertEqual(status, 422)
+        text = body.decode("utf-8")
+        self.assertRegex(text, r'name="consent"[^>]* checked')
+        self.assertIn('value="%s"' % email, text)
 
     def test_the_page_carries_one_approved_sentence_four_fields_and_no_script(self):
         status, headers, body = request(self.port, "GET", "/register")
@@ -357,6 +369,61 @@ class ConfirmTests(FlowBase):
         status, _headers, _body = request(self.port, "POST", "/confirm",
                                           form(token="f" * 64))
         self.assertEqual(status, 404)
+
+    def test_an_unknown_link_shows_the_way_back_to_registration(self):
+        """No button that cannot work: the dead link offers /register instead."""
+        status, _headers, body = request(self.port, "GET", "/confirm?t=" + "f" * 64)
+        self.assertEqual(status, 404)
+        text = body.decode("utf-8")
+        self.assertIn("That confirmation link is not valid.", text)
+        self.assertNotIn("<form", text)
+        self.assertNotIn("Confirm my address", text)
+        self.assertIn('href="/register"', text)
+        self.assertIn("Register again", text)
+
+    def test_an_expired_link_shows_the_way_back_to_registration(self):
+        email = self.email()
+        self.register(email)
+        account = self.account(email)
+        token = self.confirmation_token(account["id"])
+        connection = self.connect()
+        try:
+            connection.execute(
+                "UPDATE accounts SET confirm_expires_at = ? WHERE id = ?",
+                ("2020-01-01T00:00:00Z", account["id"]))
+            connection.commit()
+        finally:
+            connection.close()
+        status, _headers, body = request(self.port, "GET", "/confirm?t=" + token)
+        self.assertEqual(status, 410)
+        text = body.decode("utf-8")
+        self.assertIn("That confirmation link has expired.", text)
+        self.assertNotIn("<form", text)
+        self.assertNotIn("Confirm my address", text)
+        self.assertIn('href="/register"', text)
+        self.assertIn("Register again", text)
+        # The POST of the same spent-by-time link says the same thing.
+        status, _headers, body = request(self.port, "POST", "/confirm",
+                                         form(token=token))
+        self.assertEqual(status, 410)
+        text = body.decode("utf-8")
+        self.assertNotIn("<form", text)
+        self.assertIn('href="/register"', text)
+
+    def test_an_already_confirmed_link_points_at_sign_in(self):
+        email = self.email()
+        self.register(email)
+        account = self.account(email)
+        token = self.confirmation_token(account["id"])
+        self.assertEqual(request(self.port, "POST", "/confirm", form(token=token))[0], 303)
+        status, _headers, body = request(self.port, "GET", "/confirm?t=" + token)
+        self.assertEqual(status, 200)
+        text = body.decode("utf-8")
+        self.assertIn("This address is already confirmed.", text)
+        self.assertNotIn("<form", text)
+        self.assertNotIn("Confirm my address", text)
+        self.assertIn('href="/signin"', text)
+        self.assertIn("Sign in", text)
 
     def test_a_machine_that_already_exists_is_not_queued_again(self):
         """A replayed confirmation on an existing machine lands `ready`."""
@@ -512,12 +579,25 @@ class RateLimitTests(unittest.TestCase):
 
     def test_a_registration_burst_answers_429(self):
         statuses = []
+        bodies = []
         for index in range(4):
-            statuses.append(request(self.port, "POST", "/register", form(
+            status, _headers, body = request(self.port, "POST", "/register", form(
                 email="burst%d@example.com" % index, password=SIGN_IN,
-                password2=SIGN_IN, consent="yes"))[0])
+                password2=SIGN_IN, consent="yes"))
+            statuses.append(status)
+            bodies.append(body.decode("utf-8"))
         self.assertEqual(statuses[:2], [200, 200], statuses)
         self.assertEqual(statuses[2:], [429, 429], statuses)
+        # The rate limit names no field, so its sentence lands in the form's
+        # own page-level slot — never a screen that answers 429 silently
+        # (Brand gate round 1, must 1).
+        for index, text in enumerate(bodies[2:], start=2):
+            self.assertIn('id="register-err"', text)
+            self.assertIn('role="alert"', text)
+            self.assertIn("Too many registrations from here.", text)
+            self.assertEqual(text.count('role="alert"'), 1, index)
+            self.assertIn('value="burst%d@example.com"' % index, text)
+            self.assertIn("Create account", text)
 
     def test_a_confirmation_burst_answers_429(self):
         statuses = [request(self.port, "POST", "/confirm",

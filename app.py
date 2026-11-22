@@ -545,6 +545,14 @@ def throwaway_boot_key() -> str:
 
 ACCOUNT_BLOCK_RE = re.compile(
     r"<!--(form|done|confirm)-->(.*?)<!--/\1-->", re.S)
+# The confirm button is its own block inside the confirm state: it is rendered
+# only for a live token. An expired, spent or unknown link has no action that
+# could work, so it offers the way back instead (Brand gate round 1, must 2).
+CONFIRM_FORM_RE = re.compile(r"<!--confirmform-->(.*?)<!--/confirmform-->", re.S)
+CONFIRM_NEXT = {
+    "register": '<p class="note"><a href="/register">Register again</a></p>',
+    "signin": '<p class="note">Already confirmed? <a href="/signin">Sign in</a></p>',
+}
 
 ACCOUNT_TITLES = {
     "form": "Register — Odile",
@@ -732,24 +740,37 @@ def queue_confirm(account: dict, token: str) -> str:
 
 
 def render_register(*, state: str = "form", email: str = "", token: str = "",
-                    error: str = "", field: str = "") -> str:
+                    error: str = "", field: str = "", consent: bool = False,
+                    next_action: str = "") -> str:
     """One page, three states: the form, the check-your-email page, the confirm button.
 
     Each of the four fields owns one error slot; only the invalid field
-    carries the ARIA pair. The confirm state carries the token in a hidden
-    input, so the link in the mail opens a page and the confirmation itself is
-    the POST ADR-006 §7 gates.
+    carries the ARIA pair. A message that names no field (a rate limit, a
+    database failure) lands in the form's own page-level slot, so no error is
+    ever silent (Brand gate round 1, must 1). The confirm state carries the
+    token in a hidden input, so the link in the mail opens a page and the
+    confirmation itself is the POST ADR-006 §7 gates; it renders its button
+    only for a live token, and `next_action` is the way back for the rest.
     """
     body = page("register.html", TITLE=html.escape(ACCOUNT_TITLES[state]),
                 ROBOTS="noindex" if state != "form" else "index")
     body = ACCOUNT_BLOCK_RE.sub(
         lambda match: match.group(2) if match.group(1) == state else "", body)
+    body = CONFIRM_FORM_RE.sub(
+        lambda match: match.group(1) if token else "", body)
     body = body.replace("{{TOKEN}}", html.escape(token, quote=True))
+    body = body.replace("{{CONFIRM_NEXT}}", CONFIRM_NEXT.get(next_action, ""))
     body = body.replace(
         "{{CONFIRM_ERROR}}",
         err_slot(error, "confirm-err") if error and state == "confirm" else "",
     )
     owner = field if field in ACCOUNT_FIELDS else ""
+    body = body.replace(
+        "{{FORM_ERROR}}",
+        err_slot(error, "register-err")
+        if error and state == "form" and not owner else "",
+    )
+    body = body.replace("{{CONSENT_CHECKED}}", " checked" if consent else "")
     for name in ACCOUNT_FIELDS:
         hit = bool(error) and state == "form" and owner == name
         slot_id = "%s-err" % name
@@ -1732,31 +1753,32 @@ class Handler(BaseHTTPRequestHandler):
         the confirmation page that points at sign-in.
         """
         email_raw = (fields.get("email") or [""])[0]
+        consent_raw = (fields.get("consent") or [""])[0].strip().lower()
+        consent_ticked = consent_raw in ("yes", "on", "1", "true")
         # honeypot: filled only by bots. Pretend everything went fine.
         if (fields.get("hp") or [""])[0].strip():
             return self._send(200, render_register(state="done", email=email_raw))
         if not allow(self._client_ip(), "register"):
             return self._send(429, render_register(
                 error="Too many registrations from here. Try again in ten minutes.",
-                email=email_raw),
+                email=email_raw, consent=consent_ticked),
                 headers={"Retry-After": str(RATE_WINDOW)})
         email = valid_email(email_raw)
         if not email:
             return self._send(422, render_register(
                 error="That doesn't look like an email address.",
-                email=email_raw, field="email"))
+                email=email_raw, field="email", consent=consent_ticked))
         password = (fields.get("password") or [""])[0]
         repeat = (fields.get("password2") or [""])[0]
-        consent = (fields.get("consent") or [""])[0].strip().lower()
         if len(password) < PASSWORD_MIN:
             return self._send(422, render_register(
                 error="Use at least %d characters." % PASSWORD_MIN,
-                email=email_raw, field="password"))
+                email=email_raw, field="password", consent=consent_ticked))
         if password != repeat:
             return self._send(422, render_register(
                 error="The two passwords do not match.",
-                email=email_raw, field="password2"))
-        if consent not in ("yes", "on", "1", "true"):
+                email=email_raw, field="password2", consent=consent_ticked))
+        if not consent_ticked:
             return self._send(422, render_register(
                 error='Tick "I agree to the terms and the privacy policy." '
                       "before you create the account.",
@@ -1804,7 +1826,8 @@ class Handler(BaseHTTPRequestHandler):
                     slug = None
             else:
                 return self._send(500, render_register(
-                    error="Something broke. Try again?", email=email_raw))
+                    error="Something broke. Try again?", email=email_raw,
+                    consent=consent_ticked))
             account = con.execute(
                 "SELECT * FROM accounts WHERE id = ?", (cur.lastrowid,)).fetchone()
         finally:
@@ -1833,13 +1856,16 @@ class Handler(BaseHTTPRequestHandler):
         row = self._account_for_token(token)
         if row is None:
             return self._send(404, render_register(
-                state="confirm", error="That confirmation link is not valid."), head=head)
+                state="confirm", error="That confirmation link is not valid.",
+                next_action="register"), head=head)
         if row["email_verified_at"]:
             return self._send(200, render_register(
-                state="confirm", error="This address is already confirmed."), head=head)
+                state="confirm", error="This address is already confirmed.",
+                next_action="signin"), head=head)
         if row["confirm_expires_at"] <= now_iso():
             return self._send(410, render_register(
-                state="confirm", error="That confirmation link has expired."), head=head)
+                state="confirm", error="That confirmation link has expired.",
+                next_action="register"), head=head)
         return self._send(200, render_register(state="confirm", token=token), head=head)
 
     def _account_for_token(self, token):
@@ -1869,14 +1895,15 @@ class Handler(BaseHTTPRequestHandler):
         row = self._account_for_token(token)
         if row is None:
             return self._send(404, render_register(
-                state="confirm", error="That confirmation link is not valid."))
+                state="confirm", error="That confirmation link is not valid.",
+                next_action="register"))
         if row["email_verified_at"]:
             # Harmless: the third and every later click answers the same page.
             return self._send(200, render_register(state="done", email=row["email"]))
         if row["confirm_expires_at"] <= now_iso():
             return self._send(410, render_register(
-                state="confirm", token=token,
-                error="That confirmation link has expired."))
+                state="confirm", error="That confirmation link has expired.",
+                next_action="register"))
         stamp = now_iso()
         con = db()
         try:
