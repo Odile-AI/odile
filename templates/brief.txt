@@ -1,0 +1,12 @@
+subject: {weekday}, {day} {month} — your brief
+
+{greeting}
+
+{brief}
+
+{late}Open the machine → {url}
+
+— Odile
+
+{date} · {time} {zone} · {slug}
+Brief emails go out through our own mail server at mail.odile.fyi; it carries the message, never your disk.

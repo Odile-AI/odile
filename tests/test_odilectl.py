@@ -1766,6 +1766,73 @@ class StatusDestroyTest(TempConfigMixin):
         self.assertEqual(code, 0, err)
         self.assertEqual(json.loads(out)["machines"][0]["release"]["status"], "same")
 
+    def test_status_shows_the_last_brief_from_the_heartbeat(self):
+        """A failed brief send is visible here: the time does not advance."""
+        config_path = self.make_config()
+        db = Path(config_path).parent / "waitlist.db"
+        store = state.StateStore.open(db)
+        try:
+            store.invite(SLUG)
+            store.claim(SLUG)
+            store.provision(SLUG, server_id=SERVER_ID, release="2026.11.1")
+        finally:
+            store.close()
+
+        routes = {("GET", "servers"): [(200, servers_response())]}
+        code, out, err = run_cli(
+            ["status", "--json"],
+            config_path,
+            provider_factory=lambda _config: fixture_provider(routes),
+        )
+        self.assertEqual(code, 0, err)
+        self.assertEqual(
+            json.loads(out)["machines"][0]["brief"],
+            {"last_sent_at": None, "last_sent_at_iso": None},
+        )
+        code, out, err = run_cli(
+            ["status"],
+            config_path,
+            provider_factory=lambda _config: fixture_provider(routes),
+        )
+        self.assertEqual(code, 0, err)
+        self.assertIn("brief:     none recorded", out)
+
+        beats = health.HeartbeatStore.open(
+            db, clock=lambda: 1_800_000_000, verifier=lambda *_args: True
+        )
+        try:
+            body = json.dumps(
+                {
+                    "slug": SLUG,
+                    "at": 1_800_000_000,
+                    "facts": {"last_brief_at": 1_800_000_000},
+                    "public_key": "-----BEGIN PUBLIC KEY-----\nAAAA\n-----END PUBLIC KEY-----",
+                },
+                sort_keys=True,
+            ).encode()
+            beats.record(body, b"\x00" * 64, now=1_800_000_000)
+        finally:
+            beats.close()
+
+        routes = {("GET", "servers"): [(200, servers_response())]}
+        code, out, err = run_cli(
+            ["status", "--json"],
+            config_path,
+            provider_factory=lambda _config: fixture_provider(routes),
+        )
+        self.assertEqual(code, 0, err)
+        self.assertEqual(
+            json.loads(out)["machines"][0]["brief"]["last_sent_at_iso"],
+            "2027-01-15T08:00:00Z",
+        )
+        code, out, err = run_cli(
+            ["status"],
+            config_path,
+            provider_factory=lambda _config: fixture_provider(routes),
+        )
+        self.assertEqual(code, 0, err)
+        self.assertIn("brief:     last sent 2027-01-15 08:00 UTC", out)
+
     def test_status_shows_the_backup_age_and_snapshot(self):
         """The nightly job's last success is visible in `odilectl status`."""
         config_path = self.make_config()

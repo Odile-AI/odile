@@ -857,10 +857,12 @@ lexicon sits on top of it and never overrides it.
 Status: the three account email templates are built — `templates/emails/invite.txt`
 (Savio sends it personally in alpha.0), `templates/emails/confirm.txt` (queued by
 the A2 account path, ODL-341) and `templates/emails/ready.txt` (filled by
-`odilectl/claim.py` and queued as one message per tenant). The brief email is
-specified below and is not built. `tools/brand_lint.py` scans every `*.txt`
-template under `templates/emails/` (`support.md` is the reply template, outside
-the account set and outside the lint).
+`odilectl/claim.py` and queued as one message per tenant). The brief is built on
+the same bar: `templates/brief.txt` is its message frame, filled and sent on the
+tenant by `scripts/send_brief.py` (wiring: ODL-469). `tools/brand_lint.py` scans
+every `*.txt` template under `templates/emails/` and `templates/brief.txt`
+(`support.md` is the reply template, outside the account set and outside the
+lint).
 
 **alpha.0, the current release.** There is no price: Odile pays for the machine
 and the inference, and the price and the paid cohort are alpha.1's (A8). There
@@ -881,8 +883,9 @@ on it.
   the display face is for the page, not the inbox.
 - **One action.** A link is a link: ink, underlined, 1 px; never a filled
   button drawn as an image. Each template has one action: the invitation's
-  register link, the confirmation's confirm link, and the ready email's
-  first-visit link, which carries the single-use setup token. A printed value
+  register link, the confirmation's confirm link, the ready email's
+  first-visit link, which carries the single-use setup token, and the brief's
+  machine link (`Open the machine → <url>`). A printed value
   is a fact, not a second action: the ready email prints the machine URL, the
   report URL and the measurement once each, on its own line, as `Label value`.
   The reset page and the first-visit guide are named addresses in sentences,
@@ -897,8 +900,9 @@ on it.
   slug only.
 - **Footer:** `Private alpha · Odile pays for the machine and the inference ·
   no price` on all three account emails. No footer carries a price, a cohort
-  size or a clock. The brief carries its date, the timezone of the run and the
-  machine's slug. When an unsubscribe flow exists, its link lives in the footer,
+  size or a clock. The brief carries its date, the time of the run in the
+  owner's zone, the machine's slug and one line naming `mail.odile.fyi`
+  (§Brief email). When an unsubscribe flow exists, its link lives in the footer,
   never on the confirmation page.
 - **No saint, no feast, no painting, no ring.** Email is a page, not a room.
 
@@ -1054,14 +1058,32 @@ fulfils — so it needs no row. No template says "the only sign-in is yours"
 
 ### Brief email
 
+`templates/brief.txt` is the frame; `scripts/send_brief.py` fills it and sends
+it from the tenant, one message per day.
+
 - **From:** `Odile <brief-<slug>@mail.odile.fyi>` — the machine's own address.
-- **Subject:** `<Weekday>, <D Month> — your brief` (e.g. `Friday, 6 November — your brief`).
+- **Subject:** `<Weekday>, <D Month> — your brief` (e.g. `Friday, 20 November — your brief`).
 - **Body:** plain text, past tense, number first: what ran, when, how much.
   Three items at most, each with the evidence line the owner can open. No
-  tracking pixel; no HTML wrapper unless a link requires one.
-- **Footer:** the date, the timezone of the run and the machine's slug. The
-  brief says `It ran when the machine came back up.` when the machine had been
-  down, never "while you slept".
+  tracking pixel; no HTML wrapper unless a link requires one. The one action is
+  `Open the machine → <url>`; the sign is `— Odile`.
+- **The first line is the run's own clock, never a fixed greeting.** `Good
+  morning.` before 12:00, `Good afternoon.` from 12:00, `Good evening.` from
+  18:00, in the owner's zone — so a catch-up that lands at 15:02 does not open
+  with "Good morning." and then name 15:02 three lines later. The sender fills
+  the greeting; the template never carries a fixed one.
+- **Footer:** the date, the time of the run in the owner's zone, the machine's
+  slug, then one line naming the sender: `Brief emails go out through our own
+  mail server at mail.odile.fyi; it carries the message, never your disk.`
+  (§4.10).
+- **Lateness is Hermes's verdict, not the machine's state.** A brief whose
+  dispatch record says `late` or `catch_up` carries one sentence naming the
+  local time and the delay — `This one ran at 07:14 — 14 minutes after its
+  07:00 slot.`; past 90 minutes the delay reads in hours and minutes (`3 hours
+  2 minutes`). An on-time brief carries no such sentence. No brief says "while
+  you slept", and the retired `It ran when the machine came back up.` does not
+  return: the sealed machine has no unlock step, and the dispatch record is the
+  only source of lateness.
 
 ## Video
 
@@ -1251,6 +1273,7 @@ names the `docs/CLAIMS.md` row that moved with it.
 | 2026-11-19 | **Email, the §Email nits from ODL-581's brand pass.** The subject rule is reworded to the rule the three-row table actually keeps — a plain name for the message, a phrase or one sentence, never a headline, a colon-and-preamble, an emoji, an exclamation or "Newsletter #3", and it need not be the body's first sentence. The ready email's guide line moves from `Open the first-visit guide: {{GUIDE}}` to `The first-visit guide is at {{GUIDE}}`: a named address in a sentence, not a second imperative, leaving `Set your sign-in` as the ready email's only imperative URL. The invitation's "When your machine is ready, we email you its address" is named in the non-claim paragraph as a flow step — the notice the ready email fulfils — so every sentence in the three templates has a row or a named place. No palette, face or artwork change; no public sentence in `docs/CLAIMS.md` changed. | Designer | verifier, ODL-912 |
 | 2026-11-20 | **The grant sentence returns.** ODL-217 proved the grant and ODL-474 landed the A10 row, so the trust-moment rule no longer holds the support grant back: §Spacing and layout and the Do/Don't pair now say the grant is the page's own row — a tenant's `/verify` (`verify/verify.py` + `templates/verify.html`) names a live grant by its id, expiry, reason and key fingerprint in its `support access` row, read from `odile-support status`, instead of showing a bare FAIL, and a machine with no grant renders `no grant`. The page's tenant block also carries the published scoped row `No one at Odile can log in unless you grant it.` (`docs/CLAIMS.md` §1 *Access*), so the sentence above the rows and the row that proves it agree. No palette, typeface or artwork change; no public sentence in `docs/CLAIMS.md` changed (the A10 row shipped with ODL-474). | Designer | verifier, t_e23f3288 |
 | 2026-11-20 | **Component states: the skip link is a component, not a rule copied out of a commit.** §Accessibility tokens' Keyboard row asked for a skip link, but the sheet gave no values, so the carriers drifted: at this cut `web/roadmap.html` shipped `.20em` mono and revealed on `:focus`, its ring supplied only by the page's generic `a:focus-visible` rule, while t_eaa22faa's four page files at `1856358` — `web/first-visit.html`, `web/verify.html`/`web/verify-public.html` and `templates/verify.html` — ship `--text`, `:focus-visible` and the ring in the skip-link rule itself. The new row group pins the shipped rule (off screen at `left:-9999px; top:0` and first focusable; 24 px inset, 18 px at ≤560; `top:12px`; `z-index:10`; 44 px high at 12/16 padding; `--ink` fill; `--paper` label at 10 px caps / 600 / `.20em` / 1.2 in the text face; 2 px `--ink` ring at 3 px) and the three decisions the carriers were guessing: `:focus-visible` never `:focus`, no positive `tabindex`, never a second primary action. Measured on those four carriers at 1440, 390 and 320: 170.7 × 44 at (24, 12) and (18, 12), no horizontal overflow; the 390 bar covers the wordmark and `elementFromPoint` returns the link itself, recorded as accepted. The roadmap copy was still mono and `:focus`-revealed at that cut; t_2281fb61 has since re-cut it (merge `a08ec1f`) to `:focus-visible` with the ring in its own rule, keeping its page-local `ui-monospace` label, which the new row names as the one exception. No palette, face, artwork or public sentence changed. | Designer | verifier, t_36a2ae5a |
+| 2026-11-22 | **Email, the brief is built and its late sentence is the dispatch verdict.** `templates/brief.txt` is the brief's message frame, filled and sent from the tenant by `scripts/send_brief.py` (the tenant wiring is ODL-469), so §Email's status names it as built and `tools/brand_lint.py` scans it with the account templates. §Brief email's footer names the fourth footer line — `Brief emails go out through our own mail server at mail.odile.fyi; it carries the message, never your disk.` (§4.10) — and the retired `It ran when the machine came back up.` is replaced by the one sentence a `late` or `catch_up` dispatch carries, naming the local time and the delay (`This one ran at 07:14 — 14 minutes after its 07:00 slot.`), with none on an on-time brief: the sealed machine has no unlock step, and the dispatch record is the only source of lateness. The first line is the run's own greeting — morning before 12:00, afternoon from 12:00, evening from 18:00 in the owner's zone — so a 15:02 catch-up cannot open with "Good morning."; §Email's one-action rule names the brief's machine link. The greeting rule is the sheet's; the surface follows it on this card's next head. No palette, face or artwork change; no public sentence in `docs/CLAIMS.md` changed (§4.10 is unchanged). | Designer | verifier, ODL-235 |
 
 ## Do / Don't
 

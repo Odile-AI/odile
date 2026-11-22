@@ -5,13 +5,19 @@ the release recorded on the tenant row (the pin's `provision_release`, written
 at provision) and the release the latest heartbeat says the guest booted. The
 comparison is informational — `same`, `release_drift` or `unknown`; `status`
 never repairs it.
+
+It also prints the owner's last brief from the same heartbeat, so a machine
+whose brief job has stopped sending is visible here before the health poll
+raises `brief_missing`.
 """
 
 from __future__ import annotations
 
 import time
 from argparse import ArgumentParser
+from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
 from .core import Context, Report, render_datetime, result
 from .health import Heartbeat, HeartbeatStore, release_report
@@ -110,6 +116,26 @@ def _backup_line(report: dict) -> str:
     return "  backup:    " + ", ".join(bits)
 
 
+def brief_fact(beat: Heartbeat | None) -> dict[str, Any]:
+    """The last brief the guest reported, as seconds and an ISO instant."""
+    value = beat.facts.get("last_brief_at") if beat is not None else None
+    if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
+        return {"last_sent_at": None, "last_sent_at_iso": None}
+    moment = datetime.fromtimestamp(value, timezone.utc)
+    return {
+        "last_sent_at": value,
+        "last_sent_at_iso": moment.strftime("%Y-%m-%dT%H:%M:%SZ"),
+    }
+
+
+def _brief_line(brief: dict[str, Any]) -> str:
+    sent = brief.get("last_sent_at")
+    if not isinstance(sent, int):
+        return "  brief:     none recorded"
+    moment = datetime.fromtimestamp(sent, timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    return f"  brief:     last sent {moment}"
+
+
 def run(ctx: Context, args) -> Report:
     machines = ctx.provider.list()
     if args.slug:
@@ -138,10 +164,12 @@ def run(ctx: Context, args) -> Report:
             beat = beats.latest(machine.hostname)
             report = release_report(intended, beat)
             backup = backup_report(beat)
+            brief = brief_fact(beat)
             entry = machine.to_dict()
             entry["release"] = report
             entry["backup"] = backup
-            rows.append((machine, report, backup, entry))
+            entry["brief"] = brief
+            rows.append((machine, report, backup, brief, entry))
     finally:
         beats.close()
         store.close()
@@ -149,10 +177,11 @@ def run(ctx: Context, args) -> Report:
     lines = [header]
     if rows:
         lines.append(f"  {'SERVER':<10} {'HOSTNAME':<24} {'STATE':<10} {'IPV4':<16} EXPIRES")
-        for machine, report, backup, _entry in rows:
+        for machine, report, backup, brief, _entry in rows:
             lines.append(_row(machine))
             lines.append(_release_line(report))
             lines.append(_backup_line(backup))
+            lines.append(_brief_line(brief))
     elif args.slug:
         lines.append(f"  no machine named {args.slug}")
     lines.append("note: release drift is reported, never repaired")
@@ -160,7 +189,7 @@ def run(ctx: Context, args) -> Report:
         NAME,
         ctx,
         lines,
-        machines=[entry for _machine, _report, _backup, entry in rows],
+        machines=[entry for _machine, _report, _backup, _brief, entry in rows],
         count=len(rows),
         slug=args.slug,
         state_db=str(state_db),
