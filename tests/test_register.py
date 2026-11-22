@@ -754,6 +754,15 @@ class WorkerTests(unittest.TestCase):
 class SeedTests(unittest.TestCase):
     """The seed the worker's token buys carries the account's verifier."""
 
+    #: The relay's PEM. main's ODL-469 made `mail_relay.tls_ca` required in a
+    #: seed config, so this fixture carries the shape main's own seed fixture
+    #: carries (tests/test_seed.RELAY_CA); the branch was cut before that rule.
+    RELAY_CA = (
+        "-----BEGIN CERTIFICATE-----\n"
+        "MIIBhTCCASugAwIBAgIUTESTRELAYCA0000000000000000\n"
+        "-----END CERTIFICATE-----\n"
+    )
+
     @classmethod
     def setUpClass(cls) -> None:
         spec = importlib.util.spec_from_file_location("odile_install_341", INSTALLER)
@@ -770,7 +779,8 @@ class SeedTests(unittest.TestCase):
         "backup_repo_url": "sftp:odile-backup@backup.odile.fyi:/tenants/{slug}",
         "hermes_version": "2026.11.1",
         "mail_relay": {"host": "smtp.mail.odile.fyi", "port": 587,
-                       "username": "{slug}@mail.odile.fyi", "secret": "relay-0001"},
+                       "username": "{slug}@mail.odile.fyi", "secret": "relay-0001",
+                       "tls_ca": RELAY_CA},
     }
 
     def setUp(self) -> None:
