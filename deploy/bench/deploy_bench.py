@@ -1178,13 +1178,12 @@ def probe_tick() -> int:
         print(f"start        {UNIT_SITE_NAME} (port {APP_PORT} was held by an orphan from a deleted worktree)")
         try:
             run([SYSTEMCTL, "start", UNIT_SITE_NAME], check=True)
-            deadline = time.monotonic() + PROBE_SECONDS
-            while True:
-                active = run([SYSTEMCTL, "is-active", UNIT_SITE_NAME]).stdout.strip()
-                if active == "active" or time.monotonic() >= deadline:
-                    break
-                time.sleep(0.25)
-            print(f"active       {UNIT_SITE_NAME} {active}")
+            # `active` is the unit, not the socket: a Type=simple unit is
+            # active before app.py binds, so wait for the app's own health
+            # answer before the probe, or the tick reports its own repair red.
+            _healthy, detail = poll_health(APP_HEALTH, PROBE_SECONDS)
+            active = run([SYSTEMCTL, "is-active", UNIT_SITE_NAME]).stdout.strip()
+            print(f"active       {UNIT_SITE_NAME} {active}, {APP_HEALTH} {detail}")
         except SystemExit as exc:
             print(f"bench probe: {UNIT_SITE_NAME} did not start: {exc}")
     try:

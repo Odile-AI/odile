@@ -769,6 +769,9 @@ class ProbeTickTests(unittest.TestCase):
 
         def fake_run(command, **kwargs):
             commands.append(command)
+            if command[-1] == deploy.APP_HEALTH:
+                return subprocess.CompletedProcess(
+                    args=command, returncode=0, stdout="ok\n", stderr="")
             if command[0] == deploy.SYSTEMCTL and command[1:2] == ["is-active"]:
                 return subprocess.CompletedProcess(
                     args=command, returncode=0, stdout="active\n", stderr="")
