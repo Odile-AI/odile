@@ -299,10 +299,14 @@ grep "gmail-smtp-in" /var/log/mail.log | tail -1    # relay=…[2001:…]:25
 ```
 
 For a destination that publishes an AAAA, such as Gmail, a
-`relay=…[203.0.113.139]` (an IPv4 literal) after this change means the setting
-is not in effect — most likely `/etc/postfix/main.cf` was edited by hand and
-the applier has not run since. A destination that publishes only an A is
-expected to show the literal, by design.
+`relay=…[203.0.113.139]` (an IPv4 literal) after this change has two causes:
+either the setting is not in effect — most likely `/etc/postfix/main.cf` was
+edited by hand and the applier has not run since — or the IPv6 leg failed and
+Postfix fell back within that delivery, which during the outage above is
+expected (`smtp_balance_inet_protocols = yes` is what lets one delivery try
+both address types). `postconf smtp_address_preference` separates them: `ipv6`
+is the fallback, `any` the missing setting. A destination that publishes only
+an A is expected to show the literal, by design.
 
 **Why the A is quarantined — measured 2026-11-22 (`t_6b6ac0dd`).** Not because
 of a list, so **there is nothing to delist**. Every list below was queried
