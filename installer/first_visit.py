@@ -1081,7 +1081,7 @@ class FirstVisit:
 
     def form(self, error: FieldError | None = None) -> tuple[int, str]:
         """The classic setup page: no seed, so the visit chooses the sign-in."""
-        body = render(self.template(), "form", title="Set your sign-in — Odile",
+        body = render(self.template(), "form", title="Choose your sign-in — Odile",
                       error=error, username=self.username())
         return 200, body
 

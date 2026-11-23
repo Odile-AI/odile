@@ -7,7 +7,8 @@ NEAR key read at run time, then runs ``installer/odile_install.py --root`` as
 that user twice and asserts the card's simulation DoD:
 
   * the first run installs; the second prints ``tenant: same``;
-  * the sign-in gate is 302/401/200 (the deploy_demo_site.gate_ok shape);
+  * the sign-in gate is 302/401/200 (the shape deploy/demo-host/check_demo_host.sh
+    asserts);
   * one chat turn went straight to NEAR AI, ran a shell command, wrote a file,
     and one cron job exists and runs;
   * the gateway's process environment holds the per-user key from
@@ -243,6 +244,22 @@ def seed_setup(root: Path, slug: str, instance: str, seed_port: int) -> tuple[st
     )
     con.commit()
     con.close()
+    # ODL-925: the seed carries the account's sign-in verifier, so the scratch
+    # ledger needs the account row the real one has. The password is the
+    # simulation's fixture sign-in, and its hash is the installer's own format —
+    # the seed, the .env and the gate then agree byte for byte.
+    con = sqlite3.connect(db)
+    con.execute(
+        "INSERT OR REPLACE INTO accounts (slug, email, password_hash, confirm_token_hash,"
+        " confirm_expires_at, trial_started_at, trial_ends_at, created_at)"
+        " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        (slug, f"{slug}@example.invalid", load_installer().hash_password(SIGNIN),
+         hashlib.sha256(slug.encode()).hexdigest(),
+         "2026-11-07T00:00:00Z", "2026-11-07T00:00:00Z", "2026-11-21T00:00:00Z",
+         "2026-11-07T00:00:00Z"))
+    con.commit()
+    con.close()
+    print(f"sign-in      {db} · account {slug} · the registration password's verifier")
     result = run(["/usr/bin/python3", str(SEED_PY), "token", "issue", "--tenant", slug],
                  env=env, cwd=REPO)
     if result.returncode != 0:

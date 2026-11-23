@@ -321,11 +321,13 @@ import json, re, sys
 try:
     seed = json.load(open(sys.argv[1], encoding="utf-8"))
 except (OSError, ValueError) as exc:
-    raise SystemExit("install-stack: the seed is not JSON: %s" % exc)
+    print("install-stack: the seed is not JSON: %s" % exc, file=sys.stderr)
+    raise SystemExit(2)
 value = seed.get("sign_in_hash") if isinstance(seed, dict) else None
 if not isinstance(value, str) or not re.match(
         r"^scrypt\$\d+\$\d+\$\d+\$[A-Za-z0-9+/=]+\$[A-Za-z0-9+/=]+$", value):
-    raise SystemExit("install-stack: the seed has no installer-format sign_in_hash")
+    print("install-stack: the seed has no installer-format sign_in_hash", file=sys.stderr)
+    raise SystemExit(2)
 print(value)
 PY
 }

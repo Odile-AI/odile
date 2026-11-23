@@ -3113,7 +3113,7 @@ printf 'members %s\n' "${members# }"
 # The first-visit service and its page are the reviewed files, byte for
 # byte, so the signed installer carries exactly the program and page it
 # writes to /usr/local/lib/odile/. --self-test fails on a one-byte edit.
-FIRST_VISIT_SHA256 = "7ddf42c32cc629ad7293a5dc4cb167da27731d0016744577a4a4bacb5cee4a7f"
+FIRST_VISIT_SHA256 = "da45a42e9e50cac06de1aeb98d7825e1a829854677f7868a02723deab87c9f8b"
 FIRST_VISIT_SOURCE = r'''#!/usr/bin/python3
 """odile first-visit service — sign in to the guest and show the recovery code.
 
@@ -4197,7 +4197,7 @@ class FirstVisit:
 
     def form(self, error: FieldError | None = None) -> tuple[int, str]:
         """The classic setup page: no seed, so the visit chooses the sign-in."""
-        body = render(self.template(), "form", title="Set your sign-in — Odile",
+        body = render(self.template(), "form", title="Choose your sign-in — Odile",
                       error=error, username=self.username())
         return 200, body
 
@@ -15464,7 +15464,7 @@ def http_call(host: str, port: int, method: str, path: str, *,
 
 
 def gate_ok(anonymous_html: int, anonymous_api: int, authenticated: int) -> bool:
-    """The measured sign-in gate, the same shape as deploy_demo_site.gate_ok.
+    """The measured sign-in gate, as deploy/demo-host/check_demo_host.sh asserts it.
 
     An anonymous HTML request is a login redirect (302), an anonymous API
     request is 401, and a valid session is 200. A 200 on the anonymous HTML
@@ -15516,7 +15516,7 @@ def login_table(layout: Layout, username: str, password: str) -> list[tuple[str,
                     status == 200 and shell, f"{status} shell={shell}"))
     status, _, _ = http_call(host, port, "GET", "/api/sessions", headers={**base, "Cookie": cookie})
     results.append(("GET /api/sessions with the session cookie -> 200", status == 200, str(status)))
-    results.append(("the gate is 302/401/200 (deploy_demo_site.gate_ok shape)",
+    results.append(("the gate is 302/401/200 (deploy/demo-host/check_demo_host.sh shape)",
                     gate_ok(html_status, api_status, session_status if login_status == 200 else 0),
                     f"{html_status}/{api_status}/{session_status}"))
     return results
@@ -16383,7 +16383,7 @@ def self_test() -> int:
         check.ok("a classic install has no /manifest route",
                  "handle /manifest" not in block and "handle /manifest" not in with_first_visit)
 
-        # the sign-in gate shape, reused from deploy_demo_site.py
+        # the sign-in gate shape deploy/demo-host/check_demo_host.sh asserts
         check.ok("the measured gate passes 302/401/200", gate_ok(302, 401, 200))
         check.ok("an anonymous 200 is not a gate", not gate_ok(200, 401, 200))
         check.ok("an open API is not a gate", not gate_ok(302, 200, 200))

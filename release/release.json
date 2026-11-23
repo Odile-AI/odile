@@ -1,8 +1,8 @@
 {
   "artifacts": {
     "installer": {
-      "sha256": "b8776f642e371285714ff7b656f19b8fd5f31b3b5462979adfcfb088410b21e8",
-      "size": 1573431,
+      "sha256": "36f1ecaf224f22b04feec416bbaf5a24d8b574cb291ecfd95fe048b0f52e85d2",
+      "size": 1573463,
       "url": "odile_install.py"
     },
     "skills": {
@@ -14,14 +14,14 @@
   "boot": {
     "kernel": "6.12.115+deb13.1-amd64"
   },
-  "generated_at": "2026-11-23T01:23:17Z",
+  "generated_at": "2026-11-23T01:33:33Z",
   "manifest": {
-    "sha256": "0959481b96a643a94420384f1b8de3aefc9948a1d34a388b37ffa185b6bfd392",
+    "sha256": "e26f5fc67313991b57641244dc447a402858b78c7659d67469717956476fb088",
     "signature_url": "manifest.json.sig",
     "url": "manifest.json"
   },
   "notes": "ODL-925 (B-once): the first visit is a login. The first-visit page and the service it runs are re-embedded (the page is tokenless, ?t= answers 410, the state carries first_login_at), the installer writes the seed's sign_in_hash into the tenant .env before the Webapp's first boot, and the image's installer stamps the seeded state. The manifest moves installer_sha256 and generated_at only; skills_bundle_sha256 and every skill row are unchanged.",
   "product": "odile",
-  "release": "2026.11.23-1",
+  "release": "2026.11.23-2",
   "schema": 1
 }
