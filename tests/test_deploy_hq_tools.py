@@ -38,6 +38,7 @@ GIT_IDENTITY = (
 )
 
 HQ_BYTES = b"# HQ roadmap generator\ndef render():\n    return 'fixed bytes'\n"
+BACKLOG_BYTES = b"milestones: []\ntasks: []\n"
 RUNTIME_BYTES = b"# pre-card generator in /opt/odile\ndef render():\n    return 'old bytes'\n"
 WORKTREE_BYTES = b"# a card worktree's stale copy\ndef render():\n    return 'older bytes'\n"
 
@@ -92,10 +93,18 @@ class Fixture:
         cache = tools / "__pycache__"
         cache.mkdir()
         (cache / "roadmap_page.cpython-314.pyc").write_bytes(b"\0bytecode")
+        # The roadmap unit reads --backlog /opt/odile/docs/backlog.yaml, and the
+        # plan is HQ-only too; a worktree cannot carry it.
+        docs = self.hq / "docs"
+        docs.mkdir()
+        (docs / "backlog.yaml").write_bytes(BACKLOG_BYTES)
         exclude = self.hq / ".git" / "info" / "exclude"
         exclude.parent.mkdir(parents=True, exist_ok=True)
         exclude.write_text(
-            "# HQ-only tools\n/tools/roadmap_page.py\n/tools/__pycache__/\n",
+            "# HQ-only paths\n"
+            "/tools/roadmap_page.py\n"
+            "/tools/__pycache__/\n"
+            "/docs/backlog.yaml\n",
             encoding="utf-8",
         )
         self.commit("HQ tree")
@@ -209,11 +218,14 @@ class FixtureTest(unittest.TestCase):
 
 
 class ListTests(FixtureTest):
-    def test_list_names_the_hidden_tool_and_not_the_tracked_one(self) -> None:
+    def test_list_names_every_hidden_path_and_not_the_tracked_one(self) -> None:
         result = self.fixture.hq_tools("list", str(self.fixture.hq))
 
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(result.stdout.splitlines(), ["tools/roadmap_page.py"])
+        self.assertEqual(
+            result.stdout.splitlines(),
+            ["docs/backlog.yaml", "tools/roadmap_page.py"],
+        )
 
     def test_list_ignores_bytecode_caches(self) -> None:
         result = self.fixture.hq_tools("list", str(self.fixture.hq))
@@ -233,6 +245,12 @@ class InstallTests(FixtureTest):
         self.assertEqual(deployed.read_bytes(), HQ_BYTES)
         self.assertNotEqual(deployed.read_bytes(), WORKTREE_BYTES)
         self.assertIn("installed tools/roadmap_page.py", result.stdout)
+        # The roadmap unit's --backlog is HQ-only too; a worktree cannot carry
+        # it, and a deploy used to delete it with rsync --delete.
+        budget = fixture.runtime / "docs" / "backlog.yaml"
+        self.assertEqual(budget.read_bytes(), BACKLOG_BYTES)
+        self.assertIn("installed docs/backlog.yaml", result.stdout)
+        self.assertFalse((fixture.worktree / "docs" / "backlog.yaml").exists())
 
     def test_install_is_idempotent_and_says_same(self) -> None:
         fixture = self.fixture
@@ -298,8 +316,10 @@ class DeployPlanTests(FixtureTest):
 
         self.assertEqual(result.returncode, 0, output)
         self.assertIn("--exclude /tools/roadmap_page.py", argv)
+        self.assertIn("--exclude /docs/backlog.yaml", argv)
         self.assertNotIn("--exclude /tools/leak_scan.py", argv)
         self.assertIn("would install tools/roadmap_page.py", output)
+        self.assertIn("would install docs/backlog.yaml", output)
         self.assertEqual(
             (fixture.worktree / "tools" / "roadmap_page.py").read_bytes(),
             WORKTREE_BYTES,
@@ -330,6 +350,9 @@ class DeployPlanTests(FixtureTest):
         self.assertEqual(sha256(deployed), sha256(fixture.hq / "tools/roadmap_page.py"))
         self.assertEqual(deployed.read_bytes(), HQ_BYTES)
         self.assertNotEqual(deployed.read_bytes(), WORKTREE_BYTES)
+        self.assertEqual(
+            (fixture.runtime / "docs" / "backlog.yaml").read_bytes(), BACKLOG_BYTES
+        )
 
 
 if __name__ == "__main__":

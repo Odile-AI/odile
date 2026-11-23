@@ -137,13 +137,15 @@ cd <checkout>
 ./scripts/deploy.sh       # installs the units, records the source sha, runs the generator once
 ```
 
-`/opt/odile/tools/roadmap_page.py` is an HQ-only file (`.git/info/exclude`), so
-the deployed tree runs the **HQ checkout's** copy: the rsync excludes it and
-`scripts/deploy.sh` installs HQ's bytes afterwards. A card worktree's stale copy
-never lands — the rule is in [`deploy.md`](deploy.md) §2, "Which copy of a
-host-local tool the deployed tree runs". `./scripts/check_hq_tools.sh` is the
-live proof (deploy.md §4): the installed generator is HQ's byte for byte, and
-the page's footer instant follows its install.
+`/opt/odile/tools/roadmap_page.py` and `/opt/odile/docs/backlog.yaml` are
+HQ-only files (`.git/info/exclude`), so the deployed tree runs the **HQ
+checkout's** copies: the rsync excludes them and `scripts/deploy.sh` installs
+HQ's bytes afterwards. A card worktree's stale copy never lands, and a worktree
+(which cannot carry the plan) can no longer delete the backlog the unit reads.
+The rule is in [`deploy.md`](deploy.md) §2, "Which copy of a host-local tool the
+deployed tree runs". `./scripts/check_hq_tools.sh` is the live proof (deploy.md
+§4): the installed paths are HQ's byte for byte, and the page's footer instant
+follows the install.
 
 The units are committed under `deploy/roadmap/`:
 

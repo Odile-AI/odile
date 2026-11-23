@@ -125,41 +125,54 @@ the same archive.
 
 ### Which copy of a host-local tool the deployed tree runs
 
-`/opt/odile` runs **the HQ checkout's copy of every HQ-only file under
-`tools/`** — the files `.git/info/exclude` hides, present in HQ's working tree
-and absent from its index. `tools/roadmap_page.py` is the one
-`odile-roadmap.service` executes; `tools/board_sync.py`, `tools/merge_card.py`
-and the rest are the private machinery a deploy already had to keep. A card
-worktree can carry its own copy of a hidden file — the same exclude file hides
-it there too, so `git status` stays clean — and a plain `rsync --delete`
+`/opt/odile` runs **the HQ checkout's copy of every HQ-only path a deployed unit
+executes or reads** — the files `.git/info/exclude` hides, present in HQ's
+working tree and absent from its index. Today that is every private file under
+`tools/` and `docs/backlog.yaml`:
+
+- `tools/roadmap_page.py` is the generator `odile-roadmap.service` executes;
+  `tools/board_sync.py`, `tools/merge_card.py` and the rest are the private
+  machinery a deploy already had to keep.
+- `docs/backlog.yaml` is that unit's `--backlog /opt/odile/docs/backlog.yaml`.
+  The plan is HQ-only, so a worktree cannot carry it.
+
+A card worktree can carry its own copy of a hidden tool — the same exclude file
+hides it there too, so `git status` stays clean — and a plain `rsync --delete`
 installed that copy over HQ's. Measured 2026-11-23: ODL-949's deploy from
 `.worktrees/t_a0e1fdb5` restored the pre-card generator (`a2957af5…`) over the
 fixed bytes (`5f84c3e0…`), and the 17:00Z tick regenerated the live page from
-it, undoing ODL-347-F1.
+it, undoing ODL-347-F1. The same deploy shape broke the other way: this card's
+deploy from `.worktrees/t_d0d4b865` deleted `/opt/odile/docs/backlog.yaml` and
+`odile-roadmap.service` exited 2 (`roadmap: [Errno 2] No such file or
+directory: /opt/odile/docs/backlog.yaml`) until the file was restored.
 
-One rule now covers every such file, implemented in `scripts/hq_tools.sh` and
+One rule now covers every such path, implemented in `scripts/hq_tools.sh` and
 called by `scripts/deploy.sh`:
 
 - the deploy refuses before any write when the checkout does not carry the
   helper — a deploy without the rule would silently ship a worktree's copy;
 - the HQ checkout is the parent of the shared `git rev-parse
-  --git-common-dir`, which every worktree of this repository reports;
+  --git-common-dir`, which every worktree reports;
 - each HQ-only path is excluded from the rsync by its root-anchored path, so a
   worktree's copy never lands and `--delete` cannot remove the deployed one;
 - after the rsync, `scripts/hq_tools.sh install` copies HQ's files into
   `/opt/odile`. It is idempotent: a converged file prints `same`, a changed one
   prints `installed` with its sha256.
 
+Adding a hidden input to a deployed unit means adding it to `HQ_ONLY_PATHS` in
+`scripts/hq_tools.sh`; `tests/test_deploy_hq_tools.py` pins the list.
+
 A standalone clone carries no hidden files; the deploy prints `hq-tools: no
-HQ-only files under <checkout>/tools` and leaves `/opt/odile` as it is. Deploy
-from a worktree of the HQ checkout, as §2 and §6 do.
+HQ-only paths under <checkout>` and leaves `/opt/odile` as it is. Deploy from a
+worktree of the HQ checkout, as §2 and §6 do.
 
 The dry run lists the rule's whole plan, and the apply prints the same lines
 with `same`/`installed`:
 
 ```sh
 ./scripts/deploy.sh -n
-# → would install the HQ-only tools from <HQ checkout>/tools; a worktree's copy never lands:
+# → would install the HQ-only paths from <HQ checkout> (tools/ and docs/backlog.yaml); a worktree's copy never lands:
+#   hq-tools: same docs/backlog.yaml
 #   hq-tools: same tools/roadmap_page.py
 #   hq-tools: would install tools/<name>.py (<sha256>)
 #   hq-tools: N file(s) would change, M already HQ's bytes
@@ -323,13 +336,14 @@ Run all four; each is also the evidence line for the card.
    `bcd11660dec1fb5b9d8c74b57fac03939bf045cb5b3c705496cc5204aaccb0db` at
    `a75043b` (blob `455f93a`, unchanged through `5805e0c`).
 
-   The private tools are checked the same way, in one command (§2, "Which copy
-   of a host-local tool the deployed tree runs"). It compares every HQ-only file
-   under `tools/` — `tools/roadmap_page.py` against the HQ checkout's copy —
-   and proves the tick that wrote `/var/lib/odile/roadmap.html` ran those
-   bytes: the page's own footer instant must follow the installed tool, the
-   footer's source sha must be `/var/lib/odile/roadmap-source`, and the deployed
-   generator must render the same footer in a `--stdout` dry run.
+   The private paths are checked the same way, in one command (§2, "Which copy
+   of a host-local tool the deployed tree runs"). It compares every HQ-only path
+   the units run with — `tools/roadmap_page.py` and `docs/backlog.yaml` against
+   the HQ checkout's copies — and proves the tick that wrote
+   `/var/lib/odile/roadmap.html` ran those bytes: the page's own footer instant
+   must follow the installed tool, the footer's source sha must be
+   `/var/lib/odile/roadmap-source`, and the deployed generator must render the
+   same footer in a `--stdout` dry run.
 
    ```sh
    ./scripts/check_hq_tools.sh

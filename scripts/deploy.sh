@@ -99,18 +99,22 @@ getent group odile >/dev/null 2>&1 || {
   exit 1
 }
 
-# HQ-only tools (ODL-347-F1-F1). `tools/` is mixed: its tracked files ship with
+# HQ-only paths (ODL-347-F1-F1). `tools/` is mixed: its tracked files ship with
 # the tree, but every file `.git/info/exclude` hides is private machinery that
 # exists only in the HQ checkout — `tools/roadmap_page.py` is the generator
-# odile-roadmap.service executes. A card worktree carries its own copy of a
-# hidden file (the same exclude file hides it there too, so `git status` stays
-# clean) and a plain `rsync --delete` installs it over HQ's. Measured
-# 2026-11-23: ODL-949's deploy from .worktrees/t_a0e1fdb5 rsynced its pre-card
-# generator (a2957af5…) over /opt/odile's fixed bytes (5f84c3e0…), and the next
-# tick served the reverted page. Rule: the deployed tree runs HQ's copy.
+# odile-roadmap.service executes. `docs/backlog.yaml` is the same kind of input:
+# the unit passes it as `--backlog /opt/odile/docs/backlog.yaml`. A card worktree
+# carries its own copy of a hidden tool (the same exclude file hides it there
+# too, so `git status` stays clean) and cannot carry the backlog at all, so a
+# plain `rsync --delete` both installed the stale copy and deleted the backlog.
+# Measured 2026-11-23: ODL-949's deploy from .worktrees/t_a0e1fdb5 rsynced its
+# pre-card generator (a2957af5…) over /opt/odile's fixed bytes (5f84c3e0…), and
+# the next tick served the reverted page; ODL-347-F1-F1's own deploy from
+# .worktrees/t_d0d4b865 deleted /opt/odile/docs/backlog.yaml and the roadmap
+# unit exited 2 until it was restored. Rule: the deployed tree runs HQ's copy.
 # `git rev-parse --git-common-dir` is shared by every worktree of this
 # repository, so its parent is the HQ checkout whichever tree this deploy runs
-# from; the hidden files are excluded from the transfer and installed from there
+# from; the hidden paths are excluded from the transfer and installed from there
 # after it.
 HQ_ROOT=$(unset CDPATH; cd -- "$(git rev-parse --path-format=absolute --git-common-dir)/.." && pwd)
 HQ_TOOLS=$("$HQ_TOOLS_SCRIPT" list "$HQ_ROOT" || true)
@@ -142,7 +146,7 @@ set -- \
   --include '/tests/fixtures/amd/***' \
   --exclude '/tests/**' \
   --exclude '__pycache__'
-# Every HQ-only tool is excluded by its root-anchored path: the deployed tree
+# Every HQ-only path is excluded by its root-anchored path: the deployed tree
 # keeps the copy it already has, and the install below replaces it with HQ's.
 # `--delete` does not remove an excluded path, which is why the install, not
 # the rsync, is what converges the file.
@@ -156,10 +160,10 @@ rsync -a --delete "$@" ./ /opt/odile/
 
 if [ "$DRY" -eq 1 ]; then
   if [ -n "$HQ_TOOLS" ]; then
-    echo "would install the HQ-only tools from $HQ_ROOT/tools; a worktree's copy never lands:"
+    echo "would install the HQ-only paths from $HQ_ROOT (tools/ and docs/backlog.yaml); a worktree's copy never lands:"
     "$HQ_TOOLS_SCRIPT" install --dry-run "$HQ_ROOT" /opt/odile
   else
-    echo "hq-tools: no HQ-only files at $HQ_ROOT/tools; /opt/odile keeps the copies it has"
+    echo "hq-tools: no HQ-only paths at $HQ_ROOT; /opt/odile keeps the copies it has"
   fi
   echo "would install odile-attest-refresh.service and .timer, plus the"
   echo "odile.service drop-in that writes the report through the atomic wrapper"
@@ -190,10 +194,11 @@ if [ "$TREE" != "750 root:odile" ]; then
   exit 1
 fi
 
-# Converge the HQ-only tools (ODL-347-F1-F1). The rsync excluded them, so a
+# Converge the HQ-only paths (ODL-347-F1-F1). The rsync excluded them, so a
 # worktree's stale copy never landed and a source tree without them could not
-# have deleted them; this install is what makes /opt/odile/tools the HQ
-# checkout's. Idempotent: a converged host prints `same` and writes nothing.
+# have deleted them; this install is what makes /opt/odile's tools/ and
+# docs/backlog.yaml the HQ checkout's. Idempotent: a converged host prints
+# `same` and writes nothing.
 "$HQ_TOOLS_SCRIPT" install "$HQ_ROOT" /opt/odile
 
 install -m 644 odile.service /etc/systemd/system/odile.service

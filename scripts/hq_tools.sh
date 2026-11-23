@@ -1,5 +1,6 @@
 #!/bin/sh
-# HQ-only tools: one rule for every private file under tools/.
+# HQ-only paths: one rule for every private file the deployed units execute or
+# read, under tools/ and docs/backlog.yaml.
 #
 # `tools/` is mixed. The tracked files ship with the tree; every file
 # `.git/info/exclude` hides is private machinery that exists only in the HQ
@@ -11,8 +12,15 @@
 # deploy from .worktrees/t_a0e1fdb5 installed its pre-card generator over the
 # fixed bytes, and the next tick served the reverted page.
 #
+# `docs/backlog.yaml` is the second hidden input: odile-roadmap.service runs
+# `--backlog /opt/odile/docs/backlog.yaml`, and a deploy from a worktree (which
+# cannot carry it) used to delete it with `rsync --delete`, so every tick failed
+# until a deploy from the HQ checkout restored it. Measured 2026-11-23, the same
+# card: the deploy from .worktrees/t_d0d4b865 left /opt/odile/docs/backlog.yaml
+# missing and the roadmap unit exited 2.
+#
 # The rule: the deployed tree runs the HQ checkout's copy. scripts/deploy.sh
-# excludes every HQ-only file from the rsync and runs `install` after it.
+# excludes every HQ-only path from the rsync and runs `install` after it.
 #
 #   scripts/hq_tools.sh list [HQ_ROOT]                  the HQ-only paths
 #   scripts/hq_tools.sh install [--dry-run] HQ_ROOT DEST
@@ -22,6 +30,10 @@
 # `git rev-parse --git-common-dir`, which every worktree of the repository
 # reports. `list` derives it when it is not given.
 set -eu
+
+# Every HQ-only path a deployed unit executes or reads. Extend this list when a
+# unit starts reading another hidden path; tests/test_deploy_hq_tools.py pins it.
+HQ_ONLY_PATHS="tools docs/backlog.yaml"
 
 usage() {
 	cat <<'EOF'
@@ -47,12 +59,14 @@ resolve_hq() {
 	(unset CDPATH; cd -- "$common/.." && pwd)
 }
 
-# The files git ignores at HQ: present in its working tree, absent from its
-# index. Sorted by ls-files; caches are not tools.
+# The files git ignores at HQ, within HQ_ONLY_PATHS: present in its working
+# tree, absent from its index. Sorted by ls-files; caches are not tools.
 hq_only_files() {
 	hq=$1
 	[ -d "$hq/tools" ] || return 0
-	git -C "$hq" ls-files --others --ignored --exclude-standard -- tools 2>/dev/null \
+	# HQ_ONLY_PATHS is a list of pathspecs; splitting it is the point.
+	# shellcheck disable=SC2086
+	git -C "$hq" ls-files --others --ignored --exclude-standard -- $HQ_ONLY_PATHS 2>/dev/null \
 		| grep -v -e '__pycache__' -e '\.pyc$' || true
 }
 
