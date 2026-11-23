@@ -120,11 +120,17 @@ exchange that succeeded and an installer that failed retries from the cache.
   for Caddy on the first-visit port;
 - `odile-first-visit.service` enabled, and started when PID 1 is present.
 
-The page writes the real scrypt hash into the tenant `.env` on its POST and
-restarts the gateway. On a tenant image the release installer
-(`installer/odile_install.py --first-visit`, ODL-457) is the program ODL-472
-places at `/usr/local/bin/odile-install.sh` and ODL-332 runs; it consumes the
-same cache pair, so the first boot's verified seed is not exchanged twice.
+The page is a login (ODL-925): the installer writes the sign-in the seed
+carries — the registration password's verifier — into the tenant `.env`
+before the Webapp's first boot, so the POST verifies the password the user
+chose at registration and shows the recovery code once. On a classic run with
+no seed the page chooses the sign-in and writes its scrypt hash, as before.
+Either way the POST restarts the gateway. On a tenant image the release
+installer (`installer/odile_install.py --first-visit`, ODL-457) is the program
+ODL-472 places at `/usr/local/bin/odile-install.sh` and ODL-332 runs; it
+consumes the same cache pair, so the first boot's verified seed is not
+exchanged twice, and it keeps the seeded verifier rather than writing a
+placeholder.
 
 **The release placement (ODL-472).** Step 1 is not a second installer: it
 copies `release/`'s exact bytes — `odile_install.py`, `manifest.json`,

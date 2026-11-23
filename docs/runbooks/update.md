@@ -1115,6 +1115,43 @@ manifest `7031d4a0…`). The id ledger: `-4` is t_509f85e4's support-grant help 
 (15:30Z), `-5` was this card's pre-review cut (16:35Z), and `-6` is later than
 every cut by `generated_at` (17:45Z).
 
+**The `2026.11.23-3` cut (ODL-925's brand round: the first-visit page as
+measured).** Same card; the re-cut carries the Designer's first brand pass.
+The rate limit and a refused write answer the page with one `role="alert"`
+notice instead of a text/plain body, a stale `?t=` picks its answer by the
+state, the classic setup footer drops D-1's registration clause, the sign-in
+field names no missing hint, the filled controls' selection paints, and the
+ready email says D-7 once followed by D-10; no managed config block, tenant
+file or skill moved. `install.md` §12.6 has the full record: installer
+`36add6da…` (1,576,201 bytes), manifest `508f9d2f…` (50,044 bytes; its diff
+against `-2` is `installer_sha256` and `generated_at` alone), skills
+`27d98728…` (852,651 bytes, unchanged), `release.json` `c18fd043…` (1,523
+bytes) naming `2026.11.23-3` at `2026-11-23T03:58:00Z`, `--verify-signature`
+OK on the checkout's installer (`signature: OK (sha256 36add6da…)`), a
+one-byte edit `e614121c…` (1,576,202 bytes) and `signature: BAD`, exit 3, and
+`tools/recut_release.py --check` with eleven `ok` lines. Committed, not
+deployed: the id ledger puts this card's `-2` at 01:33:33Z, and
+`2026.11.23-3` is later than every cut by `generated_at` (03:58:00Z) and on no
+other ref.
+
+**The `2026.11.23-2` cut (ODL-925: B-once — the first visit is a login).**
+The first-visit page and service are re-embedded as a tokenless sign-in page
+(`?t=` answers 410), the installer writes the seed's `sign_in_hash` into the
+tenant `.env` before the Webapp's first boot, and the image's installer stamps
+the seeded state; no managed config block, tenant file or skill moved.
+`install.md` §12.6 has the full record: installer `36f1ecaf…` (1,573,463
+bytes), manifest `e26f5fc6…` (50,044 bytes; its diff against `-1` is
+`installer_sha256` and `generated_at` alone), skills `27d98728…` (852,651
+bytes, unchanged), `release.json` `6744ffaa…` (1,144 bytes) naming
+`2026.11.23-2` at `2026-11-23T01:33:33Z`, `--verify-signature` OK on the
+checkout's installer (`signature: OK (sha256 36f1ecaf…)`), a one-byte edit
+`f55bdb52…` (1,573,464 bytes) and `signature: BAD`, exit 3, and
+`tools/recut_release.py --check` with eleven `ok` lines. Committed, not
+deployed: measured 2026-11-23T01:27Z the URL serves the deployed
+`2026.11.19-5`; the id ledger puts t_fe2aee5c's `-1` at 00:40Z, and
+`2026.11.23-2` is later than every cut by `generated_at` (01:33:33Z) and on no
+other ref.
+
 **The `2026.11.23-1` cut (t_fe2aee5c, the gate row names the file that runs
 it).** The installer's `gate_ok` docstring, the row an install prints and a
 self-test comment named `deploy/demo-host/deploy_demo_site.py`, which is on no

@@ -2,14 +2,15 @@
 """Tests for the recovery kit generator, re-cut for the strict bar.
 
 The kit attached to the ready email is the machine's own document: its facts,
-the single-use first-visit link, and the two ways back (the recovery code and
+the tokenless first-sign-in page, and the two ways back (the recovery code and
 the recovery file). It carries no terminal, no key the user handles and no
 passphrase — A9, A7 and A5 of `docs/product/CLAIMS-RECUT-STRICT.md`.
 
 Hermetic. The render tests call the real CLI; the seed test starts the real
 seed service against a throwaway database and key, issues a token, renders the
-kit with it, and proves the token works once. No machine, no network beyond
-loopback, no live database.
+kit, and proves the token still works once at the seed exchange — the kit no
+longer prints it (ODL-925). No machine, no network beyond loopback, no live
+database.
 
     /usr/bin/python3 -m unittest tests.test_recovery_kit -v
 """
@@ -55,7 +56,7 @@ WRITTEN = "2026-11-08T22:30:00Z"
 MEASUREMENT = "ab" * 48
 REPO = "sftp:odile-backup@backup.odile.fyi:/tenants/odl-7f3a2c"
 URL = f"https://{SLUG}.odile.fyi"
-FIRST_VISIT = f"{URL}/first-visit?t={TOKEN}"
+FIRST_VISIT = f"{URL}/first-visit"
 ACCOUNT = "https://test.odile.fyi"
 
 # The sentence a reader acts on when the renderer is given no account host: the
@@ -70,17 +71,18 @@ FALLBACK_PARAGRAPH = (
 # Every one of these is a decided v3.9 row (`docs/product/CLAIMS-RECUT-STRICT.md`)
 # or a deck row that row keeps. The kit may not coin a trust sentence of its own.
 DECK_SENTENCES = (
+    # ODL-926 owns the kit's code sentences; this board's A9 tail stays as it
+    # is here until that card's re-cut.
     "A recovery code and a recovery file are the way back: the code resets your "
     "sign-in, the file opens your backup. Your first visit gives you both; keep "
     "them off the machine. While the machine is still running, the agent can show "
     "it again.",
-    "Your Odile sign-in is set on your machine at first visit and hashed there. "
-    "We never see it. It is the only app-layer gate: no 2FA in alpha.0.",
+    "Your Odile password opens your machine and your account page. You chose it "
+    "when you registered. It is the only app-layer gate: no 2FA in alpha.0.",
     "The disk unlocks only on the boot you verify. Change the image, and it "
     "stays locked.",
     "After a reboot, it starts itself. The seal is the key.",
-    "Check the machine before you trust it: the verify page shows PASS or FAIL, "
-    "and you set your sign-in only after PASS.",
+    "Check the machine before you trust it: the verify page shows PASS or FAIL.",
     "The public key is in your recovery kit and at "
     "https://odile.fyi/odile-signing-key.pub.",
     "This is an operator signature, not a hardware measurement",
@@ -185,34 +187,30 @@ def kit_text(**overrides: str | None) -> str:
 
 
 def visit_url(text: str) -> str:
-    """The kit's one action line, as the user reads it."""
-    lines = [line for line in text.splitlines()
-             if line.startswith("Set your sign-in:")]
-    if len(lines) != 1:
-        raise AssertionError(f"expected one 'Set your sign-in:' line, got {lines}")
-    url = lines[0].split(":", 1)[1].strip()
-    if not url:
-        raise AssertionError("the 'Set your sign-in:' line has no value")
-    return url
+    """The kit's first sign-in URL, as the user reads it (tokenless)."""
+    match = re.search(r"Open (\S+/first-visit)\.", flat(text))
+    if match is None:
+        raise AssertionError("the kit has no 'Open <url>/first-visit.' sentence")
+    return match.group(1)
 
 
 class RenderTests(unittest.TestCase):
     def test_the_kit_carries_the_machine_values(self) -> None:
         text = kit_text()
-        for value in (SLUG, IPV4, INSTANCE, MEASUREMENT, REPO, EXPIRES):
+        for value in (SLUG, IPV4, INSTANCE, MEASUREMENT, REPO):
             self.assertIn(value, text)
         self.assertRegex(text, rf"(?m)^URL:\s+{re.escape(URL)}$")
-        self.assertRegex(text, rf"(?m)^Release:\s+2026\.11\.1$")
-        self.assertRegex(text, rf"(?m)^vCPUs:\s+4$")
+        self.assertRegex(text, r"(?m)^Release:\s+2026\.11\.1$")
+        self.assertRegex(text, r"(?m)^vCPUs:\s+4$")
         self.assertRegex(text, rf"(?m)^Machine ID:\s+{re.escape(INSTANCE)}$")
         self.assertRegex(text, rf"(?m)^Measurement:\s+{MEASUREMENT}$")
-        self.assertRegex(text, r"(?m)^Token expires:\s+2026-11-15T22:30:00Z$")
 
-    def test_the_setup_token_line_is_the_first_visit_url(self) -> None:
-        """The one action is the URL the ready email's `Set your sign-in:` carries."""
+    def test_the_first_sign_in_line_is_the_tokenless_page(self) -> None:
+        """The one action is the tokenless page (B-once, ODL-925)."""
         text = kit_text()
         self.assertEqual(visit_url(text), FIRST_VISIT)
-        self.assertEqual(text.count(TOKEN), 1, "the token travels only inside the URL")
+        self.assertNotIn("?t=", text)
+        self.assertEqual(text.count(TOKEN), 0, "the setup token is not a kit value")
         self.assertNotIn("setup_token", text)
         self.assertNotIn("recovery-kit.json", text)
 
@@ -227,12 +225,12 @@ class RenderTests(unittest.TestCase):
         for sentence in V37_SENTENCES:
             self.assertNotIn(flat(sentence), flat(text), f"v3.7 sentence survived: {sentence!r}")
 
-    def test_the_reader_checks_before_setting_the_sign_in(self) -> None:
-        """Check then set: /verify and PASS come before the first-visit form."""
+    def test_the_reader_checks_before_signing_in(self) -> None:
+        """Check then sign in: /verify and PASS come before the first-sign-in page."""
         text = kit_text()
-        check = text.index("\nBefore you set your sign-in\n")
-        visit = text.index("\nThe first visit\n")
-        self.assertLess(check, visit, "the kit must read check -> set")
+        check = text.index("\nBefore you sign in\n")
+        visit = text.index("\nThe first sign-in\n")
+        self.assertLess(check, visit, "the kit must read check -> sign in")
         self.assertLess(text.index(f"{URL}/verify"), visit)
 
     def test_the_masthead_is_sentence_case(self) -> None:
@@ -240,25 +238,30 @@ class RenderTests(unittest.TestCase):
         self.assertEqual(text.splitlines()[0], f"Odile recovery kit — {SLUG}")
         self.assertNotIn("ODILE RECOVERY KIT", text)
 
-    def test_the_expiry_is_words_in_prose_and_iso_on_the_fact_line(self) -> None:
+    def test_the_token_expiry_is_gone(self) -> None:
+        """B-once: the kit prints no token, so it prints no token expiry."""
         text = kit_text()
-        self.assertRegex(text, r"(?m)^Token expires:\s+2026-11-15T22:30:00Z$")
-        self.assertIn("The link expires 15 November 2026, 22:30 UTC.", flat(text))
-        self.assertEqual(text.count(EXPIRES), 1, "the ISO instant stays on its fact line")
+        self.assertNotIn("Token expires", text)
+        self.assertNotIn(EXPIRES, text)
+        self.assertNotIn("The link expires", flat(text))
 
-    def test_the_password_count_and_the_file_copy_are_plain(self) -> None:
+    def test_the_sign_in_is_the_password_chosen_at_registration(self) -> None:
         text = flat(kit_text())
-        self.assertIn("at least 16 characters", text)
-        self.assertNotIn("sixteen", text.lower())
+        self.assertIn(
+            "Sign in with the password you chose when you registered.", text)
+        self.assertIn(
+            "The first sign-in shows your recovery code once and offers your "
+            "recovery file.", text)
+        self.assertNotIn("at least 16 characters", text)
         self.assertIn(
             "Download your copy on the first visit and keep it off the machine: "
             "it is your only copy of the backup password.", text)
         self.assertNotIn("The file stays on the machine", text)
 
-    def test_the_action_points_at_the_ready_email_and_repeats_its_url(self) -> None:
+    def test_the_action_names_the_page_and_carries_d1(self) -> None:
         text = flat(kit_text())
-        self.assertIn("Open the Set your sign-in link in your ready email.", text)
-        self.assertIn("The same URL is printed at the top of this file.", text)
+        self.assertIn(f"Open {FIRST_VISIT}.", text)
+        self.assertIn(flat(DECK_SENTENCES[1]), text, "D-1 is the page's footer")
 
     def test_the_two_ways_back_are_printed(self) -> None:
         text = flat(kit_text())
@@ -460,8 +463,10 @@ class RenderTests(unittest.TestCase):
             "missing key": {"signing-key": "/nonexistent/odile.pub"},
             "uppercase measurement": {"measurement": "AB" * 48},
             "short measurement": {"measurement": "a" * 95},
-            "visit url without the token": {
-                "first-visit-url": f"{URL}/first-visit"},
+            "visit url with a token": {
+                "first-visit-url": f"{URL}/first-visit?t={TOKEN}"},
+            "visit url is another page": {
+                "first-visit-url": f"{URL}/verify"},
         }
         for label, overrides in cases.items():
             with self.subTest(label):
@@ -610,12 +615,12 @@ class SeedOnceTests(unittest.TestCase):
         connection.close()
         return response.status, data
 
-    def test_a_rendered_kit_token_works_once(self) -> None:
+    def test_a_rendered_kit_prints_no_token_and_the_token_still_fetches_the_seed(self) -> None:
         token, expires = self.issue()
         text = kit_text(token=token, expires_at=expires)
-        visit = visit_url(text)
-        self.assertTrue(visit.endswith(f"/first-visit?t={token}"), visit)
-        self.assertEqual(text.count(token), 1)
+        self.assertEqual(visit_url(text), FIRST_VISIT)
+        self.assertNotIn("?t=", text)
+        self.assertEqual(text.count(token), 0, "the kit never prints the setup token")
         first, body = self.exchange(token)
         self.assertEqual(first, 200, body[:300])
         seed = json.loads(body)

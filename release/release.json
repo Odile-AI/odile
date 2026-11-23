@@ -1,8 +1,8 @@
 {
   "artifacts": {
     "installer": {
-      "sha256": "48d5b48ade2ca4b7ec94208a61ad4aec3c6bab68658a031ad21b3b7630197b20",
-      "size": 1563412,
+      "sha256": "36add6dab970697bc456076e249bd433332a13abf1e9cd216e235b9014203bf6",
+      "size": 1576201,
       "url": "odile_install.py"
     },
     "skills": {
@@ -14,14 +14,14 @@
   "boot": {
     "kernel": "6.12.115+deb13.1-amd64"
   },
-  "generated_at": "2026-11-23T00:40:00Z",
+  "generated_at": "2026-11-23T03:58:00Z",
   "manifest": {
-    "sha256": "a263d35b482175548f3dc371f04b6e451ce47212e48c67856f7bebcf8c9da59e",
+    "sha256": "508f9d2fab496c9aa355e492aeeb7e03e9a927ff9c2725d336ddecdb818a1a74",
     "signature_url": "manifest.json.sig",
     "url": "manifest.json"
   },
-  "notes": "t_fe2aee5c: the shipped installer's gate docstring, its printed install-result label and a self-test comment named deploy/demo-host/deploy_demo_site.py, a file on no ref of this repository (git ls-files and git log --all both return nothing; no gate_ok function exists under deploy/). They now name the file that asserts the 302/401/200 table, deploy/demo-host/check_demo_host.sh (302 on /, 401 on /api/sessions, 200 with a session), so the label every tenant reads on an install prints a name that exists. One docstring, one printed string and two comments only: no managed config block, tenant file, skill row, install-script pin or embedded program moved, so this surgical re-cut moves installer_sha256, the manifest and this document.",
+  "notes": "ODL-925 (B-once): the first visit is a login. The first-visit page and the service it runs are re-embedded (the page is tokenless, ?t= answers 410, the state carries first_login_at), the installer writes the seed's sign_in_hash into the tenant .env before the Webapp's first boot, and the image's installer stamps the seeded state. Brand round: the rate limit and a refused write answer the page with one role=\"alert\" notice, a stale ?t= picks its answer by the state (a set sign-in is 'already set', with one way in), the classic setup footer drops D-1's registration clause, the sign-in field names no missing hint, the filled controls' selection paints, and the ready email says D-7 once followed by D-10. The manifest moves installer_sha256 and generated_at only; skills_bundle_sha256 and every skill row are unchanged.",
   "product": "odile",
-  "release": "2026.11.23-1",
+  "release": "2026.11.23-3",
   "schema": 1
 }

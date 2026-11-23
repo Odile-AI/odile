@@ -85,14 +85,15 @@ def hermes_agent_root() -> Path | None:
     return None
 
 
-def tenant_env(username: str = "odile") -> str:
+def tenant_env(username: str = "odile", password_hash: str | None = None) -> str:
     """The installer's three-key allowlist, with a placeholder hash."""
     return (
         "# Odile tenant .env — an allowlist, not a copy of a seat .env.\n"
         "# Exactly these three keys.\n"
         f"HERMES_DASHBOARD_BASIC_AUTH_USERNAME={username}\n"
-        "HERMES_DASHBOARD_BASIC_AUTH_PASSWORD_HASH=scrypt$16384$8$1$AAAA$BBBB\n"
-        "HERMES_DASHBOARD_BASIC_AUTH_SECRET=c2VjcmV0LXBsYWNlaG9sZGVy\n"
+        "HERMES_DASHBOARD_BASIC_AUTH_PASSWORD_HASH=%s\n"
+        % (password_hash or "scrypt$16384$8$1$AAAA$BBBB")
+        + "HERMES_DASHBOARD_BASIC_AUTH_SECRET=c2VjcmV0LXBsYWNlaG9sZGVy\n"
     )
 
 
@@ -106,6 +107,19 @@ A9_DECIDED = (
     "sign-in, the file opens your backup. Your first visit gives you both; keep "
     "them off the machine. While the machine is still running, the agent can "
     "show it again."
+)
+# D-6 (docs/CLAIMS.md v3.11), the row that replaces A9's tail: the two
+# first-visit pages carry it verbatim (ODL-925).
+D6_DECIDED = (
+    "A recovery code and a recovery file are the way back: the code resets your "
+    "sign-in, the file opens your backup. Your first visit gives you both; keep "
+    "them off the machine. While the machine is still running, the agent can "
+    "replace the code and show you the new one."
+)
+# D-1 (docs/CLAIMS.md v3.11): the page's footer, verbatim.
+D1_DECIDED = (
+    "Your Odile password opens your machine and your account page. You chose it "
+    "when you registered. It is the only app-layer gate: no 2FA in alpha.0."
 )
 
 
@@ -204,21 +218,34 @@ def certificate_chain_fixture(directory: Path, host: str) -> tuple[Path, str, st
 
 
 class FirstVisitHarness:
-    """One service process, one temp guest root, one token."""
+    """One service process, one temp guest root, one token.
+
+    ``seeded`` is the B-once shape (ODL-925): the .env already holds the
+    registration password's verifier and the state says ``signin_set_at``, so
+    the page serves a login. The default is the classic install: no seed wrote
+    a usable sign-in, so the visit chooses one and the page serves the setup.
+    """
 
     def __init__(self, reload_command: str = "", username: str = "odile",
-                 recovery: str | None = None, caddy_stores: list[Path] | None = None):
+                 recovery: str | None = None, caddy_stores: list[Path] | None = None,
+                 seeded: bool = False):
         self.tmp = tempfile.TemporaryDirectory(prefix="odl457-")
         self.root = Path(self.tmp.name)
         self.hermes = self.root / "home" / "odile" / ".hermes"
         self.hermes.mkdir(parents=True)
         self.env = self.hermes / ".env"
-        self.env.write_text(tenant_env(username), encoding="utf-8")
+        self.seeded = seeded
+        self.env.write_text(
+            tenant_env(username, fv.hash_password(PASSWORD) if seeded else None),
+            encoding="utf-8")
         self.env.chmod(0o600)
         self.state = self.root / "etc" / "first-visit.json"
         self.recovery = self.root / "etc" / "recovery.txt"
         self.token = secrets.token_hex(32)
-        fv.initialise_state(self.state, self.token)
+        state = fv.initialise_state(self.state, self.token)
+        if seeded:
+            state["signin_set_at"] = state["created_at"]
+            fv.save_state(self.state, state)
         if recovery is not None:
             self.recovery.write_text(recovery, encoding="utf-8")
             self.recovery.chmod(0o600)
@@ -277,8 +304,15 @@ class FirstVisitHarness:
 
     def set_signin(self, password: str = PASSWORD,
                    headers: dict[str, str] | None = None) -> tuple[int, dict, str]:
+        """The classic setup POST: choose a sign-in. No token travels."""
         return self.call("POST", "/first-visit",
-                         {"t": self.token, "password": password, "password2": password},
+                         {"password": password, "password2": password},
+                         headers=headers)
+
+    def signin(self, password: str = PASSWORD,
+               headers: dict[str, str] | None = None) -> tuple[int, dict, str]:
+        """The B-once login POST: one password, verified against the .env."""
+        return self.call("POST", "/first-visit", {"password": password},
                          headers=headers)
 
     def fetch(self, method: str, path: str) -> tuple[int, dict, bytes]:
@@ -572,52 +606,63 @@ else:
 
 
 class TokenTests(unittest.TestCase):
+    """B-once (ODL-925): the page is tokenless and ``?t=`` is the stale link."""
+
     def setUp(self):
         self.harness = FirstVisitHarness()
         self.addCleanup(self.harness.close)
 
-    def test_a_valid_token_renders_the_form(self):
-        status, headers, page = self.harness.call("GET", "/first-visit?t=" + self.harness.token)
+    def test_a_bare_get_renders_the_setup_form(self):
+        status, headers, page = self.harness.call("GET", "/first-visit")
         self.assertEqual(status, 200)
-        self.assertIn("Set your sign-in", page)
-        self.assertIn('name="t" value="%s"' % self.harness.token, page)
+        self.assertIn("Choose your sign-in", page)
+        self.assertIn('method="post" action="/first-visit"', page)
+        self.assertNotIn('name="t"', page)
+        self.assertNotIn(self.harness.token, page)
         self.assertNotIn("{{", page)
         self.assertEqual(headers.get("Cache-Control"), "no-store")
         self.assertEqual(headers.get("Referrer-Policy"), "no-referrer")
         self.assertIn("form-action 'self'", headers.get("Content-Security-Policy", ""))
 
-    def test_a_reload_does_not_spend_the_token(self):
-        # A mail scanner prefetches the link and a phone reloads the tab; both
-        # are GETs. The token is spent by the POST, not the render.
-        for _ in range(3):
-            status, _, _ = self.harness.call("GET", "/first-visit?t=" + self.harness.token)
-            self.assertEqual(status, 200)
-        status, _, _ = self.harness.set_signin()
-        self.assertEqual(status, 200)
-
-    def test_a_missing_or_unknown_token_is_refused(self):
-        for path in ("/first-visit", "/first-visit?t=", "/first-visit?t=" + "a" * 64,
-                     "/first-visit?t=short"):
+    def test_any_query_token_is_the_stale_link(self):
+        """A valid, unknown, short or empty ``?t=`` never renders the form."""
+        for path in ("/first-visit?t=" + self.harness.token, "/first-visit?t=",
+                     "/first-visit?t=" + "a" * 64, "/first-visit?t=short"):
             with self.subTest(path=path):
                 status, _, page = self.harness.call("GET", path)
-                self.assertEqual(status, 404)
+                self.assertEqual(status, 410)
                 self.assertIn("This link is closed", page)
-                self.assertNotIn("Set your sign-in", page)
+                self.assertNotIn("Choose your sign-in", page)
+                self.assertNotIn(">Sign in<", page)
+                self.assertNotIn('type="password"', page)
+                self.assertNotIn("<form", page)
 
-    def test_a_reused_token_is_refused(self):
+    def test_a_reload_changes_nothing(self):
+        for _ in range(3):
+            status, _, _ = self.harness.call("GET", "/first-visit")
+            self.assertEqual(status, 200)
+        self.assertIsNone(self.harness.load_state()["signin_set_at"])
         status, _, _ = self.harness.set_signin()
         self.assertEqual(status, 200)
-        first_hash = self.harness.stored_hash()
-        self.assertEqual(self.harness.call("GET", "/first-visit?t=" + self.harness.token)[0], 410)
-        status, _, page = self.harness.set_signin("another-long-password-0001")
-        self.assertEqual(status, 410)
-        self.assertIn("This link is closed", page)
-        self.assertEqual(self.harness.stored_hash(), first_hash,
-                         "a refused reuse must not rewrite the hash")
-        self.assertEqual(self.harness.load_state()["used_at"],
-                         self.harness.load_state()["signin_set_at"])
 
-    def test_two_posts_at_once_spend_the_token_once(self):
+    def test_the_setup_write_records_the_first_login_and_opens_the_login_form(self):
+        status, _, _ = self.harness.set_signin()
+        self.assertEqual(status, 200)
+        state = self.harness.load_state()
+        self.assertIsNotNone(state["first_login_at"])
+        self.assertEqual(state["signin_set_at"], state["first_login_at"],
+                         "first_login_at and signin_set_at land in one write")
+        self.assertEqual(state["used_at"], state["signin_set_at"])
+        # The page is a login now, and the page's only credential is the
+        # password just chosen.
+        status, _, page = self.harness.call("GET", "/first-visit")
+        self.assertEqual(status, 200)
+        self.assertIn("Sign in", page)
+        self.assertNotIn('name="t"', page)
+        self.assertEqual(self.harness.signin(PASSWORD)[0], 200)
+        self.assertEqual(self.harness.signin(PASSWORD + "x")[0], 200)
+
+    def test_two_setup_posts_at_once_write_one_hash(self):
         results: list[int] = []
         lock = threading.Lock()
 
@@ -631,42 +676,157 @@ class TokenTests(unittest.TestCase):
             thread.start()
         for thread in threads:
             thread.join()
-        self.assertEqual(sorted(results), [200, 410], results)
+        # One write wins; the second sees a login page and refuses the other
+        # password, so the stored hash accepts exactly one of the two.
+        self.assertEqual(sorted(results), [200, 200], results)
+        accepted = [index for index in range(2)
+                    if fv.verify_password("racing-long-password-%04d" % index,
+                                          self.harness.stored_hash())]
+        self.assertEqual(len(accepted), 1, accepted)
+
+
+class SignInLoginTests(unittest.TestCase):
+    """The B-once first visit: a login, one password, the code once."""
+
+    def setUp(self):
+        self.harness = FirstVisitHarness(seeded=True)
+        self.addCleanup(self.harness.close)
+
+    def test_the_page_asks_for_one_password_and_titles_itself_sign_in(self):
+        status, _, page = self.harness.call("GET", "/first-visit")
+        self.assertEqual(status, 200)
+        self.assertIn("<title>Sign in — Odile</title>", page)
+        self.assertEqual(page.count('type="password"'), 1)
+        self.assertNotIn('name="password2"', page)
+        self.assertNotIn('name="t"', page)
+        self.assertIn("The first sign-in shows your recovery code once and offers "
+                      "your recovery file.", page)
+        # D-1 verbatim, and neither retiring sentence survives.
+        self.assertIn("Your Odile password opens your machine and your account "
+                      "page. You chose it when you registered. It is the only "
+                      "app-layer gate: no 2FA in alpha.0.", page)
+        self.assertNotIn("set on your machine at first visit", page)
+        self.assertNotIn("We never see it", page)
+
+    def test_a_wrong_password_re_renders_one_error_and_writes_nothing(self):
+        before = self.harness.env_text()
+        status, _, page = self.harness.signin(PASSWORD + "x")
+        self.assertEqual(status, 200)
+        self.assertIn("That password does not match this machine&#x27;s sign-in.", page)
+        self.assertEqual(page.count('aria-invalid="true"'), 1)
+        self.assertEqual(page.count('id="error"'), 1)
+        self.assertEqual(self.harness.env_text(), before)
+        self.assertIsNone(self.harness.load_state()["first_login_at"])
+        self.assertIsNone(self.harness.load_state()["recovery_hash"])
+
+    def test_a_wrong_password_is_rate_limited(self):
+        last, headers, body = 0, {}, ""
+        for _ in range(11):
+            last, headers, body = self.harness.signin(PASSWORD + "x")
+        self.assertEqual(last, 429, body)
+        # The limit is the page, not a bare string: the sign-in block, the
+        # 429, and one form-level notice above the button (brand round).
+        self.assertTrue(headers.get("Content-Type", "").startswith("text/html"))
+        self.assertIn("<title>Sign in — Odile</title>", body)
+        self.assertEqual(body.count('role="alert"'), 1)
+        self.assertIn('<p class="error" id="notice" role="alert">Too many attempts. '
+                      "Try again in ten minutes.</p>", body)
+        self.assertEqual(body.count('type="password"'), 1)
+        self.assertIn('action="/first-visit"', body)
+
+    def test_the_signin_field_points_at_no_missing_hint(self):
+        # The sign-in block renders no #password-hint, so its one control must
+        # not name one; with an error it points at #error only (brand round).
+        status, _, page = self.harness.call("GET", "/first-visit")
+        self.assertEqual(status, 200)
+        self.assertNotIn("password-hint", page)
+        self.assertNotIn("aria-describedby", page)
+        status, _, page = self.harness.signin(PASSWORD + "x")
+        self.assertEqual(status, 200)
+        self.assertIn('aria-invalid="true" aria-describedby="error"', page)
+        self.assertNotIn("password-hint", page)
+
+    def test_the_right_password_shows_the_code_and_writes_one_state(self):
+        status, headers, page = self.harness.signin()
+        self.assertEqual(status, 200)
+        self.assertEqual(headers.get("Cache-Control"), "no-store")
+        match = CODE_RE.search(page)
+        self.assertIsNotNone(match, "the done page does not show a recovery code")
+        self.assertIn("I have saved the code and the file", page)
+        self.assertIn("Open your workspace", page)
+        self.assertIn(D6_DECIDED, page)
+        state = self.harness.load_state()
+        self.assertIsNotNone(state["first_login_at"])
+        self.assertEqual(state["signin_set_at"], self.harness.load_state()["signin_set_at"])
+        self.assertIsNone(state["used_at"], "a login does not spend the setup token")
+        self.assertTrue(fv.verify_password(fv.normalise_code(match.group(1)),
+                                           state["recovery_hash"]))
+        # The .env is untouched: the password was already its verifier.
+        self.assertTrue(fv.verify_password(PASSWORD, self.harness.stored_hash()))
+        # The page opens again as a login, and never shows the code twice.
+        status, _, again = self.harness.call("GET", "/first-visit")
+        self.assertEqual(status, 200)
+        self.assertNotIn(match.group(1), again)
+
+    def test_a_stale_token_on_a_seeded_machine_never_renders_or_writes(self):
+        before = self.harness.env_text()
+        for path in ("/first-visit?t=" + self.harness.token, "/first-visit?t=",
+                     "/first-visit?t=" + "f" * 64):
+            with self.subTest(path=path):
+                status, _, page = self.harness.call("GET", path)
+                self.assertEqual(status, 410)
+                self.assertNotIn("<form", page)
+        self.assertEqual(self.harness.env_text(), before)
+        self.assertIsNone(self.harness.load_state()["first_login_at"])
+
+    def test_a_stale_token_on_the_seeded_state_answers_already_set_with_one_way_in(self):
+        # The seeded state this card creates: the .env holds the registration
+        # verifier and signin_set_at is stamped, but no recovery code exists
+        # until the sign-in. The stale link is "already set" — and its one
+        # action is the tokenless page that signs in, never the reset route
+        # (which answers 409 on this state).
+        status, _, page = self.harness.call("GET", "/first-visit?t=" + self.harness.token)
+        self.assertEqual(status, 410)
+        self.assertIn("The sign-in is already set, or the link is not valid.", page)
+        self.assertNotIn("<form", page)
+        self.assertNotIn("/first-visit/reset", page)
+        self.assertEqual(
+            re.findall(r'<a\b[^>]*href="(/[^"]*)"', page), ["/first-visit"])
+        self.assertIn('<a class="primary" href="/first-visit">Sign in</a>', page)
 
 
 class RefusedPageTests(unittest.TestCase):
-    """A refused link must not offer an action that refuses (ODL-471 follow-up).
+    """The stale link and the closed reset route (ODL-925, ODL-471 follow-up).
 
-    An unknown token on a machine whose sign-in was never set means no recovery
-    code has been issued, so ``/first-visit/reset`` answers 409. A spent token
-    means the code exists, and the reset form is the way back.
+    ``?t=`` is the A-era link: any value, on any machine, answers 410 and
+    renders no form. A machine with no sign-in yet offers the tokenless page
+    (its setup form); once a sign-in and a code exist, the reset form is the
+    way back.
     """
 
     def setUp(self):
         self.harness = FirstVisitHarness()
         self.addCleanup(self.harness.close)
 
-    def test_an_unknown_token_offers_no_action_that_refuses(self):
-        for path in ("/first-visit", "/first-visit?t=short",
-                     "/first-visit?t=" + "a" * 64):
+    def test_the_stale_link_before_a_signin_offers_the_tokenless_page(self):
+        for path in ("/first-visit?t=" + self.harness.token, "/first-visit?t=short",
+                     "/first-visit?t="):
             with self.subTest(path=path):
                 status, _, page = self.harness.call("GET", path)
-                self.assertEqual(status, 404)
+                self.assertEqual(status, 410)
                 self.assertIn("This link is closed", page)
                 self.assertNotIn("/first-visit/reset", page)
-                self.assertNotIn('href="/first-visit/reset"', page)
                 self.assertNotIn("Reset with a recovery code", page)
-                # Nothing left to click can refuse: the wordmark is plain
-                # before the sign-in exists and no other first-visit route is
-                # offered. `<link rel=icon>` is not a click, so the scan is
-                # scoped to anchors (ODL-504).
-                self.assertEqual(re.findall(r'<a\b[^>]*href="(/[^"]*)"', page), [])
-                self.assertIn("ready email", page)
-                self.assertIn("help@odile.fyi", page)
-        # The route the page used to offer still refuses; that is why it is gone.
+                # The one action is the tokenless page, which on this machine
+                # is the setup form; nothing left to click can refuse.
+                self.assertEqual(
+                    re.findall(r'<a\b[^>]*href="(/[^"]*)"', page), ["/first-visit"])
+                self.assertIn("Open the first-visit page", page)
+                self.assertIn("no sign-in has been set on this machine yet", page)
+        # The route the page does not offer still refuses; that is why it is gone.
         self.assertEqual(self.harness.call("GET", "/first-visit/reset")[0], 409)
 
-    def test_a_spent_token_still_offers_the_reset_form(self):
+    def test_the_stale_link_after_a_code_still_offers_the_reset_form(self):
         status, _, _ = self.harness.set_signin()
         self.assertEqual(status, 200)
         status, _, page = self.harness.call("GET", "/first-visit?t=" + self.harness.token)
@@ -678,13 +838,13 @@ class RefusedPageTests(unittest.TestCase):
         self.assertIn('name="code"', form)
         self.assertIn("Reset your sign-in", form)
 
-    def test_an_unknown_token_keeps_the_reset_link_once_a_code_exists(self):
+    def test_an_unknown_token_on_a_machine_with_a_code_keeps_the_reset_link(self):
         # The sign-in is set, so a recovery code exists and the reset route
-        # answers 200 even though this token does not match.
+        # answers 200 even though this token matches nothing.
         status, _, _ = self.harness.set_signin()
         self.assertEqual(status, 200)
         status, _, page = self.harness.call("GET", "/first-visit?t=" + "b" * 64)
-        self.assertEqual(status, 404)
+        self.assertEqual(status, 410)
         self.assertIn('href="/first-visit/reset"', page)
         self.assertEqual(self.harness.call("GET", "/first-visit/reset")[0], 200)
 
@@ -751,7 +911,7 @@ class SignInTests(unittest.TestCase):
             ["HERMES_DASHBOARD_BASIC_AUTH_USERNAME",
              "HERMES_DASHBOARD_BASIC_AUTH_PASSWORD_HASH",
              "HERMES_DASHBOARD_BASIC_AUTH_SECRET"])
-        self.assertIn("hashed there. We never see it.", PAGE.read_text(encoding="utf-8"))
+        self.assertIn(D1_DECIDED, PAGE.read_text(encoding="utf-8"))
         self.assertTrue(fv.verify_password(PASSWORD, self.harness.stored_hash()))
         self.assertNotIn(PASSWORD, text)
         self.assertNotIn(PASSWORD, self.harness.state.read_text(encoding="utf-8"))
@@ -817,9 +977,9 @@ class SignInTests(unittest.TestCase):
         state = self.harness.load_state()
         self.assertTrue(state["recovery_hash"].startswith("scrypt$"))
         self.assertTrue(fv.verify_password(fv.normalise_code(code), state["recovery_hash"]))
-        # Re-fetching the page cannot show it again: the token is spent.
-        status, _, page = self.harness.call("GET", "/first-visit?t=" + self.harness.token)
-        self.assertEqual(status, 410)
+        # Re-fetching the page cannot show it again: the page is the login now.
+        status, _, page = self.harness.call("GET", "/first-visit")
+        self.assertEqual(status, 200)
         self.assertNotIn(code, page)
 
     def test_the_reload_runs_after_the_hash_is_written(self):
@@ -1028,7 +1188,7 @@ class RecoveryDownloadTests(unittest.TestCase):
                          "the code is never a bearer in the download URL")
         self.assertIn('download="odile-recovery-odl-test.txt"', page)
         self.assertLess(page.index('id="code"'), page.index('class="download"'))
-        self.assertIn(A9_DECIDED, page)
+        self.assertIn(D6_DECIDED, page)
 
     def test_the_done_page_fills_the_download_not_the_workspace_link(self):
         # The card's hierarchy finding: the download must not skip, so it is
@@ -1389,7 +1549,7 @@ class ConnectionTests(unittest.TestCase):
     def test_a_head_request_has_headers_and_no_body(self):
         connection = self.connection()
         try:
-            connection.request("HEAD", "/first-visit?t=" + self.harness.token)
+            connection.request("HEAD", "/first-visit")
             response = connection.getresponse()
             self.assertEqual(response.status, 200)
             self.assertGreater(int(response.getheader("Content-Length", "0")), 1000)
@@ -1444,22 +1604,30 @@ class PageTests(unittest.TestCase):
         self.assertIn('autocomplete="new-password"', page)
         self.assertIn("minlength=\"16\"", page)
 
-    def test_the_form_asks_for_the_password_twice_and_hints_the_length(self):
-        page = self.harness.call("GET", "/first-visit?t=" + self.harness.token)[2]
+    def test_the_setup_form_asks_for_the_password_twice_and_hints_the_length(self):
+        page = self.harness.call("GET", "/first-visit")[2]
         self.assertIn('id="password" name="password"', page)
         self.assertIn('id="password2" name="password2"', page)
         self.assertIn("At least 16 characters.", page)
         self.assertIn('aria-describedby="password-hint"', page)
+        # A classic install has no registration, so its footer drops D-1's
+        # middle sentence ("You chose it when you registered"); the sign-in
+        # block keeps D-1 verbatim (brand round).
+        self.assertNotIn("You chose it when you registered", page)
+        self.assertIn("Your Odile password opens your machine and your account "
+                      "page. It is the only app-layer gate: no 2FA in alpha.0.", page)
 
-    def test_the_recovery_screens_carry_a9_and_no_coined_custody_sentence(self):
+    def test_the_recovery_screens_carry_d6_and_no_coined_custody_sentence(self):
         text = PAGE.read_text(encoding="utf-8")
-        self.assertIn(A9_DECIDED, text)
+        self.assertIn(D6_DECIDED, text)
+        self.assertIn(D1_DECIDED, text)
+        self.assertNotIn("the agent can show it again", text)
         self.assertNotIn("We hold neither", text)
         self.assertNotIn("Only its hash stays on this machine.", text)
         self.assertIn("A7 and A9", text)
         status, _, done = self.harness.set_signin()
         self.assertEqual(status, 200)
-        self.assertIn(A9_DECIDED, done)
+        self.assertIn(D6_DECIDED, done)
         match = CODE_RE.search(done)
         assert match is not None, "the done page has no recovery code"
         code = match.group(1)
@@ -1467,7 +1635,7 @@ class PageTests(unittest.TestCase):
             "POST", "/first-visit/reset",
             {"code": code, "password": NEW_PASSWORD, "password2": NEW_PASSWORD})
         self.assertEqual(status, 200)
-        self.assertIn(A9_DECIDED, reset_done)
+        self.assertIn(D6_DECIDED, reset_done)
 
     def test_the_reset_page_carries_the_decided_copy_and_the_checkbox(self):
         """§3.4's copy, and a no-JavaScript gate on the workspace link."""
@@ -1496,7 +1664,7 @@ class PageTests(unittest.TestCase):
                       "not show it again.", done)
         self.assertIn('input type="checkbox" id="saved"', done)
         self.assertIn("I have saved the code and the file", done)
-        self.assertIn(A9_DECIDED, done)
+        self.assertIn(D6_DECIDED, done)
 
     def test_the_consent_checkbox_gates_the_workspace_link(self):
         """The gate is on the label that holds the input, and it hides the link.
@@ -1718,14 +1886,14 @@ class KeyboardContractTests(unittest.TestCase):
     def states(self) -> dict[str, str]:
         """Every state the page can render, from one guest root."""
         pages = {
-            "form": self.harness.call(
-                "GET", "/first-visit?t=" + self.harness.token)[2],
+            "form": self.harness.call("GET", "/first-visit")[2],
             "refused-unknown": self.harness.call(
                 "GET", "/first-visit?t=" + "a" * 64)[2],
         }
         status, _, done = self.harness.set_signin()
         self.assertEqual(status, 200)
         pages["done"] = done
+        pages["signin"] = self.harness.call("GET", "/first-visit")[2]
         pages["refused"] = self.harness.call(
             "GET", "/first-visit?t=" + self.harness.token)[2]
         pages["reset-form"] = self.harness.call("GET", "/first-visit/reset")[2]
@@ -1775,7 +1943,7 @@ class KeyboardContractTests(unittest.TestCase):
         browser's role mapping does with it.
         """
         expected = {
-            "form": [], "refused": [], "reset-form": [], "recover-form": [],
+            "form": [], "signin": [], "refused": [], "reset-form": [], "recover-form": [],
             "done": ["recovery"], "reset-done": ["recovery"],
             "recovery-done": ["recovery"], "refused-unknown": ["what-next"],
         }

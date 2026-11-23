@@ -492,15 +492,22 @@ class ClaimPageTests(unittest.TestCase):
     # -- the ready email --------------------------------------------------
 
     def test_the_ready_email_has_url_measurement_and_one_link(self) -> None:
-        token = "ab" * 32
-        first_visit = f"https://{self.slug}.odile.fyi/first-visit?t={token}"
         body = claim.ready_body(
             url=f"https://{self.slug}.odile.fyi", measurement=MEASUREMENT,
-            first_visit_url=first_visit,
         )
         self.assertIn(f"URL https://{self.slug}.odile.fyi", body)
         self.assertIn(f"Measurement {MEASUREMENT}", body)
-        self.assertIn(f"Set your sign-in: {first_visit}", body)
+        # B-once (ODL-925): the action names the tokenless page and the
+        # password chosen at registration; no setup token travels in the mail.
+        self.assertIn(
+            f"Sign in: https://{self.slug}.odile.fyi/first-visit — "
+            "the password you chose when you registered.", body)
+        self.assertIn(
+            "Check the report before you sign in; it says PASS or FAIL.", body)
+        # D-7 said once, followed by D-10's line (brand round).
+        self.assertEqual(body.count("it says PASS or FAIL"), 1)
+        self.assertIn("That password opens", body)
+        self.assertNotIn("Check the report first", body)
         self.assertIn(
             f"The first-visit guide is at {claim.READY_GUIDE_URL}", body
         )
@@ -508,14 +515,14 @@ class ClaimPageTests(unittest.TestCase):
         # body does not repeat it, and the URL is the first thing the reader sees.
         self.assertTrue(body.startswith(f"URL https://{self.slug}.odile.fyi"), body)
         self.assertNotIn(claim.READY_SUBJECT, body)
-        # One imperative URL — the first-visit link. The guide is a named
+        # One imperative URL — the first-visit page. The guide is a named
         # address in a sentence, so no line opens with an imperative for it.
         self.assertEqual(
             len(
                 [
                     line
                     for line in body.splitlines()
-                    if line.startswith("Set your sign-in:")
+                    if line.startswith("Sign in:")
                 ]
             ),
             1,
@@ -524,10 +531,12 @@ class ClaimPageTests(unittest.TestCase):
             [line for line in body.splitlines() if line.startswith("Open ")], []
         )
         self.assertEqual(body.count(claim.READY_GUIDE_URL), 1)
-        # The single-use setup token travels only inside the action URL, and
-        # the action URL appears once.
-        self.assertEqual(body.count("first-visit?t="), 1)
-        self.assertEqual(body.count(token), 1)
+        # The reset line survives: §3.2's three surfaces keep the URL findable.
+        self.assertIn(f"https://{self.slug}.odile.fyi/first-visit/reset", body)
+        self.assertEqual(body.count("first-visit?t="), 0)
+        self.assertEqual(body.count("?t="), 0)
+        self.assertNotIn("Set your sign-in", body)
+        self.assertNotIn("only after", body)
         for old in OLD_COMMANDS:
             self.assertNotIn(old, body.lower())
         self.assertNotIn("IPv4", body)
@@ -542,16 +551,16 @@ class ClaimPageTests(unittest.TestCase):
         )
         self.assertIn("{{URL}}", template)
         self.assertIn("{{MEASUREMENT}}", template)
-        self.assertIn("{{FIRST_VISIT}}", template)
         self.assertIn("{{GUIDE}}", template)
+        self.assertNotIn("{{FIRST_VISIT}}", template)
+        self.assertEqual(template.count("{{URL}}/first-visit"), 2,
+                         "the page and its reset line, both tokenless")
         for old in OLD_COMMANDS:
             self.assertNotIn(old, template.lower())
         self.assertEqual(
-            claim.ready_body(url="https://a.odile.fyi", measurement="ab" * 48,
-                             first_visit_url="https://a.odile.fyi/first-visit?t=" + "cd" * 32),
+            claim.ready_body(url="https://a.odile.fyi", measurement="ab" * 48),
             template.replace("{{URL}}", "https://a.odile.fyi")
                     .replace("{{MEASUREMENT}}", "ab" * 48)
-                    .replace("{{FIRST_VISIT}}", "https://a.odile.fyi/first-visit?t=" + "cd" * 32)
                     .replace("{{GUIDE}}", claim.READY_GUIDE_URL),
         )
 

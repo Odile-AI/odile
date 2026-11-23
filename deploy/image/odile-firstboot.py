@@ -155,6 +155,9 @@ SYSTEMD_DIR = "/run/systemd/system"
 SEED_KEYS = (
     "slug", "instance_id", "near_api_key", "model", "support_public_key",
     "backup_repo_url", "mail_relay", "hermes_version",
+    # B-once (ODL-925): the account's scrypt verifier, which the seeded first
+    # boot writes into the tenant .env so the first visit is a login.
+    "sign_in_hash",
 )
 # `rebuild` is deliberately not in SEED_KEYS: only a rebuild carries the
 # tenant's old repository password sealed under the setup token, and
@@ -177,6 +180,10 @@ RECOVERY_PASSWORD_RE = re.compile(r"^Backup password:[ \t]*(\S+)[ \t]*$", re.M)
 RECOVERY_SEED = "/usr/local/lib/odile-image/recovery-seed.py"
 RECOVERY_PATH = "/etc/odile/recovery.txt"
 TOKEN_RE = re.compile(r"^[0-9a-f]{64}$")
+# The installer's own scrypt format (installer/odile_install.py's SCRYPT_RE);
+# the seed's sign_in_hash is written into the tenant .env byte for byte.
+SCRYPT_SEED_RE = re.compile(
+    r"^scrypt\$\d+\$\d+\$\d+\$[A-Za-z0-9+/=]+\$[A-Za-z0-9+/=]+$")
 # What the log line prints in place of the setup token (ODL-579): the argv is
 # echoed for the transcript, but the token is a bearer while it lives.
 TOKEN_REDACTED = "<redacted>"
@@ -305,30 +312,36 @@ def cached_seed_bytes(seed_cache: str, instance_id: str) -> bytes | None:
     return raw
 
 
-def first_visit_state(token: str, created_at: str | None = None) -> bytes:
+def first_visit_state(token: str, created_at: str | None = None,
+                      signin_set: bool = False) -> bytes:
     """ODL-457's state file: the token's SHA-256, and nothing secret.
 
     Written before the installer runs, so the page it enables has a hash to
     check. A machine that already has the file keeps it: a spent page stays
-    spent, and a re-run must not re-open it.
+    spent, and a re-run must not re-open it. B-once (ODL-925): a seeded first
+    boot writes its sign-in verifier into the tenant .env in the same run, so
+    the state is stamped ``signin_set_at`` — the page serves a login, not a
+    setup — and ``first_login_at`` stays null until the owner signs in.
     """
+    created = created_at or utcnow()
     return (json.dumps({
         "version": 1,
         "token_sha256": sha256(token.encode("ascii")),
-        "created_at": created_at or utcnow(),
+        "created_at": created,
         "used_at": None,
-        "signin_set_at": None,
+        "signin_set_at": created if signin_set else None,
+        "first_login_at": None,
         "recovery_hash": None,
         "recovery_issued_at": None,
         "recovery_used_at": None,
     }, indent=2, sort_keys=True) + "\n").encode()
 
 
-def write_first_visit_state(path: str, token: str) -> bool:
+def write_first_visit_state(path: str, token: str, signin_set: bool = False) -> bool:
     """Write the state once; True when written, False when it already existed."""
     if os.path.exists(path):
         return False
-    write_atomic(path, first_visit_state(token), 0o600)
+    write_atomic(path, first_visit_state(token, signin_set=signin_set), 0o600)
     return True
 
 
@@ -970,6 +983,11 @@ def validate_seed(seed, instance_id: str) -> dict:
         value = seed[key]
         if not isinstance(value, str) or not value.strip():
             raise Refusal("seed %s is empty" % key)
+    # B-once (ODL-925): the installer writes this string into the tenant .env
+    # byte for byte, so a malformed one would produce a gate nobody can open.
+    sign_in_hash = seed["sign_in_hash"]
+    if not isinstance(sign_in_hash, str) or not SCRYPT_SEED_RE.match(sign_in_hash):
+        raise Refusal("seed sign_in_hash is not an installer-format scrypt string")
     mail = seed["mail_relay"]
     if not isinstance(mail, dict):
         raise Refusal("seed mail_relay is not an object")
@@ -1188,16 +1206,23 @@ def run_installer(installer: str, seed_path: str, token: str, first_visit_port: 
     return proc.returncode
 
 
-def wait_first_visit(port: int, token: str, seconds: float = 120.0) -> tuple[bool, str]:
-    """The page answers through loopback with the form for this token."""
+def wait_first_visit(port: int, seconds: float = 120.0) -> tuple[bool, str]:
+    """The page answers through loopback with a form, tokenless (B-once).
+
+    The first visit is a login (ODL-925): ``/first-visit`` carries no setup
+    token, so the probe asks the bare path and requires 200 with the form. The
+    token still rides ``install-stack.sh --seed`` for the seed exchange; it is
+    not a page credential any more.
+    """
     deadline = time.monotonic() + seconds
     last = "no answer"
     while time.monotonic() < deadline:
         health = _get(port, "/health")
         if health is not None and health[0] == 200 and b"ok" in health[1]:
-            page = _get(port, "/first-visit?t=%s" % token)
+            page = _get(port, "/first-visit")
             if page is not None and page[0] == 200 and (
-                    b"first-visit" in page[1] or b"sign-in" in page[1]):
+                    b"<form" in page[1]
+                    and (b"first-visit" in page[1] or b"sign-in" in page[1])):
                 return True, "200"
             last = "health 200, page %s" % (
                 "status %d" % page[0] if page is not None else "no answer")
@@ -1252,6 +1277,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--recovery-seed", default=RECOVERY_SEED,
                         help="the image's recovery-file writer (recovery-seed.py)")
     parser.add_argument("--first-visit-port", type=int, default=FIRST_VISIT_PORT)
+    parser.add_argument("--first-visit-token", default="",
+                        help="the setup token for the seed exchange, when an older kit "
+                             "passes it here instead of the measured command line; "
+                             "optional, and never a page credential (ODL-925)")
     parser.add_argument("--first-visit-service",
                         default="/usr/local/lib/odile/first_visit.py",
                         help="the page's service; absent means the image has no page")
@@ -1291,7 +1320,7 @@ def main(argv: list[str] | None = None) -> int:
         facts = cmdline_facts(cmdline_text)
         instance_id = facts["instance_id"]
         token = facts["token"] or read_stdin_token(os.path.join(
-            os.path.dirname(args.seed_cache), "setup-token"))
+            os.path.dirname(args.seed_cache), "setup-token")) or args.first_visit_token
         # ODL-523: the image ships no SSH host private key; this boot makes the
         # machine's own before any unit can need one — and before the boot
         # record is read, so the first boot's record carries this machine's host
@@ -1370,9 +1399,10 @@ def main(argv: list[str] | None = None) -> int:
             write_atomic(os.path.splitext(args.seed_cache)[0] + ".sig",
                          base64.b64encode(signature) + b"\n", 0o600)
         if not token:
-            raise Refusal("no setup token to open the first-visit page")
+            raise Refusal("no setup token for the seed exchange")
         write_first_visit_state(os.path.join(os.path.dirname(args.seed_cache),
-                                             "first-visit.json"), token)
+                                             "first-visit.json"), token,
+                                signin_set=bool(seed.get("sign_in_hash")))
 
         # A rebuild (ODL-215 follow-up): the seed carries the tenant's OLD
         # repository password, sealed under this boot's setup token. Write it
@@ -1389,7 +1419,7 @@ def main(argv: list[str] | None = None) -> int:
         if code != 0:
             raise Refusal("installer failed (rc %d)" % code)
         if args.first_visit_port and os.path.exists(args.first_visit_service):
-            ok, detail = wait_first_visit(args.first_visit_port, token)
+            ok, detail = wait_first_visit(args.first_visit_port)
             if not ok:
                 raise Refusal("first-visit page did not answer (%s)" % detail)
             page = detail

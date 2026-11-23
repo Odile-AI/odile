@@ -1109,7 +1109,8 @@ class FirstbootUnitTests(unittest.TestCase):
             "model": "m", "support_public_key": "ssh-ed25519 x",
             "backup_repo_url": "sftp:x", "mail_relay": {
                 "host": "h", "port": 587, "username": "u", "secret": "s"},
-            "hermes_version": "v", "password": "hunter2",
+            "hermes_version": "v", "sign_in_hash": "scrypt$16384$8$1$c2FsdA==$ZGs=",
+            "password": "hunter2",
         }
         with self.assertRaises(firstboot.Refusal) as caught:
             firstboot.validate_seed(seed, self.IID)
@@ -1121,7 +1122,7 @@ class FirstbootUnitTests(unittest.TestCase):
             "model": "m", "support_public_key": "ssh-ed25519 x",
             "backup_repo_url": "sftp:x", "mail_relay": {
                 "host": "h", "port": 587, "username": "u", "secret": "s"},
-            "hermes_version": "v",
+            "hermes_version": "v", "sign_in_hash": "scrypt$16384$8$1$c2FsdA==$ZGs=",
         }
         with self.assertRaises(firstboot.Refusal):
             firstboot.validate_seed(seed, self.IID)
@@ -1132,7 +1133,7 @@ class FirstbootUnitTests(unittest.TestCase):
             "model": "m", "support_public_key": "ssh-ed25519 x",
             "backup_repo_url": "sftp:x", "mail_relay": {
                 "host": "h", "port": 587, "username": "u", "secret": "s"},
-            "hermes_version": "v",
+            "hermes_version": "v", "sign_in_hash": "scrypt$16384$8$1$c2FsdA==$ZGs=",
             "rebuild": {"kdf": "hmac-sha256-ctr-v1", "sealed": "00aa",
                         "tag": "00" * 32},
         }
@@ -1468,6 +1469,16 @@ class FirstbootExchangeTests(unittest.TestCase):
             con.execute("INSERT INTO tenants (slug, email, state, created_at)"
                         " VALUES (?, ?, 'invited', '2026-11-10T00:00:00Z')",
                         (self.SLUG, "bench@odile.test"))
+            # ODL-925: the seed carries the account's verifier as sign_in_hash,
+            # and the first boot refuses a seed without one.
+            con.execute(
+                "INSERT INTO accounts (slug, email, password_hash, confirm_token_hash,"
+                " confirm_expires_at, trial_started_at, trial_ends_at, created_at)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (self.SLUG, "bench@odile.test",
+                 "scrypt$16384$8$1$c2FsdA==$ZGs=", "0" * 64,
+                 "2026-11-11T00:00:00Z", "2026-11-10T00:00:00Z",
+                 "2026-11-24T00:00:00Z", "2026-11-10T00:00:00Z"))
             con.commit()
             # The first boot's record writes the tenant spine; the fixture HQ
             # database carries the same tables and one order at first_boot.
@@ -2557,7 +2568,7 @@ class FirstbootBenchTests(unittest.TestCase):
         server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Form)
         threading.Thread(target=server.serve_forever, daemon=True).start()
         try:
-            check = bench.first_visit_page(server.server_address[1], "ab" * 32, timeout=2)
+            check = bench.first_visit_page(server.server_address[1], timeout=2)
         finally:
             server.shutdown()
             server.server_close()
@@ -2577,7 +2588,7 @@ class FirstbootBenchTests(unittest.TestCase):
         server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Gone)
         threading.Thread(target=server.serve_forever, daemon=True).start()
         try:
-            check = bench.first_visit_page(server.server_address[1], "ab" * 32, timeout=0.3)
+            check = bench.first_visit_page(server.server_address[1], timeout=0.3)
         finally:
             server.shutdown()
             server.server_close()
@@ -2607,6 +2618,85 @@ class FirstbootBenchTests(unittest.TestCase):
             )
         netdev = captured["command"][captured["command"].index("-netdev") + 1]
         self.assertIn("hostfwd=tcp:127.0.0.1:19133-:8091", netdev)
+
+
+class FirstbootWaitFirstVisitTests(unittest.TestCase):
+    """The boot's readiness probe: the bare `/first-visit`, and the form.
+
+    ODL-925 made the first visit a login, so `wait_first_visit` asks the page
+    without a setup token; nothing else in the tree calls it, so this class is
+    the only pin on the path it requests. A regression that puts the token back
+    in the query (`/first-visit?t=…`) fails the page 404 below and the exact-path
+    assertion beside it.
+    """
+
+    def _serve(self, handler: type) -> http.server.ThreadingHTTPServer:
+        server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), handler)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        return server
+
+    def test_the_probe_asks_the_bare_path_and_passes_on_the_form(self) -> None:
+        asked: list[str] = []
+
+        class Page(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):  # noqa: N802 - stdlib signature
+                asked.append(self.path)
+                if self.path == "/health":
+                    body = b"ok"
+                elif self.path == "/first-visit":
+                    body = (b'<html><form method="post" action="/first-visit">'
+                            b'<label for="password">Your sign-in</label></form></html>')
+                else:
+                    body = b""
+                self.send_response(200 if body else 404)
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, format, *args):  # noqa: A002 - stdlib signature
+                pass
+
+        server = self._serve(Page)
+        ok, detail = firstboot.wait_first_visit(server.server_address[1], seconds=2)
+        self.assertTrue(ok, detail)
+        self.assertEqual(detail, "200")
+        self.assertIn("/first-visit", asked)
+        self.assertEqual([path for path in asked if "?" in path], [])
+        self.assertEqual([path for path in asked if path not in ("/health", "/first-visit")], [])
+
+    def test_the_probe_fails_when_the_page_is_absent(self) -> None:
+        class Gone(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):  # noqa: N802 - stdlib signature
+                body = b"ok" if self.path == "/health" else b""
+                self.send_response(200 if body else 404)
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, format, *args):  # noqa: A002 - stdlib signature
+                pass
+
+        server = self._serve(Gone)
+        ok, detail = firstboot.wait_first_visit(server.server_address[1], seconds=0.3)
+        self.assertFalse(ok)
+        self.assertIn("status 404", detail)
+
+    def test_the_probe_fails_when_the_service_is_not_healthy(self) -> None:
+        class Sick(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):  # noqa: N802 - stdlib signature
+                self.send_response(503)
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+
+            def log_message(self, format, *args):  # noqa: A002 - stdlib signature
+                pass
+
+        server = self._serve(Sick)
+        ok, detail = firstboot.wait_first_visit(server.server_address[1], seconds=0.3)
+        self.assertFalse(ok)
+        self.assertIn("health status 503", detail)
 
 
 class FirstbootScriptTests(unittest.TestCase):
