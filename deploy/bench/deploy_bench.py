@@ -17,7 +17,13 @@ This script makes a second one — the bench — out of the same tree, not a for
     boot and restarted only when the bytes they run moved;
   * /root/.odile/seed-config.test.json (0600) — the bench's own seed config,
     derived from the production one with a `test-` backup prefix and an
-    `environment` marker. The seed key /root/.odile/seed-signing.pem is
+    `environment` marker. An existing bench config is validated with the
+    `seed/seed.py` this deploy ships and, when that loader refuses a required
+    key the file predates (ODL-469's `mail_relay.tls_ca`, found on ODL-949),
+    only that absent key is merged in from the production config — an
+    operator's own keys are never rewritten, and a present-but-wrong value is
+    named with a one-line fix instead of replaced.
+    The seed key /root/.odile/seed-signing.pem is
     referenced by LoadCredential, never copied: a test tenant's installer
     verifies the bench seed against the same certified key as production;
   * test.odile.fyi A <this box's IPv4>, DNS-only, created through Cloudflare
@@ -64,6 +70,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import importlib.util
 import json
 import os
 import re
@@ -802,26 +809,248 @@ def check_private(path: Path, label: str) -> str | None:
     return None
 
 
-def ensure_config(dry: bool) -> bool:
-    if CONFIG_FILE.is_file():
-        problem = check_private(CONFIG_FILE, "bench seed config")
-        if problem:
-            raise SystemExit(problem)
-        try:
-            json.loads(CONFIG_FILE.read_text(encoding="utf-8"))
-        except ValueError as exc:
-            raise SystemExit(f"error: {CONFIG_FILE} is not valid JSON: {exc}") from exc
-        print(f"same         {CONFIG_FILE} (0600)")
-        return False
+#: The config paths `seed/seed.py`'s `load_config` refuses a file without.
+#: `bench_config()` supplies them when the bench config is created; a config
+#: written before a key existed (ODL-469 added `mail_relay.tls_ca`, and the
+#: bench's file predated it until ODL-949) needs that one key merged, or the
+#: shipped service exits 2 at start and the deploy ends on `GET /seed 502`.
+#: `tests/test_bench_deploy.py` proves the list is exactly the shipping
+#: loader's: a config built from it loads, and deleting any one path is refused.
+REQUIRED_CONFIG_PATHS: tuple[tuple[str, ...], ...] = (
+    ("model",),
+    ("support_public_key",),
+    ("backup_repo_url",),
+    ("hermes_version",),
+    ("mail_relay",),
+    ("mail_relay", "host"),
+    ("mail_relay", "port"),
+    ("mail_relay", "username"),
+    ("mail_relay", "secret"),
+    ("mail_relay", "tls_ca"),
+)
+#: Distinguishes "the key is absent" from "the key is there and empty": only an
+#: absent key is merged, so an operator's own (possibly wrong) value is left
+#: for the operator and named in the refusal.
+MISSING = object()
+
+
+def seed_module(source: Path):
+    """The seed module this deploy ships, which is the config's only authority.
+
+    The bench's seed unit runs `<release>/seed/seed.py`, so the deploy asks
+    that module's own `load_config` whether the bench config will load —
+    never a copy of its rules, which would drift the first time `main` adds one.
+    """
+    path = source / "seed" / "seed.py"
+    if not path.is_file():
+        raise SystemExit(f"error: {path} is missing; {source} is not a tree this "
+                         "deployer can ship (it needs seed/seed.py)")
+    spec = importlib.util.spec_from_file_location("odile_bench_seed", path)
+    if spec is None or spec.loader is None:
+        raise SystemExit(f"error: cannot load {path}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    for name in ("load_config", "ConfigError"):
+        if not hasattr(module, name):
+            raise SystemExit(f"error: {path} has no {name}; the bench seed config "
+                             "cannot be validated against the shipping seed")
+    return module
+
+
+def config_problem(module, path: Path) -> str | None:
+    """The seed loader's own refusal for `path`, or None when it accepts it."""
+    try:
+        module.load_config(str(path))
+    except module.ConfigError as exc:
+        return str(exc)
+    return None
+
+
+def document_problem(module, document: dict, target: Path) -> str | None:
+    """`config_problem` for a document not on disk yet (the dry run and the
+    fresh derivation check the same bytes the apply would write)."""
+    target.parent.mkdir(parents=True, exist_ok=True)
+    fd, name = tempfile.mkstemp(prefix=".seed-config.check.", dir=target.parent)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            json.dump(document, handle, indent=2, sort_keys=True)
+        os.chmod(name, 0o600)
+        problem = config_problem(module, Path(name))
+        return problem.replace(name, str(target)) if problem else None
+    finally:
+        os.unlink(name)
+
+
+def config_value(config: dict, path: tuple[str, ...]):
+    node: object = config
+    for name in path:
+        if not isinstance(node, dict) or name not in node:
+            return MISSING
+        node = node[name]
+    return node
+
+
+def merge_required(bench: dict, production: dict) -> list[str]:
+    """Fill the required keys `bench` lacks from `production`; return their names.
+
+    Only an *absent* key is written. A key that is present — however wrong —
+    is the operator's, and `config_refusal()` names it instead of replacing it.
+    """
+    added = []
+    for path in REQUIRED_CONFIG_PATHS:
+        if config_value(bench, path) is not MISSING:
+            continue
+        value = config_value(production, path)
+        if value is MISSING:
+            continue
+        node: object = bench
+        for name in path[:-1]:
+            if not isinstance(node, dict):
+                node = None
+                break
+            node = node.setdefault(name, {})
+        if isinstance(node, dict):
+            node[path[-1]] = json.loads(json.dumps(value))
+            added.append(".".join(path))
+    return added
+
+
+def blame_path(problem: str) -> tuple[str, ...] | None:
+    """The config path the loader's message names, as a tuple.
+
+    The loader names a field in one of two shapes — ``field 'model' is missing
+    …`` or ``mail_relay.tls_ca is not a PEM certificate`` — and a key it
+    validates but the deployer never merges (``near_api_key``) is named the
+    second way too. Read the name from the message rather than assuming the
+    refusal is about a path on `REQUIRED_CONFIG_PATHS`; a message that names
+    no key (a JSON-object error) returns None.
+    """
+    match = re.match(r"seed config (.*?): field '([^']+)'", problem)
+    if match:
+        return tuple(match.group(2).split("."))
+    match = re.match(r"seed config (.*?): ([A-Za-z_][A-Za-z0-9_.]*) is ", problem)
+    if match:
+        return tuple(match.group(2).split("."))
+    return None
+
+
+def merge_fix(path: tuple[str, ...] | None, production: dict) -> str | None:
+    """A one-line command that copies production's value for `path` in place.
+
+    In-place truncation keeps the file's 0600, and the copy is the same one a
+    merge makes — so the printed line is the repair, not advice about it.
+    """
+    if path is None or config_value(production, path) is MISSING:
+        return None
+    getter = "q" + "".join(f"[{name!r}]" for name in path)
+    setter = "d" + "".join(f"[{name!r}]" for name in path)
+    program = ("import json;b={b!r};p={p!r};d=json.load(open(b));q=json.load(open(p));"
+               "{setter}={getter};"
+               "open(b,'w').write(json.dumps(d,indent=2,sort_keys=True)+chr(10))"
+               ).format(b=str(CONFIG_FILE), p=str(PROD_CONFIG), setter=setter, getter=getter)
+    return f'/usr/bin/python3 -c "{program}"'
+
+
+def config_refusal(source: Path, problem: str, bench: dict, production: dict,
+                   added: tuple[str, ...] = ()) -> str:
+    """The seed's own message, the unit's fate, and the one line that repairs it.
+
+    `added` names the paths this run just merged from production: when the
+    loader refuses one of those, the bad value lives in production's config, so
+    the fix is there — copying it back would be a no-op.
+    """
+    path = blame_path(problem)
+    if path:
+        dotted = ".".join(path)
+        present = config_value(bench, path)
+        if dotted in added:
+            why = f"it was merged from {PROD_CONFIG} and the seed refuses that value"
+        elif present is not MISSING:
+            why = "it is present but the seed refuses its value"
+        else:
+            why = "it is absent from both configs"
+    else:
+        dotted = "the key the message names"
+        why = "the message names no config path"
+    command = merge_fix(path, production) if dotted not in added else None
+    if command:
+        fix = command
+    elif path and dotted in added:
+        fix = f"fix {dotted} in {PROD_CONFIG} (the value the merge copied) and re-run"
+    elif path and path[0] == "mail_relay":
+        fix = (f"add {dotted} to {PROD_CONFIG} from the relay's own PEM, then "
+               "re-run (production has no value for it either)")
+    elif path:
+        fix = (f"add {dotted} to {PROD_CONFIG} with a value the seed accepts, then "
+               "re-run (production has no value for it either)")
+    else:
+        fix = f"fix {CONFIG_FILE} so the seed accepts it, then re-run"
+    return (f"error: {source / 'seed' / 'seed.py'} refuses {CONFIG_FILE}: {problem}\n"
+            f"       {dotted}: {why}; the seed unit exits 2 at start on that "
+            "message, before it answers /seed\n"
+            f"fix: {fix}")
+
+
+def production_config(role: str) -> dict:
+    """The production seed config the bench config is derived (or merged) from."""
     problem = check_private(PROD_CONFIG, "production seed config")
     if problem:
-        raise SystemExit(f"{problem} — the bench config is derived from it; "
+        raise SystemExit(f"{problem} — the bench config is {role} from it; "
                          "create it per docs/runbooks/seed.md §3, then re-run")
     try:
         production = json.loads(PROD_CONFIG.read_text(encoding="utf-8"))
     except ValueError as exc:
         raise SystemExit(f"error: {PROD_CONFIG} is not valid JSON: {exc}") from exc
+    if not isinstance(production, dict):
+        raise SystemExit(f"error: {PROD_CONFIG} must be a JSON object")
+    return production
+
+
+def ensure_config(dry: bool, source: Path) -> bool:
+    module = seed_module(source)
+    if CONFIG_FILE.is_file():
+        problem = check_private(CONFIG_FILE, "bench seed config")
+        if problem:
+            raise SystemExit(problem)
+        try:
+            bench = json.loads(CONFIG_FILE.read_text(encoding="utf-8"))
+        except ValueError as exc:
+            raise SystemExit(f"error: {CONFIG_FILE} is not valid JSON: {exc}") from exc
+        if not isinstance(bench, dict):
+            raise SystemExit(f"error: {CONFIG_FILE} must be a JSON object")
+        problem = config_problem(module, CONFIG_FILE)
+        if problem is None:
+            print(f"same         {CONFIG_FILE} (0600; loads under {source}/seed/seed.py)")
+            return False
+        production = production_config("merged")
+        added = merge_required(bench, production)
+        if added:
+            print(f"{'would merge' if dry else 'merge':<12} {CONFIG_FILE} "
+                  f"(adds {', '.join(added)} from {PROD_CONFIG}; "
+                  f"{source}/seed/seed.py requires it)")
+            # Validate the document the write would produce, not the file it
+            # replaces: a merge that copies production's own bad value must
+            # refuse before `write_atomic`, exactly as the dry run does.
+            problem = document_problem(module, bench, CONFIG_FILE)
+            if problem is None:
+                if not dry:
+                    write_atomic(CONFIG_FILE,
+                                 (json.dumps(bench, indent=2, sort_keys=True) + "\n").encode("utf-8"),
+                                 0o600)
+                    chown(CONFIG_FILE, (0, 0))
+                return True
+        raise SystemExit(config_refusal(source, problem, bench, production, tuple(added)))
+
+    production = production_config("derived")
     bench = bench_config(production)
+    problem = document_problem(module, bench, CONFIG_FILE)
+    if problem is not None:
+        dotted = ".".join(blame_path(problem) or ()) or "that key"
+        raise SystemExit(
+            f"error: {source / 'seed' / 'seed.py'} refuses the bench config derived "
+            f"from {PROD_CONFIG}: {problem}\n"
+            f"fix: fix {dotted} in {PROD_CONFIG} (the bench config is derived from "
+            "it) and re-run")
     print(f"{'would create' if dry else 'create':<12} {CONFIG_FILE} "
           "(0600 root:root; backup prefix /tenants/test-{slug}, environment=bench)")
     if dry:
@@ -1390,7 +1619,7 @@ def main(argv: list[str] | None = None) -> int:
     env_changed = ensure_env(args.dry_run)
     unit_changed = ensure_units(args.dry_run)
     changed |= env_changed or unit_changed
-    changed |= ensure_config(args.dry_run)
+    changed |= ensure_config(args.dry_run, source)
     changed |= ensure_db(args.dry_run)
     changed |= ensure_roadmap(args.dry_run)
     digest, release_changed = ensure_release(args.dry_run, source)
