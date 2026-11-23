@@ -1507,13 +1507,17 @@ web/first-visit.html
 web/verify.html
 ```
 
-No `deploy/image` byte moved, and `installer/first_visit.py` (`7ddf42c3…`,
-re-cut by ODL-925 to the sign-in page) is
+No `deploy/image` byte moved, and `installer/first_visit.py` (`d1c761f0…`) is
 the same file in both pairs: the image carries the `bd3c8963…` installer and
-`web/first-visit.html` `98208a4c…` (the tokenless sign-in page, whose pins are
-`FIRST_VISIT_SHA256` and `FIRST_VISIT_PAGE_SHA256` in the installer), a build
-at the handoff head carries
-`e0cec88a…` and the type re-cut page `810a596d…`.
+`web/first-visit.html` `4d7c4960…`, a build at that round's handoff head
+carries `e0cec88a…` and the type re-cut page `810a596d…`. ODL-925 has since
+re-cut both first-visit surfaces: its `-2` cut (`2026.11.23-2`) carries
+`installer/first_visit.py`
+`7ddf42c3…` (76,304 bytes) and `web/first-visit.html` `98208a4c…` (45,248
+bytes), and its `-3` cut at this card's head (`2026.11.23-3`, installer
+`36add6da…`) carries `753417a0…` (78,550 bytes) and `1a9e8615…` (45,743
+bytes); the page's pins are `FIRST_VISIT_SHA256` and
+`FIRST_VISIT_PAGE_SHA256` in the installer.
 
 The build's own head line and the fixture seed the boot uses:
 

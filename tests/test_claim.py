@@ -1323,16 +1323,13 @@ def transcript() -> None:
         kit = Path(result.kit_path)
         kit_text = kit.read_text(encoding="utf-8")
         kit_visit = [line for line in kit_text.splitlines()
-                     if line.startswith("Set your sign-in:")][0].split(":", 1)[1].strip()
-        kit_token = kit_visit.split("t=", 1)[1]
+                     if line.startswith("Open ") and "/first-visit." in line][0]
         stored = con.execute(
             "SELECT token_hash, instance_id, expires_at FROM seed_tokens"
         ).fetchone()
-        print("setup token: plaintext in the email and the kit's first-visit URL;",
-              "stored hash:", stored["token_hash"], "instance:", stored["instance_id"],
-              "expires:", stored["expires_at"])
-        print("hash of the kit token matches the stored hash:",
-              claim.hash_token(kit_token) == stored["token_hash"])
+        print("kit's first-visit line:", kit_visit)
+        print("setup token: stored hash:", stored["token_hash"],
+              "instance:", stored["instance_id"], "expires:", stored["expires_at"])
         message = email.message_from_bytes(
             Path(result.email_path).read_bytes(), policy=email_policy.default
         )
@@ -1340,8 +1337,11 @@ def transcript() -> None:
         print("  To:", message["To"])
         print("  Subject:", message["Subject"])
         print("  body:")
-        for line in message.get_body(preferencelist=("plain",)).get_content().splitlines():
+        body = message.get_body(preferencelist=("plain",)).get_content()
+        for line in body.splitlines():
             print("   |", line)
+        print("setup token printed in the mail or the kit:",
+              "?t=" in body or "?t=" in kit_text)
         print("  attachment:", [a.get_filename() for a in message.iter_attachments()])
         print(f"kit: {kit} ({len(kit_text.splitlines())} lines, "
               f"mode {oct(kit.stat().st_mode & 0o777)})")
