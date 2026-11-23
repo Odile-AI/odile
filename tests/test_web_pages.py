@@ -127,6 +127,11 @@ class KeyboardContractTests(unittest.TestCase):
     # in test_claim_page. first-visit.html and the two /verify files carry
     # state blocks too, and their shapes are pinned by their own modules.
     SHAPE = {
+        # ODL-583: the account page keeps its state blocks in the file (one
+        # visible per render) — the four row states plus the signed-in 404
+        # (Brand gate round 2, should 2); one <main>, no named regions and no
+        # <header>.
+        "account.html": (5, [], 0),
         "ceremony.html": (1, ["visit", "machine", "support"], 1),
         "claim.html": (3, ["who", "next", "next"], 1),
         # ODL-341: the register page is claim.html's three-state shape — the

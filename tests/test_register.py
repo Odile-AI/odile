@@ -551,14 +551,14 @@ class SessionTests(FlowBase):
         for cookie in (cookie_one, cookie_two):
             status, headers, _body = request(self.port, "GET", "/account", cookie=cookie)
             self.assertEqual(status, 303)
-            self.assertEqual(headers.get("Location"), "/signin")
+            self.assertEqual(headers.get("Location"), "/login")
 
     def test_a_forged_cookie_is_refused(self):
         email, account = self.confirmed()
         cookie = "odile_account=v1.%d.1.%s" % (account["id"], "0" * 64)
         status, headers, _body = request(self.port, "GET", "/account", cookie=cookie)
         self.assertEqual(status, 303)
-        self.assertEqual(headers.get("Location"), "/signin")
+        self.assertEqual(headers.get("Location"), "/login")
 
     def test_the_sign_in_seam_way_back_is_a_full_size_target(self):
         """The same 44 px rule reaches the seam's standalone "Register" link.
