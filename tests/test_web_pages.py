@@ -130,10 +130,16 @@ class KeyboardContractTests(unittest.TestCase):
         # ODL-583: the account page keeps its state blocks in the file (one
         # visible per render) — the four row states plus the signed-in 404
         # (Brand gate round 2, should 2); one <main>, no named regions and no
-        # <header>.
-        "account.html": (5, [], 0),
+        # <header>. ODL-578 adds the account's own actions as one named
+        # region (`account-password`: the change form, the two reset links and
+        # the lost-code block).
+        "account.html": (5, ["account-password"], 0),
         "ceremony.html": (1, ["visit", "machine", "support"], 1),
         "claim.html": (3, ["who", "next", "next"], 1),
+        # ODL-578: the reset page is register.html's multi-state shape — the
+        # form and the success page, one visible per render — with no named
+        # regions of its own.
+        "forgot.html": (2, [], 1),
         # ODL-341: the register page is claim.html's three-state shape — the
         # form, the check-your-email page and the confirm button, one visible
         # per render — with no aria-labelledby regions of its own.
