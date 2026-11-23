@@ -1115,6 +1115,38 @@ manifest `7031d4a0…`). The id ledger: `-4` is t_509f85e4's support-grant help 
 (15:30Z), `-5` was this card's pre-review cut (16:35Z), and `-6` is later than
 every cut by `generated_at` (17:45Z).
 
+**The `2026.11.23-5` cut (the ODL-925 follow-up: the first-run close names no
+unlock).** The tenant first-run skill's closing sentence said a job "runs when
+you unlock" — false under the sealed boot, where the disk unlocks on the boot the
+user verifies and the machine comes back by itself. It now carries the deck's
+repeating-job row (A11) as a verbatim subset: "… and if it was due while the
+machine was down, it runs when the machine comes back up." No new public
+sentence. The skill travels inside the signed installer, so it is re-embedded
+(`TENANT_SKILLS` pins `d95b5061…`, 8,167 bytes), the installer re-signed, and
+the release cut from a fresh scratch root that installer made (29/29; run 2
+`tenant: same`, 0 writes). `install.md` §12.6 has the full record: installer
+`a62b2a56…` (1,576,241 bytes), manifest `be13b130…` (50,044 bytes; its diff
+against `-4` is `installer_sha256`, the `odile-first-run` tree row and
+`generated_at`), skills `9a10a63e…` (852,667 bytes, rebuilt from the root),
+`release.json` `50409ea3…` (1,187 bytes) naming `2026.11.23-5` at
+`2026-11-23T22:45:00Z`, `--verify-signature` OK on the checkout's installer
+(`signature: OK (sha256 a62b2a56…)`), a one-byte edit `a13bbad2…` (1,576,242
+bytes) and `signature: BAD`, exit 3, and `tools/recut_release.py --check` eleven
+`ok` lines. Committed, not deployed: measured 2026-11-23T22:40:22Z, the URL
+serves the deployed `2026.11.23-4` (installer `84860db3…`, 1,576,209 bytes;
+manifest `7a217601…`). The id ledger: `-4` is ODL-929's `/verify`-page and
+installed-help cut (16:45Z), and `-5` is later than every cut by `generated_at`
+(22:45Z) and on no other ref.
+
+**The `2026.11.23-4` cut (ODL-929: the guest `/verify` page and the installed
+help are re-cut).** Recorded here when the follow-up re-quoted the pair: the
+installer re-embeds `templates/verify.html` (`1ce729c8…`, 42,959 bytes) and
+`skills/odile-help/SKILL.md` (`62fac689…`, 6,264 bytes), so the installer is
+`84860db3…` (1,576,209 bytes), the manifest `7a217601…` (50,044 bytes; its diff
+against `-3` is `installer_sha256` and the odile-help tree row), `skills.tar.gz`
+`c5f507b5…` (852,668 bytes), and `release.json` (`7a9af3fa…`, 1,329 bytes) names
+`2026.11.23-4` at `2026-11-23T16:45:00Z`.
+
 **The `2026.11.23-3` cut (ODL-925's brand round: the first-visit page as
 measured).** Same card; the re-cut carries the Designer's first brand pass.
 The rate limit and a refused write answer the page with one `role="alert"`
