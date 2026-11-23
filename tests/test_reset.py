@@ -70,7 +70,7 @@ D16 = ("Lost your code? There is no other way back: ask us to delete your "
 D12 = ("This changes your account password. Your machine's sign-in is "
        "unchanged; change it on the machine.")
 MISMATCH = "That email and recovery code do not match."
-RATE = "Too many attempts. Try again in a few minutes."
+RATE = "Too many attempts. Try again in an hour."
 HELP = "Your code is shown once, at your first sign-in."
 DONE_CHANGED = "Your account password is changed."
 DONE_MACHINE = ("Your machine's sign-in did not change; reset it on the machine "

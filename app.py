@@ -1248,7 +1248,7 @@ FORGOT_TITLES = {
     "done": "Your account password is changed \u2014 Odile",
 }
 FORGOT_MISMATCH = "That email and recovery code do not match."
-FORGOT_RATE = "Too many attempts. Try again in a few minutes."
+FORGOT_RATE = "Too many attempts. Try again in an hour."
 FORGOT_FIELDS = ("email", "code", "password", "password2")
 FORGOT_BLOCK_RE = re.compile(r"<!--(form|done)-->(.*?)<!--/\1-->", re.S)
 
