@@ -246,9 +246,9 @@ each is a bench item for Monday:
    `/` is **302** to `/login`, an anonymous `/api/*` is **401**, `/login` is
    **200**, and a valid session gets **200** (101 for `/api/ws`). Hermes
    0.23.0's gate is a form provider with a cookie, not HTTP Basic, so a "401 at
-   `/`" would fail the check (`docs/runbooks/demo-host.md` §"The gate, measured
-   — 302, not 401"; `deploy/demo-host/deploy_demo_site.py:gate_ok` asserts
-   302/401/200). Re-measured on the live demo host while writing this ADR.
+   `/`" would fail the check (`docs/runbooks/demo-public.md` §8, "The gate,
+   measured"; `deploy/demo-host/check_demo_host.sh` asserts 302/401/200).
+   Re-measured on the live demo host while writing this ADR.
 4. A reboot parks the machine in the initramfs with the **same** host key
    (2026.11.1: generated on first boot, sealed to an SNP-derived key and kept
    for the life of the machine; 2026.09 and earlier made a new key each boot);
@@ -333,8 +333,8 @@ image that has been written over a tenant's disk is not.
   `tools/snp_report.py`: 1184 bytes, measurement 519c7c9a…9ee8).
 - The gate in §8 item 3: re-measured against the live demo host on 7 November
   2026 — `GET /` → **302**, `GET /login` → **200**, `GET /api/sessions` →
-  **401**; the same table is asserted by `deploy/demo-host/deploy_demo_site.py:gate_ok`
-  and recorded in `docs/runbooks/demo-host.md` §"The gate, measured".
+  **401**; the same table is asserted by `deploy/demo-host/check_demo_host.sh`
+  and recorded in `docs/runbooks/demo-public.md` §8 ("The gate, measured").
 - The host key in §8 item 4: on this host, the fingerprint in
   `/run/blackbox/attest.json` (`SHA256:2XWkeR4wwCkW9+iwfhTV/vFufe88fUTxvsXrcRBrCyA`)
   equals `ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub`; the release guide
