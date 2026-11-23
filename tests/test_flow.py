@@ -1171,7 +1171,8 @@ class Migration(unittest.TestCase):
         self.migrate()
         self.assertEqual(
             self.tables(),
-            {"waitlist", "tenants", "claims", "events", "grants", "accounts"})
+            {"waitlist", "tenants", "claims", "events", "grants", "accounts",
+             "admin_log"})
         funnel = run_manage(self.db, "funnel")
         self.assertEqual(funnel.returncode, 0, funnel.stderr)
         self.assertIn("signups", funnel.stdout)

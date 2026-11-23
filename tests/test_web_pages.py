@@ -132,8 +132,14 @@ class KeyboardContractTests(unittest.TestCase):
         # (Brand gate round 2, should 2); one <main>, no named regions and no
         # <header>. ODL-578 adds the account's own actions as one named
         # region (`account-password`: the change form, the two reset links and
-        # the lost-code block).
-        "account.html": (5, ["account-password"], 0),
+        # the lost-code block). ODL-582 adds the re-pointed confirm state, a
+        # sixth heading in the file (one visible per render).
+        "account.html": (6, ["account-password"], 0),
+        # ODL-582: the console is two states (the admin's page and the
+        # refusal), one visible per render; the admin's page names the one
+        # action and the account table as two regions, in that order — the
+        # action leads so it is above the fold (Brand gate round 1, must 4).
+        "admin.html": (2, ["repoint", "accounts"], 1),
         "ceremony.html": (1, ["visit", "machine", "support"], 1),
         "claim.html": (3, ["who", "next", "next"], 1),
         # ODL-578: the reset page is register.html's multi-state shape — the
