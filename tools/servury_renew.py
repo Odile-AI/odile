@@ -21,6 +21,12 @@ A server whose `auto_renew` is true is skipped and named: renewing it as well
 would stack days and pull cash forward while the panel still charges list price.
 That applies to any box whose account we have no panel session on.
 
+The trial pays for the machine. Each tenant DB the service writes — the bench's
+`/var/lib/odile-test/waitlist.db` and production's `/var/lib/odile/waitlist.db`
+— carries the account row's `trial_ends_at` beside the provider's `server_id`,
+so a server whose trial has ended is skipped, recorded as `trial_ended` in the
+status document and the audit log, and its provider term is left to expire.
+
 Exit: 0 nothing due or everything renewed; 3 an alert (balance, cap, failure);
 2 usage. Stdlib only, so the cron job needs no virtualenv.
 """
@@ -28,9 +34,11 @@ Exit: 0 nothing due or everything renewed; 3 an alert (balance, cap, failure);
 from __future__ import annotations
 
 import argparse
+import contextlib
 import datetime
 import fcntl
 import json
+import sqlite3
 import sys
 import urllib.error
 import urllib.parse
@@ -46,6 +54,13 @@ DEFAULT_KEYS = (
     ("host", Path("/root/.odile/servury_reseller_key")),
     ("dev", Path("/root/.odile/servury_reseller_key_lkbxu6i9")),
 )
+# The databases the service itself writes (ODL-341). No flag means both, so the
+# cron job needs no edit to stop paying for an ended trial.
+TRIAL_DBS = (
+    Path("/var/lib/odile-test/waitlist.db"),
+    Path("/var/lib/odile/waitlist.db"),
+)
+TRIAL_STAMP = "%Y-%m-%dT%H:%M:%SZ"
 DAY = 86400
 
 
@@ -106,9 +121,47 @@ def read_key(path: Path) -> str:
     return path.read_text(encoding="utf-8").strip()
 
 
+def trial_ends(paths: tuple[Path, ...]) -> tuple[dict[str, tuple[str, datetime.datetime]], list[str]]:
+    """`server_id` -> (the stamp as written, its instant), read from the tenant DBs.
+
+    The account row is the only record that knows which machine a trial pays for
+    (ODL-341): `accounts.server_id` names the provider's server and
+    `trial_ends_at` is registration's instant plus 14 days. A database that is
+    absent or has no accounts table (production before ODL-341 reached it) and a
+    stamp that will not parse are notes, not alerts: those servers keep exactly
+    the renewal behaviour they had before this check existed.
+    """
+    ends: dict[str, tuple[str, datetime.datetime]] = {}
+    notes: list[str] = []
+    for path in paths:
+        if not path.is_file():
+            notes.append(f"trial db {path}: absent — no trial check from it")
+            continue
+        try:
+            with contextlib.closing(sqlite3.connect(f"{path.resolve().as_uri()}?mode=ro",
+                                                    uri=True)) as db:
+                rows = list(db.execute(
+                    "SELECT server_id, trial_ends_at FROM accounts"
+                    " WHERE server_id IS NOT NULL AND server_id != ''"))
+        except sqlite3.Error as error:
+            notes.append(f"trial db {path}: {error} — no trial check from it")
+            continue
+        for server_id, stamp in rows:
+            try:
+                when = datetime.datetime.strptime(stamp, TRIAL_STAMP).replace(tzinfo=datetime.UTC)
+            except (TypeError, ValueError):
+                notes.append(f"trial db {path}: account for {server_id} has "
+                             f"trial_ends_at {stamp!r} — unreadable, treated as no trial")
+                continue
+            ends.setdefault(server_id, (stamp, when))
+    return ends, notes
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Renew Servury Blackbox servers at the partner price.")
     parser.add_argument("--apply", action="store_true", help="actually renew (default: dry run)")
+    parser.add_argument("--dry-run", action="store_true",
+                        help="print the plan and charge nothing (the default, named for a rehearsal)")
     parser.add_argument("--days", type=int, default=7, help="term to buy, 7 to 365 (default 7)")
     parser.add_argument("--threshold", type=float, default=5.0,
                         help="renew when this many days or fewer are left (default 5)")
@@ -116,11 +169,17 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--max-charge", type=Decimal, default=Decimal("10.00"),
                         help="refuse a single renewal above this amount (default 10.00, the card floor)")
     parser.add_argument("--key-file", action="append", default=[], help="label=path, repeatable")
+    parser.add_argument("--trial-db", action="append", metavar="PATH",
+                        help="tenant database whose accounts.trial_ends_at stops a machine; "
+                             "repeatable (default: the bench and production databases)")
     parser.add_argument("--json", action="store_true", help="print the status document")
     args = parser.parse_args(argv)
 
     if not 7 <= args.days <= 365:
         print("servury-renew: --days must be 7 to 365", file=sys.stderr)
+        return 2
+    if args.apply and args.dry_run:
+        print("servury-renew: --apply and --dry-run are opposites — pick one", file=sys.stderr)
         return 2
 
     keys: list[tuple[str, Path]] = []
@@ -136,6 +195,8 @@ def main(argv: list[str] | None = None) -> int:
     alerts: list[str] = []
     accounts: list[dict] = []
     notes: list[str] = []
+    trials, trial_notes = trial_ends(tuple(Path(p) for p in (args.trial_db or TRIAL_DBS)))
+    notes.extend(trial_notes)
 
     with LOCK.open("w", encoding="utf-8") as lock:
         try:
@@ -166,6 +227,20 @@ def main(argv: list[str] | None = None) -> int:
                     continue
                 left = days_left(brief.get("expiration_date", 0), at)
                 if left > args.threshold:
+                    continue
+                trial = trials.get(server_id)
+                if trial is not None and at >= trial[1]:
+                    # The trial that pays for this machine is over: buy no more
+                    # days, and leave the provider's last term to run out.
+                    actions.append({
+                        "key": label, "server": server_id, "hostname": brief.get("hostname"),
+                        "days_left": round(left, 1), "term": args.days,
+                        "trial_ends_at": trial[0], "auto_renew": bool(brief.get("auto_renew")),
+                        "applied": False, "skipped": "trial_ended",
+                    })
+                    notes.append(f"{server_id}: trial ended {trial[0]} — not renewed; "
+                                 f"the provider's term runs out")
+                    audit(f"TRIAL_ENDED key={label} server={server_id} trial_ends_at={trial[0]}")
                     continue
                 try:
                     detail = call("server", key, server_id=server_id).get("server", brief)
