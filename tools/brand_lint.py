@@ -113,9 +113,15 @@ H2_SIZES = {
 }
 # A section title is at least 1.2 rem. Below that an `h2` is a label — the demo
 # template sets `.panel h2` and `.railbox h2` at 10 px caps — and labels are a
-# different role (§Typography, *Label (caps)*).
+# different role (§Typography, *Label (caps)*). A page that writes its h2 in px
+# is held to the same floor: 19.2 px.
 H2_SECTION_MIN_REM = 1.2
+H2_SECTION_MIN_PX = H2_SECTION_MIN_REM * 16
 FIELD_SELECTOR_RE = re.compile(r"(?:^|[\s,>+~])(?:input|textarea|select)\b", re.IGNORECASE)
+# The wordmark is `.brand` wherever it sits in a selector: the sheet's rule is
+# about the header mark, not about one spelling of its selector, so `.top .brand`
+# counts as much as a bare `.brand`.
+BRAND_MEMBER_RE = re.compile(r"(?:^|[\s>+~])\.brand$")
 
 
 def css_text(text: str) -> str:
@@ -167,6 +173,12 @@ def size_rem(value: str) -> float | None:
     return float(match.group(1)) if match else None
 
 
+def size_px(value: str) -> float | None:
+    """A bare `Npx` value in px; None for rem, clamp(), %, or anything else."""
+    match = re.fullmatch(r"([0-9.]+)px", value.strip().lower())
+    return float(match.group(1)) if match else None
+
+
 def check_shell(path: Path, name: str) -> list[str]:
     """The shell pairing on one page: wordmark size and h2 role travel together."""
     findings: list[str] = []
@@ -175,7 +187,7 @@ def check_shell(path: Path, name: str) -> list[str]:
     h2_roles: list[tuple[str, str, int]] = []
     for selector, members, body, line in css_rules(plain):
         sizes = [normalise_size(value) for value in FONT_SIZE_RE.findall(body)]
-        if ".brand" in members and sizes:
+        if any(BRAND_MEMBER_RE.search(member) for member in members) and sizes:
             wordmark = (sizes[0], line)
         for member in members:
             if not re.search(r"(?:^|[\s>+~])h2$", member) or not sizes:
@@ -183,7 +195,11 @@ def check_shell(path: Path, name: str) -> list[str]:
             size = sizes[0]
             if size in H2_SIZES:
                 h2_roles.append((H2_SIZES[size], size, line))
-            elif (rem := size_rem(size)) is not None and rem >= H2_SECTION_MIN_REM:
+                continue
+            rem = size_rem(size)
+            px = size_px(size)
+            if (rem is not None and rem >= H2_SECTION_MIN_REM) or (
+                    px is not None and px >= H2_SECTION_MIN_PX):
                 findings.append(
                     f"{name}:{line}: h2 is {size}; the sheet's section-title sizes are "
                     f"1.34rem (document shell) and clamp(1.9rem,3vw,2.6rem) (report shell)"

@@ -205,6 +205,26 @@ class ShellPairingTests(unittest.TestCase):
         self.assertIn("web/page.html:1", findings[0])
         self.assertIn("a form field carries letter-spacing", findings[0])
 
+    def test_a_brand_rule_scoped_under_a_parent_is_still_the_wordmark(self) -> None:
+        body = (".brand{font-size:1.5rem}\n"
+                ".top .brand{font-size:2.4rem}\n"
+                "h2{font-size:1.34rem}\n")
+        with tempfile.TemporaryDirectory() as directory:
+            page = self.page(directory, body)
+            findings = brand_lint.check_shell(page, "web/page.html")
+        self.assertEqual(len(findings), 1, findings)
+        self.assertIn("2.4rem", findings[0])
+        self.assertIn("1.5rem", findings[0])
+
+    def test_an_h2_in_px_is_held_to_the_section_title_floor(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            page = self.page(directory, ".brand{font-size:1.5rem}\n"
+                                        "h2{font-size:22px}\n")
+            findings = brand_lint.check_shell(page, "web/page.html")
+        self.assertEqual(len(findings), 1, findings)
+        self.assertIn("22px", findings[0])
+        self.assertIn("1.34rem", findings[0])
+
     def test_a_labelled_h2_below_the_section_size_is_not_a_section_title(self) -> None:
         body = ".brand{font-size:1.5rem}\n" \
                "h2{font-size:1.34rem}\n" \
