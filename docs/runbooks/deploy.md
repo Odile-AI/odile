@@ -302,9 +302,13 @@ Run all four; each is also the evidence line for the card.
    EOF
    ```
 
-   Expect the ten tables `app.init_db()` creates — `accounts, claims, events,
-   grants, seed_tokens, tenant_keys, tenant_state, tenant_state_events, tenants,
-   waitlist` — and `user_version: 4`. `tenant_keys` is the inference key's
+   Expect the eleven tables `app.init_db()` creates — `accounts, admin_log,
+   claims, events, grants, seed_tokens, tenant_keys, tenant_state,
+   tenant_state_events, tenants, waitlist` — and `user_version: 4`.
+   `admin_log` is the append-only record of the console's re-point action
+   (ODL-582: who moved an account's address, from which address to which, and
+   when; the previous address stays the account's name for `/forgot`).
+   `tenant_keys` is the inference key's
    record (ODL-242: the label, the first characters and the state; never the
    key), created by `odilectl/state.py`'s additive schema. Schema v2 was the
    same list without the three claim-spine tables, at `user_version: 2`; v3
@@ -316,7 +320,7 @@ Run all four; each is also the evidence line for the card.
    database also holds
    `health_alerts`, `heartbeat_keys` and `heartbeats` once the health ingest
    has run (`odilectl/health.py`); they are not part of `init_db()`, so compare
-   the ten and the version, not equality of the whole list. Compare the signup count and rows with §1. On 2026-11-06
+   the eleven and the version, not equality of the whole list. Compare the signup count and rows with §1. On 2026-11-06
    both rows were unchanged (same `id`, `email`, `created_at`, `token`,
    `source`, `unsubscribed`) and `migrate` backfilled exactly one `signup`
    event per row.
