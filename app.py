@@ -25,10 +25,13 @@ import json
 import os
 import re
 import secrets
+import shutil
 import struct
 import sqlite3
+import subprocess
 import sys
 import tarfile
+import tempfile
 import threading
 import time
 import traceback
@@ -184,6 +187,12 @@ _lock = threading.Lock()
 # carries as `sign_in_hash`, so the machine and the account share one initial
 # secret (B-once). The account is the identity; `tenants` is the machine.
 #
+# ODL-578 adds `accounts.recovery_hash` the same way: an additive column
+# reported in `migrate()`'s `added` list, so an existing database converges on
+# the next service start without a version move (the convention
+# `tenants.release` set). `PRAGMA user_version` stays 4 because the column
+# changes no existing shape.
+#
 # No passwords, passphrases, private keys or IP history are stored. The one
 # password-shaped value is the account's scrypt verifier (`accounts.
 # password_hash`), which cannot be typed back into anything. A token is kept as
@@ -312,6 +321,11 @@ CREATE TABLE IF NOT EXISTS accounts (
     email                 TEXT    NOT NULL UNIQUE,
     -- a scrypt verifier (`scrypt$n$r$p$salt$dk`), never a password
     password_hash         TEXT    NOT NULL,
+    -- the hash of the machine's recovery code (ODL-578), pushed by the
+    -- machine at its first sign-in and null until then. The account reset
+    -- verifies the typed code against this value, so it works with the
+    -- machine down; the plaintext never reaches HQ.
+    recovery_hash         TEXT,
     -- the one confirmation token, as a SHA-256; never the token itself
     confirm_token_hash    TEXT    NOT NULL UNIQUE,
     confirm_expires_at    TEXT    NOT NULL,
@@ -389,6 +403,8 @@ def migrate(con):
     added = []
     if _add_column(con, "tenants", "release", "TEXT"):
         added.append("tenants.release")
+    if _add_column(con, "accounts", "recovery_hash", "TEXT"):
+        added.append("accounts.recovery_hash")
     backfilled = con.execute(BACKFILL_SIGNUPS).rowcount
     con.execute("PRAGMA user_version = %d" % SCHEMA_VERSION)
     con.commit()
@@ -433,6 +449,30 @@ def attested():
     return "unavailable"
 
 
+def allow_key(key: str, limit: int, window: int) -> bool:
+    """One in-memory bucket: True while `key` has spent fewer than `limit` hits.
+
+    `key` is hashed before it is stored, so an email address or an IP never
+    reaches the dictionary in clear — the bucket is a memory-only record and
+    nothing here touches disk. Two callers need their own numbers: the older
+    routes spend `RATE_LIMIT`/`RATE_WINDOW`, and the account reset spends 5 per
+    address and 20 per IP per hour (ODL-578, decision §3.1).
+    """
+    digest = hashlib.sha256(key.encode("utf-8", "replace")).hexdigest()[:16]
+    now = time.time()
+    with _lock:
+        q = [t for t in _hits.get(digest, []) if now - t < window]
+        if len(q) >= limit:
+            _hits[digest] = q
+            return False
+        q.append(now)
+        _hits[digest] = q
+        if len(_hits) > 4000:
+            for k in [k for k, v in _hits.items() if not v or now - v[-1] > window]:
+                _hits.pop(k, None)
+    return True
+
+
 def allow(ip: str, bucket: str = "") -> bool:
     """In-memory rate limit, one bucket per route. The IP never touches disk.
 
@@ -441,19 +481,7 @@ def allow(ip: str, bucket: str = "") -> bool:
     (ADR-006 §7 gates both), and the waitlist keeps its old one-bucket shape
     because its call site passes no bucket.
     """
-    key = hashlib.sha256((bucket + "\x00" + ip).encode("utf-8", "replace")).hexdigest()[:16]
-    now = time.time()
-    with _lock:
-        q = [t for t in _hits.get(key, []) if now - t < RATE_WINDOW]
-        if len(q) >= RATE_LIMIT:
-            _hits[key] = q
-            return False
-        q.append(now)
-        _hits[key] = q
-        if len(_hits) > 4000:
-            for k in [k for k, v in _hits.items() if not v or now - v[-1] > RATE_WINDOW]:
-                _hits.pop(k, None)
-    return True
+    return allow_key(bucket + "\x00" + ip, RATE_LIMIT, RATE_WINDOW)
 
 
 def signing_key() -> bytes:
@@ -621,6 +649,100 @@ def verify_password_or_dummy(password: str, encoded: str | None) -> bool:
 def new_slug() -> str:
     """`odl-` plus six random hex characters, the tenant slug the DNS owns."""
     return "odl-" + secrets.token_hex(3)
+
+
+# ------------------------------------------------------- the recovery code
+#
+# ODL-578, docs/product/DECISION-one-recovery-code.md §2.3 and §3.1. The
+# machine mints one recovery code at the first sign-in and pushes its scrypt
+# hash here; the plaintext stays on the machine, so `/forgot` verifies a
+# value HQ holds. That is what makes the account reset work **with the machine
+# down**. The push is signed with the Ed25519 key `heartbeat_keys` already
+# registers for the slug (scripts/heartbeat.py is the other end of that wire),
+# so this endpoint adds no secret and no bearer.
+SCRYPT_TEXT_RE = re.compile(
+    r"^scrypt\$(\d+)\$(\d+)\$(\d+)\$([A-Za-z0-9+/]+={0,2})\$([A-Za-z0-9+/]+={0,2})\Z"
+)
+RECOVERY_MAX = 512          # one installer string is ~90 bytes
+RECOVERY_SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]{2,62}$")
+RECOVERY_HEADER = "X-Odile-Signature"
+FORGOT_LIMIT_ADDRESS = 5
+FORGOT_LIMIT_IP = 20
+FORGOT_WINDOW = 3600
+MACHINE_RESET_PATH = "/first-visit/reset"
+
+
+def is_scrypt_verifier(value) -> bool:
+    """True for the installer's own scrypt string and for nothing else.
+
+    `installer/first_visit.py:hash_password` writes
+    `scrypt$16384$8$1$<salt>$<key>` (n=2**14, r=8, p=1, 16-byte salt, 32-byte
+    key) and `app.hash_password` is byte-compatible with it, so this is the
+    format the tree produces and the reset consumes. The parameter bounds keep
+    a correctly signed but hostile value from making every later reset cost
+    minutes of CPU.
+    """
+    if not isinstance(value, str) or not value or len(value) > RECOVERY_MAX:
+        return False
+    match = SCRYPT_TEXT_RE.match(value)
+    if match is None:
+        return False
+    n_text, r_text, p_text, salt_text, key_text = match.groups()
+    try:
+        n, r, p = int(n_text), int(r_text), int(p_text)
+        salt = base64.b64decode(salt_text.encode(), validate=True)
+        derived = base64.b64decode(key_text.encode(), validate=True)
+    except (ValueError, TypeError):
+        return False
+    if not (1024 <= n <= 2 ** 20) or n & (n - 1):
+        return False
+    if not (1 <= r <= 32) or not (1 <= p <= 16):
+        return False
+    return 16 <= len(salt) <= 64 and 16 <= len(derived) <= 128
+
+
+def verify_ed25519(body: bytes, signature: bytes, public_key_pem: str) -> bool:
+    """True when `signature` is Ed25519 over these exact bytes (openssl).
+
+    The standard library has no Ed25519, so this is the same call
+    `scripts/heartbeat.py:verify_ed25519` makes at the heartbeat receiver: the
+    machine signs one wire shape and every HQ endpoint agrees on it. A
+    malformed key or a missing openssl answers False rather than raising, so a
+    bad request cannot take the service down.
+    """
+    if not isinstance(public_key_pem, str) \
+            or not public_key_pem.strip().startswith("-----BEGIN PUBLIC KEY-----"):
+        return False
+    if len(signature) != 64:
+        return False
+    binary = shutil.which("openssl")
+    if not binary:
+        return False
+    with tempfile.TemporaryDirectory(prefix="odile-recovery-") as directory:
+        public = os.path.join(directory, "public.pem")
+        signature_path = os.path.join(directory, "signature.bin")
+        with open(public, "w", encoding="utf-8") as handle:
+            handle.write(public_key_pem if public_key_pem.endswith("\n")
+                         else public_key_pem + "\n")
+        with open(signature_path, "wb") as handle:
+            handle.write(signature)
+        try:
+            done = subprocess.run(
+                [binary, "dgst", "-verify", public, "-signature", signature_path],
+                input=body, capture_output=True,
+            )
+        except OSError:
+            return False
+    return done.returncode == 0
+
+
+def decode_signature(raw: str) -> bytes:
+    """The 64-byte signature in the header, or b"" when it is not one."""
+    try:
+        value = base64.b64decode((raw or "").strip().encode("ascii"), validate=True)
+    except (ValueError, TypeError, UnicodeEncodeError):
+        return b""
+    return value if len(value) == 64 else b""
 
 
 def hash_token(token: str) -> str:
@@ -1021,6 +1143,9 @@ def signin_body(*, email: str = "", error: str = "",
         "%s"
         '<button type="submit">Sign in</button>'
         "</form>"
+        # The one link the reset is reachable from (decision §3.1 step 1): one
+        # target, 44 px, in the sink's own note row.
+        '<p class="note"><a href="/forgot">Forgot your password?</a></p>'
         '<p class="note"><a href="/register">Register</a></p>'
         % (html.escape(action, quote=True), html.escape(email), invalid,
            PASSWORD_MIN, ' aria-describedby="signin-err"' if error else "", slot)
@@ -1033,6 +1158,7 @@ def signin_body(*, email: str = "", error: str = "",
 # `provision_state`, which is still `unverified`.
 ACCOUNT_STATE_RE = re.compile(
     r"<!--(confirm|building|ready|failed|missing)-->(.*?)<!--/\1-->", re.S)
+ACCOUNT_ACTIONS_RE = re.compile(r"<!--(actions)-->(.*?)<!--/actions-->", re.S)
 ACCOUNT_PAGE_TITLES = {
     "confirm": "Check your email \u2014 Odile",
     "building": "Building \u2014 Odile",
@@ -1040,6 +1166,12 @@ ACCOUNT_PAGE_TITLES = {
     "failed": "The machine could not be built \u2014 Odile",
     "missing": "That page is not here \u2014 Odile",
 }
+
+# The account page's own actions (ODL-578): the change form and the two reset
+# links. D-12 is the change form's line and D-16 the lost-code block, both
+# verbatim from docs/product/DECISION-one-recovery-code.md §4 in web/account.html
+# — this page does not coin a fourth wording.
+ACCOUNT_PASSWORD_FIELDS = ("current", "password", "password2")
 
 
 def account_state(row: sqlite3.Row) -> str:
@@ -1053,7 +1185,8 @@ def account_state(row: sqlite3.Row) -> str:
 
 
 def render_account_page(row: sqlite3.Row, tenant: sqlite3.Row | None = None,
-                        state: str | None = None) -> str:
+                        state: str | None = None, *, error: str = "",
+                        field: str = "") -> str:
     """The finished account page, server-rendered from the account and tenant.
 
     The machine's address and IPv4 come from the tenant row (the record of the
@@ -1062,6 +1195,12 @@ def render_account_page(row: sqlite3.Row, tenant: sqlite3.Row | None = None,
     `trial_ends_at`; there is no clock and no countdown. No JavaScript, no
     third-party request. `state="missing"` renders the signed-in 404: the same
     paper page, one way back to `/account`, no machine named.
+
+    ODL-578 adds the account's own actions: the change form (D-12's line), the
+    code reset (`/forgot`) and the machine's reset. The two reset links name the
+    machine, so the `failed` state (which names no machine, ODL-583) and the
+    signed-in 404 drop them; the change form and the lost-code block (D-16)
+    carry no machine name and stay in every signed-in state.
     """
     state = state or account_state(row)
     slug = row["slug"]
@@ -1070,6 +1209,8 @@ def render_account_page(row: sqlite3.Row, tenant: sqlite3.Row | None = None,
     body = page("account.html", TITLE=html.escape(ACCOUNT_PAGE_TITLES[state]))
     body = ACCOUNT_STATE_RE.sub(
         lambda match: match.group(2) if match.group(1) == state else "", body)
+    body = ACCOUNT_ACTIONS_RE.sub(
+        lambda match: match.group(2) if state != "missing" else "", body)
     values = {
         "EMAIL": html.escape(row["email"]),
         "MACHINE": html.escape(host),
@@ -1077,12 +1218,76 @@ def render_account_page(row: sqlite3.Row, tenant: sqlite3.Row | None = None,
         "REPORT": html.escape("https://%s/verify" % host, quote=True),
         "OPEN": html.escape("https://%s/login" % host, quote=True),
         "TRIAL": html.escape(brand_date(row["trial_ends_at"])),
+        # A failed build has no machine to reset, and the state must not name
+        # one (ODL-583); the link is dropped, not the whole block.
+        "MACHINE_RESET_LINK": "" if state in ("failed", "missing") else
+        '<p class="note"><a href="https://%s%s">Reset the sign-in on your machine</a></p>'
+        % (html.escape(host, quote=True), MACHINE_RESET_PATH),
+        "ACCOUNT_ERROR": err_slot(error, "account-password-err")
+        if error and field not in ACCOUNT_PASSWORD_FIELDS else "",
     }
+    for name in ACCOUNT_PASSWORD_FIELDS:
+        hit = bool(error) and field == name
+        slot_id = "%s-err" % name
+        values["%s_INVALID" % name.upper()] = (
+            ' aria-invalid="true" aria-describedby="%s"' % slot_id if hit else "")
+        values["%s_ERROR" % name.upper()] = err_slot(error, slot_id) if hit else ""
     for key, value in values.items():
         body = body.replace("{{%s}}" % key, value)
     if "{{" in body:
         raise RuntimeError("the account page has an unfilled slot")
     return body
+
+
+# The account reset (ODL-578). The page copy is docs/product/DECISION-one-
+# recovery-code.md §3.1 and §5 and lives in web/forgot.html; this module owns
+# the two strings the handler has to compare or answer. Nothing here is mailed:
+# a code-only reset sends nothing, by decision.
+FORGOT_TITLES = {
+    "form": "Reset your account password \u2014 Odile",
+    "done": "Your account password is changed \u2014 Odile",
+}
+FORGOT_MISMATCH = "That email and recovery code do not match."
+FORGOT_RATE = "Too many attempts. Try again in a few minutes."
+FORGOT_FIELDS = ("email", "code", "password", "password2")
+FORGOT_BLOCK_RE = re.compile(r"<!--(form|done)-->(.*?)<!--/\1-->", re.S)
+
+
+def render_forgot(*, state: str = "form", email: str = "", error: str = "",
+                  field: str = "", machine_reset: str = "") -> str:
+    """One page, two states: the form and the success page.
+
+    The wrong email-or-code is one message for two fields, so it is not a
+    summary over the form: it renders under the recovery-code input (the value
+    the reader has to correct) and both `#email` and `#code` carry the ARIA
+    pair pointing at it, like /signin's own pair error. The two shape errors
+    stay on the field they name, like every other form in this service.
+    """
+    body = page("forgot.html", TITLE=html.escape(FORGOT_TITLES[state]),
+                ROBOTS="noindex")
+    body = FORGOT_BLOCK_RE.sub(
+        lambda match: match.group(2) if match.group(1) == state else "", body)
+    pair_error = bool(error) and state == "form" and field not in FORGOT_FIELDS
+    body = body.replace(
+        "{{FORM_ERROR}}", err_slot(error, "forgot-err") if pair_error else "")
+    for name in FORGOT_FIELDS:
+        hit = bool(error) and state == "form" and field == name
+        slot_id = "%s-err" % name
+        described = slot_id if hit else (
+            "forgot-err" if pair_error and name in ("email", "code") else "")
+        body = body.replace(
+            "{{%s_INVALID}}" % name.upper(),
+            ' aria-invalid="true" aria-describedby="%s"' % described
+            if described else "",
+        )
+        body = body.replace(
+            "{{%s_ERROR}}" % name.upper(),
+            err_slot(error, slot_id) if hit else "",
+        )
+    body = body.replace("{{MACHINE_RESET}}", html.escape(machine_reset, quote=True))
+    # The address goes in last, so a literal `{{...}}` typed into the field is
+    # never read back as a slot of ours (the ODL-457 rule).
+    return body.replace("{{EMAIL}}", html.escape(email, quote=True))
 
 
 # The claim form has two fields, and each owns one error slot: the message
@@ -1452,6 +1657,11 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(200, render_account(
                 title="Sign in \u2014 Odile",
                 body=signin_body(action=path)), head=head)
+        if path == "/forgot":
+            # The account reset (ODL-578): one form, no token, no mail.
+            return self._send(200, render_forgot(), head=head)
+        if path == "/forgot/done":
+            return self._forgot_done(head)
         if path == "/account":
             return self._account_page(head)
         if path.startswith("/account/"):
@@ -1609,8 +1819,14 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         path = urlparse(self.path).path
+        if path == "/tenant/recovery":
+            # The machine's signed push of its recovery-code hash (ODL-578). It
+            # is JSON with a signature header, not a form, so it is answered
+            # before the form parser touches the body.
+            return self._tenant_recovery()
         if path not in ("/waitlist", "/claim", "/register", "/confirm", "/signin",
-                        "/login", "/account/retry", "/account/resend"):
+                        "/login", "/account/retry", "/account/resend",
+                        "/account/password", "/forgot"):
             return self._send(405, "method not allowed\n", "text/plain; charset=utf-8")
 
         try:
@@ -1630,6 +1846,9 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/confirm":
                 return self._send(413, render_register(
                     state="confirm", error="That request was too large."))
+            if path == "/forgot":
+                return self._send(413, render_forgot(
+                    error="That request was too large."))
             return self._send(413, render_account(
                 title="Sign in \u2014 Odile", body=signin_body(
                     action=path if path in ("/login", "/signin") else "/signin",
@@ -1649,6 +1868,10 @@ class Handler(BaseHTTPRequestHandler):
             return self._account_retry()
         if path == "/account/resend":
             return self._account_resend()
+        if path == "/account/password":
+            return self._account_password(fields)
+        if path == "/forgot":
+            return self._forgot(fields)
         email_raw = (fields.get("email") or [""])[0]
 
         # honeypot: filled only by bots. Pretend everything went fine.
@@ -1841,6 +2064,100 @@ class Handler(BaseHTTPRequestHandler):
             "text/plain; charset=utf-8",
         )
 
+    # -- the machine's recovery push (ODL-578) ----------------------------
+
+    def _json(self, code: int, payload: dict) -> None:
+        """A JSON answer with the same headers as every other route."""
+        return self._send(code, json.dumps(payload, sort_keys=True) + "\n",
+                          "application/json", cache="no-store")
+
+    def _tenant_recovery(self):
+        """The machine pushes its recovery-code hash; HQ verifies and stores it.
+
+        docs/product/DECISION-one-recovery-code.md §2.3: the guest mints the
+        code at the first sign-in and only its scrypt hash crosses the wire.
+        The signature is Ed25519 over these exact bytes, checked with `openssl`
+        against the key `heartbeat_keys` registered for the slug — the same key
+        the heartbeat already rides, so this route adds no secret. The answer
+        names neither the hash nor the body, and nothing here is logged.
+
+        Statuses: 200 `changed:true|false` (the second for the same value),
+        409 for a slug with no registered key, 400 for a body or a value that
+        is not the machine's own shape, 401 for a signature that does not
+        verify, 404 for a registered slug with no account.
+        """
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+        except ValueError:
+            length = 0
+        if length <= 0 or length > MAX_BODY:
+            return self._json(400, {"ok": False,
+                                    "error": "a JSON body is required"})
+        body = self.rfile.read(length)
+        try:
+            payload = json.loads(body.decode("utf-8"))
+        except (UnicodeDecodeError, ValueError):
+            return self._json(400, {"ok": False, "error": "the body is not JSON"})
+        if not isinstance(payload, dict):
+            return self._json(400, {"ok": False, "error": "the body is not an object"})
+        slug = payload.get("slug")
+        instance_id = payload.get("instance_id")
+        recovery_hash = payload.get("recovery_hash")
+        if not isinstance(slug, str) or not RECOVERY_SLUG_RE.match(slug):
+            return self._json(400, {"ok": False, "error": "slug is missing or malformed"})
+        if not isinstance(instance_id, str) or not instance_id.strip() \
+                or len(instance_id) > 128:
+            return self._json(400, {"ok": False,
+                                    "error": "instance_id is missing or malformed"})
+        if not is_scrypt_verifier(recovery_hash):
+            return self._json(400, {"ok": False,
+                                    "error": "recovery_hash is not an installer scrypt string"})
+        con = db()
+        try:
+            try:
+                registered = con.execute(
+                    "SELECT public_key FROM heartbeat_keys WHERE slug = ?",
+                    (slug,)).fetchone()
+            except sqlite3.OperationalError:
+                # The heartbeat store may not exist on this database yet; a
+                # missing table is no registered key, not a 500.
+                registered = None
+            if registered is None:
+                return self._json(409, {"ok": False,
+                                        "error": "no heartbeat key is registered for that slug"})
+            signature = decode_signature(self.headers.get(RECOVERY_HEADER, ""))
+            if not signature or not verify_ed25519(
+                    body, signature, registered["public_key"]):
+                return self._json(401, {"ok": False,
+                                        "error": "the signature does not verify"})
+            account = con.execute(
+                "SELECT id, recovery_hash FROM accounts WHERE slug = ?",
+                (slug,)).fetchone()
+            if account is None:
+                return self._json(404, {"ok": False,
+                                        "error": "no account for that machine"})
+            tenant = con.execute("SELECT server_id FROM tenants WHERE slug = ?",
+                                 (slug,)).fetchone()
+            # The recorded machine id: the tenant's (the record of the machine)
+            # or, when that row is still empty, the account's copy. When neither
+            # is recorded yet the signed slug is the only identity there is.
+            recorded = tenant["server_id"] if tenant is not None else None
+            if not recorded:
+                owner = con.execute("SELECT server_id FROM accounts WHERE id = ?",
+                                    (int(account["id"]),)).fetchone()
+                recorded = owner["server_id"] if owner is not None else None
+            if recorded and recorded != instance_id:
+                return self._json(400, {"ok": False,
+                                        "error": "instance_id is not this machine"})
+            if account["recovery_hash"] == recovery_hash:
+                return self._json(200, {"ok": True, "changed": False})
+            con.execute("UPDATE accounts SET recovery_hash = ? WHERE id = ?",
+                        (recovery_hash, int(account["id"])))
+            con.commit()
+        finally:
+            con.close()
+        return self._json(200, {"ok": True, "changed": True})
+
     # -- accounts ---------------------------------------------------------
 
     def _secure(self) -> bool:
@@ -1957,6 +2274,27 @@ class Handler(BaseHTTPRequestHandler):
             con.close()
         return self._send(303, "", location="/account")
 
+    def _account_answer(self, row, status, message, field=""):
+        """One refusal in the account page's own paper (429, 422).
+
+        A rate limit and a field error both land on the finished page: a bare
+        text/plain body would be the only page in this service that is not
+        designed, and the 429 on this form is reachable on its likeliest
+        mistake — the account-vs-machine sign-in confusion D-12 exists for
+        (Brand gate round 2, must 1). The template's `{{ACCOUNT_ERROR}}` slot
+        is the page-level one; a field error keeps its own slot under the
+        input it names.
+        """
+        con = db()
+        try:
+            tenant = con.execute("SELECT * FROM tenants WHERE slug = ?",
+                                 (row["slug"],)).fetchone()
+        finally:
+            con.close()
+        headers = {"Retry-After": str(RATE_WINDOW)} if status == 429 else None
+        return self._send(status, render_account_page(
+            row, tenant=tenant, error=message, field=field), headers=headers)
+
     def _account_resend(self):
         """Re-queue the mail the state owns; no new row, no new machine.
 
@@ -1976,9 +2314,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(303, "", location="/login",
                               headers={"Set-Cookie": _clear_cookie()})
         if not allow(self._client_ip(), "resend"):
-            return self._send(429, "Too many resends. Try again in ten minutes.\n",
-                              "text/plain; charset=utf-8",
-                              headers={"Retry-After": str(RATE_WINDOW)})
+            return self._account_answer(
+                row, 429, "Too many resends. Try again in ten minutes.")
         state = account_state(row)
         if state == "confirm":
             return self._confirm_resend(row)
@@ -2027,6 +2364,54 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(500, "The confirmation email could not be queued."
                                    " Try again?\n", "text/plain; charset=utf-8")
         return self._send(303, "", location="/account")
+
+    def _account_password(self, fields):
+        """The signed-in change: verify the current password, end every other browser.
+
+        D-12 is the page's line; this route is what makes it true. The write is
+        one UPDATE: the new verifier and `session_epoch + 1`, so every cookie
+        minted before it stops matching, including a second browser the person
+        forgot about. The browser that made the change is handed the fresh
+        epoch, so it stays signed in. No mail is queued (code-only alpha.0 has
+        no password-changed notice, decision §6).
+        """
+        if not self._same_origin():
+            return self._send(403, "forbidden: cross-site form\n",
+                              "text/plain; charset=utf-8")
+        row = self._session_account()
+        if row is None:
+            return self._send(303, "", location="/login",
+                              headers={"Set-Cookie": _clear_cookie()})
+        if not allow(self._client_ip(), "account-password"):
+            return self._account_answer(
+                row, 429, "Too many changes. Try again in ten minutes.")
+        current = (fields.get("current") or [""])[0]
+        password = (fields.get("password") or [""])[0]
+        repeat = (fields.get("password2") or [""])[0]
+
+        def refused(message, field):
+            return self._account_answer(row, 422, message, field)
+
+        if not verify_password_or_dummy(current, row["password_hash"]):
+            return refused("That password does not match.", "current")
+        if len(password) < PASSWORD_MIN:
+            return refused("Use at least %d characters." % PASSWORD_MIN, "password")
+        if password != repeat:
+            return refused("The two passwords do not match.", "password2")
+        con = db()
+        try:
+            con.execute(
+                "UPDATE accounts SET password_hash = ?,"
+                " session_epoch = session_epoch + 1 WHERE id = ?",
+                (hash_password(password), int(row["id"])),
+            )
+            con.commit()
+            fresh = con.execute("SELECT * FROM accounts WHERE id = ?",
+                                (int(row["id"]),)).fetchone()
+        finally:
+            con.close()
+        return self._send(303, "", location="/account",
+                          headers=self._cookie_pair(fresh))
 
     def _register(self, fields):
         """The public registration POST: one account row, one confirmation mail.
@@ -2261,6 +2646,86 @@ class Handler(BaseHTTPRequestHandler):
                 body=signin_body(email=email_raw, action=action,
                                  error="That email and password do not match.")))
         return self._send(303, "", location="/account", headers=self._cookie_pair(row))
+
+    def _forgot(self, fields):
+        """The account reset: email + recovery code + a new password, no mail.
+
+        docs/product/DECISION-one-recovery-code.md §3.1. The code is verified
+        against `accounts.recovery_hash` with the installer's own scrypt check
+        (`verify_password` is byte-compatible with
+        `installer/first_visit.py:verify_password`), and an address with no
+        account — or an account whose machine has not pushed a code yet — spends
+        the same work and answers the same string, so the page enumerates
+        nothing. A success writes the new verifier, bumps `session_epoch` (every
+        other browser of this account ends) and signs this browser in. Nothing
+        is queued: a code-only reset sends no mail.
+        """
+        if not self._same_origin():
+            return self._send(403, "forbidden: cross-site form\n",
+                              "text/plain; charset=utf-8")
+        email_raw = (fields.get("email") or [""])[0]
+        code = (fields.get("code") or [""])[0].strip()
+        password = (fields.get("password") or [""])[0]
+        repeat = (fields.get("password2") or [""])[0]
+        email = valid_email(email_raw)
+        if not email:
+            return self._send(422, render_forgot(
+                email=email_raw, field="email",
+                error="That doesn't look like an email address."))
+        if len(password) < PASSWORD_MIN:
+            return self._send(422, render_forgot(
+                email=email_raw, field="password",
+                error="Use at least %d characters." % PASSWORD_MIN))
+        if password != repeat:
+            return self._send(422, render_forgot(
+                email=email_raw, field="password2",
+                error="The two passwords do not match."))
+        # Five attempts per address and twenty per IP, per hour (decision
+        # §3.1). The buckets are keyed by a hash, never by the address itself.
+        address_ok = allow_key("forgot-address:" + email,
+                               FORGOT_LIMIT_ADDRESS, FORGOT_WINDOW)
+        ip_ok = allow_key("forgot-ip:" + self._client_ip(),
+                          FORGOT_LIMIT_IP, FORGOT_WINDOW)
+        if not (address_ok and ip_ok):
+            return self._send(429, render_forgot(email=email_raw, error=FORGOT_RATE),
+                              headers={"Retry-After": str(FORGOT_WINDOW)})
+        con = db()
+        try:
+            row = con.execute("SELECT * FROM accounts WHERE email = ?",
+                              (email,)).fetchone()
+            stored = row["recovery_hash"] if row is not None else None
+            if not verify_password_or_dummy(code, stored):
+                return self._send(401, render_forgot(
+                    email=email_raw, error=FORGOT_MISMATCH))
+            assert row is not None  # the verifier above passed, so the row exists
+            con.execute(
+                "UPDATE accounts SET password_hash = ?,"
+                " session_epoch = session_epoch + 1 WHERE id = ?",
+                (hash_password(password), int(row["id"])),
+            )
+            con.commit()
+            fresh = con.execute("SELECT * FROM accounts WHERE id = ?",
+                                (int(row["id"]),)).fetchone()
+        finally:
+            con.close()
+        return self._send(303, "", location="/forgot/done",
+                          headers=self._cookie_pair(fresh))
+
+    def _forgot_done(self, head):
+        """The success page: what changed, what did not, and the machine's reset.
+
+        It needs the browser that just reset (the cookie), so the page cannot be
+        read as a free-standing "your password changed" notice by anyone else.
+        """
+        row = self._session_account()
+        if row is None:
+            return self._send(303, "", head=head, location="/login",
+                              headers={"Set-Cookie": _clear_cookie()})
+        host = "%s.%s" % (row["slug"], TENANT_DOMAIN)
+        return self._send(200, render_forgot(
+            state="done",
+            machine_reset="https://%s%s" % (host, MACHINE_RESET_PATH),
+        ), head=head)
 
     def _permanent_redirect(self, location):
         """A retired address answers 301: the page now lives at `location`.
