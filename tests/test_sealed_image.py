@@ -1109,7 +1109,8 @@ class FirstbootUnitTests(unittest.TestCase):
             "model": "m", "support_public_key": "ssh-ed25519 x",
             "backup_repo_url": "sftp:x", "mail_relay": {
                 "host": "h", "port": 587, "username": "u", "secret": "s"},
-            "hermes_version": "v", "password": "hunter2",
+            "hermes_version": "v", "sign_in_hash": "scrypt$16384$8$1$c2FsdA==$ZGs=",
+            "password": "hunter2",
         }
         with self.assertRaises(firstboot.Refusal) as caught:
             firstboot.validate_seed(seed, self.IID)
@@ -1121,7 +1122,7 @@ class FirstbootUnitTests(unittest.TestCase):
             "model": "m", "support_public_key": "ssh-ed25519 x",
             "backup_repo_url": "sftp:x", "mail_relay": {
                 "host": "h", "port": 587, "username": "u", "secret": "s"},
-            "hermes_version": "v",
+            "hermes_version": "v", "sign_in_hash": "scrypt$16384$8$1$c2FsdA==$ZGs=",
         }
         with self.assertRaises(firstboot.Refusal):
             firstboot.validate_seed(seed, self.IID)
@@ -1132,7 +1133,7 @@ class FirstbootUnitTests(unittest.TestCase):
             "model": "m", "support_public_key": "ssh-ed25519 x",
             "backup_repo_url": "sftp:x", "mail_relay": {
                 "host": "h", "port": 587, "username": "u", "secret": "s"},
-            "hermes_version": "v",
+            "hermes_version": "v", "sign_in_hash": "scrypt$16384$8$1$c2FsdA==$ZGs=",
             "rebuild": {"kdf": "hmac-sha256-ctr-v1", "sealed": "00aa",
                         "tag": "00" * 32},
         }
@@ -1468,6 +1469,16 @@ class FirstbootExchangeTests(unittest.TestCase):
             con.execute("INSERT INTO tenants (slug, email, state, created_at)"
                         " VALUES (?, ?, 'invited', '2026-11-10T00:00:00Z')",
                         (self.SLUG, "bench@odile.test"))
+            # ODL-925: the seed carries the account's verifier as sign_in_hash,
+            # and the first boot refuses a seed without one.
+            con.execute(
+                "INSERT INTO accounts (slug, email, password_hash, confirm_token_hash,"
+                " confirm_expires_at, trial_started_at, trial_ends_at, created_at)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (self.SLUG, "bench@odile.test",
+                 "scrypt$16384$8$1$c2FsdA==$ZGs=", "0" * 64,
+                 "2026-11-11T00:00:00Z", "2026-11-10T00:00:00Z",
+                 "2026-11-24T00:00:00Z", "2026-11-10T00:00:00Z"))
             con.commit()
             # The first boot's record writes the tenant spine; the fixture HQ
             # database carries the same tables and one order at first_boot.
@@ -2557,7 +2568,7 @@ class FirstbootBenchTests(unittest.TestCase):
         server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Form)
         threading.Thread(target=server.serve_forever, daemon=True).start()
         try:
-            check = bench.first_visit_page(server.server_address[1], "ab" * 32, timeout=2)
+            check = bench.first_visit_page(server.server_address[1], timeout=2)
         finally:
             server.shutdown()
             server.server_close()
@@ -2577,7 +2588,7 @@ class FirstbootBenchTests(unittest.TestCase):
         server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Gone)
         threading.Thread(target=server.serve_forever, daemon=True).start()
         try:
-            check = bench.first_visit_page(server.server_address[1], "ab" * 32, timeout=0.3)
+            check = bench.first_visit_page(server.server_address[1], timeout=0.3)
         finally:
             server.shutdown()
             server.server_close()

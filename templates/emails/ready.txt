@@ -6,9 +6,9 @@ Check the report first: it says PASS or FAIL. PASS means the machine booted the
 image whose fingerprint is above. The page shows the measurement too, if you want
 to compare.
 
-Set your sign-in: {{FIRST_VISIT}}
+Sign in: {{URL}}/first-visit — the password you chose when you registered.
 
-Set it only after the report says PASS. That password opens your workspace.
+Check the report before you sign in; it says PASS or FAIL.
 
 Later, if you forget your sign-in:
 

@@ -248,7 +248,6 @@ class ClaimsDeckTests(unittest.TestCase):
         # verifier at provision and turns the first visit into a login.
         held = (
             "The password you chose is the only sign-in.",
-            "It is the only app-layer gate",
             "The disk unlocks only on the boot you verify.",
             "The disk key is sealed to the measured boot",
             "Not the disk key",
@@ -258,6 +257,10 @@ class ClaimsDeckTests(unittest.TestCase):
             "off-site",
             "Claiming takes 3 minutes",
         )
+        # ODL-925 landed D-1 ("It is the only app-layer gate: no 2FA in
+        # alpha.0.") on the first-visit page and its preview — the card the
+        # deck's §1a row named as its landing — so that clause is no longer a
+        # held one. Every other page keeps every other held clause off.
         surfaces = sorted((ROOT / "web").glob("*.html")) + [ROOT / "README.md"]
         for path in surfaces:
             text = path.read_text(encoding="utf-8").lower()

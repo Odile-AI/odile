@@ -1,8 +1,8 @@
 {
   "artifacts": {
     "installer": {
-      "sha256": "430d31a7c480944851382af4c9c26b47c671546a347cd68749ca3c7b3a70eb0d",
-      "size": 1563383,
+      "sha256": "b8776f642e371285714ff7b656f19b8fd5f31b3b5462979adfcfb088410b21e8",
+      "size": 1573431,
       "url": "odile_install.py"
     },
     "skills": {
@@ -14,14 +14,14 @@
   "boot": {
     "kernel": "6.12.115+deb13.1-amd64"
   },
-  "generated_at": "2026-11-22T20:32:00Z",
+  "generated_at": "2026-11-23T01:23:17Z",
   "manifest": {
-    "sha256": "80ccb90b89b9804694b2da959b7f1bcc7b78101bf59fc2a8e9e4f1a0aadda0ff",
+    "sha256": "0959481b96a643a94420384f1b8de3aefc9948a1d34a388b37ffa185b6bfd392",
     "signature_url": "manifest.json.sig",
     "url": "manifest.json"
   },
-  "notes": "t_69a749f0: the shipped installer's module docstring named a demo-host deployer file that exists on no ref of this repository (git ls-files and git log --all both return nothing). The docstring now says what is true: the pure helpers live in the installer, and the demo host's live deployer, deploy/demo-host/apply_demo_public.py, keeps its own copies of the scrypt password format and the atomic write, while the .env allowlist and the managed-block config merge have no second copy. Docstring bytes only: the managed config blocks, the tenant bundle, the skill rows and skills.tar.gz are unchanged, so this surgical re-cut moves installer_sha256, the manifest and this document.",
+  "notes": "ODL-925 (B-once): the first visit is a login. The first-visit page and the service it runs are re-embedded (the page is tokenless, ?t= answers 410, the state carries first_login_at), the installer writes the seed's sign_in_hash into the tenant .env before the Webapp's first boot, and the image's installer stamps the seeded state. The manifest moves installer_sha256 and generated_at only; skills_bundle_sha256 and every skill row are unchanged.",
   "product": "odile",
-  "release": "2026.11.22-7",
+  "release": "2026.11.23-1",
   "schema": 1
 }

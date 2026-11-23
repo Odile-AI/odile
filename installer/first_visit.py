@@ -1,18 +1,23 @@
 #!/usr/bin/python3
-"""odile first-visit service — set the Odile sign-in on the guest.
+"""odile first-visit service — sign in to the guest and show the recovery code.
 
-The strict bar sets the sign-in on the machine, at first visit, with no
-terminal. This service is the one page that does it. The installer writes a
-single-use token's SHA-256 and this program's unit; the user opens
-``https://<slug>.odile.fyi/first-visit?t=<token>`` from the ready page, chooses
-the password that opens the Hermes Webapp, and is shown a recovery code once.
-Nothing here ever sends the password, the token or the recovery code anywhere:
-the POST is same-origin, the page makes no third-party request, and the only
-file that changes is the tenant's own ``.env`` (the scrypt hash) and this
-service's state file (the hashes).
+B-once (Savio, 2026-11-20; card ODL-925): the registration password is the
+machine's sign-in, written into the tenant ``.env`` at provision, so the first
+visit is a **login**, not a setup. The installer writes this service's state
+and its unit; the user opens ``https://<slug>.odile.fyi/first-visit`` from the
+ready email, signs in with the password they chose at registration, and is
+shown a recovery code once, with the recovery file. A classic install with no
+seed — the image's bench path and a hand-run ``--first-visit`` — keeps the
+setup page: there the visit chooses the sign-in, as it did before B-once.
 
-    GET  /first-visit?t=<token>   the form, while the token is unspent
-    POST /first-visit             write the basic-auth hash; spend the token
+No first-visit link carries the setup token any more and no page accepts one:
+``?t=`` answers 410 ("already set"), the stale-link answer. The setup token's
+two remaining jobs are machine-side — it authenticates the seed exchange
+(``{token, instance_id}`` -> ``POST /seed``, which carries the NEAR key) and
+it seals the rebuild blob (``seed/seed.py``) — and neither is this service's.
+
+    GET  /first-visit             the form: a sign-in (seeded) or a setup (classic)
+    POST /first-visit             verify the password, or write the setup hash
     GET  /first-visit/recovery    the recovery page: enter the code, get the file
     POST /first-visit/recovery    spend the code, rotate it, mint a download token
     GET  /first-visit/recovery?d=<download token>   the recovery file, once
@@ -25,18 +30,23 @@ service's state file (the hashes).
     GET  /icon-512.png            the website icon, 512
     GET  /apple-touch-icon.png    the website icon, 180 on an opaque mount
 
-A refused link renders one of two pages: the spent token still offers the
-reset code, and a state with no recovery hash (the sign-in was never set, or
-the token is unknown on such a machine) offers the ready email's link instead
-of ``/first-visit/reset``, which would answer 409 there.
+A refused link renders one of two pages: a state with a recovery hash offers
+the reset code, and a state without one (the sign-in was never set) offers the
+ready email's page instead of ``/first-visit/reset``, which would answer 409
+there.
 
 Design notes a reviewer should check:
 
-* **The token is spent on POST, not on GET.** Mail scanners prefetch links and
-  a phone reloads a tab; a GET that consumed the token would lock a user out
-  before they typed anything. The same choice is recorded for the claim page in
-  ``docs/architecture/DESIGN-claim-ceremony.md``. After the sign-in is set the
-  token is dead for good: every later GET or POST answers 410.
+* **``signin_set_at`` is a fact about the ``.env``, not about this page.**
+  ``docs/security/DECISION-first-visit-state.md`` §1: it means "the ``.env``
+  holds a usable sign-in the owner can use" — the seeded first boot wrote the
+  seed's verifier and stamped it, the classic page's POST wrote one, or the
+  demo deploy installed one. It also picks this page's mode: set means the
+  visit is a login, unset means the classic setup. ``first_login_at`` is the
+  visit's own record, written beside it in one state write on success.
+* **Nothing in a URL is a credential.** The setup token is not on this page
+  at all: ``?t=`` (any value, valid or not) answers 410, and the form carries
+  no token field. The sign-in is the password the user typed.
 * **The code is never a bearer in a URL (ODL-579).** The done page shows the
   code once and links the recovery file with a **one-time download token**
   (``?d=``, 32 bytes, stored as its SHA-256, ten minutes, one use). The code is
@@ -71,14 +81,13 @@ Design notes a reviewer should check:
 * **The download is the file.** Same bytes, ``text/plain``, a filename from
   the file's own ``Tenant:`` line, ``no-store``. A missing or empty file means
   no link and a 404; an empty body is never served.
-* **The token never leaves a hash.** The plaintext arrives in the URL (the
-  ready page's link) and in the form body; only SHA-256 stays on disk. The
-  tenant Caddyfile logs to ``output discard`` and the page is
-  ``Referrer-Policy: no-referrer``, so the query string is not copied into a
-  log or a third-party request.
+* **The token never leaves a hash.** The state keeps the setup token's
+  SHA-256, never the plaintext; the token itself is not this page's any more
+  (it is the seed badge and the rebuild-seal key). The tenant Caddyfile logs to
+  ``output discard`` and the page is ``Referrer-Policy: no-referrer``.
 * **One writer.** ``POST`` holds an ``flock`` on ``<state>.lock`` across
-  read-verify-write, so two clicks cannot both spend the token or both rotate
-  the recovery code.
+  read-verify-write, so two clicks cannot both rotate the recovery code, and no
+  writer stamps ``signin_set_at`` while the ``.env`` still holds a placeholder.
 * **The hash format is Hermes's**, not this program's: the provider stores
   ``scrypt$n$r$p$salt$dk`` with n=2**14, r=8, p=1. The installer has its own
   copy of the two functions and ``tests/test_first_visit.py`` proves the copies
@@ -213,7 +222,7 @@ CODE_SENTINEL = "\x00recovery-code\x00"
 ERROR_FIELDS = ("code", "password", "password2")
 
 BLOCK_RE = re.compile(
-    r"<!--(form|done|recover|recovery-done|reset-done|reset|refused-unknown|refused)-->"
+    r"<!--(form|signin|done|recover|recovery-done|reset-done|reset|refused-unknown|refused)-->"
     r"(.*?)<!--/\1-->", re.S)
 
 _hits: dict[str, list[float]] = {}
@@ -294,6 +303,9 @@ def empty_state() -> dict:
         "created_at": utc_now(),
         "used_at": None,
         "signin_set_at": None,
+        # The visit's own record (ODL-925): when the owner first signed in.
+        # Written beside signin_set_at in one state write; null until then.
+        "first_login_at": None,
         "recovery_hash": None,
         "recovery_issued_at": None,
         "recovery_used_at": None,
@@ -314,8 +326,8 @@ def validate_state(state: object) -> dict:
     token_hash = state.get("token_sha256")
     if not isinstance(token_hash, str) or not TOKEN_RE.match(token_hash):
         raise ValueError("token_sha256 is not 64 lowercase hex")
-    for key in ("used_at", "signin_set_at", "recovery_issued_at", "recovery_used_at",
-                "download_expires_at", "download_used_at"):
+    for key in ("used_at", "signin_set_at", "first_login_at", "recovery_issued_at",
+                "recovery_used_at", "download_expires_at", "download_used_at"):
         value = state.get(key)
         if value is not None and not isinstance(value, str):
             raise ValueError("%s is not a string or null" % key)
@@ -704,6 +716,30 @@ def write_env_hash(env_path: Path, password_hash: str, *,
     return env_values(updated).get(USERNAME_KEY) or DEFAULT_USERNAME
 
 
+def stored_hash(env_path: Path) -> str:
+    """The tenant .env's sign-in hash, or '' when there is none.
+
+    Read per request, never cached: a reset writes the file while the service
+    runs, and the next sign-in must verify against the new hash.
+    """
+    try:
+        text = env_path.read_text(encoding="utf-8")
+    except OSError:
+        return ""
+    return (env_values(text).get(PASSWORD_KEY) or "").strip()
+
+
+def signin_is_set(state: dict) -> bool:
+    """True once the .env holds a usable sign-in (DECISION-first-visit-state §1).
+
+    The state key is the writer's record, not a fact only this page can make:
+    the seeded first boot stamps it, the classic page's POST stamps it, and a
+    deploy that installs a sign-in stamps it. It picks the form this page
+    serves — login when set, the classic setup when not.
+    """
+    return bool(state.get("signin_set_at"))
+
+
 # ------------------------------------------------------------------- rendering
 
 def page_text(path: Path) -> str:
@@ -742,9 +778,11 @@ def wordmark(keep: str) -> str:
 
     ``refused-unknown`` means the state carries no recovery hash, so the
     sign-in was never set and opening ``/`` would only meet a password prompt
-    no one can answer. It stays plain for the same reason ``form`` does.
+    no one can answer. ``form`` and ``signin`` are the two ways the visit
+    arrives — a classic setup or the B-once login — and both stay plain: the
+    visitor has not typed anything yet.
     """
-    if keep in ("form", "reset", "refused-unknown"):
+    if keep in ("form", "signin", "reset", "refused-unknown"):
         return '<span class="brand">Odile</span>'
     return '<a class="brand" href="/">Odile</a>'
 
@@ -1041,9 +1079,16 @@ class FirstVisit:
         body = render(self.template(), keep, title="This link is closed — Odile")
         return code, body
 
-    def form(self, token: str, error: FieldError | None = None) -> tuple[int, str]:
+    def form(self, error: FieldError | None = None) -> tuple[int, str]:
+        """The classic setup page: no seed, so the visit chooses the sign-in."""
         body = render(self.template(), "form", title="Set your sign-in — Odile",
-                      error=error, token=token, username=self.username())
+                      error=error, username=self.username())
+        return 200, body
+
+    def signin_form(self, error: FieldError | None = None) -> tuple[int, str]:
+        """The B-once login: one password field, no token, no repeat."""
+        body = render(self.template(), "signin", title="Sign in — Odile",
+                      error=error, username=self.username())
         return 200, body
 
     def reset_form(self, error: FieldError | None = None, code: str = "") -> tuple[int, str]:
@@ -1294,18 +1339,25 @@ def build_handler(service: FirstVisit):
             if path in ("/first-visit/recovery", "/first-visit/recovery/"):
                 return self._recovery_page(head, query)
             if path in ("/first-visit", "/first-visit/"):
-                token = (query.get("t") or [""])[0]
+                # B-once (ODL-925): no first-visit link carries the setup
+                # token, and no page accepts one. Any `?t=`, valid, unknown or
+                # empty, is the stale A-era link: 410, the "already set"
+                # answer, and it never renders a form or writes the .env. The
+                # token's jobs are machine-side now (the seed exchange and the
+                # rebuild seal).
+                if "t" in query:
+                    state = self._load_state()
+                    if state is None:
+                        return
+                    code, body = service.refused(410, bool(state.get("recovery_hash")))
+                    return self._send(code, body, head)
                 state = self._load_state()
                 if state is None:
                     return
-                verdict = check_token(state, token)
-                if verdict == "used":
-                    code, body = service.refused(410, bool(state.get("recovery_hash")))
-                    return self._send(code, body, head)
-                if verdict == "unknown":
-                    code, body = service.refused(404, bool(state.get("recovery_hash")))
-                    return self._send(code, body, head)
-                code, body = service.form(token)
+                if signin_is_set(state):
+                    code, body = service.signin_form()
+                else:
+                    code, body = service.form()
                 return self._send(code, body, head)
             if path in ("/first-visit/reset", "/first-visit/reset/"):
                 state = self._load_state()
@@ -1349,49 +1401,70 @@ def build_handler(service: FirstVisit):
             return self._reset_signin(fields)
 
         def _set_signin(self, fields: dict[str, list[str]]) -> None:
-            token = (fields.get("t") or [""])[0].strip()
+            """Sign in (seeded) or set the sign-in (classic); show the code once.
+
+            Seeded: ``signin_set_at`` is already set because the .env holds
+            the registration password's verifier, so this POST *verifies* with
+            ``verify_password`` and writes no hash. A wrong password re-renders
+            the one-field form and counts against the POST rate limit.
+            Classic (no seed): nothing wrote a usable sign-in, so the visit
+            chooses one and the hash is written, as the A-era page did.
+            Both end in one state write that records ``first_login_at`` and
+            ``signin_set_at`` beside the recovery code.
+            """
             password = (fields.get("password") or [""])[0]
             repeat = (fields.get("password2") or [""])[0]
             with locked(service.state):
                 state = self._load_state()
                 if state is None:
                     return
-                verdict = check_token(state, token)
-                if verdict == "used":
-                    code, body = service.refused(410, bool(state.get("recovery_hash")))
-                    return self._send(code, body)
-                if verdict == "unknown":
-                    code, body = service.refused(404, bool(state.get("recovery_hash")))
-                    return self._send(code, body)
-                problem = password_error(password, repeat)
-                if problem is not None:
-                    code, body = service.form(token, problem)
-                    return self._send(code, body)
+                login = signin_is_set(state)
+                if login:
+                    stored = stored_hash(service.env)
+                    if not stored or not verify_password(password, stored):
+                        code, body = service.signin_form(FieldError(
+                            "That password does not match this machine's sign-in.",
+                            "password", ("password",)))
+                        return self._send(code, body)
+                    username = service.username()
+                else:
+                    problem = password_error(password, repeat)
+                    if problem is not None:
+                        code, body = service.form(problem)
+                        return self._send(code, body)
 
-                password_hash = hash_password(password)
-                try:
-                    username = write_env_hash(service.env, password_hash)
-                    service.reload()
-                except (SystemExit, RuntimeError) as exc:
-                    print("first-visit: refused: %s" % exc, file=sys.stderr, flush=True)
-                    return self._send(500, "The sign-in was not set. Try again.\n",
-                                      ctype="text/plain; charset=utf-8")
+                    password_hash = hash_password(password)
+                    try:
+                        username = write_env_hash(service.env, password_hash)
+                        service.reload()
+                    except (SystemExit, RuntimeError) as exc:
+                        print("first-visit: refused: %s" % exc, file=sys.stderr, flush=True)
+                        return self._send(500, "The sign-in was not set. Try again.\n",
+                                          ctype="text/plain; charset=utf-8")
 
+                at = utc_now()
                 code_value = new_recovery_code()
-                state["used_at"] = utc_now()
-                state["signin_set_at"] = state["used_at"]
+                state["first_login_at"] = at
+                # `signin_set_at` is a fact about the .env (DECISION-first-visit-
+                # state §1): the seeded deploy already made it true, and a
+                # classic setup makes it true with the write above. Both keys
+                # land in this one write.
+                state["signin_set_at"] = state.get("signin_set_at") or at
+                if not login:
+                    state["used_at"] = at
                 state["recovery_hash"] = hash_password(normalise_code(code_value))
-                state["recovery_issued_at"] = state["used_at"]
+                state["recovery_issued_at"] = at
                 # The code stays live: the button beside it carries a one-time
                 # download token, so fetching the file does not spend the code
                 # the visitor is being asked to save (ODL-579).
                 download = issue_download(state)
                 save_state(service.state, state)
-            print("first-visit: sign-in set for %r (token %s… spent)"
-                  % (username, state["token_sha256"][:8]), flush=True)
-            # The report's sign-in line describes the .env this POST just
-            # replaced; ask the boot oneshot to rewrite it (ODL-473).
-            service.refresh_report()
+            print("first-visit: %s for %r"
+                  % ("signed in" if login else "sign-in set", username), flush=True)
+            # The report's sign-in line describes the .env the classic setup
+            # just wrote; on the seeded path it already names the owner's hash.
+            if not login:
+                service.refresh_report()
             # The recovery code exists only in this response: no-store, and the
             # state keeps its scrypt hash, never the code.
             code, body = service.done("done", "Your sign-in is set — Odile",
@@ -1540,6 +1613,7 @@ def summary(state: dict) -> dict:
         "created_at": state["created_at"],
         "used_at": state["used_at"],
         "signin_set_at": state["signin_set_at"],
+        "first_login_at": state.get("first_login_at"),
         "recovery_hash": ("scrypt…" if state.get("recovery_hash") else None),
         "recovery_issued_at": state["recovery_issued_at"],
         "recovery_used_at": state["recovery_used_at"],

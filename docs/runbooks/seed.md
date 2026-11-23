@@ -48,15 +48,19 @@ Success — `200`, `Cache-Control: no-store`, and the signed body:
 }
 ```
 
-These eight fields are the v0 contract; the test suite pins the set. `{slug}` in
+These nine fields are the v0 contract; the test suite pins the set. `{slug}` in
 any config string is substituted for the tenant's slug. `near_api_key` is the
 **instance's own** key, minted at provision by the provider's API (ODL-242, §2a);
 the config's `near_api_key` is only the shared fallback for a bench or a manual
-seed. The body contains **no user login credential**: no SSH private key, no
-passphrase, no Webapp password, no LUKS material, and not even the user's public
-key or email address. The inference and mail-relay values are machine API
-credentials the installer writes into local config, not credentials that open the
-machine.
+seed. `sign_in_hash` is the account's scrypt verifier — the installer-format
+string the registration password hashes to (ODL-341 writes it, B-once, ODL-925);
+the installer writes it into the tenant `.env` before the Webapp's first boot, so
+the machine's sign-in is the password chosen at registration and the seed carries
+**no plaintext password**. The body contains **no user login credential in the
+clear**: no SSH private key, no passphrase, no plaintext Webapp password, no LUKS
+material, and not even the user's public key or email address. The inference and
+mail-relay values are machine API credentials the installer writes into local
+config, not credentials that open the machine.
 
 The relay's own certificate travels inside `mail_relay.tls_ca` (ODL-469). It is
 not a secret: the relay's certificate is self-signed, so a tenant without it
@@ -93,8 +97,11 @@ it runs only after every check passes. Two simultaneous exchanges produce one
 - 24-hour expiry, `CHECK (expires_at > created_at)` in the schema.
 - Bound to `tenant_id` **and** `instance_id`; the exchange compares the
   instance id before consuming the token.
-- Rotate after a rebuild, a suspected leak, or an expiry. The ready email
-  carries the token — never a password, passphrase or private key.
+- Rotate after a rebuild, a suspected leak, or an expiry. The token is the
+  machine-side seed badge — the `{token, instance_id}` exchange above and the
+  rebuild seal — never a first-visit link: since B-once (ODL-925) the ready
+  email names the tokenless `/first-visit` and the seed carries the sign-in
+  verifier, not a plaintext password.
 
 Mint, inspect, rotate (run as the `odile` user or root; the DB is the same one
 `app.py` uses):

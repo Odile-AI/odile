@@ -8,8 +8,6 @@ Machine ID:             {{instance_id}}
 Release:                {{release}}
 vCPUs:                  {{vcpus}}
 Measurement:            {{measurement}}
-Set your sign-in:       {{first_visit_url}}
-Token expires:          {{token_expiry}}
 Signing key:            SHA-256 {{signing_key_sha256}}
 Seed signing key:       SHA-256 {{seed_signing_key_sha256}}
 Seed certificate:       SHA-256 {{seed_certificate_sha256}}
@@ -26,25 +24,22 @@ sign-in, the file opens your backup. Your first visit gives you both; keep
 them off the machine. While the machine is still running, the agent can show
 it again.
 
-Before you set your sign-in
----------------------------
+Before you sign in
+------------------
 Open {{url}}/verify.
 
-Check the machine before you trust it: the verify page shows PASS or FAIL,
-and you set your sign-in only after PASS. Compare the Measurement line at
-the top of this file with the one the page shows and the one in your ready
-email.
+Check the machine before you trust it: the verify page shows PASS or FAIL.
+Compare the Measurement line at the top of this file with the one the page
+shows and the one in your ready email.
 
-The first visit
----------------
-Open the Set your sign-in link in your ready email. The same URL is printed
-at the top of this file. The link expires {{token_expiry_prose}}.
-Set the password that opens your workspace: at least 16 characters. Your
-Odile sign-in is set on your machine at first visit and hashed there. We
-never see it. It is the only app-layer gate: no 2FA in alpha.0.
+The first sign-in
+-----------------
+Open {{first_visit_url}}. Sign in with the password you chose when you
+registered. The first sign-in shows your recovery code once and offers your
+recovery file.
 
-The link carries a single-use setup token. If the link has expired or was
-already opened, write to help@odile.fyi for a new one.
+Your Odile password opens your machine and your account page. You chose it
+when you registered. It is the only app-layer gate: no 2FA in alpha.0.
 
 The machine
 -----------

@@ -120,10 +120,20 @@ curl -s https://odile.fyi/odile-signing-key.pub | sha256sum
    key signs the body (§8). It caches the seed at `/etc/odile/seed.json` (0600)
    plus `/etc/odile/seed.sig`. A re-run uses the cache and sends nothing;
    rotating the token is an `odilectl` job (ODL-204).
-4. **Odile sign-in.** It asks for *your Odile sign-in* password — 16+
-   characters, or blank to generate 32 and print it once. It is hashed on the
-   machine with scrypt (`scrypt$n$r$p$salt$dk`, the dashboard provider's own
-   format) and only the hash reaches `.env`. HQ never sees it.
+4. **Odile sign-in.** The password is the one *you chose at registration*: the
+   signed seed carries its scrypt verifier (`sign_in_hash`), and the installer
+   writes it into `.env` before the Webapp's first boot — so the basic-auth
+   gate accepts that password with no page visited, and the first visit is a
+   login. The best time to change it is **before the first sign-in**: changing
+   it at the account page afterwards re-keys the account, not this machine.
+   A classic install with no seed still asks for *your Odile sign-in* here —
+   16+ characters, or blank to generate 32 and print it once — and hashes it on
+   the machine with scrypt (`scrypt$n$r$p$salt$dk`, the dashboard provider's own
+   format); only the hash reaches `.env`, and nobody can sign in until the page
+   writes the owner's hash. Either way, Odile sees your password when you
+   register and when you sign in at the account page and keeps only a hash of
+   it. Your machine is built with a copy of that hash; after that, changing one
+   does not change the other.
 5. **Install.** OS packages at their exact Debian 13 pins from one dated
    snapshot (git, Caddy, Node, restic, tmux, curl, openssl, Python; Chromium
    best-effort — §6.1), the pinned Hermes commit `2bd378ed1b8d` (v0.23.0) as
