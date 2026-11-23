@@ -10,11 +10,13 @@ is still on (that would stack days and pull cash forward).
 from __future__ import annotations
 
 import contextlib
+import datetime
 import io
+import json
 import pathlib
+import sqlite3
 import sys
 import tempfile
-import time
 import unittest
 from decimal import Decimal
 from unittest import mock
@@ -56,11 +58,26 @@ class RunTests(unittest.TestCase):
             patcher = mock.patch.object(renew, name, value)
             patcher.start()
             self.addCleanup(patcher.stop)
+        # The tenant DB the tool reads: only the columns it maps, shaped as app.py
+        # writes them (accounts.server_id and accounts.trial_ends_at).
+        self.trial_db = base / "trial.db"
+        with sqlite3.connect(self.trial_db) as db:
+            db.execute("CREATE TABLE accounts (server_id TEXT, trial_ends_at TEXT NOT NULL)")
+
+    def add_account(self, server_id: str, trial_ends_at: str) -> None:
+        with sqlite3.connect(self.trial_db) as db:
+            db.execute("INSERT INTO accounts (server_id, trial_ends_at) VALUES (?, ?)",
+                       (server_id, trial_ends_at))
+
+    def stamp(self, at: datetime.datetime, days: float) -> str:
+        return (at + datetime.timedelta(days=days)).strftime("%Y-%m-%dT%H:%M:%SZ")
 
     def run_tool(self, server, *, balance=10.0, auto_renew=False, days_left=3, apply=True,
-                 extra: list[str] | None = None) -> tuple[int, str, list[tuple]]:
+                 extra: list[str] | None = None, at: datetime.datetime | None = None,
+                 trial_flag: bool = True) -> tuple[int, str, list[tuple]]:
         calls: list[tuple] = []
-        expires = int(time.time() + days_left * renew.DAY)
+        at = at or renew.now()
+        expires = int(at.timestamp() + days_left * renew.DAY)
 
         def fake_call(action, key, *, params=None, server_id=None, timeout=40.0):
             calls.append((action, server_id, params))
@@ -75,10 +92,13 @@ class RunTests(unittest.TestCase):
                 return {"amount_charged": "2.15", "new_expiration": expires + 7 * renew.DAY}
             raise AssertionError(action)
 
-        argv = ["--key-file", f"dev={self.key}"] + (["--apply"] if apply else []) + (extra or [])
+        argv = ["--key-file", f"dev={self.key}"] \
+            + (["--trial-db", str(self.trial_db)] if trial_flag else []) \
+            + (["--apply"] if apply else []) + (extra or [])
         out = io.StringIO()
-        with mock.patch.object(renew, "call", fake_call), contextlib.redirect_stdout(out), \
-                contextlib.redirect_stderr(io.StringIO()):
+        with mock.patch.object(renew, "call", fake_call), \
+                mock.patch.object(renew, "now", lambda: at), \
+                contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
             code = renew.main(argv)
         return code, out.getvalue(), calls
 
@@ -119,13 +139,114 @@ class RunTests(unittest.TestCase):
         self.assertEqual(out, "")
         self.assertNotIn("renew", [c[0] for c in calls])
 
+    def test_the_named_dry_run_flag_is_accepted_and_charges_nothing(self) -> None:
+        code, out, calls = self.run_tool("a1b2c3d4", apply=False, extra=["--dry-run"])
+        self.assertEqual(code, 0)
+        self.assertNotIn("renew", [c[0] for c in calls])
+
+    def test_apply_and_dry_run_together_are_a_usage_error(self) -> None:
+        code, out, calls = self.run_tool("a1b2c3d4", extra=["--dry-run"])
+        self.assertEqual(code, 2)
+        self.assertEqual(calls, [])
+
     def test_the_status_file_records_the_run(self) -> None:
         self.run_tool("a1b2c3d4")
-        import json
         status = json.loads(self.status.read_text(encoding="utf-8"))
         self.assertTrue(status["applied"])
         self.assertEqual(status["accounts"][0]["label"], "dev")
         self.assertEqual(status["actions"][0]["server"], "a1b2c3d4")
+
+    # The trial pays for the machine. Past `trial_ends_at` nothing is renewed,
+    # and both records a person reads (the status document and the audit log)
+    # carry the reason, so a skipped machine is never silent.
+
+    def test_an_ended_trial_is_skipped_and_both_records_carry_the_reason(self) -> None:
+        at = renew.now()
+        stamp = self.stamp(at, -1)
+        self.add_account("a1b2c3d4", stamp)
+        code, out, calls = self.run_tool("a1b2c3d4", at=at)
+        self.assertEqual(code, 0)
+        self.assertIn("skipped a1b2c3d4 — trial_ended", out)
+        self.assertNotIn("renew", [c[0] for c in calls])
+        status = json.loads(self.status.read_text(encoding="utf-8"))
+        self.assertEqual(status["actions"][0]["skipped"], "trial_ended")
+        self.assertEqual(status["actions"][0]["trial_ends_at"], stamp)
+        self.assertFalse(status["actions"][0]["applied"])
+        self.assertEqual(status["alerts"], [])
+        self.assertIn(f"TRIAL_ENDED key=dev server=a1b2c3d4 trial_ends_at={stamp}",
+                      self.audit.read_text(encoding="utf-8"))
+
+    def test_a_live_trial_is_renewed_and_audits_no_trial_end(self) -> None:
+        at = renew.now()
+        self.add_account("a1b2c3d4", self.stamp(at, 10))
+        code, out, calls = self.run_tool("a1b2c3d4", at=at)
+        self.assertEqual(code, 0)
+        self.assertIn(("renew", "a1b2c3d4", {"days": 7}), calls)
+        self.assertIn("renewed a1b2c3d4 7d $2.15", out)
+        self.assertNotIn("TRIAL_ENDED", self.audit.read_text(encoding="utf-8"))
+
+    def test_a_server_with_no_account_row_is_unchanged(self) -> None:
+        at = renew.now()
+        self.add_account("998405b2", self.stamp(at, -1))  # another machine's ended trial
+        code, out, calls = self.run_tool("a1b2c3d4", at=at)
+        self.assertEqual(code, 0)
+        self.assertIn(("renew", "a1b2c3d4", {"days": 7}), calls)
+
+    def test_a_dry_run_names_the_ended_trial_and_audits_it_without_charging(self) -> None:
+        at = renew.now()
+        self.add_account("a1b2c3d4", self.stamp(at, -0.5))
+        code, out, calls = self.run_tool("a1b2c3d4", apply=False, at=at)
+        self.assertEqual(code, 0)
+        self.assertIn("skipped a1b2c3d4 — trial_ended", out)
+        self.assertNotIn("renew", [c[0] for c in calls])
+        self.assertIn("TRIAL_ENDED", self.audit.read_text(encoding="utf-8"))
+
+    def test_the_trial_end_instant_itself_is_ended(self) -> None:
+        at = datetime.datetime(2026, 12, 6, 11, 17, 47, tzinfo=datetime.UTC)
+        self.add_account("a1b2c3d4", "2026-12-06T11:17:47Z")
+        code, out, calls = self.run_tool("a1b2c3d4", at=at)
+        self.assertEqual(code, 0)
+        self.assertNotIn("renew", [c[0] for c in calls])
+        self.assertIn("trial_ended", out)
+
+    def test_one_second_before_the_trial_end_is_still_live(self) -> None:
+        at = datetime.datetime(2026, 12, 6, 11, 17, 46, tzinfo=datetime.UTC)
+        self.add_account("a1b2c3d4", "2026-12-06T11:17:47Z")
+        code, out, calls = self.run_tool("a1b2c3d4", at=at)
+        self.assertEqual(code, 0)
+        self.assertIn(("renew", "a1b2c3d4", {"days": 7}), calls)
+
+    def test_the_served_databases_are_the_default_source(self) -> None:
+        at = renew.now()
+        self.add_account("a1b2c3d4", self.stamp(at, -1))
+        with mock.patch.object(renew, "TRIAL_DBS", (self.trial_db,)):
+            code, out, calls = self.run_tool("a1b2c3d4", at=at, trial_flag=False)
+        self.assertEqual(code, 0)
+        self.assertIn("trial_ended", out)
+        self.assertNotIn("renew", [c[0] for c in calls])
+
+    def test_a_database_without_an_accounts_table_is_a_note_not_an_alert(self) -> None:
+        empty = pathlib.Path(self.dir.name) / "no-accounts.db"
+        with sqlite3.connect(empty):
+            pass
+        code, out, calls = self.run_tool("a1b2c3d4", extra=["--trial-db", str(empty)])
+        self.assertEqual(code, 0)
+        self.assertIn("no such table: accounts", out)
+        self.assertIn(("renew", "a1b2c3d4", {"days": 7}), calls)
+
+    def test_a_missing_database_is_a_note(self) -> None:
+        absent = pathlib.Path(self.dir.name) / "absent.db"
+        code, out, calls = self.run_tool("a1b2c3d4", extra=["--trial-db", str(absent)])
+        self.assertEqual(code, 0)
+        self.assertIn(f"trial db {absent}: absent", out)
+        self.assertIn(("renew", "a1b2c3d4", {"days": 7}), calls)
+
+    def test_an_unreadable_trial_date_is_a_note_and_the_server_is_renewed(self) -> None:
+        self.add_account("a1b2c3d4", "6 December 2026")
+        code, out, calls = self.run_tool("a1b2c3d4")
+        self.assertEqual(code, 0)
+        self.assertIn("unreadable", out)
+        self.assertIn(("renew", "a1b2c3d4", {"days": 7}), calls)
 
 
 if __name__ == "__main__":
