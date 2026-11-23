@@ -1423,6 +1423,17 @@ def app_role(role: str = "") -> str:
     return name if name in ("demo", "tenant") else "demo"
 
 
+def register_open() -> bool:
+    """Whether `/register` serves its form. Fail-closed (ODL-949).
+
+    Production has no invitation code until A7 and no worker that drains its
+    `accounts`, so only a unit that says ``open`` — the bench's — opens the
+    door. Unset, empty or misspelled is closed: a lost line closes the door
+    instead of reopening it.
+    """
+    return (os.environ.get("ODILE_REGISTER") or "").strip().lower() == "open"
+
+
 def render_verify(role: str = "") -> str:
     """The proof page: the report, the verifier command, the three gaps.
 
@@ -1647,6 +1658,10 @@ class Handler(BaseHTTPRequestHandler):
                         title="You're on the list \u2014 Odile", robots="noindex"), head=head)
             return self._send(200, render_index(), head=head)
         if path == "/register":
+            # The door is the bench's until A7 (ODL-949): production answers
+            # 302 to the waitlist before the page renders.
+            if not register_open():
+                return self._send(302, "", head=head, location="/")
             return self._send(200, render_register(), head=head)
         if path == "/confirm":
             token = (qs.get("t") or [""])[0].strip()
@@ -1829,6 +1844,23 @@ class Handler(BaseHTTPRequestHandler):
                         "/login", "/account/retry", "/account/resend",
                         "/account/password", "/forgot"):
             return self._send(405, "method not allowed\n", "text/plain; charset=utf-8")
+        if path == "/register" and not register_open():
+            # Closed before the form is parsed: no row, no tenant, no mail.
+            # The body is still drained, or the unread bytes become the next
+            # request line on a kept-alive connection (RFC 9112 §9.3; measured
+            # live as a 501 on the following GET). An oversized or chunked
+            # body we do not understand closes the connection instead.
+            try:
+                length = int(self.headers.get("Content-Length", "0"))
+            except ValueError:
+                length = 0
+            chunked = "chunked" in (self.headers.get("Transfer-Encoding") or "").lower()
+            if chunked or length < 0 or length > MAX_BODY:
+                self.close_connection = True
+                return self._send(302, "", location="/", headers={"Connection": "close"})
+            if length:
+                self.rfile.read(length)
+            return self._send(302, "", location="/")
 
         try:
             length = int(self.headers.get("Content-Length", "0"))
