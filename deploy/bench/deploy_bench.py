@@ -916,10 +916,21 @@ def merge_required(bench: dict, production: dict) -> list[str]:
 
 
 def blame_path(problem: str) -> tuple[str, ...] | None:
-    """The most specific required path the loader's message names."""
-    for path in sorted(REQUIRED_CONFIG_PATHS, key=len, reverse=True):
-        if ".".join(path) in problem:
-            return path
+    """The config path the loader's message names, as a tuple.
+
+    The loader names a field in one of two shapes — ``field 'model' is missing
+    …`` or ``mail_relay.tls_ca is not a PEM certificate`` — and a key it
+    validates but the deployer never merges (``near_api_key``) is named the
+    second way too. Read the name from the message rather than assuming the
+    refusal is about a path on `REQUIRED_CONFIG_PATHS`; a message that names
+    no key (a JSON-object error) returns None.
+    """
+    match = re.match(r"seed config (.*?): field '([^']+)'", problem)
+    if match:
+        return tuple(match.group(2).split("."))
+    match = re.match(r"seed config (.*?): ([A-Za-z_][A-Za-z0-9_.]*) is ", problem)
+    if match:
+        return tuple(match.group(2).split("."))
     return None
 
 
@@ -940,17 +951,40 @@ def merge_fix(path: tuple[str, ...] | None, production: dict) -> str | None:
     return f'/usr/bin/python3 -c "{program}"'
 
 
-def config_refusal(source: Path, problem: str, bench: dict, production: dict) -> str:
-    """The seed's own message, the unit's fate, and the one line that repairs it."""
+def config_refusal(source: Path, problem: str, bench: dict, production: dict,
+                   added: tuple[str, ...] = ()) -> str:
+    """The seed's own message, the unit's fate, and the one line that repairs it.
+
+    `added` names the paths this run just merged from production: when the
+    loader refuses one of those, the bad value lives in production's config, so
+    the fix is there — copying it back would be a no-op.
+    """
     path = blame_path(problem)
-    dotted = ".".join(path) if path else "the key the message names"
-    command = merge_fix(path, production)
-    fix = (command if command else
-           f"add {dotted} to {PROD_CONFIG} from the relay's own PEM, then re-run "
-           "(production has no value for it either)")
-    present = config_value(bench, path) if path else MISSING
-    why = ("it is present but the seed refuses its value" if present is not MISSING
-           else "it is absent from both configs")
+    if path:
+        dotted = ".".join(path)
+        present = config_value(bench, path)
+        if dotted in added:
+            why = f"it was merged from {PROD_CONFIG} and the seed refuses that value"
+        elif present is not MISSING:
+            why = "it is present but the seed refuses its value"
+        else:
+            why = "it is absent from both configs"
+    else:
+        dotted = "the key the message names"
+        why = "the message names no config path"
+    command = merge_fix(path, production) if dotted not in added else None
+    if command:
+        fix = command
+    elif path and dotted in added:
+        fix = f"fix {dotted} in {PROD_CONFIG} (the value the merge copied) and re-run"
+    elif path and path[0] == "mail_relay":
+        fix = (f"add {dotted} to {PROD_CONFIG} from the relay's own PEM, then "
+               "re-run (production has no value for it either)")
+    elif path:
+        fix = (f"add {dotted} to {PROD_CONFIG} with a value the seed accepts, then "
+               "re-run (production has no value for it either)")
+    else:
+        fix = f"fix {CONFIG_FILE} so the seed accepts it, then re-run"
     return (f"error: {source / 'seed' / 'seed.py'} refuses {CONFIG_FILE}: {problem}\n"
             f"       {dotted}: {why}; the seed unit exits 2 at start on that "
             "message, before it answers /seed\n"
@@ -994,19 +1028,18 @@ def ensure_config(dry: bool, source: Path) -> bool:
             print(f"{'would merge' if dry else 'merge':<12} {CONFIG_FILE} "
                   f"(adds {', '.join(added)} from {PROD_CONFIG}; "
                   f"{source}/seed/seed.py requires it)")
-            if dry:
-                problem = document_problem(module, bench, CONFIG_FILE)
-                if problem is None:
-                    return True
-            else:
-                write_atomic(CONFIG_FILE,
-                             (json.dumps(bench, indent=2, sort_keys=True) + "\n").encode("utf-8"),
-                             0o600)
-                chown(CONFIG_FILE, (0, 0))
-                problem = config_problem(module, CONFIG_FILE)
-                if problem is None:
-                    return True
-        raise SystemExit(config_refusal(source, problem, bench, production))
+            # Validate the document the write would produce, not the file it
+            # replaces: a merge that copies production's own bad value must
+            # refuse before `write_atomic`, exactly as the dry run does.
+            problem = document_problem(module, bench, CONFIG_FILE)
+            if problem is None:
+                if not dry:
+                    write_atomic(CONFIG_FILE,
+                                 (json.dumps(bench, indent=2, sort_keys=True) + "\n").encode("utf-8"),
+                                 0o600)
+                    chown(CONFIG_FILE, (0, 0))
+                return True
+        raise SystemExit(config_refusal(source, problem, bench, production, tuple(added)))
 
     production = production_config("derived")
     bench = bench_config(production)

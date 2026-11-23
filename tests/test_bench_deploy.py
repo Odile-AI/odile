@@ -798,6 +798,54 @@ class SeedConfigUpgradeTests(unittest.TestCase):
         self.assertIsNone(changed)
         self.assertIn("mail_relay.tls_ca", refusal or "")
 
+    def test_a_merge_the_seed_still_refuses_is_refused_before_the_file_is_written(self) -> None:
+        # The verifier's repro (2026-11-23): production's own value is wrong, so
+        # the merge cannot repair the file. The apply must refuse like the dry
+        # run — before `write_atomic` — and leave the operator's bytes alone.
+        production = json.loads(json.dumps(PRODUCTION_CONFIG))
+        production["mail_relay"]["tls_ca"] = "not a PEM certificate"
+        self.write(self.prod, production)
+        stale = json.loads(json.dumps(self.bench))
+        del stale["mail_relay"]["tls_ca"]
+        self.write(self.config, stale)
+        before = self.config.read_bytes()
+
+        _, dry_refusal, _ = self.ensure(dry=True)
+        changed, refusal, out = self.ensure()
+
+        self.assertIsNone(changed)
+        self.assertEqual(refusal, dry_refusal)
+        self.assertIn("mail_relay.tls_ca", refusal or "")
+        self.assertIn("not a PEM certificate", refusal or "")
+        # The bad value is production's, so the fix is there — not a copy of it.
+        self.assertIn("merged from", refusal or "")
+        self.assertIn(f"fix: fix mail_relay.tls_ca in {self.prod}", refusal or "")
+        self.assertIn("merge", out)
+        self.assertEqual(self.config.read_bytes(), before)
+
+    def test_a_refusal_that_names_no_required_path_names_its_own_field(self) -> None:
+        # `near_api_key` is validated by the shipping loader but is not a path
+        # the deployer merges. The refusal must name the field the message
+        # names, say it is present-but-wrong, and not offer the relay's PEM.
+        broken = json.loads(json.dumps(self.bench))
+        broken["near_api_key"] = ""
+        self.write(self.config, broken)
+        before = self.config.read_bytes()
+
+        changed, refusal, _ = self.ensure()
+
+        self.assertIsNone(changed)
+        self.assertIn("near_api_key", refusal or "")
+        self.assertIn("present but the seed refuses its value", refusal or "")
+        self.assertNotIn("relay's own PEM", refusal or "")
+        self.assertNotIn("absent from both configs", refusal or "")
+        self.assertEqual(self.config.read_bytes(), before)
+        fix = [line for line in (refusal or "").splitlines() if line.startswith("fix: ")][0]
+        subprocess.run(fix[len("fix: "):], shell=True, check=True)
+        seedmod.load_config(str(self.config))
+        changed, refusal, _ = self.ensure()
+        self.assertEqual((changed, refusal), (False, None))
+
     def test_a_fresh_derivation_is_validated_before_it_is_written(self) -> None:
         production = json.loads(json.dumps(PRODUCTION_CONFIG))
         del production["mail_relay"]["tls_ca"]
