@@ -890,5 +890,88 @@ class FirstVisitStateTests(unittest.TestCase):
         self.assertEqual(self.state.read_bytes(), original)
 
 
+class CustomerRowTests(unittest.TestCase):
+    """The customer row is the grant row main landed — one sentence (ODL-932).
+
+    The DoD's grep is line-based, so the runbook's A1 quote passed it while the
+    sentence was wrapped across two lines. These pin the row where it belongs —
+    in the shipped release page's tenant block and in the three demo programs —
+    and sweep the demo's copy-bearing files with whitespace flattened, so a
+    wrapped reintroduction of the retired row fails instead of slipping through.
+    """
+
+    #: The retired A1 row and its page variant, whitespace-flattened: a
+    #: sentence wrapped over two lines is the same sentence.
+    RETIRED = re.compile(r"No\s+one\s+at\s+Odile\s+can\s+log\s+in\s+to\s+"
+                         r"(?:a\s+tenant(?:\s+machine)?|your\s+machine)")
+    RETIRED_CLAUSE = re.compile(r"the\s+only\s+sign-in\s+is\s+yours", re.I)
+    #: The demo's copy-bearing files. The test module itself carries the A1
+    #: page variant as a hostile body (`lede_problem` must reject it), so the
+    #: clause sweep stops at the runbook and the programs.
+    COPY_FILES = (DEMO / "apply_demo_public.py", DEMO / "check_demo_public.py",
+                  DEMO / "deploy_demo_public.py", LEDE_RECORD)
+
+    @staticmethod
+    def flat(path: Path) -> str:
+        return re.sub(r"\s+", " ", path.read_text(encoding="utf-8"))
+
+    def test_the_three_demo_programs_carry_one_customer_sentence(self):
+        apply = load(DEMO / "apply_demo_public.py", "demo_apply_row_test")
+        check = load(DEMO / "check_demo_public.py", "demo_check_row_test")
+        deploy = load(DEMO / "deploy_demo_public.py", "demo_deploy_row_test")
+        self.assertEqual({apply.CUSTOMER_SENTENCE, check.CUSTOMER_SENTENCE,
+                          deploy.CUSTOMER_SENTENCE, CUSTOMER_SENTENCE},
+                         {CUSTOMER_SENTENCE})
+
+    def test_the_shipped_release_page_carries_the_one_customer_sentence(self):
+        apply = load(DEMO / "apply_demo_public.py", "demo_apply_row_page_test")
+        for path in INSTALLERS:
+            with self.subTest(installer=path.name):
+                block = apply.tenant_block(embedded_page(path))
+                self.assertIn(apply.CUSTOMER_SENTENCE, block)
+
+    def test_the_report_reads_customer_lede_off_the_page_it_was_given(self):
+        """`--report`'s customer_lede flips with the file, so it is not a constant."""
+        apply = load(DEMO / "apply_demo_public.py", "demo_apply_row_report_test")
+        tmp = Path(tempfile.mkdtemp(prefix="odile-demo-row-report-"))
+        self.addCleanup(shutil.rmtree, tmp)
+        page = tmp / "verify.html"
+        page.write_text(embedded_page(INSTALLERS[0]), encoding="utf-8")
+        shutil.copyfile(LEDE, tmp / "verify-lede.html")
+        shutil.copyfile(DEMO / "verify-command.html", tmp / "verify-command.html")
+        apply.VERIFY_TEMPLATE = page
+        apply.VERIFY_LEDE = tmp / "verify-lede.html"
+        apply.VERIFY_COMMAND = tmp / "verify-command.html"
+        apply.VERIFY_BACKUP = tmp / "verify.html.release"
+        apply.__file__ = str(tmp / "apply_demo_public.py")
+        self.assertTrue(apply.verify_state()["customer_lede"],
+                        "the release page the report reads carries no grant row")
+        lede = (tmp / "verify-lede.html").read_text(encoding="utf-8").strip()
+        page.write_text(apply.inject_lede(page.read_text(encoding="utf-8"), lede),
+                        encoding="utf-8")
+        self.assertFalse(apply.verify_state()["customer_lede"],
+                         "the injected demo page still reports the customer row")
+
+    def test_no_retired_a1_row_survives_a_wrapped_scan(self):
+        for path in self.COPY_FILES + (Path(__file__),):
+            with self.subTest(path=str(path)):
+                self.assertIsNone(self.RETIRED.search(self.flat(path)),
+                                  f"{path} still quotes the retired A1 row")
+        for path in self.COPY_FILES:
+            with self.subTest(path=str(path), clause="only-sign-in"):
+                self.assertIsNone(self.RETIRED_CLAUSE.search(self.flat(path)),
+                                  f"{path} still quotes the A1 page variant")
+
+    def test_the_wrapped_scan_catches_what_the_line_grep_missed(self):
+        """The runbook's exact shape: the A1 row split after `No one at`."""
+        wrapped = ("The page must not open with the customer row (\"No one at\n"
+                   "Odile can log in to a tenant machine. The only sign-in is yours.\")")
+        self.assertNotRegex(wrapped,
+                            r"No one at Odile can log in to (a tenant|your) machine")
+        flattened = re.sub(r"\s+", " ", wrapped)
+        self.assertRegex(flattened, self.RETIRED)
+        self.assertRegex(flattened, self.RETIRED_CLAUSE)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
