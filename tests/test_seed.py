@@ -1661,9 +1661,16 @@ class ProvisionBinding(unittest.TestCase):
         self.assertEqual(transport.calls, ["servers", "create", "server"])
         self.assertEqual(self.ledger(), [])
 
-    def test_the_claim_path_mints_after_activation_and_shows_the_token_once(self):
-        """The fallback: no create-time binding, so the claim worker mints."""
+    def test_the_claim_path_mints_after_activation_and_the_mail_never_shows_it(self):
+        """The fallback: no create-time binding, so the claim worker mints.
+
+        B-once (ODL-925): the token is the machine's seed badge and the
+        rebuild-seal key; the ready email and the kit name the tokenless page
+        and never print it. The minted token still opens the seed exchange.
+        """
         con = claim_module.open_db(self.db)
+        captured: dict[str, str] = {}
+        original_rotate = claim_module._SEED.rotate
         try:
             issued = claim_module.issue_claim(
                 con, self.slug + "@example.com", plan="Blackbox Plus",
@@ -1679,12 +1686,24 @@ class ProvisionBinding(unittest.TestCase):
                 "default_plan_id": "113",
                 "default_days": "31",
             })
+
+            def recording_rotate(*args, **kwargs):
+                minted = original_rotate(*args, **kwargs)
+                captured["token"] = minted["token"]
+                return minted
+
+            claim_module._SEED.rotate = recording_rotate
             result = claim_module.provision_tenant(
                 con, self.slug, provider=FixtureProvider(), config=config,
                 dns_client=FakeDNS(), outbox=claim_module.ReadyOutbox(outbox),
                 now=int(time.time()), interval=0.0,
             )
-            self.assertTrue(result.ok, result.reason)
+        finally:
+            claim_module._SEED.rotate = original_rotate
+            con.close()
+        self.assertTrue(result.ok, result.reason)
+        con = claim_module.open_db(self.db)
+        try:
             row = con.execute(
                 "SELECT token_hash, instance_id, used_at FROM seed_tokens"
                 " WHERE tenant_id = (SELECT id FROM tenants WHERE slug = ?)",
@@ -1701,11 +1720,11 @@ class ProvisionBinding(unittest.TestCase):
         self.assertEqual(row["token_hash"], tenant["setup_token_hash"])
         self.assertIsNotNone(result.email_path)
         assert result.email_path is not None
-        message = read_ready_body(result.email_path)
-        match = re.search(r"first-visit\?t=([0-9a-f]{64})", message)
-        self.assertIsNotNone(match, message)
-        token = match.group(1)
+        token = captured["token"]
         self.assertEqual(hashlib.sha256(token.encode()).hexdigest(), row["token_hash"])
+        message = read_ready_body(result.email_path)
+        self.assertNotIn(token, message, "the ready email never prints the setup token")
+        self.assertNotIn("first-visit?t=", message)
 
         status, body = exchange(self.port, token, "srv-another")
         self.assertEqual(status, 403, body)
@@ -1869,7 +1888,7 @@ def transcript() -> None:
             (fallback_server,)).fetchall()))
 
         print()
-        print("== 4. the claim fallback mints at activation and shows the token once ==")
+        print("== 4. the claim fallback mints at activation; the mail never prints it ==")
         claim_slug = "odl-5a4b3c"
         issued = claim_module.issue_claim(
             con, "grace@example.com", plan="Blackbox Plus", slug=claim_slug, now=now())
@@ -1880,22 +1899,35 @@ def transcript() -> None:
             "release": PROVISION_RELEASE, "default_plan_id": "113",
             "default_days": "31",
         })
-        result = claim_module.provision_tenant(
-            con, claim_slug, provider=FixtureProvider(), config=claim_config,
-            dns_client=FakeDNS(), outbox=claim_module.ReadyOutbox(outbox),
-            now=int(time.time()), interval=0.0,
-        )
+        captured = {}
+        original_rotate = claim_module._SEED.rotate
+
+        def recording_rotate(*args, **kwargs):
+            minted = original_rotate(*args, **kwargs)
+            captured["token"] = minted["token"]
+            return minted
+
+        claim_module._SEED.rotate = recording_rotate
+        try:
+            result = claim_module.provision_tenant(
+                con, claim_slug, provider=FixtureProvider(), config=claim_config,
+                dns_client=FakeDNS(), outbox=claim_module.ReadyOutbox(outbox),
+                now=int(time.time()), interval=0.0,
+            )
+        finally:
+            claim_module._SEED.rotate = original_rotate
         if not result.ok or not result.server_id or not result.email_path:
             raise RuntimeError("the claim fallback did not provision: %s" % result.reason)
         print("claim provision: ok=%s machine=%s email=%s"
               % (result.ok, result.server_id, result.email_path))
         message = read_ready_body(result.email_path)
-        claim_token = re.search(r"first-visit\?t=([0-9a-f]{64})", message).group(1)
+        claim_token = captured["token"]
         claim_row = con.execute(
             "SELECT token_hash, instance_id FROM seed_tokens WHERE instance_id = ?",
             (result.server_id,)).fetchone()
-        print("ready email carries the token once:",
-              message.count(claim_token) == 1,
+        print("ready email prints the setup token:",
+              claim_token in message,
+              "· tokenless page named:", "first-visit?t=" not in message,
               "· stored hash:", claim_row["token_hash"],
               "· instance:", claim_row["instance_id"])
         for instance in ("srv-another", result.server_id, result.server_id):

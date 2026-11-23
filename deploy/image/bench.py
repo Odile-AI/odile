@@ -810,17 +810,19 @@ def wait_firstboot(serial_path: pathlib.Path, expect: str, timeout: float) -> tu
     return False, "no '%s ...' line for %s after %.0fs" % (FIRSTBOOT_MARK, expect, timeout)
 
 
-def first_visit_page(port: int, token: str, timeout: float = 120) -> Check:
+def first_visit_page(port: int, timeout: float = 120) -> Check:
     """The page answers 200 through the host-forwarded first-visit port.
 
-    GET only: the bench never spends the token, so the same disk still opens
-    the form on the second boot (ODL-457 spends it on the POST).
+    B-once (ODL-925): the first visit is a tokenless login, so the probe is a
+    plain ``GET /first-visit``. GET-only: the bench never spends anything, so
+    the same disk still opens the form on the second boot (``used_at`` stays
+    unset).
     """
     deadline = time.monotonic() + timeout
     last = "no answer"
     while time.monotonic() < deadline:
         try:
-            response = request("127.0.0.1", port, "GET", "/first-visit?t=%s" % token,
+            response = request("127.0.0.1", port, "GET", "/first-visit",
                                timeout=15)
         except (OSError, http.client.HTTPException) as exc:
             last = str(exc)
@@ -1004,7 +1006,7 @@ def sealed(args: argparse.Namespace) -> int:
                 print(f"firstboot-bench: FAIL ({fb_detail})", flush=True)
                 return 1
             if args.first_visit_port and args.expect_firstboot in ("installed", "same"):
-                page = first_visit_page(args.first_visit_port, args.first_visit_token,
+                page = first_visit_page(args.first_visit_port,
                                         timeout=args.boot_timeout)
                 emit(page)
                 if not page.ok:

@@ -591,7 +591,7 @@ class ProvisionTests(ClaimBase):
                 [
                     line
                     for line in body.splitlines()
-                    if line.startswith("Set your sign-in:")
+                    if line.startswith("Sign in:")
                 ]
             ),
             1,
@@ -603,17 +603,22 @@ class ProvisionTests(ClaimBase):
                     "passphrase", "encrypt", "unlock", "installer", "scp", "shred"):
             self.assertNotIn(old, body)
         kit_text = Path(result.kit_path).read_text(encoding="utf-8")
-        body_visit = [line for line in body.splitlines()
-                      if line.startswith("Set your sign-in:")][0]
-        first_visit_url = body_visit.split(":", 1)[1].strip()
-        token = first_visit_url.split("t=", 1)[1]
-        self.assertEqual(first_visit_url,
-                         f"https://{SLUG}.{ZONE}/first-visit?t={token}")
-        self.assertEqual(claim.hash_token(token), tokens[0]["token_hash"])
-        # ODL-457's contract: the ready email carries the first-visit URL that
-        # spends the one-time setup token. The token travels only in that URL.
-        self.assertIn(f"Set your sign-in: {first_visit_url}", body)
-        self.assertEqual(body.count("first-visit?t="), 1)
+        # B-once (ODL-925): the email names the tokenless page and the password
+        # chosen at registration; no first-visit link carries the setup token.
+        self.assertIn(
+            f"Sign in: https://{SLUG}.{ZONE}/first-visit — the password you chose "
+            "when you registered.", body)
+        # D-7 once, then D-10's line (brand round: the duplicate was the
+        # earlier "Check the report first" sentence, now gone).
+        self.assertEqual(body.count("it says PASS or FAIL"), 1)
+        self.assertIn("Check the report before you sign in; it says PASS or FAIL. "
+                      "That password opens\n"
+                      "your machine too.", body)
+        self.assertIn("That password opens", body)
+        self.assertNotIn("Check the report first", body)
+        self.assertEqual(body.count("first-visit?t="), 0)
+        self.assertEqual(body.count("?t="), 0)
+        self.assertNotIn("Set your sign-in", body)
         self.assertEqual(tokens[0]["token_hash"], tenant["setup_token_hash"])
         attachments = list(queued.iter_attachments())
         self.assertEqual(len(attachments), 1)
@@ -621,32 +626,23 @@ class ProvisionTests(ClaimBase):
                          f"odile-{SLUG}-recovery-kit.txt")
         attached = attachments[0].get_payload(decode=True).decode("utf-8")
         self.assertEqual(kit_text, attached)
-        # The attached kit repeats the email's one action, token and all, so the
-        # user does not need the message to open the page — and never prints the
-        # token as a bare value or a shell command.
-        kit_visit = [line for line in kit_text.splitlines()
-                     if line.startswith("Set your sign-in:")][0]
-        self.assertEqual(kit_visit.split(":", 1)[1].strip(), first_visit_url)
-        self.assertEqual(kit_text.count(token), 1)
+        # The attached kit names the same tokenless page and never prints the
+        # setup token: its two jobs are the seed exchange and the rebuild seal.
+        self.assertIn(f"Open https://{SLUG}.{ZONE}/first-visit.",
+                      " ".join(kit_text.split()))
+        self.assertNotIn("?t=", kit_text)
+        self.assertNotIn("Set your sign-in", kit_text)
         self.assertNotIn("Setup token:", kit_text)
+        self.assertNotIn("Token expires", kit_text)
         for old in ("ssh", "scp", "ssh-keygen", "passphrase", "installer",
                     "shred", "~/.ssh"):
             self.assertNotIn(old, kit_text.lower())
-        # The kit reads check -> set (the decided order), the masthead is
-        # sentence case, and the prose carries the fact line's instant in words.
-        self.assertLess(kit_text.index("Before you set your sign-in"),
-                        kit_text.index("\nThe first visit\n"))
+        # The kit reads check -> sign in (the decided order) and the masthead
+        # is sentence case.
+        self.assertLess(kit_text.index("Before you sign in"),
+                        kit_text.index("\nThe first sign-in\n"))
         self.assertTrue(kit_text.startswith(f"Odile recovery kit — {SLUG}\n"))
         self.assertNotIn("ODILE RECOVERY KIT", kit_text)
-        self.assertIn("at least 16 characters", kit_text)
-        expires = tokens[0]["expires_at"]
-        stamp = datetime.strptime(expires, "%Y-%m-%dT%H:%M:%SZ")
-        months = ("January", "February", "March", "April", "May", "June", "July",
-                  "August", "September", "October", "November", "December")
-        verdict = (f"The link expires {stamp.day} {months[stamp.month - 1]} "
-                   f"{stamp.year}, {stamp.strftime('%H:%M')} UTC.")
-        self.assertIn(verdict, " ".join(kit_text.split()))
-        self.assertEqual(kit_text.count(expires), 1)
         self.assertRegex(kit_text, rf"(?m)^Measurement:\s+{MEASUREMENT}$")
         self.assertRegex(kit_text, r"(?m)^Machine ID:\s+srv-fixture0001$")
         self.assertIn(f"Machine:                {SLUG}", kit_text)
@@ -1327,16 +1323,13 @@ def transcript() -> None:
         kit = Path(result.kit_path)
         kit_text = kit.read_text(encoding="utf-8")
         kit_visit = [line for line in kit_text.splitlines()
-                     if line.startswith("Set your sign-in:")][0].split(":", 1)[1].strip()
-        kit_token = kit_visit.split("t=", 1)[1]
+                     if line.startswith("Open ") and "/first-visit." in line][0]
         stored = con.execute(
             "SELECT token_hash, instance_id, expires_at FROM seed_tokens"
         ).fetchone()
-        print("setup token: plaintext in the email and the kit's first-visit URL;",
-              "stored hash:", stored["token_hash"], "instance:", stored["instance_id"],
-              "expires:", stored["expires_at"])
-        print("hash of the kit token matches the stored hash:",
-              claim.hash_token(kit_token) == stored["token_hash"])
+        print("kit's first-visit line:", kit_visit)
+        print("setup token: stored hash:", stored["token_hash"],
+              "instance:", stored["instance_id"], "expires:", stored["expires_at"])
         message = email.message_from_bytes(
             Path(result.email_path).read_bytes(), policy=email_policy.default
         )
@@ -1344,8 +1337,11 @@ def transcript() -> None:
         print("  To:", message["To"])
         print("  Subject:", message["Subject"])
         print("  body:")
-        for line in message.get_body(preferencelist=("plain",)).get_content().splitlines():
+        body = message.get_body(preferencelist=("plain",)).get_content()
+        for line in body.splitlines():
             print("   |", line)
+        print("setup token printed in the mail or the kit:",
+              "?t=" in body or "?t=" in kit_text)
         print("  attachment:", [a.get_filename() for a in message.iter_attachments()])
         print(f"kit: {kit} ({len(kit_text.splitlines())} lines, "
               f"mode {oct(kit.stat().st_mode & 0o777)})")

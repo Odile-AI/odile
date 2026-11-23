@@ -2,33 +2,31 @@
 """Render the Odile recovery kit — one plain-text file, no secret Odile can use.
 
 The kit attached to the ready email is the machine's own document: its facts
-(slug, address, URL, machine id, release, vCPUs, measurement, token expiry,
-signing key), the single-use first-visit link, and the two ways back — the
-recovery code resets the sign-in, the recovery file opens the backup (A9, A7 and
-A5 of `docs/product/CLAIMS-RECUT-STRICT.md`). It carries no terminal, no key
-the user handles and no passphrase: the strict bar's install is zero-touch and
-the first visit is a browser page.
+(slug, address, URL, machine id, release, vCPUs, measurement, signing key), the
+tokenless first-sign-in page, and the two ways back — the recovery code resets
+the sign-in, the recovery file opens the backup (A9, A7 and A5 of
+`docs/product/CLAIMS-RECUT-STRICT.md`). It carries no terminal, no key the user
+handles and no passphrase: the install is zero-touch and the first visit is a
+browser page.
 
 What the kit does not carry: the private half of any key, the disk key, the
 Odile sign-in, the backup password or any seed secret. It carries both *public*
 halves — the release signing key (installers, manifests, releases) and the seed
 signing key (tenant seeds), plus the release key's certificate over the seed
 key — because a kit that names one key stops being an anchor the day the other
-one signs (ODL-514). The only Odile-minted value is the setup token: 64 hex,
-bound to the tenant and the instance id, single use, and spent by the
-first-visit URL in this file. The backup password is generated on the guest and
-reaches the user in the recovery file the first visit downloads; Odile holds no
-copy.
+one signs (ODL-514). The setup token is no longer a kit value (ODL-925): its
+two jobs are the seed exchange and the rebuild seal, both machine-side. The
+backup password is generated on the guest and reaches the user in the recovery
+file the first sign-in downloads; Odile holds no copy.
 
 The generator touches no network and no database: slug, IPv4, instance id,
-measurement, token and first-visit URL are parameters, and the template renders
-from values. ODL-220 mints the token with `seed/seed.py` and calls this script;
-ODL-232 attaches the file.
+measurement and the first-visit URL are parameters, and the template renders
+from values. ODL-220 mints the seed token with `seed/seed.py` and calls this
+script; ODL-232 attaches the file.
 
     ./scripts/recovery_kit.py render \\
         --slug odl-7f3a2c --ipv4 203.0.113.120 \\
-        --instance-id srv-… --token <64 lowercase hex> \\
-        --measurement <96 lowercase hex> --out kit.txt
+        --instance-id srv-… --measurement <96 lowercase hex> --out kit.txt
 
 Exit codes: 0 success, 2 bad input or a template that does not render cleanly.
 """
@@ -178,7 +176,11 @@ def build_values(args: argparse.Namespace) -> dict[str, object]:
     slug = validate(args.slug, "slug", SLUG_RE, "lowercase letters, digits and hyphens, 2–63 characters")
     instance = validate(args.instance_id, "instance id", INSTANCE_RE,
                         "letters, digits, dot, underscore, colon or hyphen, up to 128 characters")
-    token = validate(args.token, "setup token", TOKEN_RE, "64 lowercase hex characters")
+    # B-once (ODL-925): the kit names the tokenless first-sign-in page, not a
+    # tokenised link. The setup token is no longer a kit value — its two jobs
+    # are the seed exchange and the rebuild seal, and the kit prints neither.
+    token = (validate(args.token, "setup token", TOKEN_RE,
+                      "64 lowercase hex characters") if args.token else None)
     measurement = validate(args.measurement, "measurement", MEASUREMENT_RE,
                            "96 lowercase hex characters")
     if not RELEASE_RE.match(args.release):
@@ -203,13 +205,14 @@ def build_values(args: argparse.Namespace) -> dict[str, object]:
             )
 
     url = f"https://{slug}.odile.fyi"
-    first_visit_url = args.first_visit_url or f"{url}/first-visit?t={token}"
+    first_visit_url = args.first_visit_url or f"{url}/first-visit"
     if not first_visit_url.startswith("https://") or any(
             char.isspace() for char in first_visit_url):
         raise BadInput(f"first-visit URL must be one https:// URL, got {first_visit_url!r}")
-    if token not in first_visit_url:
+    if "?" in first_visit_url or not first_visit_url.endswith("/first-visit"):
         raise BadInput(
-            f"first-visit URL does not carry the setup token: {first_visit_url!r}"
+            f"first-visit URL must be the tokenless page ({url}/first-visit), "
+            f"got {first_visit_url!r}"
         )
 
     key_path = Path(args.signing_key)
@@ -305,13 +308,18 @@ def build_parser() -> argparse.ArgumentParser:
     render_p.add_argument("--ipv4", required=True, help="the machine's public IPv4 address")
     render_p.add_argument("--instance-id", required=True,
                           help="the provider instance id the setup token is bound to")
-    render_p.add_argument("--token", required=True, help="64 lowercase hex, single use")
+    render_p.add_argument("--token",
+                          help="64 lowercase hex; accepted for compatibility and never "
+                               "printed (the setup token is the seed badge and the "
+                               "rebuild-seal key)")
     render_p.add_argument("--measurement", required=True,
                           help="the 96 lowercase hex measurement from the release pin")
     render_p.add_argument("--first-visit-url",
-                          help="the single-use first-visit URL (default: "
-                               "https://<slug>.odile.fyi/first-visit?t=<token>)")
-    render_p.add_argument("--expires-at", help="the token's expiry, ISO 8601 UTC")
+                          help="the tokenless first-sign-in page (default: "
+                               "https://<slug>.odile.fyi/first-visit)")
+    render_p.add_argument("--expires-at",
+                          help="the seed token's expiry, ISO 8601 UTC (accepted; "
+                               "the kit no longer prints it)")
     render_p.add_argument("--release", default=DEFAULT_RELEASE,
                           help=f"measured-boot release id (default {DEFAULT_RELEASE})")
     render_p.add_argument("--vcpus", type=int, default=DEFAULT_VCPUS,

@@ -195,6 +195,9 @@ CONTRACT = {
     "support_public_key": "ssh-ed25519 AAAA test@odile.fyi",
     "backup_repo_url": "sftp:odile-backup@backup.odile.fyi:/tenants/odl-sign-test",
     "hermes_version": "2026.11.1",
+    # ODL-925: the seed carries the account's sign-in verifier; the cache
+    # verifies the body through validate_seed, which now requires it.
+    "sign_in_hash": "scrypt$16384$8$1$c2FsdA==$ZGs=",
     "mail_relay": {"host": "smtp.mail.odile.fyi", "port": 587,
                    "username": "odl-sign-test@mail.odile.fyi", "secret": "relay"},
 }

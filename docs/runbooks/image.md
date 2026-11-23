@@ -929,10 +929,14 @@ new certificate, a new pin and a re-sign, not a rebuild of the disk.
 A published image carries no password a stranger can use.
 `/home/tenant/.hermes/.env` holds a scrypt hash of a password generated in the
 build and thrown away, with the marker that says so; the first boot replaces
-that hash with another discarded one (and the session secret with this machine's
-own); the release installer rewrites it on **every** run until the first-visit
-page has set the owner's sign-in; and the page is the only writer of a hash a
-person can use. The session-signing secret
+that hash with another discarded one **or, when it carries a seed, with the
+seed's verifier — the password the owner chose at registration** (B-once,
+ODL-925) — and the session secret with this machine's own; the release
+installer, when it runs seeded under `--first-visit`, writes that same seeded
+verifier and keeps it, so a hash a person can use has a writer at provision and
+the first visit is a **login**, not a setup. In the classic flow (no seed) the
+first-visit page remains the only writer of a usable hash. The session-signing
+secret
 (`HERMES_DASHBOARD_BASIC_AUTH_SECRET`) is not that rule: the build has to write
 one, so every disk built from one image would sign its cookies with the same
 value. ODL-522 makes it the machine's: the first boot replaces it with a secret
@@ -961,23 +965,32 @@ Four writers, in order, and one state key.
 2. **The first boot.** `odile-firstboot.py` runs `install-stack.sh --seed`; the
    production branch sees a scrypt hash that rejects the fixture and, because
    the run carries `--seed` and the page has not set the owner's sign-in,
-   writes this machine's own session secret and another discarded hash (ODL-522,
-   §13.9). Once `signin_set_at` exists the same branch prints
+   writes this machine's own session secret and — when the seed carries
+   `sign_in_hash`, which every ODL-341 provisioned seed does — **the seed's
+   verifier** (the registration password), stamped `signin_set_at` in the
+   `/etc/odile/first-visit.json` state it writes (ODL-925; §13.4 and §13.5
+   below are the pre-change records, at their recorded heads). Only a classic
+   no-seed run writes another discarded hash (ODL-522, §13.9). Once
+   `signin_set_at` exists the same branch prints
    `same … (the owner's sign-in; this machine's own secret)` and the file stays
    byte for byte. A file with no scrypt hash at all (the vendor bootstrap
    leaves its own `.env.example` copy) or one that *does* accept the fixture is
    replaced either way.
 3. **Every `--first-visit` run of the release installer.** `ensure_env` reads
-   `/etc/odile/first-visit.json`; while `signin_set_at` is absent it rewrites
-   the hash with another discarded one, even when the allowlist looks valid,
-   and keeps the session secret. After `signin_set_at` it prints
+   `/etc/odile/first-visit.json`; while `signin_set_at` is absent it writes the
+   hash the seed carries when the run is seeded (ODL-925), and a discarded one
+   on a classic run, even when the allowlist looks valid, and keeps the session
+   secret. After `signin_set_at` it prints
    `same … (mode 0600, 3 allowlisted keys, allowlist ok)` and keeps the owner's
    hash.
-4. **The page.** `POST /first-visit` writes the owner's scrypt hash and
-   `signin_set_at`, and nothing else. It replaces the hash line only: the
-   machine's session secret is kept byte for byte, and a `.env` with no
-   `HERMES_DASHBOARD_BASIC_AUTH_SECRET` is refused (500, token unspent) rather
-   than written into a password-only file (ODL-522).
+4. **The page.** In the seeded flow `POST /first-visit` **signs the owner in**:
+   it verifies the registration password against the `.env` hash, writes
+   `first_login_at` and `signin_set_at` in one state write, and shows the
+   recovery code once. On a classic machine it writes the owner's scrypt hash
+   and `signin_set_at`, and nothing else. Either way it replaces the hash line
+   only: the machine's session secret is kept byte for byte, and a `.env` with
+   no `HERMES_DASHBOARD_BASIC_AUTH_SECRET` is refused (500, token unspent)
+   rather than written into a password-only file (ODL-522).
 
 ### 13.3 The build: a discarded hash and the marker
 
@@ -1180,7 +1193,13 @@ hostfwd cannot reach. Its serial transcript is `$FINAL/bootA/serial.log`; the
 phase report is what is pasted here and in §13.5, §13.7 and §13.8.
 
 `GET /` is 302 to the gate, `GET /login` is 200, the bench fixture's sign-in
-is 401, and `/first-visit?t=` is the only page that answers 200 with a form.
+is 401, and `/first-visit` — the tokenless page — is the only page that answers
+200 with a form; a `/first-visit?t=` request (valid, unknown or empty) never
+renders the form, and answers 410 `already set` on a machine whose sign-in is
+recorded. This is the pre-change record (ODL-521/ODL-522 heads): the
+transcripts in §13.4–§13.9 are kept as they were measured, and their page is
+the setup page, not B-once's login. ODL-926 re-measures them on the re-cut
+image.
 `/verify` is world-readable: it answers 200 before the visit as well as after
 it (§13.4 and §13.7), and its sign-in row prints `sign-in hash PASS` on a
 production image — a scrypt hash in `/home/tenant/.hermes/.env` and no
@@ -1257,7 +1276,7 @@ boot marker     present
 firstboot log   same         /home/tenant/.hermes/.env (a discarded sign-in, no usable password)
 ```
 
-### 13.6 The installer rewrites every run before the visit
+### 13.6 The installer writes the seeded verifier before the visit (pre-change transcript)
 
 The shipped installer, in its `--root` scratch mode against the image's own
 root mounted read-write, twice, before the visit:
@@ -1317,8 +1336,11 @@ firstboot log   same         /home/tenant/.hermes/.env (a discarded sign-in, no 
 
 ### 13.7 The visit
 
-`POST /first-visit` with the owner's password sets the sign-in, and the page
-records it in the state the installer reads:
+`POST /first-visit` with the password chosen at registration signs the owner
+in on a seeded machine (a classic machine sets the sign-in here), and the page
+records `first_login_at` and `signin_set_at` in the state the installer reads.
+The transcript below is the pre-change record: it measured a classic disk, so
+its page sets the sign-in and its installer runs write a placeholder.
 
 The second disk is a fresh copy of the built image, so its first boot fetches
 the same one-time seed token the first disk's boot consumed; the fixture
@@ -1487,8 +1509,15 @@ web/verify.html
 
 No `deploy/image` byte moved, and `installer/first_visit.py` (`d1c761f0…`) is
 the same file in both pairs: the image carries the `bd3c8963…` installer and
-`web/first-visit.html` `4d7c4960…`, a build at the handoff head carries
-`e0cec88a…` and the type re-cut page `810a596d…`.
+`web/first-visit.html` `4d7c4960…`, a build at that round's handoff head
+carries `e0cec88a…` and the type re-cut page `810a596d…`. ODL-925 has since
+re-cut both first-visit surfaces: its `-2` cut (`2026.11.23-2`) carries
+`installer/first_visit.py`
+`7ddf42c3…` (76,304 bytes) and `web/first-visit.html` `98208a4c…` (45,248
+bytes), and its `-3` cut at this card's head (`2026.11.23-3`, installer
+`36add6da…`) carries `753417a0…` (78,550 bytes) and `1a9e8615…` (45,743
+bytes); the page's pins are `FIRST_VISIT_SHA256` and
+`FIRST_VISIT_PAGE_SHA256` in the installer.
 
 The build's own head line and the fixture seed the boot uses:
 

@@ -54,8 +54,12 @@ The tenant flow
 3. exchange the setup token + instance id at https://odile.fyi/seed for the
    signed seed (ODL-204), cache it at /etc/odile/seed.json (0600) and verify
    the response signature before parsing a field;
-4. ask for the Odile sign-in password (16+ characters, or generate 32) and
-   hash it here with scrypt — it never leaves the machine;
+4. write the sign-in into the tenant .env before the Webapp's first boot:
+   under ``--first-visit`` it is the verifier the signed seed carries
+   (``sign_in_hash``) — the password chosen at registration, B-once — and on a
+   classic install with no seed it is asked for here (16+ characters, or
+   generate 32 and print it once) and hashed with scrypt; the plaintext never
+   leaves the machine;
 5. install the OS packages at exact Debian 13 pins from one dated snapshot
    (git, Caddy, Node, restic, tmux, curl, openssl, Python; Chromium best
    effort); install the pinned Hermes commit (2bd378ed1b8d, v0.23.0) as
@@ -234,8 +238,17 @@ OS_OPTIONAL_PINS = {"chromium": "150.0.7871.181-1~deb13u1"}
 SEED_KEYS = (
     "slug", "instance_id", "near_api_key", "model", "support_public_key",
     "backup_repo_url", "mail_relay", "hermes_version",
+    # B-once (ODL-925): the account's own scrypt verifier, written by the seed
+    # writer (ODL-341) and installed into the tenant .env before the Webapp's
+    # first boot. The first visit is then a login, not a setup.
+    "sign_in_hash",
 )
 SEED_FORBIDDEN = ("password", "passphrase", "private_key", "ssh_private_key", "luks")
+# The installer's own scrypt string shape (`scrypt$n$r$p$salt$dk`). The seed's
+# sign_in_hash is written into the tenant .env byte for byte, so a value that
+# is not this shape is refused before it can leave a gate nobody can open.
+SIGNIN_SCRYPT_RE = re.compile(
+    r"^scrypt\$\d+\$\d+\$\d+\$[A-Za-z0-9+/=]+\$[A-Za-z0-9+/=]+$")
 
 TENANT_ENV_KEYS = (
     "HERMES_DASHBOARD_BASIC_AUTH_USERNAME",
@@ -3100,22 +3113,27 @@ printf 'members %s\n' "${members# }"
 # The first-visit service and its page are the reviewed files, byte for
 # byte, so the signed installer carries exactly the program and page it
 # writes to /usr/local/lib/odile/. --self-test fails on a one-byte edit.
-FIRST_VISIT_SHA256 = "21c84e640b278668deec43535ef696cf3372c4cf9a73eb89471e9f3897b9c524"
+FIRST_VISIT_SHA256 = "753417a0e62e12672e01f7eb6b3c94920ee07d62eb17e8ae4c956de68ab7be63"
 FIRST_VISIT_SOURCE = r'''#!/usr/bin/python3
-"""odile first-visit service — set the Odile sign-in on the guest.
+"""odile first-visit service — sign in to the guest and show the recovery code.
 
-The strict bar sets the sign-in on the machine, at first visit, with no
-terminal. This service is the one page that does it. The installer writes a
-single-use token's SHA-256 and this program's unit; the user opens
-``https://<slug>.odile.fyi/first-visit?t=<token>`` from the ready page, chooses
-the password that opens the Hermes Webapp, and is shown a recovery code once.
-Nothing here ever sends the password, the token or the recovery code anywhere:
-the POST is same-origin, the page makes no third-party request, and the only
-file that changes is the tenant's own ``.env`` (the scrypt hash) and this
-service's state file (the hashes).
+B-once (Savio, 2026-11-20; card ODL-925): the registration password is the
+machine's sign-in, written into the tenant ``.env`` at provision, so the first
+visit is a **login**, not a setup. The installer writes this service's state
+and its unit; the user opens ``https://<slug>.odile.fyi/first-visit`` from the
+ready email, signs in with the password they chose at registration, and is
+shown a recovery code once, with the recovery file. A classic install with no
+seed — the image's bench path and a hand-run ``--first-visit`` — keeps the
+setup page: there the visit chooses the sign-in, as it did before B-once.
 
-    GET  /first-visit?t=<token>   the form, while the token is unspent
-    POST /first-visit             write the basic-auth hash; spend the token
+No first-visit link carries the setup token any more and no page accepts one:
+``?t=`` answers 410 ("already set"), the stale-link answer. The setup token's
+two remaining jobs are machine-side — it authenticates the seed exchange
+(``{token, instance_id}`` -> ``POST /seed``, which carries the NEAR key) and
+it seals the rebuild blob (``seed/seed.py``) — and neither is this service's.
+
+    GET  /first-visit             the form: a sign-in (seeded) or a setup (classic)
+    POST /first-visit             verify the password, or write the setup hash
     GET  /first-visit/recovery    the recovery page: enter the code, get the file
     POST /first-visit/recovery    spend the code, rotate it, mint a download token
     GET  /first-visit/recovery?d=<download token>   the recovery file, once
@@ -3128,18 +3146,23 @@ service's state file (the hashes).
     GET  /icon-512.png            the website icon, 512
     GET  /apple-touch-icon.png    the website icon, 180 on an opaque mount
 
-A refused link renders one of two pages: the spent token still offers the
-reset code, and a state with no recovery hash (the sign-in was never set, or
-the token is unknown on such a machine) offers the ready email's link instead
-of ``/first-visit/reset``, which would answer 409 there.
+A refused link renders one of two pages: a state with a recovery hash offers
+the reset code, and a state without one (the sign-in was never set) offers the
+ready email's page instead of ``/first-visit/reset``, which would answer 409
+there.
 
 Design notes a reviewer should check:
 
-* **The token is spent on POST, not on GET.** Mail scanners prefetch links and
-  a phone reloads a tab; a GET that consumed the token would lock a user out
-  before they typed anything. The same choice is recorded for the claim page in
-  ``docs/architecture/DESIGN-claim-ceremony.md``. After the sign-in is set the
-  token is dead for good: every later GET or POST answers 410.
+* **``signin_set_at`` is a fact about the ``.env``, not about this page.**
+  ``docs/security/DECISION-first-visit-state.md`` §1: it means "the ``.env``
+  holds a usable sign-in the owner can use" — the seeded first boot wrote the
+  seed's verifier and stamped it, the classic page's POST wrote one, or the
+  demo deploy installed one. It also picks this page's mode: set means the
+  visit is a login, unset means the classic setup. ``first_login_at`` is the
+  visit's own record, written beside it in one state write on success.
+* **Nothing in a URL is a credential.** The setup token is not on this page
+  at all: ``?t=`` (any value, valid or not) answers 410, and the form carries
+  no token field. The sign-in is the password the user typed.
 * **The code is never a bearer in a URL (ODL-579).** The done page shows the
   code once and links the recovery file with a **one-time download token**
   (``?d=``, 32 bytes, stored as its SHA-256, ten minutes, one use). The code is
@@ -3174,14 +3197,13 @@ Design notes a reviewer should check:
 * **The download is the file.** Same bytes, ``text/plain``, a filename from
   the file's own ``Tenant:`` line, ``no-store``. A missing or empty file means
   no link and a 404; an empty body is never served.
-* **The token never leaves a hash.** The plaintext arrives in the URL (the
-  ready page's link) and in the form body; only SHA-256 stays on disk. The
-  tenant Caddyfile logs to ``output discard`` and the page is
-  ``Referrer-Policy: no-referrer``, so the query string is not copied into a
-  log or a third-party request.
+* **The token never leaves a hash.** The state keeps the setup token's
+  SHA-256, never the plaintext; the token itself is not this page's any more
+  (it is the seed badge and the rebuild-seal key). The tenant Caddyfile logs to
+  ``output discard`` and the page is ``Referrer-Policy: no-referrer``.
 * **One writer.** ``POST`` holds an ``flock`` on ``<state>.lock`` across
-  read-verify-write, so two clicks cannot both spend the token or both rotate
-  the recovery code.
+  read-verify-write, so two clicks cannot both rotate the recovery code, and no
+  writer stamps ``signin_set_at`` while the ``.env`` still holds a placeholder.
 * **The hash format is Hermes's**, not this program's: the provider stores
   ``scrypt$n$r$p$salt$dk`` with n=2**14, r=8, p=1. The installer has its own
   copy of the two functions and ``tests/test_first_visit.py`` proves the copies
@@ -3316,8 +3338,8 @@ CODE_SENTINEL = "\x00recovery-code\x00"
 ERROR_FIELDS = ("code", "password", "password2")
 
 BLOCK_RE = re.compile(
-    r"<!--(form|done|recover|recovery-done|reset-done|reset|refused-unknown|refused)-->"
-    r"(.*?)<!--/\1-->", re.S)
+    r"<!--(form|signin|done|recover|recovery-done|reset-done|reset"
+    r"|refused-unknown|refused-set|refused)-->(.*?)<!--/\1-->", re.S)
 
 _hits: dict[str, list[float]] = {}
 _lock = threading.Lock()
@@ -3397,6 +3419,9 @@ def empty_state() -> dict:
         "created_at": utc_now(),
         "used_at": None,
         "signin_set_at": None,
+        # The visit's own record (ODL-925): when the owner first signed in.
+        # Written beside signin_set_at in one state write; null until then.
+        "first_login_at": None,
         "recovery_hash": None,
         "recovery_issued_at": None,
         "recovery_used_at": None,
@@ -3417,8 +3442,8 @@ def validate_state(state: object) -> dict:
     token_hash = state.get("token_sha256")
     if not isinstance(token_hash, str) or not TOKEN_RE.match(token_hash):
         raise ValueError("token_sha256 is not 64 lowercase hex")
-    for key in ("used_at", "signin_set_at", "recovery_issued_at", "recovery_used_at",
-                "download_expires_at", "download_used_at"):
+    for key in ("used_at", "signin_set_at", "first_login_at", "recovery_issued_at",
+                "recovery_used_at", "download_expires_at", "download_used_at"):
         value = state.get(key)
         if value is not None and not isinstance(value, str):
             raise ValueError("%s is not a string or null" % key)
@@ -3807,6 +3832,30 @@ def write_env_hash(env_path: Path, password_hash: str, *,
     return env_values(updated).get(USERNAME_KEY) or DEFAULT_USERNAME
 
 
+def stored_hash(env_path: Path) -> str:
+    """The tenant .env's sign-in hash, or '' when there is none.
+
+    Read per request, never cached: a reset writes the file while the service
+    runs, and the next sign-in must verify against the new hash.
+    """
+    try:
+        text = env_path.read_text(encoding="utf-8")
+    except OSError:
+        return ""
+    return (env_values(text).get(PASSWORD_KEY) or "").strip()
+
+
+def signin_is_set(state: dict) -> bool:
+    """True once the .env holds a usable sign-in (DECISION-first-visit-state §1).
+
+    The state key is the writer's record, not a fact only this page can make:
+    the seeded first boot stamps it, the classic page's POST stamps it, and a
+    deploy that installs a sign-in stamps it. It picks the form this page
+    serves — login when set, the classic setup when not.
+    """
+    return bool(state.get("signin_set_at"))
+
+
 # ------------------------------------------------------------------- rendering
 
 def page_text(path: Path) -> str:
@@ -3828,6 +3877,14 @@ def error_slot(message: str) -> str:
     return '<p class="error" id="error" role="alert">%s</p>' % html.escape(message)
 
 
+def notice_slot(message: str) -> str:
+    """A form-level line above the button; its own id, so a field error keeps
+    ``#error`` and both can announce independently."""
+    if not message:
+        return ""
+    return '<p class="error" id="notice" role="alert">%s</p>' % html.escape(message)
+
+
 def field_attrs(field: str, error: FieldError | None, hint: str = "") -> str:
     """aria-invalid and aria-describedby for one field, and nothing else."""
     described = [hint] if hint else []
@@ -3845,9 +3902,11 @@ def wordmark(keep: str) -> str:
 
     ``refused-unknown`` means the state carries no recovery hash, so the
     sign-in was never set and opening ``/`` would only meet a password prompt
-    no one can answer. It stays plain for the same reason ``form`` does.
+    no one can answer. ``form`` and ``signin`` are the two ways the visit
+    arrives — a classic setup or the B-once login — and both stay plain: the
+    visitor has not typed anything yet.
     """
-    if keep in ("form", "reset", "refused-unknown"):
+    if keep in ("form", "signin", "reset", "refused-set", "refused-unknown"):
         return '<span class="brand">Odile</span>'
     return '<a class="brand" href="/">Odile</a>'
 
@@ -3864,7 +3923,7 @@ def password_error(password: str, repeat: str) -> FieldError | None:
 
 
 def render(template: str, keep: str, *, title: str, error: FieldError | None = None,
-           token: str = "", username: str = DEFAULT_USERNAME,
+           notice: str = "", token: str = "", username: str = DEFAULT_USERNAME,
            code: str = "", recovery: str = "", recovery_file: str = "") -> str:
     """Keep one state block, drop the rest, then fill the slots.
 
@@ -3872,7 +3931,8 @@ def render(template: str, keep: str, *, title: str, error: FieldError | None = N
     read back as one of our slots. The recovery-code field is the one slot a
     user can fill with braces, so it goes in after the unfilled-slot check.
     ``recovery_file`` is this service's own HTML (a link or the unavailable
-    sentence), never a user value.
+    sentence), never a user value. ``notice`` is a form-level line (the rate
+    limit and a refused write), never a field error.
     """
     def pick(match: re.Match[str]) -> str:
         return match.group(2) if match.group(1) == keep else ""
@@ -3884,8 +3944,11 @@ def render(template: str, keep: str, *, title: str, error: FieldError | None = N
             body = body.replace("<!--%s-error-->" % field, error_slot(error.message))
         else:
             body = body.replace("<!--%s-error-->" % field, "")
+    body = body.replace("<!--notice-->", notice_slot(notice))
     body = body.replace("{{CODE_ATTRS}}", field_attrs("code", error))
     body = body.replace("{{PASSWORD_ATTRS}}", field_attrs("password", error, "password-hint"))
+    # The sign-in block renders no hint, so its field points at the error only.
+    body = body.replace("{{SIGNIN_PASSWORD_ATTRS}}", field_attrs("password", error))
     body = body.replace("{{PASSWORD2_ATTRS}}", field_attrs("password2", error))
     body = body.replace("{{TITLE}}", html.escape(title))
     body = body.replace("{{RECOVERY}}", html.escape(recovery))
@@ -4125,33 +4188,50 @@ class FirstVisit:
                       recovery_file=recovery_file_block(recovery, download))
         return 200, body
 
-    def recover_form(self, error: FieldError | None = None) -> tuple[int, str]:
+    def recover_form(self, error: FieldError | None = None,
+                     notice: str = "") -> tuple[int, str]:
         """The recovery page: the code is POSTed here, never carried in a URL."""
         body = render(self.template(), "recover",
                       title="Your recovery file — Odile", error=error,
-                      username=self.username())
+                      notice=notice, username=self.username())
         return 200, body
 
-    def refused(self, code: int, can_reset: bool = True) -> tuple[int, str]:
-        """The closed-link page; the reset link only where it can render.
+    def refused(self, code: int, state: dict) -> tuple[int, str]:
+        """The closed-link page, chosen by what the state actually holds.
 
-        ``/first-visit/reset`` answers 409 when the state has no recovery
-        hash, which is exactly the machine whose sign-in was never set. On
-        that machine the page names the ready email and the support address
-        instead of offering a second dead end (ODL-471 follow-up).
+        A set sign-in is the "already set" answer. When no recovery code has
+        been issued yet (the seeded state before its first sign-in) the reset
+        route answers 409, so the block's one action is the tokenless page that
+        signs in. A machine with no sign-in at all (a classic install) points
+        at the same tokenless page, which is its setup form.
         """
-        keep = "refused" if can_reset else "refused-unknown"
+        if not signin_is_set(state):
+            keep = "refused-unknown"
+        elif state.get("recovery_hash"):
+            keep = "refused"
+        else:
+            keep = "refused-set"
         body = render(self.template(), keep, title="This link is closed — Odile")
         return code, body
 
-    def form(self, token: str, error: FieldError | None = None) -> tuple[int, str]:
-        body = render(self.template(), "form", title="Set your sign-in — Odile",
-                      error=error, token=token, username=self.username())
+    def form(self, error: FieldError | None = None,
+             notice: str = "") -> tuple[int, str]:
+        """The classic setup page: no seed, so the visit chooses the sign-in."""
+        body = render(self.template(), "form", title="Choose your sign-in — Odile",
+                      error=error, notice=notice, username=self.username())
         return 200, body
 
-    def reset_form(self, error: FieldError | None = None, code: str = "") -> tuple[int, str]:
+    def signin_form(self, error: FieldError | None = None,
+                    notice: str = "") -> tuple[int, str]:
+        """The B-once login: one password field, no token, no repeat."""
+        body = render(self.template(), "signin", title="Sign in — Odile",
+                      error=error, notice=notice, username=self.username())
+        return 200, body
+
+    def reset_form(self, error: FieldError | None = None, code: str = "",
+                   notice: str = "") -> tuple[int, str]:
         body = render(self.template(), "reset", title="Reset your sign-in — Odile",
-                      error=error, username=self.username(), code=code)
+                      error=error, notice=notice, username=self.username(), code=code)
         return 200, body
 
     def icon(self, path: str) -> tuple[int, str, bytes] | None:
@@ -4344,7 +4424,7 @@ def build_handler(service: FirstVisit):
             if state is None:
                 return
             if not state.get("recovery_hash"):
-                code, body = service.refused(409, False)
+                code, body = service.refused(409, state)
                 return self._send(code, body, head)
             code, body = service.recover_form()
             return self._send(code, body, head)
@@ -4397,25 +4477,32 @@ def build_handler(service: FirstVisit):
             if path in ("/first-visit/recovery", "/first-visit/recovery/"):
                 return self._recovery_page(head, query)
             if path in ("/first-visit", "/first-visit/"):
-                token = (query.get("t") or [""])[0]
+                # B-once (ODL-925): no first-visit link carries the setup
+                # token, and no page accepts one. Any `?t=`, valid, unknown or
+                # empty, is the stale A-era link: 410, the "already set"
+                # answer, and it never renders a form or writes the .env. The
+                # token's jobs are machine-side now (the seed exchange and the
+                # rebuild seal).
+                if "t" in query:
+                    state = self._load_state()
+                    if state is None:
+                        return
+                    code, body = service.refused(410, state)
+                    return self._send(code, body, head)
                 state = self._load_state()
                 if state is None:
                     return
-                verdict = check_token(state, token)
-                if verdict == "used":
-                    code, body = service.refused(410, bool(state.get("recovery_hash")))
-                    return self._send(code, body, head)
-                if verdict == "unknown":
-                    code, body = service.refused(404, bool(state.get("recovery_hash")))
-                    return self._send(code, body, head)
-                code, body = service.form(token)
+                if signin_is_set(state):
+                    code, body = service.signin_form()
+                else:
+                    code, body = service.form()
                 return self._send(code, body, head)
             if path in ("/first-visit/reset", "/first-visit/reset/"):
                 state = self._load_state()
                 if state is None:
                     return
                 if not state.get("recovery_hash"):
-                    code, body = service.refused(409, False)
+                    code, body = service.refused(409, state)
                     return self._send(code, body, head)
                 code, body = service.reset_form()
                 return self._send(code, body, head)
@@ -4443,58 +4530,105 @@ def build_handler(service: FirstVisit):
             raw = self.rfile.read(length).decode("utf-8", "replace")
             fields = parse_qs(raw, keep_blank_values=True)
             if not allow(self.client_address[0]):
-                return self._send(429, "Too many attempts. Try again in ten minutes.\n",
-                                  ctype="text/plain; charset=utf-8")
+                return self._too_many(path)
             if path == "/first-visit":
                 return self._set_signin(fields)
             if path == "/first-visit/recovery":
                 return self._recover_file(fields)
             return self._reset_signin(fields)
 
+        def _too_many(self, path: str) -> None:
+            """The rate limit as a page, not a bare string.
+
+            The visitor is re-shown the state they were on (a login or the
+            classic setup, a reset or the recovery page) with one form-level
+            ``role="alert"`` line above the button, rather than the text/plain
+            white page this route used to answer.
+            """
+            notice = "Too many attempts. Try again in ten minutes."
+            if path == "/first-visit":
+                state = self._load_state()
+                if state is None:
+                    return
+                if signin_is_set(state):
+                    code, body = service.signin_form(notice=notice)
+                else:
+                    code, body = service.form(notice=notice)
+            elif path == "/first-visit/recovery":
+                code, body = service.recover_form(notice=notice)
+            else:
+                code, body = service.reset_form(notice=notice)
+            return self._send(429, body)
+
         def _set_signin(self, fields: dict[str, list[str]]) -> None:
-            token = (fields.get("t") or [""])[0].strip()
+            """Sign in (seeded) or set the sign-in (classic); show the code once.
+
+            Seeded: ``signin_set_at`` is already set because the .env holds
+            the registration password's verifier, so this POST *verifies* with
+            ``verify_password`` and writes no hash. A wrong password re-renders
+            the one-field form and counts against the POST rate limit.
+            Classic (no seed): nothing wrote a usable sign-in, so the visit
+            chooses one and the hash is written, as the A-era page did.
+            Both end in one state write that records ``first_login_at`` and
+            ``signin_set_at`` beside the recovery code.
+            """
             password = (fields.get("password") or [""])[0]
             repeat = (fields.get("password2") or [""])[0]
             with locked(service.state):
                 state = self._load_state()
                 if state is None:
                     return
-                verdict = check_token(state, token)
-                if verdict == "used":
-                    code, body = service.refused(410, bool(state.get("recovery_hash")))
-                    return self._send(code, body)
-                if verdict == "unknown":
-                    code, body = service.refused(404, bool(state.get("recovery_hash")))
-                    return self._send(code, body)
-                problem = password_error(password, repeat)
-                if problem is not None:
-                    code, body = service.form(token, problem)
-                    return self._send(code, body)
+                login = signin_is_set(state)
+                if login:
+                    stored = stored_hash(service.env)
+                    if not stored or not verify_password(password, stored):
+                        code, body = service.signin_form(FieldError(
+                            "That password does not match this machine's sign-in.",
+                            "password", ("password",)))
+                        return self._send(code, body)
+                    username = service.username()
+                else:
+                    problem = password_error(password, repeat)
+                    if problem is not None:
+                        code, body = service.form(problem)
+                        return self._send(code, body)
 
-                password_hash = hash_password(password)
-                try:
-                    username = write_env_hash(service.env, password_hash)
-                    service.reload()
-                except (SystemExit, RuntimeError) as exc:
-                    print("first-visit: refused: %s" % exc, file=sys.stderr, flush=True)
-                    return self._send(500, "The sign-in was not set. Try again.\n",
-                                      ctype="text/plain; charset=utf-8")
+                    password_hash = hash_password(password)
+                    try:
+                        username = write_env_hash(service.env, password_hash)
+                        service.reload()
+                    except (SystemExit, RuntimeError) as exc:
+                        print("first-visit: refused: %s" % exc, file=sys.stderr, flush=True)
+                        # The page, with the notice, not a bare string: the
+                        # visitor can retry the same form (brand round).
+                        notice = "The sign-in was not set. Try again."
+                        page = (service.signin_form(notice=notice) if login
+                                else service.form(notice=notice))
+                        return self._send(500, page[1])
 
+                at = utc_now()
                 code_value = new_recovery_code()
-                state["used_at"] = utc_now()
-                state["signin_set_at"] = state["used_at"]
+                state["first_login_at"] = at
+                # `signin_set_at` is a fact about the .env (DECISION-first-visit-
+                # state §1): the seeded deploy already made it true, and a
+                # classic setup makes it true with the write above. Both keys
+                # land in this one write.
+                state["signin_set_at"] = state.get("signin_set_at") or at
+                if not login:
+                    state["used_at"] = at
                 state["recovery_hash"] = hash_password(normalise_code(code_value))
-                state["recovery_issued_at"] = state["used_at"]
+                state["recovery_issued_at"] = at
                 # The code stays live: the button beside it carries a one-time
                 # download token, so fetching the file does not spend the code
                 # the visitor is being asked to save (ODL-579).
                 download = issue_download(state)
                 save_state(service.state, state)
-            print("first-visit: sign-in set for %r (token %s… spent)"
-                  % (username, state["token_sha256"][:8]), flush=True)
-            # The report's sign-in line describes the .env this POST just
-            # replaced; ask the boot oneshot to rewrite it (ODL-473).
-            service.refresh_report()
+            print("first-visit: %s for %r"
+                  % ("signed in" if login else "sign-in set", username), flush=True)
+            # The report's sign-in line describes the .env the classic setup
+            # just wrote; on the seeded path it already names the owner's hash.
+            if not login:
+                service.refresh_report()
             # The recovery code exists only in this response: no-store, and the
             # state keeps its scrypt hash, never the code.
             code, body = service.done("done", "Your sign-in is set — Odile",
@@ -4515,7 +4649,7 @@ def build_handler(service: FirstVisit):
                 if state is None:
                     return
                 if not state.get("recovery_hash"):
-                    code, body = service.refused(409, False)
+                    code, body = service.refused(409, state)
                     return self._send(code, body)
                 if recovery_status(state, code_value) != "ok":
                     code, body = service.recover_form(
@@ -4546,7 +4680,7 @@ def build_handler(service: FirstVisit):
                     return
                 stored = state.get("recovery_hash")
                 if not isinstance(stored, str) or not stored.startswith("scrypt$"):
-                    code, body = service.refused(409, False)
+                    code, body = service.refused(409, state)
                     return self._send(code, body)
                 if recovery_status(state, code_value) != "ok":
                     code, body = service.reset_form(
@@ -4568,8 +4702,9 @@ def build_handler(service: FirstVisit):
                     service.reload()
                 except (SystemExit, RuntimeError) as exc:
                     print("first-visit: refused: %s" % exc, file=sys.stderr, flush=True)
-                    return self._send(500, "The sign-in was not reset. Try again.\n",
-                                      ctype="text/plain; charset=utf-8")
+                    code, body = service.reset_form(
+                        notice="The sign-in was not reset. Try again.")
+                    return self._send(500, body)
 
                 spend_code(state)
                 save_state(service.state, state)
@@ -4643,6 +4778,7 @@ def summary(state: dict) -> dict:
         "created_at": state["created_at"],
         "used_at": state["used_at"],
         "signin_set_at": state["signin_set_at"],
+        "first_login_at": state.get("first_login_at"),
         "recovery_hash": ("scrypt…" if state.get("recovery_hash") else None),
         "recovery_issued_at": state["recovery_issued_at"],
         "recovery_used_at": state["recovery_used_at"],
@@ -4690,7 +4826,7 @@ def main(argv: list[str] | None = None) -> int:
 if __name__ == "__main__":
     sys.exit(main())
 '''
-FIRST_VISIT_PAGE_SHA256 = "6758b591aafe700a386c50c6cbdff94c245f8a4ac8dfed995dfecc376ba29649"
+FIRST_VISIT_PAGE_SHA256 = "1a9e861586e8a16fcedc0a1c3d85718aabd676c392056a4478dd3160e9778743"
 FIRST_VISIT_PAGE = r'''<!doctype html>
 <html lang="en">
 <head>
@@ -4701,7 +4837,7 @@ FIRST_VISIT_PAGE = r'''<!doctype html>
 <link rel="icon" type="image/png" sizes="32x32" href="/icon-32.png">
 <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png">
 <title>{{TITLE}}</title>
-<meta name="description" content="Set the Odile sign-in on this machine.">
+<meta name="description" content="Sign in to your Odile machine.">
 <meta name="color-scheme" content="light">
 <meta name="robots" content="noindex">
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; img-src 'self' data:; font-src data:; form-action 'self'; base-uri 'none'">
@@ -4772,6 +4908,7 @@ input[aria-invalid=true]{border-bottom-color:var(--error)}
   text-transform:uppercase;letter-spacing:.28em;transition:background .18s,color .18s}
 .download:hover{background:var(--ink-hover);border-color:var(--ink-hover);color:var(--paper)}
 .download:focus-visible{outline:2px solid var(--ink);outline-offset:3px}
+.primary::selection,.download::selection{background:var(--paper);color:var(--ink)}
 .consent{display:flex;align-items:flex-start;gap:12px;margin:16px 0 0;min-height:44px;padding:8px 0;
   font-size:16px;line-height:1.5;color:var(--soft);cursor:pointer;max-width:54ch}
 input[type=checkbox]{appearance:none;-webkit-appearance:none;width:18px;height:18px;margin:4px 0 0;flex:none;
@@ -4810,10 +4947,9 @@ h1,h2,h3,.brand,.mark,.wordmark,.focus{font-family:var(--serif)}
        ODL-462 lands the deck in docs/CLAIMS.md. -->
   <header class="top">{{BRAND}}</header>
 <!--form-->
-  <h1>Set your sign-in</h1>
+  <h1>Choose your sign-in</h1>
   <p class="lede">This is the first visit. Choose the password that opens your Odile workspace.</p>
   <form method="post" action="/first-visit">
-    <input type="hidden" name="t" value="{{TOKEN}}">
     <p class="fixed"><span class="label">Sign-in name</span>{{USERNAME}}</p>
     <div class="field">
       <label for="password">Password</label>
@@ -4828,19 +4964,36 @@ h1,h2,h3,.brand,.mark,.wordmark,.focus{font-family:var(--serif)}
              minlength="16" required{{PASSWORD2_ATTRS}}>
       <!--password2-error-->
     </div>
-    <button class="primary" type="submit">Set the sign-in</button>
+    <!--notice-->
+    <button class="primary" type="submit">Set it</button>
   </form>
-  <p class="foot">Your Odile sign-in is set on your machine at first visit and hashed there. We never see it. Your recovery code comes next; keep it somewhere off this machine.</p>
+  <p class="foot">Your Odile password opens your machine and your account page. It is the only app-layer gate: no 2FA in alpha.0.</p>
 <!--/form-->
+<!--signin-->
+  <h1>Sign in</h1>
+  <p class="lede">The first sign-in shows your recovery code once and offers your recovery file.</p>
+  <form method="post" action="/first-visit">
+    <p class="fixed"><span class="label">Sign-in name</span>{{USERNAME}}</p>
+    <div class="field">
+      <label for="password">Password</label>
+      <input type="password" id="password" name="password" autocomplete="current-password"
+             required{{SIGNIN_PASSWORD_ATTRS}}>
+      <!--password-error-->
+    </div>
+    <!--notice-->
+    <button class="primary" type="submit">Sign in</button>
+  </form>
+  <p class="foot">Your Odile password opens your machine and your account page. You chose it when you registered. It is the only app-layer gate: no 2FA in alpha.0.</p>
+<!--/signin-->
 <!--done-->
   <h1>Your sign-in is set.</h1>
-  <p class="lede">The workspace is open. This page will not open again.</p>
+  <p class="lede">The workspace is open; the recovery code and the file come first.</p>
   <section aria-labelledby="recovery">
     <p class="label" id="recovery">Your recovery code</p>
     <p class="code" id="code">{{RECOVERY}}</p>
     <p>This is the only time the code is shown.</p>
     {{RECOVERY_FILE}}
-    <p class="note">A recovery code and a recovery file are the way back: the code resets your sign-in, the file opens your backup. Your first visit gives you both; keep them off the machine. While the machine is still running, the agent can show it again.</p>
+    <p class="note">A recovery code and a recovery file are the way back: the code resets your sign-in, the file opens your backup. Your first visit gives you both; keep them off the machine. While the machine is still running, the agent can replace the code and show you the new one.</p>
   </section>
   <label class="consent"><input type="checkbox" id="saved"> I have saved the code and the file</label>
   <div class="act">
@@ -4870,6 +5023,7 @@ h1,h2,h3,.brand,.mark,.wordmark,.focus{font-family:var(--serif)}
              minlength="16" required{{PASSWORD2_ATTRS}}>
       <!--password2-error-->
     </div>
+    <!--notice-->
     <button class="primary" type="submit">Set the sign-in</button>
   </form>
   <p class="foot">The code you used stops working; a new one is shown next.</p>
@@ -4882,7 +5036,7 @@ h1,h2,h3,.brand,.mark,.wordmark,.focus{font-family:var(--serif)}
     <p class="code" id="code">{{RECOVERY}}</p>
     <p>This is the only time the new code is shown. The page will not show it again. The code you saved before no longer works.</p>
     {{RECOVERY_FILE}}
-    <p class="note">A recovery code and a recovery file are the way back: the code resets your sign-in, the file opens your backup. Your first visit gives you both; keep them off the machine. While the machine is still running, the agent can show it again.</p>
+    <p class="note">A recovery code and a recovery file are the way back: the code resets your sign-in, the file opens your backup. Your first visit gives you both; keep them off the machine. While the machine is still running, the agent can replace the code and show you the new one.</p>
   </section>
   <label class="consent"><input type="checkbox" id="saved"> I have saved the code and the file</label>
   <div class="act">
@@ -4899,6 +5053,7 @@ h1,h2,h3,.brand,.mark,.wordmark,.focus{font-family:var(--serif)}
              spellcheck="false" required{{CODE_ATTRS}}>
       <!--code-error-->
     </div>
+    <!--notice-->
     <button class="primary" type="submit">Show the download</button>
   </form>
   <p class="foot">Your sign-in does not change. The code you use stops working; a new one is shown next.</p>
@@ -4919,20 +5074,30 @@ h1,h2,h3,.brand,.mark,.wordmark,.focus{font-family:var(--serif)}
 <!--/recovery-done-->
 <!--refused-->
   <h1>This link is closed.</h1>
-  <p class="lede">The sign-in was already set, or the link is not valid.</p>
+  <p class="lede">The sign-in is already set, or the link is not valid.</p>
   <div class="act">
     <a class="primary" href="/">Open your workspace</a>
     <a class="quiet" href="/first-visit/reset">Reset with a recovery code</a>
   </div>
 <!--/refused-->
-<!--refused-unknown-->
-  <!-- Offered when the state has no recovery hash: the reset route answers 409
-       then, so linking it would be a second dead end (ODL-471 follow-up). -->
+<!--refused-set-->
+  <!-- The sign-in is set but no recovery code has been issued yet (the seeded
+       state before its first sign-in). The reset route answers 409 on that
+       state, so the one action is the tokenless page that signs in. -->
   <h1>This link is closed.</h1>
-  <p class="lede">The link is not valid, and no recovery code has been issued on this machine yet.</p>
+  <p class="lede">The sign-in is already set, or the link is not valid.</p>
+  <div class="act">
+    <a class="primary" href="/first-visit">Sign in</a>
+  </div>
+<!--/refused-set-->
+<!--refused-unknown-->
+  <!-- Offered when no sign-in is set (a classic install): the tokenless page
+       is the setup form, so the one action opens it. -->
+  <h1>This link is closed.</h1>
+  <p class="lede">The link is not valid, and no sign-in has been set on this machine yet.</p>
   <section aria-labelledby="what-next">
     <p class="label" id="what-next">What next</p>
-    <p>Open the link in your ready email again — it carries this machine's first-visit address. If it still does not work, write to help@odile.fyi.</p>
+    <p><a href="/first-visit">Open the first-visit page</a> to set this machine's sign-in.</p>
   </section>
 <!--/refused-unknown-->
 </main>
@@ -13354,6 +13519,13 @@ def validate_seed(body: dict, instance_id: str, slug: str | None = None) -> None
         raise SystemExit("error: seed near_api_key is empty")
     if not isinstance(body.get("model"), str) or not body["model"].strip():
         raise SystemExit("error: seed model is empty")
+    # B-once (ODL-925): the sign-in verifier is the account's scrypt string;
+    # the installer writes it into the tenant .env byte for byte, so anything
+    # that is not the installer's own format is refused here rather than
+    # producing a gate nobody can open.
+    sign_in_hash = body.get("sign_in_hash")
+    if not isinstance(sign_in_hash, str) or not SIGNIN_SCRYPT_RE.match(sign_in_hash):
+        raise SystemExit("error: seed sign_in_hash is not an installer-format scrypt string")
     for field in ("support_public_key", "backup_repo_url", "hermes_version"):
         if not isinstance(body.get(field), str) or not body[field].strip():
             raise SystemExit(f"error: seed {field} is empty")
@@ -13411,6 +13583,7 @@ def load_or_fetch_seed(layout: Layout, kit: dict, args: argparse.Namespace,
         return {"slug": slug or "<slug>", "instance_id": instance_id,
                 "near_api_key": "<from seed>", "model": "<from seed>",
                 "support_public_key": "<from seed>", "backup_repo_url": "<from seed>",
+                "sign_in_hash": "<from seed>",
                 "mail_relay": {"host": "<from seed>", "port": 587,
                                "username": "<from seed>", "secret": "<from seed>"},
                 "hermes_version": "<from seed>"}
@@ -13928,21 +14101,27 @@ def ensure_manifest_group(layout: Layout, dry: bool) -> bool:
     return True
 
 
-def first_visit_state(token: str, created_at: str | None = None) -> bytes:
-    """The state body the first-visit service loads: a token hash, nothing else.
+def first_visit_state(token: str, created_at: str | None = None,
+                      signin_set: bool = False) -> bytes:
+    """The state a first visit starts from; the token's SHA-256 only.
 
     The token is minted for the user (ODL-455: the setup token the ready page
     shows), so the guest can hold only its SHA-256. `used_at` is null until the
     POST; a re-run never rewrites this file, so a spent page stays spent.
+    ``signin_set`` is true only for a seeded run: the .env then holds the
+    seed's verifier, which *is* the owner's sign-in, and the state says so
+    before the first visit (ODL-925).
     """
     if not TOKEN_RE.match(token):
         raise SystemExit("error: the first-visit token is not 64 lowercase hex")
+    created = created_at or utc_now()
     state = {
         "version": 1,
         "token_sha256": sha256(token.encode("ascii")),
-        "created_at": created_at or utc_now(),
+        "created_at": created,
         "used_at": None,
-        "signin_set_at": None,
+        "signin_set_at": created if signin_set else None,
+        "first_login_at": None,
         "recovery_hash": None,
         "recovery_issued_at": None,
         "recovery_used_at": None,
@@ -13973,7 +14152,8 @@ def pinned_icons() -> list[tuple[str, str, bytes]]:
     return files
 
 
-def ensure_first_visit(layout: Layout, token: str, dry: bool) -> bool:
+def ensure_first_visit(layout: Layout, token: str, dry: bool,
+                       signin_set: bool = False) -> bool:
     """Write the service, its page, the icon set and — once — the token hash.
 
     The page is the reviewed `web/first-visit.html`, the program is the
@@ -14028,7 +14208,8 @@ def ensure_first_visit(layout: Layout, token: str, dry: bool) -> bool:
             "error: --first-visit needs a one-time token: pass --first-visit-token, "
             "--token, or a recovery kit that carries setup_token"
         )
-    changed |= ensure_file(layout.first_visit_state, first_visit_state(token), 0o600,
+    changed |= ensure_file(layout.first_visit_state,
+                           first_visit_state(token, signin_set=signin_set), 0o600,
                            *current_ids(layout), dry,
                            detail="(token sha256 only; no plaintext)")
     return changed
@@ -14531,13 +14712,17 @@ def ensure_skin(layout: Layout, dry: bool) -> bool:
 
 
 def first_visit_signin_set(layout: Layout) -> bool:
-    """True once the first-visit page has written the owner's own sign-in.
+    """True once a writer of the owner's sign-in has recorded it.
 
-    The page records ``signin_set_at`` in the state it owns. Before that
-    timestamp every hash in the tenant .env is a placeholder — the image's, the
-    first boot's, or an earlier run's — and every boot of the installer must
-    replace it. After it, the hash is the owner's and a boot must keep it, or
-    the first-visit sign-in would change on every reboot.
+    The page's POST records ``signin_set_at`` in the state it owns, and so does
+    a seeded first boot (the seed's verifier *is* the owner's sign-in) and a
+    deploy that installs one — ``docs/security/DECISION-first-visit-state.md``
+    §1. The key therefore means "the .env holds a usable sign-in", not "the
+    page wrote it". Before that timestamp every hash in the tenant .env is a
+    placeholder — the image's, the first boot's, or an earlier run's — and
+    every boot of the installer must replace it. After it, the hash is the
+    owner's and a boot must keep it, or the sign-in would change on every
+    reboot.
     """
     try:
         state = json.loads(layout.first_visit_state.read_text(encoding="utf-8"))
@@ -14546,20 +14731,54 @@ def first_visit_signin_set(layout: Layout) -> bool:
     return isinstance(state, dict) and bool(state.get("signin_set_at"))
 
 
+def stamp_signin_set(layout: Layout, dry: bool) -> bool:
+    """Record that the .env now holds the owner's sign-in (ODL-925).
+
+    B-once: the installer writes the seed's verifier, so the state's meaning —
+    "the .env holds a usable sign-in the owner can use"
+    (``docs/security/DECISION-first-visit-state.md`` §1) — is true when this
+    run ends, and the page must serve the login form, not the classic setup.
+    Only ``signin_set_at`` moves; a state that already carries it is untouched,
+    and every other field is kept byte for byte.
+    """
+    path = layout.first_visit_state
+    try:
+        state = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    if not isinstance(state, dict) or not TOKEN_RE.match(str(state.get("token_sha256", ""))):
+        return False
+    if state.get("signin_set_at"):
+        return False
+    state["signin_set_at"] = utc_now()
+    print(f"{'would stamp' if dry else 'stamp':<12} {path} "
+          "(signin_set_at: the seed's verifier is the owner's sign-in)")
+    if dry:
+        return True
+    write_atomic(path, (json.dumps(state, indent=2, sort_keys=True) + "\n").encode("utf-8"),
+                 0o600, *current_ids(layout))
+    return True
+
+
 def ensure_env(layout: Layout, password: str | None, username: str,
-               dry: bool, first_visit: bool = False) -> tuple[bool, str | None]:
+               dry: bool, first_visit: bool = False,
+               sign_in_hash: str | None = None) -> tuple[bool, str | None]:
     """Write the .env; return (changed, the plaintext password when known).
 
     The plaintext is only needed for this run's sign-in smoke. On a re-run with
     an existing hash and no --signin-password it is unknown, so the smoke
     re-checks the gate only when the caller supplied it.
 
-    Under ``--first-visit`` the hash is a placeholder for a discarded random
-    password until the first-visit page writes the owner's: nobody can sign in
-    before that, which is the strict bar (the installer never knows the
-    sign-in). The placeholder is rewritten on every run before the visit, even
-    when the allowlist already looks valid, so an image hash of a public
-    password cannot survive the first boot (ODL-521). The session-signing
+    Under ``--first-visit`` the hash is the sign-in the seed carries: the
+    registration password's scrypt verifier (B-once, ODL-925), written before
+    the Webapp's first boot so the first visit is a login. A state whose
+    ``signin_set_at`` is set already says the .env holds the owner's sign-in,
+    so the file is kept. A run with **no** seeded verifier (a classic install)
+    writes a placeholder for a discarded random password until the first-visit
+    page writes the owner's: nobody can sign in before that. The placeholder is
+    rewritten on every run before the visit, even when the allowlist already
+    looks valid, so an image hash of a public password cannot survive the first
+    boot (ODL-521). The session-signing
     secret is kept: the first-visit write must not rotate it (ODL-522 owns the
     per-machine secret).
     """
@@ -14599,12 +14818,21 @@ def ensure_env(layout: Layout, password: str | None, username: str,
     if dry:
         return True, password
     password_hash = values.get("HERMES_DASHBOARD_BASIC_AUTH_PASSWORD_HASH") or ""
-    if first_visit and not signin_set:
-        # A real scrypt hash of a password nobody knows: the gate is shut,
-        # and the first-visit page is the only way to open it. The plaintext
-        # is generated and discarded in one expression, never printed. This
-        # runs even when an existing (image) hash is present: otherwise the
-        # image's public bench password would survive the first boot.
+    if first_visit and not signin_set and sign_in_hash:
+        # B-once: the seed carries the account's own verifier, and this is the
+        # one write that puts it in front of the gate before the first visit.
+        # The plaintext is never here — only the scrypt string.
+        password = None
+        password_hash = sign_in_hash
+        print("write        the sign-in hash is the seed's verifier "
+              "(the password chosen at registration)")
+    elif first_visit and not signin_set:
+        # A classic install with no seed: a real scrypt hash of a password
+        # nobody knows; the gate is shut, and the first-visit page is the only
+        # way to open it. The plaintext is generated and discarded in one
+        # expression, never printed. This runs even when an existing (image)
+        # hash is present: otherwise the image's public bench password would
+        # survive the first boot.
         password = None
         password_hash = hash_password(generate_password())
         print("write        the sign-in hash is a placeholder until first visit")
@@ -14620,6 +14848,10 @@ def ensure_env(layout: Layout, password: str | None, username: str,
     if outside or seat:
         raise SystemExit(f"error: rendered .env violates the allowlist (outside={outside}, seat={seat})")
     write_atomic(target, desired.encode("utf-8"), 0o600, *user_ids(layout))
+    if first_visit and not signin_set and sign_in_hash:
+        # The state's meaning follows the .env: a seeded verifier is a usable
+        # sign-in, so the page serves the login form from the first boot.
+        stamp_signin_set(layout, dry)
     return True, password
 
 
@@ -16253,12 +16485,19 @@ def self_test() -> int:
         body = {"slug": "odl-test", "instance_id": "srv-1", "near_api_key": "near-x",
                 "model": "m", "support_public_key": "ssh-ed25519 AAA",
                 "backup_repo_url": "sftp:x", "mail_relay": {"host": "h", "port": 587,
-                "username": "u", "secret": "s"}, "hermes_version": "v0.23.0"}
+                "username": "u", "secret": "s"}, "hermes_version": "v0.23.0",
+                "sign_in_hash": "scrypt$16384$8$1$c2FsdA==$ZGs="}
         validate_seed(body, "srv-1", "odl-test")
-        check.ok("the eight-field seed validates", True)
+        check.ok("the nine-field seed validates", True)
         check.ok("a missing field is rejected", _raises(SystemExit, validate_seed,
                                                        {k: v for k, v in body.items() if k != "model"},
                                                        "srv-1"))
+        check.ok("a seed without sign_in_hash is rejected by name",
+                 _raises(SystemExit, validate_seed,
+                         {k: v for k, v in body.items() if k != "sign_in_hash"}, "srv-1"))
+        check.ok("a sign_in_hash that is not an installer scrypt string is rejected",
+                 _raises(SystemExit, validate_seed,
+                         {**body, "sign_in_hash": "plaintext-password"}, "srv-1"))
         check.ok("a password field is rejected",
                  _raises(SystemExit, validate_seed, {**body, "password": "x"}, "srv-1"))
         check.ok("a wrong instance is rejected", _raises(SystemExit, validate_seed, body, "srv-2"))
@@ -16809,6 +17048,7 @@ def self_test() -> int:
                     "support_public_key": "ssh-ed25519 AAAA test@odile.fyi",
                     "backup_repo_url": "sftp:odile-backup@backup.odile.fyi:/tenants/odl-test",
                     "hermes_version": "2026.11.1",
+                    "sign_in_hash": "scrypt$16384$8$1$c2FsdA==$ZGs=",
                     "mail_relay": {"host": "smtp.mail.odile.fyi", "port": 587,
                                    "username": "odl-test@mail.odile.fyi", "secret": "s"},
                 }
@@ -16956,13 +17196,14 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--instance-id", help="Servury instance id, if not using a kit file")
     parser.add_argument("--pubkey", help="Ed25519 public key (PEM) outside this file")
     parser.add_argument("--signature", help="detached signature (default: this file + .sig)")
-    parser.add_argument("--signin-password", help="the Odile sign-in password (16+); blank generates 32")
+    parser.add_argument("--signin-password", help="the Odile sign-in password (16+); blank generates 32. Ignored under --first-visit, where the seed carries the password chosen at registration")
     parser.add_argument("--first-visit", action="store_true",
-                        help="set the sign-in on the guest at first visit (no prompt; the "
-                             "Webapp stays shut until the page writes the hash)")
+                        help="the first visit is a login: write the seed's sign-in verifier "
+                             "before the Webapp's first boot (no prompt)")
     parser.add_argument("--first-visit-token",
-                        help="the one-time token that gates the page (default: the kit's "
-                             "setup_token). Stored on the guest as SHA-256 only")
+                        help="the setup token for the seed exchange (default: the kit's "
+                             "setup_token). Stored on the guest as SHA-256 only; no page "
+                             "carries it")
     parser.add_argument("--first-visit-port", type=int,
                         help=f"first-visit service loopback port (tenant default {FIRST_VISIT_PORT})")
     parser.add_argument("--verify-port", type=int,
@@ -17061,8 +17302,9 @@ def dry_run(args: argparse.Namespace) -> int:
           f"EnvironmentFile= on {layout.unit_target}")
     print(f"would write {layout.mail_ca} (the relay's certificate the seed pins, 0644)")
     if args.first_visit:
-        print(f"would write a placeholder sign-in hash; the first-visit page at "
-              f"https://{site_name(layout, slug)}/first-visit sets the real one")
+        print(f"would write the seed's sign-in verifier (the password chosen at "
+              f"registration); the first visit signs in at "
+              f"https://{site_name(layout, slug)}/first-visit")
         print(f"would write {layout.first_visit_source}, {layout.first_visit_page}, "
               f"{layout.first_visit_state} (token sha256 only) and {layout.first_visit_unit}")
         print(f"would listen on 127.0.0.1:{layout.first_visit_port} and proxy /first-visit* to it")
@@ -17234,14 +17476,17 @@ def tenant_main(args: argparse.Namespace) -> int:
     changed |= config_changed
     skin_changed = ensure_skin(layout, args.dry_run)
     changed |= skin_changed
+    seeded_signin = seed.get("sign_in_hash") if args.first_visit else None
     env_changed, password = ensure_env(layout, args.signin_password, args.signin_username,
-                                       args.dry_run, first_visit=args.first_visit)
+                                       args.dry_run, first_visit=args.first_visit,
+                                       sign_in_hash=seeded_signin)
     changed |= env_changed
     first_visit_token = (args.first_visit_token or kit.get("setup_token")
                          or args.token or "")
     first_visit_enabled = bool(args.first_visit) or layout.first_visit_state.is_file()
     if first_visit_enabled:
-        changed |= ensure_first_visit(layout, first_visit_token, args.dry_run)
+        changed |= ensure_first_visit(layout, first_visit_token, args.dry_run,
+                                      signin_set=bool(seeded_signin))
         changed |= ensure_verify_surface(layout, args.dry_run,
                                          verdict.boot_key_b64 if verdict else "")
     units_changed = ensure_units(layout, slug, args.dry_run, first_visit=first_visit_enabled,
@@ -17311,7 +17556,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     if args.first_visit and args.signin_password:
         print("error: --first-visit and --signin-password are mutually exclusive: the "
-              "first-visit page sets the password, the installer never learns it",
+              "seed carries the sign-in verifier, the installer never learns the password",
               file=sys.stderr)
         return 2
     if args.self_test:

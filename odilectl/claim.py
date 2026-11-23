@@ -151,9 +151,10 @@ SETTLED_STATES = ("installed", "active", "waiting_for_owner", "churned")
 # The ready email is the one public surface this module writes. The subject is
 # BRAND.md's; the body is `templates/emails/ready.txt`: the machine URL and the
 # expected measurement as printed values, then the one action — the machine's
-# first-visit URL, which carries the single-use setup token — and one navigation
-# link to the guide. The strict bar removed the four terminal commands; the
-# token travels only in the action URL, never as a bare value.
+# tokenless first-sign-in page (B-once, ODL-925: sign in with the password
+# chosen at registration) — and one navigation link to the guide. The strict
+# bar removed the four terminal commands; the setup token is the machine's seed
+# badge and the rebuild-seal key, and no message or kit prints it.
 READY_SUBJECT = "Your machine is waiting."
 # The live mail runbook's transactional sender (ODL-102): mail.odile.fyi is
 # what DKIM signs and SPF authorises. BRAND.md's hello@odile.fyi predates that
@@ -839,20 +840,21 @@ def expected_measurement(config: Config) -> str:
     return value
 
 
-def ready_body(*, url: str, measurement: str, first_visit_url: str,
+def ready_body(*, url: str, measurement: str,
                guide_url: str = READY_GUIDE_URL) -> str:
     """The ready email's plain-text body from `templates/emails/ready.txt`.
 
     The machine URL and the expected measurement are printed values. The one
-    action is the first-visit URL, which carries the single-use setup token;
-    the guide is the one navigation link. No command, no key, no passphrase.
+    action names the machine's tokenless first-visit page (B-once, ODL-925):
+    the user signs in with the password chosen at registration, and no setup
+    token travels in the message. The guide is the one navigation link. No
+    command, no key, no passphrase.
     """
     template = READY_TEMPLATE.read_text(encoding="utf-8")
     return (
         template
         .replace("{{URL}}", url)
         .replace("{{MEASUREMENT}}", measurement)
-        .replace("{{FIRST_VISIT}}", first_visit_url)
         .replace("{{GUIDE}}", guide_url)
     )
 
@@ -890,9 +892,10 @@ def render_recovery_kit(
 ) -> str:
     """Render the recovery kit from the values this run minted.
 
-    The kit is the machine's facts and the first-visit link; the setup token
-    travels only inside that URL, never as a bare value (the strict-bar ready
-    email does the same). ``account_host`` is the account site the invitation
+    The kit is the machine's facts and the tokenless first-sign-in page
+    (ODL-925); the setup token is no longer a kit value — its two jobs are the
+    seed exchange and the rebuild seal, and neither is printed. ``account_host``
+    is the account site the invitation
     email names (the operator's ``account_host`` config key): when it is set the
     account-reset sentence prints ``<host>/forgot``; when it is absent the kit
     keeps the sentence that points at the invitation email instead.
@@ -1184,10 +1187,11 @@ def provision_tenant(
 
         host = f"{slug}.{zone}"
         url = f"https://{host}"
-        # The action the user takes: set the sign-in on the machine. The
-        # single-use setup token travels only inside this URL, like the invite's
-        # claim token; neither the message nor the kit prints it as a bare value.
-        first_visit_url = f"{url}/first-visit?t={token}"
+        # The action the user takes: sign in to the machine (B-once, ODL-925).
+        # The page is tokenless; the setup token stays the machine's seed badge
+        # and the rebuild-seal key, and neither the message nor the kit prints
+        # it.
+        first_visit_url = f"{url}/first-visit"
         kit_text = render_recovery_kit(
             slug=slug,
             ipv4=ipv4,
@@ -1204,8 +1208,7 @@ def provision_tenant(
             # recorded it; unset keeps the kit's invitation-email sentence.
             account_host=config.get("account_host"),
         )
-        body = ready_body(url=url, measurement=measurement,
-                          first_visit_url=first_visit_url)
+        body = ready_body(url=url, measurement=measurement)
         queued = outbox.queue(
             slug=slug,
             recipient=tenant["email"],

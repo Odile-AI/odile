@@ -109,7 +109,7 @@ if [ -s "$DONE" ] && [ -z "$FORCE" ]; then
 fi
 
 # A machine that ran this script before the marker existed has the run in its
-# own log. Backfill rather than run the single-use first-visit token again: a
+# own log. Backfill rather than run the token's seed exchange again: a
 # second run of the installer is exactly the rewrite this marker prevents.
 if [ -z "$FORCE" ] && [ -s "$LOG" ] && grep -q '^=== odile-release-setup ' "$LOG" 2>/dev/null; then
     LAST=$(grep '^=== odile-release-setup ' "$LOG" | tail -n 1)

@@ -1,8 +1,8 @@
 {
   "artifacts": {
     "installer": {
-      "sha256": "08245c49910590ed7f3da5035bd11775f5b5343c1e2ebfcccb308032dc2f2845",
-      "size": 1563412,
+      "sha256": "b4518c9597727b950d230d7f432387867667c91e5ad4584758b41655396b6621",
+      "size": 1576201,
       "url": "odile_install.py"
     },
     "skills": {
@@ -14,14 +14,14 @@
   "boot": {
     "kernel": "6.12.115+deb13.1-amd64"
   },
-  "generated_at": "2026-11-23T15:05:00Z",
+  "generated_at": "2026-11-23T16:00:00Z",
   "manifest": {
-    "sha256": "08fd734da26d7f7eccdd7c04b8808f9130f261018b3550591325c067ba5c2200",
+    "sha256": "0b77934fc8dc72bf296b18f88a04e0195aa048c3fc421b7ce7c70b3deeb3e3f7",
     "signature_url": "manifest.json.sig",
     "url": "manifest.json"
   },
-  "notes": "t_fc412bd9: the tenant /verify page's header carried the 32 px wordmark with a 24 px bottom margin at \u2264560, leaving its box 12.0 px above the h1 \u2014 4 px under BRAND.md \u00a7Name and mark's 16 px clear space. The phone rule is now 32 px (the sheet's 4 px scale; 28 was off-scale), which measures 20.0 px at 390, 320 and 1440 with no overflow, both from the checked-out template and from the page verify/verify.py renders. installer/embed_verify.py re-pinned templates/verify.html (VERIFY_TEMPLATE and its sha256) and this surgical re-cut moves installer_sha256, the manifest and this document; no other embedded program, skill row or install-script pin moved.",
+  "notes": "t_fc412bd9 (merged over ODL-925's -3): the tenant /verify page's header carried the 32 px wordmark with a 24 px bottom margin at \u2264560, leaving its box 12.0 px above the h1 \u2014 4 px under BRAND.md \u00a7Name and mark's 16 px clear space. The phone rule is now 32 px (the sheet's 4 px scale; 28 was off-scale), which measures 20.0 px at 390, 320 and 1440 with no overflow, from the checkout template, from the page verify/verify.py renders and from the bytes embedded in this installer. installer/embed_verify.py re-pinned templates/verify.html (VERIFY_TEMPLATE and its sha256) on the head that merges ODL-925's -3; this surgical re-cut moves installer_sha256, the manifest and this document, and no other embedded program, skill row or install-script pin moved.",
   "product": "odile",
-  "release": "2026.11.23-2",
+  "release": "2026.11.23-4",
   "schema": 1
 }

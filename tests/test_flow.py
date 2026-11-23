@@ -577,8 +577,13 @@ class Flow(unittest.TestCase):
         self.assertEqual(res.status, 200)
         self.assertIn("text/html", res.getheader("Content-Type") or "")
         self.assertIn("<title>First visit — Odile</title>", body)
-        self.assertIn("<h1>Set your sign-in</h1>", body)
-        self.assertIn("This is the first visit. Choose the password that opens your Odile workspace.", body)
+        # B-once (ODL-925): the first visit is a login; the preview mirrors it.
+        self.assertIn("<h1>Sign in</h1>", body)
+        self.assertIn("The first sign-in shows your recovery code once and offers "
+                      "your recovery file.", body)
+        self.assertIn("Your Odile password opens your machine and your account page. "
+                      "You chose it when you registered. It is the only app-layer "
+                      "gate: no 2FA in alpha.0.", body)
         self.assertIn("Read-only preview", body)
         # Read-only means exactly that: no form, no field, no script.
         self.assertNotIn("<form", body.lower())
