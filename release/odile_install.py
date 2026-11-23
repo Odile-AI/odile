@@ -6264,7 +6264,7 @@ def main(argv: list[str] | None = None) -> int:
 if __name__ == "__main__":
     sys.exit(main())
 '''
-VERIFY_TEMPLATE_SHA256 = "548bc2701344dcd7b2943a34f1a5be4e11b01588be45c8f825629500871bcd80"
+VERIFY_TEMPLATE_SHA256 = "1ce729c8e2d7340b20eef5c10dd95460995784074cbad1dd5d7b604091e0b0ea"
 VERIFY_TEMPLATE = r'''<!doctype html>
 <html lang="en">
 <head>
@@ -6429,7 +6429,7 @@ https://odile.fyi/releases/m1/odile-tenant.efi
     <ol class="gaps">
       <li><span class="num" aria-hidden="true">1</span><div><strong>The app layer is not hardware-measured yet.</strong> Measured boot covers firmware, kernel, initramfs and command line. Hermes, the installer and the skills are pinned by a signed manifest and a published hash, but the CPU does not measure them. The installer is signed, inspectable and audited at handoff for keys, passwords and keyslots; only a measured image can prove there is no hidden backdoor. The manifest records the machine as provisioned; anything you install afterwards is yours.</div></li>
       <li><span class="num" aria-hidden="true">2</span><div><strong>The console passes through the host.</strong> Serial and VNC can be watched. Never type a secret there; the sign-in goes over TLS to the guest, after the report checks out.</div></li>
-      <li><span class="num" aria-hidden="true">3</span><div><strong>Odile keeps three powers.</strong> We can stop or delete the machine (availability, not confidentiality); we control DNS for your slug (pin the certificate fingerprint in your recovery file — the one your machine first served; a renewal changes it) and we can set a different boot image from the panel (detectable via the measurement — compare it to the one in your ready email before you set your sign-in).</div></li>
+      <li><span class="num" aria-hidden="true">3</span><div><strong>Odile keeps three powers.</strong> We can stop or delete the machine (availability, not confidentiality); we control DNS for your slug (pin the certificate fingerprint in your recovery file — the one your machine first served; a renewal changes it) and we can set a different boot image from the panel (detectable via the measurement — compare it to the one in your ready email before you sign in).</div></li>
     </ol>
   </section>
 
@@ -9753,7 +9753,7 @@ Never ask again after a skip. Never ask "are you sure?".
     (
         "odile-help",
         "skills/odile-help/SKILL.md",
-        "040d8de008b7ac5a5c2926598ec5f170ea4627cdc18755d2b631b0ef7ebe17f2",
+        "62fac689f1e631e748eb7ed04586a12c4ab74e174357c4f55e924269aa21faa7",
         r'''---
 name: odile-help
 description: Odile price, bill, subscription? odile.fyi/faq · odile-diag.
@@ -9814,17 +9814,17 @@ nothing is broken.
 
 ### 2. The Odile sign-in is lost
 
-> A lost Odile sign-in is reset on the machine with your recovery code. There
-> is no HQ reset. Open https://<slug>.odile.fyi/first-visit/reset, enter the
-> code you saved from the first visit and choose a new password; a new code is
-> shown once.
+> A lost Odile sign-in is reset on the machine with your recovery code;
+> HQ cannot reset your machine's sign-in. Open
+> https://<slug>.odile.fyi/first-visit/reset. Enter the recovery code you saved
+> at your first sign-in, then choose a new sign-in.
 >
-> If the recovery code is lost too, reply and the machine is rebuilt.
+> If you lose your recovery code there is no other way back: you start a new
+> account, and a backup is the only way to bring the files.
 
-Your Odile sign-in is set on your machine at first visit and hashed there. We
-never see it. A recovery code and a recovery file are the way back: the code
-resets your sign-in; the recovery file holds the backup password and the
-certificate fingerprint.
+The password you chose is the only sign-in. A recovery code and a recovery file
+are the way back: the code resets your sign-in; the recovery file holds the
+backup password and the certificate fingerprint.
 
 ### 3. The machine dies
 
@@ -9855,10 +9855,11 @@ words above is one I invented.
 
 ### 5. "Can you log in to my machine?"
 
-> No one at Odile can log in to a tenant machine. The only sign-in is yours. A
-> support grant is a time-boxed door into the running machine. It ends for new
-> logins when it expires or you revoke it; an open session keeps running until
-> it exits. A root shell, for 24 hours — only when you grant it.
+> No one at Odile holds a key to your machine: no standing key, no root
+> password, no disk passphrase. A support grant is a time-boxed door into the
+> running machine. It ends for new logins when it expires or you revoke it; an
+> open session keeps running until it exits. A root shell, for 24 hours — only
+> when you grant it.
 >
 > A grant is a handover, not a peek. It can read the mounted disk, every file,
 > my memory and past prompts, the sign-in hash, and the backup password if the
@@ -9873,9 +9874,8 @@ Say it in this order, and stop when the problem is solved:
 2. Ask me; I run on this machine and can read the logs.
 3. `odile-diag` — the user emails the bundle to help@odile.fyi.
 4. `odile-support grant --hours 24` — prints the expiry and the revoke command.
-5. A rebuild: last resort when the recovery code is lost or the disk will not
-   open. The machine is rebuilt and last night's backup is restored from the
-   recovery file.
+5. A rebuild: last resort when the disk will not open. The machine is rebuilt
+   and last night's backup is restored from the recovery file.
 
 If a command is not on the machine yet, say so and gather the same facts by
 hand: versions, disk usage, service state and the last 200 log lines.
