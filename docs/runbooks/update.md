@@ -1115,7 +1115,7 @@ manifest `7031d4a0…`). The id ledger: `-4` is t_509f85e4's support-grant help 
 (15:30Z), `-5` was this card's pre-review cut (16:35Z), and `-6` is later than
 every cut by `generated_at` (17:45Z).
 
-**The `2026.11.23-5` cut (the ODL-925 follow-up: the first-run close names no
+**The `2026.11.23-6` cut (the ODL-925 follow-up: the first-run close names no
 unlock).** The tenant first-run skill's closing sentence said a job "runs when
 you unlock" — false under the sealed boot, where the disk unlocks on the boot the
 user verifies and the machine comes back by itself. It now carries the deck's
@@ -1128,15 +1128,18 @@ the release cut from a fresh scratch root that installer made (29/29; run 2
 `a62b2a56…` (1,576,241 bytes), manifest `be13b130…` (50,044 bytes; its diff
 against `-4` is `installer_sha256`, the `odile-first-run` tree row and
 `generated_at`), skills `9a10a63e…` (852,667 bytes, rebuilt from the root),
-`release.json` `50409ea3…` (1,187 bytes) naming `2026.11.23-5` at
-`2026-11-23T22:45:00Z`, `--verify-signature` OK on the checkout's installer
-(`signature: OK (sha256 a62b2a56…)`), a one-byte edit `a13bbad2…` (1,576,242
-bytes) and `signature: BAD`, exit 3, and `tools/recut_release.py --check` eleven
-`ok` lines. Committed, not deployed: measured 2026-11-23T22:40:22Z, the URL
-serves the deployed `2026.11.23-4` (installer `84860db3…`, 1,576,209 bytes;
-manifest `7a217601…`). The id ledger: `-4` is ODL-929's `/verify`-page and
-installed-help cut (16:45Z), and `-5` is later than every cut by `generated_at`
-(22:45Z) and on no other ref.
+`release.json` `487f6b72…` (1,187 bytes) naming `2026.11.23-6` at
+`2026-11-23T23:52:00Z` (a re-cut of the same artifacts: only the release
+document moved and was re-signed, so no fresh-root re-run), `--verify-signature`
+OK on the checkout's installer (`signature: OK (sha256 a62b2a56…)`), a one-byte
+edit `a13bbad2…` (1,576,242 bytes) and `signature: BAD`, exit 3, and
+`tools/recut_release.py --check` eleven `ok` lines. Committed, not deployed:
+measured 2026-11-23T23:51Z, the URL serves the deployed `2026.11.23-4`
+(installer `84860db3…`, 1,576,209 bytes; manifest `7a217601…`). The id ledger:
+`-4` is ODL-929's `/verify`-page and installed-help cut (16:45Z); `-5` is
+t_fc412bd9's `/verify` header-margin cut (21:01:30Z; installer `580f2ad3…`,
+manifest `e97266f0…`, `release.json` `4e803fdb…`, 1,748 bytes); and
+`2026.11.23-6` is later than every cut by `generated_at` (23:52Z).
 
 **The `2026.11.23-4` cut (ODL-929: the guest `/verify` page and the installed
 help are re-cut).** Recorded here when the follow-up re-quoted the pair: the

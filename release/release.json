@@ -14,7 +14,7 @@
   "boot": {
     "kernel": "6.12.115+deb13.1-amd64"
   },
-  "generated_at": "2026-11-23T22:45:00Z",
+  "generated_at": "2026-11-23T23:52:00Z",
   "manifest": {
     "sha256": "be13b1304cd90a83a1fbbe494e6a23742e2d9474c6daf2c4509c3dbeb19cf4bf",
     "signature_url": "manifest.json.sig",
@@ -22,6 +22,6 @@
   },
   "notes": "ODL-925 follow-up (A2): the tenant first-run skill's close sentence is the deck's repeating-job row (A11) \u2014 \"and if it was due while the machine was down, it runs when the machine comes back up.\" The retired clause promised a run at the unlock; the sealed boot has no unlock step. The installer re-embeds skills/odile-first-run/SKILL.md (d95b5061\u2026, 8,167 bytes); the manifest moves installer_sha256 and the odile-first-run row, and skills.tar.gz is rebuilt from the fresh root.",
   "product": "odile",
-  "release": "2026.11.23-5",
+  "release": "2026.11.23-6",
   "schema": 1
 }
