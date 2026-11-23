@@ -1112,8 +1112,10 @@ def provision_tenant(
     adopted = False
     staged = False
     dns_client = dns_client or _dns_client(config)
-    zone = dns_client.zone
-    name = record_name(slug, zone)
+    # The tenant's own name (its URL and its A record) is `tenant_domain` when
+    # the config sets it; the client still talks to `dns_zone`.
+    domain = dns_module.tenant_zone(config)
+    name = record_name(slug, domain)
     dns_action: str | None = None
     dns_record_id: str | None = None
     dns_written = False
@@ -1185,7 +1187,7 @@ def provision_tenant(
         )
         con.commit()
 
-        host = f"{slug}.{zone}"
+        host = f"{slug}.{domain}"
         url = f"https://{host}"
         # The action the user takes: sign in to the machine (B-once, ODL-925).
         # The page is tokenless; the setup token stays the machine's seed badge
@@ -1637,7 +1639,7 @@ def _provision_actions(slug: str, config: Config) -> list[dict[str, Any]]:
         {"action": "provider.create", "hostname": slug, "plan_id": _plan_id(config),
          "days": _days(config), "snp": True, "fde": True, "measured": True},
         {"action": "provider.poll", "until": "active"},
-        {"action": "dns.create", "name": f"{slug}.{config.get('dns_zone') or DEFAULT_ZONE}",
+        {"action": "dns.create", "name": f"{slug}.{dns_module.tenant_zone(config)}",
          "ttl": PROVISION_TTL, "proxied": False},
         {"action": "seed.token.rotate", "slug": slug, "ttl_hours": SETUP_TOKEN_TTL_HOURS},
         {"action": "kit.render", "slug": slug, "release": _release(config)},

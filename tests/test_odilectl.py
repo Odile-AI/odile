@@ -1387,6 +1387,152 @@ class FixtureFlowTest(TempConfigMixin):
             ["destroyed", "claimed", "provisioning", "first_boot"],
         )
 
+    def _web_row_for(self, db: Path, slug: str, *, server_id: str | None = None) -> None:
+        """One app `tenants` row as the claim path leaves it (no machine yet)."""
+        con = sqlite3.connect(db)
+        try:
+            app.migrate(con)
+            con.execute(
+                "INSERT INTO tenants (slug, email, state, ssh_public_key, server_id,"
+                " claimed_at, created_at) VALUES (?, ?, 'claimed', ?, ?,"
+                " '2026-11-23T17:00:00Z', '2026-11-23T17:00:00Z')",
+                (slug, f"{slug}@example.com", KEY_TEXT, server_id),
+            )
+            con.commit()
+        finally:
+            con.close()
+
+    def test_release_dry_run_names_the_columns_and_writes_nothing(self):
+        config_path = self.make_config()
+        db = self._ready_row(config_path)
+        code, out, err = run_cli(
+            ["release", SLUG, "--reason", "handover", "--dry-run", "--json"],
+            config_path,
+            provider_factory=explode_provider,
+        )
+        self.assertEqual(code, 0, err)
+        payload = json.loads(out)
+        self.assertTrue(payload["dry_run"])
+        self.assertEqual(
+            [action["action"] for action in payload["actions"]],
+            ["state.release", "web.release"],
+        )
+        self.assertEqual(payload["actions"][0]["from"], "ready")
+        self.assertEqual(payload["actions"][0]["released"]["server_id"], "srv-old-0001")
+        self.assertEqual(payload["actions"][1]["cleared"], ["server_id", "ipv4"])
+        self.assertTrue(
+            any("not terminated" in note for note in payload["notes"]), payload["notes"]
+        )
+        store = state.StateStore.open(db)
+        try:
+            tenant = store.get(SLUG)
+        finally:
+            store.close()
+        self.assertEqual((tenant.state, tenant.server_id), ("ready", "srv-old-0001"))
+        con = sqlite3.connect(db)
+        con.row_factory = sqlite3.Row
+        self.addCleanup(con.close)
+        row = con.execute("SELECT server_id FROM tenants WHERE slug = ?", (SLUG,)).fetchone()
+        self.assertEqual(row["server_id"], "srv-old-0001", "a dry run writes nothing")
+
+    def test_a_released_machine_records_on_the_next_tenants_row(self):
+        """The handover the drill did by hand: free A, then B records the box.
+
+        `tenant_state.server_id` and `tenants.server_id` are UNIQUE, so without
+        `release` this provision dies `sqlite3.IntegrityError` after its writes
+        have started (the ODL-348 drill, evidence §2).
+        """
+        config_path = self.make_config()
+        db = self._ready_row(config_path)
+        other = "odl-348b2c"
+        self._web_row_for(db, other)
+
+        code, out, err = run_cli(
+            ["release", SLUG, "--reason", f"handover to {other}", "--apply", "--json"],
+            config_path,
+            provider_factory=explode_provider,
+        )
+        self.assertEqual(code, 0, err)
+        payload = json.loads(out)
+        self.assertFalse(payload["dry_run"])
+        self.assertEqual(payload["state"], "destroyed")
+        self.assertEqual(payload["released"]["server_id"], "srv-old-0001")
+        self.assertEqual(payload["web_row"], "cleared")
+
+        # A second run converges: nothing moves and it says so.
+        again = run_cli(
+            ["release", SLUG, "--apply", "--json"],
+            config_path,
+            provider_factory=explode_provider,
+        )
+        self.assertEqual(again[0], 0, again[2])
+        second = json.loads(again[1])
+        self.assertFalse(second["changed"])
+        self.assertEqual(second["web_row"], "already clear")
+
+        transport = RecordedTransport(
+            {
+                ("GET", "servers"): [
+                    (200, servers_response(machine_row(id="srv-old-0001", hostname=other)))
+                ]
+            }
+        )
+        code, out, err = run_cli(
+            [
+                "provision",
+                other,
+                "--key",
+                str(self.key_file()),
+                "--pin",
+                str(self.pin_file()),
+                "--interval",
+                "0",
+                "--apply",
+                "--json",
+            ],
+            config_path,
+            provider_factory=lambda _config: servury.ServuryProvider(TEST_KEY, transport=transport),
+        )
+        self.assertEqual(code, 0, err)
+        provision = json.loads(out)
+        self.assertFalse(provision["created"])
+        self.assertEqual(provision["machine"]["server_id"], "srv-old-0001")
+        self.assertEqual(provision["machine"]["hostname"], other)
+        self.assertEqual(provision["tenant_state"], "first_boot")
+        self.assertEqual(provision["web_row"], "repointed")
+        self.assertEqual([call["action"] for call in transport.calls], ["servers"])
+
+        store = state.StateStore.open(db)
+        try:
+            old = store.get(SLUG)
+            new = store.get(other)
+        finally:
+            store.close()
+        self.assertEqual((old.state, old.server_id), ("destroyed", None))
+        self.assertEqual(old.detail["released"]["server_id"], "srv-old-0001")
+        self.assertEqual((new.state, new.server_id), ("first_boot", "srv-old-0001"))
+        con = sqlite3.connect(db)
+        con.row_factory = sqlite3.Row
+        self.addCleanup(con.close)
+        rows = {
+            row["slug"]: (row["state"], row["server_id"])
+            for row in con.execute("SELECT slug, state, server_id FROM tenants")
+        }
+        self.assertEqual(rows[SLUG], ("active", None), "A's web row keeps its state, no machine")
+        self.assertEqual(rows[other], ("provisioned", "srv-old-0001"))
+
+    def test_release_of_an_unknown_slug_is_a_no_op(self):
+        code, out, err = run_cli(
+            ["release", "odl-abcdef", "--apply", "--json"],
+            self.make_config(),
+            provider_factory=explode_provider,
+        )
+        self.assertEqual(code, 0, err)
+        payload = json.loads(out)
+        self.assertFalse(payload["changed"])
+        self.assertEqual(payload["state"], None)
+        self.assertEqual(payload["web_row"], "absent")
+
     def test_provision_dry_run_lists_the_guard_before_create(self):
         """The plan names the refusal between the list and the paid call."""
         config_path = self.make_config()

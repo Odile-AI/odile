@@ -1425,8 +1425,9 @@ def _finish(connection: sqlite3.Connection, account_id: int, state: str, stamp: 
 
 
 def _dns_name(config, slug: str) -> str:
-    zone = (config.get("tenant_domain") or config.get("dns_zone") or "odile.fyi").strip()
-    return "%s.%s" % (slug, zone)
+    from .dns import tenant_zone
+
+    return "%s.%s" % (slug, tenant_zone(config))
 
 
 def _ensure_dns(config, slug: str, ipv4: str) -> str:
