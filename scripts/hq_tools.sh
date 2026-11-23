@@ -88,7 +88,7 @@ cmd_install() {
 	[ -d "$hq" ] || { echo "hq-tools: refused: $hq is not a directory" >&2; exit 1; }
 	files=$(hq_only_files "$hq")
 	if [ -z "$files" ]; then
-		echo "hq-tools: no HQ-only files under $hq/tools; DEST keeps the copies it has (deploy from a worktree of the HQ checkout, not a standalone clone — docs/runbooks/deploy.md)"
+		echo "hq-tools: no HQ-only paths under $hq; DEST keeps the copies it has (deploy from a worktree of the HQ checkout, not a standalone clone — docs/runbooks/deploy.md)"
 		return 0
 	fi
 	changed=0
@@ -123,7 +123,7 @@ cmd_check() {
 	hq=$2
 	files=$(hq_only_files "$hq")
 	if [ -z "$files" ]; then
-		echo "hq-tools: refused: $hq/tools has no HQ-only files to compare" >&2
+		echo "hq-tools: refused: $hq has no HQ-only paths to compare" >&2
 		exit 1
 	fi
 	bad=0

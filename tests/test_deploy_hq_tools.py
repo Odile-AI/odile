@@ -23,6 +23,7 @@ import shutil
 import subprocess
 import tempfile
 import unittest
+from datetime import datetime, timezone
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -353,6 +354,120 @@ class DeployPlanTests(FixtureTest):
         self.assertEqual(
             (fixture.runtime / "docs" / "backlog.yaml").read_bytes(), BACKLOG_BYTES
         )
+
+
+GENERATOR_STUB = """#!/usr/bin/python3
+import sys
+args = sys.argv[1:]
+now = args[args.index("--now") + 1]
+source = args[args.index("--source-sha") + 1]
+sys.stdout.write('<p class="foot">generated %s · source %s · odile.fyi</p>\\n' % (now, source))
+"""
+
+GENERATED = "2026-11-23T18:57:28Z"
+SOURCE = "abc1234"
+
+
+def epoch(instant: str) -> int:
+    stamp = datetime.strptime(instant, "%Y-%m-%dT%H:%M:%SZ").replace(
+        tzinfo=timezone.utc
+    )
+    return int(stamp.timestamp())
+
+
+class LiveCheckTests(unittest.TestCase):
+    """scripts/check_hq_tools.sh fails when the tick predates the install.
+
+    The verifier's pass is only worth what its failure is worth, so each guard
+    the script carries gets a fixture: a page older than the installed tool, a
+    deployed path that is not HQ's bytes, and the converged pass.
+    """
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory(prefix="odile-hq-check-")
+        self.addCleanup(self._tmp.cleanup)
+        root = Path(self._tmp.name)
+        self.hq = root / "hq"
+        self.hq.mkdir()
+        subprocess.run(
+            ["git", "init", "--quiet", "--initial-branch", "main"],
+            cwd=self.hq, env=git_env(), check=True, capture_output=True,
+        )
+        (self.hq / "app.py").write_text("# Odile\n", encoding="utf-8")
+        (self.hq / "tools").mkdir()
+        (self.hq / "tools" / "roadmap_page.py").write_text(
+            GENERATOR_STUB, encoding="utf-8"
+        )
+        (self.hq / "docs").mkdir()
+        (self.hq / "docs" / "backlog.yaml").write_text("tasks: []\n", encoding="utf-8")
+        (self.hq / ".git" / "info" / "exclude").write_text(
+            "/tools/roadmap_page.py\n/docs/backlog.yaml\n", encoding="utf-8"
+        )
+        subprocess.run(
+            ["git", *GIT_IDENTITY, "add", "--all"],
+            cwd=self.hq, env=git_env(), check=True, capture_output=True,
+        )
+        subprocess.run(
+            ["git", *GIT_IDENTITY, "commit", "--quiet", "--no-gpg-sign", "-m", "hq"],
+            cwd=self.hq, env=git_env(), check=True, capture_output=True,
+        )
+        self.dest = root / "dest"
+        (self.dest / "tools").mkdir(parents=True)
+        (self.dest / "web").mkdir()
+        (self.dest / "web" / "roadmap.html").write_text("<html></html>\n", encoding="utf-8")
+        (self.dest / "docs" / "architecture").mkdir(parents=True)
+        (self.dest / "docs" / "architecture" / "ADR-upgrades-and-model.md").write_text(
+            "# ADR\n", encoding="utf-8"
+        )
+        install = subprocess.run(
+            [str(HQ_TOOLS), "install", str(self.hq), str(self.dest)],
+            env=git_env(), capture_output=True, text=True,
+        )
+        self.assertEqual(install.returncode, 0, install.stderr)
+        self.page = root / "roadmap.html"
+        self.page.write_text(
+            '<p class="foot">generated %s · source %s · odile.fyi</p>\n'
+            % (GENERATED, SOURCE),
+            encoding="utf-8",
+        )
+        self.source = root / "roadmap-source"
+        self.source.write_text(SOURCE + "\n", encoding="utf-8")
+
+    def run_check(self) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            [str(CHECK), str(self.dest), str(self.hq), str(self.page), str(self.source)],
+            env=git_env(), capture_output=True, text=True,
+        )
+
+    def install_tool_at(self, instant: str) -> None:
+        tool = self.dest / "tools" / "roadmap_page.py"
+        os.utime(tool, (epoch(instant), epoch(instant)))
+
+    def test_live_check_passes_when_the_page_follows_the_installed_tool(self) -> None:
+        self.install_tool_at("2026-11-23T18:00:00Z")
+
+        result = self.run_check()
+
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("check-hq-tools: OK", result.stdout)
+
+    def test_live_check_fails_when_the_page_predates_the_installed_tool(self) -> None:
+        self.install_tool_at("2026-11-23T19:00:00Z")
+
+        result = self.run_check()
+
+        self.assertNotEqual(result.returncode, 0, result.stdout)
+        self.assertIn("before", result.stderr or result.stdout)
+
+    def test_live_check_fails_when_a_deployed_path_is_not_hq_bytes(self) -> None:
+        (self.dest / "tools" / "roadmap_page.py").write_text(
+            "# stale\n", encoding="utf-8"
+        )
+
+        result = self.run_check()
+
+        self.assertNotEqual(result.returncode, 0, result.stdout)
+        self.assertIn("DIFF tools/roadmap_page.py", result.stdout)
 
 
 if __name__ == "__main__":
