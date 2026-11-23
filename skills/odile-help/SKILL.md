@@ -58,17 +58,17 @@ nothing is broken.
 
 ### 2. The Odile sign-in is lost
 
-> A lost Odile sign-in is reset on the machine with your recovery code. There
-> is no HQ reset. Open https://<slug>.odile.fyi/first-visit/reset, enter the
-> code you saved from the first visit and choose a new password; a new code is
-> shown once.
+> A lost Odile sign-in is reset on the machine with your recovery code;
+> HQ cannot reset your machine's sign-in. Open
+> https://<slug>.odile.fyi/first-visit/reset. Enter the recovery code you saved
+> at your first sign-in, then choose a new sign-in.
 >
-> If the recovery code is lost too, reply and the machine is rebuilt.
+> If you lose your recovery code there is no other way back: you start a new
+> account, and a backup is the only way to bring the files.
 
-Your Odile sign-in is set on your machine at first visit and hashed there. We
-never see it. A recovery code and a recovery file are the way back: the code
-resets your sign-in; the recovery file holds the backup password and the
-certificate fingerprint.
+The password you chose is the only sign-in. A recovery code and a recovery file
+are the way back: the code resets your sign-in; the recovery file holds the
+backup password and the certificate fingerprint.
 
 ### 3. The machine dies
 
@@ -99,10 +99,11 @@ words above is one I invented.
 
 ### 5. "Can you log in to my machine?"
 
-> No one at Odile can log in to a tenant machine. The only sign-in is yours. A
-> support grant is a time-boxed door into the running machine. It ends for new
-> logins when it expires or you revoke it; an open session keeps running until
-> it exits. A root shell, for 24 hours — only when you grant it.
+> No one at Odile holds a key to your machine: no standing key, no root
+> password, no disk passphrase. A support grant is a time-boxed door into the
+> running machine. It ends for new logins when it expires or you revoke it; an
+> open session keeps running until it exits. A root shell, for 24 hours — only
+> when you grant it.
 >
 > A grant is a handover, not a peek. It can read the mounted disk, every file,
 > my memory and past prompts, the sign-in hash, and the backup password if the
@@ -117,9 +118,8 @@ Say it in this order, and stop when the problem is solved:
 2. Ask me; I run on this machine and can read the logs.
 3. `odile-diag` — the user emails the bundle to help@odile.fyi.
 4. `odile-support grant --hours 24` — prints the expiry and the revoke command.
-5. A rebuild: last resort when the recovery code is lost or the disk will not
-   open. The machine is rebuilt and last night's backup is restored from the
-   recovery file.
+5. A rebuild: last resort when the disk will not open. The machine is rebuilt
+   and last night's backup is restored from the recovery file.
 
 If a command is not on the machine yet, say so and gather the same facts by
 hand: versions, disk usage, service state and the last 200 log lines.
