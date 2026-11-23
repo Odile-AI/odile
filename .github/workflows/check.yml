@@ -54,6 +54,16 @@
 # there, and HQ runs those two; round 2 measured `Ran 1648 tests`,
 # `OK (skipped=6)` on the tree published then.
 #
+# The bench probe's prerequisite. `scripts/check_bench.sh --probe` names the pid
+# and command holding the bench's port with `ss`, and exits 2 when `ss` is
+# absent — it is in the probe's prerequisite list beside curl and mktemp. `ss`
+# is iproute2; `procps` does not carry it. In this container the four ProbeTests
+# in tests/test_bench_probe.py therefore failed on the missing prerequisite, not
+# on the probe (run 45095519414, 2026-11-23: `AssertionError: 2 != 0 :
+# prerequisite: ss is not installed`, `FAILED (failures=4)`, in both `check` and
+# `fresh-check`). Both toolchain installs add iproute2, so the probe runs rather
+# than exiting 2.
+#
 # There is no secret in this file, no job writes to the repository, every action
 # is pinned to a full commit SHA (the comment names the release), the base image
 # is pinned by digest, and the shellcheck binary by SHA-256. The checkout is
@@ -84,7 +94,7 @@ jobs:
           set -euo pipefail
           export DEBIAN_FRONTEND=noninteractive
           apt-get -o Acquire::Retries=3 update -qq
-          apt-get -o Acquire::Retries=3 install -y -qq git python3 python3-yaml openssl ca-certificates procps debconf sudo make build-essential systemd fdisk e2fsprogs curl xz-utils
+          apt-get -o Acquire::Retries=3 install -y -qq git python3 python3-yaml openssl ca-certificates procps iproute2 debconf sudo make build-essential systemd fdisk e2fsprogs curl xz-utils
           echo "postfix postfix/main_mailer_type select Internet Site" | debconf-set-selections
           echo "postfix postfix/mailname string ci.invalid" | debconf-set-selections
           apt-get -o Acquire::Retries=3 install -y -qq restic caddy postfix debootstrap cryptsetup squashfs-tools qemu-utils ovmf openssh-client gnupg rsync sqlite3 jq
@@ -120,7 +130,7 @@ jobs:
           set -euo pipefail
           export DEBIAN_FRONTEND=noninteractive
           apt-get -o Acquire::Retries=3 update -qq
-          apt-get -o Acquire::Retries=3 install -y -qq git python3 python3-yaml openssl ca-certificates procps debconf sudo make build-essential systemd fdisk e2fsprogs curl xz-utils
+          apt-get -o Acquire::Retries=3 install -y -qq git python3 python3-yaml openssl ca-certificates procps iproute2 debconf sudo make build-essential systemd fdisk e2fsprogs curl xz-utils
           echo "postfix postfix/main_mailer_type select Internet Site" | debconf-set-selections
           echo "postfix postfix/mailname string ci.invalid" | debconf-set-selections
           apt-get -o Acquire::Retries=3 install -y -qq restic caddy postfix debootstrap cryptsetup squashfs-tools qemu-utils ovmf openssh-client gnupg rsync sqlite3 jq
