@@ -504,6 +504,10 @@ class ClaimPageTests(unittest.TestCase):
             "the password you chose when you registered.", body)
         self.assertIn(
             "Check the report before you sign in; it says PASS or FAIL.", body)
+        # D-7 said once, followed by D-10's line (brand round).
+        self.assertEqual(body.count("it says PASS or FAIL"), 1)
+        self.assertIn("That password opens", body)
+        self.assertNotIn("Check the report first", body)
         self.assertIn(
             f"The first-visit guide is at {claim.READY_GUIDE_URL}", body
         )

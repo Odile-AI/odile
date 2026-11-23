@@ -1,8 +1,8 @@
 {
   "artifacts": {
     "installer": {
-      "sha256": "36f1ecaf224f22b04feec416bbaf5a24d8b574cb291ecfd95fe048b0f52e85d2",
-      "size": 1573463,
+      "sha256": "36add6dab970697bc456076e249bd433332a13abf1e9cd216e235b9014203bf6",
+      "size": 1576201,
       "url": "odile_install.py"
     },
     "skills": {
@@ -14,14 +14,14 @@
   "boot": {
     "kernel": "6.12.115+deb13.1-amd64"
   },
-  "generated_at": "2026-11-23T01:33:33Z",
+  "generated_at": "2026-11-23T03:58:00Z",
   "manifest": {
-    "sha256": "e26f5fc67313991b57641244dc447a402858b78c7659d67469717956476fb088",
+    "sha256": "508f9d2fab496c9aa355e492aeeb7e03e9a927ff9c2725d336ddecdb818a1a74",
     "signature_url": "manifest.json.sig",
     "url": "manifest.json"
   },
-  "notes": "ODL-925 (B-once): the first visit is a login. The first-visit page and the service it runs are re-embedded (the page is tokenless, ?t= answers 410, the state carries first_login_at), the installer writes the seed's sign_in_hash into the tenant .env before the Webapp's first boot, and the image's installer stamps the seeded state. The manifest moves installer_sha256 and generated_at only; skills_bundle_sha256 and every skill row are unchanged.",
+  "notes": "ODL-925 (B-once): the first visit is a login. The first-visit page and the service it runs are re-embedded (the page is tokenless, ?t= answers 410, the state carries first_login_at), the installer writes the seed's sign_in_hash into the tenant .env before the Webapp's first boot, and the image's installer stamps the seeded state. Brand round: the rate limit and a refused write answer the page with one role=\"alert\" notice, a stale ?t= picks its answer by the state (a set sign-in is 'already set', with one way in), the classic setup footer drops D-1's registration clause, the sign-in field names no missing hint, the filled controls' selection paints, and the ready email says D-7 once followed by D-10. The manifest moves installer_sha256 and generated_at only; skills_bundle_sha256 and every skill row are unchanged.",
   "product": "odile",
-  "release": "2026.11.23-2",
+  "release": "2026.11.23-3",
   "schema": 1
 }

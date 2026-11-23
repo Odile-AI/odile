@@ -608,7 +608,14 @@ class ProvisionTests(ClaimBase):
         self.assertIn(
             f"Sign in: https://{SLUG}.{ZONE}/first-visit — the password you chose "
             "when you registered.", body)
-        self.assertIn("Check the report before you sign in; it says PASS or FAIL.", body)
+        # D-7 once, then D-10's line (brand round: the duplicate was the
+        # earlier "Check the report first" sentence, now gone).
+        self.assertEqual(body.count("it says PASS or FAIL"), 1)
+        self.assertIn("Check the report before you sign in; it says PASS or FAIL. "
+                      "That password opens\n"
+                      "your machine too.", body)
+        self.assertIn("That password opens", body)
+        self.assertNotIn("Check the report first", body)
         self.assertEqual(body.count("first-visit?t="), 0)
         self.assertEqual(body.count("?t="), 0)
         self.assertNotIn("Set your sign-in", body)

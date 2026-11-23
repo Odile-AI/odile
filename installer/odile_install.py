@@ -3113,7 +3113,7 @@ printf 'members %s\n' "${members# }"
 # The first-visit service and its page are the reviewed files, byte for
 # byte, so the signed installer carries exactly the program and page it
 # writes to /usr/local/lib/odile/. --self-test fails on a one-byte edit.
-FIRST_VISIT_SHA256 = "da45a42e9e50cac06de1aeb98d7825e1a829854677f7868a02723deab87c9f8b"
+FIRST_VISIT_SHA256 = "753417a0e62e12672e01f7eb6b3c94920ee07d62eb17e8ae4c956de68ab7be63"
 FIRST_VISIT_SOURCE = r'''#!/usr/bin/python3
 """odile first-visit service — sign in to the guest and show the recovery code.
 
@@ -3338,8 +3338,8 @@ CODE_SENTINEL = "\x00recovery-code\x00"
 ERROR_FIELDS = ("code", "password", "password2")
 
 BLOCK_RE = re.compile(
-    r"<!--(form|signin|done|recover|recovery-done|reset-done|reset|refused-unknown|refused)-->"
-    r"(.*?)<!--/\1-->", re.S)
+    r"<!--(form|signin|done|recover|recovery-done|reset-done|reset"
+    r"|refused-unknown|refused-set|refused)-->(.*?)<!--/\1-->", re.S)
 
 _hits: dict[str, list[float]] = {}
 _lock = threading.Lock()
@@ -3877,6 +3877,14 @@ def error_slot(message: str) -> str:
     return '<p class="error" id="error" role="alert">%s</p>' % html.escape(message)
 
 
+def notice_slot(message: str) -> str:
+    """A form-level line above the button; its own id, so a field error keeps
+    ``#error`` and both can announce independently."""
+    if not message:
+        return ""
+    return '<p class="error" id="notice" role="alert">%s</p>' % html.escape(message)
+
+
 def field_attrs(field: str, error: FieldError | None, hint: str = "") -> str:
     """aria-invalid and aria-describedby for one field, and nothing else."""
     described = [hint] if hint else []
@@ -3898,7 +3906,7 @@ def wordmark(keep: str) -> str:
     arrives — a classic setup or the B-once login — and both stay plain: the
     visitor has not typed anything yet.
     """
-    if keep in ("form", "signin", "reset", "refused-unknown"):
+    if keep in ("form", "signin", "reset", "refused-set", "refused-unknown"):
         return '<span class="brand">Odile</span>'
     return '<a class="brand" href="/">Odile</a>'
 
@@ -3915,7 +3923,7 @@ def password_error(password: str, repeat: str) -> FieldError | None:
 
 
 def render(template: str, keep: str, *, title: str, error: FieldError | None = None,
-           token: str = "", username: str = DEFAULT_USERNAME,
+           notice: str = "", token: str = "", username: str = DEFAULT_USERNAME,
            code: str = "", recovery: str = "", recovery_file: str = "") -> str:
     """Keep one state block, drop the rest, then fill the slots.
 
@@ -3923,7 +3931,8 @@ def render(template: str, keep: str, *, title: str, error: FieldError | None = N
     read back as one of our slots. The recovery-code field is the one slot a
     user can fill with braces, so it goes in after the unfilled-slot check.
     ``recovery_file`` is this service's own HTML (a link or the unavailable
-    sentence), never a user value.
+    sentence), never a user value. ``notice`` is a form-level line (the rate
+    limit and a refused write), never a field error.
     """
     def pick(match: re.Match[str]) -> str:
         return match.group(2) if match.group(1) == keep else ""
@@ -3935,8 +3944,11 @@ def render(template: str, keep: str, *, title: str, error: FieldError | None = N
             body = body.replace("<!--%s-error-->" % field, error_slot(error.message))
         else:
             body = body.replace("<!--%s-error-->" % field, "")
+    body = body.replace("<!--notice-->", notice_slot(notice))
     body = body.replace("{{CODE_ATTRS}}", field_attrs("code", error))
     body = body.replace("{{PASSWORD_ATTRS}}", field_attrs("password", error, "password-hint"))
+    # The sign-in block renders no hint, so its field points at the error only.
+    body = body.replace("{{SIGNIN_PASSWORD_ATTRS}}", field_attrs("password", error))
     body = body.replace("{{PASSWORD2_ATTRS}}", field_attrs("password2", error))
     body = body.replace("{{TITLE}}", html.escape(title))
     body = body.replace("{{RECOVERY}}", html.escape(recovery))
@@ -4176,40 +4188,50 @@ class FirstVisit:
                       recovery_file=recovery_file_block(recovery, download))
         return 200, body
 
-    def recover_form(self, error: FieldError | None = None) -> tuple[int, str]:
+    def recover_form(self, error: FieldError | None = None,
+                     notice: str = "") -> tuple[int, str]:
         """The recovery page: the code is POSTed here, never carried in a URL."""
         body = render(self.template(), "recover",
                       title="Your recovery file — Odile", error=error,
-                      username=self.username())
+                      notice=notice, username=self.username())
         return 200, body
 
-    def refused(self, code: int, can_reset: bool = True) -> tuple[int, str]:
-        """The closed-link page; the reset link only where it can render.
+    def refused(self, code: int, state: dict) -> tuple[int, str]:
+        """The closed-link page, chosen by what the state actually holds.
 
-        ``/first-visit/reset`` answers 409 when the state has no recovery
-        hash, which is exactly the machine whose sign-in was never set. On
-        that machine the page names the ready email and the support address
-        instead of offering a second dead end (ODL-471 follow-up).
+        A set sign-in is the "already set" answer. When no recovery code has
+        been issued yet (the seeded state before its first sign-in) the reset
+        route answers 409, so the block's one action is the tokenless page that
+        signs in. A machine with no sign-in at all (a classic install) points
+        at the same tokenless page, which is its setup form.
         """
-        keep = "refused" if can_reset else "refused-unknown"
+        if not signin_is_set(state):
+            keep = "refused-unknown"
+        elif state.get("recovery_hash"):
+            keep = "refused"
+        else:
+            keep = "refused-set"
         body = render(self.template(), keep, title="This link is closed — Odile")
         return code, body
 
-    def form(self, error: FieldError | None = None) -> tuple[int, str]:
+    def form(self, error: FieldError | None = None,
+             notice: str = "") -> tuple[int, str]:
         """The classic setup page: no seed, so the visit chooses the sign-in."""
         body = render(self.template(), "form", title="Choose your sign-in — Odile",
-                      error=error, username=self.username())
+                      error=error, notice=notice, username=self.username())
         return 200, body
 
-    def signin_form(self, error: FieldError | None = None) -> tuple[int, str]:
+    def signin_form(self, error: FieldError | None = None,
+                    notice: str = "") -> tuple[int, str]:
         """The B-once login: one password field, no token, no repeat."""
         body = render(self.template(), "signin", title="Sign in — Odile",
-                      error=error, username=self.username())
+                      error=error, notice=notice, username=self.username())
         return 200, body
 
-    def reset_form(self, error: FieldError | None = None, code: str = "") -> tuple[int, str]:
+    def reset_form(self, error: FieldError | None = None, code: str = "",
+                   notice: str = "") -> tuple[int, str]:
         body = render(self.template(), "reset", title="Reset your sign-in — Odile",
-                      error=error, username=self.username(), code=code)
+                      error=error, notice=notice, username=self.username(), code=code)
         return 200, body
 
     def icon(self, path: str) -> tuple[int, str, bytes] | None:
@@ -4402,7 +4424,7 @@ def build_handler(service: FirstVisit):
             if state is None:
                 return
             if not state.get("recovery_hash"):
-                code, body = service.refused(409, False)
+                code, body = service.refused(409, state)
                 return self._send(code, body, head)
             code, body = service.recover_form()
             return self._send(code, body, head)
@@ -4465,7 +4487,7 @@ def build_handler(service: FirstVisit):
                     state = self._load_state()
                     if state is None:
                         return
-                    code, body = service.refused(410, bool(state.get("recovery_hash")))
+                    code, body = service.refused(410, state)
                     return self._send(code, body, head)
                 state = self._load_state()
                 if state is None:
@@ -4480,7 +4502,7 @@ def build_handler(service: FirstVisit):
                 if state is None:
                     return
                 if not state.get("recovery_hash"):
-                    code, body = service.refused(409, False)
+                    code, body = service.refused(409, state)
                     return self._send(code, body, head)
                 code, body = service.reset_form()
                 return self._send(code, body, head)
@@ -4508,13 +4530,35 @@ def build_handler(service: FirstVisit):
             raw = self.rfile.read(length).decode("utf-8", "replace")
             fields = parse_qs(raw, keep_blank_values=True)
             if not allow(self.client_address[0]):
-                return self._send(429, "Too many attempts. Try again in ten minutes.\n",
-                                  ctype="text/plain; charset=utf-8")
+                return self._too_many(path)
             if path == "/first-visit":
                 return self._set_signin(fields)
             if path == "/first-visit/recovery":
                 return self._recover_file(fields)
             return self._reset_signin(fields)
+
+        def _too_many(self, path: str) -> None:
+            """The rate limit as a page, not a bare string.
+
+            The visitor is re-shown the state they were on (a login or the
+            classic setup, a reset or the recovery page) with one form-level
+            ``role="alert"`` line above the button, rather than the text/plain
+            white page this route used to answer.
+            """
+            notice = "Too many attempts. Try again in ten minutes."
+            if path == "/first-visit":
+                state = self._load_state()
+                if state is None:
+                    return
+                if signin_is_set(state):
+                    code, body = service.signin_form(notice=notice)
+                else:
+                    code, body = service.form(notice=notice)
+            elif path == "/first-visit/recovery":
+                code, body = service.recover_form(notice=notice)
+            else:
+                code, body = service.reset_form(notice=notice)
+            return self._send(429, body)
 
         def _set_signin(self, fields: dict[str, list[str]]) -> None:
             """Sign in (seeded) or set the sign-in (classic); show the code once.
@@ -4555,8 +4599,12 @@ def build_handler(service: FirstVisit):
                         service.reload()
                     except (SystemExit, RuntimeError) as exc:
                         print("first-visit: refused: %s" % exc, file=sys.stderr, flush=True)
-                        return self._send(500, "The sign-in was not set. Try again.\n",
-                                          ctype="text/plain; charset=utf-8")
+                        # The page, with the notice, not a bare string: the
+                        # visitor can retry the same form (brand round).
+                        notice = "The sign-in was not set. Try again."
+                        page = (service.signin_form(notice=notice) if login
+                                else service.form(notice=notice))
+                        return self._send(500, page[1])
 
                 at = utc_now()
                 code_value = new_recovery_code()
@@ -4601,7 +4649,7 @@ def build_handler(service: FirstVisit):
                 if state is None:
                     return
                 if not state.get("recovery_hash"):
-                    code, body = service.refused(409, False)
+                    code, body = service.refused(409, state)
                     return self._send(code, body)
                 if recovery_status(state, code_value) != "ok":
                     code, body = service.recover_form(
@@ -4632,7 +4680,7 @@ def build_handler(service: FirstVisit):
                     return
                 stored = state.get("recovery_hash")
                 if not isinstance(stored, str) or not stored.startswith("scrypt$"):
-                    code, body = service.refused(409, False)
+                    code, body = service.refused(409, state)
                     return self._send(code, body)
                 if recovery_status(state, code_value) != "ok":
                     code, body = service.reset_form(
@@ -4654,8 +4702,9 @@ def build_handler(service: FirstVisit):
                     service.reload()
                 except (SystemExit, RuntimeError) as exc:
                     print("first-visit: refused: %s" % exc, file=sys.stderr, flush=True)
-                    return self._send(500, "The sign-in was not reset. Try again.\n",
-                                      ctype="text/plain; charset=utf-8")
+                    code, body = service.reset_form(
+                        notice="The sign-in was not reset. Try again.")
+                    return self._send(500, body)
 
                 spend_code(state)
                 save_state(service.state, state)
@@ -4777,7 +4826,7 @@ def main(argv: list[str] | None = None) -> int:
 if __name__ == "__main__":
     sys.exit(main())
 '''
-FIRST_VISIT_PAGE_SHA256 = "98208a4cbb27f2a0536a8c6dfc0679b607c7f91d5f1afecb2fbb6f92f0cd671c"
+FIRST_VISIT_PAGE_SHA256 = "1a9e861586e8a16fcedc0a1c3d85718aabd676c392056a4478dd3160e9778743"
 FIRST_VISIT_PAGE = r'''<!doctype html>
 <html lang="en">
 <head>
@@ -4859,6 +4908,7 @@ input[aria-invalid=true]{border-bottom-color:var(--error)}
   text-transform:uppercase;letter-spacing:.28em;transition:background .18s,color .18s}
 .download:hover{background:var(--ink-hover);border-color:var(--ink-hover);color:var(--paper)}
 .download:focus-visible{outline:2px solid var(--ink);outline-offset:3px}
+.primary::selection,.download::selection{background:var(--paper);color:var(--ink)}
 .consent{display:flex;align-items:flex-start;gap:12px;margin:16px 0 0;min-height:44px;padding:8px 0;
   font-size:16px;line-height:1.5;color:var(--soft);cursor:pointer;max-width:54ch}
 input[type=checkbox]{appearance:none;-webkit-appearance:none;width:18px;height:18px;margin:4px 0 0;flex:none;
@@ -4914,9 +4964,10 @@ h1,h2,h3,.brand,.mark,.wordmark,.focus{font-family:var(--serif)}
              minlength="16" required{{PASSWORD2_ATTRS}}>
       <!--password2-error-->
     </div>
+    <!--notice-->
     <button class="primary" type="submit">Set it</button>
   </form>
-  <p class="foot">Your Odile password opens your machine and your account page. You chose it when you registered. It is the only app-layer gate: no 2FA in alpha.0.</p>
+  <p class="foot">Your Odile password opens your machine and your account page. It is the only app-layer gate: no 2FA in alpha.0.</p>
 <!--/form-->
 <!--signin-->
   <h1>Sign in</h1>
@@ -4926,9 +4977,10 @@ h1,h2,h3,.brand,.mark,.wordmark,.focus{font-family:var(--serif)}
     <div class="field">
       <label for="password">Password</label>
       <input type="password" id="password" name="password" autocomplete="current-password"
-             required{{PASSWORD_ATTRS}}>
+             required{{SIGNIN_PASSWORD_ATTRS}}>
       <!--password-error-->
     </div>
+    <!--notice-->
     <button class="primary" type="submit">Sign in</button>
   </form>
   <p class="foot">Your Odile password opens your machine and your account page. You chose it when you registered. It is the only app-layer gate: no 2FA in alpha.0.</p>
@@ -4971,6 +5023,7 @@ h1,h2,h3,.brand,.mark,.wordmark,.focus{font-family:var(--serif)}
              minlength="16" required{{PASSWORD2_ATTRS}}>
       <!--password2-error-->
     </div>
+    <!--notice-->
     <button class="primary" type="submit">Set the sign-in</button>
   </form>
   <p class="foot">The code you used stops working; a new one is shown next.</p>
@@ -5000,6 +5053,7 @@ h1,h2,h3,.brand,.mark,.wordmark,.focus{font-family:var(--serif)}
              spellcheck="false" required{{CODE_ATTRS}}>
       <!--code-error-->
     </div>
+    <!--notice-->
     <button class="primary" type="submit">Show the download</button>
   </form>
   <p class="foot">Your sign-in does not change. The code you use stops working; a new one is shown next.</p>
@@ -5020,20 +5074,30 @@ h1,h2,h3,.brand,.mark,.wordmark,.focus{font-family:var(--serif)}
 <!--/recovery-done-->
 <!--refused-->
   <h1>This link is closed.</h1>
-  <p class="lede">The sign-in was already set, or the link is not valid.</p>
+  <p class="lede">The sign-in is already set, or the link is not valid.</p>
   <div class="act">
     <a class="primary" href="/">Open your workspace</a>
     <a class="quiet" href="/first-visit/reset">Reset with a recovery code</a>
   </div>
 <!--/refused-->
-<!--refused-unknown-->
-  <!-- Offered when the state has no recovery hash: the reset route answers 409
-       then, so linking it would be a second dead end (ODL-471 follow-up). -->
+<!--refused-set-->
+  <!-- The sign-in is set but no recovery code has been issued yet (the seeded
+       state before its first sign-in). The reset route answers 409 on that
+       state, so the one action is the tokenless page that signs in. -->
   <h1>This link is closed.</h1>
-  <p class="lede">The link is not valid, and no recovery code has been issued on this machine yet.</p>
+  <p class="lede">The sign-in is already set, or the link is not valid.</p>
+  <div class="act">
+    <a class="primary" href="/first-visit">Sign in</a>
+  </div>
+<!--/refused-set-->
+<!--refused-unknown-->
+  <!-- Offered when no sign-in is set (a classic install): the tokenless page
+       is the setup form, so the one action opens it. -->
+  <h1>This link is closed.</h1>
+  <p class="lede">The link is not valid, and no sign-in has been set on this machine yet.</p>
   <section aria-labelledby="what-next">
     <p class="label" id="what-next">What next</p>
-    <p>Open the link in your ready email again — it carries this machine's first-visit address. If it still does not work, write to help@odile.fyi.</p>
+    <p><a href="/first-visit">Open the first-visit page</a> to set this machine's sign-in.</p>
   </section>
 <!--/refused-unknown-->
 </main>

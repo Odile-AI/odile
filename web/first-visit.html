@@ -79,6 +79,7 @@ input[aria-invalid=true]{border-bottom-color:var(--error)}
   text-transform:uppercase;letter-spacing:.28em;transition:background .18s,color .18s}
 .download:hover{background:var(--ink-hover);border-color:var(--ink-hover);color:var(--paper)}
 .download:focus-visible{outline:2px solid var(--ink);outline-offset:3px}
+.primary::selection,.download::selection{background:var(--paper);color:var(--ink)}
 .consent{display:flex;align-items:flex-start;gap:12px;margin:16px 0 0;min-height:44px;padding:8px 0;
   font-size:16px;line-height:1.5;color:var(--soft);cursor:pointer;max-width:54ch}
 input[type=checkbox]{appearance:none;-webkit-appearance:none;width:18px;height:18px;margin:4px 0 0;flex:none;
@@ -134,9 +135,10 @@ h1,h2,h3,.brand,.mark,.wordmark,.focus{font-family:var(--serif)}
              minlength="16" required{{PASSWORD2_ATTRS}}>
       <!--password2-error-->
     </div>
+    <!--notice-->
     <button class="primary" type="submit">Set it</button>
   </form>
-  <p class="foot">Your Odile password opens your machine and your account page. You chose it when you registered. It is the only app-layer gate: no 2FA in alpha.0.</p>
+  <p class="foot">Your Odile password opens your machine and your account page. It is the only app-layer gate: no 2FA in alpha.0.</p>
 <!--/form-->
 <!--signin-->
   <h1>Sign in</h1>
@@ -146,9 +148,10 @@ h1,h2,h3,.brand,.mark,.wordmark,.focus{font-family:var(--serif)}
     <div class="field">
       <label for="password">Password</label>
       <input type="password" id="password" name="password" autocomplete="current-password"
-             required{{PASSWORD_ATTRS}}>
+             required{{SIGNIN_PASSWORD_ATTRS}}>
       <!--password-error-->
     </div>
+    <!--notice-->
     <button class="primary" type="submit">Sign in</button>
   </form>
   <p class="foot">Your Odile password opens your machine and your account page. You chose it when you registered. It is the only app-layer gate: no 2FA in alpha.0.</p>
@@ -191,6 +194,7 @@ h1,h2,h3,.brand,.mark,.wordmark,.focus{font-family:var(--serif)}
              minlength="16" required{{PASSWORD2_ATTRS}}>
       <!--password2-error-->
     </div>
+    <!--notice-->
     <button class="primary" type="submit">Set the sign-in</button>
   </form>
   <p class="foot">The code you used stops working; a new one is shown next.</p>
@@ -220,6 +224,7 @@ h1,h2,h3,.brand,.mark,.wordmark,.focus{font-family:var(--serif)}
              spellcheck="false" required{{CODE_ATTRS}}>
       <!--code-error-->
     </div>
+    <!--notice-->
     <button class="primary" type="submit">Show the download</button>
   </form>
   <p class="foot">Your sign-in does not change. The code you use stops working; a new one is shown next.</p>
@@ -240,20 +245,30 @@ h1,h2,h3,.brand,.mark,.wordmark,.focus{font-family:var(--serif)}
 <!--/recovery-done-->
 <!--refused-->
   <h1>This link is closed.</h1>
-  <p class="lede">The sign-in was already set, or the link is not valid.</p>
+  <p class="lede">The sign-in is already set, or the link is not valid.</p>
   <div class="act">
     <a class="primary" href="/">Open your workspace</a>
     <a class="quiet" href="/first-visit/reset">Reset with a recovery code</a>
   </div>
 <!--/refused-->
-<!--refused-unknown-->
-  <!-- Offered when the state has no recovery hash: the reset route answers 409
-       then, so linking it would be a second dead end (ODL-471 follow-up). -->
+<!--refused-set-->
+  <!-- The sign-in is set but no recovery code has been issued yet (the seeded
+       state before its first sign-in). The reset route answers 409 on that
+       state, so the one action is the tokenless page that signs in. -->
   <h1>This link is closed.</h1>
-  <p class="lede">The link is not valid, and no recovery code has been issued on this machine yet.</p>
+  <p class="lede">The sign-in is already set, or the link is not valid.</p>
+  <div class="act">
+    <a class="primary" href="/first-visit">Sign in</a>
+  </div>
+<!--/refused-set-->
+<!--refused-unknown-->
+  <!-- Offered when no sign-in is set (a classic install): the tokenless page
+       is the setup form, so the one action opens it. -->
+  <h1>This link is closed.</h1>
+  <p class="lede">The link is not valid, and no sign-in has been set on this machine yet.</p>
   <section aria-labelledby="what-next">
     <p class="label" id="what-next">What next</p>
-    <p>Open the link in your ready email again — it carries this machine's first-visit address. If it still does not work, write to help@odile.fyi.</p>
+    <p><a href="/first-visit">Open the first-visit page</a> to set this machine's sign-in.</p>
   </section>
 <!--/refused-unknown-->
 </main>

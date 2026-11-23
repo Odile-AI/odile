@@ -720,11 +720,31 @@ class SignInLoginTests(unittest.TestCase):
         self.assertIsNone(self.harness.load_state()["recovery_hash"])
 
     def test_a_wrong_password_is_rate_limited(self):
-        last = 0
+        last, headers, body = 0, {}, ""
         for _ in range(11):
-            last, _, body = self.harness.signin(PASSWORD + "x")
+            last, headers, body = self.harness.signin(PASSWORD + "x")
         self.assertEqual(last, 429, body)
-        self.assertIn("Too many attempts", body)
+        # The limit is the page, not a bare string: the sign-in block, the
+        # 429, and one form-level notice above the button (brand round).
+        self.assertTrue(headers.get("Content-Type", "").startswith("text/html"))
+        self.assertIn("<title>Sign in — Odile</title>", body)
+        self.assertEqual(body.count('role="alert"'), 1)
+        self.assertIn('<p class="error" id="notice" role="alert">Too many attempts. '
+                      "Try again in ten minutes.</p>", body)
+        self.assertEqual(body.count('type="password"'), 1)
+        self.assertIn('action="/first-visit"', body)
+
+    def test_the_signin_field_points_at_no_missing_hint(self):
+        # The sign-in block renders no #password-hint, so its one control must
+        # not name one; with an error it points at #error only (brand round).
+        status, _, page = self.harness.call("GET", "/first-visit")
+        self.assertEqual(status, 200)
+        self.assertNotIn("password-hint", page)
+        self.assertNotIn("aria-describedby", page)
+        status, _, page = self.harness.signin(PASSWORD + "x")
+        self.assertEqual(status, 200)
+        self.assertIn('aria-invalid="true" aria-describedby="error"', page)
+        self.assertNotIn("password-hint", page)
 
     def test_the_right_password_shows_the_code_and_writes_one_state(self):
         status, headers, page = self.harness.signin()
@@ -759,20 +779,36 @@ class SignInLoginTests(unittest.TestCase):
         self.assertEqual(self.harness.env_text(), before)
         self.assertIsNone(self.harness.load_state()["first_login_at"])
 
+    def test_a_stale_token_on_the_seeded_state_answers_already_set_with_one_way_in(self):
+        # The seeded state this card creates: the .env holds the registration
+        # verifier and signin_set_at is stamped, but no recovery code exists
+        # until the sign-in. The stale link is "already set" — and its one
+        # action is the tokenless page that signs in, never the reset route
+        # (which answers 409 on this state).
+        status, _, page = self.harness.call("GET", "/first-visit?t=" + self.harness.token)
+        self.assertEqual(status, 410)
+        self.assertIn("The sign-in is already set, or the link is not valid.", page)
+        self.assertNotIn("<form", page)
+        self.assertNotIn("/first-visit/reset", page)
+        self.assertEqual(
+            re.findall(r'<a\b[^>]*href="(/[^"]*)"', page), ["/first-visit"])
+        self.assertIn('<a class="primary" href="/first-visit">Sign in</a>', page)
+
 
 class RefusedPageTests(unittest.TestCase):
     """The stale link and the closed reset route (ODL-925, ODL-471 follow-up).
 
     ``?t=`` is the A-era link: any value, on any machine, answers 410 and
-    renders no form. A state without a recovery code offers the ready page;
-    once a code exists, the reset form is the way back.
+    renders no form. A machine with no sign-in yet offers the tokenless page
+    (its setup form); once a sign-in and a code exist, the reset form is the
+    way back.
     """
 
     def setUp(self):
         self.harness = FirstVisitHarness()
         self.addCleanup(self.harness.close)
 
-    def test_the_stale_link_before_a_code_offers_no_action_that_refuses(self):
+    def test_the_stale_link_before_a_signin_offers_the_tokenless_page(self):
         for path in ("/first-visit?t=" + self.harness.token, "/first-visit?t=short",
                      "/first-visit?t="):
             with self.subTest(path=path):
@@ -780,16 +816,14 @@ class RefusedPageTests(unittest.TestCase):
                 self.assertEqual(status, 410)
                 self.assertIn("This link is closed", page)
                 self.assertNotIn("/first-visit/reset", page)
-                self.assertNotIn('href="/first-visit/reset"', page)
                 self.assertNotIn("Reset with a recovery code", page)
-                # Nothing left to click can refuse: the wordmark is plain
-                # before the sign-in exists and no other first-visit route is
-                # offered. `<link rel=icon>` is not a click, so the scan is
-                # scoped to anchors (ODL-504).
-                self.assertEqual(re.findall(r'<a\b[^>]*href="(/[^"]*)"', page), [])
-                self.assertIn("ready email", page)
-                self.assertIn("help@odile.fyi", page)
-        # The route the page used to offer still refuses; that is why it is gone.
+                # The one action is the tokenless page, which on this machine
+                # is the setup form; nothing left to click can refuse.
+                self.assertEqual(
+                    re.findall(r'<a\b[^>]*href="(/[^"]*)"', page), ["/first-visit"])
+                self.assertIn("Open the first-visit page", page)
+                self.assertIn("no sign-in has been set on this machine yet", page)
+        # The route the page does not offer still refuses; that is why it is gone.
         self.assertEqual(self.harness.call("GET", "/first-visit/reset")[0], 409)
 
     def test_the_stale_link_after_a_code_still_offers_the_reset_form(self):
@@ -1576,6 +1610,12 @@ class PageTests(unittest.TestCase):
         self.assertIn('id="password2" name="password2"', page)
         self.assertIn("At least 16 characters.", page)
         self.assertIn('aria-describedby="password-hint"', page)
+        # A classic install has no registration, so its footer drops D-1's
+        # middle sentence ("You chose it when you registered"); the sign-in
+        # block keeps D-1 verbatim (brand round).
+        self.assertNotIn("You chose it when you registered", page)
+        self.assertIn("Your Odile password opens your machine and your account "
+                      "page. It is the only app-layer gate: no 2FA in alpha.0.", page)
 
     def test_the_recovery_screens_carry_d6_and_no_coined_custody_sentence(self):
         text = PAGE.read_text(encoding="utf-8")
