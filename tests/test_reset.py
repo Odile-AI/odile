@@ -113,6 +113,14 @@ def flat(text: str) -> str:
     return re.sub(r"\s+", " ", text)
 
 
+def css_declarations(text: str, selector: str) -> set[str]:
+    """The declarations of one CSS rule in a rendered page, order-free."""
+    match = re.search(re.escape(selector) + r"\{([^}]*)\}", text)
+    if match is None:
+        return set()
+    return {part.strip() for part in match.group(1).split(";") if part.strip()}
+
+
 def wait_health(port: int, proc: subprocess.Popen, seconds: float = 30.0) -> None:
     deadline = time.monotonic() + seconds
     while time.monotonic() < deadline:
@@ -176,6 +184,10 @@ class KeyPair:
 class ResetBase(unittest.TestCase):
     """One real service per class: a throwaway database, outbox and keys."""
 
+    # A class may lower this to reach a 429 in two presses; the default leaves
+    # the other suites' per-IP budgets effectively unspent.
+    RATE_LIMIT = "1000"
+
     @classmethod
     def setUpClass(cls) -> None:
         cls.tmp = tempfile.TemporaryDirectory(prefix="odile-reset-")
@@ -187,7 +199,7 @@ class ResetBase(unittest.TestCase):
             os.environ,
             ODILE_BIND="127.0.0.1",
             ODILE_PORT=str(cls.port),
-            ODILE_RATE_LIMIT="1000",
+            ODILE_RATE_LIMIT=cls.RATE_LIMIT,
             ODILE_DB=str(cls.db),
             ODILE_OUTBOX=str(cls.outbox),
             ODILE_SESSION_KEY_FILE=str(cls.dir / "session.key"),
@@ -295,6 +307,13 @@ class ResetBase(unittest.TestCase):
     def _next_ip(self) -> int:
         type(self)._counter += 1
         return 1 + (type(self)._counter % 250)
+
+    @staticmethod
+    def input_tag(text: str, name: str) -> str:
+        """The rendered <input> for one field, so its ARIA can be read."""
+        match = re.search(r'<input[^>]*\bname="%s"[^>]*>' % re.escape(name), text)
+        assert match is not None, "no input named %s" % name
+        return match.group(0)
 
     def register_key(self, slug: str, pem: str) -> None:
         connection = self.connect()
@@ -642,6 +661,20 @@ class ForgotPageTests(ResetBase):
         self.assertNotIn("<script", text.lower())
         self.assertIsNone(re.search(r'<(?:link|img)\b[^>]*\b(?:href|src)="https?://', text))
         self.assertEqual(headers.get("Cache-Control"), "no-store")
+        # A field holds a value, not a label: the sheet tracks capitals only,
+        # so no input rule carries letter-spacing (Brand gate round 2 follow-up,
+        # t_7f1fb414's lint).
+        for selector in ("input[type=email]", "input[type=password]",
+                         "input[type=text]"):
+            rule = css_declarations(text, selector)
+            self.assertFalse([d for d in rule if d.startswith("letter-spacing")],
+                             "%s carries letter-spacing" % selector)
+        # Selecting the filled button's label paints the sheet's inverted pair
+        # (Brand gate round 2, should 5).
+        self.assertIn("background:var(--paper)",
+                      css_declarations(text, "button::selection"))
+        self.assertIn("color:var(--ink)",
+                      css_declarations(text, "button::selection"))
 
     def test_the_sign_in_page_links_to_the_reset(self):
         status, _headers, body = request(self.port, "GET", "/signin")
@@ -731,6 +764,29 @@ class ForgotFlowTests(ResetBase):
         self.assertIn('id="password2-err"', mismatch[2].decode())
         self.assertTrue(app.verify_password(SIGN_IN,
                                             self.account(self.email_address)["password_hash"]))
+
+    def test_the_wrong_code_sits_under_the_code_field_and_both_inputs_point_at_it(self):
+        status, _headers, body = self.forgot(
+            email=self.email_address, code="WRONGWRONGWRONGWRONG",
+            ip="203.0.113.48")
+        self.assertEqual(status, 401)
+        text = body.decode("utf-8")
+        # In place, under the field the reader has to correct — not a summary
+        # over four fields (Brand gate round 2, should 3).
+        message_at = text.index('<p class="err" id="forgot-err"')
+        self.assertGreater(message_at, text.index('id="code"'))
+        self.assertLess(message_at, text.index('id="password"'))
+        for name in ("email", "code"):
+            tag = self.input_tag(text, name)
+            self.assertIn('aria-invalid="true"', tag, name)
+            self.assertIn('aria-describedby="forgot-err"', tag, name)
+        # The shape errors keep their own slot and their own field's ARIA pair.
+        short = self.forgot(email=self.email_address, password="short",
+                            ip="203.0.113.49")[2].decode("utf-8")
+        self.assertIn('id="password-err"', short)
+        self.assertIn('aria-describedby="password-err"',
+                      self.input_tag(short, "password"))
+        self.assertNotIn('aria-describedby="forgot-err"', short)
 
     def test_a_cross_site_post_is_refused(self):
         status, _headers, _body = self.forgot(
@@ -1065,6 +1121,100 @@ class AccountPageTests(ResetBase):
         self.assertIn("<h1>That page is not here.</h1>", text)
         self.assertNotIn('action="/account/password"', text)
         self.assertNotIn(D16, flat(text))
+
+    def test_the_sections_standalone_links_are_targets_and_its_rhythm_is_forgots(self):
+        _row, text = self.page("ready")
+        # Each reset link is the whole content of its paragraph, so the sheet's
+        # 44 x 44 floor applies and the section carries the same rule /forgot
+        # uses for its standalone links (Brand gate round 2, must 2).
+        self.assertRegex(
+            text,
+            r'<p class="note next"><a href="/forgot">Forgot it\? Reset it with '
+            r'your recovery code</a></p>')
+        self.assertRegex(
+            text,
+            r'<p class="note"><a href="https://[^"]+/first-visit/reset">'
+            r'Reset the sign-in on your machine</a></p>')
+        link_rule = css_declarations(text, ".account p.note a")
+        self.assertIn("display:inline-flex", link_rule)
+        self.assertIn("align-items:center", link_rule)
+        self.assertIn("min-height:44px", link_rule)
+        # The label-to-field step is the sheet's 8 px here, as on /forgot:
+        # gap 16 px minus the label's -8 px margin (Brand gate round 2,
+        # should 4).
+        self.assertIn("margin-bottom:-8px", css_declarations(text, ".account label"))
+        # No field tracking: the sheet tracks capitals, and a field is a value.
+        rule = css_declarations(text, ".account input[type=password]")
+        self.assertFalse([d for d in rule if d.startswith("letter-spacing")],
+                         "the account field carries letter-spacing")
+
+
+class AccountRefusalPageTests(ResetBase):
+    """The account page's own 429 is the finished page, not a bare body.
+
+    The bucket is spent before the current password is verified, so a person
+    reaches this by mistyping it a few times — the account-vs-machine
+    confusion D-12 exists for. With the per-IP budget lowered to one press,
+    the second POST is the rate limit; no timing loop and two requests
+    (Brand gate round 2, must 1).
+    """
+
+    RATE_LIMIT = "1"
+
+    def test_the_rate_limited_change_answers_the_account_page(self):
+        email = self.email()
+        self.seed_account(email)
+        cookie = self.sign_in(email)
+        ip = "203.0.113.201"
+        fields = form(current="not the password", password=NEW_SIGN_IN,
+                      password2=NEW_SIGN_IN)
+        first = request(self.port, "POST", "/account/password", fields,
+                        cookie=cookie, headers={"X-Forwarded-For": ip})
+        self.assertEqual(first[0], 422, first[2][:300])
+        status, headers, body = request(
+            self.port, "POST", "/account/password", fields,
+            cookie=cookie, headers={"X-Forwarded-For": ip})
+        self.assertEqual(status, 429, body[:300])
+        self.assertEqual(headers.get("Retry-After"), str(app.RATE_WINDOW))
+        self.assertTrue(headers.get("Content-Type", "").startswith("text/html"))
+        text = body.decode("utf-8")
+        self.assertIn("<title>", text)
+        self.assertIn("<h1>Your machine is ready.</h1>", text)
+        self.assertIn('id="account-password-err"', text)
+        self.assertIn('role="alert"', text)
+        self.assertIn("Too many changes. Try again in ten minutes.", text)
+        # The page is a way forward, not a dead end: the form and both resets.
+        self.assertIn('action="/account/password"', text)
+        self.assertIn('href="/forgot"', text)
+        self.assertNotIn("{{", text)
+
+    def test_the_rate_limited_resend_answers_the_account_page(self):
+        email = self.email()
+        row = self.seed_account(email)
+        connection = self.connect()
+        try:
+            connection.execute(
+                "UPDATE accounts SET provision_state = 'building' WHERE id = ?",
+                (int(row["id"]),))
+            connection.commit()
+        finally:
+            connection.close()
+        cookie = self.sign_in(email)
+        ip = "203.0.113.202"
+        first = request(self.port, "POST", "/account/resend", body="",
+                        cookie=cookie, headers={"X-Forwarded-For": ip})
+        self.assertEqual(first[0], 303, first[2][:300])
+        status, headers, body = request(
+            self.port, "POST", "/account/resend", body="",
+            cookie=cookie, headers={"X-Forwarded-For": ip})
+        self.assertEqual(status, 429, body[:300])
+        self.assertEqual(headers.get("Retry-After"), str(app.RATE_WINDOW))
+        self.assertTrue(headers.get("Content-Type", "").startswith("text/html"))
+        text = body.decode("utf-8")
+        self.assertIn("<h1>Building.</h1>", text)
+        self.assertIn('id="account-password-err"', text)
+        self.assertIn("Too many resends. Try again in ten minutes.", text)
+        self.assertNotIn("{{", text)
 
 
 if __name__ == "__main__":

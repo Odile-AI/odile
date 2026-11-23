@@ -1257,26 +1257,28 @@ def render_forgot(*, state: str = "form", email: str = "", error: str = "",
                   field: str = "", machine_reset: str = "") -> str:
     """One page, two states: the form and the success page.
 
-    The error slot is page-level for the wrong email-or-code (`forgot-err`):
-    the value belongs to neither field alone, and one string for both cases is
-    what keeps the page from enumerating addresses. The two shape errors stay
-    on the field they name, like every other form in this service.
+    The wrong email-or-code is one message for two fields, so it is not a
+    summary over the form: it renders under the recovery-code input (the value
+    the reader has to correct) and both `#email` and `#code` carry the ARIA
+    pair pointing at it, like /signin's own pair error. The two shape errors
+    stay on the field they name, like every other form in this service.
     """
     body = page("forgot.html", TITLE=html.escape(FORGOT_TITLES[state]),
                 ROBOTS="noindex")
     body = FORGOT_BLOCK_RE.sub(
         lambda match: match.group(2) if match.group(1) == state else "", body)
+    pair_error = bool(error) and state == "form" and field not in FORGOT_FIELDS
     body = body.replace(
-        "{{FORM_ERROR}}",
-        err_slot(error, "forgot-err")
-        if error and state == "form" and field not in FORGOT_FIELDS else "",
-    )
+        "{{FORM_ERROR}}", err_slot(error, "forgot-err") if pair_error else "")
     for name in FORGOT_FIELDS:
         hit = bool(error) and state == "form" and field == name
         slot_id = "%s-err" % name
+        described = slot_id if hit else (
+            "forgot-err" if pair_error and name in ("email", "code") else "")
         body = body.replace(
             "{{%s_INVALID}}" % name.upper(),
-            ' aria-invalid="true" aria-describedby="%s"' % slot_id if hit else "",
+            ' aria-invalid="true" aria-describedby="%s"' % described
+            if described else "",
         )
         body = body.replace(
             "{{%s_ERROR}}" % name.upper(),
@@ -2272,6 +2274,27 @@ class Handler(BaseHTTPRequestHandler):
             con.close()
         return self._send(303, "", location="/account")
 
+    def _account_answer(self, row, status, message, field=""):
+        """One refusal in the account page's own paper (429, 422).
+
+        A rate limit and a field error both land on the finished page: a bare
+        text/plain body would be the only page in this service that is not
+        designed, and the 429 on this form is reachable on its likeliest
+        mistake — the account-vs-machine sign-in confusion D-12 exists for
+        (Brand gate round 2, must 1). The template's `{{ACCOUNT_ERROR}}` slot
+        is the page-level one; a field error keeps its own slot under the
+        input it names.
+        """
+        con = db()
+        try:
+            tenant = con.execute("SELECT * FROM tenants WHERE slug = ?",
+                                 (row["slug"],)).fetchone()
+        finally:
+            con.close()
+        headers = {"Retry-After": str(RATE_WINDOW)} if status == 429 else None
+        return self._send(status, render_account_page(
+            row, tenant=tenant, error=message, field=field), headers=headers)
+
     def _account_resend(self):
         """Re-queue the mail the state owns; no new row, no new machine.
 
@@ -2291,9 +2314,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(303, "", location="/login",
                               headers={"Set-Cookie": _clear_cookie()})
         if not allow(self._client_ip(), "resend"):
-            return self._send(429, "Too many resends. Try again in ten minutes.\n",
-                              "text/plain; charset=utf-8",
-                              headers={"Retry-After": str(RATE_WINDOW)})
+            return self._account_answer(
+                row, 429, "Too many resends. Try again in ten minutes.")
         state = account_state(row)
         if state == "confirm":
             return self._confirm_resend(row)
@@ -2361,22 +2383,14 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(303, "", location="/login",
                               headers={"Set-Cookie": _clear_cookie()})
         if not allow(self._client_ip(), "account-password"):
-            return self._send(429, "Too many changes. Try again in ten minutes.\n",
-                              "text/plain; charset=utf-8",
-                              headers={"Retry-After": str(RATE_WINDOW)})
+            return self._account_answer(
+                row, 429, "Too many changes. Try again in ten minutes.")
         current = (fields.get("current") or [""])[0]
         password = (fields.get("password") or [""])[0]
         repeat = (fields.get("password2") or [""])[0]
 
         def refused(message, field):
-            con = db()
-            try:
-                tenant = con.execute("SELECT * FROM tenants WHERE slug = ?",
-                                     (row["slug"],)).fetchone()
-            finally:
-                con.close()
-            return self._send(422, render_account_page(
-                row, tenant=tenant, error=message, field=field))
+            return self._account_answer(row, 422, message, field)
 
         if not verify_password_or_dummy(current, row["password_hash"]):
             return refused("That password does not match.", "current")

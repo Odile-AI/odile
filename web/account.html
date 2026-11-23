@@ -45,13 +45,17 @@ a:focus-visible{outline:2px solid var(--ink);outline-offset:3px}
 .account{margin:48px 0 0;padding-top:24px;border-top:1px solid var(--line)}
 .account h2{margin:0 0 12px;font-size:1.34rem;line-height:1.2;font-weight:600;font-family:var(--serif)}
 .account form{display:flex;flex-direction:column;gap:16px;margin:16px 0 8px}
-.account label{font-weight:600;line-height:1.3}
-.account input[type=password]{width:100%;min-width:0;border-radius:0;min-height:44px;background:transparent;border:0;border-bottom:1px solid var(--edge);font:400 16.8px/1.4 var(--text);color:var(--ink);padding:9px 2px 11px;letter-spacing:.02em}
+.account label{font-weight:600;line-height:1.3;margin-bottom:-8px}
+.account input[type=password]{width:100%;min-width:0;border-radius:0;min-height:44px;background:transparent;border:0;border-bottom:1px solid var(--edge);font:400 16.8px/1.4 var(--text);color:var(--ink);padding:9px 2px 11px}
 .account input[type=password]:focus{outline:0;border-bottom-color:var(--ink)}
 .account input[type=password]:focus-visible{outline:2px solid var(--ink);outline-offset:3px}
 .account input[type=password][aria-invalid=true]{border-bottom-color:var(--error)}
 .account .err{margin:-8px 0 0;font-size:16px;line-height:1.5;font-style:italic;color:var(--error)}
 .account .note:last-child{margin-bottom:0}
+/* Each reset link is the whole content of its paragraph, so it is a target,
+   not inline prose (BRAND.md §Accessibility tokens; the same rule /forgot
+   already carries for its standalone links). */
+.account p.note a{display:inline-flex;align-items:center;min-height:44px}
 .account .next{margin:8px 0 12px}
 .primary{display:inline-flex;align-items:center;justify-content:center;min-height:44px;width:340px;max-width:100%;padding:15px 24px 14px 26px;background:var(--ink);color:var(--paper);border:1px solid var(--ink);text-decoration:none;font:600 10px/1 var(--text);text-transform:uppercase;letter-spacing:.28em}
 .primary:hover{background:var(--ink-hover);border-color:var(--ink-hover)}
