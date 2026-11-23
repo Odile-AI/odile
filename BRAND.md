@@ -884,9 +884,9 @@ on it.
   the display face is for the page, not the inbox.
 - **One action.** A link is a link: ink, underlined, 1 px; never a filled
   button drawn as an image. Each template has one action: the invitation's
-  register link, the confirmation's confirm link, the ready email's
-  first-visit link, which carries the single-use setup token, and the brief's
-  machine link (`Open the machine → <url>`). A printed value
+  register link, the confirmation's confirm link, the ready email's tokenless
+  first-visit link, where the owner signs in, and the brief's machine link
+  (`Open the machine → <url>`). A printed value
   is a fact, not a second action: the ready email prints the machine URL, the
   report URL and the measurement once each, on its own line, as `Label value`.
   The reset page and the first-visit guide are named addresses in sentences,
@@ -913,21 +913,23 @@ on it.
 |---|---|---|---|---|
 | `invite.txt` | Savio, personally, in alpha.0; `Odile <invite@mail.odile.fyi>` from A7, with an eight-character invitation code | `Your Odile machine` | Register at the link, and bring one real task | the alpha footer |
 | `confirm.txt` | `Odile <invite@mail.odile.fyi>`, Reply-To `help@odile.fyi` | `Confirm your email address` | Open the link to confirm | the alpha footer |
-| `ready.txt` | `Odile <invite@mail.odile.fyi>`, Reply-To `help@odile.fyi` | `Your machine is waiting.` (the `READY_SUBJECT` constant) | Check the report, then set the machine's sign-in | the alpha footer |
+| `ready.txt` | `Odile <invite@mail.odile.fyi>`, Reply-To `help@odile.fyi` | `Your machine is waiting.` (the `READY_SUBJECT` constant) | Check the report, then sign in with the password you chose when you registered | the alpha footer |
 
 The invitation is a person's message in alpha.0: the body below is its text, the
 sign-off stays `— Odile`, and the `From` becomes the transactional sender when
 the invitation is gated by codes (A7). The bench registers openly by design
 (`ROADMAP-ALPHA0` G12), so alpha.0's invitation carries no code and no claim
-token; the register link is the action. No template names the account password;
-the invitation and the ready email name the machine's sign-in only. The register
-page (ODL-341) carries the pair before the second password is met — "Your
-account page holds your machine's address and its state. Your machine has its own
-sign-in, which you set after you check its report." (PR/FAQ §3) — and the
-account page (ODL-583) carries it in one line under the form. The ready email's
-`Set your sign-in` is the pair's reduction at the point it is typed: the pair's
-claims-map row (C-9) is pending until ODL-577, and an email may quote published
-rows only (`docs/product/DECISION-password-reset.md` §3.5).
+token; the register link is the action. There is one password, and the
+invitation and the ready email name it: the machine's sign-in is the password
+chosen at registration (D-1, D-15), and the ready email's `Sign in` line is
+D-18's step. The register page
+(ODL-341) carries D-15 before the password is chosen, and the account page
+(ODL-583) carries D-17 in one line under the form. The ready email's check line
+is D-7's reduction (`Check the report before you sign in; it says PASS or FAIL.`)
+and its reset line is D-4 and D-19's. The which-password pair is gone, so no
+template carries a second credential or a second reduction of one. An email may
+quote published rows only, so every privacy, security or reliability sentence in
+the invitation and the ready email is a deck row or a subset of one.
 
 ### Invitation (`invite.txt`)
 
@@ -939,8 +941,9 @@ reserved for you in the private alpha.
 
 Register here: https://test.odile.fyi/register
 
-Use the address this email reached. The machine has its own sign-in; you will set
-it after you check the machine's report.
+Use the address this email reached. Your Odile password opens your machine and
+your account page. You chose it when you registered. No one at Odile holds a
+key to your machine.
 
 Bring one real thing you would do by hand this week — a page of notes to turn
 into a brief, a page to watch, a meeting to write up. After five short questions,
@@ -995,13 +998,13 @@ URL {{URL}}
 Report {{URL}}/verify
 Measurement {{MEASUREMENT}}
 
-Check the report first: it says PASS or FAIL. PASS means the machine booted the
-image whose fingerprint is above. The page shows the measurement too, if you want
-to compare.
+PASS means the machine booted the image whose fingerprint is above. The page
+shows the measurement too, if you want to compare.
 
-Set your sign-in: {{FIRST_VISIT}}
+Sign in: {{URL}}/first-visit — the password you chose when you registered.
 
-Set it only after the report says PASS. That password opens your workspace.
+Check the report before you sign in; it says PASS or FAIL. That password opens
+your machine too.
 
 Later, if you forget your sign-in:
 
@@ -1015,38 +1018,40 @@ Private alpha · Odile pays for the machine and the inference · no price
 ```
 
 The ready email's body never carries a passphrase, a key or the sign-in. It
-carries the machine URL, the report URL, the expected measurement, the
-first-visit URL that sets the sign-in (with the single-use setup token in it),
-the reset page and one navigation link to the guide. The template is
-`templates/emails/ready.txt`; `odilectl/claim.py` fills its four values
-(`{{URL}}`, `{{MEASUREMENT}}`, `{{FIRST_VISIT}}`, `{{GUIDE}}`) and queues one
-message per tenant. The report and reset URLs are composed from `{{URL}}`, so
-the filler needs no new value. The guide carries the four steps — open, check
-the report, set the sign-in, start — and no command. The recovery file attached
-to the message is the machine's own document and is re-cut by its own card (it
-still carries the Model A terminal).
+carries the machine URL, the report URL, the expected measurement, the tokenless
+first-visit page where the owner signs in, the reset page and one navigation link
+to the guide. The template is `templates/emails/ready.txt`; once ODL-925 lands
+(`odilectl/claim.py` is in its touches) `odilectl/claim.py` will fill its three
+values (`{{URL}}`, `{{MEASUREMENT}}`, `{{GUIDE}}`) and queue one message per
+tenant. The report and reset URLs are composed from `{{URL}}`, so the filler
+needs no new value. The guide carries the four steps — open, check
+the report, sign in, start — and no command. The recovery file attached to the
+message is the machine's own document and is re-cut by its own card (it still
+carries the Model A terminal).
 
 ### Every privacy, security or reliability sentence, and its row
 
 The map is the card's evidence (ODL-581): a sentence added without a row is a
-defect. Every entry is a §1 row, a subset of one, or — for the measurement
-comparison — the §4.4 evidence sentence that row's proof uses. None quotes a
-held clause from `docs/CLAIMS.md` §1a.
+defect. Every entry is a deck row (`D-*`: a §1 row or a recorded reduction) or a
+subset of one; for the measurement comparison it is the §4.4 evidence sentence
+that row's proof uses. None quotes a held clause from `docs/CLAIMS.md` §1a:
+D-1's app-layer clause and D-3's sign-in clause stay off the two templates.
 
 | Template | Sentence | Approved in `docs/CLAIMS.md` |
 |---|---|---|
 | invite | "You asked for a computer that keeps working when you close the tab." | §1 The machine: "It keeps working when you close the tab." |
 | invite | "A machine is reserved for you in the private alpha." | §1 First run: "A machine is reserved for you. When you claim it, it is built and starts itself." (the reservation clause; the alpha's trigger is the confirmation) |
-| invite | "The machine has its own sign-in; you will set it after you check the machine's report." | §1 Access, A7: "Your Odile sign-in is set on your machine at first visit and hashed there. We never see it."; §1 Confidential computing: "Check the machine before you trust it: the verify page shows PASS or FAIL, and you set your sign-in only after PASS." |
-| invite | "Nothing to install." | §1 First run: "Claiming is a form and a confirmation. Then the machine builds itself: you check the report, set your sign-in, and start." (a subset: there is no install step) |
+| invite | "Your Odile password opens your machine and your account page. You chose it when you registered." | §1 Access, D-1: "Your Odile password opens your machine and your account page. You chose it when you registered." (the first two sentences; the app-layer clause is held, §1a) |
+| invite | "No one at Odile holds a key to your machine." | §1 Access, D-3: "No one at Odile holds a key to your machine: no standing key, no root password, no disk passphrase." (the first sentence; the sign-in clause is held until ODL-925, §1a) |
+| invite | "Nothing to install." | §1 First run, D-18: "Claiming is a form and a confirmation. Then the machine builds itself: you check the report, sign in with the password you chose when you registered, and start." (a subset: there is no install step) |
 | invite | "No key to make, no terminal required." | §1 Access, A2: "The boot key in the command line is a public key with no private half. It is plumbing, not a credential." (a subset: nothing for the user to generate) |
 | confirm | "After you confirm, the machine is built and starts itself." | §1 First run: "A machine is reserved for you. When you claim it, it is built and starts itself." (the clause, with the alpha's trigger) |
-| ready | "Check the report first: it says PASS or FAIL." | §1 Confidential computing: "Check the machine before you trust it: the verify page shows PASS or FAIL…" |
-| ready | "PASS means the machine booted the image whose fingerprint is above." | §1 Confidential computing: "The boot is measured: firmware, kernel, initramfs and command line are hashed into a value the CPU signs."; the PASS/FAIL row above |
-| ready | "The page shows the measurement too, if you want to compare." | §4.4: "Compare the measurement to the one in your ready email."; the PASS/FAIL row above |
-| ready | "Set it only after the report says PASS." | §1 Confidential computing: "…you set your sign-in only after PASS." (the clause) |
-| ready | "That password opens your workspace." | §1 First run: "Your Odile sign-in is the username and password that open the workspace; only its hash is stored, on the machine." The row's next sentence, "There is no password and no account at HQ", is the one the account falsifies and ODL-577 replaces; this template quotes the first only. |
-| ready | "Later, if you forget your sign-in: … — your recovery code resets it." | §1 First run: "A lost Odile sign-in is reset on the machine with your recovery code. There is no HQ reset." |
+| ready | "PASS means the machine booted the image whose fingerprint is above." | §1 Confidential computing: "The boot is measured: firmware, kernel, initramfs and command line are hashed into a value the CPU signs."; D-7, the PASS/FAIL row |
+| ready | "The page shows the measurement too, if you want to compare." | §4.4: "Compare the measurement to the one in your ready email."; D-7 |
+| ready | "Sign in: {{URL}}/first-visit — the password you chose when you registered." | §1 First run, D-18: "…you check the report, sign in with the password you chose when you registered, and start." (the sign-in clause) |
+| ready | "Check the report before you sign in; it says PASS or FAIL." | §1 Confidential computing, D-7: "Check the machine before you trust it: the verify page shows PASS or FAIL." (the reduction) |
+| ready | "That password opens your machine too." | §1 First run, D-10: "…that password opens your account page and, until you change it, your machine too." (the machine clause) |
+| ready | "Later, if you forget your sign-in: … — your recovery code resets it." | §1 First run, D-4: "One recovery code resets both: your account password at the account page and your machine's sign-in on the machine. There is no emailed reset."; §1 Access, D-6: "…the code resets your sign-in…"; D-19: "A lost Odile sign-in is reset on the machine with your recovery code; HQ cannot reset your machine's sign-in." |
 
 The money, support and readiness sentences are not privacy, security or
 reliability claims: "Nothing to pay: Odile pays for the machine and the
@@ -1275,6 +1280,7 @@ names the `docs/CLAIMS.md` row that moved with it.
 | 2026-11-20 | **The grant sentence returns.** ODL-217 proved the grant and ODL-474 landed the A10 row, so the trust-moment rule no longer holds the support grant back: §Spacing and layout and the Do/Don't pair now say the grant is the page's own row — a tenant's `/verify` (`verify/verify.py` + `templates/verify.html`) names a live grant by its id, expiry, reason and key fingerprint in its `support access` row, read from `odile-support status`, instead of showing a bare FAIL, and a machine with no grant renders `no grant`. The page's tenant block also carries the published scoped row `No one at Odile can log in unless you grant it.` (`docs/CLAIMS.md` §1 *Access*), so the sentence above the rows and the row that proves it agree. No palette, typeface or artwork change; no public sentence in `docs/CLAIMS.md` changed (the A10 row shipped with ODL-474). | Designer | verifier, t_e23f3288 |
 | 2026-11-20 | **Component states: the skip link is a component, not a rule copied out of a commit.** §Accessibility tokens' Keyboard row asked for a skip link, but the sheet gave no values, so the carriers drifted: at this cut `web/roadmap.html` shipped `.20em` mono and revealed on `:focus`, its ring supplied only by the page's generic `a:focus-visible` rule, while t_eaa22faa's four page files at `1856358` — `web/first-visit.html`, `web/verify.html`/`web/verify-public.html` and `templates/verify.html` — ship `--text`, `:focus-visible` and the ring in the skip-link rule itself. The new row group pins the shipped rule (off screen at `left:-9999px; top:0` and first focusable; 24 px inset, 18 px at ≤560; `top:12px`; `z-index:10`; 44 px high at 12/16 padding; `--ink` fill; `--paper` label at 10 px caps / 600 / `.20em` / 1.2 in the text face; 2 px `--ink` ring at 3 px) and the three decisions the carriers were guessing: `:focus-visible` never `:focus`, no positive `tabindex`, never a second primary action. Measured on those four carriers at 1440, 390 and 320: 170.7 × 44 at (24, 12) and (18, 12), no horizontal overflow; the 390 bar covers the wordmark and `elementFromPoint` returns the link itself, recorded as accepted. The roadmap copy was still mono and `:focus`-revealed at that cut; t_2281fb61 has since re-cut it (merge `a08ec1f`) to `:focus-visible` with the ring in its own rule, keeping its page-local `ui-monospace` label, which the new row names as the one exception. No palette, face, artwork or public sentence changed. | Designer | verifier, t_36a2ae5a |
 | 2026-11-22 | **Email, the brief is built and its late sentence is the dispatch verdict.** `templates/brief.txt` is the brief's message frame, filled and sent from the tenant by `scripts/send_brief.py` (the tenant wiring is ODL-469), so §Email's status names it as built and `tools/brand_lint.py` scans it with the account templates. §Brief email's footer names the fourth footer line — `Brief emails go out through our own mail server at mail.odile.fyi; it carries the message, never your disk.` (§4.10) — and the retired `It ran when the machine came back up.` is replaced by the one sentence a `late` or `catch_up` dispatch carries, naming the local time and the delay (`This one ran at 07:14 — 14 minutes after its 07:00 slot.`), with none on an on-time brief: the sealed machine has no unlock step, and the dispatch record is the only source of lateness. The first line is the run's own greeting — morning before 12:00, afternoon from 12:00, evening from 18:00 in the owner's zone — so a 15:02 catch-up cannot open with "Good morning."; §Email's one-action rule names the brief's machine link. The greeting rule is the sheet's; the surface follows it on this card's next head. No palette, face or artwork change; no public sentence in `docs/CLAIMS.md` changed (§4.10 is unchanged). | Designer | verifier, ODL-235 |
+| 2026-11-22 | **Email, the copy map after B-once.** B-once (Savio, 20 November 2026) and the one recovery code (`docs/product/DECISION-one-recovery-code.md` §4) retire the pair the map quoted, so the sheet is re-pointed — and the invitation's template re-cut with it, while the ready template's cut is ODL-925's: the sign-in chosen at first visit, the operator having never seen it, the after-PASS gate, the claim page's set-the-sign-in step, the machine-stored hash with no account at HQ and the machine-only reset that said HQ never resets it. The invitation's sign-in paragraph becomes D-1 and D-3 (one password; no key held), its "Nothing to install." cell cites D-18, and `templates/emails/invite.txt` carries the same sentences (D-1's first two, D-3's first). The ready email loses the `{{FIRST_VISIT}}` action line and its single-use setup token: the action names the tokenless `{{URL}}/first-visit` and the password chosen at registration (D-15, D-18), the after-PASS line becomes D-7's reduction (`Check the report before you sign in; it says PASS or FAIL.`), "That password opens your machine too." is D-10's, and the reset line is D-4, D-6 and D-19's. §Email's one-action rule, the template table, the ready prose and the guide's four steps name the tokenless page and "sign in", not "set the sign-in"; the map's held-clause rule is unchanged. The §Ready block equals ODL-925's shipped `templates/emails/ready.txt` at `459daf4` byte for byte — the duplicated PASS/FAIL lead-in is dropped from the quote and its map cell with it, D-7 staying cited by the check line below `Sign in`. No palette, face or artwork change; no public sentence in `docs/CLAIMS.md` changed (the rows are v3.11's). | Designer | verifier, ODL-928 |
 | 2026-11-23 | **Component states: the form-level error is a page, not a string.** ODL-925's first-visit service answered its rate limit and its refused write as `text/plain` bodies — measured at 390×844 as a 47-byte page with an empty title, no `<h1>`, no link, a UA-white canvas and `rgb(0,0,0)` Times New Roman, which §Interaction's own rule and the palette both forbid. Both branches now re-render the state's own form (the sign-in, the classic setup, the reset, the recovery page) with one `.94rem` italic `--error` line, `role="alert"`, `id="notice"`, 16 px under the last field and directly above the action, and the same one action, so the retry is the same button; the field's `#error` and its `aria-describedby` stay the field's own. The new row pins those values and the two prohibitions — never a bare body, never two alerts on one state. Measured on the running service: the sign-in 429 and the refused write (500) at 390×844 and 1440×900, the recovery and reset 429s at 390×844 — each 1 `<h1>`, 1 form, 1 alert, no horizontal overflow, the notice 7.82:1 on paper. No palette, typeface or artwork change; no public sentence in `docs/CLAIMS.md` changed (the notice sentences are state copy, not claims). | Designer | verifier, ODL-925 |
 
 ## Do / Don't
