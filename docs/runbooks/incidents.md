@@ -230,8 +230,8 @@ starts.
 **C-2.** Your machine is built and waiting for one thing: the sign-in you set on it.
 The link in your ready email was good for 24 hours and has expired. Here is a
 new one: <link>. Open it, choose a password of at least 16 characters, and your
-workspace opens. The password is set on your machine and hashed there; we never
-see it. If the link says it was already used, the sign-in is already set — open
+workspace opens. The password is set on your machine and hashed there. If the link
+says it was already used, the sign-in is already set — open
 https://<slug>.odile.fyi and tell us if that fails.
 
 **C-3.** You cannot sign in; the machine is fine and your files are untouched. A
@@ -440,15 +440,16 @@ built with a copy of that hash; after that, changing one does not change the
 other." (D-2) D-19 is the qualified survivor: "…HQ cannot reset your machine's
 sign-in." (D-19) Four things the drill measured (§6.2):
 
-* a **wrong or used code answers `200`** and re-renders the form with `That
-  recovery code does not match.` — a check on the status code alone reads a
-  refusal as a success;
-* the **right code** sets the new sign-in and shows a **new code once**; at this
-  drill's head the old code died immediately, because both `POST
-  /first-visit/reset` and `POST /first-visit/recovery` spent a code and rotated
-  it. That is the **pre-ODL-926 measurement**: D-20 is the current row — "Your
-  recovery code works at both places until you replace it; using it does not
-  spend it." (D-20) — and ODL-926 lands the stable code;
+* at the **pre-ODL-926 head** a **wrong or used code** answered `200` and
+  re-rendered the form with `That recovery code does not match.` — a check on the
+  status code alone reads a refusal as a success;
+* the **right code** sets the new sign-in; at the pre-ODL-926 head the page also
+  showed a **new code once**, and the old code died immediately, because both
+  `POST /first-visit/reset` and `POST /first-visit/recovery` spent a code and
+  rotated it. That is the **pre-ODL-926 measurement**: D-20 is the current row —
+  "Your recovery code works at both places until you replace it; using it does not
+  spend it." (D-20) — and ODL-926 lands the stable code, whose reset response
+  shows no new code;
 * the reset **signs out every other browser** (the session secret is replaced)
   and **restarts the gateway** to load the new hash: the workspace answers `502`
   for a few seconds, so wait for `/` to answer `302` before calling a login a
