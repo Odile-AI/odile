@@ -2726,6 +2726,14 @@ Digests:
         self.assertIn(["cryptsetup", "luksDump", str(device)], calls)
         self.assertEqual(command, "cryptsetup luksDump %s" % device)
 
+    def test_the_three_powers_paragraph_names_the_sign_in_not_a_setup_step(self) -> None:
+        # B-once (ODL-929, D-7): the registration password is the machine's
+        # sign-in, so the check is "before you sign in", not a first-visit
+        # setup step. The retired phrase rode inside the signed installer.
+        body = self.page()
+        self.assertIn("compare it to the one in your ready email before you sign in", body)
+        self.assertNotIn("set your sign-in", body)
+
     def test_the_three_gaps_are_stated_in_order_with_the_manifest_note(self) -> None:
         body = self.page()
         gaps = ("The app layer is not hardware-measured yet.",
