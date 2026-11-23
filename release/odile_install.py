@@ -6099,7 +6099,7 @@ def main(argv: list[str] | None = None) -> int:
 if __name__ == "__main__":
     sys.exit(main())
 '''
-VERIFY_TEMPLATE_SHA256 = "548bc2701344dcd7b2943a34f1a5be4e11b01588be45c8f825629500871bcd80"
+VERIFY_TEMPLATE_SHA256 = "3b79b9672cc911802c9221202c6c7a04da6bb2edcc8c06e4f0383d516f920059"
 VERIFY_TEMPLATE = r'''<!doctype html>
 <html lang="en">
 <head>
@@ -6190,7 +6190,7 @@ pre code::selection{background:var(--term-ink);color:var(--term)}
   body{font-size:17px}
   main{padding:24px 18px 48px}
   .skip:focus-visible{left:18px}
-  .top{margin-bottom:24px}
+  .top{margin-bottom:32px}
   section{margin-top:32px;padding-top:24px}
   .checks,.checks tbody,.checks tr,.checks th,.checks td{display:block;width:auto}
   .checks thead{display:none}

@@ -1,7 +1,7 @@
 {
   "artifacts": {
     "installer": {
-      "sha256": "48d5b48ade2ca4b7ec94208a61ad4aec3c6bab68658a031ad21b3b7630197b20",
+      "sha256": "08245c49910590ed7f3da5035bd11775f5b5343c1e2ebfcccb308032dc2f2845",
       "size": 1563412,
       "url": "odile_install.py"
     },
@@ -14,14 +14,14 @@
   "boot": {
     "kernel": "6.12.115+deb13.1-amd64"
   },
-  "generated_at": "2026-11-23T00:40:00Z",
+  "generated_at": "2026-11-23T15:05:00Z",
   "manifest": {
-    "sha256": "a263d35b482175548f3dc371f04b6e451ce47212e48c67856f7bebcf8c9da59e",
+    "sha256": "08fd734da26d7f7eccdd7c04b8808f9130f261018b3550591325c067ba5c2200",
     "signature_url": "manifest.json.sig",
     "url": "manifest.json"
   },
-  "notes": "t_fe2aee5c: the shipped installer's gate docstring, its printed install-result label and a self-test comment named deploy/demo-host/deploy_demo_site.py, a file on no ref of this repository (git ls-files and git log --all both return nothing; no gate_ok function exists under deploy/). They now name the file that asserts the 302/401/200 table, deploy/demo-host/check_demo_host.sh (302 on /, 401 on /api/sessions, 200 with a session), so the label every tenant reads on an install prints a name that exists. One docstring, one printed string and two comments only: no managed config block, tenant file, skill row, install-script pin or embedded program moved, so this surgical re-cut moves installer_sha256, the manifest and this document.",
+  "notes": "t_fc412bd9: the tenant /verify page's header carried the 32 px wordmark with a 24 px bottom margin at \u2264560, leaving its box 12.0 px above the h1 \u2014 4 px under BRAND.md \u00a7Name and mark's 16 px clear space. The phone rule is now 32 px (the sheet's 4 px scale; 28 was off-scale), which measures 20.0 px at 390, 320 and 1440 with no overflow, both from the checked-out template and from the page verify/verify.py renders. installer/embed_verify.py re-pinned templates/verify.html (VERIFY_TEMPLATE and its sha256) and this surgical re-cut moves installer_sha256, the manifest and this document; no other embedded program, skill row or install-script pin moved.",
   "product": "odile",
-  "release": "2026.11.23-1",
+  "release": "2026.11.23-2",
   "schema": 1
 }
