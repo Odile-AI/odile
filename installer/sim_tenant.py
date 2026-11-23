@@ -7,7 +7,8 @@ NEAR key read at run time, then runs ``installer/odile_install.py --root`` as
 that user twice and asserts the card's simulation DoD:
 
   * the first run installs; the second prints ``tenant: same``;
-  * the sign-in gate is 302/401/200 (the deploy_demo_site.gate_ok shape);
+  * the sign-in gate is 302/401/200 (the shape deploy/demo-host/check_demo_host.sh
+    asserts);
   * one chat turn went straight to NEAR AI, ran a shell command, wrote a file,
     and one cron job exists and runs;
   * the gateway's process environment holds the per-user key from

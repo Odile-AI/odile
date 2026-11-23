@@ -1115,6 +1115,25 @@ manifest `7031d4a0…`). The id ledger: `-4` is t_509f85e4's support-grant help 
 (15:30Z), `-5` was this card's pre-review cut (16:35Z), and `-6` is later than
 every cut by `generated_at` (17:45Z).
 
+**The `2026.11.23-1` cut (t_fe2aee5c, the gate row names the file that runs
+it).** The installer's `gate_ok` docstring, the row an install prints and a
+self-test comment named `deploy/demo-host/deploy_demo_site.py`, which is on no
+ref (`git ls-files` and `git log --all` both empty, and no `gate_ok` exists
+under `deploy/`). They now name `deploy/demo-host/check_demo_host.sh`, which
+asserts the 302 on `/`, the 401 on `/api/sessions` and the 200 with a session.
+`install.md` §12.6 has the full record: installer `48d5b48a…` (1,563,412
+bytes), manifest `a263d35b…` (50,044 bytes, 48 skills, audit `6d3f7be0…`; its
+diff against `-7` is `installer_sha256` alone), skills `27d98728…` (852,651
+bytes, unchanged), `release.json` `3bf023b1…` (1,436 bytes) naming
+`2026.11.23-1` at `2026-11-23T00:40:00Z`, `--verify-signature` OK on the
+checkout's installer (`signature: OK (sha256 48d5b48a…)`), a one-byte edit
+`c98364d5…` (1,563,413 bytes) and `signature: BAD`, exit 3, and
+`tools/recut_release.py --check` eleven `ok` lines. It is committed, not
+deployed: measured 2026-11-23T00:43Z, the URL serves the deployed
+`2026.11.19-5` (installer `1d946c44…`, 1,503,889 bytes; manifest `7031d4a0…`).
+The id ledger: `-7` is t_69a749f0's docstring cut (2026-11-22T20:32Z), and
+`2026.11.23-1` is later than every cut by `generated_at` (00:40Z).
+
 **The `2026.11.22-7` cut (t_69a749f0, the installer's docstring names the
 deployer that runs).** The module docstring said the tenant install's pure
 helpers "are the same ones `deploy/demo-host/deploy_demo_host.py` calls"; that
@@ -1812,23 +1831,42 @@ committed pair, the signature travelled beside it (§3), and the manifest was
 rebuilt against the same root.
 
 The root is `/var/tmp/odile-sim-399`, an existing scratch install converged by
-the signed installer, then re-run to prove the idempotent path:
+the signed installer, then re-run to prove the idempotent path. The label row
+that run printed has been re-cut since (t_fe2aee5c, 2026-11-23), so the same
+second run on the current cut's own scratch root is recorded here — the shape is
+unchanged and the row now names the file that asserts it:
 
 ```sh
-$ sudo -u odiletest399 -H env HOME=/var/tmp/odile-sim-399/home/odiletest399 \
-    /usr/bin/python3 /var/tmp/odile-sim-399/bootstrap/odile_install.py \
-    --root /var/tmp/odile-sim-399 --user odiletest399 --port 9260 --meter-port 9261 \
-    --public-url http://odile-sim.test:9260 --recovery-kit …/odl332-kit.json \
-    --signin-password … --backup-password … --i-have-copied-it --no-tmux
-odile installer 0.1.0 — tenant plan (scratch) · sha256 8ca566d16ddfa0ca…
-same         meter.py … same Hermes install … same Webapp bundle (42 MB)
-same         config.yaml … same skins/odile.yaml … same .env
-same         odile-home/SKILL.md … odile-first-run … odile-help … AGENTS.md
-ok   the gate is 302/401/200 (deploy_demo_site.gate_ok shape): 302/401/200
-elapsed      0m 7s
-tenant: provisioned                       # run 1: services started
-                                          # run 2: the same command —
-tenant: same                              #   elapsed 0m 0s, no write line
+$ sudo -u odiletest -H env HOME=/var/tmp/odile-sim/home/odiletest \
+    /usr/bin/python3 /var/tmp/odile-sim/bootstrap/odile_install.py \
+    --root /var/tmp/odile-sim --user odiletest --port 9140 \
+    --public-url http://odile-sim.test:9140 --seed-url http://127.0.0.1:8082/seed \
+    --recovery-kit …/recovery-kit.json --signin-password … --backup-password … \
+    --i-have-copied-it --no-tmux
+odile installer 0.1.0 — simulation · sha256 48d5b48a…
+             user odiletest · webapp 127.0.0.1:9140
+signing key  sha256 13e8c2aee8263f550033448c8193a82b89498f533f52943e09c14d22e5b036e2 · SHA256:ZyFEbkw2oetDml63XaHTix0kUrR2kAVGZaaeDAHvXu8
+signature    OK (sha256 48d5b48ade2ca4b7ec94208a61ad4aec3c6bab68658a031ad21b3b7630197b20)
+same         /var/tmp/odile-sim/usr/local/bin/odile-install.sh
+skip         boot check (simulation)
+…
+same         Hermes install /var/tmp/odile-sim/home/odiletest/.hermes/hermes-agent
+             Hermes Agent v0.23.0 (2026.9.24) · stable · local 2bd378ed1b8d
+…
+== smoke
+ok   GET / without a session -> 302 to /login: 302
+ok   GET /api/sessions without a session -> 401: 401
+ok   POST /auth/password-login, wrong password -> 401: 401
+ok   POST /auth/password-login, the Odile password -> 200: 200
+ok   the sign-in sets four session cookies (__Host- over HTTPS, bare over HTTP): 4 cookie(s), 0 __Host-
+ok   GET / with the session cookie -> 200 Webapp shell: 200 shell=True
+ok   GET /api/sessions with the session cookie -> 200: 200
+ok   the gate is 302/401/200 (deploy/demo-host/check_demo_host.sh shape): 302/401/200
+same         chat/shell/file/cron smoke recorded at 2026-11-23T00:38:25Z
+same         /var/tmp/odile-sim/etc/odile/recovery.txt (backup password, certificate placeholder)
+confirm      recovery file copied off the machine (--i-have-copied-it)
+elapsed      0m 1s
+tenant: same
 ```
 
 ```sh
