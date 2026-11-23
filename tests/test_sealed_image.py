@@ -2620,6 +2620,85 @@ class FirstbootBenchTests(unittest.TestCase):
         self.assertIn("hostfwd=tcp:127.0.0.1:19133-:8091", netdev)
 
 
+class FirstbootWaitFirstVisitTests(unittest.TestCase):
+    """The boot's readiness probe: the bare `/first-visit`, and the form.
+
+    ODL-925 made the first visit a login, so `wait_first_visit` asks the page
+    without a setup token; nothing else in the tree calls it, so this class is
+    the only pin on the path it requests. A regression that puts the token back
+    in the query (`/first-visit?t=…`) fails the page 404 below and the exact-path
+    assertion beside it.
+    """
+
+    def _serve(self, handler: type) -> http.server.ThreadingHTTPServer:
+        server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), handler)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        return server
+
+    def test_the_probe_asks_the_bare_path_and_passes_on_the_form(self) -> None:
+        asked: list[str] = []
+
+        class Page(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):  # noqa: N802 - stdlib signature
+                asked.append(self.path)
+                if self.path == "/health":
+                    body = b"ok"
+                elif self.path == "/first-visit":
+                    body = (b'<html><form method="post" action="/first-visit">'
+                            b'<label for="password">Your sign-in</label></form></html>')
+                else:
+                    body = b""
+                self.send_response(200 if body else 404)
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, format, *args):  # noqa: A002 - stdlib signature
+                pass
+
+        server = self._serve(Page)
+        ok, detail = firstboot.wait_first_visit(server.server_address[1], seconds=2)
+        self.assertTrue(ok, detail)
+        self.assertEqual(detail, "200")
+        self.assertIn("/first-visit", asked)
+        self.assertEqual([path for path in asked if "?" in path], [])
+        self.assertEqual([path for path in asked if path not in ("/health", "/first-visit")], [])
+
+    def test_the_probe_fails_when_the_page_is_absent(self) -> None:
+        class Gone(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):  # noqa: N802 - stdlib signature
+                body = b"ok" if self.path == "/health" else b""
+                self.send_response(200 if body else 404)
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, format, *args):  # noqa: A002 - stdlib signature
+                pass
+
+        server = self._serve(Gone)
+        ok, detail = firstboot.wait_first_visit(server.server_address[1], seconds=0.3)
+        self.assertFalse(ok)
+        self.assertIn("status 404", detail)
+
+    def test_the_probe_fails_when_the_service_is_not_healthy(self) -> None:
+        class Sick(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):  # noqa: N802 - stdlib signature
+                self.send_response(503)
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+
+            def log_message(self, format, *args):  # noqa: A002 - stdlib signature
+                pass
+
+        server = self._serve(Sick)
+        ok, detail = firstboot.wait_first_visit(server.server_address[1], seconds=0.3)
+        self.assertFalse(ok)
+        self.assertIn("health status 503", detail)
+
+
 class FirstbootScriptTests(unittest.TestCase):
     """The units and the installer's flags: the image's boot contract."""
 
