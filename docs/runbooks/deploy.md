@@ -131,8 +131,8 @@ working tree and absent from its index. Today that is every private file under
 `tools/` and `docs/backlog.yaml`:
 
 - `tools/roadmap_page.py` is the generator `odile-roadmap.service` executes;
-  `tools/board_sync.py`, `tools/merge_card.py` and the rest are the private
-  machinery a deploy already had to keep.
+  the rest of the private machinery under `tools/` is what the board and the
+  merge gate run, and a deploy already had to keep it.
 - `docs/backlog.yaml` is that unit's `--backlog /opt/odile/docs/backlog.yaml`.
   The plan is HQ-only, so a worktree cannot carry it.
 
