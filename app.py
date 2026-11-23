@@ -826,11 +826,12 @@ def queue_ready(row: sqlite3.Row, tenant: sqlite3.Row | None) -> str:
         message_id = facts.get("message_id") or make_msgid(
             idstring="odile-ready.%s" % slug, domain="odile.fyi")
         url = str(facts.get("url") or "https://%s.%s" % (slug, TENANT_DOMAIN))
-        first_visit = str(facts.get("first_visit") or (url + "/first-visit"))
+        # ODL-925: the ready body names the tokenless first-sign-in page; the
+        # sidecar's `first_visit` is kept for older facts but no longer passed,
+        # because a setup token in a link is what B-once retired.
         body = claim.ready_body(
             url=url,
             measurement=str(facts.get("measurement") or pinned_measurement()),
-            first_visit_url=first_visit,
             guide_url=str(facts.get("guide_url") or claim.READY_GUIDE_URL),
         )
         message = EmailMessage()

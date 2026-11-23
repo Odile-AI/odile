@@ -229,17 +229,19 @@ class AccountBase(unittest.TestCase):
         """Write the outbox the provisioner writes: kit, facts, then the `.eml`.
 
         This is the installed shape the verifier reproduced: the ready email
-        carries the recovery kit as an attachment, and the kit is where the
-        setup token still lives (B-once retires it from the mail's own links,
-        not from the seed badge). It is also the shape that made every
-        serialization pick a fresh random MIME boundary. Returns the token and
-        the kit text, so a test can assert where each one went.
+        carries the recovery kit as an attachment, and neither the mail nor the
+        kit prints the setup token (ODL-925: the first visit is a tokenless
+        login with the password chosen at registration; the token is the
+        machine-side seed badge and the rebuild-seal key). It is also the shape
+        that made every serialization pick a fresh random MIME boundary.
+        Returns the token and the kit text, so a test can assert where each one
+        went — and that neither prints it.
         """
         slug = row["slug"]
         host = "%s.test.odile.fyi" % slug
         url = "https://" + host
         token = "ab" * 32
-        first_visit_url = url + "/first-visit?t=" + token
+        first_visit_url = url + "/first-visit"
         measurement = app.pinned_measurement()
         kit_text = claim.render_recovery_kit(
             slug=slug,
@@ -258,8 +260,7 @@ class AccountBase(unittest.TestCase):
             slug=slug,
             recipient=row["email"],
             subject=claim.READY_SUBJECT,
-            body=claim.ready_body(url=url, measurement=measurement,
-                                  first_visit_url=first_visit_url),
+            body=claim.ready_body(url=url, measurement=measurement),
             kit_text=kit_text,
             facts={
                 "kind": "ready",
@@ -474,7 +475,12 @@ class ResendTests(AccountBase):
             seeded, policy=email_policy.default).get_body(("plain",))
         self.assertIsNotNone(seeded_part, "the provisioner's mail has no plain part")
         assert seeded_part is not None
-        self.assertIn("first-visit?t=" + token, seeded_part.get_content())
+        # ODL-925: the provisioner's own ready mail is tokenless too.
+        seeded_body = seeded_part.get_content()
+        self.assertIn("/first-visit", seeded_body)
+        self.assertNotIn("first-visit?t=", seeded_body)
+        self.assertIsNone(re.search(r"\b[0-9a-f]{64}\b", seeded_body),
+                          "the provisioner's own mail carries a setup token")
 
         status, headers, _body = self.resend(
             cookie, origin="http://127.0.0.1:%d" % self.port)
@@ -498,8 +504,8 @@ class ResendTests(AccountBase):
         self.assertIsNone(re.search(r"\b[0-9a-f]{64}\b", body),
                           "the resend minted a setup token in the body")
 
-        # The kit rides along byte-for-byte, and it is where the token stays
-        # (the seed badge and the rebuild-seal key; B-once, Savio 2026-11-20).
+        # The kit rides along byte-for-byte and names the tokenless page; the
+        # setup token is the seed badge and the rebuild-seal key (ODL-925).
         attachments = list(message.iter_attachments())
         self.assertEqual(len(attachments), 1, "the kit is not attached")
         attachment = attachments[0]
@@ -507,7 +513,9 @@ class ResendTests(AccountBase):
                          "odile-%s-recovery-kit.txt" % slug)
         self.assertEqual(attachment.get_payload(decode=True),
                          kit_text.encode("utf-8"))
-        self.assertIn("first-visit?t=" + token, kit_text)
+        self.assertIn("https://%s.test.odile.fyi/first-visit" % slug, kit_text)
+        self.assertNotIn(token, kit_text,
+                         "the kit prints the setup token")
 
         # Two independent serializations of the same facts agree. The old
         # assertion here hashed the same file read twice, so it could not fail.
