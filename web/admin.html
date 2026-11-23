@@ -38,6 +38,12 @@ p{margin:0 0 16px;max-width:66ch}
 a{color:var(--ink);text-decoration-color:var(--soft);text-underline-offset:2px}
 a:focus-visible{outline:2px solid var(--ink);outline-offset:3px}
 .lede{color:var(--soft)}
+/* Addresses are the console's data and a legal one is 64 characters in the
+   local part alone; the "Signed in as" line and the success notice wrap them
+   at any character rather than widening the page (BRAND.md §Spacing
+   Overflow, Brand gate round 2). The rule is inherited, so each slot's own
+   class carries it. */
+.lede strong{overflow-wrap:anywhere}
 .note{margin:0 0 12px;font-size:16px;line-height:1.6;color:var(--soft)}
 .note strong{font-weight:600;overflow-wrap:anywhere}
 /* The page's two sections sit behind the sheet's hairline; the action leads
@@ -82,7 +88,7 @@ table.accounts tr:last-child td{border-bottom:0}
   table.accounts td:nth-child(2)::before{content:"Machine · ";color:var(--soft)}
   table.accounts td:nth-child(3)::before{content:"Address confirmed · ";color:var(--soft)}
 }
-.ok{margin:0 0 12px;font-size:19.52px;line-height:1.4;font-style:italic;font-weight:400}
+.ok{margin:0 0 12px;font-size:19.52px;line-height:1.4;font-style:italic;font-weight:400;overflow-wrap:anywhere}
 </style>
 </head>
 <body>

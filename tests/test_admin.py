@@ -31,6 +31,7 @@ import base64
 import email
 import hashlib
 import html
+from html.parser import HTMLParser
 import http.client
 import json
 import os
@@ -794,6 +795,111 @@ class ConsoleSheetTests(unittest.TestCase):
         self.assertEqual(
             sorted(scoped - present), [],
             "styled but never rendered: %s" % sorted(scoped - present))
+
+
+class AddressSlotWrapTests(unittest.TestCase):
+    """Every address the console prints sits in a slot that wraps.
+
+    Brand gate round 2 fed the page a legal address: `EMAIL_RE` allows a
+    64-character local part, and the admin's own address is the "Signed in
+    as" line. With one, the page widened at 320, 390 and 720 (`scrollWidth`
+    916 against a 390 viewport) because `.lede strong` and the success
+    notice `.ok` were the only address slots the sheet left without
+    `overflow-wrap`; `BRAND.md` §Spacing *Overflow* says the page never
+    widens in any state. The rule is inherited, so a wrapping ancestor is
+    enough. This walks every state the page can render, finds each run of
+    text that is an address, and requires one.
+    """
+
+    ADDRESS = re.compile(r"[^\s<>@]+@[^\s<>@]+\.[A-Za-z]{2,}")
+    VOID = {"area", "base", "br", "col", "embed", "hr", "img", "input",
+            "link", "meta", "source", "track", "wbr"}
+    OPAQUE = {"style", "script", "title", "head"}
+
+    class Tree(HTMLParser):
+        """Each text run with the classes on it and on its ancestors."""
+
+        def __init__(self, address, void, opaque):
+            super().__init__(convert_charrefs=True)
+            self.address, self.void, self.opaque = address, void, opaque
+            self.stack: list[tuple[str, list[str]]] = []
+            self.hits: list[list[tuple[str, list[str]]]] = []
+
+        def handle_starttag(self, tag, attrs):
+            if tag in self.void:
+                return
+            classes = (dict(attrs).get("class") or "").split()
+            self.stack.append((tag, classes))
+
+        def handle_startendtag(self, tag, attrs):
+            return
+
+        def handle_endtag(self, tag):
+            for index in range(len(self.stack) - 1, -1, -1):
+                if self.stack[index][0] == tag:
+                    del self.stack[index:]
+                    return
+
+        def handle_data(self, data):
+            if not self.address.search(data):
+                return
+            if any(tag in self.opaque for tag, _ in self.stack):
+                return
+            self.hits.append(list(self.stack))
+
+    def states(self) -> list[str]:
+        long_local = "a" * 64
+        row = {"email": "%s@example.test" % long_local,
+               "slug": "odl-tester",
+               "email_verified_at": None}
+        return [
+            app.render_admin(allowed=True, actor="%s@example.test" % long_local,
+                             accounts=[row]),
+            app.render_admin(allowed=True, actor="admin@example.com",
+                             accounts=[row],
+                             notice="The address is changed. The confirmation"
+                                    " goes to %s@example.test." % ("b" * 68)),
+            app.render_admin(allowed=True, actor="admin@example.com",
+                             accounts=[row], error="A message.",
+                             field="new_email"),
+            app.render_admin(allowed=False),
+        ]
+
+    def sheet(self) -> str:
+        found = re.search(r"<style>(.*?)</style>", self.states()[0], re.S)
+        assert found is not None, "the console page carries no <style>"
+        return re.sub(r"/\*.*?\*/", "", found.group(1), flags=re.S)
+
+    def wrapping_classes(self) -> set[str]:
+        classes = set()
+        for prelude, body in re.findall(r"([^{}]+)\{([^{}]*)\}", self.sheet()):
+            if "overflow-wrap" not in body:
+                continue
+            for selector in prelude.split(","):
+                classes.update(
+                    re.findall(r"\.([A-Za-z][A-Za-z0-9_-]*)", selector))
+        return classes
+
+    def test_every_address_the_page_prints_wraps_inside_its_slot(self):
+        wrapping = self.wrapping_classes()
+        self.assertTrue(wrapping, "no rule in the sheet wraps text")
+        bare = []
+        seen = 0
+        for state in self.states():
+            tree = self.Tree(self.ADDRESS, self.VOID, self.OPAQUE)
+            tree.feed(state)
+            for ancestors in tree.hits:
+                seen += 1
+                classes = {name for _tag, names in ancestors for name in names}
+                if classes & wrapping:
+                    continue
+                bare.append(" > ".join(
+                    "%s%s" % (tag, "." + ".".join(names) if names else "")
+                    for tag, names in ancestors))
+        self.assertGreater(seen, 3, "the states print no address to check")
+        self.assertEqual(
+            bare, [], "address printed in a slot with no wrapping rule: %s"
+                      % bare)
 
 
 class RereadFailureTests(unittest.TestCase):
