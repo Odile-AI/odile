@@ -297,14 +297,25 @@ in `docs/evidence/a2-recycle.md`):
    true` is the rename taking effect at the next boot, which the recycle is
    anyway.
 3. **Free A without terminating.** `odilectl destroy` terminates; the machine
-   must live on. Move A's row to `destroyed` (the state store's own transition,
-   with the reason) **and clear its machine columns**: `tenant_state.server_id`
-   and `tenants.server_id` are `UNIQUE`, and a destroyed row otherwise keeps the
-   id, so B's provision cannot record the same machine (the first `--apply` dies
-   `sqlite3.IntegrityError: UNIQUE constraint failed: tenant_state.server_id`).
-   Delete A's DNS record too — and note `odilectl dns delete <slug>` names
-   `<slug>.<dns_zone>` (the apex), not `<slug>.<tenant_domain>`; on the bench it
-   removes the wrong record and leaves the tenant's own.
+   must live on, so use its handover sibling:
+
+   ```sh
+   odilectl release odl-<A> --reason 'handover to odl-<B>' --apply
+   odilectl dns delete odl-<A> --apply
+   ```
+
+   `release` moves A's row to `destroyed` and clears every machine column in one
+   transaction — `tenant_state` and `tenants` commit together, because both
+   `server_id` columns are `UNIQUE` and a destroyed row that kept the id made
+   B's first `provision --apply` die `sqlite3.IntegrityError: UNIQUE constraint
+   failed: tenant_state.server_id`. The machine it let go is kept in the row's
+   `detail.released`, so `reconcile` still reports it as a `zombie_vm` while it
+   lives on and stops reporting it once B's live row records the same id; a
+   second run and an already released row are success, and `--dry-run` prints
+   the same plan without a write. `dns delete` resolves the record name through
+   `tenant_domain` when the config sets it — on the bench it removes
+   `odl-<A>.test.odile.fyi`, the record `provision --worker` wrote — and
+   through `dns_zone` in production, where no `tenant_domain` is set.
 4. **Create B's rows** the way the claim path does (a `tenants` row with B's
    public key, a verified `accounts` row queued) and run `odilectl provision
    <B> --key <B.pub> --apply`. The reuse path prints `nothing ordered (the
@@ -320,6 +331,23 @@ in `docs/evidence/a2-recycle.md`):
    -> first_visit) · refreshed /etc/odile/boot-key.pub from the measured line`,
    and `/etc/odile/boot-record.json` carries the new line's `cmdline_sha256`,
    the new boot-key fingerprint and the boot's measurement.
+
+Measured 2026-11-23T21:01Z on a copy of the bench database (`sqlite3 .backup`,
+so the live file is untouched): `odilectl release odl-348b2c --apply` reported
+`first_visit -> destroyed`, cleared `server_id, hostname, ipv4, plan_id,
+release, expires_at` on the state row and `server_id`/`ipv4` on the `tenants`
+row, kept the machine as `detail.released.server_id=168020b4`, and a second run
+answered `changed=false`; `odilectl reconcile` then named
+`zombie_vm odl-348b2c (server_id=168020b4, released_at=2026-11-23T21:01:36Z)`,
+and `odilectl provision odl-348b2c --apply` reopened the row and recorded the
+same machine (`created: False`, `web_row: repointed`, `first_boot`). The same
+two writes without `release` fail `UNIQUE constraint failed:
+tenant_state.server_id` and then `UNIQUE constraint failed: tenants.server_id`.
+For DNS, `odilectl dns delete odl-348b2c --dry-run --config
+/root/.odile/config.test.yaml` printed `dns.deleted: name="odl-348b2c.test.odile.fyi"`
+with the bench record's own id, and `getent hosts odl-348b2c.test.odile.fyi`
+resolved to the bench machine's address while the apex name `odl-348b2c.odile.fyi`
+did not resolve at all.
 
 Known gap at this writing: the image bakes `/etc/hostname` from its build name
 (`deploy/image/sealed-image.sh`), and no first-boot step re-derives it from

@@ -598,6 +598,89 @@ class DnsCommandTest(DnsBase):
         self.assertEqual(report.payload["action"], "deleted")
         self.assertEqual(transport.writes(), [])
 
+    # The bench serves `<slug>.test.odile.fyi` inside the same Cloudflare zone
+    # as production (`odile.fyi`). The record's *name* follows `tenant_domain`;
+    # the *zone* the client talks to stays `dns_zone`. Measured on ODL-348:
+    # `dns delete` removed the apex record and left the tenant's own pointing at
+    # the box the next tenant now owns.
+    BENCH = f"{TENANT}.test.odile.fyi"
+
+    def bench_config(self):
+        return self.write_config(dns_token=TOKEN, dns_zone=ZONE, tenant_domain="test.odile.fyi")
+
+    def test_create_names_the_record_after_tenant_domain(self):
+        self.bench_config()
+        transport = RecordedTransport(
+            {
+                **zone_routes([(200, api_ok([]))]),
+                ("POST", f"/zones/{ZONE_ID}/dns_records"): [
+                    (200, api_ok(record_row(name=self.BENCH)))
+                ],
+            }
+        )
+
+        report = dns.run(
+            self.context(), self.args("create", TENANT, "--ip", IP), transport=transport
+        )
+
+        self.assertEqual(report.payload["name"], self.BENCH)
+        self.assertEqual(report.payload["zone"], ZONE)
+        create = [call for call in transport.calls if call["method"] == "POST"][0]
+        self.assertEqual(create["body"]["name"], self.BENCH)
+        lookup = [call for call in transport.calls if call["method"] == "GET"][-1]
+        self.assertEqual(lookup["query"]["name"], [self.BENCH])
+        self.assertEqual(lookup["path"], f"/zones/{ZONE_ID}/dns_records")
+
+    def test_settle_finds_the_record_under_tenant_domain(self):
+        self.bench_config()
+        transport = RecordedTransport(
+            {
+                **zone_routes([(200, api_ok([record_row(name=self.BENCH, ttl=120)]))]),
+                ("PATCH", f"/zones/{ZONE_ID}/dns_records/rec123"): [
+                    (200, api_ok(record_row(name=self.BENCH, ttl=dns.SETTLED_TTL)))
+                ],
+            }
+        )
+
+        report = dns.run(self.context(), self.args("settle", TENANT), transport=transport)
+
+        self.assertEqual(report.payload["name"], self.BENCH)
+        self.assertEqual(report.payload["ttl"], dns.SETTLED_TTL)
+        self.assertEqual(report.payload["action"], "updated")
+
+    def test_delete_removes_the_record_under_tenant_domain(self):
+        self.bench_config()
+        transport = RecordedTransport(
+            {
+                **zone_routes([(200, api_ok([record_row(name=self.BENCH)]))]),
+                ("DELETE", f"/zones/{ZONE_ID}/dns_records/rec123"): [
+                    (200, api_ok({"id": "rec123"}))
+                ],
+            }
+        )
+
+        report = dns.run(self.context(), self.args("delete", TENANT), transport=transport)
+
+        self.assertEqual(report.payload["name"], self.BENCH)
+        self.assertEqual(report.payload["action"], "deleted")
+        deletes = [call for call in transport.calls if call["method"] == "DELETE"]
+        self.assertEqual([call["path"] for call in deletes], [
+            f"/zones/{ZONE_ID}/dns_records/rec123"
+        ])
+        lookup = [call for call in transport.calls if call["method"] == "GET"][-1]
+        self.assertEqual(lookup["query"]["name"], [self.BENCH])
+
+    def test_without_tenant_domain_the_record_name_falls_back_to_dns_zone(self):
+        """A production config has no `tenant_domain`; nothing moves for it."""
+        self.write_config(dns_token=TOKEN, dns_zone=ZONE)
+        transport = RecordedTransport(zone_routes([(200, api_ok([]))]))
+
+        report = dns.run(self.context(), self.args("delete", TENANT), transport=transport)
+
+        self.assertEqual(report.payload["name"], f"{TENANT}.{ZONE}")
+        lookup = [call for call in transport.calls if call["method"] == "GET"][-1]
+        self.assertEqual(lookup["query"]["name"], [f"{TENANT}.{ZONE}"])
+
     def test_settle_moves_the_record_and_reports_it(self):
         settled = record_row(ttl=dns.SETTLED_TTL)
         transport = RecordedTransport(
