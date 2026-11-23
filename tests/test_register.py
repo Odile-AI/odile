@@ -22,6 +22,9 @@ What is pinned here, in the card's own words:
   browser on its next request;
 * the registration page carries one approved sentence, four fields, one button,
   no JavaScript and no third-party request;
+* a host whose unit does not say `open` answers 302 to `/register` for GET and
+  POST, writes no row and no mail, and both units pin their side of the gate
+  (ODL-949);
 * the privacy inventory names every `accounts.*` column.
 
     /usr/bin/python3 -m unittest tests.test_register -v
@@ -118,6 +121,11 @@ def form(**fields) -> str:
 class FlowBase(unittest.TestCase):
     """One real service per class, one throwaway database and outbox."""
 
+    #: The bench unit states `open` (ODL-949), and these classes exercise the
+    #: door it opens; the closed-host classes below override this. The env var
+    #: is removed first so an ambient value can never decide a test's side.
+    REGISTER_ENV: dict = {"ODILE_REGISTER": "open"}
+
     @classmethod
     def setUpClass(cls) -> None:
         cls.tmp = tempfile.TemporaryDirectory(prefix="odile-register-")
@@ -138,6 +146,8 @@ class FlowBase(unittest.TestCase):
             ODILE_ACCOUNT_HOST="https://test.odile.fyi",
             ODILE_TENANT_DOMAIN="test.odile.fyi",
         )
+        env.pop("ODILE_REGISTER", None)
+        env.update(cls.REGISTER_ENV)
         cls.proc = subprocess.Popen(
             [sys.executable, str(ROOT / "app.py")], env=env,
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
@@ -341,6 +351,98 @@ class RegistrationTests(FlowBase):
         # The service is healthy again: the same POST now makes the row.
         self.assertEqual(self.register(email)[0], 200)
         self.assertIsNotNone(self.account(email))
+
+
+# ------------------------------------------------- production's closed door (ODL-949)
+
+
+class ClosedDoorBehaviour:
+    """What a host whose unit does not say ``open`` must answer.
+
+    Production has no invitation code until A7 and no worker that drains its
+    ``accounts``, so the door is shut before the page renders or the form is
+    parsed: one 302 to the waitlist, no row, no confirmation mail. The
+    account doors stay served — a future account must still confirm and sign in.
+    """
+
+    def test_get_answers_302_to_the_waitlist_and_renders_no_form(self):
+        status, headers, body = request(self.port, "GET", "/register")
+        self.assertEqual(status, 302)
+        self.assertEqual(headers.get("Location"), "/")
+        self.assertEqual(body, b"")
+        self.assertNotIn(b'name="email"', body)
+
+    def test_post_answers_302_before_parsing_and_writes_no_row_and_no_mail(self):
+        email = self.email()
+        status, headers, body = self.register(email)
+        self.assertEqual(status, 302, body[:300])
+        self.assertEqual(headers.get("Location"), "/")
+        self.assertEqual(body, b"")
+        self.assertIsNone(self.account(email))
+        connection = self.connect()
+        try:
+            self.assertEqual(connection.execute(
+                "SELECT count(*) FROM accounts").fetchone()[0], 0)
+        finally:
+            connection.close()
+        confirm = self.outbox / "confirm"
+        self.assertEqual(sorted(confirm.glob("*.eml")) if confirm.is_dir() else [], [])
+
+    def test_a_refused_post_does_not_poison_the_next_request_on_its_connection(self):
+        """The refused body is drained, not left to become the next request line.
+
+        Measured live before the drain: POST /register answered 302, and the
+        next GET on the same keep-alive connection was read as
+        ``email=…`` and answered 501 (RFC 9112 §9.3).
+        """
+        connection = http.client.HTTPConnection("127.0.0.1", self.port, timeout=30)
+        body = form(email=self.email(), password=SIGN_IN, password2=SIGN_IN,
+                    consent="yes")
+        connection.request("POST", "/register", body=body,
+                           headers={"Content-Type": "application/x-www-form-urlencoded"})
+        first = connection.getresponse()
+        first.read()
+        self.assertEqual(first.status, 302)
+        connection.request("GET", "/signin")
+        second = connection.getresponse()
+        payload = second.read()
+        connection.close()
+        self.assertEqual(second.status, 200, payload[:300])
+        self.assertIn(b"Sign in", payload)
+
+    def test_the_account_doors_stay_served(self):
+        for path in ("/signin", "/login", "/forgot"):
+            status, _headers, _body = request(self.port, "GET", path)
+            self.assertEqual(status, 200, path)
+
+
+class ClosedRegisterTests(ClosedDoorBehaviour, FlowBase):
+    """The production unit line: ``Environment=ODILE_REGISTER=closed``."""
+
+    REGISTER_ENV = {"ODILE_REGISTER": "closed"}
+
+
+class DefaultRegisterTests(ClosedDoorBehaviour, FlowBase):
+    """No flag at all is the same door: closed is the default, not an opt-in."""
+
+    REGISTER_ENV = {}
+
+
+class UnitPinTests(unittest.TestCase):
+    """Both units state their side of G12, so a silent edit cannot flip it."""
+
+    def _lines(self, path):
+        text = (ROOT / path).read_text(encoding="utf-8")
+        return [line.strip() for line in text.splitlines()
+                if line.strip().startswith("Environment=ODILE_REGISTER=")]
+
+    def test_the_production_unit_says_closed_and_only_closed(self):
+        self.assertEqual(self._lines("odile.service"),
+                         ["Environment=ODILE_REGISTER=closed"])
+
+    def test_the_bench_unit_template_says_open_and_only_open(self):
+        self.assertEqual(self._lines("deploy/bench/odile-bench.service.in"),
+                         ["Environment=ODILE_REGISTER=open"])
 
 
 class ConfirmTests(FlowBase):
@@ -638,6 +740,8 @@ class RateLimitTests(unittest.TestCase):
             ODILE_ATTEST=str(directory / "a.json"),
             ODILE_ROADMAP=str(directory / "r.html"),
             ODILE_ACCOUNT_HOST="https://test.odile.fyi",
+            # The bench's door (ODL-949): this class exercises its limiter.
+            ODILE_REGISTER="open",
         )
         cls.proc = subprocess.Popen([sys.executable, str(ROOT / "app.py")], env=env,
                                     stdout=subprocess.PIPE, stderr=subprocess.STDOUT)

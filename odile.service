@@ -14,6 +14,10 @@ Environment=ODILE_PORT=8080
 Environment=ODILE_BIND=127.0.0.1
 Environment=ODILE_DB=/var/lib/odile/waitlist.db
 Environment=ODILE_ATTEST=/var/lib/odile/attestation.json
+# ODL-949: production has no drain worker for `accounts` and no invitation
+# code until A7, so /register answers 302 to the waitlist. Fail-closed in the
+# app too: an absent line here closes the door rather than opening it.
+Environment=ODILE_REGISTER=closed
 Environment=PYTHONUNBUFFERED=1
 # runs as root (the + prefix) because /dev/sev-guest is 0600
 ExecStartPre=+/usr/bin/python3 /opt/odile/attest.py /var/lib/odile/attestation.json
