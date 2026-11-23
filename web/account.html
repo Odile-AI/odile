@@ -22,6 +22,12 @@
 html{-webkit-text-size-adjust:100%}
 body{margin:0;background:var(--paper);color:var(--ink);font:400 18px/1.6 var(--text);-webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility}
 main{max-width:720px;margin:0 auto;padding:32px 24px 64px}
+.skip{position:absolute;left:-9999px;top:0}
+.skip:focus-visible{left:24px;top:12px;z-index:10;display:inline-block;min-height:44px;padding:12px 16px;
+  background:var(--ink);color:var(--paper);text-decoration:none;
+  font:600 10px/1.2 var(--text);
+  letter-spacing:.20em;text-transform:uppercase;
+  outline:2px solid var(--ink);outline-offset:3px}
 .brand{display:inline-block;padding:12px 0;margin:-12px 0 24px;color:var(--ink);text-decoration:none;font-size:1.5rem;font-weight:500;letter-spacing:-.03em;line-height:.88;font-family:var(--serif)}
 .brand:focus-visible{outline:2px solid var(--ink);outline-offset:3px}
 h1{margin:0 0 16px;font-size:clamp(2.2rem,5vw,3.4rem);line-height:1.04;letter-spacing:-.025em;font-weight:500;font-family:var(--serif)}
@@ -34,6 +40,19 @@ a:focus-visible{outline:2px solid var(--ink);outline-offset:3px}
 .trial{margin:24px 0 16px;font-size:17px;line-height:1.6;color:var(--ink)}
 .password{margin:0 0 16px}
 .actions{margin:24px 0 0}
+/* The account's own actions (ODL-578): the change form and the two reset
+   links, under the state and the trial, separated by the sheet's hairline. */
+.account{margin:48px 0 0;padding-top:24px;border-top:1px solid var(--line)}
+.account h2{margin:0 0 12px;font-size:1.34rem;line-height:1.2;font-weight:600;font-family:var(--serif)}
+.account form{display:flex;flex-direction:column;gap:16px;margin:16px 0 8px}
+.account label{font-weight:600;line-height:1.3}
+.account input[type=password]{width:100%;min-width:0;border-radius:0;min-height:44px;background:transparent;border:0;border-bottom:1px solid var(--edge);font:400 16.8px/1.4 var(--text);color:var(--ink);padding:9px 2px 11px;letter-spacing:.02em}
+.account input[type=password]:focus{outline:0;border-bottom-color:var(--ink)}
+.account input[type=password]:focus-visible{outline:2px solid var(--ink);outline-offset:3px}
+.account input[type=password][aria-invalid=true]{border-bottom-color:var(--error)}
+.account .err{margin:-8px 0 0;font-size:16px;line-height:1.5;font-style:italic;color:var(--error)}
+.account .note:last-child{margin-bottom:0}
+.account .next{margin:8px 0 12px}
 .primary{display:inline-flex;align-items:center;justify-content:center;min-height:44px;width:340px;max-width:100%;padding:15px 24px 14px 26px;background:var(--ink);color:var(--paper);border:1px solid var(--ink);text-decoration:none;font:600 10px/1 var(--text);text-transform:uppercase;letter-spacing:.28em}
 .primary:hover{background:var(--ink-hover);border-color:var(--ink-hover)}
 form{margin:16px 0 0}
@@ -43,10 +62,11 @@ button.secondary:hover{background:rgba(28,24,19,.05);border-color:var(--ink)}
 button:focus-visible{outline:2px solid var(--ink);outline-offset:3px}
 .foot{margin:32px 0 0;padding-top:16px;border-top:1px solid var(--line);font-size:16px;color:var(--soft)}
 .foot a{display:inline-flex;align-items:center;min-height:44px;margin-right:16px}
-@media (max-width:560px){main{padding:24px 18px 48px}.primary,button{width:100%}}
+@media (max-width:560px){main{padding:24px 18px 48px}.skip:focus-visible{left:18px}.primary,button{width:100%}}
 </style>
 </head>
 <body>
+<a class="skip" href="#main">Skip to content</a>
 <main id="main">
   <a class="brand" href="/">Odile</a>
 
@@ -90,6 +110,29 @@ button:focus-visible{outline:2px solid var(--ink);outline-offset:3px}
 
   <p class="trial">Your trial ends on {{TRIAL}}.</p>
   <p class="note password">Your Odile password opens your machine too.</p>
+
+  <!--actions-->
+  <section class="account" aria-labelledby="account-password">
+    <h2 id="account-password">Change your password</h2>
+    <p class="note">This changes your account password. Your machine's sign-in is unchanged; change it on the machine.</p>
+    <form method="post" action="/account/password" novalidate>
+      {{ACCOUNT_ERROR}}
+      <label for="current">Current password</label>
+      <input id="current" name="current" type="password" minlength="16" maxlength="1024" autocomplete="current-password"{{CURRENT_INVALID}}>
+      {{CURRENT_ERROR}}
+      <label for="new">New password (at least 16 characters)</label>
+      <input id="new" name="password" type="password" minlength="16" maxlength="1024" autocomplete="new-password"{{PASSWORD_INVALID}}>
+      {{PASSWORD_ERROR}}
+      <label for="new2">Repeat the new password</label>
+      <input id="new2" name="password2" type="password" minlength="16" maxlength="1024" autocomplete="new-password"{{PASSWORD2_INVALID}}>
+      {{PASSWORD2_ERROR}}
+      <button class="secondary" type="submit">Change the password</button>
+    </form>
+    <p class="note next"><a href="/forgot">Forgot it? Reset it with your recovery code</a></p>
+    {{MACHINE_RESET_LINK}}
+    <p class="note">Lost your code? There is no other way back: ask us to delete your account and machine, then register again. Your backup is the only way to bring the files.</p>
+  </section>
+  <!--/actions-->
 
   <p class="foot"><a href="/">odile.fyi</a><a href="/faq">Questions</a><a href="/privacy">Privacy</a></p>
 </main>
