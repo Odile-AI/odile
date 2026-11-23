@@ -540,10 +540,24 @@ edit without re-measuring.
   alignment), 900 px (demo workspace rail), 980 px (two-column product grid).
   Five are enough; a sixth is a new decision.
 - **Measure:** 36ch marketing, 60–72ch product, 66ch email, 1100 px video.
-- **Above the fold:** at 390×844 the primary action is visible without
-  scrolling. Marketing carries at most three blocks before its one action; the
-  claim ceremony carries at most seven, and a fourth pre-action block is a
-  decision to move it after the action or cut it. The trust moment — no one at
+- **Above the fold:** the rule is measured at 390×844, the reference handset.
+  There the marketing page's one action is visible without scrolling (the
+  landing's button ends at 399.58 px); a form page's action follows its own
+  fields — the console's `Re-point the address` ends at 704 px with the legal
+  77-character admin address, and the claim form's `Claim my machine` ends at
+  889.03 px, one short scroll under its five-note *Who holds what* block.
+  Marketing carries at most three blocks before its one action; the claim
+  ceremony carries at most seven, and a fourth pre-action block is a decision
+  to move it after the action or cut it. **320×640 is not a fold width.** At
+  320 the sheet holds *Overflow* below and the ≤560 small-screen scale, not
+  this rule, and the console is the measured case: with the 77-character
+  `Signed in as` line its action ends at 781.78 px, and with an ordinary
+  16-character address at 695.39 px, because the button sits 16 px under its
+  second field and the reader meets it in the same scroll as that field. A
+  later card does not move the number or re-open the width. The *primary below
+  the fold* prohibition in §Do / Don't is the decoration case — a primary
+  pushed under ornament — and these two measured cases are the pages' own trust
+  block and their own fields, not ornament. The trust moment — no one at
   Odile holds the disk key, the seal is the key, and there is no reboot wait —
   sits above the fold on the landing and claim screens. The support-grant
   sentence is the grant's own row: ODL-217 proved the grant and ODL-474 landed
@@ -1341,6 +1355,7 @@ names the `docs/CLAIMS.md` row that moved with it.
 | 2026-11-23 | **Email, the B-once pointers resolve as the card lands.** ODL-925 publishes D-1's app-layer clause (`docs/CLAIMS.md` v3.11a) and is the cut that makes `odilectl/claim.py` fill the ready email, so the four §Email pointers that could only be written in the future tense are re-cut: the ready prose drops the "once ODL-925 lands" parenthetical for the present tense, the map intro and the D-1 cell name the app-layer clause as published with ODL-925 and still off the two templates, and the D-3 cell's "held until ODL-925" becomes "held, §1a". The §Ready and §Invitation blocks are unchanged and still equal their templates byte for byte. No palette, typeface or artwork change; no sentence on a surface changed — the D-1 row moved in `docs/CLAIMS.md` v3.11a, which this card's cut records. | Designer | verifier, ODL-925 |
 | 2026-11-23 | **Typography: the console joins the document shell, and the document table gets its column-label row.** ODL-582's console (`web/admin.html`) is the document shell — measured at 1440×900 and 390×844, `.brand` computes 24 px / 500 / −0.72 px and the h2 21.44 px / 600 / 1.2 / `letter-spacing: normal`, the same pair as claim, ceremony, faq, privacy, terms, register, forgot and account — so *Two section-title roles* now names it, the page an operator reads as a form; `tools/brand_lint.py` passed it because the lint holds the pairing, not the page name. The sheet's only table label was the mono caps role for machine values; `web/admin.html`'s accounts header and `web/privacy.html`'s three inventories compute `.76rem` (12.16 px) / 600 / 1.5 (18.24 px) / `.05em` (0.608 px) / `uppercase` in the text face, `--soft` at 7.55:1 on paper, with `padding: 0 14px 7px 0` and a 1 px `--line` underline, and `web/terms.html` carries the same rule (it renders no table at this cut); the type table gains one row for that column head and says what it is not — not a control, so the caps bullet's .12–.24em range stays with the controls, and not the mono caps role, which stays for tables of machine values. No palette, typeface, artwork or public sentence changed. | Designer | verifier, t_0804a3a4 |
 | 2026-11-23 | **Email, the invitation loses D-1's second sentence.** The invitation is read **before** registration — its action on line 6 is `Register here: https://test.odile.fyi/register` — so "You chose it when you registered." described an event that had not happened and left a stranger wondering whether they already had an account. The paragraph is now D-1's first sentence and D-3's first, both verbatim, and §Invitation's block is re-cut to the template's own three lines; `templates/emails/invite.txt` and the block stay byte-equal, and the map's invite cell quotes the first sentence, with the choice clause and the app-layer clause off the invitation (`docs/CLAIMS.md` §1 *Access*, D-1, whose row is unchanged). The cut removes approved text rather than coining it: "You choose it when you register." would be neither a row nor a subset of one, which §Email's quote-only rule forbids. The sentence above the map is re-cut in the same commit so its count matches the cells — the choice clause is off the invitation only, while the app-layer and sign-in clauses stay off both templates. No palette, typeface or artwork change; no public sentence in `docs/CLAIMS.md` changed. | Designer | verifier, t_5be4968e |
+| 2026-11-23 | **Spacing: *Above the fold* names the handset it measures, and 320×640 is a reflow width, not a fold width.** The bullet said "at 390×844 the primary action is visible without scrolling" without saying whether 390 was the only width; the console (`web/admin.html`, in the document shell) is the page that asks. Measured on the served page at HEAD — Chromium, 320×640 and 390×844, DSF 1, the viewport asserted in the same evaluate, a 77-character admin address (64-character local part) and an ordinary 16-character one — its one action ends at 704 px at 390×844 with the long address, above the fold, and at 781.78 px at 320×640, or 695.39 px when the address is ordinary; the button sits 16 px under its second field in both, so a 320 reader meets it in the same scroll. The rule now reads as a 390×844 rule and says so: 320×640 is held by the *Overflow* bullet and the ≤560 scale, and a later card does not move the number or re-open the width. The same render corrected the bullet's first sentence, which claimed every page's action above 844: the claim form's `Claim my machine` ends at 889.03 px, one short scroll under the five-note *Who holds what* block that is the trust moment the same bullet requires above the fold, and the landing's action ends at 399.58 px — so the sentence names the marketing page and permits the form case, and the *primary below the fold* cell in §Do / Don't reads as the decoration case. The two §Typography rows this card inherited — the console in the document-shell list and the document-table column-label row — landed at 1536286 (t_0804a3a4) and are unchanged here. No palette, typeface, artwork or public sentence changed. | Designer | verifier, t_995985dc |
 
 ## Do / Don't
 
