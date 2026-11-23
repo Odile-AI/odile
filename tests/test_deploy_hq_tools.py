@@ -306,6 +306,55 @@ class CheckTests(FixtureTest):
         self.assertIn("DIFF tools/roadmap_page.py", result.stdout)
 
 
+class ExcludeTests(FixtureTest):
+    """The exclusion list a deploy uses, including the fail-closed half.
+
+    `list` names what HQ hides. `exclude` must also name every unit input DEST
+    already holds, or a checkout with no hidden files (a standalone clone)
+    makes `rsync --delete` remove the only deployed copy.
+    """
+
+    def test_exclude_is_the_union_of_hq_hidden_files_and_dest_inputs(self) -> None:
+        fixture = self.fixture
+
+        result = fixture.hq_tools("exclude", str(fixture.runtime), str(fixture.hq))
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(
+            result.stdout.splitlines(),
+            ["docs/backlog.yaml", "tools/roadmap_page.py"],
+        )
+
+    def test_exclude_keeps_a_dest_input_the_checkout_does_not_hide(self) -> None:
+        fixture = self.fixture
+        # A standalone clone: tracked files only, no .git/info/exclude entries.
+        (fixture.hq / ".git" / "info" / "exclude").write_text("", encoding="utf-8")
+        for path in ("tools/roadmap_page.py", "docs/backlog.yaml"):
+            (fixture.hq / path).unlink()
+        (fixture.runtime / "docs").mkdir(exist_ok=True)
+        (fixture.runtime / "docs" / "backlog.yaml").write_bytes(BACKLOG_BYTES)
+
+        result = fixture.hq_tools("exclude", str(fixture.runtime), str(fixture.hq))
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(
+            result.stdout.splitlines(),
+            ["docs/backlog.yaml", "tools/roadmap_page.py"],
+        )
+
+    def test_exclude_is_empty_only_when_neither_side_holds_an_input(self) -> None:
+        fixture = self.fixture
+        (fixture.hq / ".git" / "info" / "exclude").write_text("", encoding="utf-8")
+        for path in ("tools/roadmap_page.py", "docs/backlog.yaml"):
+            (fixture.hq / path).unlink()
+        (fixture.runtime / "tools" / "roadmap_page.py").unlink()
+
+        result = fixture.hq_tools("exclude", str(fixture.runtime), str(fixture.hq))
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, "")
+
+
 class DeployPlanTests(FixtureTest):
     def test_the_plan_excludes_every_hq_only_tool_and_names_the_hq_install(self) -> None:
         fixture = self.fixture
@@ -354,6 +403,226 @@ class DeployPlanTests(FixtureTest):
         self.assertEqual(
             (fixture.runtime / "docs" / "backlog.yaml").read_bytes(), BACKLOG_BYTES
         )
+
+
+OLD_BACKLOG_BYTES = b"milestones:\n  - id: old\n"
+
+# The tracked units deploy.sh installs with the real `install`. Copied into the
+# fixture checkout so every step after the rsync actually runs.
+UNITS = (
+    "odile.service",
+    "deploy/attest-refresh/refresh.sh",
+    "deploy/attest-refresh/odile-service-atomic.conf",
+    "deploy/attest-refresh/odile-attest-refresh.service",
+    "deploy/attest-refresh/odile-attest-refresh.timer",
+    "deploy/claim-worker/odile-claim.service",
+    "deploy/claim-worker/odile-claim.timer",
+    "deploy/roadmap/odile-roadmap.service",
+    "deploy/roadmap/odile-roadmap.timer",
+)
+
+# deploy.sh asserts the deployed tree is 750 root:odile. A fixture runtime under
+# /tmp is root:root, so the copy drops the block; the assertion is tested
+# against the live host, not here.
+MODE_BLOCK = """install -d -o root -g odile -m 0750 /opt/odile
+TREE=$(stat -c '%a %U:%G' /opt/odile)
+if [ "$TREE" != "750 root:odile" ]; then
+  echo "deploy: /opt/odile is $TREE, expected 750 root:odile" >&2
+  exit 1
+fi
+"""
+
+
+class ApplyFixture:
+    """A checkout, a runtime, and a copy of deploy.sh that runs its apply path.
+
+    Only the live paths change: `/opt/odile` becomes a scratch runtime,
+    `/etc/systemd/system` a scratch directory, `/var/lib/odile/roadmap-source`
+    a scratch file, and the absolute interpreter a stub on PATH. `rsync`,
+    `install`, `sha256sum` and `grep` stay the real binaries, so the transfer
+    and the post-rsync convergence happen for real. `systemctl`, `curl`,
+    `sleep`, `getent` and the seed step are stubs: no host state changes.
+
+    `hidden=False` models a standalone clone: the checkout hides no private file
+    and holds neither unit input, while the runtime holds a converged copy.
+    """
+
+    def __init__(self, root: Path, *, hidden: bool) -> None:
+        self.root = root
+        self.hidden = hidden
+        self.hq = root / "hq"
+        self.hq.mkdir()
+        self.bin = root / "bin"
+        self.bin.mkdir()
+        self.runtime = root / "runtime"
+        self.etc = root / "etc"
+        self.var = root / "var"
+        for directory in (self.runtime / "tools", self.runtime / "docs", self.etc, self.var):
+            directory.mkdir(parents=True)
+        self.git("init", "--quiet", "--initial-branch", "main")
+        (self.hq / "app.py").write_text("# Odile\n", encoding="utf-8")
+        (self.hq / "scripts").mkdir()
+        for source in (DEPLOY, HQ_TOOLS):
+            target = self.hq / "scripts" / source.name
+            target.write_bytes(source.read_bytes())
+            target.chmod(0o755)
+        for rel in UNITS:
+            target = self.hq / rel
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes((ROOT / rel).read_bytes())
+        seed = self.hq / "deploy" / "seed"
+        seed.mkdir(parents=True)
+        (seed / "deploy_seed.py").write_text("print('seed: converged')\n", encoding="utf-8")
+        tools = self.hq / "tools"
+        tools.mkdir()
+        (tools / "leak_scan.py").write_text("# tracked machinery\n", encoding="utf-8")
+        if hidden:
+            (tools / "roadmap_page.py").write_bytes(HQ_BYTES)
+            (self.hq / "docs").mkdir()
+            (self.hq / "docs" / "backlog.yaml").write_bytes(BACKLOG_BYTES)
+        exclude = self.hq / ".git" / "info" / "exclude"
+        exclude.parent.mkdir(parents=True, exist_ok=True)
+        exclude.write_text(
+            "/tools/roadmap_page.py\n/docs/backlog.yaml\n" if hidden else "",
+            encoding="utf-8",
+        )
+        self.commit("fixture checkout")
+        self.checkout = self.hq
+        self.worktree: Path | None = None
+        if hidden:
+            self.worktree = root / "worktree"
+            self.git(
+                "worktree", "add", "--quiet", "--detach", str(self.worktree), "main"
+            )
+            (self.worktree / "tools").mkdir(exist_ok=True)
+            (self.worktree / "tools" / "roadmap_page.py").write_bytes(WORKTREE_BYTES)
+            self.checkout = self.worktree
+        # The runtime starts converged: the bytes a previous deploy installed.
+        (self.runtime / "tools" / "roadmap_page.py").write_bytes(RUNTIME_BYTES)
+        (self.runtime / "docs" / "backlog.yaml").write_bytes(OLD_BACKLOG_BYTES)
+        self.stub_binaries()
+        self.script = self.write_deploy_copy()
+
+    def git(self, *args: str) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            ["git", *args],
+            cwd=self.hq,
+            env=git_env(),
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+
+    def commit(self, message: str) -> None:
+        self.git("add", "--all")
+        self.git(
+            *GIT_IDENTITY, "commit", "--quiet", "--no-gpg-sign", "-m", message
+        )
+
+    def stub_binaries(self) -> None:
+        for name in ("getent", "systemctl", "curl", "sleep", "python3"):
+            path = self.bin / name
+            path.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+            path.chmod(0o755)
+
+    def write_deploy_copy(self) -> Path:
+        script = DEPLOY.read_text(encoding="utf-8")
+        if MODE_BLOCK not in script:
+            raise AssertionError(
+                "deploy.sh's mode block changed; update MODE_BLOCK in this test so "
+                "the fixture keeps running the committed script"
+            )
+        script = script.replace(MODE_BLOCK, f"mkdir -p {self.runtime}\n")
+        for original, fixture in (
+            ("/var/lib/odile/roadmap-source", str(self.var / "roadmap-source")),
+            ("/etc/systemd/system", str(self.etc)),
+            ("/opt/odile", str(self.runtime)),
+            ("/usr/bin/python3", "python3"),
+        ):
+            script = script.replace(original, fixture)
+        target = self.checkout / "scripts" / "deploy_fixture.sh"
+        target.write_text(script, encoding="utf-8")
+        target.chmod(0o755)
+        return target
+
+    def run(self) -> subprocess.CompletedProcess[str]:
+        env = git_env()
+        env["PATH"] = str(self.bin) + os.pathsep + env["PATH"]
+        return subprocess.run(
+            ["sh", str(self.script)],
+            cwd=self.checkout,
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+
+
+class DeployApplyTests(unittest.TestCase):
+    """The deploy's apply path, not only its plan.
+
+    Round 1 found the fixture never ran the post-rsync install: deleting that
+    line left every test green. These tests run the committed apply path against
+    a scratch runtime and fail when the install is removed — the runtime keeps
+    the pre-deploy bytes.
+    """
+
+    def make(self, *, hidden: bool = True) -> ApplyFixture:
+        tmp = tempfile.TemporaryDirectory(prefix="odile-hq-apply-")
+        self.addCleanup(tmp.cleanup)
+        return ApplyFixture(Path(tmp.name), hidden=hidden)
+
+    def test_a_worktree_deploy_converges_the_runtime_to_hqs_bytes(self) -> None:
+        fixture = self.make()
+        assert fixture.worktree is not None
+
+        result = fixture.run()
+        output = result.stdout + result.stderr
+
+        self.assertEqual(result.returncode, 0, output)
+        deployed = fixture.runtime / "tools" / "roadmap_page.py"
+        self.assertEqual(
+            sha256(deployed), sha256(fixture.hq / "tools" / "roadmap_page.py")
+        )
+        self.assertEqual(deployed.read_bytes(), HQ_BYTES)
+        self.assertNotEqual(deployed.read_bytes(), WORKTREE_BYTES)
+        self.assertEqual(
+            (fixture.runtime / "docs" / "backlog.yaml").read_bytes(), BACKLOG_BYTES
+        )
+        # The worktree's own copy is untouched; it is HQ's bytes that run.
+        self.assertEqual(
+            (fixture.worktree / "tools" / "roadmap_page.py").read_bytes(),
+            WORKTREE_BYTES,
+        )
+        self.assertIn("installed tools/roadmap_page.py", output)
+        # The apply path ran past the install: the units are in the fixture etc.
+        self.assertTrue((fixture.etc / "odile-roadmap.timer").exists())
+        self.assertEqual(
+            (fixture.var / "roadmap-source").read_text(encoding="utf-8").strip(),
+            fixture.git("rev-parse", "--short", "HEAD").stdout.strip(),
+        )
+
+    def test_a_checkout_with_no_hidden_files_keeps_the_deployed_copies(self) -> None:
+        """A standalone clone: an empty HQ list must not mean ``exclude nothing``.
+
+        Round 1 reproduced the failure with the card's own scripts: no
+        ``--exclude`` for either input, so ``rsync --delete`` removed
+        ``/opt/odile/tools/roadmap_page.py`` and ``/opt/odile/docs/backlog.yaml``.
+        """
+        fixture = self.make(hidden=False)
+
+        result = fixture.run()
+        output = result.stdout + result.stderr
+
+        self.assertEqual(result.returncode, 0, output)
+        self.assertEqual(
+            (fixture.runtime / "tools" / "roadmap_page.py").read_bytes(), RUNTIME_BYTES
+        )
+        self.assertEqual(
+            (fixture.runtime / "docs" / "backlog.yaml").read_bytes(),
+            OLD_BACKLOG_BYTES,
+        )
+        self.assertIn("nothing to install", output)
 
 
 GENERATOR_STUB = """#!/usr/bin/python3

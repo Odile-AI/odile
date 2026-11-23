@@ -116,8 +116,13 @@ getent group odile >/dev/null 2>&1 || {
 # repository, so its parent is the HQ checkout whichever tree this deploy runs
 # from; the hidden paths are excluded from the transfer and installed from there
 # after it.
+#
+# `exclude` also prints every unit input /opt/odile already holds, so a checkout
+# that hides nothing (a standalone clone) cannot delete the deployed copies with
+# `rsync --delete`. It reports failure, and this assignment aborts the deploy
+# before the rsync, rather than falling back to an empty exclusion list.
 HQ_ROOT=$(unset CDPATH; cd -- "$(git rev-parse --path-format=absolute --git-common-dir)/.." && pwd)
-HQ_TOOLS=$("$HQ_TOOLS_SCRIPT" list "$HQ_ROOT" || true)
+HQ_TOOLS=$("$HQ_TOOLS_SCRIPT" exclude /opt/odile "$HQ_ROOT")
 
 # The seed service runs /opt/odile/seed/seed.py; its hash before this deploy
 # lets the deployer restart it only when the module it runs actually changed.
@@ -160,10 +165,10 @@ rsync -a --delete "$@" ./ /opt/odile/
 
 if [ "$DRY" -eq 1 ]; then
   if [ -n "$HQ_TOOLS" ]; then
-    echo "would install the HQ-only paths from $HQ_ROOT (tools/ and docs/backlog.yaml); a worktree's copy never lands:"
+    echo "would keep /opt/odile's copies of the HQ-only paths and install HQ's from $HQ_ROOT (tools/ and docs/backlog.yaml); a worktree's copy never lands:"
     "$HQ_TOOLS_SCRIPT" install --dry-run "$HQ_ROOT" /opt/odile
   else
-    echo "hq-tools: no HQ-only paths at $HQ_ROOT; /opt/odile keeps the copies it has"
+    echo "hq-tools: no HQ-only paths at $HQ_ROOT and /opt/odile holds none; nothing to exclude or install"
   fi
   echo "would install odile-attest-refresh.service and .timer, plus the"
   echo "odile.service drop-in that writes the report through the atomic wrapper"

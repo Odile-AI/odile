@@ -155,23 +155,33 @@ called by `scripts/deploy.sh`:
   --git-common-dir`, which every worktree reports;
 - each HQ-only path is excluded from the rsync by its root-anchored path, so a
   worktree's copy never lands and `--delete` cannot remove the deployed one;
+- the exclusion list is `scripts/hq_tools.sh exclude`, not `list`: it also
+  names every unit input `/opt/odile` already holds. A checkout that hides
+  nothing (a standalone clone, or a `list` that fails) therefore still excludes
+  the deployed copies, and `rsync --delete` cannot remove the only one — the
+  deploy fails closed, because the assignment aborts the run when the helper
+  fails and an empty list never means "exclude nothing";
 - after the rsync, `scripts/hq_tools.sh install` copies HQ's files into
   `/opt/odile`. It is idempotent: a converged file prints `same`, a changed one
   prints `installed` with its sha256.
 
-Adding a hidden input to a deployed unit means adding it to `HQ_ONLY_PATHS` in
-`scripts/hq_tools.sh`; `tests/test_deploy_hq_tools.py` pins the list.
+Adding a hidden input to a deployed unit means adding it to `HQ_ONLY_UNIT_INPUTS`
+(its name, so a clone cannot delete it) and, when it lives under a new
+directory, to `HQ_ONLY_PATHS` in `scripts/hq_tools.sh`;
+`tests/test_deploy_hq_tools.py` pins both lists.
 
-A standalone clone carries no hidden files; the deploy prints `hq-tools: no
-HQ-only paths under <checkout>` and leaves `/opt/odile` as it is. Deploy from a
-worktree of the HQ checkout, as §2 and §6 do.
+A standalone clone carries no hidden files, so there is nothing to install, but
+its deploy keeps what `/opt/odile` already has: the clone's `exclude` still
+names both unit inputs because the deployed tree holds them, and the rsync
+leaves them alone. Deploy from a worktree of the HQ checkout, as §2 and §6 do,
+when the deployed tree should receive HQ's *current* bytes.
 
 The dry run lists the rule's whole plan, and the apply prints the same lines
 with `same`/`installed`:
 
 ```sh
 ./scripts/deploy.sh -n
-# → would install the HQ-only paths from <HQ checkout> (tools/ and docs/backlog.yaml); a worktree's copy never lands:
+# → would keep /opt/odile's copies of the HQ-only paths and install HQ's from <HQ checkout> (tools/ and docs/backlog.yaml); a worktree's copy never lands:
 #   hq-tools: same docs/backlog.yaml
 #   hq-tools: same tools/roadmap_page.py
 #   hq-tools: would install tools/<name>.py (<sha256>)

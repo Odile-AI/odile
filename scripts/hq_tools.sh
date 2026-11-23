@@ -20,9 +20,16 @@
 # missing and the roadmap unit exited 2.
 #
 # The rule: the deployed tree runs the HQ checkout's copy. scripts/deploy.sh
-# excludes every HQ-only path from the rsync and runs `install` after it.
+# excludes every HQ-only path from the rsync and runs `install` after it. When
+# the checkout holds none — a standalone clone, or a `list` that fails — the
+# exclusion still has to cover the paths the deployed tree already holds, or
+# `rsync --delete` removes the only copy and the unit exits 2. `exclude` is that
+# union: what HQ hides, plus every unit input DEST holds. The deploy fails
+# closed because it aborts when this helper fails, and because an empty list
+# never means "exclude nothing".
 #
 #   scripts/hq_tools.sh list [HQ_ROOT]                  the HQ-only paths
+#   scripts/hq_tools.sh exclude DEST [HQ_ROOT]          every path a deploy must exclude
 #   scripts/hq_tools.sh install [--dry-run] HQ_ROOT DEST
 #   scripts/hq_tools.sh check DEST HQ_ROOT              sha256 per path; 1 on DIFF
 #
@@ -35,13 +42,22 @@ set -eu
 # unit starts reading another hidden path; tests/test_deploy_hq_tools.py pins it.
 HQ_ONLY_PATHS="tools docs/backlog.yaml"
 
+# The unit inputs by name, not by directory. `list` is dynamic (whatever HQ
+# hides today); these are the paths a deployed unit runs or reads, so a deploy
+# from a checkout that holds none of them must still keep DEST's copy. Add a
+# name here when a unit starts reading another hidden path.
+HQ_ONLY_UNIT_INPUTS="tools/roadmap_page.py docs/backlog.yaml"
+
 usage() {
 	cat <<'EOF'
 usage: scripts/hq_tools.sh list [HQ_ROOT]
+       scripts/hq_tools.sh exclude DEST [HQ_ROOT]
        scripts/hq_tools.sh install [--dry-run] HQ_ROOT DEST
        scripts/hq_tools.sh check DEST HQ_ROOT
 
 list     print one HQ-only path (relative to HQ_ROOT) per line
+exclude  print every path a deploy must exclude: HQ's HQ-only paths, plus
+         each unit input DEST already holds (a clone holds none of them)
 install  copy every HQ-only path from HQ_ROOT into DEST; idempotent
 check    compare every HQ-only path in DEST with HQ_ROOT; exit 1 on a mismatch
 EOF
@@ -76,6 +92,25 @@ cmd_list() {
 	hq_only_files "$hq"
 }
 
+# Every path scripts/deploy.sh must exclude from its rsync: the files HQ hides
+# (installed from HQ afterwards), plus every unit input DEST already holds. The
+# second half is what makes a checkout with no hidden files fail closed: an
+# empty list must not mean "exclude nothing", because `rsync --delete` would then
+# remove /opt/odile/tools/roadmap_page.py and /opt/odile/docs/backlog.yaml.
+cmd_exclude() {
+	[ "$#" -ge 1 ] && [ "$#" -le 2 ] || { usage >&2; exit 2; }
+	dest=$1
+	hq=$(resolve_hq "${2:-}")
+	{
+		hq_only_files "$hq"
+		for path in $HQ_ONLY_UNIT_INPUTS; do
+			if [ -e "$dest/$path" ]; then
+				printf '%s\n' "$path"
+			fi
+		done
+	} | sort -u
+}
+
 cmd_install() {
 	dry=0
 	if [ "${1:-}" = "--dry-run" ]; then
@@ -88,7 +123,7 @@ cmd_install() {
 	[ -d "$hq" ] || { echo "hq-tools: refused: $hq is not a directory" >&2; exit 1; }
 	files=$(hq_only_files "$hq")
 	if [ -z "$files" ]; then
-		echo "hq-tools: no HQ-only paths under $hq; DEST keeps the copies it has (deploy from a worktree of the HQ checkout, not a standalone clone — docs/runbooks/deploy.md)"
+		echo "hq-tools: no HQ-only paths under $hq; nothing to install (a deploy excludes the copies DEST holds: $HQ_ONLY_UNIT_INPUTS)"
 		return 0
 	fi
 	changed=0
@@ -153,6 +188,7 @@ if [ "$#" -gt 0 ]; then
 fi
 case "$verb" in
 	list) cmd_list "$@" ;;
+	exclude) cmd_exclude "$@" ;;
 	install) cmd_install "$@" ;;
 	check) cmd_check "$@" ;;
 	-h|--help) usage ;;
