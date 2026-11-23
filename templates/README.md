@@ -48,8 +48,10 @@ Two different files, and the difference matters:
 | carries | the setup token, the machine id, the measurement, the signing key | the backup password and the certificate SHA-256 |
 | where it lives | in the operator's hands | `0600 root` on the machine, downloaded from the first-visit page behind the recovery code |
 
-The file is the only copy of the backup password. While the machine is running
-the agent can show it again:
+The file is the only copy of the backup password. One recovery code resets
+both: your account password at the account page and your machine's sign-in on
+the machine. There is no emailed reset. While the machine is running the agent
+can show you the file:
 
 ```sh
 sudo cat /etc/odile/recovery.txt

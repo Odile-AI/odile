@@ -1,8 +1,8 @@
 {
   "artifacts": {
     "installer": {
-      "sha256": "84860db33d8eb59cc210bea04fef06618a6de775c4873fc02b24755a5e9e40d2",
-      "size": 1576209,
+      "sha256": "327856460526fffd7ceb51eedcc803633638a99dca427c2814d1692bfeb4a495",
+      "size": 1626242,
       "url": "odile_install.py"
     },
     "skills": {
@@ -14,14 +14,14 @@
   "boot": {
     "kernel": "6.12.115+deb13.1-amd64"
   },
-  "generated_at": "2026-11-23T16:45:00Z",
+  "generated_at": "2026-11-24T00:30:00Z",
   "manifest": {
-    "sha256": "7a2176016cfd228552f62b88a003e11c4427db7244ea52e5ef25af6f0aed3f16",
+    "sha256": "c5c692e3c9e9dabaf65d053ad3224bf86ccf499803de4f29384ad921a5dd0034",
     "signature_url": "manifest.json.sig",
     "url": "manifest.json"
   },
-  "notes": "ODL-929 (B-once): the guest /verify page and the installed help are re-cut. The three-powers paragraph says the boot image is compared before you sign in; the installed help's sign-in-lost answer is D-19 and its lost-code tail is D-5 (a lost code starts a new account; a backup is the only way to bring the files), its grant answer opens with D-3, and the rebuild row names only the disk. The installer re-embeds templates/verify.html (1ce729c8\u2026, 42,959 bytes) and the odile-help skill (62fac689\u2026, 6,264 bytes); the manifest moves installer_sha256 and the odile-help row, and skills.tar.gz is rebuilt from the fresh root.",
+  "notes": "ODL-926 (A5): the one recovery code is stable \u2014 it no longer rotates on use and never expires \u2014 and is replaced only on request, from the machine, which mints a new code, shows it once, and pushes its hash to HQ signed with the machine's heartbeat key; a five-minute timer retries until the account acknowledges. The installer re-embeds installer/first_visit.py (e69d80d7\u2026), web/first-visit.html (a877f964\u2026) and scripts/heartbeat.py (98c01da5\u2026): the reset and recovery pages no longer spend or show the code, /first-visit/replace is new, and the recovery-push unit and timer are written. The manifest moves installer_sha256 and release.json names the new pair.",
   "product": "odile",
-  "release": "2026.11.23-4",
+  "release": "2026.11.23-5",
   "schema": 1
 }

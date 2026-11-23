@@ -21,6 +21,14 @@ conflict, never a quiet re-registration.
     scripts/heartbeat.py keygen --out /etc/odile/heartbeat
     scripts/heartbeat.py collect --slug odl-7f3a2c --public-key /etc/odile/heartbeat/heartbeat.pub
     scripts/heartbeat.py post --url https://odile.fyi/heartbeat --key /etc/odile/heartbeat/heartbeat.key
+    scripts/heartbeat.py recovery --slug odl-7f3a2c --state /etc/odile/first-visit.json
+
+`recovery` is the guest half of the one-recovery-code model (ODL-926): it
+reads the hash the first-visit service minted and pushes it to
+``/tenant/recovery``, signed with the same Ed25519 key the heartbeat uses. A
+409 means no key is registered yet, so it offers the public half in a signed
+heartbeat and retries once; a 200 records the acknowledged hash in the state
+and the five-minute timer then does nothing until the code is replaced.
 
 `openssl` is used for signing and verification because the standard library has
 no Ed25519; it is the same binary `seed/seed.py` uses.  No secret is written to
@@ -36,6 +44,8 @@ from __future__ import annotations
 import argparse
 import base64
 import json
+import os
+import re
 import shutil
 import subprocess
 import sys
@@ -46,21 +56,25 @@ import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent.parent
-if str(ROOT) not in sys.path:
-    sys.path.insert(0, str(ROOT))
+ROOT = Path(__file__).resolve().parent
+for _root in (ROOT, ROOT.parent):
+    if str(_root) not in sys.path:
+        sys.path.insert(0, str(_root))
 
-from odilectl.health import (  # noqa: E402
-    DEFAULT_HEARTBEAT_DB,
-    HeartbeatError,
-    HeartbeatRejected,
-    HeartbeatStore,
-)
-from odilectl.state import RELEASE_ID_RE  # noqa: E402
+# The receiver's store lives on HQ (`odilectl`); a tenant installs only this
+# file, so that package is imported lazily by the receiver verbs and the two
+# constants it offers are spelled here unchanged. The guest verbs (collect,
+# sign, post, recovery) therefore run on the machine with no HQ package.
+DEFAULT_HEARTBEAT_DB = "/var/lib/odile/waitlist.db"
+RELEASE_ID_RE = re.compile(r"^[0-9]{4}\.[0-9]{2}(?:\.[0-9]+)?$")
 from attest import read_boot_report, transform_boot_report  # noqa: E402
 
 MAX_BODY_BYTES = 64 * 1024
 DEFAULT_KEY_DIR = "/etc/odile/heartbeat"
+DEFAULT_STATE = "/etc/odile/first-visit.json"
+DEFAULT_RECOVERY_FILE = "/etc/odile/recovery.txt"
+DEFAULT_RECOVERY_URL = "https://odile.fyi/tenant/recovery"
+DEFAULT_HEARTBEAT_URL = "https://odile.fyi/heartbeat"
 USER_AGENT = "odile-heartbeat/0.1"
 
 
@@ -324,10 +338,17 @@ def collect(args: argparse.Namespace) -> dict:
 # ---------------------------------------------------------------------------
 
 
+def _health():
+    """HQ's heartbeat store, imported only where it exists (the receiver)."""
+    from odilectl import health
+
+    return health
+
+
 class HeartbeatServer(ThreadingHTTPServer):
     daemon_threads = True
 
-    def __init__(self, address: tuple[str, int], store: HeartbeatStore) -> None:
+    def __init__(self, address: tuple[str, int], store) -> None:
         super().__init__(address, HeartbeatHandler)
         self.store = store
 
@@ -371,12 +392,13 @@ class HeartbeatHandler(BaseHTTPRequestHandler):
         body = self.rfile.read(length)
         signature = self.headers.get("X-Odile-Signature", "")
         store = self.server.store  # type: ignore[attr-defined]
+        health = _health()
         try:
             beat = store.record(body, signature)
-        except HeartbeatRejected as error:
+        except health.HeartbeatRejected as error:
             self._json(error.status, {"ok": False, "error": str(error)})
             return
-        except HeartbeatError as error:
+        except health.HeartbeatError as error:
             self._json(500, {"ok": False, "error": str(error)})
             return
         self._json(
@@ -392,12 +414,13 @@ class HeartbeatHandler(BaseHTTPRequestHandler):
 
 
 def serve(args: argparse.Namespace) -> int:
-    store = HeartbeatStore.open(args.db, verifier=verify_ed25519)
+    db_path = args.db or _health().DEFAULT_HEARTBEAT_DB
+    store = _health().HeartbeatStore.open(db_path, verifier=verify_ed25519)
     try:
         server = HeartbeatServer((args.host, args.port), store)
         host, port = server.server_address[:2]
         sys.stderr.write(
-            "heartbeat: receiver on http://%s:%s/heartbeat; db %s\n" % (host, port, args.db)
+            "heartbeat: receiver on http://%s:%s/heartbeat; db %s\n" % (host, port, db_path)
         )
         try:
             server.serve_forever()
@@ -442,10 +465,12 @@ def _signature_from(args: argparse.Namespace, body: bytes) -> bytes:
 def record(args: argparse.Namespace) -> int:
     body = _body_bytes(args.body)
     signature = _signature_from(args, body)
-    store = HeartbeatStore.open(args.db, verifier=verify_ed25519)
+    health = _health()
+    store = health.HeartbeatStore.open(args.db or health.DEFAULT_HEARTBEAT_DB,
+                                       verifier=verify_ed25519)
     try:
         beat = store.record(body, signature, now=args.now)
-    except HeartbeatRejected as error:
+    except health.HeartbeatRejected as error:
         print(f"heartbeat: rejected: {error}", file=sys.stderr)
         return 1
     finally:
@@ -455,7 +480,8 @@ def record(args: argparse.Namespace) -> int:
 
 
 def show(args: argparse.Namespace) -> int:
-    store = HeartbeatStore.open(args.db)
+    health = _health()
+    store = health.HeartbeatStore.open(args.db or health.DEFAULT_HEARTBEAT_DB)
     try:
         if args.slug:
             beat = store.latest(args.slug)
@@ -517,6 +543,159 @@ def post(args: argparse.Namespace) -> int:
     except (urllib.error.URLError, OSError) as error:
         print(f"heartbeat: post failed: {error}", file=sys.stderr)
         return 1
+
+
+RECOVERY_INSTANCE_RE = re.compile(r"^Instance:[ \t]*(\S+)[ \t]*$", re.M)
+
+
+def _load_recovery_state(path: str | Path) -> dict:
+    try:
+        state = json.loads(Path(path).expanduser().read_text(encoding="utf-8"))
+    except (OSError, ValueError) as error:
+        raise SystemExit(f"heartbeat: cannot read the first-visit state {path}: {error}") from None
+    if not isinstance(state, dict):
+        raise SystemExit(f"heartbeat: {path} is not a JSON object")
+    return state
+
+
+def _save_recovery_state(path: str | Path, state: dict) -> None:
+    """Write the state atomically, 0600, beside itself (the service's own rule)."""
+    target = Path(path).expanduser()
+    body = json.dumps(state, indent=2, sort_keys=True) + "\n"
+    fd, tmp_name = tempfile.mkstemp(prefix=".%s." % target.name, dir=target.parent)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(body)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.chmod(tmp_name, 0o600)
+        os.replace(tmp_name, target)
+    except BaseException:
+        try:
+            os.unlink(tmp_name)
+        except FileNotFoundError:
+            pass
+        raise
+
+
+def _instance_id(args: argparse.Namespace) -> str:
+    """The machine's recorded id, from --instance-id or the recovery file."""
+    if getattr(args, "instance_id", None):
+        return args.instance_id.strip()
+    path = getattr(args, "recovery_file", None)
+    if not path:
+        raise SystemExit("heartbeat: pass --instance-id or --recovery-file")
+    try:
+        text = Path(path).expanduser().read_text(encoding="utf-8")
+    except OSError as error:
+        raise SystemExit(f"heartbeat: cannot read {path}: {error}") from None
+    match = RECOVERY_INSTANCE_RE.search(text) if RECOVERY_INSTANCE_RE else None
+    if match is None:
+        raise SystemExit(f"heartbeat: {path} carries no Instance: line")
+    return match.group(1).strip()
+
+
+def _post_signed(url: str, body: bytes, key: str | Path, timeout: float) -> tuple[int, str]:
+    """Sign the exact bytes and POST them; returns (status, body text)."""
+    signature = base64.b64encode(sign_ed25519(body, key)).decode("ascii")
+    request = urllib.request.Request(
+        url,
+        data=body,
+        method="POST",
+        headers={
+            "Content-Type": "application/json",
+            "X-Odile-Signature": signature,
+            "User-Agent": USER_AGENT,
+        },
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            return response.status, response.read(4096).decode("utf-8", "replace")
+    except urllib.error.HTTPError as error:
+        return error.code, error.read(4096).decode("utf-8", "replace")
+    except (urllib.error.URLError, OSError) as error:
+        raise OSError(str(getattr(error, "reason", error))) from None
+
+
+def _register_heartbeat(args: argparse.Namespace, slug: str, public: Path) -> tuple[int, str]:
+    """The machine's first heartbeat: offer the public half, trust on first use.
+
+    This is the registration the recovery endpoint looks for. It is a normal
+    signed heartbeat, so the record is the same row the backup job writes; the
+    timer calls it only when the push met 409 (no key registered for the slug).
+    """
+    body = json.dumps({
+        "slug": slug,
+        "at": int(time.time()),
+        "facts": {"versions": {}},
+        "public_key": public.read_text(encoding="utf-8"),
+    }, sort_keys=True).encode("utf-8")
+    return _post_signed(args.heartbeat_url, body, args.key, args.timeout)
+
+
+def recovery(args: argparse.Namespace) -> int:
+    """Push the live recovery hash to HQ, signed with the heartbeat key.
+
+    The body carries the machine's slug and instance id and the hash — no code,
+    no password (docs/product/DECISION-one-recovery-code.md §2.3). A 200 is the
+    account's acknowledgement and is recorded in the state, so the timer's next
+    run is a no-op until the code is replaced. Anything else leaves the push
+    pending: the unit runs every five minutes until HQ answers.
+    """
+    state = _load_recovery_state(args.state)
+    recovery_hash = state.get("recovery_hash")
+    if not isinstance(recovery_hash, str) or not recovery_hash.startswith("scrypt$"):
+        print("recovery: no recovery code minted yet; nothing to push")
+        return 0
+    if state.get("recovery_pushed_hash") == recovery_hash:
+        print("recovery: HQ already acknowledged this hash; nothing to push")
+        return 0
+    instance_id = _instance_id(args)
+    key = Path(args.key).expanduser()
+    public = Path(args.public_key).expanduser() if args.public_key else key.with_suffix(".pub")
+    if not key.is_file():
+        if args.dry_run:
+            print(f"would create {key} (ed25519, 0600) and push")
+            return 0
+        keygen(key.parent)
+    if not public.is_file():
+        public = keygen(key.parent)[1]
+    body = json.dumps({
+        "slug": args.slug,
+        "instance_id": instance_id,
+        "recovery_hash": recovery_hash,
+    }, sort_keys=True).encode("utf-8")
+    if args.dry_run:
+        print(f"would post {len(body)} bytes to {args.url}: "
+              f"keys {sorted(json.loads(body))}")
+        return 0
+    try:
+        status, answer = _post_signed(args.url, body, key, args.timeout)
+        if status == 409 and not args.no_register:
+            # No heartbeat key is registered for this slug yet: register it with
+            # the machine's first signed heartbeat, then try the push once more.
+            reg_status, reg_answer = _register_heartbeat(args, args.slug, public)
+            if reg_status != 200:
+                print(f"recovery: heartbeat registration answered {reg_status}: "
+                      f"{reg_answer.strip()[:200]}", file=sys.stderr)
+                return 1
+            status, answer = _post_signed(args.url, body, key, args.timeout)
+    except OSError as error:
+        print(f"recovery: cannot reach {args.url}: {error}", file=sys.stderr)
+        return 1
+    if status != 200:
+        print(f"recovery: HQ answered {status}: {answer.strip()[:200]}", file=sys.stderr)
+        return 1
+    try:
+        parsed = json.loads(answer or "{}")
+    except ValueError:
+        parsed = {}
+    changed = bool(parsed.get("changed")) if isinstance(parsed, dict) else False
+    state["recovery_pushed_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    state["recovery_pushed_hash"] = recovery_hash
+    _save_recovery_state(args.state, state)
+    print(f"recovery: pushed for {args.slug}; HQ says changed={str(changed).lower()}")
+    return 0
 
 
 def keygen_verb(args: argparse.Namespace) -> int:
@@ -602,6 +781,24 @@ def build_parser() -> argparse.ArgumentParser:
         help=f"the boot report (default: {DEFAULT_BOOT_REPORT})",
     )
     facts.set_defaults(function=collect_verb)
+
+    push = subparsers.add_parser(
+        "recovery", help="push the recovery-code hash to HQ, signed")
+    push.add_argument("--state", default=DEFAULT_STATE)
+    push.add_argument("--slug", required=True)
+    push.add_argument("--instance-id")
+    push.add_argument("--recovery-file", default=DEFAULT_RECOVERY_FILE,
+                      help="the recovery file whose Instance: line names the machine")
+    push.add_argument("--url", default=DEFAULT_RECOVERY_URL)
+    push.add_argument("--heartbeat-url", default=DEFAULT_HEARTBEAT_URL,
+                      help="where the first signed heartbeat registers the key")
+    push.add_argument("--key", default=str(Path(DEFAULT_KEY_DIR) / "heartbeat.key"))
+    push.add_argument("--public-key")
+    push.add_argument("--timeout", type=float, default=15.0)
+    push.add_argument("--no-register", action="store_true",
+                      help="do not register the key on a 409 (a proof run)")
+    push.add_argument("--dry-run", action="store_true")
+    push.set_defaults(function=recovery)
 
     return parser
 

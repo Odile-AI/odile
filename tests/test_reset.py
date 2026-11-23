@@ -709,6 +709,22 @@ class ForgotFlowTests(ResetBase):
         self.assertEqual(status, 401)
         self.sign_in(self.email_address, NEW_SIGN_IN)
 
+    def test_a_pasted_code_with_dashes_and_lower_case_is_the_same_code(self):
+        """The page prints the code in groups; the account reads it that way.
+
+        ODL-926: the machine hashes the letters and digits only, so a code
+        pasted with its dashes (or in lower case) must verify here too, or the
+        one code would work only when typed without them.
+        """
+        pasted = " " + "-".join(
+            RECOVERY_CODE.lower()[index:index + 4] for index in range(0, 20, 4)) + " "
+        status, headers, body = self.forgot(email=self.email_address, code=pasted,
+                                            ip="203.0.113.33")
+        self.assertEqual(status, 303, body[:300])
+        self.assertEqual(headers.get("Location"), "/forgot/done")
+        self.assertTrue(app.verify_password(NEW_SIGN_IN,
+                                            self.account(self.email_address)["password_hash"]))
+
     def test_the_success_page_says_what_changed_and_links_the_machines_reset(self):
         status, headers, _body = self.forgot(email=self.email_address,
                                              ip="203.0.113.32")
