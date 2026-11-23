@@ -59,7 +59,7 @@ TRIAL_END = "2026-12-04T09:00:00Z"
 RECOVERY_CODE = "M3XK9PVT2QWR7HCL5BSD"
 
 CONFIRM_HEAD = "Confirm your new address."
-CONFIRM_LINE = "until you confirm your new address"
+CONFIRM_LINE = "Your account stays as it is until you open it"
 CHANGED = "The address is changed."
 FORBIDDEN_HEAD = "Not here."
 
@@ -734,6 +734,171 @@ class GuardRailTests(AdminBase):
                 capture_output=True, text=True, timeout=120)
             self.assertEqual(done.stdout.strip(), "no",
                              "accounts.%s is the guest gate's password" % column)
+
+
+class ConsoleSheetTests(unittest.TestCase):
+    """The console's own sheet paints every state the page can render.
+
+    Brand gate round 1 read the rendering, not the file: the heading, label
+    and error rules were scoped to `.account` (the account page's block, which
+    is not on this page), `--line-soft` was used in two hairline declarations
+    and defined nowhere, and the submit button matched no rule at all, so it
+    fell back to the browser's native control. A test that greps the source
+    for class names stayed green through every one of those, so these read the
+    page's rules against the page's own states: each `var(--…)` resolves in
+    `:root`, and each class a rule scopes appears on some state the page can
+    render. The reserved classes are rendered by the states no fixture holds
+    open (`err`, `ok`), which is why the union is the four render_admin calls
+    and not one served page.
+    """
+
+    def states(self) -> list[str]:
+        row = {"email": "tester@example.com", "slug": "odl-tester",
+               "email_verified_at": None}
+        return [
+            app.render_admin(allowed=True, actor=ADMIN, accounts=[row]),
+            app.render_admin(allowed=True, actor=ADMIN, accounts=[row],
+                             error="A message.", field="new_email"),
+            app.render_admin(allowed=True, actor=ADMIN, accounts=[row],
+                             notice="A notice."),
+            app.render_admin(allowed=False),
+        ]
+
+    def sheet(self) -> str:
+        found = re.search(r"<style>(.*?)</style>", self.states()[0], re.S)
+        assert found is not None, "the console page carries no <style>"
+        # A comment is not a rule: `BRAND.md` in a comment is not a class.
+        return re.sub(r"/\*.*?\*/", "", found.group(1), flags=re.S)
+
+    def test_every_custom_property_the_sheet_uses_is_defined(self):
+        css = self.sheet()
+        used = set(re.findall(r"var\((--[A-Za-z0-9-]+)\)", css))
+        defined = set(re.findall(r"(--[A-Za-z0-9-]+)\s*:", css))
+        self.assertGreater(len(defined), 5, "the sheet defines no tokens")
+        self.assertEqual(
+            sorted(used - defined), [],
+            "used but undefined in :root: %s" % sorted(used - defined))
+
+    def test_every_class_the_sheet_scopes_is_on_a_rendered_state(self):
+        css = self.sheet()
+        present = set()
+        for value in re.findall(r'class="([^"]*)"',
+                                "".join(self.states())):
+            present.update(value.split())
+        scoped = set()
+        for prelude in re.findall(r"[^{}]+(?=\{)", css):
+            if prelude.lstrip().startswith("@"):
+                continue
+            scoped.update(re.findall(r"\.([A-Za-z][A-Za-z0-9_-]*)", prelude))
+        self.assertTrue(scoped, "the sheet scopes no class")
+        self.assertEqual(
+            sorted(scoped - present), [],
+            "styled but never rendered: %s" % sorted(scoped - present))
+
+
+class RereadFailureTests(unittest.TestCase):
+    """The re-read after the commit: the change stands, the page is the console.
+
+    Brand gate round 1, should 4: this branch answered `text/plain` with no
+    paper, title or way back — the only branch of the action that was not the
+    console. The branch sits between the commit and the two queued messages,
+    so a real socket cannot reach it without a corrupt row; this drives the
+    handler itself with a connection whose post-commit re-read returns
+    nothing, then reads the transition the action did make.
+    """
+
+    def test_the_reread_failure_answers_the_console_and_the_change_stands(self):
+        old, new = "old@example.com", "new@example.com"
+        sent = []
+
+        class NullReread:
+            def __init__(self, con):
+                self.con = con
+
+            def execute(self, sql, params=()):
+                if sql.startswith("SELECT * FROM accounts WHERE id = ?"):
+                    # The re-read finds nothing; every other statement is real.
+                    return self
+                return self.con.execute(sql, params)
+
+            def fetchone(self):
+                return None
+
+            def commit(self):
+                return self.con.commit()
+
+            def rollback(self):
+                return self.con.rollback()
+
+            def close(self):
+                return self.con.close()
+
+        with tempfile.TemporaryDirectory(prefix="odile-reread-") as tmp:
+            saved = app.DB_PATH
+            app.DB_PATH = str(Path(tmp) / "waitlist.db")
+            real_db = app.db
+            try:
+                app.init_db()
+                con = sqlite3.connect(app.DB_PATH)
+                try:
+                    con.execute(
+                        "INSERT INTO accounts (slug, email, password_hash,"
+                        " recovery_hash, confirm_token_hash,"
+                        " confirm_expires_at, email_verified_at,"
+                        " trial_started_at, trial_ends_at, provision_state,"
+                        " server_id, ipv4, created_at) VALUES ('odl-old', ?,"
+                        " ?, ?, 'token-hash', ?, ?, ?, ?, 'ready', 'server',"
+                        " '203.0.113.7', ?)",
+                        (old, app.hash_password("a long enough password"),
+                         app.hash_password(RECOVERY_CODE), TRIAL_END,
+                         TRIAL_START, TRIAL_START, TRIAL_END, TRIAL_START))
+                    con.commit()
+                finally:
+                    con.close()
+                app.db = lambda: NullReread(real_db())
+                handler = app.Handler.__new__(app.Handler)
+                setattr(handler, "_same_origin", lambda: True)
+                setattr(handler, "_admin_account",
+                        lambda: ({"email": ADMIN}, "allowed"))
+                setattr(handler, "_admin_rows", lambda: [])
+
+                def capture(status, body="",
+                            content_type="text/html; charset=utf-8", **_kw):
+                    sent.append((status, body, content_type))
+                setattr(handler, "_send", capture)
+                handler._admin_repoint({"current_email": [old],
+                                        "new_email": [new]})
+                check = sqlite3.connect(app.DB_PATH)
+                check.row_factory = sqlite3.Row
+                try:
+                    row = check.execute(
+                        "SELECT * FROM accounts WHERE email = ?", (new,)
+                    ).fetchone()
+                    log = check.execute(
+                        "SELECT * FROM admin_log ORDER BY id").fetchall()
+                finally:
+                    check.close()
+            finally:
+                app.db = real_db
+                app.DB_PATH = saved
+
+        self.assertEqual(len(sent), 1)
+        status, body, content_type = sent[0]
+        self.assertEqual(status, 500)
+        self.assertTrue(content_type.startswith("text/html"),
+                        "the re-read failure is not a page: %r" % content_type)
+        self.assertIn("The address is changed", body)
+        self.assertIn("Reload the console.", body)
+        self.assertIn('href="/account"', body, "the page has no way back")
+        self.assertIn("The console", body)
+        # The sentence is true: the commit landed before the re-read failed.
+        self.assertIsNotNone(row, "the address did not change")
+        self.assertIsNone(row["email_verified_at"])
+        self.assertEqual(len(log), 1)
+        self.assertEqual(log[0]["actor"], ADMIN)
+        self.assertEqual(log[0]["action"], "repoint")
+        self.assertEqual(log[0]["previous_email"], old)
+        self.assertEqual(log[0]["new_email"], new)
 
 
 class MigrationTests(unittest.TestCase):

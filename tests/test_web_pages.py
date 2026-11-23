@@ -136,9 +136,10 @@ class KeyboardContractTests(unittest.TestCase):
         # sixth heading in the file (one visible per render).
         "account.html": (6, ["account-password"], 0),
         # ODL-582: the console is two states (the admin's page and the
-        # refusal), one visible per render; the admin's page names the account
-        # table and the one action as two regions.
-        "admin.html": (2, ["accounts", "repoint"], 1),
+        # refusal), one visible per render; the admin's page names the one
+        # action and the account table as two regions, in that order — the
+        # action leads so it is above the fold (Brand gate round 1, must 4).
+        "admin.html": (2, ["repoint", "accounts"], 1),
         "ceremony.html": (1, ["visit", "machine", "support"], 1),
         "claim.html": (3, ["who", "next", "next"], 1),
         # ODL-578: the reset page is register.html's multi-state shape — the

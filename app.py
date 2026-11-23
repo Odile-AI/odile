@@ -2638,8 +2638,11 @@ class Handler(BaseHTTPRequestHandler):
         finally:
             con.close()
         if fresh is None:
-            return self._send(500, "The account could not be re-read.\n",
-                              "text/plain; charset=utf-8")
+            # The commit landed; the re-read is the only thing that failed, so
+            # the message says the change stands. A branded refusal, not a
+            # text/plain branch (Brand gate round 1, should 4).
+            return refused(500, "The address is changed, but the account could"
+                               " not be re-read. Reload the console.")
 
         problems = []
         try:
@@ -2661,7 +2664,7 @@ class Handler(BaseHTTPRequestHandler):
                       " confirmation again." % " and ".join(problems).capitalize()))
         return self._send(200, render_admin(
             allowed=True, actor=row["email"], accounts=self._admin_rows(),
-            notice="The address is changed. The confirmation is queued to %s;"
+            notice="The address is changed. The confirmation goes to %s;"
                    " the notice to %s. The machine is untouched."
                    % (html.escape(new), html.escape(current))))
 
