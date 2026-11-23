@@ -118,6 +118,45 @@ OUTBOX = os.environ.get("ODILE_OUTBOX", "/var/lib/odile/outbox")
 CONFIRM_SUBJECT = "Confirm your email address"
 CONFIRM_SENDER = "Odile <invite@mail.odile.fyi>"
 CONFIRM_TTL_HOURS = 24
+# The admin console (ODL-582). The admin is a configured address, never a
+# column: a database write cannot mint an admin, and no accounts column becomes
+# a value a gate could present. The file path is the default because the
+# service unit carries no environment for it; a host writes one address at
+# /var/lib/odile/admin-email (0600). An absent or malformed value means no
+# admin, so the console fails closed.
+ADMIN_EMAIL_FILE = os.environ.get("ODILE_ADMIN_EMAIL_FILE",
+                                  "/var/lib/odile/admin-email")
+REPOINT_ACTION = "repoint"
+REPOINT_CONFIRM_SUBJECT = "Confirm your new address"
+REPOINT_NOTICE_SUBJECT = "Your Odile account's address changed"
+# One confirmation template, two bodies: the registration one (ODL-581's
+# templates/emails/confirm.txt) and the re-point one, whose machine already
+# exists. Both obey BRAND.md §Email: one action, no address in the body, the
+# alpha footer.
+REPOINT_CONFIRM_BODY = """Hello,
+
+Open this link to confirm your new address for your Odile account:
+
+{{CONFIRM}}
+
+Your machine, its sign-in and its recovery code are unchanged.
+
+— Odile
+
+Private alpha · Odile pays for the machine and the inference · no price
+"""
+REPOINT_NOTICE_BODY = """Hello,
+
+The address on your Odile account was changed on {{DATE}}.
+
+The machine, its sign-in and its recovery code are unchanged.
+
+If you did not ask for this, reply to the email that invited you.
+
+— Odile
+
+Private alpha · Odile pays for the machine and the inference · no price
+"""
 TRIAL_DAYS = 14
 # One scrypt verifier for the account and the machine (the installer's format,
 # n=2**14 r=8 p=1, 16-byte salt, 32-byte key); `hashlib.scrypt` is stdlib.
@@ -199,7 +238,8 @@ _lock = threading.Lock()
 # a hash, never as itself; the only key material is the throwaway boot key,
 # whose private half was never written.
 SCHEMA_VERSION = 4
-SCHEMA_TABLES = ("waitlist", "tenants", "claims", "events", "grants", "accounts")
+SCHEMA_TABLES = ("waitlist", "tenants", "claims", "events", "grants", "accounts",
+                 "admin_log")
 
 SCHEMA = """
 PRAGMA journal_mode=WAL;
@@ -351,6 +391,35 @@ CREATE TABLE IF NOT EXISTS accounts (
 );
 
 CREATE INDEX IF NOT EXISTS accounts_provision ON accounts(provision_state);
+
+-- The admin log (ODL-582). The console's first action rewrites an account's
+-- address; this table records who did it, from which address to which, and
+-- when. It is the only place the previous address survives, so `/forgot` can
+-- still take the old address as the account's name while the new one waits to
+-- be confirmed. Append-only, like `events`: a log line is evidence.
+CREATE TABLE IF NOT EXISTS admin_log (
+    id             INTEGER PRIMARY KEY,
+    account_id     INTEGER NOT NULL REFERENCES accounts(id),
+    actor          TEXT    NOT NULL,
+    action         TEXT    NOT NULL,
+    previous_email TEXT    NOT NULL,
+    new_email      TEXT    NOT NULL,
+    created_at     TEXT    NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS admin_log_account ON admin_log(account_id, id);
+
+CREATE TRIGGER IF NOT EXISTS admin_log_no_update
+BEFORE UPDATE ON admin_log
+BEGIN
+    SELECT RAISE(ABORT, 'the admin log is append-only');
+END;
+
+CREATE TRIGGER IF NOT EXISTS admin_log_no_delete
+BEFORE DELETE ON admin_log
+BEGIN
+    SELECT RAISE(ABORT, 'the admin log is append-only');
+END;
 """
 
 # One signup event per waitlist row, with the signup's own timestamp. The WHERE
@@ -539,6 +608,27 @@ def valid_email(raw: str) -> str | None:
     if len(email) < 6 or len(email) > 254:
         return None
     return email if EMAIL_RE.match(email) else None
+
+
+def admin_email() -> str | None:
+    """The one configured admin address, or None when none is configured.
+
+    Read per request, not at import: a host replaces one file (or one env
+    value) and the console opens without a restart, and a service with no
+    configured address has no admin at all — the gate fails closed. The value
+    is an address, never a credential, so no accounts row needs a flag a guest
+    could present to its gate.
+    """
+    raw = os.environ.get("ODILE_ADMIN_EMAIL")
+    if raw is None:
+        path = os.environ.get("ODILE_ADMIN_EMAIL_FILE") or ADMIN_EMAIL_FILE
+        try:
+            with open(path, encoding="utf-8") as handle:
+                raw = handle.readline()
+        except OSError:
+            return None
+    candidate = (raw or "").strip()
+    return valid_email(candidate) if candidate else None
 
 
 # ------------------------------------------------------------------ the claim
@@ -983,7 +1073,8 @@ def queue_ready(row: sqlite3.Row, tenant: sqlite3.Row | None) -> str:
         return message_path
 
 
-def queue_confirm(account: dict, token: str) -> str:
+def queue_confirm(account: dict, token: str, *, subject: str = CONFIRM_SUBJECT,
+                  body: str | None = None) -> str:
     """Write the confirmation mail once per account; return its path.
 
     The bytes are ODL-581's template; this only fills its one `{{CONFIRM}}`
@@ -991,10 +1082,16 @@ def queue_confirm(account: dict, token: str) -> str:
     `help@odile.fyi` has no reader yet (the Designer's ODL-581 nit), and a
     reply to a transactional sender is the honest default. The link is the
     only place the token travels.
+
+    ODL-582 passes its own subject and body for a re-point: the machine
+    already exists, so the registration template's "the machine is built and
+    starts itself" would be false. The link, the outbox path and the 0600
+    queue are unchanged, so the mailer needs one fewer new thing.
     """
-    with open(os.path.join(ROOT, "templates", "emails", "confirm.txt"),
-              encoding="utf-8") as handle:
-        body = handle.read()
+    if body is None:
+        with open(os.path.join(ROOT, "templates", "emails", "confirm.txt"),
+                  encoding="utf-8") as handle:
+            body = handle.read()
     link = "%s/confirm?t=%s" % (ACCOUNT_HOST, token)
     body = body.replace("{{CONFIRM}}", link)
     if "{{" in body:
@@ -1009,7 +1106,7 @@ def queue_confirm(account: dict, token: str) -> str:
     message = EmailMessage()
     message["From"] = CONFIRM_SENDER
     message["To"] = account["email"]
-    message["Subject"] = CONFIRM_SUBJECT
+    message["Subject"] = subject
     message["Date"] = formatdate(usegmt=True)
     message["Message-ID"] = make_msgid(idstring="odile-confirm.%s" % account["slug"],
                                        domain="odile.fyi")
@@ -1019,6 +1116,79 @@ def queue_confirm(account: dict, token: str) -> str:
         handle.write(message.as_bytes())
     os.replace(path + ".tmp", path)
     return path
+
+
+def queue_repoint_notice(account: dict, previous_email: str) -> str:
+    """Write the notice the old address gets after a re-point; return its path.
+
+    It is a separate directory (`<outbox>/repoint/`) because it is not a
+    confirmation and carries no action: a mailer that drains `confirm/` must
+    not mistake it for one. The file name carries a digest of the previous
+    address, so a second re-point adds a second notice instead of replacing
+    the first. A bounce on this message is a delivery event after the queue and
+    cannot undo the change (the row and the admin log are committed first).
+    """
+    body = REPOINT_NOTICE_BODY.replace("{{DATE}}", brand_date(now_iso()))
+    if "{{" in body:
+        raise RuntimeError("the re-point notice has an unfilled slot")
+    directory = os.path.join(OUTBOX, "repoint")
+    os.makedirs(directory, exist_ok=True)
+    try:
+        os.chmod(directory, 0o700)
+    except OSError:
+        pass
+    digest = hashlib.sha256(previous_email.encode("utf-8")).hexdigest()[:12]
+    path = os.path.join(directory, "%d-%s.eml" % (int(account["id"]), digest))
+    message = EmailMessage()
+    message["From"] = CONFIRM_SENDER
+    message["To"] = previous_email
+    message["Subject"] = REPOINT_NOTICE_SUBJECT
+    message["Date"] = formatdate(usegmt=True)
+    message["Message-ID"] = make_msgid(
+        idstring="odile-repoint.%s" % account["slug"], domain="odile.fyi")
+    message.set_content(body)
+    fd = os.open(path + ".tmp", os.O_CREAT | os.O_TRUNC | os.O_WRONLY, 0o600)
+    with os.fdopen(fd, "wb") as handle:
+        handle.write(message.as_bytes())
+    os.replace(path + ".tmp", path)
+    return path
+
+
+def is_repoint(con, row: sqlite3.Row) -> bool:
+    """True when this unverified row is waiting on a re-pointed address.
+
+    The admin log is the record that the address moved; the accounts table
+    grows no flag (the schema keeps the column set the privacy page lists).
+    After the confirmation `email_verified_at` is set and this answers False
+    even though the log line stays.
+    """
+    if row["email_verified_at"]:
+        return False
+    return con.execute(
+        "SELECT 1 FROM admin_log WHERE account_id = ? AND action = ?"
+        " AND new_email = ? ORDER BY id DESC LIMIT 1",
+        (int(row["id"]), REPOINT_ACTION, row["email"]),
+    ).fetchone() is not None
+
+
+def account_for_name(con, email: str) -> sqlite3.Row | None:
+    """The account a typed address names: current address first, old one second.
+
+    Under code-only recovery the address is the account's *name* and the code
+    is the credential (DECISION-one-recovery-code.md §3.3), so a re-point must
+    not strand the person who still types the old address. The admin log keeps
+    the previous addresses; the current address always wins, so an address
+    freed by a re-point and later registered by someone else resolves to the
+    new account.
+    """
+    row = con.execute("SELECT * FROM accounts WHERE email = ?", (email,)).fetchone()
+    if row is not None:
+        return row
+    return con.execute(
+        "SELECT a.* FROM admin_log AS l JOIN accounts AS a ON a.id = l.account_id"
+        " WHERE l.action = ? AND l.previous_email = ? ORDER BY l.id DESC LIMIT 1",
+        (REPOINT_ACTION, email),
+    ).fetchone()
 
 
 def render_register(*, state: str = "form", email: str = "", token: str = "",
@@ -1157,10 +1327,11 @@ def signin_body(*, email: str = "", error: str = "",
 # browser. `confirm` is the address that is not verified yet; it wins over
 # `provision_state`, which is still `unverified`.
 ACCOUNT_STATE_RE = re.compile(
-    r"<!--(confirm|building|ready|failed|missing)-->(.*?)<!--/\1-->", re.S)
+    r"<!--(confirm|repoint|building|ready|failed|missing)-->(.*?)<!--/\1-->", re.S)
 ACCOUNT_ACTIONS_RE = re.compile(r"<!--(actions)-->(.*?)<!--/actions-->", re.S)
 ACCOUNT_PAGE_TITLES = {
     "confirm": "Check your email \u2014 Odile",
+    "repoint": "Confirm your new address \u2014 Odile",
     "building": "Building \u2014 Odile",
     "ready": "Your machine is ready \u2014 Odile",
     "failed": "The machine could not be built \u2014 Odile",
@@ -1174,10 +1345,15 @@ ACCOUNT_PAGE_TITLES = {
 ACCOUNT_PASSWORD_FIELDS = ("current", "password", "password2")
 
 
-def account_state(row: sqlite3.Row) -> str:
-    """The one state the page shows, from the account row alone."""
+def account_state(row: sqlite3.Row, *, repointed: bool = False) -> str:
+    """The one state the page shows, from the account row and the admin log.
+
+    `repointed` distinguishes the two unverified states: a fresh registration
+    is told to check its email, and an account whose address an admin moved is
+    told to confirm the new address. Both are `email_verified_at IS NULL`.
+    """
     if not row["email_verified_at"]:
-        return "confirm"
+        return "repoint" if repointed else "confirm"
     state = row["provision_state"]
     if state in ("unverified", "queued", "building"):
         return "building"
@@ -1186,7 +1362,7 @@ def account_state(row: sqlite3.Row) -> str:
 
 def render_account_page(row: sqlite3.Row, tenant: sqlite3.Row | None = None,
                         state: str | None = None, *, error: str = "",
-                        field: str = "") -> str:
+                        field: str = "", repointed: bool = False) -> str:
     """The finished account page, server-rendered from the account and tenant.
 
     The machine's address and IPv4 come from the tenant row (the record of the
@@ -1202,7 +1378,7 @@ def render_account_page(row: sqlite3.Row, tenant: sqlite3.Row | None = None,
     signed-in 404 drop them; the change form and the lost-code block (D-16)
     carry no machine name and stay in every signed-in state.
     """
-    state = state or account_state(row)
+    state = state or account_state(row, repointed=repointed)
     slug = row["slug"]
     host = "%s.%s" % (slug, TENANT_DOMAIN)
     ipv4 = (tenant["ipv4"] if tenant is not None and tenant["ipv4"] else row["ipv4"]) or ""
@@ -1288,6 +1464,77 @@ def render_forgot(*, state: str = "form", email: str = "", error: str = "",
     # The address goes in last, so a literal `{{...}}` typed into the field is
     # never read back as a slot of ours (the ODL-457 rule).
     return body.replace("{{EMAIL}}", html.escape(email, quote=True))
+
+
+# The console (ODL-582), its first action. The page is admin-only; the
+# forbidden state is the same paper with one way back. `allowed` and
+# `forbidden` are the two blocks in web/admin.html.
+ADMIN_BLOCK_RE = re.compile(r"<!--(allowed|forbidden)-->(.*?)<!--/\1-->", re.S)
+ADMIN_TITLES = {
+    "allowed": "The console \u2014 Odile",
+    "forbidden": "Not here \u2014 Odile",
+}
+ADMIN_FIELDS = ("current_email", "new_email")
+ADMIN_ERRORS = {
+    "no-account": "No account has that address.",
+    "same": "That is already the account's address.",
+    "taken": "That address already has an account.",
+    "shape": "That doesn't look like an email address.",
+}
+
+
+def render_admin(*, allowed: bool, actor: str = "", accounts=(),
+                 error: str = "", field: str = "", notice: str = "",
+                 values: dict | None = None) -> str:
+    """The console in its two states: the admin's page, or the refusal.
+
+    The accounts table is the console's list (A6's later cards add the key's
+    label and spend); the form is this card's one action. A page-level error
+    sits in its own slot; a field error keeps the ARIA pair on its input. No
+    JavaScript and no third-party request, like every other surface here.
+    """
+    values = values or {}
+    body = page("admin.html", TITLE=html.escape(
+        ADMIN_TITLES["allowed" if allowed else "forbidden"]), ROBOTS="noindex")
+    body = ADMIN_BLOCK_RE.sub(
+        lambda match: match.group(2)
+        if match.group(1) == ("allowed" if allowed else "forbidden") else "",
+        body,
+    )
+    if not allowed:
+        return body.replace("{{ACTOR}}", "")
+
+    rows = []
+    for row in accounts:
+        state = "confirmed" if row["email_verified_at"] else "waiting to confirm"
+        rows.append(
+            "<tr><td>%s</td><td>%s</td><td>%s</td></tr>"
+            % (html.escape(row["email"]), html.escape(row["slug"]),
+               html.escape(state)))
+    owner = field if field in ADMIN_FIELDS else ""
+    body = body.replace(
+        "{{ADMIN_ERROR}}",
+        err_slot(error, "admin-err") if error and not owner else "")
+    for name in ADMIN_FIELDS:
+        hit = bool(error) and owner == name
+        slot_id = "%s-err" % name
+        body = body.replace(
+            "{{%s_INVALID}}" % name.upper(),
+            ' aria-invalid="true" aria-describedby="%s"' % slot_id if hit else "")
+        body = body.replace(
+            "{{%s_ERROR}}" % name.upper(),
+            err_slot(error, slot_id) if hit else "")
+        body = body.replace(
+            "{{%s}}" % name.upper(),
+            html.escape(values.get(name, ""), quote=True))
+    body = body.replace("{{ACCOUNTS}}", "".join(rows))
+    body = body.replace(
+        "{{ADMIN_NOTICE}}",
+        '<div role="status"><p class="ok">%s</p></div>' % notice if notice else "")
+    body = body.replace("{{ACTOR}}", html.escape(actor))
+    if "{{" in body:
+        raise RuntimeError("the console page has an unfilled slot")
+    return body
 
 
 # The claim form has two fields, and each owns one error slot: the message
@@ -1664,6 +1911,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._forgot_done(head)
         if path == "/account":
             return self._account_page(head)
+        if path == "/admin":
+            return self._admin_page(head)
         if path.startswith("/account/"):
             # The same page addressed by the machine it belongs to: a
             # signed-in request for another account's machine is a branded 404
@@ -1826,7 +2075,7 @@ class Handler(BaseHTTPRequestHandler):
             return self._tenant_recovery()
         if path not in ("/waitlist", "/claim", "/register", "/confirm", "/signin",
                         "/login", "/account/retry", "/account/resend",
-                        "/account/password", "/forgot"):
+                        "/account/password", "/forgot", "/admin/repoint"):
             return self._send(405, "method not allowed\n", "text/plain; charset=utf-8")
 
         try:
@@ -1872,6 +2121,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._account_password(fields)
         if path == "/forgot":
             return self._forgot(fields)
+        if path == "/admin/repoint":
+            return self._admin_repoint(fields)
         email_raw = (fields.get("email") or [""])[0]
 
         # honeypot: filled only by bots. Pretend everything went fine.
@@ -2235,9 +2486,18 @@ class Handler(BaseHTTPRequestHandler):
         try:
             tenant = con.execute("SELECT * FROM tenants WHERE slug = ?",
                                  (row["slug"],)).fetchone()
+            repointed = is_repoint(con, row)
         finally:
             con.close()
-        return self._send(200, render_account_page(row, tenant=tenant), head=head)
+        return self._send(200, render_account_page(
+            row, tenant=tenant, repointed=repointed), head=head)
+
+    def _repointed(self, row) -> bool:
+        con = db()
+        try:
+            return is_repoint(con, row)
+        finally:
+            con.close()
 
     def _account_missing(self, head, row=None):
         """A signed-in 404 in the page's own paper, one link back to /account.
@@ -2251,6 +2511,143 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(303, "", head=head, location="/login",
                               headers={"Set-Cookie": _clear_cookie()})
         return self._send(404, render_account_page(row, state="missing"), head=head)
+
+    def _admin_account(self):
+        """(the signed-in admin row, None) or (row-or-None, "login"|"forbidden")."""
+        row = self._session_account()
+        if row is None:
+            return None, "login"
+        admin = admin_email()
+        if not admin or row["email"] != admin:
+            return row, "forbidden"
+        return row, None
+
+    def _admin_rows(self):
+        con = db()
+        try:
+            return con.execute(
+                "SELECT id, email, slug, email_verified_at, provision_state"
+                " FROM accounts ORDER BY id").fetchall()
+        finally:
+            con.close()
+
+    def _admin_page(self, head):
+        """GET /admin: the console, or the same paper's refusal."""
+        row, verdict = self._admin_account()
+        if verdict == "login":
+            return self._send(303, "", head=head, location="/login",
+                              headers={"Set-Cookie": _clear_cookie()})
+        if verdict == "forbidden":
+            return self._send(403, render_admin(allowed=False), head=head)
+        return self._send(200, render_admin(
+            allowed=True, actor=row["email"], accounts=self._admin_rows()), head=head)
+
+    def _admin_repoint(self, fields):
+        """POST /admin/repoint: rewrite the address, log it, queue both notices.
+
+        docs/product/DECISION-password-reset.md §5 steps 2-4. The write is one
+        transaction: the account's address (verified_at null, a fresh
+        confirmation token), the machine's owner record, and the append-only
+        admin log. `password_hash` and `recovery_hash` are not touched — the
+        password and the code are not tied to the address. The two messages are
+        queued after the commit; a delivery bounce on the old one is a later
+        event and cannot undo the change.
+        """
+        if not self._same_origin():
+            return self._send(403, "forbidden: cross-site form\n",
+                              "text/plain; charset=utf-8")
+        row, verdict = self._admin_account()
+        if verdict == "login":
+            return self._send(303, "", location="/login",
+                              headers={"Set-Cookie": _clear_cookie()})
+        if verdict == "forbidden":
+            return self._send(403, render_admin(allowed=False))
+        current_raw = (fields.get("current_email") or [""])[0]
+        new_raw = (fields.get("new_email") or [""])[0]
+        values = {"current_email": current_raw.strip(), "new_email": new_raw.strip()}
+
+        def refused(status, message, field="", values=values):
+            return self._send(status, render_admin(
+                allowed=True, actor=row["email"], accounts=self._admin_rows(),
+                error=message, field=field, values=values))
+
+        current = valid_email(current_raw)
+        if not current:
+            return refused(422, ADMIN_ERRORS["shape"], "current_email")
+        new = valid_email(new_raw)
+        if not new:
+            return refused(422, ADMIN_ERRORS["shape"], "new_email")
+        if new == current:
+            return refused(422, ADMIN_ERRORS["same"], "new_email")
+
+        token = secrets.token_hex(32)
+        stamp = now_iso()
+        con = db()
+        try:
+            target = con.execute(
+                "SELECT * FROM accounts WHERE email = ?", (current,)).fetchone()
+            if target is None:
+                return refused(404, ADMIN_ERRORS["no-account"], "current_email")
+            # An address belongs to one account and one machine record; the
+            # new one may be neither this account's nor another's.
+            taken = con.execute(
+                "SELECT 1 FROM accounts WHERE email = ? AND id != ?"
+                " UNION ALL SELECT 1 FROM tenants WHERE email = ? AND slug != ?",
+                (new, int(target["id"]), new, target["slug"])).fetchone()
+            if taken is not None:
+                return refused(422, ADMIN_ERRORS["taken"], "new_email")
+            try:
+                con.execute(
+                    "UPDATE accounts SET email = ?, email_verified_at = NULL,"
+                    " confirm_token_hash = ?, confirm_expires_at = ? WHERE id = ?",
+                    (new, hash_token(token), confirm_expiry(), int(target["id"])),
+                )
+                con.execute(
+                    "UPDATE tenants SET email = ? WHERE slug = ? AND email = ?",
+                    (new, target["slug"], current),
+                )
+                con.execute(
+                    "INSERT INTO admin_log (account_id, actor, action,"
+                    " previous_email, new_email, created_at)"
+                    " VALUES (?, ?, ?, ?, ?, ?)",
+                    (int(target["id"]), row["email"], REPOINT_ACTION,
+                     current, new, stamp),
+                )
+                con.commit()
+            except sqlite3.IntegrityError:
+                con.rollback()
+                return refused(422, ADMIN_ERRORS["taken"], "new_email")
+            fresh = con.execute("SELECT * FROM accounts WHERE id = ?",
+                                (int(target["id"]),)).fetchone()
+        finally:
+            con.close()
+        if fresh is None:
+            return self._send(500, "The account could not be re-read.\n",
+                              "text/plain; charset=utf-8")
+
+        problems = []
+        try:
+            queue_confirm(dict(fresh), token, subject=REPOINT_CONFIRM_SUBJECT,
+                          body=REPOINT_CONFIRM_BODY)
+        except (OSError, RuntimeError):
+            traceback.print_exc(file=sys.stderr)
+            problems.append("the confirmation")
+        try:
+            queue_repoint_notice(dict(fresh), current)
+        except (OSError, RuntimeError):
+            traceback.print_exc(file=sys.stderr)
+            problems.append("the notice")
+        if problems:
+            return self._send(500, render_admin(
+                allowed=True, actor=row["email"], accounts=self._admin_rows(),
+                notice="The address is changed.",
+                error="%s could not be queued. The account page can send the"
+                      " confirmation again." % " and ".join(problems).capitalize()))
+        return self._send(200, render_admin(
+            allowed=True, actor=row["email"], accounts=self._admin_rows(),
+            notice="The address is changed. The confirmation is queued to %s;"
+                   " the notice to %s. The machine is untouched."
+                   % (html.escape(new), html.escape(current))))
 
     def _account_retry(self):
         """Re-queue a failed provision: the retryable state's one move."""
@@ -2289,11 +2686,13 @@ class Handler(BaseHTTPRequestHandler):
         try:
             tenant = con.execute("SELECT * FROM tenants WHERE slug = ?",
                                  (row["slug"],)).fetchone()
+            repointed = is_repoint(con, row)
         finally:
             con.close()
         headers = {"Retry-After": str(RATE_WINDOW)} if status == 429 else None
         return self._send(status, render_account_page(
-            row, tenant=tenant, error=message, field=field), headers=headers)
+            row, tenant=tenant, error=message, field=field,
+            repointed=repointed), headers=headers)
 
     def _account_resend(self):
         """Re-queue the mail the state owns; no new row, no new machine.
@@ -2316,8 +2715,8 @@ class Handler(BaseHTTPRequestHandler):
         if not allow(self._client_ip(), "resend"):
             return self._account_answer(
                 row, 429, "Too many resends. Try again in ten minutes.")
-        state = account_state(row)
-        if state == "confirm":
+        state = account_state(row, repointed=self._repointed(row))
+        if state in ("confirm", "repoint"):
             return self._confirm_resend(row)
         if state != "ready":
             return self._send(303, "", location="/account")
@@ -2353,12 +2752,17 @@ class Handler(BaseHTTPRequestHandler):
             con.commit()
             fresh = con.execute("SELECT * FROM accounts WHERE id = ?",
                                 (int(row["id"]),)).fetchone()
+            repointed = is_repoint(con, fresh) if fresh is not None else False
         finally:
             con.close()
         if fresh is None or fresh["email_verified_at"]:
             return self._send(303, "", location="/account")
         try:
-            queue_confirm(dict(fresh), token)
+            if repointed:
+                queue_confirm(dict(fresh), token, subject=REPOINT_CONFIRM_SUBJECT,
+                              body=REPOINT_CONFIRM_BODY)
+            else:
+                queue_confirm(dict(fresh), token)
         except (OSError, RuntimeError):
             traceback.print_exc(file=sys.stderr)
             return self._send(500, "The confirmation email could not be queued."
@@ -2586,32 +2990,54 @@ class Handler(BaseHTTPRequestHandler):
                 state="confirm", error="That confirmation link has expired.",
                 next_action="register"))
         stamp = now_iso()
+        repointed = False
         con = db()
         try:
-            tenant = con.execute(
-                "SELECT server_id, ipv4 FROM tenants WHERE slug = ?", (row["slug"],)
-            ).fetchone()
-            existing = tenant["server_id"] if tenant is not None else None
-            state = "ready" if existing else "queued"
-            cur = con.execute(
-                "UPDATE accounts SET email_verified_at = ?, provision_state = ?,"
-                " provision_queued_at = ?, server_id = COALESCE(server_id, ?),"
-                " ipv4 = COALESCE(ipv4, ?) WHERE id = ? AND email_verified_at IS NULL",
-                (stamp, state, None if existing else stamp,
-                 tenant["server_id"] if tenant is not None else None,
-                 tenant["ipv4"] if tenant is not None else None,
-                 int(row["id"])),
-            )
-            con.execute(
-                "UPDATE tenants SET claimed_at = COALESCE(claimed_at, ?) WHERE slug = ?",
-                (stamp, row["slug"]),
-            )
-            con.commit()
-            if cur.rowcount != 1:
-                # A concurrent click won; its queue entry is this account's.
-                return self._send(200, render_register(state="done", email=row["email"]))
+            repointed = is_repoint(con, row) \
+                and row["provision_state"] != "unverified"
+            if repointed:
+                # A re-pointed address confirms itself and nothing else: the
+                # machine already exists, so no provision is queued and the
+                # record's state stays where it was.
+                cur = con.execute(
+                    "UPDATE accounts SET email_verified_at = ?"
+                    " WHERE id = ? AND email_verified_at IS NULL",
+                    (stamp, int(row["id"])),
+                )
+                con.commit()
+                if cur.rowcount != 1:
+                    return self._send(200, render_register(
+                        state="done", email=row["email"]))
+            else:
+                tenant = con.execute(
+                    "SELECT server_id, ipv4 FROM tenants WHERE slug = ?", (row["slug"],)
+                ).fetchone()
+                existing = tenant["server_id"] if tenant is not None else None
+                state = "ready" if existing else "queued"
+                cur = con.execute(
+                    "UPDATE accounts SET email_verified_at = ?, provision_state = ?,"
+                    " provision_queued_at = ?, server_id = COALESCE(server_id, ?),"
+                    " ipv4 = COALESCE(ipv4, ?) WHERE id = ? AND email_verified_at IS NULL",
+                    (stamp, state, None if existing else stamp,
+                     tenant["server_id"] if tenant is not None else None,
+                     tenant["ipv4"] if tenant is not None else None,
+                     int(row["id"])),
+                )
+                con.execute(
+                    "UPDATE tenants SET claimed_at = COALESCE(claimed_at, ?) WHERE slug = ?",
+                    (stamp, row["slug"]),
+                )
+                con.commit()
+                if cur.rowcount != 1:
+                    # A concurrent click won; its queue entry is this account's.
+                    return self._send(200, render_register(
+                        state="done", email=row["email"]))
         finally:
             con.close()
+        if repointed:
+            # The address is confirmed; the person signs in with the account
+            # password. An emailed link confirms a name, it is not a session.
+            return self._send(303, "", location="/login")
         fresh = self._account_for_token(token)
         headers = self._cookie_pair(fresh) if fresh is not None else {}
         return self._send(303, "", location="/account", headers=headers)
@@ -2691,8 +3117,10 @@ class Handler(BaseHTTPRequestHandler):
                               headers={"Retry-After": str(FORGOT_WINDOW)})
         con = db()
         try:
-            row = con.execute("SELECT * FROM accounts WHERE email = ?",
-                              (email,)).fetchone()
+            # The address is the account's name, and the admin log keeps the
+            # previous name: an old address still finds the account while the
+            # person's next reset waits (DECISION-one-recovery-code.md §3.3).
+            row = account_for_name(con, email)
             stored = row["recovery_hash"] if row is not None else None
             if not verify_password_or_dummy(code, stored):
                 return self._send(401, render_forgot(

@@ -83,6 +83,15 @@ button:focus-visible{outline:2px solid var(--ink);outline-offset:3px}
   </form>
   <!--/confirm-->
 
+  <!--repoint-->
+  <h1>Confirm your new address.</h1>
+  <p class="lede">We emailed a link to the new address. Your account stays as it is until you confirm your new address.</p>
+  <p class="note">The address is <strong>{{EMAIL}}</strong>.</p>
+  <form method="post" action="/account/resend">
+    <button class="secondary" type="submit">Send the email again</button>
+  </form>
+  <!--/repoint-->
+
   <!--building-->
   <h1>Building.</h1>
   <p class="lede">We have your address. The machine is being set up. Its first boot prepares the encrypted disk, which is the slow part.</p>
