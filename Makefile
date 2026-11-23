@@ -3,8 +3,9 @@
 # `make check` is the full gate; `.githooks/pre-commit` runs the fast half
 # (`make check-fast`) on every commit, and `.github/workflows/check.yml` runs
 # the full one on every push and on every pull request to `main`. The full gate
-# still runs at `make acceptance` and at the merge gate. It needs
-# /usr/bin/python3, shellcheck and openssl; see CONTRIBUTING.md.
+# also runs in `card_acceptance.py --full` — on the merge tree, inside
+# `make acceptance`, so the stamp names the tree that lands — and at the merge
+# gate. It needs /usr/bin/python3, shellcheck and openssl; see CONTRIBUTING.md.
 
 PYTHON ?= /usr/bin/python3
 SHELLCHECK ?= shellcheck
@@ -109,10 +110,17 @@ check-inner: prereqs secrets leak test self-test compile lint claims brand roadm
 
 # The handoff gate. A card runs this before it asks for review, so the verifier
 # reviews an artifact instead of re-driving the build. CARD=ODL-472 adds the
-# per-card checks: clean tree, merges into main, evidence present. It runs
-# `check-hq` too: `check` in a card worktree sees only the tracked modules, and
-# the HQ-only ones ran first at the merge gate, in main, where they twice went
-# red for a card whose own gate was green.
+# per-card checks: clean tree, merges into main, evidence present.
+#
+# `acceptance` does NOT run `check` in the card's worktree. The full suite runs
+# once per acceptance, in `card_acceptance.py --full`, inside a throwaway
+# checkout of `git merge-tree --write-tree main HEAD` — the tree that lands — and
+# the stamp it writes names that tree (`gate: full-suite-on-merge-tree`). The
+# merge gate reuses the stamp only on tree equality, so one acceptance is one
+# full suite (t_123bbc46; `make check` stays the merge gate and the manual
+# gate). `check-hq` still runs first: the HQ-only test modules against the
+# branch's merge preview, where a card that was green in its worktree twice went
+# red in main.
 #
 # Both tools below are private machinery at HQ (`.git/info/exclude`), so a card
 # worktree carries no copy and a relative path dies there. Resolve each the way
@@ -125,9 +133,9 @@ HQ_CHECKOUT := $(patsubst %/.git,%,$(HQ_COMMON))
 acceptance_tool = $(if $(wildcard $(1)),$(1),$(if $(wildcard $(HQ_CHECKOUT)/$(1)),$(HQ_CHECKOUT)/$(1),$(1)))
 BOARD_SYNC := $(call acceptance_tool,tools/board_sync.py)
 CARD_ACCEPTANCE := $(call acceptance_tool,tools/card_acceptance.py)
-acceptance: check check-hq
+acceptance: check-hq
 	@$(PYTHON) "$(BOARD_SYNC)" check
-	@if [ -n "$(CARD)" ]; then $(PYTHON) "$(CARD_ACCEPTANCE)" --card "$(CARD)"; fi
+	@if [ -n "$(CARD)" ]; then $(PYTHON) "$(CARD_ACCEPTANCE)" --card "$(CARD)" --full; fi
 	@echo "make acceptance: OK $(CARD)"
 
 # The HQ half of the suite (ODL-479). A card worktree is a fresh checkout, so
