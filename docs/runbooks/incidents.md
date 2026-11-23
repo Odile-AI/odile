@@ -1,10 +1,12 @@
 # Incidents — the ten classes, the first five commands, and the drills
 
-**Status:** v1.2 — corrected from four drills: two re-cut for alpha.0 and run on
-22 November 2026 (§6.1, §6.2), and two run on 15 November 2026 and kept because
-the recovery and seed classes still cite them (§6.4). §6.3 is every line a drill
-changed, with the measurement that changed it. **Card:** ODL-244, A2 (re-cut
-17 November 2026, ODL-573).
+**Status:** v1.3 — 22 November 2026: the reset copy is re-cut to the v3.11 deck
+(D-2, D-4, D-19) and §6.2 is labelled the pre-ODL-926 measurement (D-20). v1.2
+corrected four drills: two re-cut for alpha.0 and run on 22 November 2026 (§6.1,
+§6.2), and two run on 15 November 2026 and kept because the recovery and seed
+classes still cite them (§6.4). §6.3 is every line a drill changed, with the
+measurement that changed it. **Card:** ODL-244, A2 (re-cut 17 November 2026,
+ODL-573); claims re-cut `t_47bceb77` (ODL-244 follow-up), v3.11 D-2/D-4/D-19/D-20.
 **Read with:** `alerting.md` (the heartbeat and the five alerts), `support.md`
 (the grant and the diag bundle), `backup.md` (restic and the restore),
 `seed.md` (the token and `/seed`), `provision.md` (the provider API),
@@ -228,16 +230,16 @@ starts.
 **C-2.** Your machine is built and waiting for one thing: the sign-in you set on it.
 The link in your ready email was good for 24 hours and has expired. Here is a
 new one: <link>. Open it, choose a password of at least 16 characters, and your
-workspace opens. The password is set on your machine and hashed there; we never
-see it. If the link says it was already used, the sign-in is already set — open
+workspace opens. The password is set on your machine and hashed there. If the link
+says it was already used, the sign-in is already set — open
 https://<slug>.odile.fyi and tell us if that fails.
 
-**C-3.** You cannot sign in; the machine is fine and your files are untouched. The
-only reset is on the machine, with the recovery code you saved at your first
-visit: open https://<slug>.odile.fyi/first-visit/reset and enter it. There is no
-reset at HQ and we never see your password. If you cannot find the code, tell
-us: the way back is a rebuild, and your recovery file still opens the backup.
-Nothing is lost except the time it takes to rebuild.
+**C-3.** You cannot sign in; the machine is fine and your files are untouched. A
+lost Odile sign-in is reset on the machine with your recovery code; HQ cannot
+reset your machine's sign-in. Open https://<slug>.odile.fyi/first-visit/reset and
+enter the code you saved at your first visit. There is no emailed reset. If you
+cannot find the code, tell us: the way back is a rebuild, and your recovery file
+still opens the backup. Nothing is lost except the time it takes to rebuild.
 
 **C-4.** Your backup is encrypted with a password that only your recovery file holds;
 Odile keeps no copy and cannot read it. Two cases. If the machine is still
@@ -298,8 +300,8 @@ starts; the last day may be lost.
 |---|---|
 | C-0 | 42 |
 | C-1 | 84 |
-| C-2 | 85 |
-| C-3 | 79 |
+| C-2 | 81 |
+| C-3 | 81 |
 | C-4 | 90 |
 | C-5 | 86 |
 | C-6 | 99 |
@@ -415,8 +417,9 @@ the sign-in was never set). The `/verify` sign-in row reads `PASS` in both
 cases; it proves a hash is present, not that the user's password is the one.
 
 **Blast radius.** The user, not the machine: the agent keeps running, cron jobs
-fire, the backup runs. The recovery code resets the sign-in; without it there is
-no reset at HQ.
+fire, the backup runs. The reset is the machine's: "A lost Odile sign-in is reset
+on the machine with your recovery code; HQ cannot reset your machine's sign-in."
+(`CLAIMS.md` D-19)
 
 **First five commands.**
 
@@ -428,15 +431,25 @@ no reset at HQ.
 5. # code lost: §4.4's rebuild path; the recovery file still opens the backup
 ```
 
-The reset form is the only in-place way back; we never hold the password and
-there is no HQ reset (`CLAIMS.md` §5). Four things the drill measured (§6.2):
+The machine's reset form is the only in-place way back. "One recovery code resets
+both: your account password at the account page and your machine's sign-in on the
+machine. There is no emailed reset." (`CLAIMS.md` D-4) D-2 is why an account
+reset does not fix the machine: "Odile sees your password when you register and
+when you sign in at the account page and keeps only a hash of it. Your machine is
+built with a copy of that hash; after that, changing one does not change the
+other." (D-2) D-19 is the qualified survivor: "…HQ cannot reset your machine's
+sign-in." (D-19) Four things the drill measured (§6.2):
 
-* a **wrong or used code answers `200`** and re-renders the form with `That
-  recovery code does not match.` — a check on the status code alone reads a
-  refusal as a success;
-* the **right code** sets the new sign-in, shows a **new code once**, and the
-  old code is dead immediately: both `POST /first-visit/reset` and `POST
-  /first-visit/recovery` spend a code and rotate it;
+* at the **pre-ODL-926 head** a **wrong or used code** answered `200` and
+  re-rendered the form with `That recovery code does not match.` — a check on the
+  status code alone reads a refusal as a success;
+* the **right code** sets the new sign-in; at the pre-ODL-926 head the page also
+  showed a **new code once**, and the old code died immediately, because both
+  `POST /first-visit/reset` and `POST /first-visit/recovery` spent a code and
+  rotated it. That is the **pre-ODL-926 measurement**: D-20 is the current row —
+  "Your recovery code works at both places until you replace it; using it does not
+  spend it." (D-20) — and ODL-926 lands the stable code, whose reset response
+  shows no new code;
 * the reset **signs out every other browser** (the session secret is replaced)
   and **restarts the gateway** to load the new hash: the workspace answers `502`
   for a few seconds, so wait for `/` to answer `302` before calling a login a
@@ -451,7 +464,8 @@ becomes the rebuild path (§5), with §4.4's file question first.
 
 **Exit.** The user signs in with the new password — a `200` from the login, not
 the `/verify` row (which never changes: it proves a hash is present) — and the
-new code the page showed is the one they save.
+code they hold is the one the reset form accepts: the new code the page showed at
+this head, and the unchanged code once ODL-926 lands.
 
 ---
 
@@ -829,8 +843,14 @@ carries the user copy. See §6.3.
 
 ### 6.2 Drill 2 — a lost sign-in (re-cut for A2, 22 November 2026)
 
+**Measured before ODL-926.** The drill ran before ODL-926, which lands the
+stable code, so the "new code", "third code" and "the same code again" rows
+below are the pre-ODL-926 measurement. D-20 is the current row: "Your recovery
+code works at both places until you replace it; using it does not spend it."
+(D-20)
+
 **Scenario.** A tester on the bench forgets the sign-in. The recovery code is the
-only reset; there is no HQ reset.
+only reset; "HQ cannot reset your machine's sign-in" (`CLAIMS.md` D-19).
 
 **What ran.** Two halves.
 
