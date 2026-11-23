@@ -1511,6 +1511,20 @@ def render_admin(*, allowed: bool, actor: str = "", accounts=(),
             "<tr><td>%s</td><td>%s</td><td>%s</td></tr>"
             % (html.escape(row["email"]), html.escape(row["slug"]),
                html.escape(state)))
+    # The actor and the two typed values are template slots but their values
+    # are addresses; sentinels keep the unfilled-slot check about the
+    # template only (the ODL-457 rule — a typed `{{...}}` is data).
+    actor_slot = "\x00odile-actor\x00"
+    body = body.replace("{{ACTOR}}", actor_slot)
+    value_slots = {}
+    for name in ADMIN_FIELDS:
+        slot = "\x00odile-%s\x00" % name
+        value_slots[name] = slot
+        body = body.replace("{{%s}}" % name.upper(), slot)
+    rows_slot = "\x00odile-accounts\x00"
+    notice_slot = "\x00odile-notice\x00"
+    body = body.replace("{{ACCOUNTS}}", rows_slot)
+    body = body.replace("{{ADMIN_NOTICE}}", notice_slot)
     owner = field if field in ADMIN_FIELDS else ""
     body = body.replace(
         "{{ADMIN_ERROR}}",
@@ -1524,17 +1538,19 @@ def render_admin(*, allowed: bool, actor: str = "", accounts=(),
         body = body.replace(
             "{{%s_ERROR}}" % name.upper(),
             err_slot(error, slot_id) if hit else "")
-        body = body.replace(
-            "{{%s}}" % name.upper(),
-            html.escape(values.get(name, ""), quote=True))
-    body = body.replace("{{ACCOUNTS}}", "".join(rows))
-    body = body.replace(
-        "{{ADMIN_NOTICE}}",
-        '<div role="status"><p class="ok">%s</p></div>' % notice if notice else "")
-    body = body.replace("{{ACTOR}}", html.escape(actor))
     if "{{" in body:
         raise RuntimeError("the console page has an unfilled slot")
-    return body
+    # The data goes in last, so a literal `{{...}}` in an address is never
+    # read back as a slot of ours (the ODL-457 rule). The check above ran on
+    # the template only, before any address or account row was inserted.
+    body = body.replace(rows_slot, "".join(rows))
+    body = body.replace(
+        notice_slot,
+        '<div role="status"><p class="ok">%s</p></div>' % notice if notice else "")
+    for name in ADMIN_FIELDS:
+        body = body.replace(
+            value_slots[name], html.escape(values.get(name, ""), quote=True))
+    return body.replace(actor_slot, html.escape(actor))
 
 
 # The claim form has two fields, and each owns one error slot: the message

@@ -447,6 +447,16 @@ class RepointTests(AdminBase):
         self.assertNotIn(before["password_hash"], dumped)
         self.assertNotIn(before["recovery_hash"], dumped)
 
+    def test_a_literal_slot_in_an_address_is_data_not_a_template(self):
+        target = self.email()
+        self.seed_account(target)
+        weird = "{{new_email}}@example.com"
+        status, _headers, body = self.repoint(target, weird)
+        self.assertEqual(status, 200, body[:300])
+        text = body.decode("utf-8")
+        self.assertIn(weird, text, "the typed address was read back as a slot")
+        self.assertEqual(self.account(weird)["email"], weird)
+
     def test_the_admin_log_is_append_only(self):
         target = self.email()
         before = self.seed_account(target)
