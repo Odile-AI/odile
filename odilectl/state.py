@@ -59,6 +59,17 @@ and a machine still running behind a destroyed tenant. It is read-only unless
 a missing machine is marked destroyed (the finding names the same-slug rebuild),
 an expired ready machine suspended, and an unknown machine is left for a human
 to adopt or destroy.
+
+`release()` is the handover step (ODL-348 follow-up): `destroy` terminates the
+machine and keeps its id as the zombie marker, but a recycled machine must
+outlive the tenant it served. `tenant_state.server_id` and `tenants.server_id`
+are `UNIQUE`, so the next tenant's provision cannot record a machine an old row
+still names. `release` clears the machine columns of both tables in one
+transaction, leaves the row `destroyed` and its slug intact, and records the
+machine it let go in `detail.released` — which is how `reconcile` still reports
+a destroyed row whose machine lives on. This module still never edits the web
+schema; `release` is the one place it writes a web `tenants` row, and only to
+NULL that row's machine columns.
 """
 
 from __future__ import annotations
@@ -146,6 +157,10 @@ _FIELDS = (
     "initramfs_host_key",
     "last_heartbeat",
 )
+
+# The same tuple, named for the commands that empty these columns: `release`
+# reports exactly what it cleared, by these names.
+MACHINE_FIELDS = _FIELDS
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS tenant_state (
@@ -466,6 +481,28 @@ class ReconcileReport:
             "fixed": list(self.fixed),
             "applied": self.applied,
         }
+
+
+@dataclass(frozen=True)
+class Release:
+    """What one `release` moved: the row after it, the machine it let go, the web rows cleared.
+
+    `tenant` is None when the slug has no state row (an absent row is success);
+    `released` is the `detail.released` record after the write, or None;
+    `changed` is False when the world already agreed, which is what makes a
+    second run a no-op down to `updated_at`.
+    """
+
+    tenant: "Tenant | None"
+    released: dict[str, Any] | None
+    web_cleared: int
+    changed: bool
+
+
+def _table_exists(connection: sqlite3.Connection, name: str) -> bool:
+    return connection.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?", (name,)
+    ).fetchone() is not None
 
 
 def _iso(epoch: int) -> str:
@@ -1092,6 +1129,124 @@ class StateStore:
     def destroy(self, slug: str, *, reason: str = "") -> Tenant:
         return self.transition(slug, "destroyed", detail={"reason": reason})
 
+    # -------------------------------------------------------------- handover
+
+    def web_row(self, slug: str) -> dict[str, Any] | None:
+        """The app's `tenants` row for ``slug``: its state and machine columns.
+
+        None when this database carries no web schema (a state-only store) or
+        no row for the slug. Read-only; `release` is the only write.
+        """
+        if not _table_exists(self._con, "tenants"):
+            return None
+        row = self._con.execute(
+            "SELECT state, server_id, ipv4 FROM tenants WHERE slug = ?", (slug,)
+        ).fetchone()
+        return dict(row) if row is not None else None
+
+    def release(self, slug: str, *, reason: str = "") -> "Release":
+        """Let the machine go while the tenant row stays `destroyed`.
+
+        `destroy` keeps the machine id as the zombie marker; a handover needs
+        the opposite — the machine lives on and the next tenant records it — and
+        both `server_id` columns are `UNIQUE`, so the id must move off the old
+        row first. One transaction does all of it: the state row becomes
+        `destroyed` (one event, when it was not already), every machine column
+        is NULL, the departed machine is kept in `detail.released`, and the web
+        row's `server_id`/`ipv4` are NULLed with it. A crash therefore leaves
+        either both rows holding the id or neither.
+
+        The slug, the detail's other keys, and the web row's `state` column are
+        untouched. A second call, an already released row and an absent row all
+        converge to `changed=False`. The provider is never called: this command
+        cannot terminate, power or create a machine.
+        """
+        try:
+            tenant = self.get(slug)
+        except UnknownTenant:
+            web = self.web_row(slug)
+            if web is None or not (web.get("server_id") or web.get("ipv4")):
+                return Release(None, None, 0, False)
+            try:
+                cleared = self._clear_web_machine(slug)
+                self._con.commit()
+            except Exception:
+                self._con.rollback()
+                raise
+            return Release(None, None, cleared, True)
+
+        machine = {
+            name: getattr(tenant, name)
+            for name in _FIELDS
+            if getattr(tenant, name) is not None
+        }
+        web = self.web_row(slug)
+        web_machine = bool(web and (web.get("server_id") or web.get("ipv4")))
+        released = tenant.detail.get("released")
+        if tenant.state == "destroyed" and not machine and not web_machine:
+            record = released if isinstance(released, dict) else None
+            return Release(tenant, record, 0, False)
+
+        stamp = _iso(self.now())
+        detail = dict(tenant.detail)
+        record: dict[str, Any] | None = None
+        if machine:
+            record = dict(released) if isinstance(released, dict) else {}
+            record.update(machine)
+            record["at"] = stamp
+            record["reason"] = reason or "handover"
+            detail["released"] = record
+
+        assignments = ["state = 'destroyed'"]
+        assignments.extend(f"{name} = NULL" for name in _FIELDS)
+        assignments.extend(["detail = ?", "updated_at = ?"])
+        values: list[Any] = [json.dumps(detail, sort_keys=True), stamp, slug]
+        event_detail: dict[str, Any] = {"reason": reason or "handover"}
+        if record is not None:
+            event_detail["released"] = {
+                name: record[name]
+                for name in ("server_id", "hostname", "ipv4")
+                if record.get(name) is not None
+            }
+        try:
+            cursor = self._con.execute(
+                f"UPDATE tenant_state SET {', '.join(assignments)} WHERE slug = ?", values
+            )
+            if cursor.rowcount != 1:
+                raise StateError(f"{slug}: the row moved while it was released")
+            if tenant.state != "destroyed":
+                self._con.execute(
+                    "INSERT INTO tenant_state_events (slug, kind, from_state, to_state,"
+                    " detail, created_at) VALUES (?, 'destroyed', ?, 'destroyed', ?, ?)",
+                    (
+                        slug,
+                        tenant.state,
+                        json.dumps(event_detail, sort_keys=True),
+                        stamp,
+                    ),
+                )
+            cleared = self._clear_web_machine(slug)
+            self._con.commit()
+        except Exception:
+            self._con.rollback()
+            raise
+        return Release(self.get(slug), record, cleared, True)
+
+    def _clear_web_machine(self, slug: str) -> int:
+        """NULL the web row's machine columns inside the caller's transaction.
+
+        The row's `state` is not this module's to move: `destroy` does not move
+        it either, and the handover only needs the two `UNIQUE` columns free.
+        """
+        if not _table_exists(self._con, "tenants"):
+            return 0
+        cursor = self._con.execute(
+            "UPDATE tenants SET server_id = NULL, ipv4 = NULL"
+            " WHERE slug = ? AND (server_id IS NOT NULL OR ipv4 IS NOT NULL)",
+            (slug,),
+        )
+        return cursor.rowcount
+
     def reopen(self, slug: str, *, reason: str) -> Tenant:
         """Bring a destroyed tenant back under the same slug (ADR-007).
 
@@ -1194,19 +1349,32 @@ class StateStore:
 # --------------------------------------------------------------------- reconcile
 
 
+def _released_machine(tenant: Tenant) -> dict[str, Any]:
+    """The machine a released row let go, as `release` recorded it."""
+    value = tenant.detail.get("released") if isinstance(tenant.detail, dict) else None
+    return value if isinstance(value, dict) else {}
+
+
 def _match(tenant: Tenant, machines: Iterable[Machine]) -> Machine | None:
     """The provider row this tenant points at, by server id first, name second.
 
     A tenant before `provisioning` has no server id; only then is the hostname
     an identity. A destroyed tenant is matched so a machine that outlived its
-    row is visible as a zombie, not silently ignored.
+    row is visible as a zombie, not silently ignored — including one the row
+    released, whose id and hostname now live only in `detail.released` and whose
+    provider name may already be the next tenant's slug.
     """
     if tenant.server_id:
         for machine in machines:
             if machine.server_id == tenant.server_id:
                 return machine
         return None
-    name = tenant.hostname or tenant.slug
+    released = _released_machine(tenant) if tenant.state == "destroyed" else {}
+    if released.get("server_id"):
+        for machine in machines:
+            if machine.server_id == released["server_id"]:
+                return machine
+    name = tenant.hostname or released.get("hostname") or tenant.slug
     if tenant.state in MACHINE_STATES or tenant.state == "destroyed":
         for machine in machines:
             if machine.hostname == name:
@@ -1214,13 +1382,26 @@ def _match(tenant: Tenant, machines: Iterable[Machine]) -> Machine | None:
     return None
 
 
-def _known_machine_ids(tenants: Iterable[Tenant], machines: list[Machine]) -> set[str]:
+def _machine_ids(
+    tenants: Iterable[Tenant], machines: list[Machine]
+) -> tuple[set[str], set[str]]:
+    """The machines some row points at, and the subset a live row owns.
+
+    `known` silences the unknown-machine finding for a destroyed row's zombie;
+    `live` is what keeps that zombie silent once another, live tenant records
+    the same machine — the handover is complete then, and the machine has an
+    owner instead of a ghost.
+    """
     known: set[str] = set()
+    live: set[str] = set()
     for tenant in tenants:
         match = _match(tenant, machines)
-        if match is not None:
-            known.add(match.server_id)
-    return known
+        if match is None:
+            continue
+        known.add(match.server_id)
+        if tenant.state != "destroyed":
+            live.add(match.server_id)
+    return known, live
 
 
 def _expired_days(expires_at: int, now: int) -> int:
@@ -1246,26 +1427,28 @@ def reconcile(
     moment = int(now if now is not None else time.time())
     machines = list(provider.list())
     all_tenants = store.tenants()
-    known = _known_machine_ids(all_tenants, machines)
+    known, live = _machine_ids(all_tenants, machines)
     scoped = [tenant for tenant in all_tenants if slug is None or tenant.slug == slug]
 
     drift: list[Drift] = []
     for tenant in scoped:
         match = _match(tenant, machines)
         if tenant.state == "destroyed":
-            if match is not None and match.state != "terminated":
-                drift.append(
-                    Drift(
-                        "zombie_vm",
-                        tenant.slug,
-                        "manual",
-                        {
-                            "server_id": match.server_id,
-                            "provider_state": match.state,
-                            "raw_status": match.raw_status,
-                        },
-                    )
-                )
+            if (
+                match is not None
+                and match.state != "terminated"
+                and match.server_id not in live
+            ):
+                released = _released_machine(tenant)
+                detail: dict[str, Any] = {
+                    "server_id": match.server_id,
+                    "provider_state": match.state,
+                    "raw_status": match.raw_status,
+                }
+                if released:
+                    detail["released_at"] = released.get("at")
+                    detail["released_hostname"] = released.get("hostname")
+                drift.append(Drift("zombie_vm", tenant.slug, "manual", detail))
             continue
         if tenant.state not in MACHINE_STATES:
             continue

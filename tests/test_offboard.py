@@ -203,7 +203,7 @@ class OffboardTest(unittest.TestCase):
         with state.StateStore.open(self.db) as store:
             store.invite(slug)
 
-    def run_cli(self, argv, *, routes, dns=None, verify=None, factory=None, now=NOW):
+    def run_cli(self, argv, *, routes, dns=None, verify=None, factory=None, now=NOW, **config):
         transport = RecordedTransport(routes)
         provider = factory or (
             lambda _config: servury.ServuryProvider(TEST_KEY, transport=transport)
@@ -211,7 +211,7 @@ class OffboardTest(unittest.TestCase):
         out, err = io.StringIO(), io.StringIO()
         with Seams(dns=dns, verify=verify, now=now):
             code = cli.main(
-                [*argv, "--config", str(self.make_config())],
+                [*argv, "--config", str(self.make_config(**config))],
                 provider_factory=provider,
                 stdout=out,
                 stderr=err,
@@ -284,6 +284,25 @@ class PlanTest(OffboardTest):
         ).strftime("%Y-%m-%dT%H:%M:%SZ")
         self.assertEqual(payload["backup"]["keep_until"], expected)
         self.assertFalse(payload["backup"]["due"])
+
+    def test_the_dns_name_follows_tenant_domain_on_the_bench(self):
+        """The same rule as `odilectl dns`: the name, not the zone, moves."""
+        self.activate_row()
+        dns = FakeDNS(RECORD)
+        code, out, err, _ = self.run_cli(
+            ["destroy", SLUG, "--json"],
+            routes={("GET", "servers"): [(200, servers_response())]},
+            dns=dns,
+            tenant_domain="test.odile.fyi",
+        )
+        self.assertEqual(code, 0, err)
+        payload = json.loads(out)
+        self.assertEqual(payload["dns"]["name"], f"{SLUG}.test.odile.fyi")
+        self.assertEqual(payload["dns"]["zone"], ZONE)
+        self.assertEqual(payload["actions"][2]["name"], f"{SLUG}.test.odile.fyi")
+        self.assertEqual(
+            payload["grant"]["source"], f"https://{SLUG}.test.odile.fyi/verify"
+        )
 
     def test_a_plan_without_a_bundle_says_so_and_still_lists_the_steps(self):
         code, out, err, transport = self.run_cli(
