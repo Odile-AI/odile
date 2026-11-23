@@ -19,8 +19,8 @@ board kanban.db ───┘        (every 15 min)          (atomic write)      
 ## 1. What the page shows
 
 The order is the contract: status sentence, **Now**, **What needs you**,
-**Gates**, the note, one `<details>` per gate (the focus gate is open), and
-**How this page is made** (closed).
+**Gates**, the note, one `<details>` per gate (the focus gate is open), the
+**ADR view** A4 links to, and **How this page is made** (closed).
 
 - **The status sentence** — one computed sentence naming the open gate(s), the
   days to the next close, the next gate's start date, and the plan-wide count
@@ -47,6 +47,18 @@ The order is the contract: status sentence, **Now**, **What needs you**,
   verbatim from `docs/backlog.yaml`, then the gate's `open` questions as a
   final list when the milestone defines any. Exactly one is open: the focus
   gate's.
+- **The ADR view** — A4's block carries one in-page link whose label names
+  ADR-005, and the linked section renders that ADR's §3 layer table (all 15
+  rows, each with its label and the computed `7 in place · 5
+  rebuild-and-restore · 3 not updatable` line), §4's chosen model route (the
+  §4.1 prompt-path row and §4.3's prose) and §5's trigger (the one-line answer
+  and the four row groups). The text is read from
+  `docs/architecture/ADR-upgrades-and-model.md` on every render, so a changed
+  ADR changes the view; a lost row, an unknown label or a moved heading stops
+  the generator instead of shortening the page. The inventory is a real table
+  in the DOM; under 700 px each row stacks (label, today, reason) and nothing
+  scrolls sideways. No second route, no hand-written copy: the ADR is the one
+  source, and `--adr` names it.
 - **How this page is made** — the counting and redaction rules, in six
   sentences, behind a closed disclosure.
 - **The footer** — `generated <ISO-8601 UTC> · source <short sha> · odile.fyi`.
@@ -100,6 +112,9 @@ sudo systemctl status odile-roadmap.service --no-pager # the last timer run
 - `--out` — where to write (default `/var/lib/odile/roadmap.html`).
 - `--stdout` — print, write nothing (the dry run).
 - `--now` — an ISO-8601 instant; the Now block is then deterministic.
+- `--adr` — the document the A4 view renders (default:
+  `docs/architecture/ADR-upgrades-and-model.md` beside the tool). The section
+  is read on every run; `--adr` exists so a test can hand it a changed copy.
 - `--source-sha` / `--source-file` — what the footer prints; the default file
   is `/var/lib/odile/roadmap-source`, written by `./scripts/deploy.sh` from the
   checkout it deployed (`/opt/odile` has no `.git`).
@@ -145,10 +160,24 @@ systemctl status odile-roadmap.service --no-pager | head -12
 ```
 
 The page must carry `noindex`, no `<script>`, no cookie, no third-party
-request, and no link to itself. `make check` runs
-`tests/test_roadmap_page.py`, which pins the disclosure structure, the single
-open gate, the first-screen blocks and all three invariants. The visual review
-is at 1440×900 and 390×844, plus a grayscale screenshot for the `held` tag.
+request, and no link to itself. It must also carry one ADR view: A4's in-page
+link, 15 row labels, and the three §3/§4/§5 headings.
+
+```sh
+grep -c '<section class="adr"' /tmp/roadmap.html        # 1: the view, not a second page
+grep -c 'class="adr-label ' /tmp/roadmap.html           # 15 row labels
+grep -F '7 in place · 5 rebuild-and-restore · 3 not updatable' /tmp/roadmap.html
+grep -o '<h3 id="adr-[a-z]*-title">[^<]*</h3>' /tmp/roadmap.html  # the three headings
+grep -F 'href="#adr-upgrades-and-model"' /tmp/roadmap.html        # A4's link
+```
+
+`make check` runs `tests/test_roadmap_page.py`, which pins the disclosure
+structure, the single open gate, the first-screen blocks, all three invariants
+and the ADR view (the 15 row labels, the 7 / 5 / 3 counts, the three headings,
+the A4 link, and a lost row stopping the render). The visual review is at
+1440×900 and 390×844, plus a grayscale screenshot for the `held` tag; the ADR
+table stacks under 700 px, and neither the page nor the table scrolls
+horizontally at either width.
 
 ## 6. When something is wrong
 
