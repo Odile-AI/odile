@@ -103,13 +103,13 @@ and the lexicon: `docs/brand/ST-ODILE.md`.
   `/verify` and `/verify-public`, 20.0 px at 390, 320 and 1440 on `/roadmap`
   and `/status`, 16.6 px on `/first-visit` and 37.6 px on
   `/first-visit-preview` at both widths. Claim, ceremony, register and forgot
-  sit exactly at the 12 px floor
-  at 390, and every other page clears its floor at both widths except the one
-  named here. The tenant `/verify` page (`templates/verify.html`) is that
-  exception: its header carries the wordmark alone, the box sits 12.0 px above
-  the h1 at ≤560 — 4 px under the 32 px floor — and the 28 px header that
-  closes the gap changes bytes embedded in the signed installer, so it ships
-  with the release that re-embeds the page (t_fc412bd9). (The inked text sits
+  sit exactly at the 12 px floor at 390, and every other page clears its floor
+  at both widths except the one named here. The tenant `/verify` page
+  (`templates/verify.html`) is that exception: its header carries the wordmark
+  alone, the box sits 12.0 px above the h1 at ≤560 — 4 px under the 32 px
+  floor — and the 32 px header that closes the gap changes bytes embedded in
+  the signed installer, so it ships with the release that re-embeds the page
+  (t_fc412bd9). (The inked text sits
   further from the h1 — 20.1 / 28.1 px on claim, 29.8 / 39.8 px on privacy,
   33.5 / 41.5 px on `/verify` — because the wordmark's line box is taller than
   its glyphs; the box is the figure this rule measures.)
