@@ -280,6 +280,53 @@ What the numbers mean — and what they do **not** mean:
   /etc/odile/boot-key.pub disagree)` and HQ never received the record; the
   local `/etc/odile/boot-record.json` was written either way.
 
+## 3a. Handover to a new tenant — measured 2026-11-23 (ODL-348)
+
+A recycle is also a **handover**: the machine that served tenant A comes back as
+tenant B. The three writes are §2; the handover around them is this, in this
+order (measured on `<server:ukitest>` for `odl-340a1e` → `odl-348b2c`, evidence
+in `docs/evidence/a2-recycle.md`):
+
+1. **Record A's facts** on the machine (a marker file and its SHA-256, the
+   boot-key fingerprint from `/etc/odile/boot-key.pub`, the `/etc/odile/key.env`
+   prefix, the LUKS UUID and keyslot) before anything is written.
+2. **Rename the provider hostname to B's slug** — the reseller API's rename
+   verb (`POST ?action=hostname&id=<id>`, body = the slug; there is no
+   odilectl verb for it). `odilectl provision` reuses a machine by hostname, so
+   B's slug must be the provider's name before provision runs. `restart_required:
+   true` is the rename taking effect at the next boot, which the recycle is
+   anyway.
+3. **Free A without terminating.** `odilectl destroy` terminates; the machine
+   must live on. Move A's row to `destroyed` (the state store's own transition,
+   with the reason) **and clear its machine columns**: `tenant_state.server_id`
+   and `tenants.server_id` are `UNIQUE`, and a destroyed row otherwise keeps the
+   id, so B's provision cannot record the same machine (the first `--apply` dies
+   `sqlite3.IntegrityError: UNIQUE constraint failed: tenant_state.server_id`).
+   Delete A's DNS record too — and note `odilectl dns delete <slug>` names
+   `<slug>.<dns_zone>` (the apex), not `<slug>.<tenant_domain>`; on the bench it
+   removes the wrong record and leaves the tenant's own.
+4. **Create B's rows** the way the claim path does (a `tenants` row with B's
+   public key, a verified `accounts` row queued) and run `odilectl provision
+   <B> --key <B.pub> --apply`. The reuse path prints `nothing ordered (the
+   machine already exists)` and no `provider.create`. The bench worker
+   (`odilectl.provision --worker --apply`) then writes the account row's machine
+   id, address and key label/first characters and creates the DNS record.
+5. **Mint B's token with `seed.bind`** (what provision calls), not `token
+   issue`: `bind` writes `tenants.setup_token_hash` in the same transaction as
+   the ledger row, so the row and the line agree. Put it in B's per-machine line
+   with B's key (§2.0) and recycle (§2.2).
+6. **The first boot lands on B's row**: the console prints
+   `odile-firstboot: installed <B> (instance <id>) … (hq first_visit, first_boot
+   -> first_visit) · refreshed /etc/odile/boot-key.pub from the measured line`,
+   and `/etc/odile/boot-record.json` carries the new line's `cmdline_sha256`,
+   the new boot-key fingerprint and the boot's measurement.
+
+Known gap at this writing: the image bakes `/etc/hostname` from its build name
+(`deploy/image/sealed-image.sh`), and no first-boot step re-derives it from
+`bb.host`, so a recycled machine still says the build tenant's slug at the getty
+and in `/etc/hosts` even though `bb.host`, the boot key, the seed and `/verify`
+are B's. Set it from `bb.host` on first boot and re-cut the image.
+
 ## 4. Trim the fence, then restore it
 
 The destructive verb needs the allow-list to name one id; the non-destructive

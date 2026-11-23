@@ -56,7 +56,7 @@ The order is the contract: status sentence, **Now**, **What needs you**,
   `docs/architecture/ADR-upgrades-and-model.md` on every render, so a changed
   ADR changes the view; a lost row, an unknown label or a moved heading stops
   the generator instead of shortening the page. The inventory is a real table
-  in the DOM; under 700 px each row stacks (label, today, reason) and nothing
+  in the DOM; below 760 px each row stacks (label, today, reason) and nothing
   scrolls sideways. No second route, no hand-written copy: the ADR is the one
   source, and `--adr` names it.
 - **How this page is made** — the counting and redaction rules, in six

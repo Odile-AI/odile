@@ -1,12 +1,16 @@
 # Incidents — the ten classes, the first five commands, and the drills
 
-**Status:** v1.3 — 22 November 2026: the reset copy is re-cut to the v3.11 deck
-(D-2, D-4, D-19) and §6.2 is labelled the pre-ODL-926 measurement (D-20). v1.2
-corrected four drills: two re-cut for alpha.0 and run on 22 November 2026 (§6.1,
-§6.2), and two run on 15 November 2026 and kept because the recovery and seed
-classes still cite them (§6.4). §6.3 is every line a drill changed, with the
-measurement that changed it. **Card:** ODL-244, A2 (re-cut 17 November 2026,
-ODL-573); claims re-cut `t_47bceb77` (ODL-244 follow-up), v3.11 D-2/D-4/D-19/D-20.
+**Status:** v1.4 — 23 November 2026: after ODL-925 (B-once) §4.2 and C-2 are
+re-cut to the landed first visit — a login with the password chosen at
+registration, not a setup — and the `?t=`/`410` lines with them (D-1, D-7). v1.3
+was the reset-copy re-cut to the v3.11 deck (D-2, D-4, D-19) and §6.2's
+pre-ODL-926 label (D-20). v1.2 corrected four drills: two re-cut for alpha.0 and
+run on 22 November 2026 (§6.1, §6.2), and two run on 15 November 2026 and kept
+because the recovery and seed classes still cite them (§6.4). §6.3 is every line
+a drill changed, with the measurement that changed it. **Card:** ODL-244, A2
+(re-cut 17 November 2026, ODL-573); claims re-cut `t_47bceb77` (ODL-244
+follow-up), v3.11 D-2/D-4/D-19/D-20, and `t_01ef88d9`, v3.11 D-1/D-7 after
+ODL-925.
 **Read with:** `alerting.md` (the heartbeat and the five alerts), `support.md`
 (the grant and the diag bundle), `backup.md` (restic and the restore),
 `seed.md` (the token and `/seed`), `provision.md` (the provider API),
@@ -26,7 +30,7 @@ needed, it is the grant the user starts (§2.4) — never a key we keep.
 | # | Class | The first command | Who acts |
 |---|---|---|---|
 | 4.1 | Machine down (unexpected) | `odilectl status <slug> --json` | HQ |
-| 4.2 | Machine waiting for owner | `odilectl status <slug> --json`, then `/first-visit/reset` (`409` = never set) | HQ + user |
+| 4.2 | Machine waiting for owner | `odilectl status <slug> --json`, then `/first-visit/reset` (`409` = never signed in) | HQ + user |
 | 4.3 | User locked out | `curl https://<slug>.odile.fyi/first-visit/reset` (`200` = a code exists) | user |
 | 4.4 | Lost recovery kit | the recovery page, then the backup repo | user + HQ |
 | 4.5 | Seed failure | `seed.py token list --tenant <slug>` | HQ |
@@ -126,8 +130,8 @@ Two `odilectl` habits that bite:
 | URL | What it proves |
 |---|---|
 | `https://<slug>.odile.fyi/verify` | The machine's own access report: measurement, boot key, seal, sign-in hash, operator key, grant. `200` with `PASS — five checks` means the machine is up and serving. |
-| `https://<slug>.odile.fyi/first-visit?t=<token>` | `200` the sign-in form; `410` the token was spent (the sign-in is set); `404` the token is unknown. The token is the whole address: the bare path without `?t=` is always `404`, so test the ready email's link. |
-| `https://<slug>.odile.fyi/first-visit/reset` | `200` the reset form when a sign-in was set; `409` (`This link is closed.`) when the state has no recovery hash — a machine whose first visit was never completed, which is §4.2, not §4.3. |
+| `https://<slug>.odile.fyi/first-visit` | The page the ready email names: `200` the login form on a machine whose sign-in was written at provision (a classic install with no seed gets the setup form instead). `?t=` — any value — answers `410` (`This link is closed`), the stale A-era link: no page accepts the setup token any more (ODL-925). The bare path is the page, not a 404. |
+| `https://<slug>.odile.fyi/first-visit/reset` | `200` the reset form once the first sign-in has run (a recovery hash exists); `409` (`This link is closed.`) when it has not — the state has no recovery hash, which is §4.2, not §4.3. |
 | `https://<slug>.odile.fyi/first-visit/recovery` | `GET` the form; `POST` the code (no `?c=` any more) and get a page with a one-time download link (`?d=`, ten minutes, one use). The old permanent `?c=<code>` URL returns the form and never the file (ODL-579). |
 | `https://odile.fyi/manifest.json` | The signed manifest: release, versions, hashes. (`/manifest` answers 404.) |
 
@@ -227,12 +231,13 @@ with your recovery file, so keep odile-recovery-<slug>.txt within reach. Nothing
 is needed from you yet; we will write again when it is back or when the rebuild
 starts.
 
-**C-2.** Your machine is built and waiting for one thing: the sign-in you set on it.
-The link in your ready email was good for 24 hours and has expired. Here is a
-new one: <link>. Open it, choose a password of at least 16 characters, and your
-workspace opens. The password is set on your machine and hashed there. If the link
-says it was already used, the sign-in is already set — open
-https://<slug>.odile.fyi and tell us if that fails.
+**C-2.** A machine is reserved for you. When you claim it, it is built and starts
+itself. Check the machine before you trust it: the verify page shows PASS or
+FAIL. Report: https://<slug>.odile.fyi/verify. Your Odile password opens your
+machine and your account page. You chose it when you registered. Sign in:
+https://<slug>.odile.fyi/first-visit — the same page your ready email names, and
+the page to use if that email's link says it is closed. If the password is
+refused, tell us.
 
 **C-3.** You cannot sign in; the machine is fine and your files are untouched. A
 lost Odile sign-in is reset on the machine with your recovery code; HQ cannot
@@ -300,7 +305,7 @@ starts; the last day may be lost.
 |---|---|
 | C-0 | 42 |
 | C-1 | 84 |
-| C-2 | 81 |
+| C-2 | 79 |
 | C-3 | 81 |
 | C-4 | 90 |
 | C-5 | 86 |
@@ -366,46 +371,50 @@ incident.
 
 ### 4.2 Machine waiting for owner
 
-**Detect.** The tenant is `ready` (or `installed`) but no user sign-in exists:
-`/first-visit/reset` answers `409` (the state has no recovery hash), and the
-ready email's link answers `200` while its token is unspent, `410` once it was
-spent, or `404` when it is not this machine's. The machine heartbeats (or, if
-it does not, this is §4.1).
-`waiting_for_owner` is a legacy state: the sealed image boots without a
-passphrase, so the poll no longer parks a tenant there (`odilectl/health.py`,
-ODL-467). Measured on the bench tenant `odl-340a1e.test.odile.fyi` on
-22 November 2026: `/first-visit/reset` `409`, bare `/first-visit` `404`,
+**Detect.** The tenant is `ready` (or `installed`) and the machine heartbeats, but
+the user has never signed in: `/first-visit/reset` answers `409` — the state has
+no recovery hash, and the code is issued at the first sign-in — and `/verify`'s
+sign-in row reads `PASS` (it proves a hash is present, not that a user typed it).
+The ready email's link is `https://<slug>.odile.fyi/first-visit`, a login page;
+any `?t=` answers `410` (`This link is closed`), because no page accepts the
+setup token any more (ODL-925). `waiting_for_owner` is a legacy state: the sealed
+image boots without a passphrase, so the poll no longer parks a tenant there
+(`odilectl/health.py`, ODL-467). Measured on the bench tenant
+`odl-340a1e.test.odile.fyi` on 22 November 2026, on the 21 November image:
+`/first-visit/reset` `409`, bare `/first-visit` `404` (that image's A-era page),
 `/login` `200`, and `/verify`'s sign-in row `PASS` — the row proves a hash is
 present, not that a user chose it.
 
-**Blast radius.** None technically. The user has a machine they have not opened;
-the setup token dies after 24 hours and the link stops working.
+**Blast radius.** None technically: the machine is up, its disk is encrypted and
+untouched, and nothing expires — the ready email's link is the machine's login
+page. The user has a machine they have not opened.
 
 **First five commands.**
 
 ```sh
 1. /usr/bin/python3 -m odilectl status <slug> --json
-2. curl -sS -o /dev/null -w '%{http_code}\n' https://<slug>.odile.fyi/first-visit/reset   # 409 = no sign-in yet
-3. /usr/bin/python3 /opt/odile/seed/seed.py token list --tenant <slug>
-4. /usr/bin/python3 /opt/odile/seed/seed.py token rotate --tenant <slug>
-5. curl -sS https://<slug>.odile.fyi/verify | grep -i 'sign-in'
+2. curl -sS -o /dev/null -w '%{http_code}\n' https://<slug>.odile.fyi/first-visit/reset   # 409 = never signed in
+3. curl -sS https://<slug>.odile.fyi/first-visit | grep -o 'Sign in\|Choose your sign-in'   # which page the ready link opens
+4. curl -sS https://<slug>.odile.fyi/verify | grep -i 'sign-in'
+5. ls -l /var/lib/odile/outbox/ready/<slug>.eml   # the ready email as queued; resend it, or send C-2
 ```
 
 `409` on the reset form is the discriminator: the state has no recovery hash, so
-the first visit never wrote a sign-in. A bare `/first-visit` is always `404` —
-the token is the whole address — so check the ready email's link, not the path;
-`410` there means the token was spent, which means the sign-in *is* set and the
-user has a different problem (§4.3). Step 4 mints a new token but sends nothing:
-the ready email (`templates/emails/ready.txt`) is a separate send, with the
-token in it.
+the first sign-in never ran. `/first-visit` is the page the ready email names;
+any `?t=` is the stale A-era link and answers `410`, so the status alone proves
+nothing about the sign-in. Step 3 tells the two pages apart: `Sign in` is the
+B-once login, `Choose your sign-in` a classic install with no seed. Step 5 is the
+queued message; a resend is a separate send, and C-2 is the same message when the
+queue item is gone.
 
 **What the user is told.** C-2.
 
 **Escalate when.** The user says they never received the ready email and a
 resend does not arrive → the mail relay (`email.md`), not the machine.
 
-**Exit.** The user's link accepts a password (`POST` `200`, the done page) and
-`/first-visit/reset` answers `200` instead of `409`.
+**Exit.** The user's first sign-in answers `POST` `200` with the done page (the
+recovery code shown once) and `/first-visit/reset` answers `200` instead of
+`409`.
 
 ---
 
@@ -413,7 +422,7 @@ resend does not arrive → the mail relay (`email.md`), not the machine.
 
 **Detect.** The user says "I cannot sign in". The machine is healthy and
 `/first-visit/reset` answers `200` (a recovery hash exists — a `409` is §4.2,
-the sign-in was never set). The `/verify` sign-in row reads `PASS` in both
+the first sign-in never ran). The `/verify` sign-in row reads `PASS` in both
 cases; it proves a hash is present, not that the user's password is the one.
 
 **Blast radius.** The user, not the machine: the agent keeps running, cron jobs
@@ -779,7 +788,8 @@ tenant).
 /usr/bin/python3 scripts/provision_one.py --slug <slug> --email <owner@example.com> \
   --key /root/.odile/tenants/<slug>.pub
 # 3. wait for first visit; the image installs itself and fetches its seed
-# 4. the user sets the sign-in on the new machine (the ready email's link)
+# 4. the user signs in on the new machine with their account password (the ready
+#    email's link)
 # 5. the user asks the agent to restore, with the recovery file (the guest's
 #    own copy of the backup program; it reads /etc/odile/recovery.txt):
 #    /usr/bin/python3 /usr/local/lib/odile/backup.py restore latest \
@@ -843,11 +853,13 @@ carries the user copy. See §6.3.
 
 ### 6.2 Drill 2 — a lost sign-in (re-cut for A2, 22 November 2026)
 
-**Measured before ODL-926.** The drill ran before ODL-926, which lands the
-stable code, so the "new code", "third code" and "the same code again" rows
-below are the pre-ODL-926 measurement. D-20 is the current row: "Your recovery
-code works at both places until you replace it; using it does not spend it."
-(D-20)
+**Measured before ODL-925 and ODL-926.** The drill ran before ODL-926, which
+lands the stable code, so the "new code", "third code" and "the same code again"
+rows below are the pre-ODL-926 measurement. D-20 is the current row: "Your
+recovery code works at both places until you replace it; using it does not spend
+it." (D-20) It also ran before ODL-925, which makes the first visit a login: the
+bare `/first-visit` `404` rows below are that head's measurement, and at this
+head the bare path is the login page (`200`) while any `?t=` answers `410`.
 
 **Scenario.** A tester on the bench forgets the sign-in. The recovery code is the
 only reset; "HQ cannot reset your machine's sign-in" (`CLAIMS.md` D-19).
@@ -859,8 +871,9 @@ only reset; "HQ cannot reset your machine's sign-in" (`CLAIMS.md` D-19).
   and a wrong-code `POST` to the demo's reset form (non-destructive — a refused
   code changes nothing).
 * The shipped `installer/first_visit.py` as a real HTTP service on a scratch
-  guest root (real state file, real 0600 `.env`, real page): set a sign-in, lose
-  it, present a wrong code, present the right one, then read what changed.
+  guest root (real state file, real 0600 `.env`, real page — the classic setup
+  branch, because a scratch guest root has no seed): set a sign-in, lose it,
+  present a wrong code, present the right one, then read what changed.
 
 **What it measured.**
 
@@ -885,9 +898,10 @@ only reset; "HQ cannot reset your machine's sign-in" (`CLAIMS.md` D-19).
 `404` and that a reset changes the `/verify` sign-in row; the drill measures
 `200` + text, and a row that reads `PASS` before and after. It also measured that
 the reset signs out other browsers and restarts the gateway, that a `409` on the
-reset form is the "never set" branch, and that the bare `/first-visit` is always
-`404`. The live half is why §4.4's `?c=` URL is gone: the old permanent URL
-returns the form, never the file. See §6.3.
+reset form is the "never signed in" branch, and that at that head the bare
+`/first-visit` was `404` (ODL-925 moved it to the login page, `200`). The live
+half is why §4.4's `?c=` URL is gone: the old permanent URL returns the form,
+never the file. See §6.3.
 
 ### 6.3 Every line the drills changed
 

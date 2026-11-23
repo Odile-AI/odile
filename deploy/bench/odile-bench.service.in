@@ -21,6 +21,9 @@ Environment=ODILE_OUTBOX={{STATE}}/outbox
 Environment=ODILE_SESSION_KEY_FILE={{STATE}}/account-session.key
 Environment=ODILE_ACCOUNT_HOST=https://test.odile.fyi
 Environment=ODILE_TENANT_DOMAIN=test.odile.fyi
+# ODL-949: the bench is the one host that drains `accounts` and orders the
+# machine a registration asks for; production's door is closed until A7.
+Environment=ODILE_REGISTER=open
 Environment=PYTHONUNBUFFERED=1
 # runs as root (the + prefix) because /dev/sev-guest is 0600; the bench writes
 # its own report, never the production one
