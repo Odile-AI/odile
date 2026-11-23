@@ -19,8 +19,10 @@ from __future__ import annotations
 import http.server
 import json
 import os
+import shutil
 import socket
 import subprocess
+import sys
 import tempfile
 import threading
 import unittest
@@ -63,10 +65,20 @@ def _serve(status: int, server_header: str,
 @unittest.skipUnless(SCRIPT.is_file(), "the bench check is missing")
 class ProbeTests(unittest.TestCase):
     def run_probe(self, url: str, port: int) -> subprocess.CompletedProcess:
-        return subprocess.run(
+        result = subprocess.run(
             ["/bin/sh", str(SCRIPT), "--probe"],
             capture_output=True, text=True, timeout=30,
             env={**os.environ, "BENCH_URL": url, "BENCH_PORT": str(port)})
+        if result.returncode == 2:
+            # `--probe` exits 2 only from its `for bin in curl ss mktemp` loop
+            # ("prerequisite: ss is not installed"), which the script's contract
+            # and the five-minute timer read as "not installed", never as "the
+            # bench is red". A host without iproute2 must therefore skip these
+            # four tests and say which binary is missing — not report four
+            # failures, which is a red `make check` from a fresh clone.
+            raise unittest.SkipTest(result.stderr.strip() or
+                                    "the probe's prerequisites are missing")
+        return result
 
     def test_a_healthy_bench_answers_one_line_and_exits_zero(self) -> None:
         server, port = _serve(200, "odile-bench")
@@ -123,6 +135,48 @@ class ProbeTests(unittest.TestCase):
         self.assertEqual(len(lines), 1, result.stderr)
         self.assertIn("bench probe: FAIL", lines[0])
         self.assertIn("nobody listening", lines[0])
+
+
+class PrerequisiteSkipTests(unittest.TestCase):
+    """A host without `ss` skips the four probes; it does not fail them.
+
+    ``check_bench.sh`` exits 2 from its ``for bin in curl ss mktemp`` loop when
+    a prerequisite is missing, and its contract calls that "a prerequisite, not
+    a check" — the five-minute timer and the operator read it that way. A test
+    that asserts ``returncode == 0`` turns the same host into four red tests,
+    so `make check` is red from a fresh clone with no ``iproute2`` (the G0
+    substrate promise). The proof is behavioural: run the real module under a
+    ``PATH`` that carries curl and mktemp but no ``ss``, and require the four
+    probes to skip with the script's own prerequisite line as the reason.
+    """
+
+    # Enough of a PATH for the script to reach its prerequisite loop (it calls
+    # `dirname` to resolve REPO) — and deliberately no `ss`.
+    PATH_TOOLS = ("dirname", "curl", "mktemp", "sed", "awk", "tr", "head",
+                  "grep", "rm", "cat", "basename", "date")
+
+    @unittest.skipUnless(shutil.which("curl") and shutil.which("mktemp"),
+                         "curl and mktemp are needed to build a PATH without ss")
+    def test_the_four_probes_skip_and_name_ss_when_it_is_absent(self) -> None:
+        with tempfile.TemporaryDirectory() as name:
+            bin_dir = Path(name) / "bin"
+            bin_dir.mkdir()
+            for tool in self.PATH_TOOLS:
+                found = shutil.which(tool)
+                if found:
+                    (bin_dir / tool).symlink_to(found)
+            self.assertIsNone(shutil.which("ss", path=str(bin_dir)))
+            result = subprocess.run(
+                [sys.executable, "-m", "unittest",
+                 "tests.test_bench_probe.ProbeTests", "-v"],
+                cwd=ROOT, capture_output=True, text=True, timeout=120,
+                env={**os.environ, "PATH": str(bin_dir)})
+        output = result.stdout + result.stderr
+        self.assertIn("Ran 4 tests", output)
+        self.assertIn("OK (skipped=4)", output, output)
+        self.assertIn("prerequisite: ss is not installed", output, output)
+        self.assertEqual(
+            output.count("prerequisite: ss is not installed"), 4, output)
 
 
 class RecordTests(unittest.TestCase):
