@@ -1,0 +1,196 @@
+#!/bin/sh
+# HQ-only paths: one rule for every private file the deployed units execute or
+# read, under tools/ and docs/backlog.yaml.
+#
+# `tools/` is mixed. The tracked files ship with the tree; every file
+# `.git/info/exclude` hides is private machinery that exists only in the HQ
+# checkout — `tools/roadmap_page.py` is the generator odile-roadmap.service
+# executes, `tools/board_sync.py` is what the board is cut with. A card
+# worktree can carry its own (stale) copy of a hidden file, because the same
+# exclude file hides it there too, so `git status` stays clean and nothing
+# stops it from reaching /opt/odile. Measured 2026-11-23 (ODL-347-F1-F1): a
+# deploy from .worktrees/t_a0e1fdb5 installed its pre-card generator over the
+# fixed bytes, and the next tick served the reverted page.
+#
+# `docs/backlog.yaml` is the second hidden input: odile-roadmap.service runs
+# `--backlog /opt/odile/docs/backlog.yaml`, and a deploy from a worktree (which
+# cannot carry it) used to delete it with `rsync --delete`, so every tick failed
+# until a deploy from the HQ checkout restored it. Measured 2026-11-23, the same
+# card: the deploy from .worktrees/t_d0d4b865 left /opt/odile/docs/backlog.yaml
+# missing and the roadmap unit exited 2.
+#
+# The rule: the deployed tree runs the HQ checkout's copy. scripts/deploy.sh
+# excludes every HQ-only path from the rsync and runs `install` after it. When
+# the checkout holds none — a standalone clone, or a `list` that fails — the
+# exclusion still has to cover the paths the deployed tree already holds, or
+# `rsync --delete` removes the only copy and the unit exits 2. `exclude` is that
+# union: what HQ hides, plus every unit input DEST holds. The deploy fails
+# closed because it aborts when this helper fails, and because an empty list
+# never means "exclude nothing".
+#
+#   scripts/hq_tools.sh list [HQ_ROOT]                  the HQ-only paths
+#   scripts/hq_tools.sh exclude DEST [HQ_ROOT]          every path a deploy must exclude
+#   scripts/hq_tools.sh install [--dry-run] HQ_ROOT DEST
+#   scripts/hq_tools.sh check DEST HQ_ROOT              sha256 per path; 1 on DIFF
+#
+# HQ_ROOT is the checkout that owns the shared .git: the parent of
+# `git rev-parse --git-common-dir`, which every worktree of the repository
+# reports. `list` derives it when it is not given.
+set -eu
+
+# Every HQ-only path a deployed unit executes or reads. Extend this list when a
+# unit starts reading another hidden path; tests/test_deploy_hq_tools.py pins it.
+HQ_ONLY_PATHS="tools docs/backlog.yaml"
+
+# The unit inputs by name, not by directory. `list` is dynamic (whatever HQ
+# hides today); these are the paths a deployed unit runs or reads, so a deploy
+# from a checkout that holds none of them must still keep DEST's copy. Add a
+# name here when a unit starts reading another hidden path.
+HQ_ONLY_UNIT_INPUTS="tools/roadmap_page.py docs/backlog.yaml"
+
+usage() {
+	cat <<'EOF'
+usage: scripts/hq_tools.sh list [HQ_ROOT]
+       scripts/hq_tools.sh exclude DEST [HQ_ROOT]
+       scripts/hq_tools.sh install [--dry-run] HQ_ROOT DEST
+       scripts/hq_tools.sh check DEST HQ_ROOT
+
+list     print one HQ-only path (relative to HQ_ROOT) per line
+exclude  print every path a deploy must exclude: HQ's HQ-only paths, plus
+         each unit input DEST already holds (a clone holds none of them)
+install  copy every HQ-only path from HQ_ROOT into DEST; idempotent
+check    compare every HQ-only path in DEST with HQ_ROOT; exit 1 on a mismatch
+EOF
+}
+
+resolve_hq() {
+	if [ "$#" -ge 1 ] && [ -n "$1" ]; then
+		printf '%s\n' "$1"
+		return 0
+	fi
+	script_dir=$(unset CDPATH; cd -- "$(dirname -- "$0")" && pwd)
+	repo=$(unset CDPATH; cd -- "$script_dir/.." && pwd)
+	common=$(git -C "$repo" rev-parse --path-format=absolute --git-common-dir 2>/dev/null) \
+		|| { echo "hq-tools: refused: $repo is not a git checkout; pass HQ_ROOT" >&2; return 1; }
+	(unset CDPATH; cd -- "$common/.." && pwd)
+}
+
+# The files git ignores at HQ, within HQ_ONLY_PATHS: present in its working
+# tree, absent from its index. Sorted by ls-files; caches are not tools.
+hq_only_files() {
+	hq=$1
+	[ -d "$hq/tools" ] || return 0
+	# HQ_ONLY_PATHS is a list of pathspecs; splitting it is the point.
+	# shellcheck disable=SC2086
+	git -C "$hq" ls-files --others --ignored --exclude-standard -- $HQ_ONLY_PATHS 2>/dev/null \
+		| grep -v -e '__pycache__' -e '\.pyc$' || true
+}
+
+cmd_list() {
+	[ "$#" -le 1 ] || { usage >&2; exit 2; }
+	hq=$(resolve_hq "${1:-}")
+	hq_only_files "$hq"
+}
+
+# Every path scripts/deploy.sh must exclude from its rsync: the files HQ hides
+# (installed from HQ afterwards), plus every unit input DEST already holds. The
+# second half is what makes a checkout with no hidden files fail closed: an
+# empty list must not mean "exclude nothing", because `rsync --delete` would then
+# remove /opt/odile/tools/roadmap_page.py and /opt/odile/docs/backlog.yaml.
+cmd_exclude() {
+	[ "$#" -ge 1 ] && [ "$#" -le 2 ] || { usage >&2; exit 2; }
+	dest=$1
+	hq=$(resolve_hq "${2:-}")
+	{
+		hq_only_files "$hq"
+		for path in $HQ_ONLY_UNIT_INPUTS; do
+			if [ -e "$dest/$path" ]; then
+				printf '%s\n' "$path"
+			fi
+		done
+	} | sort -u
+}
+
+cmd_install() {
+	dry=0
+	if [ "${1:-}" = "--dry-run" ]; then
+		dry=1
+		shift
+	fi
+	[ "$#" -eq 2 ] || { usage >&2; exit 2; }
+	hq=$1
+	dest=$2
+	[ -d "$hq" ] || { echo "hq-tools: refused: $hq is not a directory" >&2; exit 1; }
+	files=$(hq_only_files "$hq")
+	if [ -z "$files" ]; then
+		echo "hq-tools: no HQ-only paths under $hq; nothing to install (a deploy excludes the copies DEST holds: $HQ_ONLY_UNIT_INPUTS)"
+		return 0
+	fi
+	changed=0
+	same=0
+	for path in $files; do
+		src=$hq/$path
+		dst=$dest/$path
+		sum=$(sha256sum "$src" | cut -d' ' -f1)
+		if [ -f "$dst" ] && [ "$(sha256sum "$dst" | cut -d' ' -f1)" = "$sum" ]; then
+			echo "hq-tools: same $path"
+			same=$((same + 1))
+			continue
+		fi
+		if [ "$dry" -eq 1 ]; then
+			echo "hq-tools: would install $path ($sum)"
+		else
+			install -D -m "$(stat -c '%a' "$src")" "$src" "$dst"
+			echo "hq-tools: installed $path ($sum)"
+		fi
+		changed=$((changed + 1))
+	done
+	if [ "$dry" -eq 1 ]; then
+		echo "hq-tools: $changed file(s) would change, $same already HQ's bytes"
+	else
+		echo "hq-tools: $changed file(s) changed, $same already HQ's bytes"
+	fi
+}
+
+cmd_check() {
+	[ "$#" -eq 2 ] || { usage >&2; exit 2; }
+	dest=$1
+	hq=$2
+	files=$(hq_only_files "$hq")
+	if [ -z "$files" ]; then
+		echo "hq-tools: refused: $hq has no HQ-only paths to compare" >&2
+		exit 1
+	fi
+	bad=0
+	for path in $files; do
+		src=$hq/$path
+		dst=$dest/$path
+		sum=$(sha256sum "$src" | cut -d' ' -f1)
+		if [ ! -f "$dst" ]; then
+			echo "hq-tools: MISSING $dst (HQ has $sum)"
+			bad=1
+			continue
+		fi
+		found=$(sha256sum "$dst" | cut -d' ' -f1)
+		if [ "$found" = "$sum" ]; then
+			echo "hq-tools: same $path $sum"
+		else
+			echo "hq-tools: DIFF $path expected $sum found $found"
+			bad=1
+		fi
+	done
+	exit "$bad"
+}
+
+verb=${1:-}
+if [ "$#" -gt 0 ]; then
+	shift
+fi
+case "$verb" in
+	list) cmd_list "$@" ;;
+	exclude) cmd_exclude "$@" ;;
+	install) cmd_install "$@" ;;
+	check) cmd_check "$@" ;;
+	-h|--help) usage ;;
+	*) usage >&2; exit 2 ;;
+esac

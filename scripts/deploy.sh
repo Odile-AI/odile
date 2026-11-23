@@ -19,6 +19,14 @@ if [ ! -f app.py ]; then
   echo "deploy: refused: $(pwd) is not the repository root (no app.py; run scripts/deploy.sh from the checkout)" >&2
   exit 1
 fi
+# The HQ-only-tools rule ships beside the entry point. A checkout missing it
+# would silently fall back to shipping a worktree's private tools, so refuse
+# before the guard or any write rather than deploy without the rule.
+HQ_TOOLS_SCRIPT=$SCRIPT_DIR/hq_tools.sh
+if [ ! -x "$HQ_TOOLS_SCRIPT" ]; then
+  echo "deploy: refused: $HQ_TOOLS_SCRIPT is missing (scripts/deploy.sh and scripts/hq_tools.sh ship together)" >&2
+  exit 1
+fi
 
 DRY=0
 ALLOW_BEHIND=0
@@ -91,6 +99,31 @@ getent group odile >/dev/null 2>&1 || {
   exit 1
 }
 
+# HQ-only paths (ODL-347-F1-F1). `tools/` is mixed: its tracked files ship with
+# the tree, but every file `.git/info/exclude` hides is private machinery that
+# exists only in the HQ checkout — `tools/roadmap_page.py` is the generator
+# odile-roadmap.service executes. `docs/backlog.yaml` is the same kind of input:
+# the unit passes it as `--backlog /opt/odile/docs/backlog.yaml`. A card worktree
+# carries its own copy of a hidden tool (the same exclude file hides it there
+# too, so `git status` stays clean) and cannot carry the backlog at all, so a
+# plain `rsync --delete` both installed the stale copy and deleted the backlog.
+# Measured 2026-11-23: ODL-949's deploy from .worktrees/t_a0e1fdb5 rsynced its
+# pre-card generator (a2957af5…) over /opt/odile's fixed bytes (5f84c3e0…), and
+# the next tick served the reverted page; ODL-347-F1-F1's own deploy from
+# .worktrees/t_d0d4b865 deleted /opt/odile/docs/backlog.yaml and the roadmap
+# unit exited 2 until it was restored. Rule: the deployed tree runs HQ's copy.
+# `git rev-parse --git-common-dir` is shared by every worktree of this
+# repository, so its parent is the HQ checkout whichever tree this deploy runs
+# from; the hidden paths are excluded from the transfer and installed from there
+# after it.
+#
+# `exclude` also prints every unit input /opt/odile already holds, so a checkout
+# that hides nothing (a standalone clone) cannot delete the deployed copies with
+# `rsync --delete`. It reports failure, and this assignment aborts the deploy
+# before the rsync, rather than falling back to an empty exclusion list.
+HQ_ROOT=$(unset CDPATH; cd -- "$(git rev-parse --path-format=absolute --git-common-dir)/.." && pwd)
+HQ_TOOLS=$("$HQ_TOOLS_SCRIPT" exclude /opt/odile "$HQ_ROOT")
+
 # The seed service runs /opt/odile/seed/seed.py; its hash before this deploy
 # lets the deployer restart it only when the module it runs actually changed.
 PREV_SEED=$(sha256sum /opt/odile/seed/seed.py 2>/dev/null | cut -d' ' -f1 || true)
@@ -118,12 +151,25 @@ set -- \
   --include '/tests/fixtures/amd/***' \
   --exclude '/tests/**' \
   --exclude '__pycache__'
+# Every HQ-only path is excluded by its root-anchored path: the deployed tree
+# keeps the copy it already has, and the install below replaces it with HQ's.
+# `--delete` does not remove an excluded path, which is why the install, not
+# the rsync, is what converges the file.
+for tool in $HQ_TOOLS; do
+  set -- "$@" --exclude "/$tool"
+done
 if [ "$DRY" -eq 1 ]; then
   set -- --dry-run --itemize-changes "$@"
 fi
 rsync -a --delete "$@" ./ /opt/odile/
 
 if [ "$DRY" -eq 1 ]; then
+  if [ -n "$HQ_TOOLS" ]; then
+    echo "would keep /opt/odile's copies of the HQ-only paths and install HQ's from $HQ_ROOT (tools/ and docs/backlog.yaml); a worktree's copy never lands:"
+    "$HQ_TOOLS_SCRIPT" install --dry-run "$HQ_ROOT" /opt/odile
+  else
+    echo "hq-tools: no HQ-only paths at $HQ_ROOT and /opt/odile holds none; nothing to exclude or install"
+  fi
   echo "would install odile-attest-refresh.service and .timer, plus the"
   echo "odile.service drop-in that writes the report through the atomic wrapper"
   echo "would install /opt/odile as root:odile 0750 (an unprivileged uid cannot read it)"
@@ -152,6 +198,13 @@ if [ "$TREE" != "750 root:odile" ]; then
   echo "deploy: /opt/odile is $TREE, expected 750 root:odile" >&2
   exit 1
 fi
+
+# Converge the HQ-only paths (ODL-347-F1-F1). The rsync excluded them, so a
+# worktree's stale copy never landed and a source tree without them could not
+# have deleted them; this install is what makes /opt/odile's tools/ and
+# docs/backlog.yaml the HQ checkout's. Idempotent: a converged host prints
+# `same` and writes nothing.
+"$HQ_TOOLS_SCRIPT" install "$HQ_ROOT" /opt/odile
 
 install -m 644 odile.service /etc/systemd/system/odile.service
 install -d -m 755 /etc/systemd/system/odile.service.d
