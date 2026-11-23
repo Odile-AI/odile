@@ -144,5 +144,76 @@ class LegacyTokenTests(unittest.TestCase):
         self.assertIn("1 surface(s), 21 allowed colours, 4 legacy-only", out.getvalue())
 
 
+class ShellPairingTests(unittest.TestCase):
+    """§Typography *Two section-title roles*: the wordmark and the h2 are one shell."""
+
+    @staticmethod
+    def page(directory: str, css: str) -> Path:
+        return surface(directory, "web/page.html", f"<style>{css}</style>\n")
+
+    def test_the_shipped_pages_pair_the_shell(self) -> None:
+        self.assertEqual(brand_lint.check_shell_surfaces(ROOT), [])
+
+    def test_a_24px_wordmark_with_the_display_h2_is_a_finding(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            page = self.page(directory, ".brand{font-size:1.5rem}\n"
+                                        "h2{font-size:clamp(1.9rem,3vw,2.6rem)}\n")
+            findings = brand_lint.check_shell(page, "web/page.html")
+        self.assertEqual(len(findings), 1, findings)
+        self.assertIn("web/page.html:2", findings[0])
+        self.assertIn("are one shell", findings[0])
+
+    def test_a_32px_wordmark_with_the_document_h2_is_a_finding(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            page = self.page(directory, ".brand{font-size:2rem}\n"
+                                        "h2{font-size:1.34rem}\n")
+            findings = brand_lint.check_shell(page, "web/page.html")
+        self.assertEqual(len(findings), 1, findings)
+        self.assertIn("web/page.html:2", findings[0])
+        self.assertIn("1.34rem", findings[0])
+
+    def test_the_clamp_floor_in_a_media_query_is_the_same_role(self) -> None:
+        body = (".brand{font-size:2rem}\n"
+                "h2{font-size:clamp(1.9rem,3vw,2.6rem)}\n"
+                "@media (max-width:560px){h2{font-size:1.9rem}}\n")
+        with tempfile.TemporaryDirectory() as directory:
+            page = self.page(directory, body)
+            findings = brand_lint.check_shell(page, "web/page.html")
+        self.assertEqual(findings, [])
+
+    def test_a_third_wordmark_size_is_a_finding(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            page = self.page(directory, ".brand{font-size:1.25rem}\n")
+            findings = brand_lint.check_shell(page, "web/page.html")
+        self.assertEqual(len(findings), 1, findings)
+        self.assertIn("1.25rem", findings[0])
+        self.assertIn("1.5rem", findings[0])
+
+    def test_a_page_with_no_h2_takes_the_shell_of_its_wordmark(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            page = self.page(directory, ".brand{font-size:2rem}\n")
+            findings = brand_lint.check_shell(page, "web/page.html")
+        self.assertEqual(findings, [])
+
+    def test_a_tracked_field_is_a_finding_and_the_surface_is_named(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            page = self.page(directory,
+                             "input[type=password]{letter-spacing:.02em}\n")
+            findings = brand_lint.check_surface(
+                page, {}, {}, name="web/page.html")
+        self.assertEqual(len(findings), 1, findings)
+        self.assertIn("web/page.html:1", findings[0])
+        self.assertIn("a form field carries letter-spacing", findings[0])
+
+    def test_a_labelled_h2_below_the_section_size_is_not_a_section_title(self) -> None:
+        body = ".brand{font-size:1.5rem}\n" \
+               "h2{font-size:1.34rem}\n" \
+               ".panel h2{font-size:10px;letter-spacing:.24em;text-transform:uppercase}\n"
+        with tempfile.TemporaryDirectory() as directory:
+            page = self.page(directory, body)
+            findings = brand_lint.check_shell(page, "web/page.html")
+        self.assertEqual(findings, [])
+
+
 if __name__ == "__main__":
     unittest.main()

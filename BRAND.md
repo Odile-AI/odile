@@ -85,16 +85,24 @@ and the lexicon: `docs/brand/ST-ODILE.md`.
 - **Text:** `Odile`, title case, one word. Never `ODILE`, `odile`, `Odile.`,
   `Odile™` or a typographic ligature.
 - **Face:** Cormorant Garamond 500, roman (not italic).
-- **Size:** `clamp(5rem, 7.1vw, 6.7rem)` — 80.0 px at 390 and 102.24 px at
-  1440. The floor is 5rem, not 4.6rem; the old floor rendered 73.6 px and
-  contradicted this sheet.
+- **Size:** `clamp(5rem, 7.1vw, 6.7rem)` on the landing — 80.0 px at 390 and
+  102.24 px at 1440. The floor is 5rem, not 4.6rem; the old floor rendered
+  73.6 px and contradicted this sheet. On a product page the wordmark is the
+  header mark, not the page's voice: `1.5rem` (24 px) on the document and form
+  pages and `2rem` (32 px) on the report pages and the demo sign-in — the
+  pairing is §Typography, *Two section-title roles*.
 - **Line height:** .88. **Tracking:** −.03em. **Colour:** `--ink`. One line.
-- **Clear space:** 0.5 × the rendered type size on all four sides — 40 px at
-  390, 51 px at 1440 — measured to other elements, not to the viewport edge
-  (the page inset may be smaller). Nothing enters it: no rule, image edge,
-  caption, button or second line.
-- **Minimum size:** 32 px on a page. The one exception is the 1440×900 video
-  card shown at 390×244, where the 102 px wordmark renders 27.6 px (§Video).
+- **Clear space:** 0.5 × the rendered type size on all four sides — 12 px at
+  24, 16 px at 32, 40 px at 390 and 51 px at 1440 on the landing — measured to
+  other elements, not to the viewport edge (the page inset may be smaller).
+  Nothing enters it: no rule, image edge, caption, button or second line. The
+  shipped pages keep it with margin to spare: the 24 px mark's box sits 20.1 px
+  above the h1's at 390 on claim and register and 28.1 px at 1440, and the
+  32 px mark 33.5 px above it on `/verify`.
+- **Minimum size:** 24 px on a page — the product header. The landing's floor
+  is 80 px, and the video card's 390 rendition is 27.6 px, which is above the
+  minimum and needs no exception (§Video). Nothing on a page sets the wordmark
+  below 24 px.
 - **Position:** top of the 520 px marketing column, 22 px above the
   description. It is the loudest thing on the page and the only thing at that
   size.
@@ -384,6 +392,7 @@ so it cannot swap and does not move the first paint.
 | Role | Face | Size | Weight | Line height | Tracking | Colour | Measure |
 |---|---|---|---|---|---|---|---|
 | Wordmark | Display | `clamp(5rem, 7.1vw, 6.7rem)` — 80.0 / 102.24 px | 500 | .88 | −.03em | `--ink` | one line |
+| Product header wordmark | Display | `1.5rem` — 24 px on the document pages; `2rem` — 32 px on the report pages | 500 | .88 | −.03em | `--ink` | one line |
 | Marketing description | Text | 18 px | 400 | 1.6 | 0 | `--soft` | 36ch |
 | Marketing field text | Text | 16.8 px | 400 | 1.4 | 0 | `--ink` | field width |
 | Marketing placeholder | Text italic | same | 400 | 1.4 | 0 | `--placeholder` | field width |
@@ -393,7 +402,8 @@ so it cannot swap and does not move the first paint.
 | Confirmation address | Text | 16 px | 400 | 1.5 | 0 | `--ink` | 36ch, wrap anywhere |
 | Marketing error | Text italic | 16 px | 400 | 1.5 | 0 | `--error` | field width |
 | Page title (h1) | Display | `clamp(2.5rem, 5vw, 4.1rem)` — 40 / 65.6 px | 500 | 1.02 | −.025em | `--ink` | 18ch |
-| Section title (h2) | Display | `clamp(1.9rem, 3vw, 2.6rem)` — 30.4 / 41.6 px | 500 | 1.04 | −.02em | `--ink` | 48ch |
+| Section title (h2) — report pages | Display | `clamp(1.9rem, 3vw, 2.6rem)` — 30.4 / 41.6 px | 500 | 1.04 | −.02em | `--ink` | 48ch |
+| Section title (h2) — document pages | Display | `1.34rem` — 21.44 px | 600 | 1.2 | 0 | `--ink` | 48ch |
 | Subsection (h3) | Display | `1.45rem` — 23.2 px | 500 | 1.1 | −.01em | `--ink` | 52ch |
 | Product body | Text | 18 px | 400 | 1.6 | 0 | `--ink` | 60–72ch |
 | Product help | Text | 16 px | 400 | 1.6 | 0 | `--soft` | 60ch |
@@ -422,7 +432,26 @@ Rules that are not in the table:
 - **Capitals are always letterspaced.** Primary buttons .28em; compact
   controls .12–.24em depending on the row; lowercase is never tracked, except
   the display faces' optical negative tracking (wordmark −.03em, h1 −.025em,
-  h2 −.02em, h3 −.01em).
+  the report h2 −.02em, h3 −.01em). The document h2 and every form field are
+  untracked: no `input`, `textarea` or `select` rule declares `letter-spacing`,
+  and `tools/brand_lint.py` fails on one.
+- **Two section-title roles, and each travels with the wordmark.** A paper page
+  takes one shell, never a mix. The **document** shell — a 24 px wordmark and
+  the `1.34rem`/600 h2 — is the default for a page read as a document or
+  filled as a form (claim, ceremony, faq, privacy, terms, register, account):
+  a section is separated from 18 px prose by weight, not by size, because the
+  step is only 1.19×, and that is why the weight is 600 rather than the h1's
+  500. The **report** shell — a 32 px wordmark and the
+  `clamp(1.9rem,3vw,2.6rem)`/500 h2 — is the pages whose sections are blocks of
+  machine values (`/verify`, `/verify-public`, the verify page template,
+  `/status`, `/roadmap`), the two first-visit pages, which carry the same shell
+  because they are embedded beside the verify page in the signed installer, and
+  the demo sign-in: the step is 2.3× at 1440, so 500 carries it. At 390 the
+  wordmark is 1.12× its h2 on the document pages and 1.05× on the report
+  pages; at 1440 the report h2 overtakes the wordmark (41.6 vs 32). The page
+  title is the page's voice and the wordmark is the masthead in both. A new
+  paper page takes the document shell unless it is the report family; the lint
+  holds every page under `web/` and `templates/` to the pairing.
 - **No faux bold, no outline type, no gradient text, no all-caps sentence.**
   The 9 px micro-label is a label, never a paragraph.
 - **The display face is never used for a sentence at reading size.** If the
@@ -1280,6 +1309,9 @@ names the `docs/CLAIMS.md` row that moved with it.
 | 2026-11-20 | **Component states: the skip link is a component, not a rule copied out of a commit.** §Accessibility tokens' Keyboard row asked for a skip link, but the sheet gave no values, so the carriers drifted: at this cut `web/roadmap.html` shipped `.20em` mono and revealed on `:focus`, its ring supplied only by the page's generic `a:focus-visible` rule, while t_eaa22faa's four page files at `1856358` — `web/first-visit.html`, `web/verify.html`/`web/verify-public.html` and `templates/verify.html` — ship `--text`, `:focus-visible` and the ring in the skip-link rule itself. The new row group pins the shipped rule (off screen at `left:-9999px; top:0` and first focusable; 24 px inset, 18 px at ≤560; `top:12px`; `z-index:10`; 44 px high at 12/16 padding; `--ink` fill; `--paper` label at 10 px caps / 600 / `.20em` / 1.2 in the text face; 2 px `--ink` ring at 3 px) and the three decisions the carriers were guessing: `:focus-visible` never `:focus`, no positive `tabindex`, never a second primary action. Measured on those four carriers at 1440, 390 and 320: 170.7 × 44 at (24, 12) and (18, 12), no horizontal overflow; the 390 bar covers the wordmark and `elementFromPoint` returns the link itself, recorded as accepted. The roadmap copy was still mono and `:focus`-revealed at that cut; t_2281fb61 has since re-cut it (merge `a08ec1f`) to `:focus-visible` with the ring in its own rule, keeping its page-local `ui-monospace` label, which the new row names as the one exception. No palette, face, artwork or public sentence changed. | Designer | verifier, t_36a2ae5a |
 | 2026-11-22 | **Email, the brief is built and its late sentence is the dispatch verdict.** `templates/brief.txt` is the brief's message frame, filled and sent from the tenant by `scripts/send_brief.py` (the tenant wiring is ODL-469), so §Email's status names it as built and `tools/brand_lint.py` scans it with the account templates. §Brief email's footer names the fourth footer line — `Brief emails go out through our own mail server at mail.odile.fyi; it carries the message, never your disk.` (§4.10) — and the retired `It ran when the machine came back up.` is replaced by the one sentence a `late` or `catch_up` dispatch carries, naming the local time and the delay (`This one ran at 07:14 — 14 minutes after its 07:00 slot.`), with none on an on-time brief: the sealed machine has no unlock step, and the dispatch record is the only source of lateness. The first line is the run's own greeting — morning before 12:00, afternoon from 12:00, evening from 18:00 in the owner's zone — so a 15:02 catch-up cannot open with "Good morning."; §Email's one-action rule names the brief's machine link. The greeting rule is the sheet's; the surface follows it on this card's next head. No palette, face or artwork change; no public sentence in `docs/CLAIMS.md` changed (§4.10 is unchanged). | Designer | verifier, ODL-235 |
 | 2026-11-22 | **Email, the copy map after B-once.** B-once (Savio, 20 November 2026) and the one recovery code (`docs/product/DECISION-one-recovery-code.md` §4) retire the pair the map quoted, so the sheet is re-pointed — and the invitation's template re-cut with it, while the ready template's cut is ODL-925's: the sign-in chosen at first visit, the operator having never seen it, the after-PASS gate, the claim page's set-the-sign-in step, the machine-stored hash with no account at HQ and the machine-only reset that said HQ never resets it. The invitation's sign-in paragraph becomes D-1 and D-3 (one password; no key held), its "Nothing to install." cell cites D-18, and `templates/emails/invite.txt` carries the same sentences (D-1's first two, D-3's first). The ready email loses the `{{FIRST_VISIT}}` action line and its single-use setup token: the action names the tokenless `{{URL}}/first-visit` and the password chosen at registration (D-15, D-18), the after-PASS line becomes D-7's reduction (`Check the report before you sign in; it says PASS or FAIL.`), "That password opens your machine too." is D-10's, and the reset line is D-4, D-6 and D-19's. §Email's one-action rule, the template table, the ready prose and the guide's four steps name the tokenless page and "sign in", not "set the sign-in"; the map's held-clause rule is unchanged. The §Ready block equals ODL-925's shipped `templates/emails/ready.txt` at `459daf4` byte for byte — the duplicated PASS/FAIL lead-in is dropped from the quote and its map cell with it, D-7 staying cited by the check line below `Sign in`. No palette, face or artwork change; no public sentence in `docs/CLAIMS.md` changed (the rows are v3.11's). | Designer | verifier, ODL-928 |
+| 2026-11-23 | **Typography: the section title has two roles, one for each shell.** The sheet's single h2 row described only the report pages, and another rule shipped on the paper pages. Measured on the tree render at 1440×900 and 390×844: claim, ceremony, faq, privacy, terms and register compute h2 21.44 px / 600 / 1.2 / `letter-spacing: normal` (3, 3, 7, 8, 7 and 0 sections — register carries the rule and renders no h2), while /verify, /verify-public and /roadmap compute 41.6 px / 500 / −0.832 px at 1440 and 30.4 px / 500 / −0.608 px at 390; `/status` and the verify page template carry the same display rule. At this cut six files carry the 1.34 rem/600 rule and at ODL-578's unmerged head (2c266a6) two more do — `forgot.html`'s bare `h2` and `account.html`'s scoped `.account h2`. No page overflows at either width (`scrollWidth == clientWidth`), and the document pages are identical at both. The three pages built after the 2026-11-11 S1b note — register (11-18), account and forgot (11-22) — chose the small role again, so S1b's plan to migrate the /faq shell pages up is resolved the other way: the `1.34rem`/600 role is the sheet's document section title, the report pages keep the display role, and that is the only shell the byte-for-byte embedded verify page can carry without a release. The two rows and the *Two section-title roles* rule are the sheet; `tools/brand_lint.py` now fails on a page that pairs a 24 px wordmark with the display h2 (or a 32 px wordmark with the document h2), on an h2 between 1.2 rem and the document size, and on a page that mixes the two roles. No palette, typeface, artwork or public sentence changed. | Designer | verifier, t_7f1fb414 |
+| 2026-11-23 | **Name and mark: the product header wordmark is 24 px, and the page minimum follows it.** `.brand` computes 24 px in Cormorant 500 / −.03em on claim, ceremony, faq, privacy, terms, register and account, and 32 px on /verify, /verify-public, /roadmap, first-visit and first-visit-preview (2 rem; the verify page template likewise). `/status` was the one page that mixed the two — a 24 px wordmark over the display h2 — and it takes 2 rem in this change, so the pairing holds on every page the lint reads. Clear space at 24 px is 12 px: the shipped gap from the wordmark's box to the h1's is 20.1 px at 390 and 28.1 px at 1440 on claim and register, 30.8 / 40.8 px on privacy, 32.1 px on account, and the 32 px mark sits 33.5 px above the h1 on /verify at 390. The 32 px figure stays where the wordmark is the demo door's and the report shell's size; it stops being the page minimum, and the video card's 27.6 px rendition stops being an exception because 24 px is now the floor. No palette, typeface, artwork or public sentence changed. | Designer | verifier, t_7f1fb414 |
+| 2026-11-23 | **Typography: the password fields stop being tracked.** `input[type=password]{letter-spacing:.02em}` shipped on web/register.html, and on web/forgot.html and web/account.html at ODL-578's head (2c266a6). At 16.8 px it computes 0.336 px at 390 and 1440 — under one device pixel, invisible as a mask aid, and a positive tracking on lowercase that this sheet forbids. The declaration leaves web/register.html at this cut and the fields compute `letter-spacing: normal`, matching `/signin`, which never tracked; the two files that exist only on ODL-578's unmerged branch lose it in that card, which carries this rule. The tracking rule gains its second sentence — the document h2 and every form field are untracked — and the lint now fails on any `letter-spacing` inside an `input`, `textarea` or `select` rule. No palette, face, artwork or public sentence changed. | Designer | verifier, t_7f1fb414 |
 
 ## Do / Don't
 
