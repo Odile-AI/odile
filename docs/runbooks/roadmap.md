@@ -168,6 +168,7 @@ grep -c '<section class="adr"' /tmp/roadmap.html        # 1: the view, not a sec
 grep -c 'class="adr-label ' /tmp/roadmap.html           # 15 row labels
 grep -F '7 in place · 5 rebuild-and-restore · 3 not updatable' /tmp/roadmap.html
 grep -o '<h3 id="adr-[a-z]*-title">[^<]*</h3>' /tmp/roadmap.html  # the three headings
+grep -o '<h4 class="adr-group">[^<]*' /tmp/roadmap.html            # the four §5 groups
 grep -F 'href="#adr-upgrades-and-model"' /tmp/roadmap.html        # A4's link
 ```
 
@@ -175,9 +176,13 @@ grep -F 'href="#adr-upgrades-and-model"' /tmp/roadmap.html        # A4's link
 structure, the single open gate, the first-screen blocks, all three invariants
 and the ADR view (the 15 row labels, the 7 / 5 / 3 counts, the three headings,
 the A4 link, and a lost row stopping the render). The visual review is at
-1440×900 and 390×844, plus a grayscale screenshot for the `held` tag; the ADR
-table stacks under 700 px, and neither the page nor the table scrolls
-horizontally at either width.
+1440×900 and 390×844, plus a grayscale screenshot for the `held` tag. In the
+ADR inventory the five cells are one row at every width: from 760 px up the
+four short cells sit on one line and "Why, and the path" takes the full table
+width beneath them, with a 164 px label column that holds the
+`rebuild-and-restore` pill on one line; below 760 px the same five cells stack
+with a `data-label` line each. Neither the page nor the table scrolls
+horizontally at 320–1440.
 
 ## 6. When something is wrong
 
