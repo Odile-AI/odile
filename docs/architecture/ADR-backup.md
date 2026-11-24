@@ -7,7 +7,7 @@ superseded. On 24 November 2026 Savio chose the Hetzner Storage Box BX11, on a
 new Hetzner account dedicated to backups, as the destination for all Odile user
 backups** (card `t_a548cb0a`). **The box is ordered and active in Helsinki,
 Finland (`hel1`) as `odile-backups` — id 709870, created 2026-11-24 06:25:41Z —
-and holds no bytes yet.** He directed the **shape** on 17 November 2026 —
+and `t_12b3720a` was provisioning its first pair at 07:48Z.** He directed the **shape** on 17 November 2026 —
 the copy lives at a third provider, neither the tenant's machine nor HQ, Odile
 pays that provider and the subscription price carries it — and under
 `docs/AGENT-ORG.md` §3 the **provider, the account, the region and the two
@@ -85,9 +85,9 @@ fifth is a deck sentence still **held from the public pages** (`docs/CLAIMS.md`
    the provisioning card (`t_83d6fd7d`) never landed. Under v3 the repository
    moves to a Hetzner box: a different provider from Servury, a different
    account from Cloudflare, a different country from the machine. The box exists
-   and is empty — `stats` 0 bytes at 2026-11-24 06:30Z (§2) — so the sentence
-   becomes true **only when it holds the bytes**: `t_12b3720a` creates the first
-   pair and runs the real drill.
+   — `stats` 0 bytes at 06:30Z, 1 MiB of the drill's own fixture at 07:48Z — so
+   the sentence becomes true **only when it holds a tenant's repository**:
+   `t_12b3720a` creates the first pair and runs the real drill.
 3. **Only the user can read it.** *True on the storage path, false on the
    rebuild path.* No repository password exists in `/root/.odile`,
    `/etc/odile` or `/opt/odile` (measured, §2), so the storage path is clean.
@@ -123,7 +123,8 @@ fifth is a deck sentence still **held from the public pages** (`docs/CLAIMS.md`
    `docs/CLAIMS.md`:122 carries it and §1a holds it. It becomes true in fact
    **when `t_12b3720a` lands** — the first sub-account pair, the
    destroy→rebuild→paste→restore drill against the real box (the box exists and
-   is empty; it is the pair and the bytes that are missing), followed by the
+   holds only the drill's own fixture; it is the pair and the tenant's bytes
+   that are missing), followed by the
    demo and bench repositories moving to it — **not when the R2 migration
    landed**, because the R2 migration never landed. `t_5f10dd14` landed the
    30-day retention row on 19 November 2026 and corrected `web/privacy.html`'s
@@ -169,10 +170,10 @@ failure the builder did not test.**
 
 1. **The destination shares HQ's fate.** The runbook says it in its own words:
    "the backup survives the tenant, not the loss of HQ" (`backup.md` §3). The
-   stand-in was honest; the box that replaces it exists and is **empty**
-   (`stats` 0 bytes), so **no tenant byte has left HQ yet**, and `t_8eb17a54` is
-   now "retire the stand-in", not "buy a box". The R2 interim put nothing in its
-   buckets either.
+   stand-in was honest; the box that replaces it exists and holds only the
+   drill's own fixture (`stats` 0 bytes at 06:30Z, 1 MiB at 07:48Z), so **no
+   tenant byte has left HQ yet**, and `t_8eb17a54` is now "retire the stand-in",
+   not "buy a box". The R2 interim put nothing in its buckets either.
 2. **The rebuild path puts the user's recovery file on HQ's disk.** The
    `--backup-password-file` argument is a *path*, so the password is not on
    `argv`, but the file it names is on HQ while the rebuild runs — and the
@@ -199,8 +200,8 @@ from the vendor's own pages.
 
 | Fact | Value | Source, date |
 |---|---|---|
-| **The box, measured** | **id 709870, name `odile-backups`, username u728180, server `u728180.your-storagebox.de`, system `HEL1-BX192`, status `active`, created 2026-11-24T06:25:41Z**; `stats` **0 / 0 / 0 bytes** — it holds nothing yet | `GET /storage_boxes`, 2026-11-24 06:30:36Z; `/root/.odile/hetzner-box.json` (0600) |
-| **Its settings as ordered, measured** | `location` **hel1 / Helsinki / FI**, network zone `eu-central`; `ssh_enabled: true`, `reachable_externally: true`, `samba`, `webdav`, `zfs` false; `snapshot_plan` **04:30 UTC, max 10**; `subaccounts_limit` **100**; `snapshot_limit` 10, `automatic_snapshot_limit` 10; size 1,099,511,627,776 bytes | same |
+| **The box, measured** | **id 709870, name `odile-backups`, username u728180, server `u728180.your-storagebox.de`, system `HEL1-BX192`, status `active`, created 2026-11-24T06:25:41Z**; `stats` **0 / 0 / 0 bytes at 06:30:36Z** and **1,048,576 bytes (`size_data`) at 07:48Z** — the drill's own fixture or filesystem overhead, **no tenant repository** | `GET /storage_boxes/709870`, 06:30:36Z and 07:48Z; `/root/.odile/hetzner-box.json` (0600) |
+| **Its settings as ordered, measured** | `location` **hel1 / Helsinki / FI**, network zone `eu-central`; `ssh_enabled: true`, `reachable_externally: true`, `samba`, `webdav`, `zfs` false; `snapshot_plan` **04:30 UTC, max 10**; `subaccounts_limit` **100**; `snapshot_limit` 10, `automatic_snapshot_limit` 10; size 1,099,511,627,776 bytes; `protection.delete` **false at 06:30Z, true at 07:48Z** (`t_12b3720a` set it) | same |
 | **The API token, measured** | one project-scoped Console API token at `/root/.odile/hetzner-api-token` (**0600**, one `HETZNER_API_TOKEN` line); `GET /storage_boxes` with it answers the box above, so the scope works and HQ needs nothing else | measured 2026-11-24 06:27–06:30Z |
 | The account's login, measured | the account password was accepted at `accounts.hetzner.com` and Hetzner demanded a **6-digit code mailed to the account address** (`/2fa`) at 04:57Z; the API token, not the password, is what HQ uses | measured 2026-11-24 04:57Z; credentials `/root/.odile/hetzner-account.env` (0600) |
 | The product, read | **BX11: 1 TB, 100 sub-accounts, 10 snapshots (10 automated), 10 concurrent connections, unlimited traffic, Germany (FSN1) or Finland (HEL1), no minimum contract term, cancellation immediately, €3.20/month excl. VAT, no setup fee** | `hetzner.com/storage/storage-box/` and `/bx11/`, read 2026-11-24 |
@@ -274,8 +275,14 @@ first thing to revisit** (§4.5).
 
 ### 4.1 The per-tenant layout
 
-**The pair, and what each can do.** One tenant, one pair, both created with the
-same `home_directory`:
+**The pair, and what each can do.** One tenant, one pair, **both inside the
+tenant's directory `tenants/<slug>`** — and the drill's first measured pair
+(`t_12b3720a`, 2026-11-24 07:48Z) roots the read-only account one level tighter
+than the read-write one: `tenants/odl-bench` for `-rw`, `tenants/odl-bench/data`
+for `-ro`, so the user's key opens the repository's directory and not the
+tenant's whole tree. The rule the ADR fixes is the one the card names — both
+accounts inside `tenants/<slug>`, neither able to see another tenant — and the
+exact depth is the drill's evidence to settle:
 
 | Sub-account | `access_settings` | The key | What it can do |
 |---|---|---|---|
@@ -287,9 +294,9 @@ carried in the sub-account's `description` and in the tenant row. **Hetzner
 assigns the login**: the sub-account's login is `u<box>-sub<N>` and its
 hostname is `u<box>-sub<N>.your-storagebox.de`, so the ADR never derives a login
 from the slug — it records what the API returned. The pair is slug-scoped, and a
-tenant cannot see another tenant's directory: the sub-account's home directory is
-`tenants/<slug>` on the box, and the box's main account sees it under its own
-`/home`.
+tenant cannot see another tenant's directory: each sub-account's home directory
+is inside `tenants/<slug>` on the box, and the box's main account sees the tree
+under its own `/home`.
 
 **The repository URL** is the shipped program's grammar
 (`scripts/backup.py:SFTP_HOST_RE`): `sftp:u<box>-sub<N>@u<box>-sub<N>.your-storagebox.de:repo`
@@ -336,11 +343,11 @@ Write) — card `t_a548cb0a` — and it lands at
 `/root/.odile/hetzner-api-token` (0600). It is used by provisioning and by
 nothing else:
 
-- `POST /storage_boxes/{id}/actions/change_protection` — set `delete` protection
-  on the box (§4.5). **It is not set yet**: the box reports
-  `protection.delete: false` at 2026-11-24 06:30Z, and `t_12b3720a` sets it
-  before the first tenant byte. The `POST /storage_boxes` that ordered the box
-  (id 709870, 06:25:41Z) is behind us and is not a code path.
+- `POST /storage_boxes/{id}/actions/change_protection` — `delete` protection on
+  the box (§4.5). Measured `false` at 06:30Z and **`true` at 07:48Z**, set by
+  `t_12b3720a` before the first tenant byte, as designed. The `POST
+  /storage_boxes` that ordered the box (id 709870, 06:25:41Z) is behind us and
+  is not a code path.
 - `GET /storage_boxes/{id}/subaccounts` and `POST …/subaccounts` — read the
   count and create the pair.
 - `POST …/subaccounts/{subaccount_id}/actions/update_access_settings` — set or
@@ -483,9 +490,10 @@ credential to mint by hand.
    covers the failure that actually happens in practice: an operator's bad
    `restic forget`, a tenant's wrong directory, a torn write. It does not cover
    the box dying; it covers us.
-2. **`protection.delete` on the box.** Not set at 06:30Z (`false`);
-   `t_12b3720a` sets it before the first tenant byte. After that the API token
-   cannot delete the box, and a human has to turn protection off first.
+2. **`protection.delete` on the box.** Measured `false` at 06:30Z and **`true`
+   at 07:48Z**, set by `t_12b3720a` before the first tenant byte. After that the
+   API token cannot delete the box, and a human has to turn protection off
+   first.
 3. **The 30-day exit.** The promise does not change: after cancellation the
    repository is kept 30 days and then deleted (`docs/CLAIMS.md`:123). During
    those 30 days the user holds the password, the URL and the read-only key, so
@@ -572,6 +580,12 @@ Certificate SHA-256: <the certificate the browser saw>
 
 This file is the only copy of the backup password. ...
 ```
+
+**The `Repository:` line is the read-only account's own URL** — the same
+repository, reached with its own user and hostname; the guest's
+`/etc/odile/backup-repo.txt` carries the read-write account's. The path is
+relative to whichever account is reading, so the two lines differ in the user,
+the host and sometimes the path depth (§4.1), and both name the same repository.
 
 With those four things — the password, the repository, the pinned host key and
 the read-only key — a user can pull the repository on any machine with restic
@@ -719,8 +733,8 @@ recovery file and the provisioning.
 
 | Card | What it must do | Depends on |
 |---|---|---|
-| **The box and the first pair — `t_12b3720a`** (new; supersedes **ODL-938** / `t_7010af06`) | The box is ordered and active (id 709870, `hel1`, snapshots already 04:30 UTC × 10, `stats` empty); **set `protection.delete`** — still `false` — then create `odile-odl-bench-rw`/`-ro` on `tenants/odl-bench`, install both public keys, run a real `init`/`backup`/`snapshots`/`restore` with the read-write key, read the same repository with the read-only key (`--no-lock`), measure **11 parallel sessions'** refusal, record the box fingerprint, and write `docs/evidence/hetzner-bx11/` with the commands and raw output (token redacted) | `t_a548cb0a` is **satisfied**: the token exists at `/root/.odile/hetzner-api-token` (0600) and answers the API |
-| **Provisioning — the re-cut of ODL-924 (`t_83d6fd7d`)** | For each tenant: create the pair with the same `home_directory`, generate both keypairs, install the public halves, reset and discard the sub-account passwords, write `/root/.odile/hetzner/odile-<slug>.env` (0600) and the row's `detail` (`backup_box_id`, `backup_subaccount_id`, `backup_readonly_subaccount_id`; the env file is the store of record and the reopen path re-records `detail` from it), put the repository URL, the read-write key, the host-key line and the read-only key in the seed **with the previous instance id**, and **refuse the 51st pair**. **Retires `--backup-password-file`** and with it the sealed password in `seed-rebuilds.json` | the evidence from `t_12b3720a` |
+| **The box and the first pair — `t_12b3720a`** (new; supersedes **ODL-938** / `t_7010af06`) | The box is ordered and active (id 709870, `hel1`, snapshots 04:30 UTC × 10, `protection.delete` set at 07:48Z); create `odile-odl-bench-rw`/`-ro` inside `tenants/odl-bench`, install both public keys, run a real `init`/`backup`/`snapshots`/`restore` with the read-write key, read the same repository with the read-only key (`--no-lock`), measure **11 parallel sessions'** refusal, record the box fingerprint, and write `docs/evidence/hetzner-bx11/` with the commands and raw output (token redacted) | `t_a548cb0a` is **satisfied**: the token exists at `/root/.odile/hetzner-api-token` (0600) and answers the API |
+| **Provisioning — the re-cut of ODL-924 (`t_83d6fd7d`)** | For each tenant: create the pair **inside `tenants/<slug>`** — the drill's measured depth is `tenants/<slug>` for `-rw` and the repository's own directory for `-ro` — generate both keypairs, install the public halves, reset and discard the sub-account passwords, write `/root/.odile/hetzner/odile-<slug>.env` (0600) and the row's `detail` (`backup_box_id`, `backup_subaccount_id`, `backup_readonly_subaccount_id`; the env file is the store of record and the reopen path re-records `detail` from it), put the repository URL, the read-write key, the host-key line and the read-only key in the seed **with the previous instance id**, and **refuse the 51st pair**. **Retires `--backup-password-file`** and with it the sealed password in `seed-rebuilds.json` | the evidence from `t_12b3720a` |
 | **`backup.py` + installer — the re-cut of ODL-933 (`t_fda54dd4`)** | Add **`-o sftp.connections=2`** to the SFTP options; render the timer from the slug (§4.3's offset, `RandomizedDelaySec=0`), keep `Persistent=true`; rename the cap to `BACKUP_TENANT_CAP_BYTES` and keep the `restic stats` check and `status: over_cap`; add `ConditionPathExists=/etc/odile/recovery.txt` to the backup **service**; **do not mint a recovery file on a rebuild** (`ensure_recovery` skips only while the file is absent and the seed carries the previous instance id). No `s3:` branch. Update `BACKUP_SHA256` and re-sign the installer | the seed fields |
 | **The usage readback — the re-cut of ODL-934 (`t_a316c2fe`)** | `odilectl backup-usage`: read `stats.size_data` and `stats.size_snapshots` from `GET /storage_boxes` with the existing API token, sum each tenant's last `restic stats` from its heartbeat, write `/var/lib/odile/backup/usage.json`, and feed the watchdog at **800 GB warn / 950 GB critical** (1 TB box, 2 GB cap, 50 tenants = 100 GB at the cap). No new credential: the API token is already there | provisioning |
 | **First visit — ODL-937 (`t_c31fb2aa`) stands** | the rebuild step: detect the previous instance id in the seed, ask for the recovery file before the sign-in step, write `/etc/odile/recovery.txt`, run `odile-restore.service`, show the snapshot and its time (no JavaScript). Its §8 row's bucket wording is re-cut to the repository URL | `backup.py`'s `restore` (already supports `--target /` and `--include`) |
@@ -841,7 +855,13 @@ Measured, at this head, unless marked *read* or *modelled*:
   `location` **hel1 / Helsinki / FI**, `subaccounts_limit` **100**,
   `snapshot_plan` **{hour 4, minute 30, max 10}**, `access_settings` {ssh true,
   reachable_externally true, samba/webdav/zfs false}, `protection.delete`
-  **false**. Recorded at `/root/.odile/hetzner-box.json` (0600); the token is at
+  **false**. **Re-read at 07:48Z:** `protection.delete` **true**,
+  `stats.size_data` **1,048,576 bytes**, and **two sub-accounts — 392550
+  `u728180-sub1` (`tenants/odl-bench`, `readonly: false`) and 392556
+  `u728180-sub2` (`tenants/odl-bench/data`, `readonly: true`)** — both
+  `ssh_enabled: true`, `reachable_externally: true`, samba/webdav false: the
+  drill's first pair, with the read-only account rooted one level tighter.
+  Recorded at `/root/.odile/hetzner-box.json` (0600); the token is at
   `/root/.odile/hetzner-api-token` (0600, one `HETZNER_API_TOKEN` line) and the
   account login at `/root/.odile/hetzner-account.env` (0600). The account
   password plus a 6-digit email code were needed once, at 04:57Z; the token is
@@ -899,10 +919,11 @@ Measured, at this head, unless marked *read* or *modelled*:
 ## 12. What this ADR does not do
 
 - **No code, no tenant byte moved.** The first honest sentence about this re-cut
-  is that it is still a recommendation: the box exists (id 709870, `hel1`,
-  empty), the token exists, and **no tenant has a sub-account pair and no byte
-  has been written**. `t_12b3720a` creates the first pair, sets
-  `protection.delete` and proves the path; the provisioning re-cut automates it.
+  is that it is still a recommendation: the box exists (id 709870, `hel1`), the
+  token exists, `protection.delete` is on, and **no tenant has a pair and no
+  tenant repository is in it** — the only bytes are the drill's own fixture
+  (1 MiB at 07:48Z). `t_12b3720a` creates the first pair and proves the path;
+  the provisioning re-cut automates it.
 - **No new claim in the deck.** §9 names the one sentence that gets stronger and
   the one property that gets weaker; both land through Product and Savio or not
   at all.
