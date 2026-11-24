@@ -8,6 +8,7 @@ surface (a public page, the deck's own prose, a future FAQ) fails the lint.
 
 from __future__ import annotations
 
+import bisect
 import html
 import re
 import shutil
@@ -478,6 +479,116 @@ class PlantedPhraseTests(unittest.TestCase):
         result = run_lint(self.root)
         self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
         self.assertIn("docs/FAQ.md:1", result.stderr)
+
+
+EMAIL_DIR = ROOT / "templates" / "emails"
+
+# The strict bar's retired copy. It is not on the deck's §2 lint list — that
+# list forbids *terms* ("we hold your keys", "operator access"), not these
+# sentences — so `claims_lint` alone cannot catch a template that quotes the
+# v3.7 ceremony again. Measured 2026-11-23: `Paste an SSH public key you
+# control.` planted in `templates/emails/invite.txt` left both the claims and
+# the brand lint green (docs/evidence/a2-email-lint.md). The four sentences are
+# v3.7 rows in `docs/product/CLAIMS-RECUT-STRICT.md` §2 A5/§3 and were in
+# `BRAND.md` §Email's invite table (`:739-741`) and `prototype/userflow.html`;
+# ODL-581 (`238c22b`), ODL-928 (`18188d7`) and `t_5be4968e` (`d5c88a7`) took
+# the templates to the strict bar, by hand. This tuple is that hand step, pinned.
+RETIRED_STRICT_BAR = (
+    "Paste an SSH public key you control",
+    "set your sign-in",
+    "the machine waits for you",
+    "about 20 minutes of setup",
+)
+
+
+def retired_hits(
+    path: Path, sentences: tuple[str, ...] = RETIRED_STRICT_BAR
+) -> list[str]:
+    """`path:line: retired sentence` for every retired strict-bar sentence.
+
+    The templates wrap at about 78 columns, so the match runs over the whole
+    file with any run of whitespace or a hyphen between words, and the line
+    number comes from the offset where the match starts: a wrapped
+    reintroduction is caught as surely as a one-line one.
+    """
+    text = path.read_text(encoding="utf-8", errors="replace")
+    offsets = [0]
+    for line in text.splitlines(keepends=True):
+        offsets.append(offsets[-1] + len(line))
+    hits: list[str] = []
+    for sentence in sentences:
+        body = r"[\s-]+".join(re.escape(word) for word in sentence.split())
+        for match in re.finditer(body, text, re.IGNORECASE):
+            line = bisect.bisect_right(offsets, match.start())
+            hits.append(f"{path}:{line}: retired {sentence!r}")
+    return hits
+
+
+class EmailTemplateTests(unittest.TestCase):
+    """The four templates a tester receives are inside the claims lint.
+
+    ODL-349: `DEFAULT_PATHS` stopped at `web`, `app.py` and the deck, so the
+    invitation, the confirmation, the ready email and the support reply were
+    checked only by `tools/brand_lint.py` (colours, type, surfaces) and by hand
+    against `BRAND.md` §Email. A phrase on the deck's lint list now fails
+    inside `templates/emails/`; the strict bar's retired copy, which the deck's
+    list does not name, is pinned here as well.
+    """
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.root = Path(self._tmp.name)
+        (self.root / "docs").mkdir()
+        shutil.copyfile(ROOT / "docs" / "CLAIMS.md", self.root / "docs" / "CLAIMS.md")
+
+    def test_the_four_templates_a_tester_receives_are_in_the_default_scan(self):
+        scanned = {
+            path.resolve()
+            for path in claims_lint.iter_files(ROOT.resolve(), claims_lint.DEFAULT_PATHS)
+        }
+        for name in ("invite.txt", "confirm.txt", "ready.txt", "support.md"):
+            template = EMAIL_DIR / name
+            self.assertTrue(template.is_file(), "templates/emails/%s is missing" % name)
+            self.assertIn(
+                template.resolve(),
+                scanned,
+                "the claims lint does not scan templates/emails/%s" % name,
+            )
+
+    def test_a_deck_phrase_planted_in_the_invitation_fails_the_lint(self):
+        # A path in DEFAULT_PATHS is not coverage: the scan has to report the
+        # file and the line. The temp tree carries the real deck and one email.
+        emails = self.root / "templates" / "emails"
+        emails.mkdir(parents=True)
+        (emails / "invite.txt").write_text(
+            "Hello,\n\nWe can log in to your machine.\n", encoding="utf-8"
+        )
+        result = run_lint(self.root)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("templates/emails/invite.txt:3", result.stderr)
+        self.assertIn("we can log in", result.stderr)
+
+    def test_no_retired_strict_bar_sentence_is_in_a_template(self):
+        hits: list[str] = []
+        for template in sorted(EMAIL_DIR.iterdir()):
+            if template.suffix in {".txt", ".md"}:
+                hits.extend(retired_hits(template))
+        self.assertEqual(
+            hits, [], "a retired strict-bar sentence is back in an email template"
+        )
+
+    def test_the_retirement_guard_reads_through_a_wrapped_line(self):
+        # Nothing else proves the guard can see a sentence the template wrapped
+        # at 78 columns; a per-line grep would pass and the email would ship.
+        wrapped = self.root / "wrapped.txt"
+        wrapped.write_text(
+            "You paste an SSH public key you\ncontrol, then wait.\n", encoding="utf-8"
+        )
+        self.assertEqual(
+            retired_hits(wrapped, ("Paste an SSH public key you control",)),
+            [f"{wrapped}:1: retired 'Paste an SSH public key you control'"],
+        )
 
 
 class PrivacyTests(unittest.TestCase):
