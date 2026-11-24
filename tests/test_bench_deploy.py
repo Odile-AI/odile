@@ -185,10 +185,28 @@ class UnitRenderTests(unittest.TestCase):
         self.assertIn("User=root", unit)
         self.assertIn("ExecStart=/usr/bin/python3 -m odilectl.provision --worker --apply", unit)
         self.assertIn("--config /root/.odile/config.test.yaml", unit)
-        self.assertIn("ReadWritePaths=/var/lib/odile-test /var/lib/odile", unit)
+        self.assertIn("ReadWritePaths=/var/lib/odile-test /var/lib/odile /root/.odile", unit)
         timer = deploy.render_unit(deploy.WORKER_TIMER)
         self.assertIn("Unit=odile-bench-register", timer)
         self.assertIn("WantedBy=timers.target", timer)
+
+    def test_the_register_unit_can_rotate_the_near_credential(self) -> None:
+        # ODL-242 rotates the management credential in place: `keys.py` writes a
+        # `.near-account.*` temp file beside it and `os.replace`s it. The
+        # worker's ProtectHome=read-only made that directory read-only, and the
+        # registration died with EROFS at 2026-11-24T03:52:15Z. The unit must
+        # grant the credential's own directory, taken from the config the
+        # worker is handed, so a moved config moves the grant with it.
+        unit = deploy.render_unit(deploy.WORKER_SERVICE)
+        grants = next(line for line in unit.splitlines()
+                      if line.startswith("ReadWritePaths=")
+                      ).split("=", 1)[1].split()
+        self.assertEqual(deploy.WORKER_CONFIG.parent, Path("/root/.odile"),
+                         "the live worker's credential directory")
+        self.assertIn("/root/.odile", grants)
+        # The two grants that were already there stay.
+        self.assertIn("/var/lib/odile-test", grants)
+        self.assertIn("/var/lib/odile", grants)
 
     def test_rendering_twice_is_identical_and_follows_the_values(self) -> None:
         first = deploy.render_unit(SITE_TEMPLATE)
