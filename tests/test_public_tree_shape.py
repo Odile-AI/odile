@@ -57,6 +57,7 @@ LOCAL_ONLY_GLOBS = (
     "docs/product/RECUT-*",
     "docs/product/REESTIMATE-*",
     "docs/product/SPIKE-*",
+    "docs/product/PRFAQ-*",
 )
 LOCAL_ONLY_FILES = (
     "AGENTS.md",
