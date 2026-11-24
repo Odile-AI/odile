@@ -5799,7 +5799,7 @@ def main(argv: list[str] | None = None) -> int:
 if __name__ == "__main__":
     sys.exit(main())
 '''
-FIRST_VISIT_PAGE_SHA256 = "a877f964f6bdc40c2f1916c4459d55c2594929e51a34f882f91023f9fc4df0f9"
+FIRST_VISIT_PAGE_SHA256 = "801a13037ddb5014ecd41681c9ec4c8a8da11e539f90e107bdde4f30a1e9fa5a"
 FIRST_VISIT_PAGE = r'''<!doctype html>
 <html lang="en">
 <head>
@@ -5845,6 +5845,7 @@ a:focus-visible{outline:2px solid var(--ink);outline-offset:3px}
   font:600 10px/1 var(--text);
   text-transform:uppercase;letter-spacing:.24em;color:var(--oxblood)}
 .note{margin:0;font-size:16px;line-height:1.6;color:var(--soft);max-width:54ch}
+.note + .note{margin-top:16px}
 .field{margin:0 0 16px}
 .field label{display:block;margin:0 0 8px;font-weight:600}
 .field .hint{margin:0 0 8px;font-size:16px;line-height:1.5;color:var(--soft)}
@@ -5957,7 +5958,6 @@ h1,h2,h3,.brand,.mark,.wordmark,.focus{font-family:var(--serif)}
     <button class="primary" type="submit">Sign in</button>
   </form>
   <p class="foot">Your Odile password opens your machine and your account page. You chose it when you registered. It is the only app-layer gate: no 2FA in alpha.0.</p>
-  <p class="foot">Your recovery code is unchanged after the first visit. <a href="/first-visit/replace">Replace it</a> if you think someone saw it.</p>
 <!--/signin-->
 <!--signed-in-->
   <h1>You are signed in.</h1>
@@ -6073,7 +6073,6 @@ h1,h2,h3,.brand,.mark,.wordmark,.focus{font-family:var(--serif)}
     {{RECOVERY_FILE}}
     <p class="note">A recovery code and a recovery file are the way back: the code resets your sign-in, the file opens your backup. Your first visit gives you both; keep them off the machine. While the machine is still running, the agent can replace the code and show you the new one.</p>
     <p class="note">Your recovery code works at both places until you replace it; using it does not spend it.</p>
-    <p class="note">Your account follows when the machine's signed note reaches it; the machine retries until it does.</p>
   </section>
   <label class="consent"><input type="checkbox" id="saved"> I have saved the code and the file</label>
   <div class="act">

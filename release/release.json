@@ -1,8 +1,8 @@
 {
   "artifacts": {
     "installer": {
-      "sha256": "327856460526fffd7ceb51eedcc803633638a99dca427c2814d1692bfeb4a495",
-      "size": 1626242,
+      "sha256": "2786a4087df4f52fbcbf845aa20fc91c389c2fe0d59aefa0af6d787b49174db5",
+      "size": 1625998,
       "url": "odile_install.py"
     },
     "skills": {
@@ -16,11 +16,11 @@
   },
   "generated_at": "2026-11-24T00:30:00Z",
   "manifest": {
-    "sha256": "c5c692e3c9e9dabaf65d053ad3224bf86ccf499803de4f29384ad921a5dd0034",
+    "sha256": "149f56468e4c008441047e4d274e684730fa7b0eb564f6c7411150266b075103",
     "signature_url": "manifest.json.sig",
     "url": "manifest.json"
   },
-  "notes": "ODL-926 (A5): the one recovery code is stable \u2014 it no longer rotates on use and never expires \u2014 and is replaced only on request, from the machine, which mints a new code, shows it once, and pushes its hash to HQ signed with the machine's heartbeat key; a five-minute timer retries until the account acknowledges. The installer re-embeds installer/first_visit.py (e69d80d7\u2026), web/first-visit.html (a877f964\u2026) and scripts/heartbeat.py (98c01da5\u2026): the reset and recovery pages no longer spend or show the code, /first-visit/replace is new, and the recovery-push unit and timer are written. The manifest moves installer_sha256 and release.json names the new pair.",
+  "notes": "ODL-926 (A5): the one recovery code is stable \u2014 it no longer rotates on use and never expires \u2014 and is replaced only on request, from the machine, which mints a new code, shows it once, and pushes its hash to HQ signed with the machine's heartbeat key; a five-minute timer retries until the account acknowledges. The installer re-embeds installer/first_visit.py (e69d80d7\u2026), web/first-visit.html (801a1303\u2026, 47,050 bytes) and scripts/heartbeat.py (98c01da5\u2026): the reset and recovery pages no longer spend or show the code, /first-visit/replace is new, and the recovery-push unit and timer are written. Brand round (t_029914f6): the sign-in page's false 'replace it' foot is cut (no code exists before the first sign-in), consecutive notes take the sheet's 16 px gap, the replaced page's unlanded account-follow sentence is cut, and the kit prints D-6 once. The manifest moves installer_sha256 and release.json names the new pair.",
   "product": "odile",
   "release": "2026.11.23-5",
   "schema": 1

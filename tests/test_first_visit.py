@@ -753,6 +753,21 @@ class SignInLoginTests(unittest.TestCase):
         self.assertNotIn("set on your machine at first visit", page)
         self.assertNotIn("We never see it", page)
 
+    def test_the_sign_in_page_offers_no_replace_link_before_a_code_exists(self):
+        """Designer round 2: the login must not promise a code that does not exist.
+
+        Before the first sign-in the state's ``recovery_hash`` is null and
+        ``/first-visit/replace`` answers 409 "This link is closed.", so the
+        sign-in page carries no replace foot and no replace link. The
+        ``signed-in`` state is the one that names the action.
+        """
+        self.assertIsNone(self.harness.load_state()["recovery_hash"])
+        status, _, page = self.harness.call("GET", "/first-visit")
+        self.assertEqual(status, 200)
+        self.assertNotIn("/first-visit/replace", page)
+        self.assertNotIn("Replace it", page)
+        self.assertNotIn("unchanged after the first visit", page)
+
     def test_a_wrong_password_re_renders_one_error_and_writes_nothing(self):
         before = self.harness.env_text()
         status, _, page = self.harness.signin(PASSWORD + "x")
@@ -1716,6 +1731,27 @@ class PageTests(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertIn(D6_DECIDED, replace_done)
         self.assertIn("Your new recovery code.", replace_done)
+
+    def test_consecutive_notes_take_the_sheet_gap_and_stay_on_the_deck(self):
+        """Designer round 2: D-20 gets the sheet's paragraph gap, and the
+        replaced page prints no reliability sentence the deck does not carry.
+
+        The four notes rendered at 0 px gaps because ``.note{margin:0}``; the
+        adjacency rule is the sheet's 16 px paragraph gap and fires only where
+        two notes meet. "Your account follows when the machine's signed note
+        reaches it…" was a new public reliability sentence with no deck row, so
+        it is cut.
+        """
+        text = PAGE.read_text(encoding="utf-8")
+        self.assertIn(".note + .note{margin-top:16px}", text)
+        self.assertNotIn("Your account follows", text)
+        status, _, _ = self.harness.set_signin()
+        self.assertEqual(status, 200)
+        replaced = self.harness.replace()[2]
+        self.assertNotIn("Your account follows", replaced)
+        self.assertGreaterEqual(
+            replaced.count('class="note"'), 2,
+            "the replaced page no longer prints D-20 after a note")
 
     def test_the_reset_page_carries_the_decided_copy_and_the_stability_row(self):
         """D-14's copy, D-20 verbatim, and a no-JavaScript gate on the link."""

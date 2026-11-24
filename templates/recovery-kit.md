@@ -19,10 +19,6 @@ odile-{{slug}}-recovery-kit.txt. The recovery file from your first
 visit is odile-recovery-{{slug}}.txt; it is a different file, and it
 holds the backup password.
 
-A recovery code and a recovery file are the way back: the code resets your
-sign-in, the file opens your backup. Your first visit gives you both; keep
-them off the machine.
-
 Before you sign in
 ------------------
 Open {{url}}/verify.
