@@ -9539,7 +9539,7 @@ TENANT_SKILLS: tuple[tuple[str, str, str, str], ...] = (
     (
         "odile-first-run",
         "skills/odile-first-run/SKILL.md",
-        "1249114236b7071ed28700579e92bd4caf14d93e59ce6d7be4f50cf566960114",
+        "d95b50611d7617bd53349f55b33c15e756feefd318939da18ebf8c7eaf0eaf67",
         r'''---
 name: odile-first-run
 description: First run: five questions, a real brief, a schedule.
@@ -9724,8 +9724,8 @@ Then add to memory (target `memory`):
 
 > Saved: your name, your time zone, your three things, and <HH:MM> <zone> for
 > the brief. Tomorrow at <HH:MM> <zone> it will be in `~/briefs/` — and in your
-> inbox at <address> if you gave one — and if the machine is locked it runs when
-> you unlock. Ask me for anything in between.
+> inbox at <address> if you gave one — and if it was due while the machine was
+> down, it runs when the machine comes back up. Ask me for anything in between.
 
 ## Skip
 
