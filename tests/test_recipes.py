@@ -133,6 +133,27 @@ class SkillShape(unittest.TestCase):
         self.assertIn('{"to": "<address>"}', text)
         self.assertIn("chmod 600", text)
 
+    def test_the_first_run_close_does_not_promise_an_unlock(self) -> None:
+        """ODL-925 follow-up: the sealed boot has no unlock step.
+
+        The disk unlocks on the boot the user verifies and the machine comes
+        back by itself, so the close may only carry the deck's repeating-job
+        row (A11): a job due while the machine was down runs when it comes back
+        up. Both halves are asserted: the retired timing sentence is gone and
+        the approved one is present, whitespace-flattened so a re-wrap cannot
+        hide either.
+        """
+        source = FIRST_RUN.read_text(encoding="utf-8")
+        close = source.split("## Close — exactly three sentences", 1)[1].split("\n## ", 1)[0]
+        text = " ".join(line.lstrip("> ").strip() for line in close.splitlines())
+        self.assertNotIn("when you unlock", text)
+        self.assertNotIn("machine is locked", text)
+        self.assertIn("and if it was due while the machine was down, it runs when "
+                      "the machine comes back up", text)
+        claims = " ".join((ROOT / "docs/CLAIMS.md").read_text(encoding="utf-8").split())
+        self.assertIn("runs when the machine comes back up if it was due while it was "
+                      "down", claims, "the close must quote the deck's A11 row")
+
     def test_the_recipes_skill_turns_email_on_with_the_same_address_file(self) -> None:
         section = self.text.split("## 1. Morning brief", 1)[1].split("## 2.", 1)[0]
         self.assertIn("~/.hermes/brief.json", section)
