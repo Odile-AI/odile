@@ -1,7 +1,8 @@
 # Verdict — Hetzner BX11 box, first sub-account pair, restic drill
 
 **Card:** `t_12b3720a` · **Seat:** Security · **Measured:** 2026-11-24
-06:25–07:47 UTC · **Artifact:** Hetzner Storage Box id 709870, `odile-backups`,
+06:25–07:56 UTC, re-verified 09:18 UTC · **Artifact:** Hetzner Storage Box id
+709870, `odile-backups`,
 BX11, Helsinki (`hel1`) · **Evidence:** `docs/evidence/hetzner-bx11/` (HQ-only)
 
 This card is the first half of ADR-004 v3's destination: the box and one
@@ -15,7 +16,7 @@ The verdict below is on the access property the pair is meant to carry, not on
 | Claim the card makes | Verdict | Command and output |
 |---|---|---|
 | The drill passes with a real restic restore | **PASS** | `restic init` (12.0 s) → `backup` (8.7 s, snapshot `608ef125`, 4 files / 1.023 MiB) → `snapshots` → `restore` (8.6 s); `sha256sum -c` all four OK and `diff -r` identical — `05-restic-drill.txt` |
-| The RO key is proven read-only | **PASS on the pair as shipped; the card's literal pair is a BLOCK** | With both homes `tenants/odl-bench` the RO key authenticated to the RW sub-account and wrote a file; after the RO home was moved to `tenants/odl-bench/data`, the RO key reads the snapshot (`--no-lock`) and its SFTP write/delete are refused, and it is denied on the RW account — `04-access-checks.txt`, `07-finding-shared-authorized-keys.md` |
+| The RO key is proven read-only | **PASS on the pair as shipped; the card's literal pair is a BLOCK** | With both homes `tenants/odl-bench` the RO key authenticated to the RW sub-account and wrote a file; after the RO home was moved to `tenants/odl-bench/data`, the RO key reads the snapshot (`--no-lock`) and its SFTP write/delete are refused (`sftp -b` exits 1), and it is denied on the RW account — `04-access-checks.txt`, `07-finding-shared-authorized-keys.md` |
 | The 10-connection limit is measured | **BLOCK on the number, PASS on the measurement** | The 11th SFTP session **succeeds**; 25 hold; the 26th is refused with `Received disconnect … Maximum connections for host/user reached`; the ceiling is shared by the sub-accounts — `06-connection-ceiling.txt` |
 | The token file is 0600 | **PASS** | `600 root root /root/.odile/hetzner-api-token` |
 | No secret in the evidence | **PASS** | token, restic password and the (then live) sub-account passwords absent; no private-key marker; no `Authorization: Bearer <value>` — `09-secret-scan.txt` |
