@@ -1416,6 +1416,18 @@ class FirstbootExchangeTests(unittest.TestCase):
         self.keygen = pathlib.Path(shutil.which("ssh-keygen") or "ssh-keygen")
         self.host_key_path = self.ssh_root / "etc" / "ssh" / "ssh_host_ed25519_key.pub"
         self.first_visit_state = self.dir / "etc" / "first-visit.json"
+        # ODL-350: the gate host is not the image (the same rule as --ssh-root,
+        # ODL-523). `bb.host` re-derives the machine's name into two files; the
+        # image ships the build tenant's slug and the marker domain, so these
+        # start as image bytes under this temp dir rather than at the machine's
+        # own /etc.
+        self.hostname = self.dir / "etc" / "hostname"
+        self.hosts = self.dir / "etc" / "hosts"
+        self.hostname.parent.mkdir(parents=True, exist_ok=True)
+        self.hostname.write_text("odl-imagebuild\n", encoding="utf-8")
+        self.hosts.write_text(
+            "127.0.0.1 localhost odl-imagebuild tenant.odile.test\n"
+            "10.0.2.15 odl-imagebuild tenant.odile.test\n", encoding="utf-8")
 
     def tearDown(self) -> None:
         self.server.shutdown()
@@ -1555,7 +1567,16 @@ class FirstbootExchangeTests(unittest.TestCase):
             "--boot-record", str(self.dir / "boot-record.json"),
             "--host-key", str(self.host_key_path),
             "--first-visit-state", str(self.first_visit_state),
+            # ODL-350: the first boot re-derives `bb.host` into these two
+            # files. Left to their defaults they are the gate host's own
+            # /etc/hostname and /etc/hosts — a bind mount on a CI runner
+            # (EBUSY in write_atomic's replace) and a silent rename at HQ.
+            "--hostname-path", str(self.hostname),
+            "--hosts-path", str(self.hosts),
         ]
+        # The argv the boot actually ran, so a test can assert which paths the
+        # program was told to use instead of inferring them from what it wrote.
+        self.last_argv = argv
         if recovery is not None:
             argv += ["--recovery", str(recovery)]
         if recovery_seed is not None:
@@ -1867,6 +1888,59 @@ class FirstbootExchangeTests(unittest.TestCase):
         self.assertEqual(firstboot_line(output),
                          "odile-firstboot: fail-closed: no setup token in the command line")
         self.assertFalse(self.cache.exists())
+
+    # -- ODL-350: the gate host is not the image ------------------------------
+
+    @staticmethod
+    def option(argv: list[str], flag: str) -> str:
+        if flag not in argv:
+            raise AssertionError("%s is not in the boot argv: %r" % (flag, argv))
+        return argv[argv.index(flag) + 1]
+
+    def test_the_first_boot_names_the_host_inside_the_temp_dir(self) -> None:
+        """`bb.host` re-derives the name into this dir, not the gate host's /etc.
+
+        The program defaults both paths to `/etc`. On a runner `/etc/hostname`
+        is a bind mount, so the rename behind `write_atomic` fails with EBUSY
+        (run 45318362637); at HQ the same default silently renamed the box.
+        """
+        self.write_cmdline(self.token)
+        code, output = self.run_boot()
+        self.assertEqual(code, 0, output)
+        self.assertEqual(self.option(self.last_argv, "--hostname-path"),
+                         str(self.hostname))
+        self.assertEqual(self.option(self.last_argv, "--hosts-path"),
+                         str(self.hosts))
+        self.assertEqual(self.hostname.read_text(encoding="utf-8"),
+                         self.SLUG + "\n")
+        hosts = self.hosts.read_text(encoding="utf-8")
+        self.assertIn(" %s tenant.odile.test" % self.SLUG, hosts)
+        self.assertNotIn("odl-imagebuild", hosts)
+
+    def test_the_first_boot_writes_nothing_outside_its_temp_dir(self) -> None:
+        """No path the exchange hands `write_atomic` leaves this temp dir.
+
+        `write_atomic` is the writer behind the leak: it renamed the gate
+        host's own `/etc/hostname` through `os.replace`, and on the runner the
+        bind mount made that rename fail with EBUSY. Recording every path it is
+        handed names exactly the writes the argv omission misplaced.
+        """
+        self.write_cmdline(self.token)
+        writes: list[str] = []
+        real = firstboot.write_atomic
+
+        def record(path, data, mode):
+            writes.append(str(path))
+            return real(path, data, mode)
+
+        with mock.patch.object(firstboot, "write_atomic", record):
+            code, output = self.run_boot()
+        self.assertEqual(code, 0, output)
+        self.assertIn(str(self.hostname), writes)
+        self.assertIn(str(self.hosts), writes)
+        outside = [path for path in writes
+                   if not pathlib.Path(path).is_relative_to(self.dir)]
+        self.assertEqual(outside, [], writes)
 
     def test_a_used_token_fails_closed_and_the_machine_is_not_half_installed(self) -> None:
         self.write_cmdline(self.token)
