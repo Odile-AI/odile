@@ -43,6 +43,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import fcntl
 import json
 import os
 import re
@@ -53,6 +54,7 @@ import tempfile
 import time
 import urllib.error
 import urllib.request
+from contextlib import contextmanager
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -558,6 +560,46 @@ def _load_recovery_state(path: str | Path) -> dict:
     return state
 
 
+@contextmanager
+def _state_lock(path: str | Path):
+    """The first-visit service's own lock, taken by the client for one read or write.
+
+    The client is a second writer of the same document (ODL-926): the service
+    rewrites it on a replace while this process may be mid-POST. The lock is
+    the same ``<state>.lock`` the service holds across its read-verify-write,
+    so neither side can land between the other's read and its write.
+    """
+    target = Path(path).expanduser()
+    lock_path = target.with_name(target.name + ".lock")
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    handle = open(lock_path, "a+")
+    try:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        yield
+    finally:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+        handle.close()
+
+
+def _acknowledge_recovery(path: str | Path, recovery_hash: str) -> bool:
+    """Record the acknowledged hash, but only if that hash is still live.
+
+    Returns False when a replace landed while the POST was open. The service
+    wrote a new ``recovery_hash`` in that window; this client's copy is stale,
+    and rewriting it from the copy would resurrect the retired code and mark the
+    new one as pushed, so the new code would never reach HQ. Re-read under the
+    lock and leave the state — and the push pending — alone in that case.
+    """
+    with _state_lock(path):
+        live = _load_recovery_state(path)
+        if live.get("recovery_hash") != recovery_hash:
+            return False
+        live["recovery_pushed_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        live["recovery_pushed_hash"] = recovery_hash
+        _save_recovery_state(path, live)
+    return True
+
+
 def _save_recovery_state(path: str | Path, state: dict) -> None:
     """Write the state atomically, 0600, beside itself (the service's own rule)."""
     target = Path(path).expanduser()
@@ -641,8 +683,15 @@ def recovery(args: argparse.Namespace) -> int:
     account's acknowledgement and is recorded in the state, so the timer's next
     run is a no-op until the code is replaced. Anything else leaves the push
     pending: the unit runs every five minutes until HQ answers.
+
+    The state is a second writer's document: the first-visit service rewrites
+    it on a replace. The client takes the service's own lock for the read, and
+    after a 200 it re-reads under that lock and records the markers only while
+    the pushed hash is still live; a replace that landed during the POST stays
+    pending and is pushed by the next tick.
     """
-    state = _load_recovery_state(args.state)
+    with _state_lock(args.state):
+        state = _load_recovery_state(args.state)
     recovery_hash = state.get("recovery_hash")
     if not isinstance(recovery_hash, str) or not recovery_hash.startswith("scrypt$"):
         print("recovery: no recovery code minted yet; nothing to push")
@@ -691,9 +740,14 @@ def recovery(args: argparse.Namespace) -> int:
     except ValueError:
         parsed = {}
     changed = bool(parsed.get("changed")) if isinstance(parsed, dict) else False
-    state["recovery_pushed_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-    state["recovery_pushed_hash"] = recovery_hash
-    _save_recovery_state(args.state, state)
+    if not _acknowledge_recovery(args.state, recovery_hash):
+        # A replace landed while the POST was open: the code the user was shown
+        # is live, and this push acknowledged the retired one. Leave the new
+        # hash pending so the timer pushes it; never rewrite the state from the
+        # stale copy (that would resurrect the old code).
+        print(f"recovery: a replace landed while the push was open; "
+              f"{args.slug}'s new hash stays pending for the next tick")
+        return 0
     print(f"recovery: pushed for {args.slug}; HQ says changed={str(changed).lower()}")
     return 0
 

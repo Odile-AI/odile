@@ -1,26 +1,26 @@
 {
   "artifacts": {
     "installer": {
-      "sha256": "2f2f541e1923e6be0518542d3aa8ee2a019f0b0cf5d94dcd57fcb2447b1f7029",
-      "size": 1625998,
+      "sha256": "ba8268d242c282609f4ccc04793ed8cc3156a2aad4ab48c923cfa9d2dc5e0688",
+      "size": 1628513,
       "url": "odile_install.py"
     },
     "skills": {
-      "sha256": "c5f507b59bf4eaf4256986f2fa67ddadb01a18abf94372cfa9e160a0f1b6dd3f",
-      "size": 852668,
+      "sha256": "9a10a63ee9a813783e719c2bf0e0de8bb9484a5358077a8ea147cfa17cc6c6d4",
+      "size": 852667,
       "url": "skills.tar.gz"
     }
   },
   "boot": {
     "kernel": "6.12.115+deb13.1-amd64"
   },
-  "generated_at": "2026-11-24T01:55:00Z",
+  "generated_at": "2026-11-24T06:12:52Z",
   "manifest": {
-    "sha256": "62a70158a995c11dadd17a81f6a4d9c0727634e3aa4d72b4b9cf259c62972817",
+    "sha256": "c574552feb36b5779e58be40a3006efac33e36d2f172e9d66df7308d081b8552",
     "signature_url": "manifest.json.sig",
     "url": "manifest.json"
   },
-  "notes": "ODL-926 (A5): the one recovery code is stable \u2014 it does not rotate on use and never expires \u2014 and is replaced only on request, from the machine, which mints a new code, shows it once, and pushes its hash to HQ signed with the machine's heartbeat key; a five-minute timer retries until the account acknowledges. The installer re-embeds installer/first_visit.py (e69d80d7\u2026, 86,172 bytes), web/first-visit.html (801a1303\u2026, 47,050 bytes) and scripts/heartbeat.py (98c01da5\u2026, 31,592 bytes): the reset and recovery pages no longer spend or show the code, /first-visit/replace is new, and the recovery-push unit and timer are written. Brand round (t_029914f6): the sign-in page's false 'replace it' foot is cut (no code exists before the first sign-in), consecutive notes take the sheet's 16 px gap, the replaced page's unlanded account-follow sentence is cut, and the kit prints D-6 once. This cut is 2026.11.23-8 over t_fc412bd9's -5: the merge re-embeds templates/verify.html (1f5314db\u2026, 42,959 bytes) and the odile-help skill (62fac689\u2026) from the merged tree, and ODL-929's page and help re-cut are carried, so the manifest moves installer_sha256 and carries both cards' rows.",
+  "notes": "ODL-926 (A5): the one recovery code is stable \u2014 it does not rotate on use and never expires \u2014 and is replaced only on request, from the machine, which mints a new code, shows it once, and pushes its hash to HQ signed with the machine's heartbeat key; a five-minute timer retries until the account acknowledges. The installer re-embeds installer/first_visit.py (e69d80d7\u2026, 86,172 bytes), web/first-visit.html (801a1303\u2026, 47,050 bytes) and scripts/heartbeat.py (2459ca26\u2026, 34,075 bytes): the reset and recovery pages no longer spend or show the code, /first-visit/replace is new, and the recovery-push unit and timer are written, and the push re-reads the state under the service's lock after a 200 so a replace that lands mid-POST stays pending rather than being overwritten. Brand round (t_029914f6): the sign-in page's false 'replace it' foot is cut (no code exists before the first sign-in), consecutive notes take the sheet's 16 px gap, the replaced page's unlanded account-follow sentence is cut, and the kit prints D-6 once. This cut is 2026.11.23-8 over main's -6 (the ODL-925 follow-up, which carries t_fc412bd9's -5 and ODL-929's -4): the merge re-embeds templates/verify.html (1f5314db\u2026, 42,959 bytes), the odile-help skill (62fac689\u2026), the first-run skill (d95b5061\u2026, the -6 change) and the skills tarball (9a10a63e\u2026, 852,667 bytes) from the merged tree, so the manifest carries -6's rows and moves this card's installer_sha256 only.",
   "product": "odile",
   "release": "2026.11.23-8",
   "schema": 1

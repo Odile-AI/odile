@@ -50,8 +50,9 @@ Two different files, and the difference matters:
 
 The file is the only copy of the backup password. One recovery code resets
 both: your account password at the account page and your machine's sign-in on
-the machine. There is no emailed reset. While the machine is running the agent
-can show you the file:
+the machine. There is no emailed reset. While the machine is still running, the
+agent can replace the code and show you the new one. While the machine is
+running the agent can show you the file:
 
 ```sh
 sudo cat /etc/odile/recovery.txt

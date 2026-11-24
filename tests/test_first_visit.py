@@ -2533,6 +2533,8 @@ class RecoveryPushTests(unittest.TestCase):
         self.registered = False
         self.changed = True
         self.fail_next = 0
+        self.post_seen: threading.Event | None = None
+        self.answer_now: threading.Event | None = None
 
     def write_state(self, values: dict) -> None:
         self.state.write_text(json.dumps(values), encoding="utf-8")
@@ -2566,6 +2568,10 @@ class RecoveryPushTests(unittest.TestCase):
                 payload = json.loads(body)
                 if not test.registered:
                     return self.answer(409, {"ok": False, "error": "no key"})
+                if test.post_seen is not None:
+                    test.post_seen.set()
+                if test.answer_now is not None:
+                    test.answer_now.wait(30)
                 changed = payload["recovery_hash"] != test.pushed
                 test.pushed = payload["recovery_hash"]
                 return self.answer(200, {"ok": True, "changed": changed})
@@ -2661,6 +2667,54 @@ class RecoveryPushTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn("changed=true", result.stdout)
         self.assertEqual(self.read_state()["recovery_pushed_hash"], self.code_hash)
+
+    def test_a_replace_during_the_push_is_not_undone_by_the_stale_copy(self):
+        """The timer's push must never rewrite a replace that landed mid-POST.
+
+        The service rewrites the whole state on a replace while this client is
+        waiting for HQ. Reproduced before the fix: the client's stale copy put
+        the retired hash back, verified the old code again, and marked the new
+        one as pushed — so the code the user saved was dead and never reached
+        HQ. The client now re-reads under the service's lock and writes only
+        the two marker keys.
+        """
+        self.start_receiver()
+        self.registered = True
+        self.post_seen = threading.Event()
+        self.answer_now = threading.Event()
+        outcome: dict[str, subprocess.CompletedProcess] = {}
+
+        def run_client() -> None:
+            outcome["result"] = self.run_client()
+
+        thread = threading.Thread(target=run_client, daemon=True)
+        thread.start()
+        self.assertTrue(self.post_seen.wait(30), "the client never posted")
+
+        # The replace, exactly as the service writes it: the service's lock,
+        # the service's save, a new hash in one write.
+        new_code = "NPQR-STUV-WXYZ-2345-6789"
+        new_hash = fv.hash_password(fv.normalise_code(new_code))
+        with fv.locked(self.state):
+            live = json.loads(self.state.read_text(encoding="utf-8"))
+            live["recovery_hash"] = new_hash
+            fv.save_state(self.state, live)
+        self.answer_now.set()
+        thread.join(30)
+        result = outcome["result"]
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("stays pending", result.stdout)
+
+        state = self.read_state()
+        self.assertEqual(state["recovery_hash"], new_hash,
+                         "the push's stale copy restored the retired code")
+        self.assertIsNone(state["recovery_pushed_hash"])
+        self.assertTrue(fv.push_pending(state),
+                        "the new code was marked as pushed and would never reach HQ")
+        self.assertTrue(fv.verify_password(fv.normalise_code(new_code), state["recovery_hash"]))
+        self.assertFalse(fv.verify_password(
+            fv.normalise_code("ABCD-EFGH-JKLM-NPQR-STUV"), state["recovery_hash"]),
+            "the retired code verifies again")
 
     def test_the_recovery_file_names_the_instance_when_no_flag_does(self):
         self.start_receiver()
