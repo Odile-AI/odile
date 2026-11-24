@@ -226,9 +226,14 @@ NoNewPrivileges=yes
 PrivateTmp=yes
 ProtectSystem=strict
 ProtectHome=read-only
-# The state database, the outbox and the seed-key handoff; the host root is
-# read-only so a bug cannot rewrite the config it was given.
-ReadWritePaths={{STATE}} /var/lib/odile
+# The state database, the outbox and the seed-key handoff, plus the directory
+# that holds the worker's own config — as of ODL-242 the same directory carries
+# the NEAR management credential, which `odilectl keys` rotates in place by
+# writing a temp file beside `near-account.json` and renaming it over. With
+# ProtectHome=read-only that rename is EROFS, and a registration already
+# claimed `building` stays there with no server id (2026-11-24T03:52:15Z). The
+# rest of the host root stays read-only so a bug cannot rewrite the config.
+ReadWritePaths={{STATE}} /var/lib/odile {{WORKER_HOME}}
 """
 
 WORKER_TIMER = """[Unit]
@@ -709,6 +714,10 @@ def render_unit(template, *, root: Path | None = None, state: Path | None = None
         "CONFIG": CONFIG_FILE if config is None else config,
         "SEED_KEY": SEED_KEY_FILE if seed_key is None else seed_key,
         "WORKER_CONFIG": WORKER_CONFIG,
+        # The worker's credential directory — the same directory the config is
+        # in, because `near_account` defaults beside it; one value, so a moved
+        # config moves its writable grant too.
+        "WORKER_HOME": WORKER_CONFIG.parent,
         "UNIT": UNIT_REGISTER_NAME,
     })
 
