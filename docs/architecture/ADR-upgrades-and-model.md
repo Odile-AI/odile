@@ -3,20 +3,20 @@
 **Status:** Proposed — the inventory and the trigger default wait on Savio's
 confirmation, which A4's exit criterion 2 names · 17 November 2026 · Architect
 **Revision 6** — 24 November 2026, §2 and §11 are re-cut at `main`'s
-`2ffaf45`, and §2.8's boot-script sentence is corrected: the script has two
+`48000ee`, and §2.8's boot-script sentence is corrected: the script has two
 mechanisms, not one — an operator's `ODILE_RELEASE_PUBLIC_URL`, then the
 measured `odile.public_url=` token — and the sentence now names their
-precedence. `main`'s own first-parent history took twenty-five merges in
-`8eb1ceb..2ffaf45` (forty merge commits are reachable; the others came in with
-those twenty-five), six of which moved a file whose lines §11 reads —
+precedence. `main`'s own first-parent history took twenty-six merges in
+`8eb1ceb..48000ee` (forty-one merge commits are reachable; the others came in
+with those twenty-six), seven of which moved a file whose lines §11 reads —
 `1f16e5f` and `74ca6d6` the installer and the release, `991c5fb`, `c75afd8`
-and `9585090` the app, and `92acb25` the installer, the boot script, the
-first-boot token prose, the update runbook, the release and the app — and
-`dcf2a94` re-cut this ADR and nothing else. So every in-text pointer is
-re-resolved at `2ffaf45` (none moved: the installer and `release.json` changed
-by replacement, not by insertion), §2.1's size and self-test count re-read, and
-§11's commands re-run with their real output pasted. No other statement in
-§2.8 changes, and no decision changes.
+and `9585090` the app, `92acb25` the installer, the boot script, the first-boot
+token prose, the update runbook, the release and the app, and `48000ee` the
+first-boot program again — and `dcf2a94` re-cut this ADR and nothing else. So
+every in-text pointer is re-resolved at `48000ee` (none moved: every line these
+readings cite sits outside the changes those files took), §2.1's size and
+self-test count re-read, and §11's commands re-run with their real output
+pasted. No other statement in §2.8 changes, and no decision changes.
 **Revision 5** — 22–23 November 2026, §2 and §11 are re-cut at `main`'s
 `8eb1ceb`; no merge of `main` since it has moved a file §11 reads:
 ODL-341-F1 added `auxiliary` as the seventh managed block, so §2.5's tuple,
@@ -102,7 +102,7 @@ Four sentences the product is built on, and what this change does to each:
 ## 2. What exists today, at this head
 
 The inventory in §3 is not a wish list; it is a reading of the tree at
-`main`'s `2ffaf45` (24 November 2026), the cut §11 is taken at, and every
+`main`'s `48000ee` (24 November 2026), the cut §11 is taken at, and every
 commit this branch adds after it changes this ADR only (§11). Eight facts shape
 it, and each is cited because a later card will change one of them.
 
@@ -864,19 +864,19 @@ its own card, and two of them (A3's provider, a per-response proxy) are Savio's.
 
 ## 11. Evidence
 
-Read and run at `main`'s `2ffaf45`
-(`2ffaf4575c622253d6d4165198c8ad51804d1e5b`, 24 November 2026), the cut these
+Read and run at `main`'s `48000ee`
+(`48000ee762ed2c5491abd180d0f10c0b857678c6`, 24 November 2026), the cut these
 readings and every pointer in §2–§8 are taken at. Every commit this branch adds
 after it changes this ADR and nothing else (the first command). `main` had moved
 six of these files between the previous cut and this one, which is why they are
 re-taken here (the second command names them), and no merge of `main` after
-`2ffaf45` has moved one of them — the third command is that check, and it
+`48000ee` has moved one of them — the third command is that check, and it
 prints nothing — so these are the tree the ADR lands on:
 
 ```sh
 $ git diff --name-only $(git merge-base main HEAD)..HEAD
 docs/architecture/ADR-upgrades-and-model.md
-$ git diff --name-only 8eb1ceb 2ffaf45 -- installer/odile_install.py \
+$ git diff --name-only 8eb1ceb 48000ee -- installer/odile_install.py \
     update/odile_update.py app.py scripts/manifest.py scripts/heartbeat.py \
     odilectl/health.py seed/seed.py deploy/image/odile-firstboot.py \
     deploy/image/odile-release-setup.sh docs/runbooks/update.md \
@@ -887,7 +887,7 @@ deploy/image/odile-release-setup.sh
 docs/runbooks/update.md
 installer/odile_install.py
 release/release.json
-$ git diff --name-only 2ffaf45 main -- installer/odile_install.py \
+$ git diff --name-only 48000ee main -- installer/odile_install.py \
     update/odile_update.py app.py scripts/manifest.py scripts/heartbeat.py \
     odilectl/health.py seed/seed.py deploy/image/odile-firstboot.py \
     deploy/image/odile-release-setup.sh docs/runbooks/update.md \
@@ -897,8 +897,8 @@ $ git diff --name-only 2ffaf45 main -- installer/odile_install.py \
 Read-only: no file outside this ADR is touched.
 
 ```sh
-$ git rev-parse 2ffaf45
-2ffaf4575c622253d6d4165198c8ad51804d1e5b
+$ git rev-parse 48000ee
+48000ee762ed2c5491abd180d0f10c0b857678c6
 $ sha256sum update/odile_update.py installer/odile_install.py app.py \
     scripts/manifest.py scripts/heartbeat.py
 2c795cad3625c870051797881ae95576fab6537ab394586c475b48b8b5c97415  update/odile_update.py
