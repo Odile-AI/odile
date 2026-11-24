@@ -200,11 +200,11 @@ from the vendor's own pages.
 
 | Fact | Value | Source, date |
 |---|---|---|
-| **The box, measured** | **id 709870, name `odile-backups`, username u728180, server `u728180.your-storagebox.de`, system `HEL1-BX192`, status `active`, created 2026-11-24T06:25:41Z**; `stats` **0 / 0 / 0 bytes at 06:30:36Z** and **1,048,576 bytes (`size_data`) at 07:48Z** — the drill's own fixture or filesystem overhead, **no tenant repository** | `GET /storage_boxes/709870`, 06:30:36Z and 07:48Z; `/root/.odile/hetzner-box.json` (0600) |
+| **The box, measured** | **id 709870, name `odile-backups`, username u728180, server `u728180.your-storagebox.de`, system `HEL1-BX192`, status `active`, created 2026-11-24T06:25:41Z**; `stats` **0 / 0 / 0 bytes at 06:30:36Z** and **1,048,576 bytes (`size_data`) at 07:48Z** — the drill's own repository (4 files, 1.023 MiB, snapshot `608ef125`), **no tenant repository** | `GET /storage_boxes/709870`, 06:30:36Z and 07:48Z; `/root/.odile/hetzner-box.json` (0600); `docs/evidence/hetzner-bx11/05-restic-drill.txt` |
 | **Its settings as ordered, measured** | `location` **hel1 / Helsinki / FI**, network zone `eu-central`; `ssh_enabled: true`, `reachable_externally: true`, `samba`, `webdav`, `zfs` false; `snapshot_plan` **04:30 UTC, max 10**; `subaccounts_limit` **100**; `snapshot_limit` 10, `automatic_snapshot_limit` 10; size 1,099,511,627,776 bytes; `protection.delete` **false at 06:30Z, true at 07:48Z** (`t_12b3720a` set it) | same |
 | **The API token, measured** | one project-scoped Console API token at `/root/.odile/hetzner-api-token` (**0600**, one `HETZNER_API_TOKEN` line); `GET /storage_boxes` with it answers the box above, so the scope works and HQ needs nothing else | measured 2026-11-24 06:27–06:30Z |
 | The account's login, measured | the account password was accepted at `accounts.hetzner.com` and Hetzner demanded a **6-digit code mailed to the account address** (`/2fa`) at 04:57Z; the API token, not the password, is what HQ uses | measured 2026-11-24 04:57Z; credentials `/root/.odile/hetzner-account.env` (0600) |
-| The product, read | **BX11: 1 TB, 100 sub-accounts, 10 snapshots (10 automated), 10 concurrent connections, unlimited traffic, Germany (FSN1) or Finland (HEL1), no minimum contract term, cancellation immediately, €3.20/month excl. VAT, no setup fee** | `hetzner.com/storage/storage-box/` and `/bx11/`, read 2026-11-24 |
+| The product, read | **BX11: 1 TB, 100 sub-accounts, 10 snapshots (10 automated), 10 concurrent connections (published; 25 measured, §4.3), unlimited traffic, Germany (FSN1) or Finland (HEL1), no minimum contract term, cancellation immediately, €3.20/month excl. VAT, no setup fee** | `hetzner.com/storage/storage-box/` and `/bx11/`, read 2026-11-24 |
 | Protocols, read | SFTP, SCP, rsync over SSH, BorgBackup, rclone, FTP/FTPS, SMB, WebDAV, HTTPS — **restic is listed as supported** | same page, read 2026-11-24 |
 | SFTP and SSH ports, read | **SFTP/SCP on port 22 is always active and cannot be disabled; it has no interactive access.** "SSH Support" enables port **23** (interactive, rsync, Borg). Port 22 takes the public key in **RFC4716** format; port 23 takes **OpenSSH** format | `docs.hetzner.com/storage/storage-box/general` and `.../getting-started/creating-a-storage-box`, read 2026-11-24 |
 | Sub-accounts, read | a sub-account gets **its own username, its own hostname (`uXXXXX-subN.your-storagebox.de`) and its own `authorized_keys`**; it sees only its `home_directory`; **a read-only sub-account "prevents it from uploading, deleting, and modifying files"** | API reference + product page, read 2026-11-24 |
@@ -257,7 +257,7 @@ Hetzner account whose only workload is backups. Prices are list prices read on
 |---|---|---|---|
 | Protocol and path | **SFTP on port 22** (always on, no interactive access), `sftp:<subaccount>@<subaccount>.your-storagebox.de:repo`; restic's `sftp` backend | S3 API over HTTPS/443; restic's `s3` backend | S3 API over HTTPS/443; restic's `s3` backend |
 | Where the bytes are | **Helsinki, Finland (`hel1`)** — chosen at order, and the box is active there (`HEL1-BX192`) | Cloudflare's default jurisdiction, a best-effort `enam` hint; not guaranteed to be in Canada | Toronto, Ontario — `ca-east-006` |
-| Capacity and cost at our size | **1 TB flat, €3.20/mo excl. VAT (≈$3.58), unlimited traffic, no minimum term**; 100 sub-accounts (measured); 10 snapshots; 10 concurrent connections | 10 GB-month free across the account, then $0.015/GB-mo; no per-bucket cap (the 9 GB ceiling was ours) | first 10 GB free, then $6.95/TB-mo; 100 buckets/account |
+| Capacity and cost at our size | **1 TB flat, €3.20/mo excl. VAT (≈$3.58), unlimited traffic, no minimum term**; 100 sub-accounts (measured); 10 snapshots; **10 concurrent connections published, 25 measured** | 10 GB-month free across the account, then $0.015/GB-mo; no per-bucket cap (the 9 GB ceiling was ours) | first 10 GB free, then $6.95/TB-mo; 100 buckets/account |
 | Cost per tenant / month at 1.017 GB | **$0.36 at ten tenants; $0.07 at fifty** — the box is one fixed cost | $0.00 inside the shared free tier; ≈$0.09 at a 15 GB envelope | $0.01 |
 | Durability of the only surviving copy | **RAID, "the data is not mirrored onto other servers"**; block checksums; **10 snapshots on the same box** | 11 nines claimed, in the same account as HQ's DNS and HQ's only backup | 11 nines claimed; 17 data + 3 parity shards |
 | Per-tenant scope | **one sub-account pair per tenant**, each with its own username, hostname and `authorized_keys`, confined to `tenants/<slug>` | one bucket per tenant, token restricted to it | one bucket per tenant, app key restricted to it |
@@ -276,18 +276,23 @@ first thing to revisit** (§4.5).
 ### 4.1 The per-tenant layout
 
 **The pair, and what each can do.** One tenant, one pair, **both inside the
-tenant's directory `tenants/<slug>`** — and the drill's first measured pair
-(`t_12b3720a`, 2026-11-24 07:48Z) roots the read-only account one level tighter
-than the read-write one: `tenants/odl-bench` for `-rw`, `tenants/odl-bench/data`
-for `-ro`, so the user's key opens the repository's directory and not the
-tenant's whole tree. The rule the ADR fixes is the one the card names — both
-accounts inside `tenants/<slug>`, neither able to see another tenant — and the
-exact depth is the drill's evidence to settle:
+tenant's directory `tenants/<slug>` but never on the same home directory** — and
+that is a hard requirement, not tidiness. **The `.ssh/authorized_keys` file lives
+in the home directory**, so two sub-accounts that share a home also share one
+`authorized_keys`: the drill measured exactly that on 2026-11-24 — with both
+accounts on `tenants/odl-bench`, its **read-only key authenticated to the
+read-write sub-account and wrote a file** (the first RO account, id 392552,
+reproduced twice before the re-cut). The measured pair is therefore
+**`tenants/odl-bench` for `-rw`** and **`tenants/odl-bench/data` for `-ro`**, and
+on that pair the RO key is denied on the read-write sub-account and reads the
+repository on its own (`--no-lock`). The rule the ADR fixes: the read-only home
+is a **subdirectory of the read-write home that holds the repository**, so the
+user's key opens the repository and nothing above it:
 
 | Sub-account | `access_settings` | The key | What it can do |
 |---|---|---|---|
-| `odile-<slug>-rw` | `readonly: false`, `ssh_enabled: true`, `reachable_externally: true`, `samba_enabled: false`, `webdav_enabled: false` | generated at provision, private half in the seed → `/etc/odile/backup-ssh/id_ed25519` (0600) | `init`, `backup`, `prune`, `check`, `restore` — everything restic does |
-| `odile-<slug>-ro` | `readonly: true`, same rest | generated at provision, private half in the user's recovery file and in the store of record | `snapshots`, `check`, `restore` — **it cannot upload, delete or modify**, and it cannot write restic's lock file, so every command carries `--no-lock` |
+| `odile-<slug>-rw` | `readonly: false`, `ssh_enabled: true`, `reachable_externally: true`, `samba_enabled: false`, `webdav_enabled: false`; home `tenants/<slug>` | generated at provision, private half in the seed → `/etc/odile/backup-ssh/id_ed25519` (0600) | `init`, `backup`, `prune`, `check`, `restore` — everything restic does |
+| `odile-<slug>-ro` | `readonly: true`, same rest; home **`tenants/<slug>/data`, a subdirectory of the rw home** (never the same home: shared keys) | generated at provision, private half in the user's recovery file and in the store of record | `snapshots`, `check`, `restore` — **it cannot upload, delete or modify**, and it cannot write restic's lock file, so every command carries `--no-lock` |
 
 **Naming.** Our name for the pair is `odile-<slug>-rw` / `odile-<slug>-ro`,
 carried in the sub-account's `description` and in the tenant row. **Hetzner
@@ -302,10 +307,20 @@ under its own `/home`.
 (`scripts/backup.py:SFTP_HOST_RE`): `sftp:u<box>-sub<N>@u<box>-sub<N>.your-storagebox.de:repo`
 — the path **relative to the sub-account's home**, so no absolute path and no
 leading slash. That URL is one line in `/etc/odile/backup-repo.txt`, written
-from the seed's `backup_repo_url` (`installer/odile_install.py:14914`). A fresh
-start without a restore (§7.4) is a new `repo-<4 hex>` directory **inside the
-same sub-account** — no API call, no new sub-account — with the old directory
-kept 30 days and then emptied by the exit.
+from the seed's `backup_repo_url` (`installer/odile_install.py:14914`).
+
+**The URL carries no port, and that is a measured trap.** restic's colon form
+has no port field: `sftp:user@host:22/path` is the path `22/path`, and the drill
+measured exactly that — its first `init` created a literal `22/` directory, and
+the read-only account then saw `Lstat 22/restic/config`. The port belongs in
+`sftp.command` (`-p 22`), which `scripts/backup.py` already builds; the URL stays
+`sftp:user@host:repo`. (`SFTP_HOST_RE` accepts a port in the `sftp://` form, and
+the builder card should either pin that the colon form never carries one or
+refuse it by name.)
+
+A fresh start without a restore (§7.4) is a new `repo-<4 hex>` directory
+**inside the same sub-account** — no API call, no new sub-account — with the old
+directory kept 30 days and then emptied by the exit.
 
 **The store of record.** `detail` in the tenant row is the cache, not the store
 of record: `reopen` (ADR-007) rewrites it on a destroy→rebuild. The durable copy
@@ -368,9 +383,10 @@ power the R2 bucket token had.
 
 **The main account's password is not at HQ.** It stays in Savio's console. HQ
 never needs it: the API token creates the sub-accounts, sets their passwords and
-installs their keys. **`protection.delete` goes on the box** as `t_12b3720a`'s
-first write (§4.5), so that the token — or a tired operator with `curl` — cannot
-delete the only copy; deleting the box is then a two-step act in the console.
+installs their keys. **`protection.delete` is on the box** — `t_12b3720a`'s first
+write (§4.5), `true` since 07:48Z — so the token, or a tired operator with
+`curl`, cannot delete the only copy; deleting the box is a two-step act in the
+console.
 
 **The sub-account password is a one-time provisioning value.** The API requires
 one to create a sub-account; it is generated at provision, used once to install
@@ -380,29 +396,44 @@ re-installed. **Nothing at HQ holds a password that can open a door into a
 tenant machine** — this credential opens one directory of one tenant's
 ciphertext, outbound only.
 
-**The key install, and its one sharp edge.** Each sub-account has its own
-`authorized_keys`, and the key format depends on the port: **RFC4716 for port
-22, OpenSSH for port 23**. Provisioning installs each public half in both
-formats — the port-23 `install-ssh-key` command does that in one step while
-"SSH Support" is enabled — and the steady state is **port 22 only**, which
-cannot be disabled and exposes no shell. A key uploaded in the wrong format
-fails silently as `Permission denied (publickey)`; `t_12b3720a` proves both
-halves with a real restic run and records the exact commands.
+**The key install, and its three sharp edges.** (1) **A sub-account has its own
+`authorized_keys` only because its home directory is its own** — two accounts on
+one home share the file, and the drill measured the read-only key authenticating
+as read-write when they did (§4.1). (2) The key format depends on the port:
+**RFC4716 for port 22, OpenSSH for port 23**. Provisioning installs both — the
+port-23 `install-ssh-key` command does that in one step while "SSH Support" is
+enabled — and the steady state is **port 22 only**, which cannot be disabled and
+exposes no shell. (3) **`POST /storage_boxes/{id}/subaccounts` silently ignores
+`access_settings`**: every create needs a follow-up
+`…/actions/update_access_settings` and a readback, and the key must be installed
+**while the home is still writable** — a sub-account already set
+`readonly: true` refuses the install. So the order is: create → update the access
+settings (ssh and external reachability on, still writable) → install both
+formats → read back → set `readonly: true` → read back again. A key in the wrong
+format fails as `Permission denied (publickey)`; `t_12b3720a` proves each step
+with a real restic run and records the commands.
 
 ### 4.3 Concurrency, and the nightly window
 
-**The box has 10 concurrent connections**, shared by every sub-account and the
-main account. Two facts make that a design constraint rather than a footnote:
+**The published ceiling is 10 concurrent connections; the measured one is 25.**
+The BX11 page lists 10, shared by every sub-account and the main account. The
+drill measured the operative limit from HQ on 2026-11-24: **the 11th SFTP
+session succeeds, 25 hold, and the 26th is refused** —
+`Received disconnect … port 22:12: Maximum connections for host/user reached` —
+and the refusal is **box-wide**: it hit a second sub-account while 25 were held
+on the first. The design below sizes to the **smaller, published** number, so it
+holds at either. Two facts make that a design constraint rather than a footnote:
 
 1. **A restic run opens up to 5 SFTP connections by default**
    (`sftp.connections`, restic's own option, default 5). Two simultaneous runs
-   at defaults sit exactly on the ceiling.
+   at defaults sit on the published ceiling.
 2. **Today every tenant fires at 03:00** (`OnCalendar=*-*-* 03:00:00`,
    `RandomizedDelaySec=300`). Ten tenants at defaults would ask for 50
    connections in the same five minutes.
 
 **The decision.** The guest's unit carries **`-o sftp.connections=2`**, so one
-nightly run asks for **two** connections and **five runs can share the box**.
+nightly run asks for **two** connections: **five runs share the published 10,
+twelve share the measured 25**.
 The installer renders the timer from the slug instead of a constant:
 
 ```
@@ -414,19 +445,20 @@ start:    02:00 UTC + offset         (02:00 ... 05:59)
 The offset is stable across a rebuild (same slug, same minute) and needs no
 state at HQ: the installer computes it, the timer carries it. **At a full box of
 50 tenants the binding number is the run length `D`: average concurrent runs =
-50 x D / 240.** At D = 10 minutes that is 2.1; at D = 20 minutes, 4.2; the
-window holds a nightly run of **about 24 minutes** before five runs overlap.
-The measured first run took **27.3 s** on the same host; the transatlantic
-upload term is the unknown, and `t_12b3720a` measures it. **`RandomizedDelaySec`
-goes to 0** — the fixed offset is the whole schedule and a random delay on top
-of it only blurs the arithmetic.
+50 x D / 240.** At D = 10 minutes that is 2.1; at D = 20 minutes, 4.2; five runs
+overlap at about **24 minutes** and twelve at about **58**. The measured first
+run took **27.3 s** on the same host; the transatlantic upload term is the
+unknown, and `t_12b3720a` measures it. **`RandomizedDelaySec` goes to 0** — the
+fixed offset is the whole schedule and a random delay on top of it only blurs the
+arithmetic.
 
 **The failures this leaves, named.**
 
-- **A run that is longer than the window assumes.** Five runs is the safe
-  number, not a lock; a sixth connection is refused, restic exits non-zero, the
-  run is `status: failed`, and the 36-hour freshness watchdog (ODL-216) catches
-  two in a row. Nothing corrupts: restic's last good snapshot stays.
+- **A run that is longer than the window assumes.** Five runs (the published
+  ceiling) or twelve (the measured one) is the safe number, not a lock; the next
+  connection is refused with the error above, restic exits non-zero, the run is
+  `status: failed`, and the 36-hour freshness watchdog (ODL-216) catches two in
+  a row. Nothing corrupts: restic's last good snapshot stays.
 - **`Persistent=true` replays missed runs at boot.** After a box outage or a
   guest reboot every tenant that missed its window starts at once, offset
   included, and the ceiling can be exceeded. The consequence is the same bounded
@@ -607,10 +639,13 @@ to build. It also makes `docs/CLAIMS.md`:65's "the file opens your backup"
 literally true instead of figuratively true, which is a **stronger sentence than
 the deck owns** and goes to Product and Savio (§9).
 
-**What the read-only key deliberately cannot do:** write, delete or lock. A
-recovery file that is printed, emailed to a new laptop or dropped in a password
-manager cannot destroy the repository it opens. The read-write key is on the
-guest and in the seed; it never goes into the user's file.
+**What the read-only key deliberately cannot do:** write, delete or lock — and
+that holds **only because its account's home is nested inside the tenant's**
+(§4.1): on a shared home the same key authenticated as the read-write account and
+wrote a file, which the drill measured. A recovery file that is printed, emailed
+to a new laptop or dropped in a password manager cannot destroy the repository it
+opens. The read-write key is on the guest and in the seed; it never goes into the
+user's file.
 
 **The parser and the file.** `parse_recovery` is a set of line-anchored
 regexes, so a multi-line key block between the other fields is tolerated — but
@@ -692,7 +727,13 @@ measured on 19 November 2026 (13.6 MB/s single stream from Cloudflare) is
 **history, not a Hetzner number**: the box is in the EU and the machine is in
 Montréal, so the term is a transatlantic one. At 5 MB/s a 1.017 GB repository is
 **3.5 minutes**; at 20 MB/s it is **55 seconds**; restic runs its transfers in
-parallel across those two connections (§4.3). The end-to-end estimate is
+parallel across those two connections (§4.3). **The drill's first real numbers
+on the box** — `restic init` 12.0 s, `backup` 8.7 s, `restore` 8.6 s for a
+4-file / 1.023 MiB repository, with `sha256sum -c` and `diff -r` clean — bound
+the **fixed cost** of an operation over the transatlantic link (connection
+setup, host-key check, repository open) at roughly ten seconds; they say nothing
+about throughput, because the repository is a thousandth of a tenant's. The
+end-to-end estimate is
 therefore **15–25 minutes**, comfortably inside the published hour — but **the
 number that replaces 38m03s has to come from the drill in §8**, not from this
 paragraph, and if it does not hold, `docs/CLAIMS.md`:201's "under an hour" is
@@ -733,8 +774,8 @@ recovery file and the provisioning.
 
 | Card | What it must do | Depends on |
 |---|---|---|
-| **The box and the first pair — `t_12b3720a`** (new; supersedes **ODL-938** / `t_7010af06`) | The box is ordered and active (id 709870, `hel1`, snapshots 04:30 UTC × 10, `protection.delete` set at 07:48Z); create `odile-odl-bench-rw`/`-ro` inside `tenants/odl-bench`, install both public keys, run a real `init`/`backup`/`snapshots`/`restore` with the read-write key, read the same repository with the read-only key (`--no-lock`), measure **11 parallel sessions'** refusal, record the box fingerprint, and write `docs/evidence/hetzner-bx11/` with the commands and raw output (token redacted) | `t_a548cb0a` is **satisfied**: the token exists at `/root/.odile/hetzner-api-token` (0600) and answers the API |
-| **Provisioning — the re-cut of ODL-924 (`t_83d6fd7d`)** | For each tenant: create the pair **inside `tenants/<slug>`** — the drill's measured depth is `tenants/<slug>` for `-rw` and the repository's own directory for `-ro` — generate both keypairs, install the public halves, reset and discard the sub-account passwords, write `/root/.odile/hetzner/odile-<slug>.env` (0600) and the row's `detail` (`backup_box_id`, `backup_subaccount_id`, `backup_readonly_subaccount_id`; the env file is the store of record and the reopen path re-records `detail` from it), put the repository URL, the read-write key, the host-key line and the read-only key in the seed **with the previous instance id**, and **refuse the 51st pair**. **Retires `--backup-password-file`** and with it the sealed password in `seed-rebuilds.json` | the evidence from `t_12b3720a` |
+| **The box and the first pair — `t_12b3720a`** (new; supersedes **ODL-938** / `t_7010af06`) | The box is ordered and active (id 709870, `hel1`, snapshots 04:30 UTC × 10, `protection.delete` set at 07:48Z); create `odile-odl-bench-rw`/`-ro` on **nested homes** (§4.1), **`update_access_settings` after each create**, install both public keys before `readonly: true`, run a real `init`/`backup`/`snapshots`/`restore` with the read-write key, read the same repository with the read-only key (`--no-lock`), **measure the connection ceiling** (25 held, the 26th refused, box-wide), record the box fingerprint, and write `docs/evidence/hetzner-bx11/` with the commands and raw output (token redacted) | `t_a548cb0a` is **satisfied**: the token exists at `/root/.odile/hetzner-api-token` (0600) and answers the API |
+| **Provisioning — the re-cut of ODL-924 (`t_83d6fd7d`)** | For each tenant: create the pair — `-rw` at `tenants/<slug>`, `-ro` at a **subdirectory of it that holds the repository** (never the same home: shared homes share `authorized_keys`, §4.1) — **call `update_access_settings` after every create** (the `POST` ignores `access_settings`), install each public half **while the home is still writable**, read both accounts back, and only then set `readonly: true`; generate both keypairs, reset and discard the sub-account passwords, write `/root/.odile/hetzner/odile-<slug>.env` (0600) and the row's `detail` (`backup_box_id`, `backup_subaccount_id`, `backup_readonly_subaccount_id`; the env file is the store of record and the reopen path re-records `detail` from it), put the repository URL, the read-write key, the host-key line and the read-only key in the seed **with the previous instance id**, and **refuse the 51st pair**. **Retires `--backup-password-file`** and with it the sealed password in `seed-rebuilds.json` | the evidence from `t_12b3720a` |
 | **`backup.py` + installer — the re-cut of ODL-933 (`t_fda54dd4`)** | Add **`-o sftp.connections=2`** to the SFTP options; render the timer from the slug (§4.3's offset, `RandomizedDelaySec=0`), keep `Persistent=true`; rename the cap to `BACKUP_TENANT_CAP_BYTES` and keep the `restic stats` check and `status: over_cap`; add `ConditionPathExists=/etc/odile/recovery.txt` to the backup **service**; **do not mint a recovery file on a rebuild** (`ensure_recovery` skips only while the file is absent and the seed carries the previous instance id). No `s3:` branch. Update `BACKUP_SHA256` and re-sign the installer | the seed fields |
 | **The usage readback — the re-cut of ODL-934 (`t_a316c2fe`)** | `odilectl backup-usage`: read `stats.size_data` and `stats.size_snapshots` from `GET /storage_boxes` with the existing API token, sum each tenant's last `restic stats` from its heartbeat, write `/var/lib/odile/backup/usage.json`, and feed the watchdog at **800 GB warn / 950 GB critical** (1 TB box, 2 GB cap, 50 tenants = 100 GB at the cap). No new credential: the API token is already there | provisioning |
 | **First visit — ODL-937 (`t_c31fb2aa`) stands** | the rebuild step: detect the previous instance id in the seed, ask for the recovery file before the sign-in step, write `/etc/odile/recovery.txt`, run `odile-restore.service`, show the snapshot and its time (no JavaScript). Its §8 row's bucket wording is re-cut to the repository URL | `backup.py`'s `restore` (already supports `--target /` and `--include`) |
@@ -860,7 +901,21 @@ Measured, at this head, unless marked *read* or *modelled*:
   `u728180-sub1` (`tenants/odl-bench`, `readonly: false`) and 392556
   `u728180-sub2` (`tenants/odl-bench/data`, `readonly: true`)** — both
   `ssh_enabled: true`, `reachable_externally: true`, samba/webdav false: the
-  drill's first pair, with the read-only account rooted one level tighter.
+  drill's first pair, with the read-only account rooted one level tighter
+  — and **three behaviours measured, not read**: (a) **concurrency** — 11, 20
+  and 25 parallel SFTP sessions succeeded on port 22 and the **26th was
+  refused** (`Received disconnect … port 22:12: Maximum connections for
+  host/user reached`), and the same refusal hit the second sub-account while 25
+  were held on the first, so the limit is **box-wide and 25**; (b) **shared
+  home** — with both accounts on `tenants/odl-bench` the **read-only key
+  authenticated as the read-write account and wrote a file** (first RO id
+  392552), which is why the pair nests; (c) **no port in the colon URL** —
+  `sftp:user@host:22/path` created a literal `22/` directory and the RO account
+  saw `Lstat 22/restic/config`. `POST /subaccounts` also ignored
+  `readonly`/`ssh_enabled`/`reachable_externally` on create; each needed
+  `update_access_settings` plus a readback. The tracked verdict is
+  `docs/security/VERDICT-hetzner-bx11.md` (branch `wt/t_12b3720a`, `8715a2f`),
+  with the raw evidence in `docs/evidence/hetzner-bx11/`.
   Recorded at `/root/.odile/hetzner-box.json` (0600); the token is at
   `/root/.odile/hetzner-api-token` (0600, one `HETZNER_API_TOKEN` line) and the
   account login at `/root/.odile/hetzner-account.env` (0600). The account
