@@ -7,7 +7,9 @@ This program runs **as root on the tenant** (odl-fake01). The HQ-side deploy
     /usr/local/lib/odile-demo-public/apply_demo_public.py    this program
     /usr/local/lib/odile-demo-public/demo-tenant-site.caddy  the site block
     /usr/local/lib/odile-demo-public/login.html              Odile's sign-in page
+    /usr/local/lib/odile-demo-public/verify.html             the release page main ships
     /usr/local/lib/odile-demo-public/verify-lede.html        the demo machine's /verify lede
+    /usr/local/lib/odile-demo-public/verify-command.html     the demo's one verifier command
     /usr/local/lib/odile-demo-public/start-here.md           the seeded session
     /usr/local/lib/odile-demo-public/session-receipt.json    the receipt template
 
@@ -17,14 +19,18 @@ down; that is the recovery path in docs/runbooks/demo-public.md.
 
 What it owns, each step idempotent and printed as `same` / `write` / `restart`:
 
-  0. the demo machine's /verify page: the release template's one tenant-block
-     paragraph is replaced by `verify-lede.html`, because on this machine Odile
-     holds the boot key and the sign-in is shared, and the one-line `--expect`
-     verifier command is added after the `#machine` section (the row its
-     `measurement` row the note names) from `verify-command.html`, with the
-     measurement the page serves filled in by the page renderer. A customer
-     machine never runs this program and keeps the general row and no demo
-     command;
+  0. the demo machine's /verify page: the release page `verify.html` the deploy
+     ships (the same bytes the signed installer embeds and writes at first
+     boot) is checked against the template's body — the tenant block's one lede
+     replaced by `verify-lede.html`, because on this machine Odile holds the
+     boot key and the sign-in is shared, and the one-line `--expect` verifier
+     command added after the `#machine` section (the row its `measurement` row
+     the note names) from `verify-command.html`, with the measurement the page
+     serves filled in by the page renderer. When the body under the demo layer
+     is not the tree's release page, the served page is re-cut from it and the
+     rollback copy `verify.html.release` is rewritten from the same bytes; a
+     convergent run prints `same` for both. A customer machine never runs this
+     program and keeps the general row and no demo command;
   1. the sign-in page at /srv/odile-demo/login.html, and the three tab files
      it links beside it (pinned to the committed web/ renditions);
   2. the `demo.odile.fyi` block in /etc/caddy/Caddyfile — spliced between its
@@ -72,6 +78,7 @@ import shutil
 import sqlite3
 import subprocess
 import sys
+import tempfile
 import time
 import urllib.error
 import urllib.request
@@ -125,6 +132,13 @@ ATTEST_TIMER_UNIT = "odile-attest-refresh.timer"
 #: on the first boot (`odile-release-setup.service` now converges once); this
 #: deploy is the only writer after that (ODL-503 finding 1).
 VERIFY_TEMPLATE = Path("/usr/local/lib/odile/verify.html")
+#: The release page main ships — `templates/verify.html`, the same bytes the
+#: signed installer embeds and writes at first boot. The deploy uploads it
+#: beside this program. The demo machine's template is this page plus the two
+#: injections below, and the rollback copy is this page byte for byte — so a
+#: rollback serves the tree's release page, not whatever page the image wrote
+#: at first boot (t_0dff2799: the boot copy predated ODL-929's cut).
+RELEASE_PAGE = LIB / "verify.html"
 #: The demo's lede, uploaded beside this program. It replaces the one lede
 #: paragraph inside the template's tenant block; a customer machine never runs
 #: this program, so its page keeps the general row.
@@ -392,6 +406,105 @@ def lede_source() -> Path:
     return beside if beside.is_file() else VERIFY_LEDE
 
 
+def release_source() -> Path:
+    """The uploaded release page beside this program, else the installed one.
+
+    Same resolution as `lede_source()`: the deploy's dry run executes the
+    uploaded program from `/tmp` before the installed copy exists.
+    """
+    beside = Path(__file__).resolve().parent / RELEASE_PAGE.name
+    return beside if beside.is_file() else RELEASE_PAGE
+
+
+def release_page_problem(page: str) -> str:
+    """Why *page* is not the release page the demo layer sits on; '' when it is.
+
+    The tree's `templates/verify.html` is a customer page: one tenant block
+    whose lede is the grant row, and no demo command. A page that carries the
+    demo command, or whose tenant block is not the grant row, is not what the
+    rollback must restore.
+    """
+    try:
+        block = tenant_block(page)
+    except ValueError as exc:
+        return str(exc)
+    if block.count(CUSTOMER_SENTENCE) != 1:
+        return "the tenant block does not carry the customer row"
+    ledes = LEDE_RE.findall(block)
+    if len(ledes) != 1:
+        return "the tenant block has %d ledes, expected 1" % len(ledes)
+    if COMMAND_BEGIN in page or COMMAND_END in page:
+        return "the release page carries a demo command section"
+    return ""
+
+
+def release_body(page: str) -> str:
+    """The release page *page* was cut from: the customer row, no demo command.
+
+    The demo machine's template is the release page plus exactly two
+    injections. Undoing them is how this program finds out whether the body
+    under the demo layer is still the page the tree ships: a page cut before a
+    release re-cut differs in a sentence outside the tenant block (ODL-929
+    retired `before you set your sign-in`), and this comparison sees it.
+    """
+    return inject_lede(drop_command(page),
+                       '<p class="lede">%s</p>' % CUSTOMER_SENTENCE)
+
+
+def ensure_release_page(dry: bool) -> bool:
+    """Re-cut the page and its rollback copy from the tree's release page.
+
+    The image's installer wrote `/usr/local/lib/odile/verify.html` once at
+    first boot and `odile-release-setup.service` converges once, so without
+    this step the page and `verify.html.release` keep whatever release the
+    image carried — true here: the boot page predates ODL-929 and a rollback
+    would have served its retired sentence (t_0dff2799).
+
+    The deploy ships `templates/verify.html` beside this program. If the
+    template's release body differs, the served page is rewritten to the
+    shipped page plus the demo's lede and command; the rollback copy is
+    written from the shipped page byte for byte. A convergent machine prints
+    one `same` line and writes nothing; `--dry-run` prints `would write` and
+    writes nothing.
+    """
+    source = release_source()
+    if not source.is_file():
+        raise SystemExit(f"error: missing {source} (the release page this deploy ships)")
+    if not VERIFY_TEMPLATE.is_file():
+        raise SystemExit(f"error: missing {VERIFY_TEMPLATE}")
+    try:
+        release = source.read_text(encoding="utf-8")
+        problem = release_page_problem(release)
+        if problem:
+            raise ValueError(problem)
+        current = VERIFY_TEMPLATE.read_text(encoding="utf-8")
+        body = release_body(current)
+        lede = lede_source().read_text(encoding="utf-8")
+        command = command_source().read_text(encoding="utf-8")
+        wanted = inject_command(inject_lede(release, lede), command)
+    except (OSError, ValueError) as exc:
+        raise SystemExit(f"error: cannot use {source} as the release page: {exc}") from exc
+    data = release.encode("utf-8")
+    digest = hashlib.sha256(data).hexdigest()
+    changed = False
+    if body != release:
+        say("would write" if dry else "write",
+            f"{VERIFY_TEMPLATE} (re-cut from the release page {digest[:12]}…)")
+        changed = True
+        if not dry and wanted != current:
+            write_atomic(VERIFY_TEMPLATE, wanted.encode("utf-8"), 0o644, 0, 0)
+    if not VERIFY_BACKUP.is_file() or VERIFY_BACKUP.read_bytes() != data:
+        say("would write" if dry else "write",
+            f"{VERIFY_BACKUP} (the release page {digest[:12]}…)")
+        changed = True
+        if not dry:
+            write_atomic(VERIFY_BACKUP, data, 0o644, 0, 0)
+    if not changed:
+        say("same", f"{VERIFY_TEMPLATE} and {VERIFY_BACKUP.name} "
+                     f"(the release page {digest[:12]}…)")
+    return changed
+
+
 def ensure_verify_lede(dry: bool) -> bool:
     """Put the demo's lede on this machine's /verify template (ODL-503 f1).
 
@@ -461,6 +574,27 @@ def command_problem(markup: str) -> str:
     return ""
 
 
+def drop_command(page: str) -> str:
+    """Return *page* without its one demo command section.
+
+    Both revisions of the page append the block with one newline on each side;
+    drop them with it so the page returns to what the append found. A page
+    with no section is returned unchanged, and two sections are an error.
+    """
+    existing = list(COMMAND_RE.finditer(page))
+    if len(existing) > 1:
+        raise ValueError("the page has %d command blocks, expected at most 1"
+                         % len(existing))
+    if not existing:
+        return page
+    start, end = existing[0].span()
+    if page[start - 1:start] == "\n":
+        start -= 1
+    if page[end:end + 1] == "\n":
+        end += 1
+    return page[:start] + page[end:]
+
+
 def inject_command(page: str, command: str) -> str:
     """Return *page* with the demo's command section after the machine section.
 
@@ -479,20 +613,7 @@ def inject_command(page: str, command: str) -> str:
     matches = tenant_blocks(page)
     if len(matches) != 1:
         raise ValueError("the verify page has %d tenant blocks, expected 1" % len(matches))
-    existing = list(COMMAND_RE.finditer(page))
-    if len(existing) > 1:
-        raise ValueError("the page has %d command blocks, expected at most 1"
-                         % len(existing))
-    body = page
-    if existing:
-        start, end = existing[0].span()
-        # Both revisions append the block with one newline on each side; drop
-        # them with it so the page returns to what the append found.
-        if page[start - 1:start] == "\n":
-            start -= 1
-        if page[end:end + 1] == "\n":
-            end += 1
-        body = page[:start] + page[end:]
+    body = drop_command(page)
     anchor = MACHINE_SECTION_RE.search(body)
     if anchor is None:
         raise ValueError('the verify page has no <section id="machine"> to put '
@@ -546,6 +667,9 @@ def verify_state() -> dict:
     command_source_path = command_source()
     command = (command_source_path.read_text(encoding="utf-8").strip()
                if command_source_path.is_file() else "")
+    release_path = release_source()
+    release = release_path.read_bytes() if release_path.is_file() else b""
+    backup = VERIFY_BACKUP.read_bytes() if VERIFY_BACKUP.is_file() else b""
     try:
         block = tenant_block(page)
     except ValueError:
@@ -563,7 +687,9 @@ def verify_state() -> dict:
             section is not None and machine_section is not None
             and section.start() > machine_section.end()),
         "customer_lede": CUSTOMER_SENTENCE in block,
-        "rollback": VERIFY_BACKUP.is_file(),
+        "rollback": bool(backup),
+        "rollback_sha256": hashlib.sha256(backup).hexdigest() if backup else "",
+        "rollback_is_release_page": bool(backup) and backup == release,
     }
 
 
@@ -2099,6 +2225,69 @@ def self_test() -> int:
     check(bool(command_problem(command.replace("--expect {{MEASUREMENT}}", ""))),
           "a command without --expect is refused")
 
+    # the release page and the rollback copy (t_0dff2799). The page is the
+    # tree's `templates/verify.html`; the installer embeds the same bytes.
+    candidates = (RELEASE_PAGE,
+                  Path(__file__).resolve().parent / RELEASE_PAGE.name,
+                  Path(__file__).resolve().parents[2] / "templates" / "verify.html")
+    release_path = next((path for path in candidates if path.is_file()), None)
+    release_page = release_path.read_text(encoding="utf-8") if release_path else ""
+    check(bool(release_page) and release_page_problem(release_page) == "",
+          "the tree's release page is one customer page: the grant row, no demo command")
+    check("before you sign in" in release_page
+          and "before you set your sign-in" not in release_page,
+          "the tree's release page carries the deck's sign-in sentence, not ODL-929's retired one")
+    check(release_body(release_page) == release_page,
+          "a release page has no demo layer to undo")
+    demo_page = inject_command(inject_lede(release_page, lede), command)
+    check(release_body(demo_page) == release_page,
+          "undoing the demo lede and command returns the tree's release page byte for byte")
+    stale = release_page.replace("before you sign in", "before you set your sign-in")
+    stale_page = inject_command(inject_lede(stale, lede), command)
+    check(release_body(stale_page) == stale and release_body(stale_page) != release_page,
+          "a page cut before the release re-cut is not mistaken for the tree's page")
+    if os.geteuid() == 0:
+        with tempfile.TemporaryDirectory(prefix="odile-release-page-") as tmp:
+            root = Path(tmp)
+            shipped_path = root / "verify.html"
+            page_path, backup_path = root / "machine-verify.html", root / "verify.html.release"
+            lede_path, command_path = root / "verify-lede.html", root / "verify-command.html"
+            shipped_path.write_text(release_page, encoding="utf-8")
+            page_path.write_text(stale_page, encoding="utf-8")
+            backup_path.write_bytes(stale.encode("utf-8"))
+            lede_path.write_text(lede, encoding="utf-8")
+            command_path.write_text(command, encoding="utf-8")
+            saved = (VERIFY_TEMPLATE, VERIFY_BACKUP, VERIFY_LEDE, VERIFY_COMMAND,
+                     RELEASE_PAGE, globals()["__file__"])
+            try:
+                globals().update(VERIFY_TEMPLATE=page_path, VERIFY_BACKUP=backup_path,
+                                 VERIFY_LEDE=lede_path, VERIFY_COMMAND=command_path,
+                                 RELEASE_PAGE=shipped_path)
+                globals()["__file__"] = str(root / "apply_demo_public.py")
+                before = page_path.read_bytes()
+                planned = ensure_release_page(dry=True)
+                check(planned and page_path.read_bytes() == before
+                      and backup_path.read_bytes() == stale.encode("utf-8"),
+                      "the release-page refresh has a dry run that writes nothing")
+                check(ensure_release_page(dry=False),
+                      "the refresh re-cuts a page whose release body predates the tree's")
+                check(backup_path.read_bytes() == release_page.encode("utf-8")
+                      and release_body(page_path.read_text(encoding="utf-8")) == release_page,
+                      "the rollback copy is the tree's release page and the served page is its demo cut")
+                digest = page_path.read_bytes()
+                check(not ensure_release_page(dry=False)
+                      and page_path.read_bytes() == digest,
+                      "a second refresh is same and changes nothing")
+            finally:
+                (template, backup, lede_file, command_file,
+                 release_constant, module_file) = saved
+                globals().update(VERIFY_TEMPLATE=template, VERIFY_BACKUP=backup,
+                                 VERIFY_LEDE=lede_file, VERIFY_COMMAND=command_file,
+                                 RELEASE_PAGE=release_constant)
+                globals()["__file__"] = module_file
+    else:
+        print("skip  the release-page refresh write test (needs root: write_atomic chowns root)")
+
     check(len(SESSION_ID) == 70 and SESSION_ID.startswith("local-"),
           "the seeded id is app.py's 64-hex session id")
     return 0 if failures == 0 else 1
@@ -2154,7 +2343,8 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     dry = not args.write or args.dry_run
-    changed = ensure_verify_lede(dry)
+    changed = ensure_release_page(dry)
+    changed |= ensure_verify_lede(dry)
     changed |= ensure_verify_command(dry)
     if not args.no_login:
         changed |= ensure_login_page(dry)

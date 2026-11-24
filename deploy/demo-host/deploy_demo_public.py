@@ -12,7 +12,11 @@ prints one line per fact:
      `apply_demo_public.py` runs there as root: Odile's sign-in page and its
      three tab files, the `demo.odile.fyi` Caddy block, Near AI direct with one
      key, the judge account, and the one seeded "Start here — Odile demo"
-     session, written only if it is not already there. The machine's current
+     session, written only if it is not already there. The release page this
+     tree ships (`templates/verify.html`, the bytes the signed installer
+     embeds) goes with the apply: the apply re-cuts the served `/verify` from
+     it when the image's first-boot page predates a release cut, and keeps it
+     as `verify.html.release` for the runbook's rollback. The machine's current
      release-setup script is installed too: it converges the release installer
      once (a done marker under `/var/lib/odile`), so a boot cannot rewrite the
      config the owner changed.
@@ -108,6 +112,7 @@ UPLOADS = (
     ("apply_demo_public.py", 0o755),
     ("demo-tenant-site.caddy", 0o644),
     ("login.html", 0o644),
+    ("verify.html", 0o644),
     ("verify-lede.html", 0o644),
     ("verify-command.html", 0o644),
     ("start-here.md", 0o644),
@@ -128,6 +133,12 @@ RECEIPT_SOURCE = REPO / "deploy/demo-host/seed/session-receipt.json"
 #: a config key the owner changed.
 RELEASE_SETUP_SOURCE = REPO / "deploy/image/odile-release-setup.sh"
 RELEASE_SETUP_REMOTE = "/usr/local/lib/odile-image/odile-release-setup.sh"
+#: The release page the signed installer embeds and writes at first boot. The
+#: image on the demo host predates ODL-929's cut, and the release setup
+#: converges once, so the page and its rollback copy would keep the retired
+#: sentence forever; the apply uploads this file and refreshes both
+#: (t_0dff2799). It is read from the tree, not re-cut here.
+RELEASE_PAGE_SOURCE = REPO / "templates" / "verify.html"
 
 LOGIN_MARKERS = (
     "<title>Sign in — Odile</title>",
@@ -561,6 +572,8 @@ def self_test() -> int:
             return RECEIPT_SOURCE
         if name == "demo-tenant-site.caddy":
             return REPO / "deploy/caddy" / name
+        if name == "verify.html":
+            return RELEASE_PAGE_SOURCE
         if name == "start-here.md":
             return HERE / "seed/start-here-tenant.md"
         if name == "attest-refresh.sh":
@@ -599,6 +612,13 @@ def self_test() -> int:
     check(RELEASE_SETUP_SOURCE.is_file()
           and "release-setup.done" in RELEASE_SETUP_SOURCE.read_text(encoding="utf-8"),
           "the release setup script this deploy installs writes its done marker once")
+    release_page = RELEASE_PAGE_SOURCE.read_text(encoding="utf-8")
+    check(("verify.html", 0o644) in UPLOADS
+          and CUSTOMER_SENTENCE in release_page
+          and "before you sign in" in release_page
+          and "before you set your sign-in" not in release_page,
+          "the release page this deploy ships is ODL-929's cut: the grant row, "
+          "the deck's sign-in sentence, not the retired one")
     check(apply_problem() == "",
           "this tree's apply carries the no-rewrite marker the deploy ships")
     with tempfile.TemporaryDirectory(prefix="odile-old-apply-") as tmp:
@@ -614,6 +634,9 @@ def self_test() -> int:
     module = importlib.util.module_from_spec(spec)
     assert spec.loader is not None
     spec.loader.exec_module(module)
+    check(module.RELEASE_PAGE.name == "verify.html"
+          and module.RELEASE_PAGE.name in [name for name, _mode in UPLOADS],
+          "the release page the deploy uploads is the file the apply reads")
     print("-- the tenant program's own self-test --")
     failures += module.self_test()
     return 0 if failures == 0 else 1
@@ -634,8 +657,8 @@ def cleanup_dry_run(console) -> None:
     one form the Webapp's command guard allows (no `rm -rf`, no `find -delete`,
     and the uploaded files are root-owned)."""
     names = ("apply_demo_public.py", "demo-tenant-site.caddy", "login.html",
-             "verify-lede.html", "verify-command.html", "start-here.md",
-             "session-receipt.json", "attest-refresh.sh",
+             "verify.html", "verify-lede.html", "verify-command.html",
+             "start-here.md", "session-receipt.json", "attest-refresh.sh",
              "odile-attest-refresh.service", "odile-attest-refresh.timer",
              *(name for name, _pin, _type in ICONS))
 
@@ -727,6 +750,8 @@ def _run(argv: list[str] | None = None) -> int:
             source = RECEIPT_SOURCE
         elif name == "demo-tenant-site.caddy":
             source = COMMITTED_BLOCK
+        elif name == "verify.html":
+            source = RELEASE_PAGE_SOURCE
         elif name == "attest-refresh.sh":
             source = REPO / "deploy/attest-refresh" / "refresh.sh"
         else:
