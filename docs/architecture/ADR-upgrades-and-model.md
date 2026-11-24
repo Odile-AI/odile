@@ -3,20 +3,20 @@
 **Status:** Proposed — the inventory and the trigger default wait on Savio's
 confirmation, which A4's exit criterion 2 names · 17 November 2026 · Architect
 **Revision 6** — 24 November 2026, §2 and §11 are re-cut at `main`'s
-`48000ee`, and §2.8's boot-script sentence is corrected: the script has two
+`8ad9145`, and §2.8's boot-script sentence is corrected: the script has two
 mechanisms, not one — an operator's `ODILE_RELEASE_PUBLIC_URL`, then the
 measured `odile.public_url=` token — and the sentence now names their
-precedence. `main`'s own first-parent history took twenty-six merges in
-`8eb1ceb..48000ee` (forty-one merge commits are reachable; the others came in
-with those twenty-six), seven of which moved a file whose lines §11 reads —
+precedence. `main`'s own first-parent history took twenty-eight merges in
+`8eb1ceb..8ad9145` (forty-six merge commits are reachable; the others came in
+with those twenty-eight), eight of which moved a file whose lines §11 reads —
 `1f16e5f` and `74ca6d6` the installer and the release, `991c5fb`, `c75afd8`
 and `9585090` the app, `92acb25` the installer, the boot script, the first-boot
-token prose, the update runbook, the release and the app, and `48000ee` the
-first-boot program again — and `dcf2a94` re-cut this ADR and nothing else. So
-every in-text pointer is re-resolved at `48000ee` (none moved: every line these
-readings cite sits outside the changes those files took), §2.1's size and
-self-test count re-read, and §11's commands re-run with their real output
-pasted. No other statement in §2.8 changes, and no decision changes.
+token prose, the update runbook, the release and the app, `48000ee` the
+first-boot program again, and `8ad9145` the update runbook, the installer and
+the release again — and `dcf2a94` re-cut this ADR and nothing else. So every
+in-text pointer is re-resolved at `8ad9145`, §2.1's size and self-test count
+re-read, and §11's commands re-run with their real output pasted. No other
+statement in §2.8 changes, and no decision changes.
 **Revision 5** — 22–23 November 2026, §2 and §11 are re-cut at `main`'s
 `8eb1ceb`; no merge of `main` since it has moved a file §11 reads:
 ODL-341-F1 added `auxiliary` as the seventh managed block, so §2.5's tuple,
@@ -102,7 +102,7 @@ Four sentences the product is built on, and what this change does to each:
 ## 2. What exists today, at this head
 
 The inventory in §3 is not a wish list; it is a reading of the tree at
-`main`'s `48000ee` (24 November 2026), the cut §11 is taken at, and every
+`main`'s `8ad9145` (24 November 2026), the cut §11 is taken at, and every
 commit this branch adds after it changes this ADR only (§11). Eight facts shape
 it, and each is cited because a later card will change one of them.
 
@@ -568,7 +568,7 @@ risk than a tenant six weeks behind a security fix. The user can turn it off
 same timer, that also freezes the placements; the model timer is separate. The
 first-run skill will say the machine keeps itself updated. The record is
 `/etc/odile/release.json`. The unit in `docs/runbooks/update.md` §8 reads
-`OnCalendar=daily` + `RandomizedDelaySec=1h` (`:1639`–`:1640`), which is
+`OnCalendar=daily` + `RandomizedDelaySec=1h` (`:1676`–`:1677`), which is
 00:00–01:00; the build card moves it to `*-*-* 04:00:00` so the day's data is
 backed up (03:00) before the app layer moves.
 
@@ -864,19 +864,19 @@ its own card, and two of them (A3's provider, a per-response proxy) are Savio's.
 
 ## 11. Evidence
 
-Read and run at `main`'s `48000ee`
-(`48000ee762ed2c5491abd180d0f10c0b857678c6`, 24 November 2026), the cut these
+Read and run at `main`'s `8ad9145`
+(`8ad91455085c6ffa2b2c2d9e05eccd9b2f30c55b`, 24 November 2026), the cut these
 readings and every pointer in §2–§8 are taken at. Every commit this branch adds
 after it changes this ADR and nothing else (the first command). `main` had moved
 six of these files between the previous cut and this one, which is why they are
 re-taken here (the second command names them), and no merge of `main` after
-`48000ee` has moved one of them — the third command is that check, and it
+`8ad9145` has moved one of them — the third command is that check, and it
 prints nothing — so these are the tree the ADR lands on:
 
 ```sh
 $ git diff --name-only $(git merge-base main HEAD)..HEAD
 docs/architecture/ADR-upgrades-and-model.md
-$ git diff --name-only 8eb1ceb 48000ee -- installer/odile_install.py \
+$ git diff --name-only 8eb1ceb 8ad9145 -- installer/odile_install.py \
     update/odile_update.py app.py scripts/manifest.py scripts/heartbeat.py \
     odilectl/health.py seed/seed.py deploy/image/odile-firstboot.py \
     deploy/image/odile-release-setup.sh docs/runbooks/update.md \
@@ -887,7 +887,7 @@ deploy/image/odile-release-setup.sh
 docs/runbooks/update.md
 installer/odile_install.py
 release/release.json
-$ git diff --name-only 48000ee main -- installer/odile_install.py \
+$ git diff --name-only 8ad9145 main -- installer/odile_install.py \
     update/odile_update.py app.py scripts/manifest.py scripts/heartbeat.py \
     odilectl/health.py seed/seed.py deploy/image/odile-firstboot.py \
     deploy/image/odile-release-setup.sh docs/runbooks/update.md \
@@ -897,12 +897,12 @@ $ git diff --name-only 48000ee main -- installer/odile_install.py \
 Read-only: no file outside this ADR is touched.
 
 ```sh
-$ git rev-parse 48000ee
-48000ee762ed2c5491abd180d0f10c0b857678c6
+$ git rev-parse 8ad9145
+8ad91455085c6ffa2b2c2d9e05eccd9b2f30c55b
 $ sha256sum update/odile_update.py installer/odile_install.py app.py \
     scripts/manifest.py scripts/heartbeat.py
 2c795cad3625c870051797881ae95576fab6537ab394586c475b48b8b5c97415  update/odile_update.py
-580f2ad3a2393c0ae7f76fcb6c573bd3ed44bdeb4d8151b5cf9e7c157eaf5c8f  installer/odile_install.py
+f8bde5967add10575e9e4c295f7ad74cf0cbabd86e1bf2bdc5a859957e5e05c6  installer/odile_install.py
 2e0b281f9f0e552154ae9858254826744b2f0b16161bbe4b7082ac31974fff61  app.py
 7c0b045f8b602e43f1857d8b2813e55c1f82d88d7af717ab23734c8591cdc0a7  scripts/manifest.py
 2130870684e5ba2975517b805abc2aa0b4731478b277cbb74ef2e4a0d2922f32  scripts/heartbeat.py
@@ -972,7 +972,7 @@ $ sed -n '964,965p' odilectl/health.py                # HQ accepts a versions ma
     if versions is not None:
 $ python3 -c 'import json;d=json.load(open("release/release.json"));\
 print(d["release"],d["generated_at"],sorted(d["artifacts"]))'
-2026.11.23-5 2026-11-23T21:01:30Z ['installer', 'skills']
+2026.11.23-6 2026-11-24T01:45:00Z ['installer', 'skills']
 ```
 
 Revision 3's citations, the same tree, 23 November 2026:
@@ -1036,8 +1036,8 @@ def verify_or_die(args: argparse.Namespace, kit: dict) -> Path:
         INSTALLER_PATH.name + ".sig")
     pubkey = kit_pubkey(kit)
 $ grep -n 'OnCalendar\|RandomizedDelaySec' docs/runbooks/update.md
-1639:OnCalendar=daily
-1640:RandomizedDelaySec=1h
+1676:OnCalendar=daily
+1677:RandomizedDelaySec=1h
 ```
 
 `docs/MVP-V0.1.md`, `docs/AGENT-ORG.md` and `docs/craft/*` are untracked
@@ -1069,4 +1069,4 @@ verbatim: `docs/CLAIMS.md` §1 *Inference*.
 | the model snapshot copies the app layer's record convention | `update/odile_update.py:965` (the four records), `:990` (restore) |
 | the template's keys and their quoting | `installer/odile_install.py:11053`, `:11058`, `:11064` (`TENANT_CONFIG_TEMPLATE`) |
 | the template's two public hosts | `installer/odile_install.py:11075`, `:11081` |
-| the app timer today is 00:00–01:00, not 04:00 | `docs/runbooks/update.md`:1639–1640 |
+| the app timer today is 00:00–01:00, not 04:00 | `docs/runbooks/update.md`:1676–1677 |
