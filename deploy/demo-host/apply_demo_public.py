@@ -512,6 +512,13 @@ def ensure_verify_lede(dry: bool) -> bool:
     the demo tenant, and the file it replaces is the release installer's page,
     written once on the first boot (the release setup converges once). No boot
     unit re-cuts it; this deploy's `--write` is the writer.
+
+    `verify.html.release` gets the page's *release body*, never the page: the
+    rollback copy is what `ensure_release_page` writes byte for byte from the
+    shipped page, and a lede step that stored its own pre-injection page put
+    the demo lede and `<!--demo-check-->` in the rollback slot (t_0dff2799
+    review round 1). `apply_demo_icons.py` runs this step without the release
+    step, so the undo has to happen here as well.
     """
     source = lede_source()
     if not source.is_file():
@@ -522,6 +529,7 @@ def ensure_verify_lede(dry: bool) -> bool:
         lede = source.read_text(encoding="utf-8")
         page = VERIFY_TEMPLATE.read_text(encoding="utf-8")
         wanted = inject_lede(page, lede)
+        release = release_body(page)
     except (OSError, ValueError) as exc:
         raise SystemExit(f"error: cannot inject {source} into {VERIFY_TEMPLATE}: {exc}") from exc
     if wanted == page:
@@ -530,7 +538,7 @@ def ensure_verify_lede(dry: bool) -> bool:
     say("would write" if dry else "write",
         f"{VERIFY_TEMPLATE} (the demo lede; rollback {VERIFY_BACKUP.name})")
     if not dry:
-        write_atomic(VERIFY_BACKUP, page.encode("utf-8"), 0o644, 0, 0)
+        write_atomic(VERIFY_BACKUP, release.encode("utf-8"), 0o644, 0, 0)
         write_atomic(VERIFY_TEMPLATE, wanted.encode("utf-8"), 0o644, 0, 0)
     return True
 
@@ -632,9 +640,9 @@ def ensure_verify_command(dry: bool) -> bool:
     the demo layer: the release template keeps the customer's page (no command,
     no demo hostname), and the section is placed after the machine section so
     its note names a row the reader has already passed. The write
-    goes to the same file `odile-verify.service` reads per request; the lede's
-    update wrote the backup, so this step must not overwrite it with a
-    half-injected page.
+    goes to the same file `odile-verify.service` reads per request; the
+    fallback rollback copy is the page's release body, never the page — the
+    demo lede is already on it when this step runs (t_0dff2799 review round 1).
     """
     source = command_source()
     if not source.is_file():
@@ -645,6 +653,7 @@ def ensure_verify_command(dry: bool) -> bool:
         command = source.read_text(encoding="utf-8")
         page = VERIFY_TEMPLATE.read_text(encoding="utf-8")
         wanted = inject_command(page, command)
+        release = release_body(page)
     except (OSError, ValueError) as exc:
         raise SystemExit(f"error: cannot inject {source} into {VERIFY_TEMPLATE}: {exc}") from exc
     if wanted == page:
@@ -653,10 +662,31 @@ def ensure_verify_command(dry: bool) -> bool:
     say("would write" if dry else "write",
         f"{VERIFY_TEMPLATE} (the demo command; rollback {VERIFY_BACKUP.name})")
     if not dry and not VERIFY_BACKUP.is_file():
-        write_atomic(VERIFY_BACKUP, page.encode("utf-8"), 0o644, 0, 0)
+        write_atomic(VERIFY_BACKUP, release.encode("utf-8"), 0o644, 0, 0)
     if not dry:
         write_atomic(VERIFY_TEMPLATE, wanted.encode("utf-8"), 0o644, 0, 0)
     return True
+
+
+def ensure_verify_page(dry: bool) -> bool:
+    """/verify and its rollback copy, in the one order that keeps them straight.
+
+    The lede and command steps each write the demo layer; the release step runs
+    last, so it has the final word on both files. It compares the body under
+    the two injections with the shipped page and, when they differ, writes
+    `/usr/local/lib/odile/verify.html` from that page plus the two demo
+    paragraphs and `verify.html.release` from the page byte for byte.
+
+    Running the release step first (as this program did until t_0dff2799 review
+    round 1) let one lede edit leave the pre-injection demo page — release
+    body, old lede, `<!--demo-check-->` — in the rollback slot until the next
+    deploy, while `--report` read `rollback_is_release_page:false` and the
+    deploy still printed PASS.
+    """
+    changed = ensure_verify_lede(dry)
+    changed |= ensure_verify_command(dry)
+    changed |= ensure_release_page(dry)
+    return changed
 
 
 def verify_state() -> dict:
@@ -2278,6 +2308,25 @@ def self_test() -> int:
                 check(not ensure_release_page(dry=False)
                       and page_path.read_bytes() == digest,
                       "a second refresh is same and changes nothing")
+
+                # A lede change in one deploy must leave the rollback copy the
+                # release page (t_0dff2799 review round 1: the release step ran
+                # before the lede step, whose write put the pre-injection demo
+                # page — release body, old lede, `<!--demo-check-->` — in the
+                # rollback slot until the next deploy).
+                lede_path.write_text('<p class="lede">A changed demo lede for the regression.</p>',
+                                     encoding="utf-8")
+                changed = ensure_verify_page(dry=False)
+                check(changed
+                      and page_path.read_text(encoding="utf-8").count(
+                          "A changed demo lede for the regression.") == 1,
+                      "a lede change re-cuts the served page in one deploy")
+                check(backup_path.read_bytes() == release_page.encode("utf-8"),
+                      "a lede change keeps the rollback copy the release page")
+                state = verify_state()
+                check(state["demo_lede"] and state["demo_command"]
+                      and state["rollback_is_release_page"],
+                      "the report reads the new lede and a rollback copy that is the release page")
             finally:
                 (template, backup, lede_file, command_file,
                  release_constant, module_file) = saved
@@ -2343,9 +2392,7 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     dry = not args.write or args.dry_run
-    changed = ensure_release_page(dry)
-    changed |= ensure_verify_lede(dry)
-    changed |= ensure_verify_command(dry)
+    changed = ensure_verify_page(dry)
     if not args.no_login:
         changed |= ensure_login_page(dry)
     changed |= ensure_icons(dry)

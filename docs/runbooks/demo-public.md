@@ -181,7 +181,16 @@ Instead:
   (its note names the `measurement` row, so it follows the row it
   names), and keeps the release page at
   `/usr/local/lib/odile-demo-public/verify.html.release` for the rollback.
-  The release page is the one the demo deploy uploads, `templates/verify.html`
+  The demo deploy's three `/verify` steps are one function,
+  `ensure_verify_page`, in the order lede → command → release: the release
+  step runs last and has the final word on both files, so a deploy that changes
+  the lede and re-cuts the release page in the same run still leaves the copy
+  byte-equal to the shipped page.
+  Both demo steps store the page's *release body* (the page with the two
+  injections undone), never the demo page, so a caller that runs the lede step
+  alone — `apply_demo_icons.py` does — cannot put the demo lede and
+  `<!--demo-check-->` in the rollback slot. The release page is the one the
+  demo deploy uploads, `templates/verify.html`
   — the same bytes the signed installer embeds and writes at first boot. The
   apply checks the template's body under the two demo injections against that
   page; when the boot page predates a release cut it re-cuts
@@ -191,9 +200,9 @@ Instead:
   ODL-929's retired `before you set your sign-in`). This is the "the demo
   deploy ships the release installer" route — it ships the installer's page,
   the one file the rollback needs, rather than the whole installer, which
-  would rewrite the owner's config. A converged run prints one
-  `same` line for the two files; `--dry-run` prints `would write` and writes
-  nothing;
+  would rewrite the owner's config. A converged run prints one `same` line from
+  the release step for the two files; `--dry-run` prints `would write` and
+  writes nothing;
 - the demo-public deploy's `apply --write` and the t_6b25f6e5 icons deploy are
   the two writers of this page. `odile-release-setup.service` converges
   **once** (t_ee5aac66 writes a done marker under `/var/lib/odile`), so after
@@ -201,8 +210,10 @@ Instead:
   is no boot unit and no `--tune` re-assert. The icons deploy installs
   `templates/verify.html` and `verify/verify.py` and its `apply_demo_icons.py`
   re-injects both the lede and
-  the `<!--demo-check-->` section (§2), so it keeps this page; it does not
-  refresh the rollback copy — run the demo-public deploy after a forced re-cut;
+  the `<!--demo-check-->` section (§2), so it keeps this page; when it rewrites
+  the page it stores the page's release body as the rollback copy, but it does
+  not re-cut that copy from the shipped page — run the demo-public deploy after
+  a forced re-cut;
 - a customer machine never runs `apply_demo_public.py`, so its `/verify` keeps
   the general row. `tests/test_demo_public.py` renders both pages through the
   release renderer and pins the sentence each one shows. The same test runs
@@ -222,6 +233,9 @@ sudo install -m 0644 /usr/local/lib/odile-demo-public/verify.html.release \
 refreshes it from the `templates/verify.html` it uploads; a rollback therefore
 serves the page this tree ships, rendered by `verify/verify.py` with the
 machine's own values — not the page the image wrote at first boot (t_0dff2799).
+That holds in the run that changes the lede too, because the release step runs
+last: after it, the copy is byte-equal to the shipped page and `--report`'s
+`rollback_is_release_page` is `true`.
 The template is read per request, so no restart is needed. `--report` prints a
 `verify` object with the template's hash, `demo_lede`, `demo_command`,
 `customer_lede`, whether the rollback copy is present, its hash
@@ -851,6 +865,21 @@ this machine's own measurement (`83bd3fce…`) and the customer row, and the nex
 `--report` read `"demo_lede":true,"demo_command":true,"customer_lede":false,
 "rollback":true,"rollback_is_release_page":true`. Evidence:
 `docs/evidence/a2-demo-release-page.md`.
+
+Review round 1 (2026-11-24) found one ordering defect in the new mechanism: the
+release step ran **first**, and a lede edit made the lede step write its
+pre-injection page — the release body with the old lede and
+`<!--demo-check-->` — over `verify.html.release`, so `--report` read
+`rollback_is_release_page:false` while the deploy still printed PASS until the
+next run healed it. The three steps are now one function,
+`ensure_verify_page`, in the order lede → command → release, and both demo
+steps store the page's release body rather than the page. `apply --self-test`'s
+`a lede change keeps the rollback copy the release page` exercises the whole
+three-step path with a changed lede; it fails on the round-1 program (the copy
+came back `4b065ef0…`, the demo template, carrying `<!--demo-check-->`) and
+passes at this head. On the demo host the converged deploy prints `same` on all
+three steps, the copy is `1f5314db…`, and `--report` reads
+`"rollback_is_release_page":true`.
 
 ## 9. The boot image is a footgun — read before any power action
 
