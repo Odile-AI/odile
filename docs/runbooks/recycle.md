@@ -349,11 +349,37 @@ with the bench record's own id, and `getent hosts odl-348b2c.test.odile.fyi`
 resolved to the bench machine's address while the apex name `odl-348b2c.odile.fyi`
 did not resolve at all.
 
-Known gap at this writing: the image bakes `/etc/hostname` from its build name
-(`deploy/image/sealed-image.sh`), and no first-boot step re-derives it from
-`bb.host`, so a recycled machine still says the build tenant's slug at the getty
-and in `/etc/hosts` even though `bb.host`, the boot key, the seed and `/verify`
-are B's. Set it from `bb.host` on first boot and re-cut the image.
+**Fixed 2026-11-23 (`t_b20e267f`), after this drill.** `odile-firstboot` now
+re-derives the guest hostname from `bb.host` on every boot: `/etc/hostname` and
+the image's own two `/etc/hosts` lines (the ones carrying `tenant.odile.test`)
+are set to the measured slug, and — because the unit passes
+`--kernel-hostname apply` — the running kernel name is set too, so `hostname`
+and the next getty prompt agree. A converged boot writes nothing (`same` in
+`/var/log/odile-firstboot.log`), and `--check` is read-only. The image was
+re-cut from that tree and published: disk
+`https://odile.fyi/releases/disks/1f0ec18099aaa464.raw`
+(`1f0ec18099aaa4645ade7949d8ea9699f5795c74a572bca5a45c00dc4351b87f`), the
+empty-`.cmdline` UKI re-signed and published as
+`https://odile.fyi/releases/uki/7571cb22a591a5d4.efi`
+(`7571cb22a591a5d4089c2904cf38befd650257e094ad7c64b9ec16a2f7a1c213`). On that
+pair, a bench recycle of tenant A (`odl-340a1e`) then tenant B (`odl-348b2c`)
+shows B's first boot write `odl-340a1e -> odl-348b2c` and its reboot read
+`same` — `docs/evidence/a2-recycle.md` §16.
+
+Two measured traps for the next operator:
+
+* **Never change the per-machine line of a machine that has already first-booted
+  and then reboot it.** The volume is sealed to a key derived from the measured
+  line, so changing any field (a new token, `bb.release`, a key) changes the
+  measurement and the blob no longer opens: the boot stops at
+  `Please unlock disk root_crypt:`. Reboot with the line the machine sealed to,
+  or recycle it.
+* **The first `ssh` after a first boot can refuse for a few minutes.** The
+  installer's verify surface writes `/root/.ssh/authorized_keys` (exactly the
+  measured boot key) only once `odile-release-setup` has run the installer; the
+  key the provider injected before the disk write was overwritten by the image.
+  Retry until the boot key answers rather than diagnosing sshd.
+
 
 ## 4. Trim the fence, then restore it
 
