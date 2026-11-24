@@ -1,7 +1,7 @@
 {
   "artifacts": {
     "installer": {
-      "sha256": "84860db33d8eb59cc210bea04fef06618a6de775c4873fc02b24755a5e9e40d2",
+      "sha256": "580f2ad3a2393c0ae7f76fcb6c573bd3ed44bdeb4d8151b5cf9e7c157eaf5c8f",
       "size": 1576209,
       "url": "odile_install.py"
     },
@@ -14,14 +14,14 @@
   "boot": {
     "kernel": "6.12.115+deb13.1-amd64"
   },
-  "generated_at": "2026-11-23T16:45:00Z",
+  "generated_at": "2026-11-23T21:01:30Z",
   "manifest": {
-    "sha256": "7a2176016cfd228552f62b88a003e11c4427db7244ea52e5ef25af6f0aed3f16",
+    "sha256": "e97266f0adc78ff139e1c3c7cd63ce922b3b2aee85430292e4170dc8f191d893",
     "signature_url": "manifest.json.sig",
     "url": "manifest.json"
   },
-  "notes": "ODL-929 (B-once): the guest /verify page and the installed help are re-cut. The three-powers paragraph says the boot image is compared before you sign in; the installed help's sign-in-lost answer is D-19 and its lost-code tail is D-5 (a lost code starts a new account; a backup is the only way to bring the files), its grant answer opens with D-3, and the rebuild row names only the disk. The installer re-embeds templates/verify.html (1ce729c8\u2026, 42,959 bytes) and the odile-help skill (62fac689\u2026, 6,264 bytes); the manifest moves installer_sha256 and the odile-help row, and skills.tar.gz is rebuilt from the fresh root.",
+  "notes": "ODL-929 (B-once): the guest /verify page and the installed help are re-cut. The three-powers paragraph says the boot image is compared before you sign in; the installed help's sign-in-lost answer is D-19 and its lost-code tail is D-5 (a lost code starts a new account; a backup is the only way to bring the files), its grant answer opens with D-3, and the rebuild row names only the disk. The installer re-embeds templates/verify.html (1ce729c8\u2026, 42,959 bytes) and the odile-help skill (62fac689\u2026, 6,264 bytes); the manifest moves installer_sha256 and the odile-help row, and skills.tar.gz is rebuilt from the fresh root. t_fc412bd9 (this cut): the tenant /verify page's \u2264560 header margin rises from 24 to 32 px, the sheet's 4 px scale, so the 32 px wordmark's box clears its 16 px floor at 390, 320 and 1440 (20.0 px measured, scrollWidth == clientWidth); the installer re-embeds templates/verify.html (1f5314db\u2026, 42,959 bytes), which carries both changes, and the installer/manifest hashes move over ODL-929's 2026.11.23-4 cut.",
   "product": "odile",
-  "release": "2026.11.23-4",
+  "release": "2026.11.23-5",
   "schema": 1
 }
