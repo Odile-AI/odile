@@ -30,8 +30,18 @@ bench is a second set of values, two units and one Caddy block. Ports 8082
 
 The bench's seed config is **derived** from the production one (the box holds
 one inference key and one relay secret) with two changes: the backup repository
-is `/tenants/test-{slug}` and an `environment: bench` marker. It is written
-once, at 0600, and never committed; delete it to have the deployer rebuild it.
+is `/tenants/test-{slug}` and an `environment: bench` marker. It is created at
+0600, root-owned, and never committed — and it is not frozen at creation. Every
+deploy loads the `seed/seed.py` it ships (the config's only authority) and asks
+that loader whether the file loads; when the loader refuses the file, the
+deployer merges only the required keys that are **absent** from it, taking each
+value from production's config and naming every added path in its output
+(`merge … adds mail_relay.tls_ca`). A key the operator set is never rewritten,
+even when its value is wrong: the seed's own message names it and the deploy
+prints the one line that repairs it. Deleting the file still rebuilds it from
+production, but that is now the repair for a missing file — a malformed one is
+refused and named, never overwritten — not the way a key `main` gains reaches
+the bench.
 
 The roadmap cache is generated once by the first apply, when
 `/var/lib/odile-test/roadmap.html` is absent; the bench has no roadmap timer,
@@ -71,10 +81,14 @@ card, do not invent a hostname.
 ```
 
 The dry run prints one line per step: `would create` for a directory, database
-or config; `would write` for `bench.env`, a unit, the Caddyfile and the DNS
-record; `would copy` for a release; `would point` for the `current` symlink;
+or config; `would merge` for an absent required key in the seed config;
+`would write` for `bench.env`, a unit, the Caddyfile and the DNS record;
+`would copy` for a release; `would point` for the `current` symlink;
 `would generate` for the roadmap cache; and `would probe` for the three
-checks. It writes no file and runs no mutating command.
+checks. It runs no mutating command and moves no file it names: planning the
+seed config writes the document it would write to a transient 0600
+`.seed-config.check.*` beside it, so the shipped seed can read it, and removes
+it before exiting — the config's own bytes are untouched.
 
 An apply is idempotent. A converged host prints `same` for every step and ends
 `bench: nothing to do`, with no `systemctl` restart and no Caddy write. The
@@ -173,7 +187,8 @@ uses it too.
 |---|---|---|
 | `bench: deployed` but `https://test.odile.fyi/` answers 000/503 | certificate not issued yet, or DNS not resolving | `journalctl -u caddy`, `dig +short test.odile.fyi`; re-run the deploy once the record resolves |
 | `odile-bench` inactive, `journalctl -u odile-bench` shows `address already in use` | 8082 is taken by something else | `./scripts/check_bench.sh --probe` names the holder; the deployer refuses it before writing. Kill the holder, or let the deployer reap it when its `.worktrees/<card>` directory is gone |
-| `odile-bench-seed` fails `seed config … missing` | `/root/.odile/seed-config.test.json` was deleted while the unit was running | re-run the deploy (it recreates the file) and `systemctl restart odile-bench-seed` |
+| `odile-bench-seed` fails `seed config … missing`, and the file is gone | `/root/.odile/seed-config.test.json` was deleted while the unit was running | re-run the deploy (it recreates the file from production's config) and `systemctl restart odile-bench-seed` |
+| `odile-bench-seed` fails `seed config … mail_relay.tls_ca is missing or invalid` (or another key) on a file that is **present** | a required key that `main`'s `seed/seed.py` gained after the bench config was written (ODL-949) | re-run the deploy — it merges the absent key from production's config and names it — then `systemctl restart odile-bench-seed`. If the deploy names a present-but-wrong value instead, its `fix:` line is the repair |
 | `caddy validate rejected …; restored it` | the block was edited into invalid Caddy syntax | the live file is unchanged; fix `deploy/bench/bench.caddy` and re-run |
 | `error: production moved during the bench run` | a production deploy or the roadmap timer ran mid-apply | re-run the bench deploy when production is quiet; the bench itself is fine |
 | `error: the Cloudflare token cannot see the odile.fyi zone` | wrong or rotated token | replace `/root/.odile/cloudflare_dns_token`; do not edit DNS by hand |
