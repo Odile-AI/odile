@@ -5,17 +5,22 @@ Why this exists: the panel's auto-renew charges **list price**. Invoice
 `58093838` on 2026-11-19 was "Auto-renewal for 7 days" $9.03 on Blackbox Max —
 exactly 39.99/31*7 — on an account whose key carries the 5% partner discount.
 `?action=renew` with the same key charges the partner price (8.58 for that
-term). So auto-renew is turned off on the boxes we can reach and this tool does
-the renewing, while there is still slack to retry.
+term then). So auto-renew is turned off on the boxes we can reach and this tool
+does the renewing, while there is still slack to retry.
 
     ./tools/servury_renew.py                      # dry run, every configured key
     ./tools/servury_renew.py --apply              # renew what is inside the window
     ./tools/servury_renew.py --server 168020b4 --threshold 30 --days 7 --apply
 
-Policy: 7-day terms inside a 5-day window. Price is linear on Blackbox
-(`retail/31 * days`, no short-term fee, no long-term discount), so the term
-length changes only how often this runs; 7 days keeps every charge under $10 and
-leaves five daily runs to retry a failure before the 24-hour deletion window.
+Policy: 7-day terms inside a 5-day window. Servury prices a term by its length
+(measured 2026-11-24, not inferred): the retail term is `rate/31 * days` rounded
+to the cent; a term under 31 days adds a 15% short-term fee; terms of 90, 180
+and 365 days take 5%, 10% and 15% off, the highest reached applying; and the
+account's partner discount comes last. Every step rounds to the cent. Seven days
+therefore keeps every charge under $10 — a $9.99 box is $2.47, not the $2.15 the
+old linear model quoted — and leaves five daily runs to retry a failure before
+the 24-hour deletion window. A longer term costs less per day and needs a card
+that names the amount: 365 days on that box is $94.98.
 
 A server whose `auto_renew` is true is skipped and named: renewing it as well
 would stack days and pull cash forward while the panel still charges list price.
@@ -72,14 +77,29 @@ def money(value: Decimal) -> Decimal:
     return value.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
 
 
-def term_price(rate_monthly: float | str, days: int, discount_percent: float | int) -> Decimal:
-    """What ?action=renew charges: retail term, then the partner discount.
+# Servury's term schedule, from `?action=account`'s `limits` block on 2026-11-24.
+SHORT_TERM_UNDER_DAYS = 31
+SHORT_TERM_FEE_PERCENT = 15
+TERM_DISCOUNTS = ((365, 15), (180, 10), (90, 5))
 
-    The API documents the order — `retail_price / 31 * days` rounded to the
-    cent, minus the discount, rounded again — so the rounding happens twice and
-    a renewal is not simply 5% of the list term.
+
+def term_price(rate_monthly: float | str, days: int, discount_percent: float | int) -> Decimal:
+    """What ?action=renew charges for a term, in the vendor's order of operations.
+
+    Measured 2026-11-24: the retail term is `rate/31 * days` rounded to the
+    cent; a term under 31 days adds the 15% short-term fee; a term of 90, 180 or
+    365 days takes the highest term discount reached (5%, 10%, 15%) — one
+    discount, not a stack; then the account's partner discount applies. Every
+    step rounds to the cent, so the price is not one multiplication.
     """
     retail = money(Decimal(str(rate_monthly)) / Decimal(31) * Decimal(days))
+    if days < SHORT_TERM_UNDER_DAYS:
+        retail = money(retail * (Decimal(100) + Decimal(SHORT_TERM_FEE_PERCENT)) / Decimal(100))
+    else:
+        for threshold, percent in TERM_DISCOUNTS:
+            if days >= threshold:
+                retail = money(retail * (Decimal(100) - Decimal(percent)) / Decimal(100))
+                break
     return money(retail * (Decimal(100) - Decimal(str(discount_percent))) / Decimal(100))
 
 
