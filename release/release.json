@@ -1,27 +1,27 @@
 {
   "artifacts": {
     "installer": {
-      "sha256": "580f2ad3a2393c0ae7f76fcb6c573bd3ed44bdeb4d8151b5cf9e7c157eaf5c8f",
-      "size": 1576209,
+      "sha256": "f8bde5967add10575e9e4c295f7ad74cf0cbabd86e1bf2bdc5a859957e5e05c6",
+      "size": 1576241,
       "url": "odile_install.py"
     },
     "skills": {
-      "sha256": "c5f507b59bf4eaf4256986f2fa67ddadb01a18abf94372cfa9e160a0f1b6dd3f",
-      "size": 852668,
+      "sha256": "9a10a63ee9a813783e719c2bf0e0de8bb9484a5358077a8ea147cfa17cc6c6d4",
+      "size": 852667,
       "url": "skills.tar.gz"
     }
   },
   "boot": {
     "kernel": "6.12.115+deb13.1-amd64"
   },
-  "generated_at": "2026-11-23T21:01:30Z",
+  "generated_at": "2026-11-24T01:45:00Z",
   "manifest": {
-    "sha256": "e97266f0adc78ff139e1c3c7cd63ce922b3b2aee85430292e4170dc8f191d893",
+    "sha256": "9d6e3b9e8f4ff69b818f95b2f3873104c406f36abe944b4f42ce141bf8d1eb4d",
     "signature_url": "manifest.json.sig",
     "url": "manifest.json"
   },
-  "notes": "ODL-929 (B-once): the guest /verify page and the installed help are re-cut. The three-powers paragraph says the boot image is compared before you sign in; the installed help's sign-in-lost answer is D-19 and its lost-code tail is D-5 (a lost code starts a new account; a backup is the only way to bring the files), its grant answer opens with D-3, and the rebuild row names only the disk. The installer re-embeds templates/verify.html (1ce729c8\u2026, 42,959 bytes) and the odile-help skill (62fac689\u2026, 6,264 bytes); the manifest moves installer_sha256 and the odile-help row, and skills.tar.gz is rebuilt from the fresh root. t_fc412bd9 (this cut): the tenant /verify page's \u2264560 header margin rises from 24 to 32 px, the sheet's 4 px scale, so the 32 px wordmark's box clears its 16 px floor at 390, 320 and 1440 (20.0 px measured, scrollWidth == clientWidth); the installer re-embeds templates/verify.html (1f5314db\u2026, 42,959 bytes), which carries both changes, and the installer/manifest hashes move over ODL-929's 2026.11.23-4 cut.",
+  "notes": "ODL-925 follow-up (A2), re-cut over t_fc412bd9's tenant /verify header-margin cut: the tenant first-run skill's close sentence is the deck's repeating-job row (A11) \u2014 \"and if it was due while the machine was down, it runs when the machine comes back up.\" The retired clause promised a run at the unlock; the sealed boot has no unlock step. The installer re-embeds skills/odile-first-run/SKILL.md (d95b5061\u2026, 8,167 bytes) and carries t_fc412bd9's templates/verify.html (1f5314db\u2026, 42,959 bytes \u2014 the \u2264560 header margin rises from 24 to 32 px); the manifest moves installer_sha256 and the odile-first-run row, and skills.tar.gz is the fresh root's build (9a10a63e\u2026).",
   "product": "odile",
-  "release": "2026.11.23-5",
+  "release": "2026.11.23-6",
   "schema": 1
 }
