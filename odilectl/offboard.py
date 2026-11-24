@@ -413,8 +413,11 @@ def _survey(ctx: Context, args, bundle: Bundle | None) -> Survey:
     skip_export = bool(getattr(args, "skip_export", False))
 
     zone = dns_module.validate_zone(ctx.config.get("dns_zone") or dns_module.DEFAULT_ZONE)
+    # The record hangs under the tenant's own name (`tenant_domain`), not the
+    # apex zone the token talks to: the same rule `odilectl dns` follows.
+    domain = dns_module.tenant_zone(ctx.config)
     try:
-        name = dns_module.record_name(slug, zone)
+        name = dns_module.record_name(slug, domain)
     except ValueError:
         name = None  # a machine named outside the slug grammar has no record
     record = _dns_client(ctx).find(name) if name else None
@@ -448,7 +451,7 @@ def _survey(ctx: Context, args, bundle: Bundle | None) -> Survey:
         record=record,
         record_name=name,
         zone=zone,
-        grant=probe_grant(f"https://{name or slug + '.' + zone}/verify"),
+        grant=probe_grant(f"https://{name or slug + '.' + domain}/verify"),
         bundle=bundle,
         backup=backup_facts(ctx, slug, Path(heartbeat_db), recorded=recorded),
         skip_export=skip_export,

@@ -7,12 +7,20 @@ sends `proxied: true` — not on create and not on update.
 
 Three mutating verbs, each safe to run twice:
 
-* ``create SLUG --ip ADDR`` writes A ``<slug>.<zone>`` with TTL 120 during
-  provisioning and converges an existing record in place (PATCH, never
+* ``create SLUG --ip ADDR`` writes A ``<slug>.<tenant_domain>`` with TTL 120
+  during provisioning and converges an existing record in place (PATCH, never
   delete-and-recreate);
 * ``settle SLUG`` moves the TTL to 300 once provisioning is done;
 * ``delete SLUG`` removes the record; a second delete is a no-op because an
   absent record is success.
+
+The record's **name** and the **zone** that owns it are two values: the name
+hangs under ``tenant_domain`` when the config sets it (the bench serves
+``<slug>.test.odile.fyi``) and under ``dns_zone`` otherwise, while the client
+always talks to ``dns_zone`` — the zone the token is scoped to. ODL-348
+measured the old conflation: ``dns delete`` removed ``<slug>.odile.fyi`` and
+left the tenant's own record pointing at the machine the next tenant then
+owned.
 
 Resolution is deliberately not re-implemented here: `dig @<zone-ns>` is the
 authoritative check (and the card's evidence), while a system-resolver wrapper
@@ -134,6 +142,21 @@ def validate_zone(zone: str) -> str:
 def record_name(slug: str, zone: str) -> str:
     """The fully qualified A record name for a tenant slug."""
     return f"{validate_slug(slug)}.{validate_zone(zone)}"
+
+
+def tenant_zone(config) -> str:
+    """The suffix a tenant's record hangs under: ``tenant_domain``, else ``dns_zone``.
+
+    The two are different things. ``dns_zone`` is the zone the Cloudflare token
+    is scoped to and the client talks to; ``tenant_domain`` is the name the
+    tenant's own URL resolves under. On the bench ``dns_zone`` is ``odile.fyi``
+    and ``tenant_domain`` is ``test.odile.fyi``, so the record is
+    ``<slug>.test.odile.fyi`` inside the ``odile.fyi`` zone. A production
+    config has no ``tenant_domain`` and the record is ``<slug>.odile.fyi``.
+    """
+    return validate_zone(
+        (config.get("tenant_domain") or config.get("dns_zone") or DEFAULT_ZONE).strip()
+    )
 
 
 def validate_ipv4(value: str) -> str:
@@ -498,7 +521,11 @@ def run(
         zone = validate_zone(
             getattr(args, "zone", None) or ctx.config.get("dns_zone") or DEFAULT_ZONE
         )
-        name = record_name(args.slug, zone)
+        # The name hangs under `tenant_domain` when the config sets it; `--zone`
+        # still names the zone the client talks to, because a bench record is one
+        # label *down* from the apex zone the token is scoped to.
+        suffix = tenant_zone(ctx.config) if ctx.config.get("tenant_domain") else zone
+        name = record_name(args.slug, suffix)
     except ValueError as error:
         raise UsageError(f"dns {verb}: {error}") from None
     _validate_flags(verb, args)
