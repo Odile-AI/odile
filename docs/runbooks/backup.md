@@ -59,8 +59,8 @@ replaces the R2 interim **and** the B2 target with one box and a **sub-account
 pair per tenant** (`odile-<slug>-rw`, its key on the guest; `odile-<slug>-ro`,
 its key in the recovery file), both confined to the box's `tenants/<slug>`
 directory. So:
-**every R2 sentence in §1 and §3.1, the bucket token, the 9 GB cap and the
-three-bucket ceiling are superseded on that date**; the SFTP shape in §3 is
+**every R2 sentence in §1, §3.1, §8 and §9, the bucket token, the 9 GB cap and
+the three-bucket ceiling are superseded on that date**; the SFTP shape in §3 is
 live again with a different host (a sub-account on the box, not HQ's `sshd`)
 and **one change to §3's own words** — under v3 the keypair is generated at
 provision and the private half reaches the guest in the seed, so `init` finds it

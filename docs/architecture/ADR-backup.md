@@ -1,6 +1,6 @@
 # ADR-004 — The copy that outlives HQ: restic over SFTP to a Hetzner Storage Box BX11
 
-**Status:** Proposed (v3 re-cut) · 24 November 2026 · Architect. **The 17 November
+**Status:** Proposed (v3.1 re-cut) · 24 November 2026 · Architect. **The 17 November
 2026 cut named Backblaze B2 in Canada East as the destination; the 19 November
 2026 re-cut made Cloudflare R2 the interim and kept B2 as the target. Both are
 superseded. On 24 November 2026 Savio chose the Hetzner Storage Box BX11, on a
@@ -42,9 +42,12 @@ HQ can decrypt the repository.
 | 19 November 2026 | v2 | Destination re-cut to **Cloudflare R2 interim**: `odile-t-<slug>` buckets, bucket-scoped keys, 2 GB per tenant, at most 3 buckets, a 9 GB account cap; B2 retained as the target | The B2 account was suspended at signup; unblock R&D without touching HQ's backup or the free tier |
 | 19–20 November 2026 | v2.1, v2.2 | Review corrections; §8's rows named the cards that own them (ODL-924/933/934/935) | Round-1 review: an evidence row must reproduce at the head it ships with |
 | 24 November 2026 | **v3 — this re-cut** | **Destination re-cut to a Hetzner Storage Box BX11** on a new, backup-only Hetzner account: one **sub-account pair per tenant** (`readonly: false` / `readonly: true`), one project-scoped **Console API token** at HQ, SFTP on port 22, a **staggered 02:00–06:00 UTC** nightly window sized to **10 concurrent connections**. **R2 and B2 are superseded**; the three-bucket ceiling and the 9 GB cap are R2 history, not current design. The durability trade is stated, not hidden: one box, RAID, snapshots on the same box | Savio, 2026-11-24: the B2 account never came back, R2 was an interim with no tenant data in it, and the Hetzner box is the provider he chose for all user backups |
+| 24 November 2026 | v3.1 | Round-1 review corrections: the 26th-connection sentence (not the 11th); every `docs/CLAIMS.md` and public-tree pointer re-derived as a **section and row**, not a line; the 2 GB cap restated as **policy** (its constant, `restic stats` check and `over_cap` write are **added** by ODL-933's re-cut, not "kept"); the pair's name is in the API `name`, not `description`; the runbook banner names §1, §3.1, **§8 and §9** | Round-1 review: an evidence row must reproduce at the head it ships with |
 
 **Related:** `docs/MVP-V0.1.md` §6.1, §6.7, §8, §12 (D19); `docs/CLAIMS.md` §1
-(Access 65–66, Money and place 122–123, Reliability 201) and §1a;
+(Access: the recovery-code and recovery-file rows; Money and place: the
+Montréal/off-site row and the 30-day row; Reliability: "Backed up nightly") and
+§1a ("Held from the public pages");
 `docs/architecture/ADR-factory-backup.md` (ADR-003, the factory's own R2 copy)
 §4.2–§4.4; `docs/architecture/ADR-007-destroyed-slug.md` (the same-slug
 rebuild, landed); `docs/runbooks/backup.md` §1–§9; `docs/runbooks/offboard.md`
@@ -64,7 +67,7 @@ changes none.
 
 Five sentences the product depends on: four are internal invariants, and the
 fifth is a deck sentence still **held from the public pages** (`docs/CLAIMS.md`
-§1a, line 219).
+§1a, "Held from the public pages").
 
 1. **The copy survives the machine.** *True, drilled.* ODL-215's nightly restic
    snapshot and a destroy-and-restore were measured on 2026-11-12 (§2).
@@ -74,7 +77,8 @@ fifth is a deck sentence still **held from the public pages** (`docs/CLAIMS.md`
    chrooted `sshd` on HQ's port 2222, under `/srv/odile-backup/tenants/<slug>`
    (`docs/runbooks/backup.md` §3). HQ is itself one Servury guest: the address
    behind `mail.odile.fyi` — the public tree writes it as `203.0.113.139`
-   (`docs/ops/PUBLIC-TREE.md`:85) — resolves to **AS395904 Servury, Montréal**,
+   (`docs/ops/PUBLIC-TREE.md`, the address row; local-only, so it is cited by
+   row, not by line) — resolves to **AS395904 Servury, Montréal**,
    the same provider and the same city as the tenant machines. One Servury
    suspension, one dead host or one billing failure loses the tenant's machine,
    the control plane and the only copy at the same moment. **This is the
@@ -108,10 +112,11 @@ fifth is a deck sentence still **held from the public pages** (`docs/CLAIMS.md`
    sub-account's password and then log in — and that power reaches **ciphertext,
    never plaintext**.
 4. **The user can get the bytes back without us.** *True in principle, unbacked
-   in practice.* `docs/MVP-V0.1.md` §6.7 and `docs/CLAIMS.md`:123 promise a
-   download "before" the 30 days; until now nothing gave the user a credential
-   that reaches the bytes. Under v3 the recovery file carries the repository
-   URL, the host-key fingerprint and the **read-only private key**: with those
+   in practice.* `docs/MVP-V0.1.md` §6.7 and `docs/CLAIMS.md` §1 "Money and
+   place", the 30-day row, promise a download "before" the 30 days; until now
+   nothing gave the user a credential that reaches the bytes. Under v3 the
+   recovery file carries the repository URL, the host-key fingerprint and the
+   **read-only private key**: with those
    and the password, a user — or their lawyer, or their next provider — can pull
    the repository with `restic` and `ssh`, without Odile, without HQ and without
    a support grant (§5). The restore reads with `--no-lock`, because a read-only
@@ -120,13 +125,13 @@ fifth is a deck sentence still **held from the public pages** (`docs/CLAIMS.md`
    is literally true; §8's drill has to prove it against the real box rather
    than assert it.
 5. **"Backups are off-site."** *In the deck, held from the page.*
-   `docs/CLAIMS.md`:122 carries it and §1a holds it. It becomes true in fact
-   **when `t_12b3720a` lands** — the first sub-account pair, the
-   destroy→rebuild→paste→restore drill against the real box (the box exists and
-   holds only the drill's own fixture; it is the pair and the tenant's bytes
-   that are missing), followed by the
-   demo and bench repositories moving to it — **not when the R2 migration
-   landed**, because the R2 migration never landed. `t_5f10dd14` landed the
+   `docs/CLAIMS.md` §1 "Money and place" carries it and §1a holds it. It
+   becomes true in fact **when `t_12b3720a` lands** — the first sub-account
+   pair, the destroy→rebuild→paste→restore drill against the real box (the box
+   exists and holds only the drill's own fixture; it is the pair and the
+   tenant's bytes that are missing), followed by the demo and bench repositories
+   moving to it — **not when the R2 migration landed**, because the R2 migration
+   never landed. `t_5f10dd14` landed the
    30-day retention row on 19 November 2026 and corrected `web/privacy.html`'s
    destination cell, which then said "an SFTP storage box at HQ" and now needs
    the Hetzner sentence (§4.4 carries the hand-off). Both surfaces are
@@ -184,7 +189,7 @@ failure the builder did not test.**
    backup unit is rendered from `layout.home` (`backup_unit_files`,
    `installer/odile_install.py:14987`), which for a tenant is `/home/tenant`
    (`Layout.tenant`; `DEFAULT_HOME`; the image runs the installer with
-   `--user tenant`, `deploy/image/odile-release-setup.sh:169`) — the same string
+   `--user tenant`, `deploy/image/odile-release-setup.sh:204`) — the same string
    the live unit the drill measured names (`backup.md` §2.1). So today the two
    homes agree, and **no migration or home-mapping is needed**: the failure is a
    rebuild whose unit or restore call drops `--home` or overrides it. A restore
@@ -295,7 +300,9 @@ user's key opens the repository and nothing above it:
 | `odile-<slug>-ro` | `readonly: true`, same rest; home **`tenants/<slug>/data`, a subdirectory of the rw home** (never the same home: shared keys) | generated at provision, private half in the user's recovery file and in the store of record | `snapshots`, `check`, `restore` — **it cannot upload, delete or modify**, and it cannot write restic's lock file, so every command carries `--no-lock` |
 
 **Naming.** Our name for the pair is `odile-<slug>-rw` / `odile-<slug>-ro`,
-carried in the sub-account's `description` and in the tenant row. **Hetzner
+carried in the sub-account's **`name`** (the measured pair reads
+`odile-odl-bench-rw` / `odile-odl-bench-ro` in `name`; `description` is empty on
+both) and in the tenant row. **Hetzner
 assigns the login**: the sub-account's login is `u<box>-sub<N>` and its
 hostname is `u<box>-sub<N>.your-storagebox.de`, so the ADR never derives a login
 from the slug — it records what the API returned. The pair is slug-scoped, and a
@@ -332,12 +339,15 @@ so the read-only private half has to travel there once, and a rebuild that
 re-renders the file (the "start fresh" branch, §7.4) must be able to do it
 without the user's paste.
 
-**The 2 GB fair-use cap stays.** It is a per-repository envelope, not a
-provider limit: `backup.py run` reads `BACKUP_TENANT_CAP_BYTES=2000000000`,
-runs `restic stats --mode raw-data` **after prune**, and writes
-`status: over_cap` — with the size and the cap — when the repository exceeds it.
-A run that starts over cap does not upload, so growth stops at one night's delta
-above 2.0 GB. **Fifty tenants at the cap use 100 GB of 1 TB**; the cap is a
+**The 2 GB fair-use cap stays — as policy; the check that enforces it is not
+shipped at this head.** The cap is a per-repository envelope, not a provider
+limit: a repository over `BACKUP_TENANT_CAP_BYTES=2000000000` is a
+`status: over_cap` heartbeat that does not upload, so growth stops at one
+night's delta above 2.0 GB. **At this head `scripts/backup.py` reads no such
+constant, runs no after-prune `restic stats` and writes no `over_cap`**; the
+constant, the check and the write are **added by ODL-933's re-cut (§8)**, and
+until it lands the cap is a sentence in this ADR and the runbook, not a
+behaviour. **Fifty tenants at the cap use 100 GB of 1 TB**; the cap is a
 fair-use guard, not a capacity plan.
 
 **The ceiling that replaces the three-bucket cap.** The ordered box reports
@@ -355,8 +365,9 @@ purchase.
 **The API token at HQ: one, project-scoped, and only for provisioning.** Savio
 creates it in the Hetzner Console (Project → Security → API Tokens, Read &
 Write) — card `t_a548cb0a` — and it lands at
-`/root/.odile/hetzner-api-token` (0600). It is used by provisioning and by
-nothing else:
+`/root/.odile/hetzner-api-token` (0600). It is used by provisioning, by the
+box's delete protection, and by the daily usage readback (§8), and by nothing
+else:
 
 - `POST /storage_boxes/{id}/actions/change_protection` — `delete` protection on
   the box (§4.5). Measured `false` at 06:30Z and **`true` at 07:48Z**, set by
@@ -469,12 +480,16 @@ arithmetic.
 - **A restore is outside the window.** `odile-restore.service` stops the backup
   timer first (§7.2, step 5), so the one operation that legitimately needs more
   connections never competes with the nightly set.
-- **The 11th connection's error is measured, not guessed.** `t_12b3720a` opens
-  11 parallel SFTP sessions and records the exact refusal.
+- **The ceiling's refusal is measured, not guessed.** `t_12b3720a` holds 25
+  parallel SFTP sessions on port 22, then records the 26th one's
+  `Received disconnect … port 22:12: Maximum connections for host/user reached`
+  — and the same refusal on the second sub-account while 25 are held, which is
+  how the limit is known to be box-wide (§11).
 
 ### 4.4 Location: the bytes are in the EU, and that is a change
 
-The machine is in **Montréal, Canada** (`docs/CLAIMS.md`:122). The box is in
+The machine is in **Montréal, Canada** (`docs/CLAIMS.md` §1 "Money and place",
+the place row). The box is in
 **Helsinki, Finland (`hel1`)** — `location: {name: hel1, city: Helsinki,
 country: FI}`, `system: HEL1-BX192`, ordered on 24 November 2026. Germany
 (`fsn1`) was the other location Hetzner offers and is **not** used; the location
@@ -527,7 +542,8 @@ credential to mint by hand.
    API token cannot delete the box, and a human has to turn protection off
    first.
 3. **The 30-day exit.** The promise does not change: after cancellation the
-   repository is kept 30 days and then deleted (`docs/CLAIMS.md`:123). During
+   repository is kept 30 days and then deleted (`docs/CLAIMS.md` §1 "Money and
+   place", the 30-day row). During
    those 30 days the user holds the password, the URL and the read-only key, so
    they can take a copy without asking. That is the mechanism by which a tenant
    is never trapped by our single box.
@@ -635,9 +651,10 @@ one flag is the difference between "the file opens your backup" and a user
 watching a restore fail with a permission error, and it goes in the recovery
 file's own words as well as the page's. That closes invariant 4, and it makes
 the 30-day exit a thing the user already has rather than a thing Odile promises
-to build. It also makes `docs/CLAIMS.md`:65's "the file opens your backup"
-literally true instead of figuratively true, which is a **stronger sentence than
-the deck owns** and goes to Product and Savio (§9).
+to build. It also makes `docs/CLAIMS.md` §1 "Access", the recovery-file row's
+"the file opens your backup", literally true instead of figuratively true, which
+is a **stronger sentence than the deck owns** and goes to Product and Savio
+(§9).
 
 **What the read-only key deliberately cannot do:** write, delete or lock — and
 that holds **only because its account's home is nested inside the tenant's**
@@ -656,10 +673,10 @@ the repository password, and together they open the repository. Separately,
 neither does.
 
 **A grant gains nothing new, which is why no access claim moves.** A support
-grant could already read `/etc/odile/recovery.txt` (`docs/CLAIMS.md`:115 says
-so) and the read-write key beside it, so a grantee could already copy the
-repository's bytes and its password. The read-only key is the same capability,
-in a tidier form, and it widens the grant by nothing. A user who wants a
+grant could already read `/etc/odile/recovery.txt` (`docs/CLAIMS.md` §1
+"Access", the grant row, says so) and the read-write key beside it, so a
+grantee could already copy the repository's bytes and its password. The
+read-only key is the same capability, in a tidier form, and it widens the grant by nothing. A user who wants a
 grantee's copy to stop opening the repository rotates the password —
 `restic key add`, prove a restore, `restic key remove` — which
 `docs/runbooks/backup.md` §7 already documents; the read-only key is rotated by
@@ -736,8 +753,8 @@ about throughput, because the repository is a thousandth of a tenant's. The
 end-to-end estimate is
 therefore **15–25 minutes**, comfortably inside the published hour — but **the
 number that replaces 38m03s has to come from the drill in §8**, not from this
-paragraph, and if it does not hold, `docs/CLAIMS.md`:201's "under an hour" is
-re-cut rather than stretched.
+paragraph, and if it does not hold, `docs/CLAIMS.md` §1 "Reliability", the
+"under an hour" row, is re-cut rather than stretched.
 
 ### 7.3 The user's four actions, in one paragraph
 
@@ -759,7 +776,7 @@ message containing a secret.
 | **The box's host key changes** | `StrictHostKeyChecking=yes` with the pinned `known_hosts` fails the run with a host-key error — the safe direction, and every tenant fails at once because they share one box. The fix is one re-seed: the page or an installer re-run rewrites `known_hosts` from the box, and the runbook records `ssh-keyscan`'s output before and after. `t_12b3720a` records the box's fingerprint so the first change is detectable |
 | **The sub-account is deleted, or the box is full** | restic fails with an authentication or quota error; the run is `status: failed` and the watchdog reports it. The provisioning path refuses the 51st pair (§4.1), so "full" is caught before a tenant exists rather than at 03:00 |
 | **A password typed into the chat instead of the page** | it travels to NEAR AI's TEE in the prompt **and** lands in `state.db`, which is inside the backup it opens. The restore step is a page POST for exactly this reason, and the help text says so |
-| **The destination is down, or the repository is over the 2 GB cap** | the restore waits and retries; the machine is usable without it. A failed upload is a `status: failed` heartbeat, and a repository over `BACKUP_TENANT_CAP_BYTES` is `status: over_cap`; the freshness watchdog reports either. The cap never silently deletes: the last good snapshot stays until an operator prunes |
+| **The destination is down, or the repository is over the 2 GB cap** | the restore waits and retries; the machine is usable without it. A failed upload is a `status: failed` heartbeat, and a repository over the 2 GB cap is `status: over_cap` — the check lands with ODL-933's re-cut (§8); the freshness watchdog reports either. The cap never silently deletes: the last good snapshot stays until an operator prunes |
 | **HQ is gone** | the off-site repository, the user's recovery file and the signed image are enough to rebuild the machine by hand on any provider; what is lost is the convenience of `odilectl`, not the data. This is the first time that sentence has been true of a destination that is not HQ itself |
 
 ## 8. What this changes in the code — cards, not prose
@@ -776,7 +793,7 @@ recovery file and the provisioning.
 |---|---|---|
 | **The box and the first pair — `t_12b3720a`** (new; supersedes **ODL-938** / `t_7010af06`) | The box is ordered and active (id 709870, `hel1`, snapshots 04:30 UTC × 10, `protection.delete` set at 07:48Z); create `odile-odl-bench-rw`/`-ro` on **nested homes** (§4.1), **`update_access_settings` after each create**, install both public keys before `readonly: true`, run a real `init`/`backup`/`snapshots`/`restore` with the read-write key, read the same repository with the read-only key (`--no-lock`), **measure the connection ceiling** (25 held, the 26th refused, box-wide), record the box fingerprint, and write `docs/evidence/hetzner-bx11/` with the commands and raw output (token redacted) | `t_a548cb0a` is **satisfied**: the token exists at `/root/.odile/hetzner-api-token` (0600) and answers the API |
 | **Provisioning — the re-cut of ODL-924 (`t_83d6fd7d`)** | For each tenant: create the pair — `-rw` at `tenants/<slug>`, `-ro` at a **subdirectory of it that holds the repository** (never the same home: shared homes share `authorized_keys`, §4.1) — **call `update_access_settings` after every create** (the `POST` ignores `access_settings`), install each public half **while the home is still writable**, read both accounts back, and only then set `readonly: true`; generate both keypairs, reset and discard the sub-account passwords, write `/root/.odile/hetzner/odile-<slug>.env` (0600) and the row's `detail` (`backup_box_id`, `backup_subaccount_id`, `backup_readonly_subaccount_id`; the env file is the store of record and the reopen path re-records `detail` from it), put the repository URL, the read-write key, the host-key line and the read-only key in the seed **with the previous instance id**, and **refuse the 51st pair**. **Retires `--backup-password-file`** and with it the sealed password in `seed-rebuilds.json` | the evidence from `t_12b3720a` |
-| **`backup.py` + installer — the re-cut of ODL-933 (`t_fda54dd4`)** | Add **`-o sftp.connections=2`** to the SFTP options; render the timer from the slug (§4.3's offset, `RandomizedDelaySec=0`), keep `Persistent=true`; rename the cap to `BACKUP_TENANT_CAP_BYTES` and keep the `restic stats` check and `status: over_cap`; add `ConditionPathExists=/etc/odile/recovery.txt` to the backup **service**; **do not mint a recovery file on a rebuild** (`ensure_recovery` skips only while the file is absent and the seed carries the previous instance id). No `s3:` branch. Update `BACKUP_SHA256` and re-sign the installer | the seed fields |
+| **`backup.py` + installer — the re-cut of ODL-933 (`t_fda54dd4`)** | Add **`-o sftp.connections=2`** to the SFTP options; render the timer from the slug (§4.3's offset, `RandomizedDelaySec=0`), keep `Persistent=true`; **add** `BACKUP_TENANT_CAP_BYTES=2000000000`, the after-prune `restic stats --mode raw-data` and the `status: over_cap` write (nothing to rename or keep: `scripts/backup.py` has none of them at this head); add `ConditionPathExists=/etc/odile/recovery.txt` to the backup **service**; **do not mint a recovery file on a rebuild** (`ensure_recovery` skips only while the file is absent and the seed carries the previous instance id). No `s3:` branch. Update `BACKUP_SHA256` and re-sign the installer | the seed fields |
 | **The usage readback — the re-cut of ODL-934 (`t_a316c2fe`)** | `odilectl backup-usage`: read `stats.size_data` and `stats.size_snapshots` from `GET /storage_boxes` with the existing API token, sum each tenant's last `restic stats` from its heartbeat, write `/var/lib/odile/backup/usage.json`, and feed the watchdog at **800 GB warn / 950 GB critical** (1 TB box, 2 GB cap, 50 tenants = 100 GB at the cap). No new credential: the API token is already there | provisioning |
 | **First visit — ODL-937 (`t_c31fb2aa`) stands** | the rebuild step: detect the previous instance id in the seed, ask for the recovery file before the sign-in step, write `/etc/odile/recovery.txt`, run `odile-restore.service`, show the snapshot and its time (no JavaScript). Its §8 row's bucket wording is re-cut to the repository URL | `backup.py`'s `restore` (already supports `--target /` and `--include`) |
 | **Recovery file** | three new lines (the repository URL, the box host-key fingerprint and the read-only private key) and the parse that tolerates the key block; `first_visit.py`'s copy of the grammar stays the one source; the page's help text carries `--no-lock` | provisioning |
@@ -800,11 +817,11 @@ than smuggled in:**
 
 | Sentence | Today | After this ADR |
 |---|---|---|
-| "Backups are off-site." (`CLAIMS.md`:122) | **in the deck, held from the page** (`CLAIMS.md` §1a, `t_66fcaa02`); not true in fact — the bytes are on HQ's disk | **true in fact when `t_12b3720a` lands** — a box at Hetzner, a different provider from the machine and from HQ, a different account from the DNS zone, in the EU. The page sentence stays held until Product lands it — **this ADR does not publish it** |
-| "The encrypted backup is kept 30 days after cancellation, then deleted. Odile can delete it, not read it." (`:123`) | true on the storage path; conditional during a rebuild | true on both paths, because the password never transits HQ: the rebuild is a paste on the machine and `--backup-password-file` is retired. At `keep_until` the repository directory and both sub-accounts are deleted (ODL-935's re-cut); the 30 days and the deletion are unchanged |
-| "A recovery code and a recovery file are the way back: … the file opens your backup." (`:65`) | true through the agent | **literally true**: the file carries the URL, the pinned host key and a read-only key, so it opens the backup on any machine. **This is stronger than the deck owns** — Product lands the wording, Savio approves it (§3, a published sentence not in `CLAIMS.md`) |
-| "The recovery file holds the backup password and the certificate fingerprint." (`:66`) | true | it now also holds the repository, the box's host-key fingerprint and a read-only key; the sentence needs the extra clause |
-| "Backed up nightly. Rebuildable in under an hour — without a key." (`:201`) | measured at 38m03s against a repository on the same host | **at risk**: the number must be re-measured against the real box over a transatlantic link. The model says 15–25 minutes and the sentence probably survives; the drill decides, and if it does not, the sentence moves |
+| "Backups are off-site." (`CLAIMS.md` §1 "Money and place") | **in the deck, held from the page** (`CLAIMS.md` §1a, `t_66fcaa02`); not true in fact — the bytes are on HQ's disk | **true in fact when `t_12b3720a` lands** — a box at Hetzner, a different provider from the machine and from HQ, a different account from the DNS zone, in the EU. The page sentence stays held until Product lands it — **this ADR does not publish it** |
+| "The encrypted backup is kept 30 days after cancellation, then deleted. Odile can delete it, not read it." (§1 "Money and place") | true on the storage path; conditional during a rebuild | true on both paths, because the password never transits HQ: the rebuild is a paste on the machine and `--backup-password-file` is retired. At `keep_until` the repository directory and both sub-accounts are deleted (ODL-935's re-cut); the 30 days and the deletion are unchanged |
+| "A recovery code and a recovery file are the way back: … the file opens your backup." (§1 "Access") | true through the agent | **literally true**: the file carries the URL, the pinned host key and a read-only key, so it opens the backup on any machine. **This is stronger than the deck owns** — Product lands the wording, Savio approves it (§3, a published sentence not in `CLAIMS.md`) |
+| "The recovery file holds the backup password and the certificate fingerprint." (§1 "Access") | true | it now also holds the repository, the box's host-key fingerprint and a read-only key; the sentence needs the extra clause |
+| "Backed up nightly. Rebuildable in under an hour — without a key." (§1 "Reliability") | measured at 38m03s against a repository on the same host | **at risk**: the number must be re-measured against the real box over a transatlantic link. The model says 15–25 minutes and the sentence probably survives; the drill decides, and if it does not, the sentence moves |
 | `docs/MVP-V0.1.md` §6.7 "A restore needs the recovery file and one paste of its password in the browser" | already true at this head | unchanged by this ADR; it is the path §7.2–§7.3 describe, and under v3 the paste carries the key the user's own copy needs |
 
 Nothing here makes the *access* story stronger: no operator key, no escrow, no
@@ -855,7 +872,10 @@ whichever comes first. After that, changing providers is a migration with a
 
 ## 11. Evidence
 
-Measured, at this head, unless marked *read* or *modelled*:
+Measured, at this head, unless marked *read* or *modelled*. **`docs/CLAIMS.md`
+rows are cited by section and text, never by line**: one claims edit shifts
+every number below (the v2.1 round found that, and the v3.1 round re-derived
+nine pointers that had moved since v2 shipped).
 
 - The destination and its honesty: `docs/runbooks/backup.md` §3 (the repository
   name does not resolve; the stand-in is HQ's `sshd` on 2222; "the backup survives
@@ -863,8 +883,9 @@ Measured, at this head, unless marked *read* or *modelled*:
 - HQ's provider, read on 17 November 2026: `getent hosts mail.odile.fyi`, then
   `curl https://ipinfo.io/<that address>/json` → `"hostname": "mail.odile.fyi"`,
   `"city": "Montréal"`, `"org": "AS395904 Servury"`. The shipped tree carries the
-  documentation-range alias for that address (`docs/ops/PUBLIC-TREE.md`:85), and
-  `docs/runbooks/backup-hq.md` §5 states that HQ is "one vCPU-class box".
+  documentation-range alias for that address (`docs/ops/PUBLIC-TREE.md`, the
+  same address row), and `docs/runbooks/backup-hq.md` §5 states that HQ is
+  "one vCPU-class box".
 - The numbers in §2: `backup.md` §4 (0.931 s), §5.5 (38m03s / 84m13s / 14m24s /
   0.861 s), §8 (156,311 files / 3,139,596,963 bytes; repository
   1,017,111,156 bytes; the `rc=1` password grep; the snapshot ids).
