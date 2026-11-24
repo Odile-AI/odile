@@ -1,27 +1,27 @@
 {
   "artifacts": {
     "installer": {
-      "sha256": "36add6dab970697bc456076e249bd433332a13abf1e9cd216e235b9014203bf6",
-      "size": 1576201,
+      "sha256": "580f2ad3a2393c0ae7f76fcb6c573bd3ed44bdeb4d8151b5cf9e7c157eaf5c8f",
+      "size": 1576209,
       "url": "odile_install.py"
     },
     "skills": {
-      "sha256": "27d98728253480e7e5262d0440e61303b5e6ab25d9f5236f8454c4d3adbddcbe",
-      "size": 852651,
+      "sha256": "c5f507b59bf4eaf4256986f2fa67ddadb01a18abf94372cfa9e160a0f1b6dd3f",
+      "size": 852668,
       "url": "skills.tar.gz"
     }
   },
   "boot": {
     "kernel": "6.12.115+deb13.1-amd64"
   },
-  "generated_at": "2026-11-23T03:58:00Z",
+  "generated_at": "2026-11-23T21:01:30Z",
   "manifest": {
-    "sha256": "508f9d2fab496c9aa355e492aeeb7e03e9a927ff9c2725d336ddecdb818a1a74",
+    "sha256": "e97266f0adc78ff139e1c3c7cd63ce922b3b2aee85430292e4170dc8f191d893",
     "signature_url": "manifest.json.sig",
     "url": "manifest.json"
   },
-  "notes": "ODL-925 (B-once): the first visit is a login. The first-visit page and the service it runs are re-embedded (the page is tokenless, ?t= answers 410, the state carries first_login_at), the installer writes the seed's sign_in_hash into the tenant .env before the Webapp's first boot, and the image's installer stamps the seeded state. Brand round: the rate limit and a refused write answer the page with one role=\"alert\" notice, a stale ?t= picks its answer by the state (a set sign-in is 'already set', with one way in), the classic setup footer drops D-1's registration clause, the sign-in field names no missing hint, the filled controls' selection paints, and the ready email says D-7 once followed by D-10. The manifest moves installer_sha256 and generated_at only; skills_bundle_sha256 and every skill row are unchanged.",
+  "notes": "ODL-929 (B-once): the guest /verify page and the installed help are re-cut. The three-powers paragraph says the boot image is compared before you sign in; the installed help's sign-in-lost answer is D-19 and its lost-code tail is D-5 (a lost code starts a new account; a backup is the only way to bring the files), its grant answer opens with D-3, and the rebuild row names only the disk. The installer re-embeds templates/verify.html (1ce729c8\u2026, 42,959 bytes) and the odile-help skill (62fac689\u2026, 6,264 bytes); the manifest moves installer_sha256 and the odile-help row, and skills.tar.gz is rebuilt from the fresh root. t_fc412bd9 (this cut): the tenant /verify page's \u2264560 header margin rises from 24 to 32 px, the sheet's 4 px scale, so the 32 px wordmark's box clears its 16 px floor at 390, 320 and 1440 (20.0 px measured, scrollWidth == clientWidth); the installer re-embeds templates/verify.html (1f5314db\u2026, 42,959 bytes), which carries both changes, and the installer/manifest hashes move over ODL-929's 2026.11.23-4 cut.",
   "product": "odile",
-  "release": "2026.11.23-3",
+  "release": "2026.11.23-5",
   "schema": 1
 }

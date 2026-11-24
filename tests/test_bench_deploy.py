@@ -51,6 +51,10 @@ def load(name: str, path: Path):
 
 
 deploy = load("odile_deploy_bench", SCRIPT)
+#: The seed module the deployer ships, and therefore the loader it validates a
+#: bench config with. Imported here so the tests can ask the same authority.
+SEED_MODULE_PATH = ROOT / "seed" / "seed.py"
+seedmod = load("odile_seed_for_bench_tests", SEED_MODULE_PATH)
 
 # A live-shaped Caddyfile: the global `admin off`, the production site with
 # its own seed region and catch-all, and a second site block with its own
@@ -343,7 +347,10 @@ class DeployerTests(unittest.TestCase):
             directory.mkdir(parents=True, exist_ok=True)
         (self.source / "app.py").write_text("print('app')\n", encoding="utf-8")
         (self.source / "attest.py").write_text("print('attest')\n", encoding="utf-8")
-        (self.source / "seed" / "seed.py").write_text("print('seed')\n", encoding="utf-8")
+        # The deployer validates the bench seed config with the seed module it
+        # ships (`seed/seed.py`'s own `load_config`), so the fixture ships the
+        # real one rather than a stub.
+        shutil.copyfile(SEED_MODULE_PATH, self.source / "seed" / "seed.py")
         (self.source / "web" / "index.html").write_text("<h1>Odile</h1>\n", encoding="utf-8")
         self.prod_config.write_text(json.dumps(PRODUCTION_CONFIG), encoding="utf-8")
         os.chmod(self.prod_config, 0o600)
@@ -504,6 +511,52 @@ class DeployerTests(unittest.TestCase):
         self.assertEqual(self.caddyfile.read_text(encoding="utf-8"),
                          deploy.splice_caddyfile(PRODUCTION_CADDY, BLOCK.read_text(encoding="utf-8")))
 
+    def test_a_deploy_that_ships_a_newer_seed_merges_the_key_it_needs(self) -> None:
+        # ODL-949: the bench config was written before ODL-469 made
+        # `mail_relay.tls_ca` required, the shipped seed exited 2 at start, and
+        # the deploy ended on `GET https://test.odile.fyi/seed answered 502`.
+        stale = deploy.bench_config(PRODUCTION_CONFIG)
+        del stale["mail_relay"]["tls_ca"]
+        self.config.write_text(json.dumps(stale, indent=2, sort_keys=True) + "\n",
+                               encoding="utf-8")
+        os.chmod(self.config, 0o600)
+
+        code, out, err = self.apply()
+
+        self.assertEqual(code, 0, err)
+        self.assertIn("bench: deployed", out)
+        self.assertIn("mail_relay.tls_ca", out)
+        self.assertIn(str(self.prod_config), out)
+        seedmod.load_config(str(self.config))          # the unit's own loader
+        merged = json.loads(self.config.read_text(encoding="utf-8"))
+        self.assertEqual(merged["environment"], "bench")
+        self.assertEqual(self.config.stat().st_mode & 0o777, 0o600)
+        # The next apply converges and restarts nothing.
+        self.recorder.calls.clear()
+        code, out, err = self.apply()
+        self.assertEqual(code, 0, err)
+        self.assertIn("bench: nothing to do", out)
+        self.assertEqual(self.recorder.mutating(), [])
+
+    def test_a_config_the_seed_refuses_stops_the_apply_before_any_restart(self) -> None:
+        # The guard precedes the first mutating step: a config the shipped seed
+        # refuses leaves the running units (and the old release) alone, rather
+        # than restarting them onto a seed that exits 2.
+        broken = deploy.bench_config(PRODUCTION_CONFIG)
+        broken["mail_relay"]["tls_ca"] = "not a PEM certificate"
+        self.config.write_text(json.dumps(broken, indent=2, sort_keys=True) + "\n",
+                               encoding="utf-8")
+        os.chmod(self.config, 0o600)
+
+        code, out, err = self.apply()
+
+        self.assertEqual(code, 1)
+        self.assertIn("mail_relay.tls_ca", err)
+        self.assertIn("fix: ", err)
+        self.assertNotIn("bench:", out)
+        self.assertEqual(self.recorder.mutating(), [])
+        self.assertFalse(self.current.is_symlink())
+
     def test_one_rollback_returns_the_previous_release(self) -> None:
         self.assertEqual(self.apply()[0], 0)
         first = os.readlink(self.current)
@@ -596,6 +649,239 @@ class BenchConfigTests(unittest.TestCase):
         self.assertEqual(bench["mail_relay"], PRODUCTION_CONFIG["mail_relay"])
         self.assertNotEqual(bench["backup_repo_url"], PRODUCTION_CONFIG["backup_repo_url"])
         self.assertEqual(bench["environment"], "bench")
+
+
+class SeedConfigUpgradeTests(unittest.TestCase):
+    """ODL-949: an existing bench config is upgraded, not left to fail at start.
+
+    The bench config is derived once, when it is created. When `main`'s
+    `seed/seed.py` later refuses a config without a key (ODL-469's
+    `mail_relay.tls_ca`), the shipped service exits 2 at start and the deploy
+    ends on `GET /seed 502`. The repair merges only the required keys the file
+    lacks, from production; an operator's own keys are never rewritten, and a
+    value that is present but wrong is named with a fix rather than replaced.
+    """
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        base = Path(self.tmp.name)
+        self.config = base / "root/.odile/seed-config.test.json"
+        self.prod = base / "root/.odile/seed-config.json"
+        self.config.parent.mkdir(parents=True)
+        self.saved = (deploy.CONFIG_FILE, deploy.PROD_CONFIG, deploy.chown)
+        deploy.CONFIG_FILE = self.config
+        deploy.PROD_CONFIG = self.prod
+        deploy.chown = lambda path, ids: None
+        self.bench = deploy.bench_config(PRODUCTION_CONFIG)
+        self.write(self.prod, PRODUCTION_CONFIG)
+
+    def tearDown(self) -> None:
+        deploy.CONFIG_FILE, deploy.PROD_CONFIG, deploy.chown = self.saved
+        self.tmp.cleanup()
+
+    @staticmethod
+    def write(path: Path, document: dict) -> None:
+        path.write_text(json.dumps(document, indent=2, sort_keys=True) + "\n",
+                        encoding="utf-8")
+        os.chmod(path, 0o600)
+
+    def ensure(self, dry: bool = False) -> tuple[bool | None, str | None, str]:
+        """(changed, refusal, stdout); a refusal is what SystemExit carried."""
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            try:
+                return deploy.ensure_config(dry, ROOT), None, out.getvalue()
+            except SystemExit as exc:
+                self.assertIsInstance(exc.code, str)
+                return None, str(exc.code), out.getvalue()
+
+    def test_a_missing_required_key_is_merged_and_the_shipping_seed_accepts_it(self) -> None:
+        stale = json.loads(json.dumps(self.bench))
+        del stale["mail_relay"]["tls_ca"]
+        self.write(self.config, stale)
+
+        changed, refusal, out = self.ensure()
+
+        self.assertIsNone(refusal)
+        self.assertTrue(changed)
+        self.assertIn("mail_relay.tls_ca", out)
+        self.assertIn(str(self.prod), out)
+        # The authority is the module this deploy ships, not a copy of its rules.
+        seedmod.load_config(str(self.config))
+        merged = json.loads(self.config.read_text(encoding="utf-8"))
+        self.assertEqual(merged["mail_relay"]["tls_ca"],
+                         PRODUCTION_CONFIG["mail_relay"]["tls_ca"])
+        # Merged, not re-derived: the bench's own values survive untouched.
+        self.assertEqual(merged["environment"], "bench")
+        self.assertTrue(merged["backup_repo_url"].endswith("/tenants/test-{slug}"))
+        self.assertEqual(merged["mail_relay"]["host"], PRODUCTION_CONFIG["mail_relay"]["host"])
+        self.assertEqual(self.config.stat().st_mode & 0o777, 0o600)
+        # And the next run converges instead of merging again.
+        changed, refusal, out = self.ensure()
+        self.assertEqual((changed, refusal), (False, None))
+        self.assertIn("same", out)
+
+    def test_an_operator_edited_config_that_still_loads_is_left_byte_identical(self) -> None:
+        edited = json.loads(json.dumps(self.bench))
+        edited["model"] = "the-operator-chose-this-model"
+        edited["mail_relay"]["tls_ca"] = ("-----BEGIN CERTIFICATE-----\n"
+                                          "OPERATOROWNCA\n"
+                                          "-----END CERTIFICATE-----\n")
+        edited["odile_operator_note"] = "hand-edited on the bench"
+        self.write(self.config, edited)
+        before = self.config.read_bytes()
+
+        changed, refusal, out = self.ensure()
+
+        self.assertEqual((changed, refusal), (False, None))
+        self.assertIn("same", out)
+        self.assertEqual(self.config.read_bytes(), before)
+        seedmod.load_config(str(self.config))
+
+    def test_an_operator_edited_value_the_seed_refuses_is_named_with_a_working_fix(self) -> None:
+        broken = json.loads(json.dumps(self.bench))
+        broken["mail_relay"]["tls_ca"] = "not a PEM certificate"
+        self.write(self.config, broken)
+        before = self.config.read_bytes()
+
+        changed, refusal, out = self.ensure()
+
+        self.assertIsNone(changed)
+        self.assertIn(str(self.config), refusal or "")
+        self.assertIn("mail_relay.tls_ca", refusal or "")
+        self.assertIn("not a PEM certificate", refusal or "")  # the seed's own message
+        self.assertIn("fix: ", refusal or "")
+        # Refused, not rewritten: the operator's file is theirs until they say so.
+        self.assertEqual(self.config.read_bytes(), before)
+        # The printed line is the repair, and it works.
+        fix = [line for line in (refusal or "").splitlines() if line.startswith("fix: ")][0]
+        subprocess.run(fix[len("fix: "):], shell=True, check=True)
+        seedmod.load_config(str(self.config))
+        changed, refusal, _ = self.ensure()
+        self.assertEqual((changed, refusal), (False, None))
+
+    def test_a_required_key_production_lacks_is_named_and_not_invented(self) -> None:
+        production = json.loads(json.dumps(PRODUCTION_CONFIG))
+        del production["mail_relay"]["tls_ca"]
+        self.write(self.prod, production)
+        stale = json.loads(json.dumps(self.bench))
+        del stale["mail_relay"]["tls_ca"]
+        self.write(self.config, stale)
+
+        changed, refusal, _ = self.ensure()
+
+        self.assertIsNone(changed)
+        self.assertIn("mail_relay.tls_ca", refusal or "")
+        self.assertIn(str(self.prod), refusal or "")
+        self.assertNotIn("tls_ca", json.loads(self.config.read_text(encoding="utf-8"))["mail_relay"])
+
+    def test_the_dry_run_names_the_merge_and_writes_nothing(self) -> None:
+        stale = json.loads(json.dumps(self.bench))
+        del stale["mail_relay"]["tls_ca"]
+        self.write(self.config, stale)
+        before = self.config.read_bytes()
+
+        changed, refusal, out = self.ensure(dry=True)
+
+        self.assertEqual((changed, refusal), (True, None))
+        self.assertIn("would merge", out)
+        self.assertIn("mail_relay.tls_ca", out)
+        self.assertEqual(self.config.read_bytes(), before)
+
+    def test_the_dry_run_refuses_what_the_apply_refuses(self) -> None:
+        broken = json.loads(json.dumps(self.bench))
+        broken["mail_relay"]["tls_ca"] = "not a PEM certificate"
+        self.write(self.config, broken)
+
+        changed, refusal, _ = self.ensure(dry=True)
+
+        self.assertIsNone(changed)
+        self.assertIn("mail_relay.tls_ca", refusal or "")
+
+    def test_a_merge_the_seed_still_refuses_is_refused_before_the_file_is_written(self) -> None:
+        # The verifier's repro (2026-11-23): production's own value is wrong, so
+        # the merge cannot repair the file. The apply must refuse like the dry
+        # run — before `write_atomic` — and leave the operator's bytes alone.
+        production = json.loads(json.dumps(PRODUCTION_CONFIG))
+        production["mail_relay"]["tls_ca"] = "not a PEM certificate"
+        self.write(self.prod, production)
+        stale = json.loads(json.dumps(self.bench))
+        del stale["mail_relay"]["tls_ca"]
+        self.write(self.config, stale)
+        before = self.config.read_bytes()
+
+        _, dry_refusal, _ = self.ensure(dry=True)
+        changed, refusal, out = self.ensure()
+
+        self.assertIsNone(changed)
+        self.assertEqual(refusal, dry_refusal)
+        self.assertIn("mail_relay.tls_ca", refusal or "")
+        self.assertIn("not a PEM certificate", refusal or "")
+        # The bad value is production's, so the fix is there — not a copy of it.
+        self.assertIn("merged from", refusal or "")
+        self.assertIn(f"fix: fix mail_relay.tls_ca in {self.prod}", refusal or "")
+        self.assertIn("merge", out)
+        self.assertEqual(self.config.read_bytes(), before)
+
+    def test_a_refusal_that_names_no_required_path_names_its_own_field(self) -> None:
+        # `near_api_key` is validated by the shipping loader but is not a path
+        # the deployer merges. The refusal must name the field the message
+        # names, say it is present-but-wrong, and not offer the relay's PEM.
+        broken = json.loads(json.dumps(self.bench))
+        broken["near_api_key"] = ""
+        self.write(self.config, broken)
+        before = self.config.read_bytes()
+
+        changed, refusal, _ = self.ensure()
+
+        self.assertIsNone(changed)
+        self.assertIn("near_api_key", refusal or "")
+        self.assertIn("present but the seed refuses its value", refusal or "")
+        self.assertNotIn("relay's own PEM", refusal or "")
+        self.assertNotIn("absent from both configs", refusal or "")
+        self.assertEqual(self.config.read_bytes(), before)
+        fix = [line for line in (refusal or "").splitlines() if line.startswith("fix: ")][0]
+        subprocess.run(fix[len("fix: "):], shell=True, check=True)
+        seedmod.load_config(str(self.config))
+        changed, refusal, _ = self.ensure()
+        self.assertEqual((changed, refusal), (False, None))
+
+    def test_a_fresh_derivation_is_validated_before_it_is_written(self) -> None:
+        production = json.loads(json.dumps(PRODUCTION_CONFIG))
+        del production["mail_relay"]["tls_ca"]
+        self.write(self.prod, production)
+
+        changed, refusal, _ = self.ensure()
+
+        self.assertIsNone(changed)
+        self.assertIn("mail_relay.tls_ca", refusal or "")
+        self.assertIn(str(self.prod), refusal or "")
+        self.assertFalse(self.config.exists())
+
+    def test_the_required_list_is_exactly_what_the_shipping_seed_refuses(self) -> None:
+        """Alarm on drift: `main` gaining a key must fail this test, not a deploy."""
+        minimal: dict = {}
+        for path in deploy.REQUIRED_CONFIG_PATHS:
+            node = minimal
+            for name in path[:-1]:
+                node = node.setdefault(name, {})
+            source = PRODUCTION_CONFIG
+            for name in path:
+                source = source[name]
+            node[path[-1]] = source
+        self.write(self.config, minimal)
+        # Everything the deployer merges is enough for the shipping loader…
+        seedmod.load_config(str(self.config))
+        # …and every name on the list is a key that loader genuinely refuses.
+        for required in deploy.REQUIRED_CONFIG_PATHS:
+            without = json.loads(json.dumps(minimal))
+            node = without
+            for name in required[:-1]:
+                node = node[name]
+            del node[required[-1]]
+            self.write(self.config, without)
+            with self.assertRaises(seedmod.ConfigError, msg=".".join(required)):
+                seedmod.load_config(str(self.config))
 
 
 class PortGuardTests(unittest.TestCase):

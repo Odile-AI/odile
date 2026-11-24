@@ -2726,6 +2726,14 @@ Digests:
         self.assertIn(["cryptsetup", "luksDump", str(device)], calls)
         self.assertEqual(command, "cryptsetup luksDump %s" % device)
 
+    def test_the_three_powers_paragraph_names_the_sign_in_not_a_setup_step(self) -> None:
+        # B-once (ODL-929, D-7): the registration password is the machine's
+        # sign-in, so the check is "before you sign in", not a first-visit
+        # setup step. The retired phrase rode inside the signed installer.
+        body = self.page()
+        self.assertIn("compare it to the one in your ready email before you sign in", body)
+        self.assertNotIn("set your sign-in", body)
+
     def test_the_three_gaps_are_stated_in_order_with_the_manifest_note(self) -> None:
         body = self.page()
         gaps = ("The app layer is not hardware-measured yet.",
@@ -2860,6 +2868,38 @@ Digests:
                             r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z"):
                 self.assertIsNone(re.search(pattern, bare),
                                   "%r is bare outside the mono role: %r" % (pattern, bare[:160]))
+
+    def test_the_phone_header_keeps_the_32px_marks_16px_clear_space(self) -> None:
+        """BRAND.md §Name and mark: a 32 px mark keeps 16 px of clear space.
+
+        This page's header carries the wordmark alone, so its own bottom
+        margin is the whole gap to the h1. The 24 px phone margin measured
+        12.0 px of box gap at 390 and 320 — 4 px under the floor — and the
+        sheet's next on-scale value, 32 px, measures 20.0 px there and at
+        1440. t_fc412bd9's render probe reads those figures; this test fails
+        first if the rule moves again, before the page ships inside the
+        signed installer.
+        """
+        body = self.page()
+        css = re.search(r"<style>(.*?)</style>", body, re.S).group(1)
+        wide = re.search(r"\.top\{([^}]*)\}", css)
+        self.assertIsNotNone(wide, "the page lost its header rule")
+        assert wide is not None  # the assertion above names the failure
+        self.assertIn("margin:0 0 32px", wide.group(1))
+        phone = re.search(r"@media \(max-width:560px\)\{(.*?)\n\}", css, re.S)
+        self.assertIsNotNone(phone, "the page lost its phone block")
+        assert phone is not None
+        rule = re.search(r"\.top\{([^}]*)\}", phone.group(1))
+        self.assertIsNotNone(rule, "the phone block has no .top margin")
+        assert rule is not None
+        self.assertIn("margin-bottom:32px", rule.group(1),
+                      "the 32 px mark is under its 16 px clear-space floor at ≤560")
+        self.assertNotIn("28px", phone.group(1),
+                         "28 px is off the sheet's 4 px scale")
+        brand = re.search(r"\.brand\{([^}]*)\}", css)
+        self.assertIsNotNone(brand, "the page lost its wordmark rule")
+        assert brand is not None
+        self.assertIn("padding:12px 0", brand.group(1))
 
     def test_the_header_carries_the_wordmark_alone(self) -> None:
         # BRAND.md change log 2026-11-11: one link, not two to the same place.

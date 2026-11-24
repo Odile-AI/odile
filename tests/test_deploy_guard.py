@@ -23,6 +23,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 DEPLOY = ROOT / "scripts/deploy.sh"
+HQ_TOOLS = ROOT / "scripts/hq_tools.sh"
 
 # `git -c` pairs so a fixture commit needs no user config on the host.
 GIT_IDENTITY = (
@@ -87,6 +88,11 @@ class Checkout:
         deploy = self.repo / "scripts/deploy.sh"
         deploy.write_bytes(DEPLOY.read_bytes())
         deploy.chmod(0o755)
+        # The HQ-only-tools rule ships beside the entry point; deploy.sh
+        # refuses a checkout that lacks it (ODL-347-F1-F1).
+        helper = self.repo / "scripts/hq_tools.sh"
+        helper.write_bytes(HQ_TOOLS.read_bytes())
+        helper.chmod(0o755)
         self.commit("base tree")
 
     def git(self, *args: str) -> subprocess.CompletedProcess[str]:

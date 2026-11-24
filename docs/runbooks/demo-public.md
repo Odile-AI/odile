@@ -144,10 +144,12 @@ journalctl -u odile-attest-refresh.service -n 20 --no-pager
 
 ### The `/verify` lede is demo-only — the choice
 
-The page a judge lands on must not open with the customer row ("No one at
-Odile can log in to a tenant machine. The only sign-in is yours."): on this
-machine Odile holds the boot key and the sign-in is the shared `judge`
-account. `demo.odile.fyi/verify` therefore opens with
+The page a judge lands on must not open with the customer row — the grant row
+`No one at Odile can log in unless you grant it.` that main landed at bd97247
+(the ODL-474 follow-up, unchanged at f0a5e86) and that ODL-929's release cut
+kept in `templates/verify.html` and the embedded copies. On this machine Odile
+holds the boot key and the sign-in is the shared `judge` account.
+`demo.odile.fyi/verify` therefore opens with
 
 > This is Odile's tenant machine: one shared workspace on our measured AMD
 > SEV-SNP machine. Odile holds this machine's boot key and can log in. The demo
@@ -459,7 +461,7 @@ it actually uses, the `.env` key *names*, the `verify` object
 hashes and residue count, the seeded session's row and the last runs' turn
 counts. The check also reads the served `/verify` and fails if its first
 paragraph is not `deploy/demo-host/verify-lede.html` or if the customer row
-still appears. `--report --session-id <id>` prints one session's row and a
+(the grant row above) still appears. `--report --session-id <id>` prints one session's row and a
 digest of its messages, which is what the deploy-changes-no-session check
 compares. What the same console reaches when it runs a shell — `tenant`,
 passwordless root, the tenant's Near AI key — is the six-command block in §3,
@@ -780,6 +782,37 @@ byte-unchanged; the unit is not found and there is no demo timer; the check is
 PASS 57/57 with `86 before, 86 after, 8 opened all gone` (a first run failed
 only on the dashboard sign-in rate limit, 400, and passed 57/57 after the
 documented wait); rename/delete/archive were re-measured.
+
+**The customer row after ODL-929's release cut (ODL-932, 2026-11-23).** The
+release page's customer row is the sibling grant row main landed at bd97247,
+`No one at Odile can log in unless you grant it.` — `templates/verify.html:111`,
+`installer/odile_install.py:6378`, `release/odile_install.py:6378` — and
+ODL-929's cut did not move it. The three demo programs name that sentence once
+(`CUSTOMER_SENTENCE`: `apply_demo_public.py:139`, `check_demo_public.py:87`,
+`deploy_demo_public.py:159`), and `tests/test_demo_public.py`'s
+`CustomerRowTests` pins the shipped page's tenant block to the same constant,
+proves `--report`'s `customer_lede` flips with the file it reads, and sweeps
+the demo's copy-bearing files with whitespace flattened. That sweep is the
+point: §"The `/verify` lede is demo-only — the choice" used to quote the
+retired A1 row **wrapped across two lines**, so the card's line-based grep
+returned nothing while the row was still here. The deploy from this branch
+installed the updated apply (installed sha256 = tree's `eb3164b1…`), left the
+demo lede and command `same`, and the live
+`check_demo_public.py --target "$(dig +short demo.odile.fyi)"` is
+`PASS (26 passed, 0 failed)`; `apply --report` on the machine reads
+`"demo_lede":true,"demo_command":true,"customer_lede":false,"rollback":true`,
+the served `/verify` opens with `deploy/demo-host/verify-lede.html` (sha256
+`6d581e13…`, `grep -c 'No one at Odile can log in'` = 0), and the rollback copy
+`verify.html.release` (sha256 `548bc270…`) line 111 carries the grant row.
+Evidence: `docs/evidence/a2-demo-lede.md`; transcripts in
+`docs/ops/evidence/t_96eff57f/`.
+
+**One open item:** that rollback copy still says `before you set your sign-in`
+— the phrase ODL-929 retired; `templates/verify.html:165` at this head says
+`before you sign in`. The demo deploy ships the demo apply, not the release
+installer, so it cannot refresh the release page the machine keeps for a
+rollback. The row check is unaffected, but the demo host's release page predates
+ODL-929's cut.
 
 ## 9. The boot image is a footgun — read before any power action
 

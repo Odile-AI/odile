@@ -683,6 +683,123 @@ class ReprovisionTest(TempStoreMixin):
         self.assertEqual(self.store.get(SLUG).slug, SLUG)
 
 
+# ------------------------------------------------------------------- the handover
+
+
+class ReleaseTest(TempStoreMixin):
+    """The handover step: detach the machine, keep the row and its slug.
+
+    ODL-348's drill freed tenant A by hand because `destroy` terminates the
+    machine and a destroyed row kept the provider id, so the next tenant's
+    provision died on the two `UNIQUE server_id` columns. `release` is the
+    missing move: the row ends `destroyed`, every machine column is NULL, the
+    departed machine is recorded in `detail.released`, and reconcile still sees
+    a machine that lives on.
+    """
+
+    MACHINE_FIELDS = ReprovisionTest.FIELDS
+
+    def test_release_leaves_the_row_destroyed_and_clears_every_machine_column(self):
+        self.active_tenant()
+        result = self.store.release(SLUG, reason="handover to odl-348b2c")
+        released = result.tenant
+
+        self.assertTrue(result.changed)
+        self.assertEqual(released.state, "destroyed")
+        self.assertEqual(released.slug, SLUG)
+        for name in self.MACHINE_FIELDS:
+            self.assertIsNone(getattr(released, name), name)
+        self.assertEqual(released.detail["released"]["server_id"], SERVER_ID)
+        self.assertEqual(released.detail["released"]["ipv4"], "203.0.113.120")
+        self.assertEqual(released.detail["released"]["reason"], "handover to odl-348b2c")
+        event = self.store.events(SLUG)[-1]
+        self.assertEqual((event.from_state, event.to_state), ("ready", "destroyed"))
+        self.assertEqual(event.detail["reason"], "handover to odl-348b2c")
+
+    def test_release_clears_a_destroyed_row_that_kept_the_machine_id(self):
+        """The drill's exact state: destroyed, machine id still the zombie marker."""
+        self.active_tenant()
+        self.store.destroy(SLUG, reason="freed without termination")
+
+        released = self.store.release(SLUG, reason="handover").tenant
+
+        self.assertEqual(released.state, "destroyed")
+        self.assertIsNone(released.server_id)
+        self.assertEqual(released.detail["released"]["server_id"], SERVER_ID)
+        destroyed = [event for event in self.store.events(SLUG) if event.to_state == "destroyed"]
+        self.assertEqual(len(destroyed), 1, "the state did not move; no second event")
+
+    def test_a_released_machine_records_on_the_next_tenants_row(self):
+        """The measured failure: UNIQUE tenant_state.server_id on B's provision."""
+        self.active_tenant()
+        self.store.release(SLUG, reason="handover")
+        other = "odl-348b2c"
+        self.store.invite(other)
+        self.store.claim(other)
+
+        tenant = self.store.provision(
+            other, server_id=SERVER_ID, hostname=other, ipv4="203.0.113.120"
+        )
+
+        self.assertEqual(tenant.server_id, SERVER_ID)
+        self.assertIsNone(self.store.get(SLUG).server_id)
+
+    def test_release_twice_is_a_no_op(self):
+        self.active_tenant()
+        first = self.store.release(SLUG, reason="handover").tenant
+        events = self.count_events(SLUG)
+
+        second = self.store.release(SLUG, reason="handover")
+
+        self.assertFalse(second.changed)
+        self.assertEqual(second.tenant.updated_at, first.updated_at)
+        self.assertEqual(second.tenant.detail["released"], first.detail["released"])
+        self.assertEqual(self.count_events(SLUG), events)
+
+    def test_release_keeps_the_rest_of_the_detail(self):
+        self.store.invite(SLUG, detail={"source": "claim"})
+        self.store.claim(SLUG)
+        self.store.provision(SLUG, server_id=SERVER_ID, hostname=SLUG)
+        self.store.await_boot(SLUG)
+
+        released = self.store.release(SLUG, reason="handover").tenant
+
+        self.assertEqual(released.detail["source"], "claim")
+        self.assertEqual(released.detail["released"]["server_id"], SERVER_ID)
+
+    def test_a_released_row_still_reports_the_machine_that_lives_on(self):
+        """The new clearing must not make reconcile silent about a zombie."""
+        self.active_tenant()
+        self.store.release(SLUG, reason="handover")
+
+        report = state.reconcile(
+            self.store,
+            StubProvider([machine(server_id=SERVER_ID, hostname="odl-348b2c")]),
+            now=NOW,
+        )
+
+        self.assertEqual([drift.kind for drift in report.drift], ["zombie_vm"])
+        self.assertEqual(report.drift[0].slug, SLUG)
+        self.assertEqual(report.drift[0].detail["server_id"], SERVER_ID)
+        self.assertTrue(report.drift[0].detail["released_at"])
+
+    def test_the_zombie_clears_once_a_live_tenant_records_the_machine(self):
+        self.active_tenant()
+        self.store.release(SLUG, reason="handover")
+        other = "odl-348b2c"
+        self.store.invite(other)
+        self.store.claim(other)
+        self.store.provision(other, server_id=SERVER_ID, hostname=other)
+
+        report = state.reconcile(
+            self.store,
+            StubProvider([machine(server_id=SERVER_ID, hostname=other)]),
+            now=NOW,
+        )
+
+        self.assertEqual(report.drift, ())
+
+
 # ------------------------------------------------------------- waiting for owner
 
 

@@ -129,6 +129,14 @@ VERIFY_TEMPLATE = Path("/usr/local/lib/odile/verify.html")
 #: paragraph inside the template's tenant block; a customer machine never runs
 #: this program, so its page keeps the general row.
 VERIFY_LEDE = LIB / "verify-lede.html"
+#: The customer row the release page's tenant block carries: the sibling grant
+#: row main landed at bd97247 (the ODL-474 follow-up, unchanged at f0a5e86) and
+#: kept in `templates/verify.html` and the embedded copies by ODL-929's release
+#: cut. This program replaces it with the demo lede on the demo machine only;
+#: `--report`'s `customer_lede` says whether the installed block still carries
+#: it, and the self-test builds its release fixture from this constant so the
+#: fixture and the page are one sentence (ODL-932).
+CUSTOMER_SENTENCE = "No one at Odile can log in unless you grant it."
 #: The demo's /verify command section: the one-line --expect run a judge
 #: copies, with the live measurement filled by the first-visit renderer. The
 #: release template's tenant block has no command (a customer's page is not the
@@ -554,7 +562,7 @@ def verify_state() -> dict:
         "demo_command_after_machine": bool(
             section is not None and machine_section is not None
             and section.start() > machine_section.end()),
-        "customer_lede": "No one at Odile can log in unless you grant it." in block,
+        "customer_lede": CUSTOMER_SENTENCE in block,
         "rollback": VERIFY_BACKUP.is_file(),
     }
 
@@ -2058,8 +2066,8 @@ def self_test() -> int:
           and "--expect" in command,
           "the demo command carries the --expect line and one live measurement slot")
     release = ("<!--tenant-->\n"
-               '<p class="lede">No one at Odile can log in unless you grant it.</p>\n'
-               "<!--/tenant-->\n"
+               + '<p class="lede">%s</p>\n' % CUSTOMER_SENTENCE
+               + "<!--/tenant-->\n"
                '<section id="machine" aria-labelledby="machine-h">\n'
                '<h2 id="machine-h">From the machine</h2>\n'
                "</section>\n"
