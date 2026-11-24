@@ -39,9 +39,9 @@ value from production's config and naming every added path in its output
 (`merge … adds mail_relay.tls_ca`). A key the operator set is never rewritten,
 even when its value is wrong: the seed's own message names it and the deploy
 prints the one line that repairs it. Deleting the file still rebuilds it from
-production, but that is now the repair for a missing file — a malformed one is
-refused and named, never overwritten — not the way a key `main` gains reaches
-the bench.
+production, but only a malformed file needs that now — a deploy refuses and
+names a malformed one rather than overwriting it — not the way a key `main`
+gains reaches the bench.
 
 The roadmap cache is generated once by the first apply, when
 `/var/lib/odile-test/roadmap.html` is absent; the bench has no roadmap timer,
@@ -189,6 +189,7 @@ uses it too.
 | `odile-bench` inactive, `journalctl -u odile-bench` shows `address already in use` | 8082 is taken by something else | `./scripts/check_bench.sh --probe` names the holder; the deployer refuses it before writing. Kill the holder, or let the deployer reap it when its `.worktrees/<card>` directory is gone |
 | `odile-bench-seed` fails `seed config … missing`, and the file is gone | `/root/.odile/seed-config.test.json` was deleted while the unit was running | re-run the deploy (it recreates the file from production's config) and `systemctl restart odile-bench-seed` |
 | `odile-bench-seed` fails `seed config … mail_relay.tls_ca is missing or invalid` (or another key) on a file that is **present** | a required key that `main`'s `seed/seed.py` gained after the bench config was written (ODL-949) | re-run the deploy — it merges the absent key from production's config and names it — then `systemctl restart odile-bench-seed`. If the deploy names a present-but-wrong value instead, its `fix:` line is the repair |
+| `odile-bench-seed` fails `seed config … is not valid JSON` | `/root/.odile/seed-config.test.json` was edited or truncated until it no longer parses; the deployer refuses it in place (`error: … is not valid JSON`) rather than overwriting it | delete `/root/.odile/seed-config.test.json`, re-run the deploy (it rebuilds the file from production's config), then `systemctl restart odile-bench-seed` |
 | `caddy validate rejected …; restored it` | the block was edited into invalid Caddy syntax | the live file is unchanged; fix `deploy/bench/bench.caddy` and re-run |
 | `error: production moved during the bench run` | a production deploy or the roadmap timer ran mid-apply | re-run the bench deploy when production is quiet; the bench itself is fine |
 | `error: the Cloudflare token cannot see the odile.fyi zone` | wrong or rotated token | replace `/root/.odile/cloudflare_dns_token`; do not edit DNS by hand |
