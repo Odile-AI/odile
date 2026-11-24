@@ -30,6 +30,14 @@ What this program does, in order:
    on a cloned disk because it carries ConditionFirstBoot=yes). It runs before
    the boot record is read, so the first boot's record carries this machine's
    key (ODL-398);
+1b. re-derives the guest hostname from `bb.host`: `/etc/hostname` and the
+   image's own `/etc/hosts` lines (the two that name the machine and
+   `tenant.odile.test`) are set to the measured slug, and the running kernel
+   hostname is set when the unit asks for it. The image build bakes its own
+   `GUEST_NAME` (`deploy/image/sealed-image.sh`), which is the *build* tenant's
+   slug — on a recycled machine that is the previous tenant's name at the getty
+   prompt. A converged boot reads `same` and writes nothing; `--check` never
+   writes (ODL-348 follow-up);
 2. places the release's exact installer at /usr/local/bin/odile-install.sh
    (0755 root), the signed manifest pair at /etc/odile/manifest.json/.sig and
    the listener that serves them — from the image's own copy of the release,
@@ -92,6 +100,7 @@ import json
 import os
 import re
 import secrets
+import socket
 import subprocess
 import sys
 import tempfile
@@ -129,6 +138,14 @@ PIN_PATH = "/etc/odile/tenant-image.pin"
 BOOT_KEY_PATH = "/etc/odile/boot-key.pub"
 BOOT_RECORD_PATH = "/etc/odile/boot-record.json"
 HOST_KEY_PATH = "/etc/ssh/ssh_host_ed25519_key.pub"
+# ODL-348 follow-up: the build's own name is the *build* tenant's slug, so a
+# recycled machine would show the previous tenant at the prompt. The boot line
+# is the only per-tenant input; `/etc/hosts` is rewritten only on the two lines
+# the image itself writes, recognised by this marker domain
+# (`deploy/image/sealed-image.sh` writes both with `tenant.odile.test`).
+HOSTNAME_PATH = "/etc/hostname"
+HOSTS_PATH = "/etc/hosts"
+IMAGE_HOST_MARKER = "tenant.odile.test"
 RELEASE_ID_RE = re.compile(r"^[0-9]{4}\.[0-9]{2}(?:\.[0-9]+)?$")
 KEY_TYPES = (
     "ssh-ed25519",
@@ -229,6 +246,14 @@ def read_text(path: str) -> str:
         return ""
 
 
+def read_bytes(path: str) -> bytes:
+    try:
+        with open(path, "rb") as handle:
+            return handle.read()
+    except OSError:
+        return b""
+
+
 def parse_cmdline(text: str) -> dict[str, str]:
     """The `key=value` tokens of a kernel command line; the last one wins."""
     tokens: dict[str, str] = {}
@@ -242,12 +267,88 @@ def parse_cmdline(text: str) -> dict[str, str]:
 
 
 def cmdline_facts(cmdline: str) -> dict[str, str]:
-    """The three facts this program needs, or what is missing, as strings."""
+    """The facts this program needs, or what is missing, as strings."""
     tokens = parse_cmdline(cmdline)
     instance = tokens.get("bb.iid", "").strip()
     token = tokens.get("odile.token", "").strip()
     seed_url = tokens.get("odile.seed_url", "").strip() or DEFAULT_SEED_URL
-    return {"instance_id": instance, "token": token, "seed_url": seed_url}
+    hostname = tokens.get("bb.host", "").strip()
+    return {"instance_id": instance, "token": token, "seed_url": seed_url,
+            "hostname": hostname}
+
+
+def rewrite_hosts(text: str, name: str, stale: str = "") -> str:
+    """The image's own `/etc/hosts` lines, naming `name` instead of the old one.
+
+    Only the two lines the image writes are touched: they carry the marker
+    domain `tenant.odile.test` (`deploy/image/sealed-image.sh`), so the host
+    field before the marker is this image's own name. `stale` (the name
+    `/etc/hostname` carried when this function was called) is replaced wherever
+    it appears as a whole field, which also catches a line an operator added
+    the old name to. Every other line, and their spacing and order, is kept.
+    """
+    out: list[str] = []
+    for raw in text.splitlines(keepends=True):
+        newline = ""
+        body = raw
+        if raw.endswith("\n"):
+            body, newline = raw[:-1], "\n"
+        fields = body.split()
+        if not fields or fields[0].startswith("#"):
+            out.append(raw)
+            continue
+        new = list(fields)
+        if stale and stale != name:
+            new = [name if field == stale else field for field in new]
+        for index, field in enumerate(new):
+            # address, then at least one host field, before the marker.
+            if field == IMAGE_HOST_MARKER and index >= 2:
+                new[index - 1] = name
+        out.append((" ".join(new) if new != fields else body) + newline)
+    return "".join(out)
+
+
+def ensure_hostname(name: str, *, hostname_path: str = HOSTNAME_PATH,
+                    hosts_path: str = HOSTS_PATH,
+                    set_kernel=None) -> tuple[str, str]:
+    """Set the guest's own name from the measured line, once, idempotently.
+
+    Returns (verb, detail) where `verb` is `same` when both files already say
+    `name`. A machine booted from the published image says the build tenant's
+    slug in `/etc/hostname` and `/etc/hosts`; a booted-and-converged machine
+    says its own. `set_kernel` (the unit passes `socket.sethostname`) makes the
+    running kernel agree, so `hostname` and the getty prompt are the line's name
+    without waiting for a reboot; a read-only probe passes None.
+    """
+    current = read_text(hostname_path).strip()
+    old_hosts = read_text(hosts_path)
+    new_hosts = rewrite_hosts(old_hosts, name, stale=current)
+    wrote: list[str] = []
+    expected = (name + "\n").encode()
+    if read_bytes(hostname_path) != expected:
+        write_atomic(hostname_path, expected, 0o644)
+        wrote.append("file")
+    if new_hosts != old_hosts:
+        write_atomic(hosts_path, new_hosts.encode(), 0o644)
+        wrote.append("hosts")
+    kernel = "not-asked"
+    if set_kernel is not None:
+        try:
+            if socket.gethostname() == name:
+                kernel = "same"
+            else:
+                set_kernel(name)
+                kernel = "set"
+        except OSError as error:
+            kernel = "failed:%s" % (error.strerror or error)
+    if not wrote:
+        verb = "same"
+    else:
+        verb = "write"
+    detail = "%s -> %s (file %s, hosts %s, kernel %s)" % (
+        current or "-", name, ",".join(wrote) or "same",
+        "same" if new_hosts == old_hosts else "rewritten", kernel)
+    return verb, detail
 
 
 def read_stdin_token(path: str = "/etc/odile/setup-token") -> str:
@@ -1304,6 +1405,13 @@ def main(argv: list[str] | None = None) -> int:
                         help="the installer's boot record (the pin fallback)")
     parser.add_argument("--host-key", default=HOST_KEY_PATH,
                         help="the sshd host key the record carries in detail.host_key")
+    parser.add_argument("--hostname-path", default=HOSTNAME_PATH,
+                        help="the file `bb.host` re-derives (default /etc/hostname)")
+    parser.add_argument("--hosts-path", default=HOSTS_PATH,
+                        help="the file whose image-written lines name the machine")
+    parser.add_argument("--kernel-hostname", choices=("apply", "skip"), default="skip",
+                        help="set the running kernel hostname too; the unit passes "
+                             "`apply`, a test or probe `skip` (default)")
     parser.add_argument("--first-visit-state", default=FIRST_VISIT_STATE,
                         help="the first-visit state that says the sign-in is set")
     parser.add_argument("--print-state", action="store_true",
@@ -1334,6 +1442,27 @@ def main(argv: list[str] | None = None) -> int:
             # reader sees the key came first. Its own prefix keeps the
             # one-`odile-firstboot:`-line console contract.
             print("odile-hostkeys: %s %s" % (verb, detail), flush=True)
+        # ODL-348 follow-up: the image's `/etc/hostname` is the build tenant's
+        # slug. Re-derive it from the measured line on every boot, before the
+        # release placement can read it; a converged boot reads `same` and
+        # writes nothing. A malformed or absent bb.host is cosmetic and must
+        # not fail the boot, so it is a log line, not a Refusal.
+        if not args.check:
+            name = facts["hostname"]
+            if not name:
+                log_placements(args.log, ["%-12s %s" % (
+                    "absent", "no bb.host in the command line")], label="hostname")
+            elif not SLUG_RE.match(name):
+                log_placements(args.log, ["%-12s %s" % (
+                    "skip", "bb.host is not one label: %r" % name)], label="hostname")
+            else:
+                verb, detail = ensure_hostname(
+                    name, hostname_path=args.hostname_path,
+                    hosts_path=args.hosts_path,
+                    set_kernel=(socket.sethostname
+                                if args.kernel_hostname == "apply" else None))
+                log_placements(args.log, ["%-12s %s" % (verb, detail)],
+                               label="hostname")
         record, record_key, record_reason, record_note = boot_record_facts(
             cmdline_text, pin_path=args.pin, boot_key_path=args.boot_key,
             boot_record_path=args.boot_record, host_key_path=args.host_key,
