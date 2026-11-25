@@ -1,7 +1,8 @@
 # Verdict — Hetzner BX11 box, first sub-account pair, restic drill
 
 **Card:** `t_12b3720a` · **Seat:** Security · **Measured:** 2026-11-24
-06:25–07:56 UTC, re-verified 09:18 UTC · **Artifact:** Hetzner Storage Box id
+06:25–07:56 UTC, re-verified 09:18 UTC and again 2026-11-25 03:28 UTC
+(`11-recheck-2026-11-25.txt`) · **Artifact:** Hetzner Storage Box id
 709870, `odile-backups`,
 BX11, Helsinki (`hel1`) · **Evidence:** `docs/evidence/hetzner-bx11/` (HQ-only)
 
