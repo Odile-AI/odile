@@ -55,6 +55,13 @@ class PriceTests(unittest.TestCase):
         self.assertEqual(renew.term_price(9.99, 365, 5), Decimal("94.98"))
         self.assertEqual(renew.term_price(39.99, 365, 5), Decimal("380.21"))
 
+    def test_the_short_term_fee_runs_to_thirty_days_and_stops_at_thirty_one(self) -> None:
+        # The boundary is a cliff, not a taper: 30 days still pays the 15% fee,
+        # 31 does not. Without the 30-day side a fee test one day short of the
+        # vendor's threshold would stay green.
+        self.assertEqual(renew.term_price(9.99, 30, 5), Decimal("10.56"))
+        self.assertEqual(renew.term_price(9.99, 31, 5), Decimal("9.49"))
+
     def test_the_highest_term_discount_reached_applies(self) -> None:
         # One discount, not a stack: nothing at 89 days, 5% from 90, 10% from
         # 180, 15% from 365.
