@@ -61,10 +61,22 @@ class ReleaseSetupOnceTests(unittest.TestCase):
         self.systemctl = self.bin / "systemctl"
         self.systemctl.write_text(
             "#! /bin/sh\n"
-            "# STUB_UNIT_STATE is what `systemctl is-active` answers.\n"
+            "# STUB_UNIT_STATE is what `systemctl is-active` answers. With\n"
+            "# STUB_UNIT_COUNT, it counts its own calls and answers `activating`\n"
+            "# for the first STUB_UNIT_ACTIVATING_CALLS of them, so a wait can\n"
+            "# be exercised without a machine.\n"
             "if [ \"$1\" = is-active ]; then\n"
-            "    printf '%s\\n' \"${STUB_UNIT_STATE:-active}\"\n"
-            "    [ \"${STUB_UNIT_STATE:-active}\" = active ] || exit 3\n"
+            "    state=${STUB_UNIT_STATE:-active}\n"
+            "    if [ -n \"${STUB_UNIT_COUNT:-}\" ]; then\n"
+            "        n=$(cat \"$STUB_UNIT_COUNT\" 2>/dev/null || echo 0)\n"
+            "        n=$((n + 1))\n"
+            "        printf '%s\\n' \"$n\" > \"$STUB_UNIT_COUNT\"\n"
+            "        if [ \"$n\" -le \"${STUB_UNIT_ACTIVATING_CALLS:-0}\" ]; then\n"
+            "            state=activating\n"
+            "        fi\n"
+            "    fi\n"
+            "    printf '%s\\n' \"$state\"\n"
+            "    [ \"$state\" = active ] || exit 3\n"
             "fi\n"
             "exit 0\n",
             encoding="utf-8")
@@ -87,6 +99,8 @@ class ReleaseSetupOnceTests(unittest.TestCase):
             "ODILE_RELEASE_DONE": str(self.done),
             "ODILE_RELEASE_REPORT": str(self.report),
             "ODILE_RELEASE_UNIT": "odile-access-report",
+            # The stub settles immediately; the wait has its own tests.
+            "ODILE_RELEASE_REPORT_WAIT": "0",
         }
         env.update(extra)
         return env
@@ -300,6 +314,28 @@ class ReleaseSetupOnceTests(unittest.TestCase):
         result = self.run_script(STUB_UNIT_STATE="failed")
         self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
         self.assertIn("FAIL         odile-access-report is failed",
+                      self.log.read_text(encoding="utf-8"))
+
+    def test_an_activating_unit_is_waited_for(self) -> None:
+        """The installer restarts the unit without waiting; the check must not
+        read a healthy run as a failed one. Measured on the QEMU bench: the
+        report took four minutes and the first check read `activating`."""
+        counter = self.tmp / "unit-count"
+        result = self.run_script(STUB_UNIT_COUNT=str(counter),
+                                 STUB_UNIT_ACTIVATING_CALLS="2",
+                                 ODILE_RELEASE_REPORT_WAIT="10")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertGreaterEqual(int(counter.read_text(encoding="utf-8")), 3)
+        self.assertIn("ok           odile-access-report is active",
+                      self.log.read_text(encoding="utf-8"))
+
+    def test_a_unit_still_activating_after_the_wait_fails_and_says_so(self) -> None:
+        counter = self.tmp / "unit-count"
+        result = self.run_script(STUB_UNIT_COUNT=str(counter),
+                                 STUB_UNIT_ACTIVATING_CALLS="100",
+                                 ODILE_RELEASE_REPORT_WAIT="2")
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("FAIL         odile-access-report is still activating after 2s",
                       self.log.read_text(encoding="utf-8"))
 
     def test_a_failed_report_still_records_the_installed_run(self) -> None:

@@ -236,6 +236,28 @@ case "$BOOT_EPOCH" in
     ''|*[!0-9]*) BOOT_EPOCH=0 ;;
 esac
 BOOT_AT=$(date -u -d "@$BOOT_EPOCH" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null) || BOOT_AT="unknown"
+# The installer restarts the unit without waiting (`wait=False`), and the
+# reporter's own scan takes time: on the cold walk it failed in a second, but a
+# healthy run on the QEMU bench took four minutes and the check read
+# `activating` with no file yet. Wait, bounded, for the oneshot to settle; a
+# unit that is still running when the wait ends is named as such below. 0
+# disables the wait (the harness).
+REPORT_WAIT=${ODILE_RELEASE_REPORT_WAIT:-300}
+case "$REPORT_WAIT" in
+    ''|*[!0-9]*) REPORT_WAIT=0 ;;
+esac
+STATE=""
+WAITED=0
+if command -v systemctl >/dev/null 2>&1; then
+    while :; do
+        STATE=$(systemctl is-active "$REPORT_UNIT" 2>/dev/null) || true
+        [ -n "$STATE" ] || STATE="unknown"
+        [ "$STATE" = activating ] || [ "$STATE" = reloading ] || break
+        [ "$WAITED" -ge "$REPORT_WAIT" ] && break
+        sleep 1
+        WAITED=$((WAITED + 1))
+    done
+fi
 REPORT_EPOCH=$(stat -c %Y "$REPORT" 2>/dev/null) || REPORT_EPOCH=""
 case "$REPORT_EPOCH" in
     ''|*[!0-9]*) REPORT_EPOCH=0 ;;
@@ -259,10 +281,11 @@ CHECK=$(mktemp 2>/dev/null) || CHECK="/tmp/odile-release-setup.$$.check"
     if command -v systemctl >/dev/null 2>&1; then
         # `systemctl is-active` prints the state and exits non-zero for
         # everything but `active`, so the text is read before the status.
-        STATE=$(systemctl is-active "$REPORT_UNIT" 2>/dev/null) || true
-        [ -n "$STATE" ] || STATE="unknown"
         if [ "$STATE" = "active" ]; then
             echo "ok           $REPORT_UNIT is active"
+        elif [ "$STATE" = "activating" ] || [ "$STATE" = "reloading" ]; then
+            echo "FAIL         $REPORT_UNIT is still $STATE after ${WAITED}s — systemctl status $REPORT_UNIT names the cause"
+            VERDICT=1
         else
             echo "FAIL         $REPORT_UNIT is $STATE — systemctl status $REPORT_UNIT names the cause"
             VERDICT=1
