@@ -1412,13 +1412,23 @@ def _claim_queued(connection: sqlite3.Connection, account_id: int, stamp: str) -
 def _finish(connection: sqlite3.Connection, account_id: int, state: str, stamp: str,
             *, server_id: str | None = None, ipv4: str | None = None,
             key_label: str | None = None, key_prefix: str | None = None,
-            reason: str | None = None) -> None:
+            reason: str | None = None, finished: bool = True) -> None:
+    """Write one account's provision facts.
+
+    ODL-947 split the row's two moments: the order's own finish is stamped when
+    the provider's machine is recorded (`provision_finished_at`, the queue's
+    column), and the ready transition later (`finished=False`) keeps that stamp
+    instead of overwriting it with the day the guest answered — the mail's facts
+    sidecar carries the ready time. A `building` row with a `server_id` is the
+    provider-active state: ordered, not ready, no ready mail.
+    """
     connection.execute(
-        "UPDATE accounts SET provision_state = ?, provision_finished_at = ?,"
+        "UPDATE accounts SET provision_state = ?,"
+        " provision_finished_at = CASE WHEN ? THEN ? ELSE provision_finished_at END,"
         " server_id = COALESCE(?, server_id), ipv4 = COALESCE(?, ipv4),"
         " key_label = COALESCE(?, key_label), key_prefix = COALESCE(?, key_prefix),"
         " provision_reason = ? WHERE id = ?",
-        (state, stamp, server_id, ipv4, key_label, key_prefix,
+        (state, 1 if finished else 0, stamp, server_id, ipv4, key_label, key_prefix,
          (reason or None) and reason[:MAX_REASON], account_id),
     )
     connection.commit()
@@ -1509,12 +1519,13 @@ def _provision_one(connection: sqlite3.Connection, config, row: sqlite3.Row, *,
             # run (or `odilectl dns create`) can finish. It is named, not
             # swallowed, and it does not turn a built machine into a failure.
             dns = f"failed: {str(error)[:200]}"
-    _finish(connection, int(row["id"]), "ready", _stamp(),
+    _finish(connection, int(row["id"]), "building", _stamp(),
             server_id=server_id, ipv4=ipv4,
             key_label=keyinfo.get("label"), key_prefix=keyinfo.get("key_prefix"))
     return {
         "slug": slug,
         "ok": True,
+        "ready": False,
         "server_id": server_id,
         "ipv4": ipv4,
         "release": report.payload.get("release"),
@@ -1523,6 +1534,101 @@ def _provision_one(connection: sqlite3.Connection, config, row: sqlite3.Row, *,
         "dns": dns,
         "seed_expires": (report.payload.get("seed") or {}).get("expires_at"),
     }
+
+
+def _pending_guest_rows(connection: sqlite3.Connection,
+                        slug: str | None = None) -> list[sqlite3.Row]:
+    """Accounts whose machine was ordered but whose guest half has not answered.
+
+    ODL-947: the provider's `active` is not the product's ready. The row keeps
+    `provision_state='building'` with the machine recorded and
+    `provision_finished_at` NULL; the next run asks the machine itself.
+    """
+    sql = ("SELECT * FROM accounts WHERE provision_state = 'building'"
+           " AND server_id IS NOT NULL")
+    values: list[object] = []
+    if slug is not None:
+        sql += " AND slug = ?"
+        values.append(slug)
+    sql += " ORDER BY id"
+    return connection.execute(sql, values).fetchall()
+
+
+def _guest_domain(config) -> str:
+    from .dns import tenant_zone
+
+    return tenant_zone(config)
+
+
+def _default_guest_probe(domain: str, slug: str):
+    from .health import guest_answer
+
+    return guest_answer(domain, slug)
+
+
+def _drain_guest_ready(connection: sqlite3.Connection, config, *,
+                       guest_probe=None, out=print,
+                       limit: int | None = None, slug: str | None = None) -> list[dict[str, object]]:
+    """Promote an ordered account to ready when the machine itself answers.
+
+    The ready email is written first and the row moves second: a crash between
+    the two leaves the same bytes to be rewritten (the builder is idempotent),
+    never a `ready` row with no mail. The measurement written into the mail is
+    the machine's own boot-report value, so the `/verify` sentence that asks
+    the tester to compare the two is true.
+    """
+    from . import claim as claim_module
+
+    probe = guest_probe or _default_guest_probe
+    domain = _guest_domain(config)
+    outbox = str(config.path_value("outbox", claim_module.DEFAULT_OUTBOX))
+    results: list[dict[str, object]] = []
+    rows = _pending_guest_rows(connection, slug)
+    for row in rows[:limit] if limit else rows:
+        name = str(row["slug"])
+        answer = probe(domain, name)
+        if answer is None:
+            out("provision %s: waiting for https://%s.%s/verify" % (name, name, domain))
+            continue
+        tenant = connection.execute(
+            "SELECT * FROM tenants WHERE slug = ?", (name,)).fetchone()
+        host = "%s.%s" % (name, domain)
+        url = "https://" + host
+        try:
+            message = str(claim_module.queue_ready_email(
+                outbox,
+                slug=name,
+                to=str(row["email"]),
+                url=url,
+                host=host,
+                measurement=answer.measurement,
+                ipv4=str(row["ipv4"] or ""),
+                server_id=str(row["server_id"] or ""),
+                release=(tenant["release"] if tenant is not None else None),
+            ))
+        except (claim_module.ClaimError, OSError, ValueError) as error:
+            # The machine answered; a failed queue write is retried by the next
+            # timer tick with the same facts, and must not stop the other rows.
+            out("provision %s: ready but the mail could not be written: %s"
+                % (name, str(error)[:200]))
+            results.append({"slug": name, "ok": True, "ready": False,
+                            "error": str(error)[:200]})
+            continue
+        _finish(connection, int(row["id"]), "ready", _stamp(),
+                server_id=row["server_id"], ipv4=row["ipv4"], finished=False)
+        out("provision %s: ready at https://%s.%s/verify · measurement %s"
+            % (name, name, domain, answer.measurement[:16]))
+        results.append({
+            "slug": name,
+            "ok": True,
+            "ready": True,
+            "server_id": row["server_id"],
+            "ipv4": row["ipv4"],
+            "measurement": answer.measurement,
+            "verify_bytes": answer.verify_bytes,
+            "email": message,
+        })
+    return results
 
 
 def _build_provider(config) -> Provider:
@@ -1534,13 +1640,19 @@ def _build_provider(config) -> Provider:
 def provision_queue(config, *, apply: bool = True, slug: str | None = None,
                     limit: int | None = None, timeout: float = DEFAULT_TIMEOUT,
                     interval: float = DEFAULT_INTERVAL, provider_factory=None,
-                    out=print) -> list[dict[str, object]]:
+                    guest_probe=None, out=print) -> list[dict[str, object]]:
     """Drain the confirmed-account queue, one row at a time. Safe to re-run.
 
     Without `apply` nothing is claimed and nothing is ordered: the plan names
     every row the next run would provision. A row is claimed with a
     conditional UPDATE before the first provider call, so two workers on one
     database order one machine, not two.
+
+    Two phases (ODL-947): the provider call orders the machine and records it
+    while the row stays `building`; a later pass asks the machine's own
+    `/verify` and only then writes `ready` and queues the one ready email. On
+    the bench the guest half installs after the machine boots, so the two
+    phases are normally separate runs of the timer.
     """
     db_path = _state_path_for(config)
     try:
@@ -1551,9 +1663,12 @@ def provision_queue(config, *, apply: bool = True, slug: str | None = None,
     results: list[dict[str, object]] = []
     try:
         rows = _queue_rows(connection, slug)
+        pending = _pending_guest_rows(connection, slug)
         if not apply:
             for row in rows[:limit] if limit else rows:
                 out(f"would provision {row['slug']} ({row['email']})")
+            for row in pending[:limit] if limit else pending:
+                out(f"would wait for {row['slug']}'s /verify before ready")
             return results
         for row in rows[:limit] if limit else rows:
             stamp = _stamp()
@@ -1570,6 +1685,9 @@ def provision_queue(config, *, apply: bool = True, slug: str | None = None,
             else:
                 out("provision %(slug)s: FAILED - %(reason)s; machine %(machine)s "
                     "terminated=%(terminated)s" % {"machine": "-", **result})
+        results.extend(_drain_guest_ready(connection, config, slug=slug,
+                                          guest_probe=guest_probe, out=out,
+                                          limit=limit))
         return results
     finally:
         connection.close()

@@ -352,9 +352,13 @@ CREATE INDEX IF NOT EXISTS grants_tenant ON grants(tenant_id, expires_at);
 --
 -- `provision_state` is the queue: registration writes 'unverified', the
 -- confirmation POST moves it to 'queued' exactly once, the root worker claims
--- a queued row as 'building' and lands 'ready' with the machine id, the IPv4
--- and the key's label and first characters, or 'failed' with the provider's
--- reason (retryable by the account page's retry action).
+-- a queued row as 'building' and records the machine id, the IPv4 and the
+-- key's label and first characters, or 'failed' with the provider's reason
+-- (retryable by the account page's retry action). 'building' with a
+-- `server_id` is the provider-active state (ODL-947): the machine is ordered
+-- and the row is not ready. A later run of the same worker asks the machine's
+-- own `/attestation` and `/verify`; only then does the row become 'ready', in
+-- the same run that queues the one ready email.
 CREATE TABLE IF NOT EXISTS accounts (
     id                    INTEGER PRIMARY KEY,
     slug                  TEXT    NOT NULL UNIQUE,
@@ -936,9 +940,11 @@ def brand_date(stamp: str) -> str:
 def pinned_measurement() -> str:
     """The 96-hex launch measurement the release pin promises.
 
-    The account page's resend writes the ready email from the rows; the
-    measurement is the same pin the verifier and `odilectl claim` use, so the
-    tester compares one value, not two.
+    The pin is the image's build-time expectation and the value a rebuild is
+    compared with (docs/runbooks/verify.md). ODL-947 retired it from the ready
+    email: that mail prints the machine's own boot-report measurement, because
+    a machine's boot legitimately differs from the pin (its measured command
+    line carries the instance id, the address and the sealed line).
     """
     with open(os.path.join(ROOT, "odile-verify.pin"), encoding="utf-8") as handle:
         value = str(json.load(handle).get("measurement", "")).strip().lower()
@@ -947,131 +953,55 @@ def pinned_measurement() -> str:
     return value
 
 
-def _atomic_write(path: str, data: bytes) -> None:
-    """Write one queue file at 0600, replaced atomically under the lock."""
-    directory = os.path.dirname(path)
-    os.makedirs(directory, exist_ok=True)
-    try:
-        os.chmod(directory, 0o700)
-    except OSError:
-        pass
-    fd = os.open(path + ".tmp", os.O_CREAT | os.O_TRUNC | os.O_WRONLY, 0o600)
-    with os.fdopen(fd, "wb") as handle:
-        handle.write(data)
-    os.replace(path + ".tmp", path)
-
-
-_ready_lock = threading.Lock()
-
-
-def _ready_boundary(slug: str, body: str, kit: bytes) -> str:
-    """The multipart boundary for one ready email: fixed, and absent from its parts.
-
-    The resend's contract is that a second press writes the same bytes, so the
-    boundary may not be drawn at random. It also may not occur in the body or
-    the kit, or the message would split at the wrong line; the suffix loop is
-    deterministic, so two builds from the same facts still hash equal.
-    """
-    base = "odile-ready.%s" % slug
-    kit_text = kit.decode("utf-8", "replace")
-    candidate = base
-    suffix = 0
-    while candidate in body or candidate in kit_text:
-        suffix += 1
-        candidate = "%s-%d" % (base, suffix)
-    return candidate
-
-
-def queue_ready(row: sqlite3.Row, tenant: sqlite3.Row | None) -> str:
+def queue_ready(row: sqlite3.Row, tenant: sqlite3.Row | None, *,
+                measurement: str | None = None, domain: str | None = None,
+                outbox: str | None = None) -> str:
     """Queue the ready email for one ready account, with no setup token.
 
     B-once retires the setup token from the ready email (Savio, 2026-11-20);
     the token keeps its machine-side jobs — the seed badge and the rebuild-seal
-    key — and no link here carries it. The message is rebuilt from the facts
-    sidecar on every press, so a second press re-queues byte-for-byte the same
-    message: same Date, same Message-ID, same body, same attachment and the
-    same multipart boundary (pinned below). That holds on the installed,
-    kit-bearing outbox too, where the recovery kit makes the message
-    multipart. A press after the mailer removed the `.eml` restores those same
-    bytes rather than minting a new message.
+    key — and no link here carries it. The message is built in one place,
+    `odilectl.claim.queue_ready_email`, from the facts sidecar, so a second
+    press re-queues byte-for-byte the same message: same Date, same
+    Message-ID, same body, same attachment and the same multipart boundary.
+    A press after the mailer removed the `.eml` restores those same bytes
+    rather than minting a new message.
+
+    ODL-947: `measurement` is the machine's own boot-report measurement, the
+    value the worker read from the machine's `/attestation` once its `/verify`
+    answered. With a facts sidecar already written, the sidecar's value is the
+    mail's. A legacy account with no sidecar (a row from before this card) is
+    read from the machine itself; if the machine has not reported yet the press
+    fails rather than printing the release pin as if it were this machine's.
+    `domain` and `outbox` let the root worker (the account queue) write the
+    same bytes from another process, with the bench's own suffix and queue.
     """
     slug = row["slug"]
-    outbox = claim.ReadyOutbox(OUTBOX)
-    facts_path = str(outbox.facts_path(slug))
-    message_path = str(outbox.message_path(slug))
-    kit_path = outbox.kit_path(slug)
-    with _ready_lock:
-        facts = None
-        if os.path.isfile(facts_path):
-            try:
-                with open(facts_path, encoding="utf-8") as handle:
-                    facts = json.load(handle)
-            except (OSError, ValueError):
-                facts = None
-        if facts is None and os.path.isfile(message_path):
-            # A message with no facts sidecar is already the queued bytes;
-            # re-queue it as it stands and mint nothing.
-            os.utime(message_path, None)
-            return message_path
-        if facts is None:
-            host = "%s.%s" % (slug, TENANT_DOMAIN)
-            url = "https://" + host
-            facts = {
-                "kind": "ready",
-                "slug": slug,
-                "to": row["email"],
-                "subject": claim.READY_SUBJECT,
-                "host": host,
-                "url": url,
-                "first_visit": url + "/first-visit",
-                "guide_url": claim.READY_GUIDE_URL,
-                "measurement": pinned_measurement(),
-                "ipv4": (tenant["ipv4"] if tenant is not None else row["ipv4"]),
-                "server_id": (tenant["server_id"] if tenant is not None
-                              else row["server_id"]),
-                "release": (tenant["release"] if tenant is not None else None),
-                "at": int(time.time()),
-                "message_id": make_msgid(idstring="odile-ready.%s" % slug,
-                                         domain="odile.fyi"),
-            }
-        at = int(facts.get("at") or time.time())
-        message_id = facts.get("message_id") or make_msgid(
-            idstring="odile-ready.%s" % slug, domain="odile.fyi")
-        url = str(facts.get("url") or "https://%s.%s" % (slug, TENANT_DOMAIN))
-        # ODL-925: the ready body names the tokenless first-sign-in page; the
-        # sidecar's `first_visit` is kept for older facts but no longer passed,
-        # because a setup token in a link is what B-once retired.
-        body = claim.ready_body(
-            url=url,
-            measurement=str(facts.get("measurement") or pinned_measurement()),
-            guide_url=str(facts.get("guide_url") or claim.READY_GUIDE_URL),
-        )
-        message = EmailMessage()
-        message["From"] = claim.READY_SENDER
-        message["Reply-To"] = claim.READY_REPLY_TO
-        message["To"] = str(facts.get("to") or row["email"])
-        message["Subject"] = str(facts.get("subject") or claim.READY_SUBJECT)
-        message["Date"] = formatdate(at, usegmt=True)
-        message["Message-ID"] = message_id
-        message.set_content(body)
-        if kit_path.is_file() and kit_path.stat().st_size:
-            filename = "odile-%s-recovery-kit.txt" % slug
-            kit_bytes = kit_path.read_bytes()
-            message.add_attachment(kit_bytes, maintype="text",
-                                   subtype="plain", filename=filename)
-            # Pin the boundary. `add_attachment` leaves it unset, and each
-            # `as_bytes()` would then draw a fresh random one, so the same mail
-            # would be written with different bytes on every press (the
-            # verifier's round-1 must). The installed outbox always has the
-            # kit, so this is the shape that matters.
-            message.set_boundary(_ready_boundary(slug, body, kit_bytes))
-            facts["kit_filename"] = filename
-        facts["at_iso"] = datetime.fromtimestamp(
-            at, timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-        _atomic_write(facts_path, (json.dumps(
-            facts, indent=2, sort_keys=True) + "\n").encode("utf-8"))
-        _atomic_write(message_path, message.as_bytes())
-        return message_path
+    outbox_dir = outbox or OUTBOX
+    suffix = domain or TENANT_DOMAIN
+    host = "%s.%s" % (slug, suffix)
+    url = "https://" + host
+    value = measurement
+    if value is None:
+        facts_path = claim.ReadyOutbox(outbox_dir).facts_path(slug)
+        if not facts_path.is_file():
+            value = claim.machine_measurement(suffix, slug)
+            if value is None:
+                raise RuntimeError(
+                    "the machine has not reported its measurement yet")
+    return str(claim.queue_ready_email(
+        outbox_dir,
+        slug=slug,
+        to=row["email"],
+        url=url,
+        measurement=value or "",
+        host=host,
+        ipv4=(tenant["ipv4"] if tenant is not None else row["ipv4"]),
+        server_id=(tenant["server_id"] if tenant is not None
+                   else row["server_id"]),
+        release=(tenant["release"] if tenant is not None else None),
+        at=int(time.time()),
+    ))
 
 
 def queue_confirm(account: dict, token: str, *, subject: str = CONFIRM_SUBJECT,
@@ -2751,11 +2681,13 @@ class Handler(BaseHTTPRequestHandler):
 
         In `ready` this is the plain resend (B-once means the ready email
         carries no setup token, so the same bytes, the same machine URL, the
-        same state; a second press is idempotent in effect). In `confirm` it
-        re-sends the confirmation email with a fresh 24 h token — the mailed
-        token is the only copy of its raw value, so the previous link stops
-        working. In `building` and `failed` there is no email to send, so the
-        press answers the page and changes nothing.
+        same state; a second press is idempotent in effect). ODL-947: the mail
+        is queued once by the account queue when the machine answers, so this
+        press restores it from the facts sidecar rather than being its only
+        source. In `confirm` it re-sends the confirmation email with a fresh
+        24 h token — the mailed token is the only copy of its raw value, so the
+        previous link stops working. In `building` and `failed` there is no
+        email to send, so the press answers the page and changes nothing.
         """
         if not self._same_origin():
             return self._send(403, "forbidden: cross-site form\n",
@@ -2780,7 +2712,7 @@ class Handler(BaseHTTPRequestHandler):
             con.close()
         try:
             queue_ready(row, tenant)
-        except (OSError, ValueError, RuntimeError):
+        except (claim.ClaimError, OSError, ValueError, RuntimeError):
             traceback.print_exc(file=sys.stderr)
             return self._send(500, "The ready email could not be queued. Try again?\n",
                               "text/plain; charset=utf-8")
@@ -3065,7 +2997,10 @@ class Handler(BaseHTTPRequestHandler):
                     "SELECT server_id, ipv4 FROM tenants WHERE slug = ?", (row["slug"],)
                 ).fetchone()
                 existing = tenant["server_id"] if tenant is not None else None
-                state = "ready" if existing else "queued"
+                # ODL-947: a machine that already exists is not ready until its
+                # own report answers. The row stays `building`; the account
+                # queue's second phase writes `ready` and the one ready mail.
+                state = "building" if existing else "queued"
                 cur = con.execute(
                     "UPDATE accounts SET email_verified_at = ?, provision_state = ?,"
                     " provision_queued_at = ?, server_id = COALESCE(server_id, ?),"

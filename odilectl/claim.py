@@ -74,6 +74,7 @@ import re
 import secrets
 import sqlite3
 import sys
+import threading
 import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -88,7 +89,13 @@ from .config import DEFAULT_CONFIG_PATH, ENV_CONFIG_PATH, Config
 from .core import Context, Report, plan
 from .dns import DEFAULT_ZONE, PROVISION_TTL, CloudflareDNS, record_name
 from .errors import ConfigError, OdileError, ProviderError, UsageError
-from .health import MatrixSender, Outbox, SmtpSender
+from .health import (
+    MatrixSender,
+    Outbox,
+    SmtpSender,
+    guest_answer,
+    machine_measurement,
+)
 from .providers.base import CreateSpec, Machine, Provider, validate_ssh_public_key
 from .provision import DEFAULT_PIN, pinned_release
 from .state import SCHEMA as STATE_SCHEMA
@@ -163,9 +170,12 @@ READY_SENDER = "Odile <invite@mail.odile.fyi>"
 READY_REPLY_TO = "help@odile.fyi"
 READY_GUIDE_URL = "https://odile.fyi/ceremony"
 READY_TEMPLATE = ROOT / "templates" / "emails" / "ready.txt"
-# The expected launch measurement is the release pin ODL-454 updates. A tenant
-# is built from that image, so the ready email quotes the same 96 hex the
-# verifier will show; the config key lets an operator pass it before a re-pin.
+# The release pin ODL-454 updates: the measurement the image was built for, and
+# the value a rebuild is compared with. ODL-947 retired it from the ready email:
+# a machine's own boot report is per machine (its command line carries the
+# instance id, address and sealed line), so the pin and the boot legitimately
+# differ — the mail now prints the report's 96 hex, the one its `/verify` page
+# shows. The pin stays the build-time expectation (`expected_measurement`).
 MEASUREMENT_PIN = ROOT / "odile-verify.pin"
 MEASUREMENT_RE = re.compile(r"^[0-9a-f]{96}$")
 
@@ -407,6 +417,9 @@ class ProvisionResult:
     created: bool = False
     adopted: bool = False
     skipped: bool = False
+    # ODL-947: the machine exists but its guest half has not answered `/verify`
+    # yet; the row stays `provisioned` and the one ready email waits.
+    pending: bool = False
     server_id: str | None = None
     ipv4: str | None = None
     expires_at: str | None = None
@@ -429,6 +442,7 @@ class ProvisionResult:
             "created": self.created,
             "adopted": self.adopted,
             "skipped": self.skipped,
+            "pending": self.pending,
             "server_id": self.server_id,
             "ipv4": self.ipv4,
             "expires_at": self.expires_at,
@@ -751,6 +765,41 @@ class ReadyOutbox:
             return None
         return QueuedEmail(message, self.facts_path(slug), self.kit_path(slug))
 
+    def facts(self, slug: str) -> dict[str, Any] | None:
+        """The staged facts sidecar, or None while the tenant waits."""
+        path = self.facts_path(slug)
+        if not path.is_file():
+            return None
+        try:
+            value = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return None
+        return value if isinstance(value, dict) else None
+
+    def stage(self, *, slug: str, facts: dict[str, Any], at: int) -> Path:
+        """Write the facts sidecar only: the order's facts, no mail yet.
+
+        ODL-947 splits the claim's ready email off from the order: the facts
+        (URL, recipient, machine, token expiry) are recorded when the machine
+        is ordered, and the message is written when the machine's own
+        `/verify` answers. Nothing here is the commit — `queued()` still
+        returns None until the `.eml` exists.
+        """
+        self.ready_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            self.ready_dir.chmod(0o700)
+        except OSError:
+            pass
+        facts_path = self.facts_path(slug)
+        facts_path.write_text(
+            json.dumps({**facts, "at": int(at),
+                        "at_iso": iso(datetime.fromtimestamp(int(at), timezone.utc))},
+                       indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        _chmod(facts_path, 0o600)
+        return facts_path
+
     def queue(
         self,
         *,
@@ -811,6 +860,156 @@ def _chmod(path: Path, mode: int) -> None:
         path.chmod(mode)
     except OSError:
         pass
+
+
+# ------------------------------------------------------------------ ready mail
+#
+# ODL-947: one builder, one definition of ready. The account queue (`app.py`'s
+# resend press and the registration worker) and the claim queue both queue this
+# message, once, when the machine's own report answers — never when the provider
+# says the VM is active. The message is rebuilt from its facts sidecar on every
+# later press, so the bytes do not change; the sidecar carries the machine's own
+# 96-hex measurement, not the release pin.
+
+_ready_lock = threading.Lock()
+
+
+def _atomic_write(path: str, data: bytes) -> None:
+    """Write one queue file at 0600, replaced atomically under the lock."""
+    directory = os.path.dirname(path)
+    os.makedirs(directory, exist_ok=True)
+    try:
+        os.chmod(directory, 0o700)
+    except OSError:
+        pass
+    fd = os.open(path + ".tmp", os.O_CREAT | os.O_TRUNC | os.O_WRONLY, 0o600)
+    with os.fdopen(fd, "wb") as handle:
+        handle.write(data)
+    os.replace(path + ".tmp", path)
+
+
+def ready_boundary(slug: str, body: str, kit: bytes) -> str:
+    """The multipart boundary for one ready email: fixed, and absent from its parts.
+
+    A second press must write the same bytes, so the boundary may not be drawn
+    at random. It also may not occur in the body or the kit, or the message
+    would split at the wrong line; the suffix loop is deterministic, so two
+    builds from the same facts still hash equal.
+    """
+    base = "odile-ready.%s" % slug
+    kit_text = kit.decode("utf-8", "replace")
+    candidate = base
+    suffix = 0
+    while candidate in body or candidate in kit_text:
+        suffix += 1
+        candidate = "%s-%d" % (base, suffix)
+    return candidate
+
+
+def queue_ready_email(
+    outbox: str | Path,
+    *,
+    slug: str,
+    to: str,
+    url: str,
+    measurement: str | None = None,
+    host: str | None = None,
+    ipv4: str | None = None,
+    server_id: str | None = None,
+    release: str | None = None,
+    at: int | None = None,
+    guide_url: str = READY_GUIDE_URL,
+) -> Path:
+    """Queue the one token-free ready email for a machine that answered.
+
+    `measurement` is the machine's own boot-report value (the 96 hex its
+    `/attestation` carries and its `/verify` page prints). It is written into
+    the facts sidecar; every later press rebuilds the same message from those
+    facts — same Date, Message-ID, body, attachment and boundary — so the
+    resend press cannot change the bytes. A press after the mailer removed the
+    `.eml` restores those same bytes rather than minting a new message. With a
+    sidecar already present and no `measurement` passed, the sidecar's value is
+    the mail's (that is the press's path).
+    """
+    queue = ReadyOutbox(outbox)
+    facts_path = str(queue.facts_path(slug))
+    message_path = str(queue.message_path(slug))
+    kit_path = queue.kit_path(slug)
+    with _ready_lock:
+        facts = None
+        if os.path.isfile(facts_path):
+            try:
+                with open(facts_path, encoding="utf-8") as handle:
+                    facts = json.load(handle)
+            except (OSError, ValueError):
+                facts = None
+        if facts is None and os.path.isfile(message_path):
+            # A message with no facts sidecar is already the queued bytes;
+            # re-queue it as it stands and mint nothing.
+            os.utime(message_path, None)
+            return queue.message_path(slug)
+        value = (measurement or (facts or {}).get("measurement") or "").strip().lower()
+        if not MEASUREMENT_RE.match(value):
+            raise ClaimError("the ready email's measurement is not 96 hex characters")
+        if facts is None:
+            host = host or url.split("//", 1)[-1].split("/", 1)[0]
+            facts = {
+                "kind": "ready",
+                "slug": slug,
+                "to": to,
+                "subject": READY_SUBJECT,
+                "host": host,
+                "url": url,
+                "first_visit": url + "/first-visit",
+                "guide_url": guide_url,
+                "measurement": value,
+                "ipv4": ipv4,
+                "server_id": server_id,
+                "release": release,
+                "at": int(at if at is not None else time.time()),
+                "message_id": make_msgid(idstring="odile-ready.%s" % slug,
+                                         domain="odile.fyi"),
+            }
+        else:
+            # The machine's own value wins over a pin an older sidecar carried
+            # (a facts file staged at order time, before the report existed).
+            facts["measurement"] = value
+        moment = int(facts.get("at") or time.time())
+        message_id = facts.get("message_id") or make_msgid(
+            idstring="odile-ready.%s" % slug, domain="odile.fyi")
+        url = str(facts.get("url") or url)
+        # ODL-925: the ready body names the tokenless first-sign-in page; the
+        # sidecar's `first_visit` is kept for older facts but no longer passed,
+        # because a setup token in a link is what B-once retired.
+        body = ready_body(
+            url=url,
+            measurement=str(facts.get("measurement") or value),
+            guide_url=str(facts.get("guide_url") or guide_url),
+        )
+        message = EmailMessage()
+        message["From"] = READY_SENDER
+        message["Reply-To"] = READY_REPLY_TO
+        message["To"] = str(facts.get("to") or to)
+        message["Subject"] = str(facts.get("subject") or READY_SUBJECT)
+        message["Date"] = formatdate(moment, usegmt=True)
+        message["Message-ID"] = message_id
+        message.set_content(body)
+        if kit_path.is_file() and kit_path.stat().st_size:
+            filename = "odile-%s-recovery-kit.txt" % slug
+            kit_bytes = kit_path.read_bytes()
+            message.add_attachment(kit_bytes, maintype="text",
+                                   subtype="plain", filename=filename)
+            # Pin the boundary: `add_attachment` leaves it unset, and each
+            # `as_bytes()` would draw a fresh random one, so the same mail
+            # would be written with different bytes on every press.
+            message.set_boundary(ready_boundary(slug, body, kit_bytes))
+            facts["kit_filename"] = filename
+        facts["at"] = moment
+        facts["at_iso"] = iso(datetime.fromtimestamp(moment, timezone.utc))
+        _atomic_write(facts_path, (json.dumps(
+            facts, indent=2, sort_keys=True) + "\n").encode("utf-8"))
+        _atomic_write(message_path, message.as_bytes())
+        return queue.message_path(slug)
 
 
 def expected_measurement(config: Config) -> str:
@@ -880,10 +1079,10 @@ def render_recovery_kit(
     slug: str,
     ipv4: str,
     instance_id: str,
-    token: str,
+    token: str | None,
     measurement: str,
     first_visit_url: str,
-    expires_at: str,
+    expires_at: str | None,
     release: str,
     vcpus: int,
     backup_repo_url: str | None,
@@ -1056,6 +1255,136 @@ def _find_machine(provider: Provider, slug: str) -> Machine | None:
     return machines[0] if machines else None
 
 
+def _guest_domain(config: Config) -> str:
+    """The suffix the machine's own name hangs under (the bench's `test.…`)."""
+    return dns_module.tenant_zone(config)
+
+
+def _default_guest_probe(domain: str, slug: str):
+    from .health import guest_answer
+
+    return guest_answer(domain, slug)
+
+
+def _finish_ready(
+    con: sqlite3.Connection,
+    slug: str,
+    *,
+    config: Config,
+    outbox: ReadyOutbox,
+    now: int | None = None,
+    guest_probe: Callable[[str, str], Any] | None = None,
+) -> ProvisionResult:
+    """Queue the one ready email once the machine's own `/verify` answers.
+
+    ODL-947: the claim path's email used to be written when the provider said
+    the VM was active, which is not when the product's machine exists. The
+    order still records its facts (`ReadyOutbox.stage`); this pass asks the
+    machine itself, and only a 200 from `/verify` with the machine's own
+    `/attestation` report moves the row. The kit and the mail are rebuilt from
+    those facts and the machine's measurement, so a later press on the account
+    page writes the same bytes (the facts sidecar carries the value).
+    """
+    tenant = _tenant(con, slug)
+    moment = int(now if now is not None else time.time())
+    facts = outbox.facts(slug)
+    if facts is None:
+        return ProvisionResult(
+            slug=slug, ok=True, skipped=True, pending=True,
+            server_id=tenant["server_id"], ipv4=tenant["ipv4"],
+            expires_at=tenant["expires_at"], reason="no staged facts",
+            state_note="waiting for the order's facts",
+        )
+    probe = guest_probe or _default_guest_probe
+    domain = _guest_domain(config)
+    answer = probe(domain, slug)
+    if answer is None:
+        return ProvisionResult(
+            slug=slug, ok=True, skipped=True, pending=True,
+            server_id=tenant["server_id"], ipv4=tenant["ipv4"],
+            expires_at=tenant["expires_at"],
+            reason="waiting for the machine's /verify",
+            state_note="the machine has not answered at its own name yet",
+        )
+
+    measurement = str(answer.measurement)
+    url = str(facts.get("url") or "https://%s.%s" % (slug, domain))
+    host = str(facts.get("host") or "%s.%s" % (slug, domain))
+    release = str(facts.get("release") or tenant["release"] or "")
+    kit_path = outbox.kit_path(slug)
+    try:
+        kit_text = render_recovery_kit(
+            slug=slug,
+            ipv4=str(tenant["ipv4"]),
+            instance_id=str(tenant["server_id"]),
+            token=None,  # B-once: the kit prints no setup token
+            measurement=measurement,
+            first_visit_url=url + "/first-visit",
+            # The token's own expiry is retired from the kit (ODL-925); the
+            # kit's `written_at` is now the moment the machine answered.
+            expires_at=None,
+            release=release,
+            vcpus=_vcpus(config),
+            backup_repo_url=_backup_repo(config, slug),
+            written_at=iso(datetime.fromtimestamp(moment, timezone.utc)),
+            account_host=config.get("account_host"),
+        )
+        kit_path.write_text(kit_text, encoding="utf-8")
+        _chmod(kit_path, 0o600)
+        facts.update({
+            "measurement": measurement,
+            "host": host,
+            "url": url,
+            "ipv4": tenant["ipv4"],
+            "server_id": tenant["server_id"],
+            "release": release,
+            "kit_filename": "odile-%s-recovery-kit.txt" % slug,
+        })
+        outbox.stage(slug=slug, facts=facts, at=moment)
+        # One builder, both queues: the same function the account page's press
+        # calls, rebuilding from the facts sidecar (so the mail's bytes do not
+        # change) with the machine's own measurement.
+        message = str(queue_ready_email(
+            str(outbox.directory),
+            slug=slug,
+            to=str(facts.get("to") or tenant["email"]),
+            url=url,
+            host=host,
+            measurement=measurement,
+            ipv4=tenant["ipv4"],
+            server_id=tenant["server_id"],
+            release=release,
+            at=int(facts.get("at") or moment),
+        ))
+    except (ClaimError, OSError, ValueError, RuntimeError) as error:
+        # The machine exists; a failed write is retried by the next run with
+        # the same facts, so it must not become a failed provision.
+        return ProvisionResult(
+            slug=slug, ok=True, skipped=True, pending=True,
+            server_id=tenant["server_id"], ipv4=tenant["ipv4"],
+            expires_at=tenant["expires_at"],
+            reason="the ready email could not be written: %s" % str(error)[:200],
+            state_note="retrying the ready email",
+        )
+    _event(con, int(tenant["id"]), "provisioned", {
+        "step": "ready",
+        "server_id": tenant["server_id"],
+        "ready_email": message,
+        "kit": str(kit_path),
+        "measurement": measurement,
+        "verify_bytes": answer.verify_bytes,
+        "at": iso(datetime.fromtimestamp(moment, timezone.utc)),
+    })
+    con.commit()
+    return ProvisionResult(
+        slug=slug, ok=True, adopted=True,
+        server_id=tenant["server_id"], ipv4=tenant["ipv4"],
+        expires_at=tenant["expires_at"], kit_path=str(kit_path),
+        email_path=message, reason="",
+        state_note="the machine answered at its own name",
+    )
+
+
 def provision_tenant(
     con: sqlite3.Connection,
     slug: str,
@@ -1067,14 +1396,20 @@ def provision_tenant(
     now: int | None = None,
     timeout: float = DEFAULT_TIMEOUT,
     interval: float = DEFAULT_INTERVAL,
+    guest_probe: Callable[[str, str], Any] | None = None,
 ) -> ProvisionResult:
     """Provision one paid, claimed tenant; safe to run again.
 
     The order is the card's: order the machine, wait for it, write the DNS
-    record, mint the setup token, render the kit, queue the ready email. Every
-    step is checked before the next, and a failure after the machine exists
-    terminates it before the failure is recorded, so a failed attempt leaves no
-    billed resource.
+    record, mint the setup token, stage the ready facts. Every step is checked
+    before the next, and a failure after the machine exists terminates it
+    before the failure is recorded, so a failed attempt leaves no billed
+    resource.
+
+    ODL-947 splits the ready email off the order: the row and the facts are
+    written here, and the one mail is queued by `_finish_ready` when the
+    machine's own `/verify` answers. A later run of the timer re-enters this
+    function for the same tenant and goes straight to that second phase.
     """
     moment = int(now if now is not None else time.time())
     tenant = _tenant(con, slug)
@@ -1098,6 +1433,13 @@ def provision_tenant(
             email_path=str(existing.message) if existing else None,
             state_note=_advance_state_provisioned(con, slug, release=tenant["release"]),
         )
+
+    # The machine is ordered and its facts are staged: this is the second
+    # phase, and it must not rotate the token the machine is already using.
+    if (tenant["state"] == "provisioned" and tenant["server_id"]
+            and outbox.facts(slug) is not None):
+        return _finish_ready(con, slug, config=config, outbox=outbox,
+                             now=moment, guest_probe=guest_probe)
 
     # Validate the one config value the ready email promises before any spend:
     # an invalid measurement is a config error, not a machine that gets built
@@ -1189,34 +1531,11 @@ def provision_tenant(
 
         host = f"{slug}.{domain}"
         url = f"https://{host}"
-        # The action the user takes: sign in to the machine (B-once, ODL-925).
-        # The page is tokenless; the setup token stays the machine's seed badge
-        # and the rebuild-seal key, and neither the message nor the kit prints
-        # it.
-        first_visit_url = f"{url}/first-visit"
-        kit_text = render_recovery_kit(
+        # ODL-947: the order records its facts; the message itself waits for
+        # the machine's own /verify (the claim used to queue it here, when the
+        # provider said "active" and the guest half did not exist yet).
+        outbox.stage(
             slug=slug,
-            ipv4=ipv4,
-            instance_id=server_id,
-            token=token,
-            measurement=measurement,
-            first_visit_url=first_visit_url,
-            expires_at=issued["expires_at"],
-            release=release,
-            vcpus=_vcpus(config),
-            backup_repo_url=_backup_repo(config, slug),
-            written_at=iso(datetime.fromtimestamp(moment, timezone.utc)),
-            # The account site the invitation email names, when the operator has
-            # recorded it; unset keeps the kit's invitation-email sentence.
-            account_host=config.get("account_host"),
-        )
-        body = ready_body(url=url, measurement=measurement)
-        queued = outbox.queue(
-            slug=slug,
-            recipient=tenant["email"],
-            subject=READY_SUBJECT,
-            body=body,
-            kit_text=kit_text,
             facts={
                 "kind": "ready",
                 "slug": slug,
@@ -1236,15 +1555,6 @@ def provision_tenant(
             },
             at=moment,
         )
-        _event(con, int(tenant["id"]), "provisioned", {
-            "step": "ready",
-            "server_id": server_id,
-            "ready_email": str(queued.message),
-            "kit": str(queued.kit),
-            "token_expires": issued["expires_at"],
-            "dns": {"name": name, "action": dns_action, "record_id": dns_record_id},
-            "at": iso(datetime.fromtimestamp(moment, timezone.utc)),
-        })
         con.commit()
     except Exception as error:  # the one place a failure becomes a clean state
         con.rollback()  # discard a Stage A write whose commit did not land
@@ -1297,11 +1607,15 @@ def provision_tenant(
         )
 
     note = _advance_state_provisioned(con, slug, release=release)
+    finished = _finish_ready(con, slug, config=config, outbox=outbox,
+                             now=moment, guest_probe=guest_probe)
     return ProvisionResult(
         slug=slug,
         ok=True,
         created=created_here,
         adopted=adopted,
+        skipped=finished.skipped,
+        pending=finished.pending,
         server_id=machine.server_id,
         ipv4=machine.ipv4,
         expires_at=iso_epoch(machine.expires_at),
@@ -1310,9 +1624,10 @@ def provision_tenant(
         dns_record_id=dns_record_id,
         dns_name=name,
         token_expires=issued["expires_at"],
-        kit_path=str(queued.kit),
-        email_path=str(queued.message),
-        state_note=note,
+        kit_path=finished.kit_path,
+        email_path=finished.email_path,
+        reason=finished.reason,
+        state_note="; ".join(part for part in (note, finished.state_note) if part),
     )
 
 
@@ -1369,9 +1684,11 @@ def _advance_state_provisioned(
     """Record the machine on the state spine: claimed → provisioning → first_boot.
 
     The state machine has no retryable ``failed`` state, so it is advanced only
-    after the machine and the ready email both exist. A failure here is a note:
-    the tenant and the queued email are already correct, and a later run
-    repairs the state row.
+    after the machine is recorded. ODL-947: the ready email is no longer part
+    of this step — the order stages its facts and the machine's own answer
+    queues it — so the detail says `ready: False` until that later run. A
+    failure here is a note: the tenant and the staged facts are already
+    correct, and a later run repairs the state row.
 
     ``release`` is the pin's ``provision_release``. It is written in the same
     transition that records the order; a row that predates ODL-398 (or a second
@@ -1395,7 +1712,8 @@ def _advance_state_provisioned(
                 hostname=slug,
                 ipv4=_tenant(con, slug)["ipv4"],
                 release=release,
-                detail={"source": "claim", "ready": True},
+                detail={"source": "claim", "ready": False,
+                        "ready_note": "waiting for the machine's /verify"},
             )
         if tenant.state == "provisioning":
             tenant = store.await_boot(slug)
@@ -1443,6 +1761,7 @@ def run_pending(
     now: int | None = None,
     timeout: float = DEFAULT_TIMEOUT,
     interval: float = DEFAULT_INTERVAL,
+    guest_probe: Callable[[str, str], Any] | None = None,
 ) -> list[ProvisionResult]:
     """Provision every eligible tenant, one at a time; return every result."""
     outbox = outbox or ReadyOutbox(config.path_value("outbox", DEFAULT_OUTBOX))
@@ -1462,6 +1781,7 @@ def run_pending(
                 now=now,
                 timeout=timeout,
                 interval=interval,
+                guest_probe=guest_probe,
             )
         )
     return results
@@ -1501,7 +1821,9 @@ def tenant_status(
             latest = detail
             break
         if step == "vm":
-            provision = "vm_ready_no_email"
+            # ODL-947: the machine is ordered and the ready email is waiting
+            # for the machine's own /verify; this is a state, not a failure.
+            provision = "waiting_for_guest"
             latest = detail
             break
     queued = outbox.queued(slug)
@@ -1532,7 +1854,12 @@ def tenant_status(
 def _action_rows(results: Sequence[ProvisionResult]) -> list[str]:
     lines: list[str] = []
     for result in results:
-        if result.ok and result.skipped:
+        if result.ok and result.pending:
+            lines.append(
+                f"  {result.slug}: {result.server_id} active at {result.ipv4}; "
+                f"waiting for the machine's /verify before the ready email"
+            )
+        elif result.ok and result.skipped:
             lines.append(f"  {result.slug}: already ready ({result.server_id})")
         elif result.ok:
             lines.append(
@@ -1677,7 +2004,7 @@ def _injected_dns(config: Config, transport):
 
 
 def cmd_accept(con: sqlite3.Connection, config: Config, args, ctx: Context,
-               *, dns_transport=None) -> tuple[Report, bool]:
+               *, dns_transport=None, guest_probe=None) -> tuple[Report, bool]:
     if not args.apply:
         preview = peek_claim(con, args.token)
         actions = [{"action": "claim.accept", "slug": preview["slug"]}]
@@ -1700,6 +2027,7 @@ def cmd_accept(con: sqlite3.Connection, config: Config, args, ctx: Context,
             con, result.slug, provider=ctx.provider, config=config,
             dns_client=_injected_dns(config, dns_transport),
             timeout=args.timeout, interval=args.interval,
+            guest_probe=guest_probe,
         )
         payload["provision"] = provision.to_dict()
         lines += _action_rows([provision])
@@ -1708,7 +2036,7 @@ def cmd_accept(con: sqlite3.Connection, config: Config, args, ctx: Context,
 
 
 def cmd_mark_paid(con: sqlite3.Connection, config: Config, args, ctx: Context,
-                  *, dns_transport=None) -> tuple[Report, bool]:
+                  *, dns_transport=None, guest_probe=None) -> tuple[Report, bool]:
     if not args.apply:
         actions = [{"action": "tenant.mark_paid", "slug": args.slug, "plan": args.plan}]
         actions += _provision_actions(args.slug, config)
@@ -1723,6 +2051,7 @@ def cmd_mark_paid(con: sqlite3.Connection, config: Config, args, ctx: Context,
             con, args.slug, provider=ctx.provider, config=config,
             dns_client=_injected_dns(config, dns_transport),
             timeout=args.timeout, interval=args.interval,
+            guest_probe=guest_probe,
         )
         payload["provision"] = provision.to_dict()
         lines += _action_rows([provision])
@@ -1731,7 +2060,7 @@ def cmd_mark_paid(con: sqlite3.Connection, config: Config, args, ctx: Context,
 
 
 def cmd_run(con: sqlite3.Connection, config: Config, args, ctx: Context,
-            *, dns_transport=None) -> tuple[Report, bool]:
+            *, dns_transport=None, guest_probe=None) -> tuple[Report, bool]:
     outbox = ReadyOutbox(config.path_value("outbox", DEFAULT_OUTBOX))
     if not args.apply:
         rows = eligible(con, outbox, args.slug)
@@ -1744,14 +2073,21 @@ def cmd_run(con: sqlite3.Connection, config: Config, args, ctx: Context,
         con, provider_factory=lambda cfg: ctx.provider, config=config,
         dns_client=_injected_dns(config, dns_transport),
         outbox=outbox, slug=args.slug, timeout=args.timeout, interval=args.interval,
+        guest_probe=guest_probe,
     )
     if not results:
         return Report({"ok": True, "command": NAME, "dry_run": False, "results": [],
                        "count": 0}, ["claim: nothing to provision"]), True
+    ready = sum(1 for result in results if result.ok and not result.pending)
+    waiting = sum(1 for result in results if result.ok and result.pending)
+    headline = "claim: %d provisioned" % ready
+    if waiting:
+        headline += ", %d waiting for the machine" % waiting
     return Report(
         {"ok": all(result.ok for result in results), "command": NAME, "dry_run": False,
-         "results": [result.to_dict() for result in results], "count": len(results)},
-        ["claim: provisioned %d tenant(s)" % len(results)] + _action_rows(results),
+         "results": [result.to_dict() for result in results], "count": len(results),
+         "ready": ready, "waiting": waiting},
+        [headline] + _action_rows(results),
     ), all(result.ok for result in results)
 
 
@@ -1810,6 +2146,7 @@ def main(
     *,
     provider_factory: Callable[[Config], Provider] | None = None,
     dns_transport=None,
+    guest_probe: Callable[[str, str], Any] | None = None,
     stdout: TextIO | None = None,
     stderr: TextIO | None = None,
 ) -> int:
@@ -1838,13 +2175,16 @@ def main(
                 report, ok = cmd_invite(con, config, args)
             elif args.verb == "accept":
                 report, ok = cmd_accept(con, config, args, ctx,
-                                        dns_transport=dns_transport)
+                                        dns_transport=dns_transport,
+                                        guest_probe=guest_probe)
             elif args.verb == "mark-paid":
                 report, ok = cmd_mark_paid(con, config, args, ctx,
-                                           dns_transport=dns_transport)
+                                           dns_transport=dns_transport,
+                                           guest_probe=guest_probe)
             elif args.verb == "run":
                 report, ok = cmd_run(con, config, args, ctx,
-                                     dns_transport=dns_transport)
+                                     dns_transport=dns_transport,
+                                     guest_probe=guest_probe)
             else:
                 report, ok = cmd_status(con, config, args)
         finally:

@@ -427,13 +427,20 @@ Run all four; each is also the evidence line for the card.
 ## 5. The claim worker (`odile-claim.timer`)
 
 ODL-220's claim spine records a claim in the web service; the paid work — adopt
-or order the machine, write the A record, mint the setup token, render the
-recovery kit, queue the ready email — is this root command run from
-`/opt/odile`:
+or order the machine, write the A record, mint the setup token — is this root
+command run from `/opt/odile`:
 
 ```sh
 /usr/bin/python3 -m odilectl.claim run --apply --json
 ```
+
+The ready email is the second half of the same timer (ODL-947): the order
+records the machine and stages the mail's facts, and a later run asks the
+machine's own `/attestation` and `/verify` at `https://<slug>.<tenant domain>`.
+Only a machine that answers gets the one ready email, rendered from the staged
+facts with the machine's own launch measurement (the number its `/verify` page
+prints). Until then `claim status` says `vm_ready_no_email`, and the row stays
+`provisioned`.
 
 `scripts/deploy.sh` installs `odile-claim.service` (oneshot) and `odile-claim.timer`
 (every five minutes, `WantedBy=timers.target`) and enables the timer, so no

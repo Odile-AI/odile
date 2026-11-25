@@ -748,12 +748,16 @@ the user signs in.
 
 ### 5.0 A build that failed before a machine existed
 
-A2's claim worker builds a tenant in one run: order, poll, DNS, seed token,
-recovery kit, ready email. If any step after the order fails, that same run
-terminates the machine it created, removes any DNS record it wrote and any
-queued file, puts the tenant row back to `claimed`, and writes one
-`provision_failed` alert.
-There is no machine to restart and no disk to rebuild; the fix is a retry.
+A2's claim worker builds a tenant in two runs (ODL-947). The first orders the
+machine, polls it, writes the DNS record and mints the seed token, and stages
+the ready mail's facts. If any step before the machine is recorded fails, that
+run terminates the machine it created, removes any DNS record it wrote, puts
+the tenant row back to `claimed`, and writes one `provision_failed` alert.
+There is no machine to restart and no disk to rebuild; the fix is a retry. Once
+the machine is recorded, a later run of the same timer asks its own
+`/attestation` and `/verify`; only an answering machine gets the recovery kit
+and the one ready email, and a failure in that second half keeps the machine and
+retries on the next tick (`claim status` reads `vm_ready_no_email`).
 
 ```sh
 1. /usr/bin/python3 -m odilectl.claim status <slug> --json   # provision: "failed"
