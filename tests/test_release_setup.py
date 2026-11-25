@@ -50,6 +50,25 @@ class ReleaseSetupOnceTests(unittest.TestCase):
         self.pubkey.write_text("pub\n", encoding="utf-8")
         self.log = self.tmp / "release-setup.log"
         self.done = self.tmp / "state" / "release-setup.done"
+        # The access-report check (ODL-947). The default is the healthy first
+        # boot: the report exists and was written after this host's boot, and
+        # the unit answers `active`; the tests below bend each of the three.
+        self.report = self.tmp / "access-report.txt"
+        self.report.write_text("read from your machine, 2026-11-24T09:16:26Z\n",
+                               encoding="utf-8")
+        self.bin = self.tmp / "bin"
+        self.bin.mkdir()
+        self.systemctl = self.bin / "systemctl"
+        self.systemctl.write_text(
+            "#! /bin/sh\n"
+            "# STUB_UNIT_STATE is what `systemctl is-active` answers.\n"
+            "if [ \"$1\" = is-active ]; then\n"
+            "    printf '%s\\n' \"${STUB_UNIT_STATE:-active}\"\n"
+            "    [ \"${STUB_UNIT_STATE:-active}\" = active ] || exit 3\n"
+            "fi\n"
+            "exit 0\n",
+            encoding="utf-8")
+        self.systemctl.chmod(0o755)
 
     def _cleanup(self) -> None:
         import shutil
@@ -57,7 +76,7 @@ class ReleaseSetupOnceTests(unittest.TestCase):
 
     def env(self, **extra: str) -> dict[str, str]:
         env = {
-            "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+            "PATH": str(self.bin) + ":" + os.environ.get("PATH", "/usr/bin:/bin"),
             "ODILE_RELEASE_CMDLINE": str(self.cmdline),
             "ODILE_RELEASE_PIN": str(self.pin),
             "ODILE_RELEASE_ATTEST": str(self.attest),
@@ -66,6 +85,8 @@ class ReleaseSetupOnceTests(unittest.TestCase):
             "ODILE_RELEASE_PUBKEY": str(self.pubkey),
             "ODILE_RELEASE_LOG": str(self.log),
             "ODILE_RELEASE_DONE": str(self.done),
+            "ODILE_RELEASE_REPORT": str(self.report),
+            "ODILE_RELEASE_UNIT": "odile-access-report",
         }
         env.update(extra)
         return env
@@ -237,6 +258,86 @@ class ReleaseSetupOnceTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("--public-url https://moved.odile.fyi",
                       self.log.read_text(encoding="utf-8"))
+
+    # ODL-947: the boot's own exit code, its log line and the unit's state
+    # agree about the access report. Before this check the release setup logged
+    # `FAIL odile-access-report did not start` and still ended rc=0, so the
+    # console and the exit code disagreed and the support bundle kept whatever
+    # report an earlier boot had written.
+
+    def test_a_report_written_this_boot_keeps_rc_zero_and_says_so(self) -> None:
+        result = self.run_script()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        text = self.log.read_text(encoding="utf-8")
+        self.assertIn("ok           " + str(self.report) + " written ", text)
+        self.assertIn("ok           odile-access-report is active", text)
+        self.assertIn("(this boot started ", text)
+        self.assertNotIn("the access report did not pass", text)
+
+    def test_a_stale_report_fails_the_run_and_names_its_timestamp(self) -> None:
+        boot = self.host_boot_epoch()
+        # One second before the boot is unambiguously stale and stays inside the
+        # epoch on a machine that booted moments ago (a fresh gate host).
+        stamp = boot - 1 if boot else 1795421600
+        os.utime(self.report, (stamp, stamp))
+        result = self.run_script()
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        text = self.log.read_text(encoding="utf-8")
+        self.assertIn("FAIL         the access report is stale", text)
+        self.assertIn(self.utc(stamp), text)
+        self.assertIn("this boot started", text)
+        self.assertIn("the access report did not pass this boot", result.stdout)
+        self.assertIn("the access report did not pass this boot", text)
+
+    def test_a_missing_report_fails_the_run(self) -> None:
+        self.report.unlink()
+        result = self.run_script()
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("was not written this boot",
+                      self.log.read_text(encoding="utf-8"))
+
+    def test_a_unit_that_did_not_come_up_fails_the_run(self) -> None:
+        result = self.run_script(STUB_UNIT_STATE="failed")
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("FAIL         odile-access-report is failed",
+                      self.log.read_text(encoding="utf-8"))
+
+    def test_a_failed_report_still_records_the_installed_run(self) -> None:
+        """The report is the machine's record, not the install's verdict."""
+        self.report.unlink()
+        result = self.run_script()
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("=== rc=0", self.log.read_text(encoding="utf-8"))
+        self.assertIn("rc=0", self.done.read_text(encoding="utf-8"))
+
+    def test_a_converged_boot_leaves_the_report_check_to_its_own_unit(self) -> None:
+        """The check is the first boot's: a converged boot does no work at all.
+
+        The report's unit is enabled at every boot (`WantedBy=multi-user`), so
+        a failed report on a converged machine is still visible in `systemctl`
+        and on the console; this script's early exit says only that the install
+        is done.
+        """
+        self.done.parent.mkdir(parents=True, exist_ok=True)
+        self.done.write_text("ran 2026-11-24T09:16:26Z · odile-test · instance i-test · rc=0\n",
+                             encoding="utf-8")
+        self.report.unlink()
+        result = self.run_script()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("already converged", result.stdout)
+
+    # -- helpers for the two clocks --------------------------------------
+
+    def host_boot_epoch(self) -> int:
+        for line in Path("/proc/stat").read_text(encoding="utf-8").splitlines():
+            if line.startswith("btime "):
+                return int(line.split()[1])
+        return 0
+
+    def utc(self, epoch: int) -> str:
+        import datetime
+        return datetime.datetime.fromtimestamp(epoch, datetime.timezone.utc)\
+            .strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 if __name__ == "__main__":

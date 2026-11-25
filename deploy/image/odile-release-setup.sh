@@ -45,7 +45,14 @@
 # Every path is overridable so a harness can drive each branch without a
 # machine (tests/test_release_setup.py); the defaults are the image's.
 #
-# Exit codes: 0 always. The boot depends on the page, not on ACME.
+# Exit codes: 0 when the installer ran and this boot's access report is in
+# place, 1 when the report is stale or its unit did not come up (ODL-947). A
+# report is the machine's own record: before this check the boot logged
+# `FAIL odile-access-report did not start` and still ended rc=0, so the console
+# and the exit code disagreed and the support bundle kept whatever report an
+# earlier boot had written. The release itself is not failed by either: Caddy,
+# /verify and the page stand, the boot reaches multi-user, and the unit runs
+# again on every boot so a failed write is repaired without a re-install.
 #
 # Two arguments the boot cannot get from a terminal (t_d95b8c13): the installer
 # ends `rc=4` when the recovery file has not been confirmed and stdin is not a
@@ -84,6 +91,11 @@ SIGNATURE=${ODILE_RELEASE_SIGNATURE:-/usr/local/lib/odile-image/odile_install.py
 PUBKEY=${ODILE_RELEASE_PUBKEY:-/etc/odile/odile-signing-key.pub}
 LOG=${ODILE_RELEASE_LOG:-/var/log/odile-release-setup.log}
 DONE=${ODILE_RELEASE_DONE:-/var/lib/odile/release-setup.done}
+# The report the installer's own restart just rewrote (ODL-947), and the unit
+# that writes it. Both are overridable so the harness can drive the stale and
+# the fresh branch without a machine.
+REPORT=${ODILE_RELEASE_REPORT:-/var/lib/odile/access-report.txt}
+REPORT_UNIT=${ODILE_RELEASE_UNIT:-odile-access-report}
 TOKEN=""
 IID=""
 HOST=""
@@ -210,4 +222,58 @@ done
         "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$HOST" "$IID" "$rc" > "$DONE"
 } 2>&1 | tee -a "$LOG" || true
 
-exit 0
+# The report the unit wrote, and the unit's own state (ODL-947). The installer
+# above restarts odile-access-report; before this check the boot logged
+# `FAIL odile-access-report did not start` and still ended rc=0, so the console,
+# the log and the exit code disagreed and the support bundle kept whatever
+# report an earlier boot had left. A oneshot with RemainAfterExit=yes stays
+# `active` after a run that ended 0 and reads `failed` after one that did not,
+# and the file's mtime is the other half of the same fact: a report older than
+# this boot is named with its own timestamp instead of being passed off as
+# fresh.
+BOOT_EPOCH=$(awk '$1 == "btime" { print $2; exit }' /proc/stat 2>/dev/null) || BOOT_EPOCH=""
+case "$BOOT_EPOCH" in
+    ''|*[!0-9]*) BOOT_EPOCH=0 ;;
+esac
+BOOT_AT=$(date -u -d "@$BOOT_EPOCH" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null) || BOOT_AT="unknown"
+REPORT_EPOCH=$(stat -c %Y "$REPORT" 2>/dev/null) || REPORT_EPOCH=""
+case "$REPORT_EPOCH" in
+    ''|*[!0-9]*) REPORT_EPOCH=0 ;;
+esac
+REPORT_AT=$(date -u -d "@$REPORT_EPOCH" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null) || REPORT_AT="unknown"
+VERDICT=0
+# The check's text goes through a file, not a pipe: a `{ … } | tee` body runs
+# in a subshell and the verdict set inside it would be lost, which is exactly
+# the class of bug this card is about.
+CHECK=$(mktemp 2>/dev/null) || CHECK="/tmp/odile-release-setup.$$.check"
+{
+    if [ "$REPORT_EPOCH" -gt 0 ] && { [ "$BOOT_EPOCH" -eq 0 ] || [ "$REPORT_EPOCH" -ge "$BOOT_EPOCH" ]; }; then
+        echo "ok           $REPORT written $REPORT_AT (this boot started $BOOT_AT)"
+    elif [ "$REPORT_EPOCH" -gt 0 ]; then
+        echo "FAIL         the access report is stale: $REPORT was written $REPORT_AT, this boot started $BOOT_AT"
+        VERDICT=1
+    else
+        echo "FAIL         the access report was not written this boot: no $REPORT"
+        VERDICT=1
+    fi
+    if command -v systemctl >/dev/null 2>&1; then
+        # `systemctl is-active` prints the state and exits non-zero for
+        # everything but `active`, so the text is read before the status.
+        STATE=$(systemctl is-active "$REPORT_UNIT" 2>/dev/null) || true
+        [ -n "$STATE" ] || STATE="unknown"
+        if [ "$STATE" = "active" ]; then
+            echo "ok           $REPORT_UNIT is active"
+        else
+            echo "FAIL         $REPORT_UNIT is $STATE — systemctl status $REPORT_UNIT names the cause"
+            VERDICT=1
+        fi
+    fi
+    if [ "$VERDICT" = 1 ]; then
+        echo "=== odile-release-setup: the access report did not pass this boot (the installer's own rc is above) — rc=1"
+    fi
+} > "$CHECK" 2>&1
+cat "$CHECK"
+cat "$CHECK" >> "$LOG" 2>/dev/null || true
+rm -f "$CHECK"
+
+exit "$VERDICT"

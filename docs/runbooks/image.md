@@ -123,6 +123,18 @@ The plan says which mirror it will use without building anything —
 `./deploy/image/sealed-image.sh --dry-run` prints a `mirror` line, and `--help`
 prints the resolved default.
 
+**A production image's pin is placed by the command that writes it (ODL-947).**
+For `sealed-image.sh --production`, the UKI step is the pin step:
+`sudo ./deploy/image/uki.sh --in OUT --sign --pin OUT/tenant-image.pin` writes
+the pin and then opens the sealed disk and installs it at
+`/etc/odile/tenant-image.pin` — there is no fifth command to remember. `uki.sh`
+refuses a production image with no `--pin` (exit 2, naming the `record skipped`
+boot it would otherwise produce), refuses `--no-place-pin` on one, and needs
+root because the disk is opened with its bootstrap key. A bench disk has no
+bootstrap key and its own build (`firstboot-bench.sh build`) places the pin with
+the bench stand-in, so §3's command above still needs neither sudo nor the
+placement.
+
 Every state-changing step refuses to overwrite an existing artefact without
 `--force` (the initrd and the disk) and has a `--dry-run`; the disk build is
 destructive only inside `--out` and its outside-the-repo chroot. `uki.sh` runs

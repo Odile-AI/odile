@@ -7499,18 +7499,18 @@ https://odile.fyi/releases/m1/odile-tenant.efi
 </body>
 </html>
 '''
-ACCESS_REPORT_SCRIPT_SHA256 = "c85b4c370b4ef0c44b8a9b5b35d5a0c348155a5b120a7064a4a8e3179caef20b"
+ACCESS_REPORT_SCRIPT_SHA256 = "7c5629c279856dfdd6d0746f614742722b73668d44405806a73dbdad2d0d8468"
 ACCESS_REPORT_SCRIPT = r'''#!/bin/sh
 # access-report.sh — write the machine's own /verify report (ODL-473).
 #
-# The boot oneshot runs this as root. It resolves the pinned measurement the
-# user verified, then runs the strict bar's report exactly as the card names
+# The boot oneshot runs this as root. It resolves the measurement the report is
+# checked against, then runs the strict bar's report exactly as the card names
 # it and writes the file /verify reads:
 #
-#   verify_and_unlock.sh --mode access --root / --user odile --expect <pin> \
+#   verify_and_unlock.sh --mode access --root / --user odile --expect <number> \
 #       --out /var/lib/odile/access-report.txt
 #
-# Where the pin comes from, in order:
+# Where the pinned number comes from, in order:
 #
 #   /etc/odile/tenant-image.pin   uki_signed.measurement — the image's own UKI
 #                                 measurement, when a release cut places it
@@ -7521,10 +7521,22 @@ ACCESS_REPORT_SCRIPT = r'''#!/bin/sh
 #   /etc/odile/odile-verify.pin   measurement — the demo/release pin, if a
 #                                 tenant copy was ever re-pinned to this image
 #
-# A pinned number that does not match the report fails the seal line, which is
-# the point: the report says `the measurement is not --expect`. No pin at all
-# exits 2 and writes nothing, so /verify says "not written yet" instead of
-# showing a report checked against nothing.
+# **The pin names a file; a boot has its own number (ODL-947).** The UKI is
+# built with an empty command line and the machine passes its own line at
+# launch (`--append`), so the launch measurement covers the per-machine tokens
+# (`odile.token=`, `bb.key=`, the slug) *and* the vCPU count. A pin built by
+# `uki.sh --vcpus 2` from the builder's line can therefore never equal a 1 vCPU
+# tenant's number — measured on the cold walk, where the pin was
+# d1aa68fb…/2 vCPU and the machine's own report was 9f2bc74b…/1 vCPU, so this
+# unit failed at every boot of an image that had its pin. The number the report
+# is checked against is this boot's own when the machine wrote one, and the pin
+# when it did not; a disagreement is never silent — one line names both, exactly
+# as odile-release-setup.sh already does for the installer's `--expect`.
+#
+# A pinned number that does match is still a comparison, not a substitution:
+# `--expect` fails the seal line when the report's own bytes disagree with it.
+# No pin at all exits 2 and writes nothing, so /verify says "not written yet"
+# instead of showing a report checked against nothing.
 #
 # Read-only on the machine: the reporter reads /proc/cmdline, the attestation
 # document, every authorized_keys and the tenant .env; it writes only the
@@ -7542,8 +7554,12 @@ TENANT_USER=${ODILE_ACCESS_USER:-odile}
 OUT=${ODILE_ACCESS_OUT:-/var/lib/odile/access-report.txt}
 REPORTER=${ODILE_REPORTER:-/usr/local/lib/odile/verify_and_unlock.sh}
 PIN_FILES=${ODILE_ACCESS_PIN_FILES:-/etc/odile/tenant-image.pin:/etc/odile/boot-record.json:/var/lib/odile/attestation.json:/etc/odile/odile-verify.pin}
+# This boot's own report, when the machine wrote one (odile-attest-boot.service
+# is Wants=/After= this unit). Absent on a bench root that never ran that unit,
+# and then the pin is the only number there is.
+ATTEST=${ODILE_ACCESS_ATTEST:-/var/lib/odile/attestation.json}
 
-found=$(/usr/bin/python3 - "$PIN_FILES" <<'PY'
+found=$(/usr/bin/python3 - "$PIN_FILES" "$ATTEST" <<'PY'
 import json
 import re
 import sys
@@ -7567,34 +7583,46 @@ def value(node):
     return None
 
 
+def read(path):
+    """The parsed JSON at path, or None when it is missing or not JSON."""
+    try:
+        with open(path, encoding="utf-8") as handle:
+            return json.load(handle)
+    except (OSError, ValueError):
+        return None
+
+
+pin_path = ""
+pin = ""
 for path in sys.argv[1].split(":"):
     if not path:
         continue
-    try:
-        with open(path, encoding="utf-8") as handle:
-            document = json.load(handle)
-    except (OSError, ValueError):
-        continue
-    measurement = value(document)
+    measurement = value(read(path))
     if measurement:
-        print("%s\t%s" % (path, measurement))
+        pin_path, pin = path, measurement
         break
+boot = value(read(sys.argv[2])) or ""
+print("pin\t%s\t%s" % (pin_path, pin))
+print("boot\t%s" % boot)
 PY
 )
-if [ -z "$found" ]; then
+PIN_FILE=$(printf '%s\n' "$found" | sed -n '1p' | cut -f2)
+PIN=$(printf '%s\n' "$found" | sed -n '1p' | cut -f3)
+BOOT=$(printf '%s\n' "$found" | sed -n '2p' | cut -f2)
+if [ -z "$PIN" ]; then
     echo "access-report: no 96-hex measurement in ${PIN_FILES}" >&2
     exit 2
 fi
-PIN_FILE=$(printf '%s' "$found" | cut -f1)
-PIN=$(printf '%s' "$found" | cut -f2)
-if [ -z "$PIN" ]; then
-    echo "access-report: $PIN_FILE has no measurement" >&2
-    exit 2
-fi
 
-echo "access-report: $PIN_FILE pins $PIN"
-echo "access-report: verify_and_unlock.sh --mode access --root $ROOT --user $TENANT_USER --expect $PIN --out $OUT"
-exec "$REPORTER" --mode access --root "$ROOT" --user "$TENANT_USER" --expect "$PIN" --out "$OUT"
+EXPECT=$PIN
+if [ -n "$BOOT" ] && [ "$BOOT" != "$PIN" ]; then
+    EXPECT=$BOOT
+    echo "access-report: $PIN_FILE pins $PIN, this boot is $BOOT; reporting with the boot's own measurement" >&2
+else
+    echo "access-report: $PIN_FILE pins $PIN"
+fi
+echo "access-report: verify_and_unlock.sh --mode access --root $ROOT --user $TENANT_USER --expect $EXPECT --out $OUT"
+exec "$REPORTER" --mode access --root "$ROOT" --user "$TENANT_USER" --expect "$EXPECT" --out "$OUT"
 '''
 VERIFY_UNLOCK_SHA256 = "332eccdfc7adb0f9fc75aa80a7ead3f524204bdca59991d4944d34de850e4abb"
 VERIFY_UNLOCK = r'''#!/usr/bin/env bash
@@ -17544,9 +17572,15 @@ def self_test() -> int:
                                  % args_path, encoding="utf-8")
         reporter_path.chmod(0o755)
         out_path = root / "access-report.txt"
+        # The boot report's path is pinned into the fixture too: the wrapper's
+        # default is /var/lib/odile/attestation.json, which exists on a host
+        # that runs this self-test (measured: the real file made the first
+        # check compare a bench pin with the host's own measurement).
+        attest_path = root / "attestation.json"
         result = run(["/bin/sh", str(wrapper_path)], env={
             "PATH": "/usr/sbin:/usr/bin:/sbin:/bin",
             "ODILE_ACCESS_PIN_FILES": str(pin_path),
+            "ODILE_ACCESS_ATTEST": str(attest_path),
             "ODILE_REPORTER": str(reporter_path),
             "ODILE_ACCESS_OUT": str(out_path),
         })
@@ -17556,10 +17590,34 @@ def self_test() -> int:
                      "--mode", "access", "--root", "/", "--user", "odile",
                      "--expect", pinned, "--out", str(out_path)],
                  result.stderr.strip())
+        # ODL-947: the pin names a file (an empty command line and the
+        # builder's vCPU count); a machine's boot has its own number. The
+        # wrapper compares the pin only when the two agree, and otherwise
+        # reports with the boot's own and names both numbers on one line.
+        boot_measurement = "cd" * 48
+        attest_path.write_text(json.dumps({"measurement": boot_measurement}),
+                               encoding="utf-8")
+        args_path.unlink()
+        result = run(["/bin/sh", str(wrapper_path)], env={
+            "PATH": "/usr/sbin:/usr/bin:/sbin:/bin",
+            "ODILE_ACCESS_PIN_FILES": str(pin_path),
+            "ODILE_ACCESS_ATTEST": str(attest_path),
+            "ODILE_REPORTER": str(reporter_path),
+            "ODILE_ACCESS_OUT": str(out_path),
+        })
+        args = args_path.read_text(encoding="utf-8").splitlines() if args_path.is_file() else []
+        check.ok("the wrapper reports with this boot's own measurement when the pin differs",
+                 result.returncode == 0 and args == [
+                     "--mode", "access", "--root", "/", "--user", "odile",
+                     "--expect", boot_measurement, "--out", str(out_path)]
+                 and pinned in result.stderr and boot_measurement in result.stderr,
+                 result.stderr.strip())
+        attest_path.unlink()
         pin_path.write_text("{}", encoding="utf-8")
         result = run(["/bin/sh", str(wrapper_path)], env={
             "PATH": "/usr/sbin:/usr/bin:/sbin:/bin",
             "ODILE_ACCESS_PIN_FILES": str(pin_path),
+            "ODILE_ACCESS_ATTEST": str(attest_path),
             "ODILE_REPORTER": str(reporter_path),
             "ODILE_ACCESS_OUT": str(out_path),
         })

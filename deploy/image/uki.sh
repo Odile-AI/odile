@@ -42,6 +42,16 @@ SIGN_KEY=${ODILE_IMAGE_SIGNING_KEY:-/root/.odile/image-signing.key}
 SIGN_CERT=$HERE/odile-image-signing.crt
 PIN=""
 VARIANT=""
+# Where the pin goes inside the image, and whether this run puts it there
+# (ODL-947). `place-pin.sh` is the program the runbook used to name as a fifth
+# command an operator had to remember; the walk that forgot it built a
+# production image whose first boot printed `record skipped (no pinned release at
+# /etc/odile/tenant-image.pin)` and never ran the release half — no Caddy, no
+# /verify, no /first-visit, and nothing failed. The disk is in this input
+# directory by construction (`sealed-image.sh` wrote it and the pin hashes it),
+# so a production image's pin is placed by the command that writes it.
+PLACE_PIN=${ODILE_PLACE_PIN:-$HERE/place-pin.sh}
+NO_PLACE=0
 
 RELEASE=2026.11.1
 BASE_URL=${ODILE_BLACKBOX_BASE:-https://servury.com/downloads/blackbox}
@@ -55,7 +65,8 @@ export SOURCE_DATE_EPOCH
 usage() {
     cat <<'EOF'
 usage: uki.sh [--in DIR] [--sign] [--sign-key FILE] [--cert FILE]
-              [--pin FILE] [--variant TOKEN] [--vcpus N] [--dry-run]
+              [--pin FILE] [--no-place-pin] [--variant TOKEN] [--vcpus N]
+              [--dry-run]
 
   --in DIR       directory holding boot/vmlinuz, boot/initrd.img, boot/cmdline
                  and boot/uname (default: deploy/image/out)
@@ -64,7 +75,13 @@ usage: uki.sh [--in DIR] [--sign] [--sign-key FILE] [--cert FILE]
                  committed certificate deploy/image/odile-image-signing.crt
   --sign-key F   signing key (default: $ODILE_IMAGE_SIGNING_KEY)
   --cert F       signing certificate (default: deploy/image/odile-image-signing.crt)
-  --pin F        write the JSON pin after the measurements agree
+  --pin F        write the JSON pin after the measurements agree. On a
+                 production image the pin is then placed inside
+                 DIR/odile-tenant-sealed.raw with place-pin.sh (needs root: it
+                 opens the sealed disk), so the image boots with its pin
+  --no-place-pin keep the pin outside the disk. Refused for a production
+                 image (--production wrote the disk this command is given);
+                 accepted for a bench disk, whose own build places the pin
   --variant T    build a second UKI whose only change is seal_id=T; used to
                  prove a changed command line breaks the seal
   --vcpus N      the tenant's vCPU count (default $ODILE_BENCH_VCPUS, else 2).
@@ -84,6 +101,7 @@ while [ $# -gt 0 ]; do
         --sign-key) SIGN_KEY=$2; shift 2 ;;
         --cert) SIGN_CERT=$2; shift 2 ;;
         --pin) PIN=$2; shift 2 ;;
+        --no-place-pin) NO_PLACE=1; shift ;;
         --variant) VARIANT=$2; shift 2 ;;
         --vcpus) VCPUS=$2; shift 2 ;;
         --dry-run) DRY_RUN=1; shift ;;
@@ -102,6 +120,27 @@ for f in "$VMLINUZ" "$INITRD" "$CMDLINE_FILE" "$UNAME_FILE"; do
     [ -s "$f" ] || { echo "uki: missing or empty $f (run mkdisk.sh or sealed-initrd.sh first)" >&2; exit 2; }
 done
 CMDLINE=$(cat "$CMDLINE_FILE")
+
+# --- the pin, and the disk that must carry it (ODL-947) ---------------------
+# A `--production` image carries the bootstrap key `place-pin.sh` opens its
+# container with, and sealed-image.sh records that in sealed/seal.txt. A bench
+# disk is sealed to the chip (or to the bench stand-in) and has no bootstrap
+# key, so its own build places the pin with the stand-in. Both are decided
+# before the build does any work: a run that cannot place its pin must fail in
+# seconds with a named sentence, not after a six-minute debootstrap.
+DISK=$IN/odile-tenant-sealed.raw
+SEAL_FILE=$IN/sealed/seal.txt
+PRODUCTION=0
+if [ -f "$SEAL_FILE" ] && grep -q '^production=yes$' "$SEAL_FILE"; then
+    PRODUCTION=1
+fi
+PLACE=0
+if [ "$PRODUCTION" = 1 ]; then
+    PLACE=1
+fi
+if [ "$NO_PLACE" = 1 ]; then
+    PLACE=0
+fi
 
 OVMF=$IN/ovmf/OVMF.amdsev.fd
 UKI=$IN/odile-tenant.efi
@@ -131,8 +170,56 @@ if [ "$DRY_RUN" = 1 ]; then
     fi
     if [ -n "$PIN" ]; then
         say would "write the pin to $PIN"
+        if [ "$PLACE" = 1 ]; then
+            say would "place it inside $DISK with $PLACE_PIN (the disk carries /etc/odile/tenant-image.pin)"
+            if [ ! -f "$DISK" ] || [ ! -x "$PLACE_PIN" ] || [ "$(id -u)" != 0 ]; then
+                say would "refuse: placing the pin needs $DISK, $PLACE_PIN and root"
+            fi
+        else
+            say would "leave the pin outside the disk (not a production image, or --no-place-pin)"
+        fi
+    elif [ "$PRODUCTION" = 1 ]; then
+        say would "refuse: a production image needs --pin, which is placed inside $DISK"
     fi
     exit 0
+fi
+
+# A production image's pin is not optional (ODL-947). Both refusals are named
+# and come before the first write: the UKI alone is not a bootable image, and a
+# disk whose /etc/odile/tenant-image.pin is missing boots with no Caddy and
+# still reports success.
+if [ "$PRODUCTION" = 1 ] && [ "$NO_PLACE" = 1 ]; then
+    echo "uki: --no-place-pin on a production image. This disk would boot with no" >&2
+    echo "     /etc/odile/tenant-image.pin: odile-firstboot prints 'record skipped" >&2
+    echo "     (no pinned release ...)' and odile-release-setup never runs, so the" >&2
+    echo "     machine has no Caddy, no /verify and no /first-visit, and nothing" >&2
+    echo "     fails. Drop --no-place-pin (ODL-947)." >&2
+    exit 2
+fi
+if [ "$PRODUCTION" = 1 ] && [ -z "$PIN" ]; then
+    echo "uki: a production image needs its pin: pass --pin FILE. This command" >&2
+    echo "     writes the pin and places it inside $DISK; without it the first" >&2
+    echo "     boot prints 'record skipped (no pinned release ...)' and never runs" >&2
+    echo "     the release half — no Caddy, no /verify, no /first-visit (ODL-947)." >&2
+    exit 2
+fi
+
+if [ "$PLACE" = 1 ] && [ "$DRY_RUN" != 1 ]; then
+    if [ ! -f "$DISK" ]; then
+        echo "uki: --pin was given but there is no $DISK to carry it; a production" >&2
+        echo "     image without its pin boots with no Caddy (ODL-947)" >&2
+        exit 2
+    fi
+    if [ "$(id -u)" != 0 ]; then
+        echo "uki: placing the pin opens the sealed disk, which needs root; run this" >&2
+        echo "     command under sudo (or pass --no-place-pin, which a production" >&2
+        echo "     image refuses)" >&2
+        exit 2
+    fi
+    if [ ! -x "$PLACE_PIN" ]; then
+        echo "uki: no place-pin program at $PLACE_PIN (set ODILE_PLACE_PIN)" >&2
+        exit 2
+    fi
 fi
 
 for tool in sev-snp-measure curl sha256sum; do
@@ -374,6 +461,22 @@ pin = {
 pin_path.write_text(json.dumps(pin, indent=2, sort_keys=True) + "\n")
 print(f"pinned       {pin_path}")
 PY
+
+    # The pin must travel **inside** the disk (ODL-947). It used to be a fifth
+    # command an operator ran after this one, and the walk that omitted it built
+    # a production image whose first boot printed `record skipped (no pinned
+    # release at /etc/odile/tenant-image.pin)` and never ran the release half:
+    # no Caddy, no /verify, no /first-visit, and nothing failed. The disk is in
+    # this input directory by construction — `sealed-image.sh` wrote it and the
+    # pin hashes it — so writing the pin and placing it are one step.
+    if [ "$PLACE" = 1 ]; then
+        say place "$PLACE_PIN --disk $DISK --pin $PIN"
+        if ! "$PLACE_PIN" --disk "$DISK" --pin "$PIN"; then
+            echo "uki: place-pin.sh failed: $DISK does not carry $PIN" >&2
+            exit 1
+        fi
+        say pinned "the pin inside $DISK (/etc/odile/tenant-image.pin)"
+    fi
 fi
 
 printf '\n%s\n' "signed UKI measurement (identical twice): $UKI_M1"
