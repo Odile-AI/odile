@@ -211,7 +211,7 @@ from the vendor's own pages.
 | **The box, measured** | **id 709870, name `odile-backups`, username u728180, server `u728180.your-storagebox.de`, system `HEL1-BX192`, status `active`, created 2026-11-24T06:25:41Z**; `stats` **0 / 0 / 0 bytes at 06:30:36Z** and **1,048,576 bytes (`size_data`) at 07:48Z** — the drill's own repository (4 files, 1.023 MiB, snapshot `608ef125`), **no tenant repository** | `GET /storage_boxes/709870`, 06:30:36Z and 07:48Z; `/root/.odile/hetzner-box.json` (0600); `docs/evidence/hetzner-bx11/05-restic-drill.txt` |
 | **Its settings as ordered, measured** | `location` **hel1 / Helsinki / FI**, network zone `eu-central`; `ssh_enabled: true`, `reachable_externally: true`, `samba`, `webdav`, `zfs` false; `snapshot_plan` **04:30 UTC, max 10**; `subaccounts_limit` **100**; `snapshot_limit` 10, `automatic_snapshot_limit` 10; size 1,099,511,627,776 bytes; `protection.delete` **false at 06:30Z, true at 07:48Z** (`t_12b3720a` set it) | same |
 | **The API token, measured** | one project-scoped Console API token at `/root/.odile/hetzner-api-token` (**0600**, one `HETZNER_API_TOKEN` line); `GET /storage_boxes` with it answers the box above, so the scope works and HQ needs nothing else | measured 2026-11-24 06:27–06:30Z |
-| The account's login, measured | the account password was accepted at `accounts.hetzner.com` and Hetzner demanded a **6-digit code mailed to the account address** (`/2fa`) at 04:57Z; the API token, not the password, is what HQ uses | measured 2026-11-24 04:57Z; credentials `/root/.odile/hetzner-account.env` (0600) |
+| The account's login, measured | the account password was accepted at `accounts.hetzner.com` and Hetzner demanded a **6-digit code mailed to the account address** (`/2fa`) at 04:57Z; the API token, not the password, is what HQ uses. **The password was removed from HQ on 2026-11-25 (ODL-924):** the file holds `HETZNER_LOGIN` only | measured 2026-11-24 04:57Z; login at `/root/.odile/hetzner-account.env` (0600, one `HETZNER_LOGIN` line, 57 bytes) |
 | The product, read | **BX11: 1 TB, 100 sub-accounts, 10 snapshots (10 automated), 10 concurrent connections (published; 25 measured, §4.3), unlimited traffic, Germany (FSN1) or Finland (HEL1), no minimum contract term, cancellation immediately, €3.20/month excl. VAT, no setup fee** | `hetzner.com/storage/storage-box/` and `/bx11/`, read 2026-11-24 |
 | Protocols, read | SFTP, SCP, rsync over SSH, BorgBackup, rclone, FTP/FTPS, SMB, WebDAV, HTTPS — **restic is listed as supported** | same page, read 2026-11-24 |
 | SFTP and SSH ports, read | **SFTP/SCP on port 22 is always active and cannot be disabled; it has no interactive access.** "SSH Support" enables port **23** (interactive, rsync, Borg). Port 22 takes the public key in **RFC4716** format; port 23 takes **OpenSSH** format | `docs.hetzner.com/storage/storage-box/general` and `.../getting-started/creating-a-storage-box`, read 2026-11-24 |
@@ -410,7 +410,11 @@ power the R2 bucket token had.
 
 **The main account's password is not at HQ.** It stays in Savio's console. HQ
 never needs it: the API token creates the sub-accounts, sets their passwords and
-installs their keys. **`protection.delete` is on the box** — `t_12b3720a`'s first
+installs their keys. (Measured 2026-11-25, ODL-924: the file at
+`/root/.odile/hetzner-account.env` held a `HETZNER_PASSWORD` line from the
+drill's human card; that line was removed, and the 0600 file now carries
+`HETZNER_LOGIN` only — 95 bytes before, 57 after.) **`protection.delete` is on
+the box** — `t_12b3720a`'s first
 write (§4.5), `true` since 07:48Z — so the token, or a tired operator with
 `curl`, cannot delete the only copy; deleting the box is a two-step act in the
 console.
@@ -967,7 +971,9 @@ exactly that reason; round 4 found them.
   `/root/.odile/hetzner-api-token` (0600, one `HETZNER_API_TOKEN` line) and the
   account login at `/root/.odile/hetzner-account.env` (0600). The account
   password plus a 6-digit email code were needed once, at 04:57Z; the token is
-  what HQ uses, and `GET /storage_boxes` answering is the proof it works.
+  what HQ uses, and `GET /storage_boxes` answering is the proof it works. The
+  password line was removed from that file on 2026-11-25 (ODL-924); it holds
+  `HETZNER_LOGIN` only, and the password is in Savio's console.
 - **Hetzner, read on 2026-11-24:** `https://www.hetzner.com/storage/storage-box/`
   and `/storage/storage-box/bx11/` — BX11 1 TB, 100 sub-accounts, 10 snapshots
   (10 automated), 10 concurrent connections, unlimited traffic, Germany (FSN1)

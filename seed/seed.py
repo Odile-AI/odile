@@ -660,9 +660,10 @@ def validate_backup_pair(entry: object, where: str = "seed backup pairs") -> dic
     Every rule is a fact the guest's first boot depends on: the two logins are
     the provider's and distinct, the homes nest (never the same home — two
     accounts on one home share `.ssh/authorized_keys`), both URLs are in the
-    no-port colon form, the two private keys are present, and the pinned host
-    key is one line of `known_hosts`. A plaintext sub-account password is
-    refused by name: the keys are the credential.
+    no-port colon form, the two private keys are present, and the seed pins the
+    host key of every hostname its URLs name (one `known_hosts` line per host,
+    because strict checking matches the host field). A plaintext sub-account
+    password is refused by name: the keys are the credential.
     """
     if not isinstance(entry, dict):
         raise ConfigError("%s must be a JSON object" % where)
@@ -721,8 +722,27 @@ def validate_backup_pair(entry: object, where: str = "seed backup pairs") -> dic
         if not isinstance(value, str) or "PRIVATE KEY" not in value:
             raise ConfigError("%s.%s is not a private key" % (where, key))
     known = entry["known_hosts"]
-    if not isinstance(known, str) or known.count("\n") != 0 or not BACKUP_HOSTKEY_RE.match(known):
-        raise ConfigError("%s.known_hosts must be one pinned host-key line" % where)
+    if not isinstance(known, str) or not known.strip():
+        raise ConfigError(
+            "%s.known_hosts must carry one pinned host-key line per hostname" % where)
+    # A pair is two hostnames and the entry carries a repository URL for each,
+    # so the seed's consumer (restic on port 22, strict host-key checking)
+    # needs both pinned. Measured in review 1: a seed pinned only for the
+    # read-write hostname failed the read-only `snapshots --no-lock` with
+    # "No RSA host key is known for u728180-sub2 … Host key verification failed".
+    pinned_hosts: set[str] = set()
+    for line in known.splitlines():
+        if not BACKUP_HOSTKEY_RE.match(line):
+            raise ConfigError(
+                "%s.known_hosts has a line that is not a pinned host key: %r"
+                % (where, line[:60]))
+        pinned_hosts.add(line.split(" ", 1)[0])
+    for key in ("repo_url", "readonly_repo_url"):
+        host = entry[key].split("@", 1)[1].split(":", 1)[0]
+        if host not in pinned_hosts:
+            raise ConfigError(
+                "%s.known_hosts has no pinned line for %s (%s's hostname); the "
+                "seed must open every URL it carries" % (where, host, key))
     if not isinstance(entry["previous_instance"], str):
         raise ConfigError("%s.previous_instance must be a string" % where)
     if not isinstance(entry["provisioned_at"], str) or not entry["provisioned_at"]:
@@ -1084,8 +1104,9 @@ def build_seed(tenant: sqlite3.Row, instance_id: str, config: dict,
     }
     # ODL-924: the rest of the pair travels beside `backup_repo_url`: the two
     # private keys (the read-write one opens the tenant's own ciphertext
-    # directory; the read-only one is for the recovery file), the one pinned
-    # host-key line, and the provider's logins as non-secret provenance. The
+    # directory; the read-only one is for the recovery file), the pinned
+    # host-key lines (one per hostname, so both URLs open under strict
+    # checking), and the provider's logins as non-secret provenance. The
     # installer writes `/etc/odile/backup-repo.txt` and
     # `/etc/odile/backup-ssh/id_ed25519` (0600) from these fields.
     if backup_pair is not None:

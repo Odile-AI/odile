@@ -904,14 +904,23 @@ def _stored_pair_count(settings: BackupSettings) -> int:
         return 0
 
 
-def _refuse_the_51st(settings: BackupSettings, slug: str, api_pairs: int | None) -> None:
+def _refuse_the_51st(settings: BackupSettings, slug: str, api_pairs: int | None,
+                     *, adds_pair: bool = True) -> None:
     """Refuse the 51st pair by name, before any create.
 
     100 sub-accounts per box, a pair per tenant: 50 tenants, and the 51st is a
     second box, not an upgrade (the feature table lists 100 sub-accounts and 10
     connections for every BX tier). The count is the store of record's when no
     API read has happened yet, and the box's own when one has.
+
+    `adds_pair` is False for a slug that is *already* one of the counted pairs
+    — recorded in the store of record, or named on the box by the API read.
+    Re-running that slug is the idempotent read-back the DoD promises, and at
+    the ceiling it must still print `same` instead of being refused as a 51st
+    (measured in review 1: with 50 recorded pairs, a recorded slug was refused).
     """
+    if not adds_pair:
+        return
     counted = max(_stored_pair_count(settings), api_pairs or 0)
     if counted < MAX_BACKUP_TENANTS:
         return
@@ -1152,7 +1161,8 @@ def _scan_host_key(server: str, known_hosts: Path) -> str:
     known_hosts.write_text("\n".join(combined) + "\n", encoding="utf-8")
     os.chmod(known_hosts, 0o600)
     # One line for the seed: an ed25519 line on port 22 when the host offers
-    # one, else the first accepted (the drill measured RSA on port 22).
+    # one, else the first accepted (the drill measured RSA on port 22). The
+    # seed itself carries one such line *per hostname* — `_seed_host_keys`.
     for line in accepted:
         if " ssh-ed25519 " in line and not line.startswith("["):
             return line
@@ -1160,6 +1170,56 @@ def _scan_host_key(server: str, known_hosts: Path) -> str:
         if not line.startswith("["):
             return line
     return accepted[0]
+
+
+def _pinned_host_line(known_hosts: Path, server: str) -> str:
+    """The steady-state (port 22) pin for one hostname, or "".
+
+    A `known_hosts` line is `<host> <type> <key>` for port 22 and
+    `[<host>]:23 <type> <key>` for the key-install port; the seed's consumer is
+    restic on port 22, so only the first form is a pin here.
+    """
+    if not known_hosts.is_file():
+        return ""
+    for line in known_hosts.read_text(encoding="utf-8").splitlines():
+        fields = line.split()
+        if len(fields) < 3 or line.lstrip().startswith("#"):
+            continue
+        host, port = fields[0], 22
+        if host.startswith("[") and "]:" in host:
+            host, _, number = host[1:].partition("]:")
+            port = int(number) if number.isdigit() else 0
+        if host == server and port == 22:
+            return line
+    return ""
+
+
+def _seed_host_keys(known_hosts: Path, servers: list[str]) -> str:
+    """The pin the seed carries: one port-22 line per hostname it names.
+
+    A pair is two hostnames (`u<box>-sub<N>` and `u<box>-sub<N+1>`), and the
+    seed carries a repository URL for each — the read-write repository and the
+    read-only one. One line is not enough: measured in review 1, a guest
+    configured from the seed alone failed the read-only `snapshots --no-lock`
+    with "No RSA host key is known for u728180-sub2 … Host key verification
+    failed", because the seed pinned only the read-write hostname. Both
+    hostnames present the same key material; the host field is what
+    `known_hosts` matches, so both lines travel.
+    """
+    lines: list[str] = []
+    for server in servers:
+        if not server:
+            raise ProviderError("provision: the API returned no hostname for a pair's half")
+        line = _pinned_host_line(known_hosts, server)
+        if not line:
+            _scan_host_key(server, known_hosts)
+            line = _pinned_host_line(known_hosts, server)
+        if not line:
+            raise ProviderError(
+                f"provision: {server} has no port-22 host key in {known_hosts}; the "
+                "seed's pinned host key could not be written")
+        lines.append(line)
+    return "\n".join(dict.fromkeys(lines))
 
 
 def _install_public_key(server: str, username: str, public_key: str,
@@ -1341,8 +1401,10 @@ def _provision_backup(ctx: Context, slug: str, previous_instance: str) -> Backup
     later run would believe.
     """
     settings = _backup_settings(ctx)
-    _refuse_the_51st(settings, slug, None)
     store_path = settings.store / f"odile-{slug}.env"
+    # A slug the store already records is not an additional pair: re-running it
+    # is the read-back, even at the 50-pair ceiling (review 1, must 2).
+    _refuse_the_51st(settings, slug, None, adds_pair=not store_path.is_file())
     subaccounts = _subaccounts(settings)
     named = _named_pair(subaccounts, slug)
     api_pairs = _pair_count(subaccounts)
@@ -1379,24 +1441,31 @@ def _provision_backup(ctx: Context, slug: str, previous_instance: str) -> Backup
                 f"(store {recorded.subaccount_id}/{recorded.readonly_subaccount_id}, "
                 f"box {facts['rw'].get('id')}/{facts['ro'].get('id')}); refusing to "
                 "guess which pair the tenant owns")
-        _write_seed_pair(ctx, settings, recorded)
-        return BackupResult("same", recorded, 0, "pending")
+        # The reopen path is a rebuild's only writer: a destroyed row reopens
+        # under the same slug and the seed must carry the dead machine's id or
+        # the first visit takes a fresh install instead of a restore (ODL-937).
+        # A run that passes none keeps what the store already carries.
+        pinned = _seed_host_keys(settings.keys / slug / "known_hosts",
+                                 [str(facts["rw"].get("server")),
+                                  str(facts["ro"].get("server"))])
+        reopened = replace(
+            recorded,
+            previous_instance=previous_instance or recorded.previous_instance,
+            known_hosts=pinned,
+        )
+        if reopened != recorded:
+            _write_store(store_path, reopened)
+        _write_seed_pair(ctx, settings, reopened)
+        return BackupResult("same", reopened, 0, "pending")
 
-    _refuse_the_51st(settings, slug, api_pairs)
+    _refuse_the_51st(settings, slug, api_pairs, adds_pair=named is None)
     if named is not None:
         facts = _pair_from_api(slug, *named)
         rw_key, ro_key = _pair_keys(settings, slug)
         known_hosts = settings.keys / slug / "known_hosts"
-        pinned = ""
-        if known_hosts.is_file():
-            # A drill's file starts with `# host:22 SSH-2.0-…` comment lines;
-            # the first real line is the pin.
-            for line in known_hosts.read_text(encoding="utf-8").splitlines():
-                if line.strip() and not line.lstrip().startswith("#"):
-                    pinned = line
-                    break
-        if not pinned:
-            pinned = _scan_host_key(str(facts["rw"].get("server")), known_hosts)
+        pinned = _seed_host_keys(known_hosts,
+                                 [str(facts["rw"].get("server")),
+                                  str(facts["ro"].get("server"))])
         pair = BackupPair(
             slug=slug, box_id=settings.box_id,
             box_server=_box_server(str(facts["rw"].get("server") or "")),
@@ -1487,7 +1556,9 @@ def _provision_backup(ctx: Context, slug: str, previous_instance: str) -> Backup
 
     facts = _pair_from_api(slug, created["rw"], created["ro"])
     known_hosts = directory / "known_hosts"
-    pinned = known_hosts.read_text(encoding="utf-8").strip().splitlines()[0]
+    pinned = _seed_host_keys(known_hosts,
+                             [str(facts["rw"].get("server")),
+                              str(facts["ro"].get("server"))])
     pair = BackupPair(
         slug=slug, box_id=settings.box_id,
         box_server=_box_server(str(facts["rw"].get("server") or "")),

@@ -1443,6 +1443,8 @@ class BackupPairs(unittest.TestCase):
             "readonly_repo_url": "sftp:u728180-sub2@u728180-sub2.your-storagebox.de:restic",
             "ssh_port": 22,
             "known_hosts": ("u728180-sub1.your-storagebox.de ssh-ed25519 "
+                            "AAAAC3NzaC1lZDI1NTE5AAAAIFixtureHostKey\n"
+                            "u728180-sub2.your-storagebox.de ssh-ed25519 "
                             "AAAAC3NzaC1lZDI1NTE5AAAAIFixtureHostKey"),
             "ssh_private_key": box_fixture.PRIVATE_KEY,
             "readonly_ssh_private_key": box_fixture.PRIVATE_KEY,
@@ -1486,18 +1488,30 @@ class BackupPairs(unittest.TestCase):
             self.seed.validate_backup_pair(
                 dict(self.entry, subaccount_username=self.slug), "fixture")
 
-    def test_the_keys_and_the_one_host_key_line_are_checked(self) -> None:
+    def test_the_keys_and_the_pinned_host_lines_are_checked(self) -> None:
+        rw_host = "u728180-sub1.your-storagebox.de"
+        ro_host = "u728180-sub2.your-storagebox.de"
+        rw_line = self.entry["known_hosts"].splitlines()[0]
+        ro_line = self.entry["known_hosts"].splitlines()[1]
         for broken, reason in (
             (dict(self.entry, ssh_private_key="not-a-key"), "not a private key"),
             (dict(self.entry, readonly_ssh_private_key=""), "not a private key"),
-            (dict(self.entry, known_hosts=self.entry["known_hosts"] + "\nsecond line"),
-             "one pinned host-key line"),
+            (dict(self.entry, known_hosts=rw_line + "\nnot a host key line"),
+             "not a pinned host key"),
+            # The read-only URL's hostname, unpinned: the guest's strict check
+            # fails on the restore path (review 1, must 3).
+            (dict(self.entry, known_hosts=rw_line),
+             "no pinned line for %s" % ro_host),
             (dict(self.entry, ssh_port=2222), "ssh_port must be 22"),
             (dict(self.entry, subaccount_id=self.entry["readonly_subaccount_id"]),
              "one sub-account twice"),
         ):
             with self.assertRaisesRegex(self.seed.ConfigError, reason):
                 self.seed.validate_backup_pair(broken, "fixture")
+        # One line per hostname is the shape; the second line is not an error,
+        # and the order does not matter.
+        self.seed.validate_backup_pair(
+            dict(self.entry, known_hosts=ro_line + "\n" + rw_line), "fixture")
 
     def test_build_seed_carries_the_pair_and_overrides_the_config_template(self) -> None:
         seed = self.seed.build_seed({"slug": self.slug}, "srv-fixture", CONFIG,
@@ -1957,7 +1971,13 @@ class ProvisionBinding(unittest.TestCase):
                          "sftp:%s@%s:data/restic" % (rw["username"], rw["server"]))
         self.assertNotIn(":22", entry["repo_url"])
         self.assertIn("ssh_private_key", entry)
-        self.assertIn("known_hosts", entry)
+        # The seed's pin opens every URL it carries: one line per hostname
+        # (review 1, must 3 — one line failed the read-only URL under strict
+        # checking).
+        pinned = entry["known_hosts"].splitlines()
+        self.assertEqual([line.split(" ")[0] for line in pinned],
+                         [rw["server"], ro["server"]])
+        self.assertEqual(entry["known_hosts"].count("\n"), 1)
         # The row's cache names both ids and both logins.
         con = sqlite3.connect(self.db)
         try:
@@ -2002,6 +2022,11 @@ class ProvisionBinding(unittest.TestCase):
         self.assertEqual(backup["state"], "adopted")
         self.assertEqual(backup["subaccount_id"], rw["id"])
         self.assertEqual(backup["readonly_subaccount_id"], ro["id"])
+        # An adopted pair pins both hostnames too (the drill's own file was
+        # kept; the seed must open both URLs it carries).
+        entry = json.loads(self.pairs_path().read_text(encoding="utf-8"))[self.slug]
+        self.assertEqual([line.split(" ")[0] for line in entry["known_hosts"].splitlines()],
+                         [rw["server"], ro["server"]])
         self.assertEqual([call for call in box.calls[before:] if call[0] == "POST"], [],
                          "an adopted pair is never re-created")
 
@@ -2017,6 +2042,118 @@ class ProvisionBinding(unittest.TestCase):
         self.assertEqual(code, 0, err)
         self.assertIn("same", out)
         self.assertEqual([call for call in box.calls[before:] if call[0] == "POST"], [])
+
+    def test_a_reopen_records_the_dead_machine_in_the_row_the_seed_and_the_store(self):
+        """Review 1, must 1: a rebuilt machine's seed carries the dead id.
+
+        The slug is adopted, then the row goes `destroyed` (the machine is
+        gone). The second run takes the read-back path — the store exists and
+        the box's pair is intact — and must record the dead machine's id as
+        `previous_instance` in the row's `detail`, the seed entry and the store
+        of record: that field is what makes ODL-937's first visit a restore.
+        """
+        self.add_tenant()
+        box = self.box()
+        box.add_pair(self.slug)
+        keys = Path(self.tmp.name) / "keys" / self.slug
+        keys.mkdir(parents=True, exist_ok=True)
+        (keys / ("odile-%s-rw" % self.slug)).write_text(box_fixture.PRIVATE_KEY,
+                                                         encoding="utf-8")
+        (keys / ("odile-%s-ro" % self.slug)).write_text(box_fixture.PRIVATE_KEY,
+                                                         encoding="utf-8")
+        (keys / "known_hosts").write_text(box_fixture.HOST_LINE + "\n", encoding="utf-8")
+        code, out, err, _transport = self.provision()
+        self.assertEqual(code, 0, err)
+        self.assertEqual(json.loads(out)["backup"]["state"], "adopted")
+
+        # The machine is gone. The slug reopens; the dead id is the marker.
+        con = sqlite3.connect(self.db)
+        try:
+            con.execute("UPDATE tenant_state SET state = 'destroyed', server_id = ?"
+                        " WHERE slug = ?", ("srv-old-0001", self.slug))
+            con.commit()
+        finally:
+            con.close()
+        code, out, err, _transport = self.provision()
+        self.assertEqual(code, 0, out + err)
+        backup = json.loads(out)["backup"]
+        self.assertEqual(backup["state"], "same")
+        self.assertEqual(backup["previous_instance"], "srv-old-0001")
+
+        con = sqlite3.connect(self.db)
+        try:
+            detail = json.loads(con.execute(
+                "SELECT detail FROM tenant_state WHERE slug = ?", (self.slug,)
+            ).fetchone()[0])
+        finally:
+            con.close()
+        self.assertEqual(detail["previous_instance"], "srv-old-0001")
+        entry = json.loads(self.pairs_path().read_text(encoding="utf-8"))[self.slug]
+        self.assertEqual(entry["previous_instance"], "srv-old-0001")
+        self.assertIn("BACKUP_PREVIOUS_INSTANCE=srv-old-0001",
+                      self.store_path().read_text(encoding="utf-8"))
+
+        # A third run with no dead machine keeps the recorded marker: the
+        # read-back is idempotent, not a reset. The provider lists the machine
+        # the reopen ordered, so this run records it rather than ordering again.
+        code, out, err, _transport = self.provision(listed=True)
+        self.assertEqual(code, 0, out + err)
+        self.assertEqual(json.loads(out)["backup"]["previous_instance"], "srv-old-0001")
+
+    def test_at_the_ceiling_a_recorded_slug_still_reads_back_as_same(self):
+        """Review 1, must 2: 50 pairs recorded, one of them this slug.
+
+        The 51st refusal counts pairs; a slug the store already records is not
+        an additional pair, so re-running it at the ceiling must print `same`
+        rather than be refused as number 51. Its own store directory, so the
+        fifty fillers never leak into another test's pairing.
+        """
+        directory = tempfile.mkdtemp(prefix="odl924-ceiling-")
+        self.addCleanup(shutil.rmtree, directory, ignore_errors=True)
+        self.add_tenant()
+        box = box_fixture.box_for(Path(directory) / "hetzner")
+        box.add_pair(self.slug)
+        keys = Path(directory) / "keys" / self.slug
+        keys.mkdir(parents=True, exist_ok=True)
+        (keys / ("odile-%s-rw" % self.slug)).write_text(box_fixture.PRIVATE_KEY,
+                                                         encoding="utf-8")
+        (keys / ("odile-%s-ro" % self.slug)).write_text(box_fixture.PRIVATE_KEY,
+                                                         encoding="utf-8")
+        (keys / "known_hosts").write_text(box_fixture.HOST_LINE + "\n", encoding="utf-8")
+        config = _odilectl_config(directory, self.slug, self.db, self.seed_rebuilds)
+
+        def run(slug: str, *, listed: bool) -> tuple[int, str, str]:
+            transport = RecordedProvision(self.db, slug, self.server_id, listed=listed)
+            return run_odilectl(
+                ["provision", slug, "--key", self.key_file, "--pin", self.pin,
+                 "--interval", "0", "--apply"],
+                config,
+                lambda _cfg: ServuryProvider("fixture-reseller-key", transport=transport),
+            )
+
+        code, out, err = run(self.slug, listed=False)
+        self.assertEqual(code, 0, err)
+        self.assertIn("adopted", out)
+
+        store = Path(directory) / "hetzner"
+        for index in range(49):
+            (store / ("odile-odl-fill%04d.env" % index)).write_text(
+                "BACKUP_SLUG=filler\n", encoding="utf-8")
+        self.assertEqual(len(list(store.glob("odile-*.env"))), 50)
+
+        before = len(box.calls)
+        code, out, err = run(self.slug, listed=True)
+        self.assertEqual(code, 0, out + err)
+        self.assertIn("same", out)
+        self.assertEqual([call for call in box.calls[before:] if call[0] == "POST"], [],
+                         "the recorded slug re-reads, it never re-creates")
+
+        # A slug that is *not* one of the 50 is still refused, by name.
+        other = "odl-fresh51"
+        code, out, err = run(other, listed=False)
+        self.assertEqual(code, 4, out + err)
+        self.assertIn("51st", err)
+        self.assertIn(other, err)
 
     def test_the_51st_pair_is_refused_by_name_before_any_provider_call(self):
         directory = tempfile.mkdtemp(prefix="odl924-51st-")

@@ -2596,7 +2596,11 @@ class FixtureRebuildTests(unittest.TestCase):
                 config = json.loads((directory / "seed-config.json").read_text(encoding="utf-8"))
                 served = seed_module.redeem(con, result["token"], self.INSTANCE,
                                             config, rebuilds,
-                                            identity=self.certified_identity(directory, key))
+                                            identity=self.certified_identity(directory, key),
+                                            # Hermetic: without this the seed
+                                            # service's default path is HQ's
+                                            # live `/var/lib/odile/seed-backup-pairs.json`.
+                                            backup_pairs={})
             finally:
                 con.close()
             self.assertEqual(firstboot_module.unseal_rebuild(served["rebuild"], result["token"]),

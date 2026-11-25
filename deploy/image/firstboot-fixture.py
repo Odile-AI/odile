@@ -194,8 +194,13 @@ def fixture_pair(slug: str) -> dict:
         "repo_url": "sftp:%s@%s.your-storagebox.de:data/restic" % (login, login),
         "readonly_repo_url": "sftp:%s@%s.your-storagebox.de:restic" % (readonly, readonly),
         "ssh_port": 22,
-        "known_hosts": ("%s.your-storagebox.de ssh-ed25519 "
-                        "AAAAC3NzaC1lZDI1NTE5AAAAIBenchHostKeyFixture" % login),
+        # One pinned line per hostname: the entry carries a repository URL for
+        # each login, and a guest with strict host-key checking must be able to
+        # open both (review 1, must 3).
+        "known_hosts": "\n".join(
+            "%s.your-storagebox.de ssh-ed25519 "
+            "AAAAC3NzaC1lZDI1NTE5AAAAIBenchHostKeyFixture" % login_or_readonly
+            for login_or_readonly in (login, readonly)),
         # Concatenated so `tools/secret_scan.py` does not read a fixture as a
         # leaked key; the value still has the PEM's begin/end lines.
         "ssh_private_key": _fixture_private_key("read-write"),
