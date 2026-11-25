@@ -19,11 +19,6 @@ odile-{{slug}}-recovery-kit.txt. The recovery file from your first
 visit is odile-recovery-{{slug}}.txt; it is a different file, and it
 holds the backup password.
 
-A recovery code and a recovery file are the way back: the code resets your
-sign-in, the file opens your backup. Your first visit gives you both; keep
-them off the machine. While the machine is still running, the agent can show
-it again.
-
 Before you sign in
 ------------------
 Open {{url}}/verify.
@@ -50,24 +45,36 @@ After a reboot, it starts itself. The seal is the key.
 
 Your two ways back
 ------------------
-The recovery code resets your sign-in. Open
+A recovery code and a recovery file are the way back: the code resets your
+sign-in, the file opens your backup. Your first visit gives you both; keep
+them off the machine. While the machine is still running, the agent can replace
+the code and show you the new one.
+
+One recovery code resets both: your account password at the account page and
+your machine's sign-in on the machine. There is no emailed reset.
+
+Your recovery code works at both places until you replace it; using it does not
+spend it.
+
+The recovery code resets this machine's sign-in. Open
 {{url}}/first-visit/reset
-and enter the code you saved from the first visit. The code is shown once,
-on the first visit. After a reset the old code stops working, and a new one
-is shown. The same code fetches your recovery file at
-{{url}}/first-visit/recovery; using it there rotates it too.
+and enter the code you saved at the first sign-in. The same code fetches your
+recovery file at {{url}}/first-visit/recovery.
 
 Your account password is not reset on the machine. {{^account_host}}It resets at your account
 site — the site in your invitation email. Open that site and add /forgot. That
-reset works while the machine is down; the recovery code needs the machine up.{{/account_host}}{{#account_host}}It resets at
+reset works while the machine is down; the machine's reset needs the machine up.{{/account_host}}{{#account_host}}It resets at
 {{account_host}}/forgot. That reset works while the machine is down;
-the recovery code needs the machine up.{{/account_host}}
+the machine's reset needs the machine up.{{/account_host}}
+
+If you lose your recovery code there is no other way back: you start a new
+account, and a backup is the only way to bring the files.
 
 The recovery file opens your backup. Download your copy on the first visit
 and keep it off the machine: it is your only copy of the backup password. It
 holds the backup password and this machine's certificate fingerprint. The
-machine keeps its own copy, so while the machine is still running the agent
-can show it again.
+machine keeps its own copy while it is still running, so the agent can show
+you the file.
 
 If the machine dies
 -------------------

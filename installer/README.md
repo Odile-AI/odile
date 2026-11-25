@@ -130,8 +130,9 @@ sudo cat /etc/odile/recovery.txt    # 0600 root — the agent holds sudo, the te
 
 The file holds the backup password and the certificate SHA-256, and it is the
 only copy: the page serves the same bytes for download, behind the recovery
-code. While the machine is running the agent can show it again; if the machine is
-gone, the copy the user kept is the one that opens the backup. `backup.py verify`
+code. While the machine is running the agent can show you the file again, and it
+can replace the recovery code and show you the new one; if the machine is gone,
+the copy the user kept is the one that opens the backup. `backup.py verify`
 proves that password opens the repository (see [`scripts/README.md`](../scripts/README.md)).
 
 ## Embedded copies, and the signature
