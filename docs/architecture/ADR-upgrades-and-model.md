@@ -285,7 +285,7 @@ body already carries `facts.backup.snapshot` and its `at`
 fact** to reach HQ; the heartbeat answer is already read by the guest — it is
 `{ok, slug, at, received_at}` (`scripts/heartbeat.py:406`–`:409`) and
 `heartbeat.py post` prints it (`:522`), so a new answer key is additive; and
-`_validated_facts` validates the five facts it knows and **ignores the rest**
+`_validated_facts` validates the facts it knows and **ignores the rest**
 (`odilectl/health.py:962`), while `heartbeats.body` stores the whole object — an
 HQ that does not know a fact accepts and keeps it, which is what lets the HQ half
 ship before any tenant can send it.
