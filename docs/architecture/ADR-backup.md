@@ -1,6 +1,6 @@
 # ADR-004 — The copy that outlives HQ: restic over SFTP to a Hetzner Storage Box BX11
 
-**Status:** Proposed (v3.1 re-cut) · 24 November 2026 · Architect. **The 17 November
+**Status:** Proposed (v3.2 re-cut) · 25 November 2026 · Architect. **The 17 November
 2026 cut named Backblaze B2 in Canada East as the destination; the 19 November
 2026 re-cut made Cloudflare R2 the interim and kept B2 as the target. Both are
 superseded. On 24 November 2026 Savio chose the Hetzner Storage Box BX11, on a
@@ -42,7 +42,9 @@ HQ can decrypt the repository.
 | 19 November 2026 | v2 | Destination re-cut to **Cloudflare R2 interim**: `odile-t-<slug>` buckets, bucket-scoped keys, 2 GB per tenant, at most 3 buckets, a 9 GB account cap; B2 retained as the target | The B2 account was suspended at signup; unblock R&D without touching HQ's backup or the free tier |
 | 19–20 November 2026 | v2.1, v2.2 | Review corrections; §8's rows named the cards that own them (ODL-924/933/934/935) | Round-1 review: an evidence row must reproduce at the head it ships with |
 | 24 November 2026 | **v3 — this re-cut** | **Destination re-cut to a Hetzner Storage Box BX11** on a new, backup-only Hetzner account: one **sub-account pair per tenant** (`readonly: false` / `readonly: true`), one project-scoped **Console API token** at HQ, SFTP on port 22, a **staggered 02:00–06:00 UTC** nightly window sized to **10 concurrent connections**. **R2 and B2 are superseded**; the three-bucket ceiling and the 9 GB cap are R2 history, not current design. The durability trade is stated, not hidden: one box, RAID, snapshots on the same box | Savio, 2026-11-24: the B2 account never came back, R2 was an interim with no tenant data in it, and the Hetzner box is the provider he chose for all user backups |
+| 24 November 2026 | v3, amended in place before review | The drill's three corrections: the pair must **nest** (two sub-accounts on one home share `.ssh/authorized_keys`, so a read-only key on the read-write home authenticates as read-write); the connection ceiling measures **25**, not the published 10 (the 26th is refused, box-wide); restic's colon `sftp:` URL carries **no port** (a port written there becomes part of the path) | `t_12b3720a` measured them, and each one changed a sentence |
 | 24 November 2026 | v3.1 | Round-1 review corrections: the 26th-connection sentence (not the 11th); every `docs/CLAIMS.md` and public-tree pointer re-derived as a **section and row**, not a line; the 2 GB cap restated as **policy** (its constant, `restic stats` check and `over_cap` write are **added** by ODL-933's re-cut, not "kept"); the pair's name is in the API `name`, not `description`; the runbook banner names §1, §3.1, **§8 and §9** | Round-1 review: an evidence row must reproduce at the head it ships with |
+| 25 November 2026 | v3.2 | Round-3 review corrections: the `AGENTS.md` citation re-derived from a line number to the rule's **section and text** (line 61 is now the standing-credential rule; the quoted rule had moved to 63); §11's convention widened to **every mutable document**; the drill's three corrections given their own row above | Round 3: the same pointer drift the round-1 audit cleared, this time in an HQ-local file no `git grep` can see |
 
 **Related:** `docs/MVP-V0.1.md` §6.1, §6.7, §8, §12 (D19); `docs/CLAIMS.md` §1
 (Access: the recovery-code and recovery-file rows; Money and place: the
@@ -584,18 +586,19 @@ operator who wanted to read one could not. **No HQ credential can reach
 `hermes-hq-backup`** — a different provider, a different account, a different
 console.
 
-**The rules this amends, named.** `AGENTS.md` line 61 says HQ stores no tenant
-passphrase, private key or Webapp password — "Only the public key and a hashed
-setup token." **Under v3 the letter is amended, not satisfied: HQ holds a backup
-private key.** It is not a key *to* the machine (no door in) — it opens one
-directory of the tenant's own ciphertext, and it has to be in the seed because
-the guest cannot register it before it boots. **`docs/MVP-V0.1.md` §6.1 invariant
-5 is the stronger sentence and is amended again by this cut:** as corrected on
-20 November 2026 (`t_2522fa72`) it names "the bucket-scoped read-write token" as
-the thing that reaches HQ; under v3 the thing is **the tenant's read-write SFTP
-private key**. What stays true is the invariant's *purpose*: **the password never
-reaches HQ, so HQ cannot read a backup.** The MVP sentence is outside this
-card's `touches`; §8 names the card that re-cuts it.
+**The rules this amends, named.** `AGENTS.md`'s `## Rules` say: *"Never store a
+tenant passphrase, private key or Webapp password at HQ. Only the public key and
+a hashed setup token."* **Under v3 the letter is amended, not satisfied: HQ holds
+a backup private key.** It is not a key *to* the machine (no door in) — it
+opens one directory of the tenant's own ciphertext, and it has to be in the
+seed because the guest cannot register it before it boots. **`docs/MVP-V0.1.md`
+§6.1 invariant 5 is the stronger sentence and is amended again by this cut:**
+as corrected on 20 November 2026 (`t_2522fa72`) it names "the bucket-scoped
+read-write token" as the thing that reaches HQ; under v3 the thing is **the
+tenant's read-write SFTP private key**. What stays true is the invariant's
+*purpose*: **the password never reaches HQ, so HQ cannot read a backup.** The
+MVP sentence is outside this card's `touches`; §8 names the card that re-cuts
+it.
 
 **What the guest holds.** `/etc/odile/backup-ssh/id_ed25519` (0600) and its
 `known_hosts`, `/etc/odile/backup-repo.txt`, `/etc/odile/recovery.txt` (0600)
@@ -873,9 +876,11 @@ whichever comes first. After that, changing providers is a migration with a
 ## 11. Evidence
 
 Measured, at this head, unless marked *read* or *modelled*. **`docs/CLAIMS.md`
-rows are cited by section and text, never by line**: one claims edit shifts
-every number below (the v2.1 round found that, and the v3.1 round re-derived
-nine pointers that had moved since v2 shipped).
+rows — and every other mutable document, `AGENTS.md` included — are cited by
+section and text, never by line**: one edit shifts every number below (the v2.1
+round found that; the v3.1 round re-derived nine pointers that had moved since
+v2 shipped; round 3 found the same drift in an `AGENTS.md` line, which no
+`git grep` could see because the file is HQ-local and untracked).
 
 - The destination and its honesty: `docs/runbooks/backup.md` §3 (the repository
   name does not resolve; the stand-in is HQ's `sshd` on 2222; "the backup survives
