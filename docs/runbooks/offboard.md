@@ -265,7 +265,7 @@ live grant still shows the plan.
 ## 3. The destroy — measured on two scratch tenants
 
 The live tenant `odl-fake01` is Savio's own agent and its destroy + rebuild is
-**t_8d50106b** (the $18.99 order and the panel's disk image are his: see §5). The
+**t_8d50106b** (the $47.44 order and the panel's disk image are his: see §5). The
 destroy path itself was measured end to end on two scratch tenants ordered for
 this card, on the host account, at $2.15 each:
 
@@ -693,7 +693,8 @@ image is the panel's, not the API's*).
 ### The live tenant
 
 `odl-fake01` is Savio's own agent and was **left running**: destroying it costs
-nothing but rebuilding it needs a **plan 113 / 31-day** order (**$18.99**) and
+nothing but rebuilding it needs a **plan 138 / 365-day** order (**$47.44**, the
+partner price after the term and partner discounts) and
 the panel's two images, which is a human action. **t_8d50106b** asks for that
 one decision (A: destroy and rebuild now, recommended for the M2 exit criterion;
 B: keep it, the scratch drills stand as the evidence). The plan for the live
@@ -706,7 +707,7 @@ tenant is §2 — complete, with the record id, the server id and the backup dat
 | Gap | Why it is not here | Card |
 |---|---|---|
 | ~~a destroyed slug cannot come back~~ **resolved** | ADR-007: `destroyed -> claimed`, the named `reopen()`, and `provision` reopens before the order, points the web row and the state row at the new machine and reaches `first_boot` (so its boot record lands); the slug, the URL and the `tenants/<slug>` repository keep their names | **t_ce52bb8d** |
-| the live tenant's destroy + rebuild | $18.99 and the panel's disk image — a real-world action | **t_8d50106b** |
+| the live tenant's destroy + rebuild | $47.44 (plan 138 / 365 days) and the panel's disk image — a real-world action | **t_8d50106b** |
 | the live tenant's Webapp refuses `/login` (`400 Invalid Host header`) | measured 2026-11-13T05:33Z after a boot-time release install; that boot's release setup ended `rc=1` at `odile-access-report` and the 10:29Z retry ended `rc=4` at the recovery confirmation. It was installer/release work, not the offboard path: the agent is restarted whenever a file the gateway reads at start changed (so a rewritten `webapp.public_url` goes live), a failed access report no longer aborts that restart, and the boot half passes `--i-have-copied-it`. **Recovered on the live tenant 2026-11-15T20:12Z**: `=== rc=0`, `/login?next=%2F` 200, `POST /auth/password-login` 200 with four `__Host-` cookies, `/verify` 200. The machine's own name `odl-fake01.odile.fyi` still answers 400 by design (`demo-public.md` §Host check) | **t_d95b8c13** fixed and recovered 2026-11-15 |
 | the purge on the real box | the command is `odilectl purge` (**t_9d6fb595**, §4), drilled on a scratch repository and a copy of the state store; the off-site box, and how its chroot meets HQ's state store, are the purchase's | **t_8eb17a54** |
 

@@ -11,8 +11,14 @@ state_db: /var/lib/odile/waitlist.db
 seed_db: /var/lib/odile/waitlist.db
 backup_repo: sftp://backup@example.invalid/odile
 support_public_key: /etc/odile/support/odile-support.pub
-default_plan_id: 113
-default_days: 31
+# The provisioning defaults: a Blackbox Nano at the annual term — plan 138 is
+# the Canada tier (1 vCPU / 2 GB / 25 GB), 139 the Netherlands and 141 the US.
+# The tier is not a preference: Servury cannot downgrade a machine, so a plan
+# larger than the Nano cannot come back without a rebuild. See
+# docs/runbooks/deploy.md's config table and docs/evidence/nano-baseline.md.
+default_plan_id: 138
+default_days: 365
+default_vcpus: 1
 
 # Every instance's inference runs on its own NEAR AI key (ODL-242). The mint
 # needs the account's management credential: a rotating session credential,

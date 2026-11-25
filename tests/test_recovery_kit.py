@@ -353,6 +353,27 @@ class RenderTests(unittest.TestCase):
         self.assertEqual(text.count(f"{value}/forgot"), 1)
         self.assertNotIn("the site in your invitation email", text)
 
+    def test_the_config_example_defaults_to_a_nano_at_the_annual_term(self) -> None:
+        """A new HQ copies this file, so its provisioning defaults are a Nano.
+
+        Plan 138 is the Canada Blackbox Nano (1 vCPU / 2 GB / 25 GB) and 365
+        the annual term (Savio, 2026-11-24). The tier cannot be walked back —
+        Servury has no downgrade — so a template that named a Plus would put a
+        new HQ's first tenants on the wrong machine permanently.
+        """
+        lines = (ROOT / "odilectl" / "config.example.yaml").read_text(
+            encoding="utf-8").splitlines()
+        body = [line for line in lines
+                if line.strip() and not line.lstrip().startswith("#")]
+        with tempfile.TemporaryDirectory(prefix="odile-kit-config-") as directory:
+            path = Path(directory) / "config.yaml"
+            path.write_text("\n".join(body) + "\n", encoding="utf-8")
+            path.chmod(0o600)
+            loaded = Config.load(path)
+        self.assertEqual(loaded.get("default_plan_id"), "138")
+        self.assertEqual(loaded.get("default_days"), "365")
+        self.assertEqual(loaded.get("default_vcpus"), "1")
+
     def test_a_bad_account_host_is_refused_naming_the_flag(self) -> None:
         for value in ("http://test.odile.fyi", "test.odile.fyi",
                       "https://test odile.fyi", "https://"):
