@@ -1,0 +1,12 @@
+{
+ "probe_url": "https://odile.fyi/health",
+ "expected_body": "ok",
+ "failure_threshold": 3,
+ "connect_timeout_s": 5,
+ "max_time_s": 10,
+ "matrix_homeserver": "https://matrix.org",
+ "matrix_room_id": "!odile-room:matrix.org",
+ "matrix_token_file": "/etc/odile-hq-watch/matrix-token",
+ "state_file": "/var/lib/odile-hq-watch/state.json",
+ "probe_name": "hqrecover (13474647)"
+}
