@@ -51,9 +51,9 @@ no human in the loop.
 The fixture provider is a test seam, like ODL-211's recorded transport. The
 live provision is ODL-332's evidence.
 
-    python3 -m odilectl.claim invite ada@example.com --plan "Blackbox Plus" --apply
+    python3 -m odilectl.claim invite ada@example.com --plan "Blackbox Nano" --apply
     python3 -m odilectl.claim accept <claim-token> --key ~/.ssh/odile.pub --apply
-    python3 -m odilectl.claim mark-paid odl-7f3a2c --plan "Blackbox Plus" --apply
+    python3 -m odilectl.claim mark-paid odl-7f3a2c --plan "Blackbox Nano" --apply
     python3 -m odilectl.claim run --apply
     python3 -m odilectl.claim status odl-7f3a2c --json
 
@@ -129,7 +129,7 @@ EXAMPLE = "python3 -m odilectl.claim run --apply"
 
 DEFAULT_STATE_DB = "/var/lib/odile/waitlist.db"
 DEFAULT_OUTBOX = "/var/lib/odile/outbox"
-DEFAULT_PLAN_NAME = "Blackbox Plus"
+DEFAULT_PLAN_NAME = "Blackbox Nano"
 DEFAULT_TTL_HOURS = 168
 SETUP_TOKEN_TTL_HOURS = 24
 DEFAULT_TIMEOUT = 900.0

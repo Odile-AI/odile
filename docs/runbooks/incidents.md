@@ -798,6 +798,11 @@ tenant).
 #    workspace's files
 ```
 
+With no `--plan` / `--days` flags step 2 orders the script's own default, **plan
+138 (Blackbox Nano) for 365 days** — the same tier and term as the live config
+(`docs/runbooks/deploy.md`). Pass explicit flags only to deviate, and name the
+measured reason on the card: Servury cannot downgrade a machine.
+
 The restore runs on the machine that holds the recovery file. From HQ,
 `odilectl restore --apply` needs `--repo`, the backup box's `--ssh-key` and
 `--known-hosts`; HQ holds neither for a live tenant (§6.4.1), so HQ is the
