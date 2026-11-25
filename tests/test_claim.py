@@ -1406,6 +1406,16 @@ class CliTests(ClaimBase):
         self.assertTrue(json.loads(out)["dry_run"])
         self.assertEqual(self.con.execute("SELECT count(*) FROM tenants").fetchone()[0], 0)
 
+    def test_mark_paid_without_a_plan_records_the_nano(self) -> None:
+        """The unflagged label is the tier the config orders — a Nano, not a Plus."""
+        self.issue(plan=None)
+        code, out, err = self.run_cli(["mark-paid", SLUG, "--apply", "--json"])
+        self.assertEqual(code, 0, err)
+        self.assertEqual(json.loads(out)["plan"], "Blackbox Nano")
+        row = self.con.execute(
+            "SELECT plan FROM tenants WHERE slug = ?", (SLUG,)).fetchone()
+        self.assertEqual(row[0], "Blackbox Nano")
+
     def test_the_cli_exits_one_when_the_provision_fails(self) -> None:
         self.paid_claim()
         provider = FixtureProvider(fail_poll=True)
@@ -1653,6 +1663,53 @@ def transcript() -> None:
         con2.close()
     finally:
         shutil.rmtree(directory, ignore_errors=True)
+
+
+class NanoDefaultTests(unittest.TestCase):
+    """The config's provisioning defaults describe a Nano, never a Core.
+
+    Plan 138 is the Canada Blackbox Nano (1 vCPU / 2 GB / 25 GB); the 365-day
+    term is the provisioning default (Savio, 2026-11-24) and the 31-day value
+    that remains the fallback is Nano's own minimum term, not a Core default.
+    """
+
+    def config(self, **values):
+        directory = tempfile.mkdtemp(prefix="odile-nano-")
+        self.addCleanup(shutil.rmtree, directory, ignore_errors=True)
+        base = {"default_plan_id": "138", "default_days": "365", "default_vcpus": "1"}
+        base.update(values)
+        path = Path(directory) / "config.yaml"
+        path.write_text(
+            "".join(f"{key}: {value}\n" for key, value in base.items() if value is not None),
+            encoding="utf-8")
+        path.chmod(0o600)
+        return Config(path, {key: value for key, value in base.items() if value is not None})
+
+    def test_the_shipped_defaults_reach_the_order_and_the_kit(self):
+        config = self.config()
+        self.assertEqual(
+            (claim._plan_id(config), claim._days(config), claim._vcpus(config)),
+            (138, 365, 1))
+
+    def test_a_missing_plan_is_refused_rather_than_defaulted_to_a_core(self):
+        config = self.config(default_plan_id=None)
+        with self.assertRaises(ConfigError):
+            claim._plan_id(config)
+
+    def test_a_missing_term_is_the_nano_minimum_not_a_core_default(self):
+        config = self.config(default_days=None)
+        self.assertEqual(claim._days(config), 31)
+
+    def test_the_unflagged_mark_paid_records_a_nano(self):
+        """`tenants.plan` is the tier a human later reads; an unflagged write is a Nano.
+
+        The machine an unflagged `claim mark-paid` precedes is the config's
+        order — plan 138 — so the label the CLI writes must name the same tier.
+        """
+        self.assertEqual(claim.DEFAULT_PLAN_NAME, "Blackbox Nano")
+        args = claim.build_parser().parse_args(
+            ["--config", "/etc/odile/config.yaml", "mark-paid", "odl-7f3a2c"])
+        self.assertEqual(args.plan, "Blackbox Nano")
 
 
 if __name__ == "__main__":
