@@ -984,10 +984,15 @@ Four writers, in order, and one state key.
    *does* accept the fixture is replaced either way. §13.4 and §13.5 below are
    the pre-change records, at their recorded heads.
 3. **Every `--first-visit` run of the release installer.** `ensure_env` reads
-   `/etc/odile/first-visit.json`; while `signin_set_at` is absent it writes the
-   hash the seed carries when the run is seeded (ODL-925), and a discarded one
-   on a classic run, even when the allowlist looks valid, and keeps the session
-   secret. After `signin_set_at` it prints
+   `/etc/odile/first-visit.json`; it writes the hash the seed carries when the
+   run is seeded (ODL-925) and the `.env` does not already hold that verifier —
+   or when `signin_set_at` is absent, as before — and a discarded one on a
+   classic run, even when the allowlist looks valid, and keeps the session
+   secret. It does not trust the stamp alone: a state stamped by the pre-ODL-947
+   order can sit over the image's placeholder, so the seed's verifier being
+   absent from the file is what triggers the write. A hash the owner's own visit
+   recorded (`used_at`/`first_login_at`, a page setup or a reset) is kept. After
+   `signin_set_at` is honest it prints
    `same … (mode 0600, 3 allowlisted keys, allowlist ok)` and keeps the owner's
    hash.
 4. **The page.** In the seeded flow `POST /first-visit` **signs the owner in**:
