@@ -1,6 +1,6 @@
 # ADR-004 — The copy that outlives HQ: restic over SFTP to a Hetzner Storage Box BX11
 
-**Status:** Proposed (v3.2 re-cut) · 25 November 2026 · Architect. **The 17 November
+**Status:** Proposed (v3.3 re-cut) · 25 November 2026 · Architect. **The 17 November
 2026 cut named Backblaze B2 in Canada East as the destination; the 19 November
 2026 re-cut made Cloudflare R2 the interim and kept B2 as the target. Both are
 superseded. On 24 November 2026 Savio chose the Hetzner Storage Box BX11, on a
@@ -45,6 +45,7 @@ HQ can decrypt the repository.
 | 24 November 2026 | v3, amended in place before review | The drill's three corrections: the pair must **nest** (two sub-accounts on one home share `.ssh/authorized_keys`, so a read-only key on the read-write home authenticates as read-write); the connection ceiling measures **25**, not the published 10 (the 26th is refused, box-wide); restic's colon `sftp:` URL carries **no port** (a port written there becomes part of the path) | `t_12b3720a` measured them, and each one changed a sentence |
 | 24 November 2026 | v3.1 | Round-1 review corrections: the 26th-connection sentence (not the 11th); every `docs/CLAIMS.md` and public-tree pointer re-derived as a **section and row**, not a line; the 2 GB cap restated as **policy** (its constant, `restic stats` check and `over_cap` write are **added** by ODL-933's re-cut, not "kept"); the pair's name is in the API `name`, not `description`; the runbook banner names §1, §3.1, **§8 and §9** | Round-1 review: an evidence row must reproduce at the head it ships with |
 | 25 November 2026 | v3.2 | Round-3 review corrections: the `AGENTS.md` citation re-derived from a line number to the rule's **section and text** (line 61 is now the standing-credential rule; the quoted rule had moved to 63); §11's convention widened to **every mutable document**; the drill's three corrections given their own row above | Round 3: the same pointer drift the round-1 audit cleared, this time in an HQ-local file no `git grep` can see |
+| 25 November 2026 | v3.3 | Round-4 review corrections: the two `installer/odile_install.py` line pointers replaced by their **symbols** (`backup_unit_files`, `ensure_pin_files`); §11's citation rule extended to the **generated installer**; the verdict cited where it now lives (`main`), not on its old branch; the **RW-can-lock-out-RO** `authorized_keys` residual recorded with the nesting choice; the runbook's "box is empty" banner replaced by the landed drill's `stats` | ODL-926's merge changed 1,373 lines in that embedded file, so both numbers pointed at unrelated code at the tree that lands; the other three were the round's caveats, closed rather than carried |
 
 **Related:** `docs/MVP-V0.1.md` §6.1, §6.7, §8, §12 (D19); `docs/CLAIMS.md` §1
 (Access: the recovery-code and recovery-file rows; Money and place: the
@@ -188,8 +189,8 @@ failure the builder did not test.**
    `/opt/odile`, none of which is a shell's `~`. A rebuild is also the one moment
    the repository password is *supposed* to be the user's alone.
 3. **The include set is a flag, and the wrong flag succeeds.** The installer's
-   backup unit is rendered from `layout.home` (`backup_unit_files`,
-   `installer/odile_install.py:14987`), which for a tenant is `/home/tenant`
+   backup unit is rendered from `layout.home` (`backup_unit_files` in
+   `installer/odile_install.py`), which for a tenant is `/home/tenant`
    (`Layout.tenant`; `DEFAULT_HOME`; the image runs the installer with
    `--user tenant`, `deploy/image/odile-release-setup.sh:204`) — the same string
    the live unit the drill measured names (`backup.md` §2.1). So today the two
@@ -301,6 +302,18 @@ user's key opens the repository and nothing above it:
 | `odile-<slug>-rw` | `readonly: false`, `ssh_enabled: true`, `reachable_externally: true`, `samba_enabled: false`, `webdav_enabled: false`; home `tenants/<slug>` | generated at provision, private half in the seed → `/etc/odile/backup-ssh/id_ed25519` (0600) | `init`, `backup`, `prune`, `check`, `restore` — everything restic does |
 | `odile-<slug>-ro` | `readonly: true`, same rest; home **`tenants/<slug>/data`, a subdirectory of the rw home** (never the same home: shared keys) | generated at provision, private half in the user's recovery file and in the store of record | `snapshots`, `check`, `restore` — **it cannot upload, delete or modify**, and it cannot write restic's lock file, so every command carries `--no-lock` |
 
+**What the nesting still gives up, and the choice made.** Because the read-only
+home is a subdirectory of the read-write home, the read-write account can
+rewrite `tenants/<slug>/data/.ssh/authorized_keys` and lock the read-only key
+out: a **denial of service on the restore path, not an escalation** — the
+read-write key already owns every byte the read-only key can see. The inverse
+nesting (read-only home the parent, read-write home `tenants/<slug>/data`)
+removes even that, but it is not the pair the drill measured and it would put the
+read-write account's home below a read-only one. **This ADR keeps the measured
+nesting and records the residual**; changing it later is a directory move and a
+re-seeded URL, not a data migration (`t_12b3720a`'s verdict, "RW can rewrite
+RO's `authorized_keys`").
+
 **Naming.** Our name for the pair is `odile-<slug>-rw` / `odile-<slug>-ro`,
 carried in the sub-account's **`name`** (the measured pair reads
 `odile-odl-bench-rw` / `odile-odl-bench-ro` in `name`; `description` is empty on
@@ -316,7 +329,8 @@ under its own `/home`.
 (`scripts/backup.py:SFTP_HOST_RE`): `sftp:u<box>-sub<N>@u<box>-sub<N>.your-storagebox.de:repo`
 — the path **relative to the sub-account's home**, so no absolute path and no
 leading slash. That URL is one line in `/etc/odile/backup-repo.txt`, written
-from the seed's `backup_repo_url` (`installer/odile_install.py:14914`).
+from the seed's `backup_repo_url` by `ensure_pin_files` in
+`installer/odile_install.py`.
 
 **The URL carries no port, and that is a measured trap.** restic's colon form
 has no port field: `sftp:user@host:22/path` is the path `22/path`, and the drill
@@ -880,7 +894,13 @@ rows — and every other mutable document, `AGENTS.md` included — are cited by
 section and text, never by line**: one edit shifts every number below (the v2.1
 round found that; the v3.1 round re-derived nine pointers that had moved since
 v2 shipped; round 3 found the same drift in an `AGENTS.md` line, which no
-`git grep` could see because the file is HQ-local and untracked).
+`git grep` could see because the file is HQ-local and untracked). **The generated
+installer follows the same rule**: `installer/odile_install.py` is assembled by
+`installer/embed_*.py` and grows on every embed (ODL-926's merge alone was a
+1,373-line diff), so this ADR cites its functions and constants —
+`backup_unit_files`, `ensure_pin_files`, `command_restore` — never a line. Both
+installer pointers v3.2 carried pointed at unrelated code at the merge tree for
+exactly that reason; round 4 found them.
 
 - The destination and its honesty: `docs/runbooks/backup.md` §3 (the repository
   name does not resolve; the stand-in is HQ's `sshd` on 2222; "the backup survives
@@ -940,8 +960,9 @@ v2 shipped; round 3 found the same drift in an `AGENTS.md` line, which no
   saw `Lstat 22/restic/config`. `POST /subaccounts` also ignored
   `readonly`/`ssh_enabled`/`reachable_externally` on create; each needed
   `update_access_settings` plus a readback. The tracked verdict is
-  `docs/security/VERDICT-hetzner-bx11.md` (branch `wt/t_12b3720a`, `8715a2f`),
-  with the raw evidence in `docs/evidence/hetzner-bx11/`.
+  `docs/security/VERDICT-hetzner-bx11.md` **on `main`** (last changed at
+  `cc5e337`; the drill's branch was `wt/t_12b3720a`, `8715a2f`), with the raw
+  evidence in `docs/evidence/hetzner-bx11/` (HQ-only, git-excluded).
   Recorded at `/root/.odile/hetzner-box.json` (0600); the token is at
   `/root/.odile/hetzner-api-token` (0600, one `HETZNER_API_TOKEN` line) and the
   account login at `/root/.odile/hetzner-account.env` (0600). The account

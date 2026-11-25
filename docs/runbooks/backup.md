@@ -65,9 +65,10 @@ live again with a different host (a sub-account on the box, not HQ's `sshd`)
 and **one change to §3's own words** — under v3 the keypair is generated at
 provision and the private half reaches the guest in the seed, so `init` finds it
 and only the public half is installed on the box. The last `install-ssh-key`
-step is a provisioning act, not a human one. The box is ordered and empty
-(id 709870, `hel1`, `stats` 0 bytes); the first pair and the real drill are
-**`t_12b3720a`**, and the code re-cuts are ADR-004 §8.
+step is a provisioning act, not a human one. The box is ordered (id 709870,
+`hel1`) and **`t_12b3720a` has since landed** (merged at `131214e`): its nested
+pair and restic drill are in place, and the box's `stats` reads 1,048,576 bytes
+— the drill's own repository, no tenant byte. The code re-cuts are ADR-004 §8.
 
 ---
 
