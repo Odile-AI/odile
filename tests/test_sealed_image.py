@@ -3546,11 +3546,13 @@ class FirstBootReKeyTests(unittest.TestCase):
         old sweep skipped `openers>0` and so never recovered one: the mount
         kept the count up and every later run inherited the mapping.
 
-        `dead` names pids the caller has proven dead. The tests that fabricate
-        an orphan pass their own pid here (a real, live pid) instead of a
-        numeric dead one: a sibling gate then sees a live owner and leaves the
-        fabricated mapping alone, so two concurrent runs cannot sweep each
-        other's test fixture.
+        `dead` names pids the caller has proven dead. A test that fabricates an
+        orphan names it after its own pid and passes that pid here: a sibling
+        suite declares only its own pid, which is alive to this one, so the two
+        cannot sweep each other's fixture. Never key a synthetic name on
+        `os.getppid()` -- two suites started by one parent share it, so both
+        declare it dead and each sweep closes the other's fixture (ODL-357
+        round 2: measured one red on a same-parent pair, both green apart).
 
         A name without a pid is the old fixed form (`odile-rekey`,
         `odile-rekey-check`): a run still on that code may hold it with zero
@@ -3656,20 +3658,50 @@ class FirstBootReKeyTests(unittest.TestCase):
 
     @classmethod
     def _release_loop(cls, device: str) -> None:
-        """Detach the loop, then release its lock.
+        """Detach the loop this run claimed, then release its lock.
 
         Safe in a signal handler: best effort, no assertion. The lock is held
         until the device is detached, so a sibling cannot claim it mid-detach;
         the unmount comes first because a mounted loop is not free to detach.
+
+        No entry means this run no longer owns the device, and the call is a
+        no-op: `claim_loop` leaves an `addCleanup`, and a test that releases
+        explicitly leaves that cleanup to run again. Detaching then -- with no
+        lock and an empty backing, which skips `_detach`'s ownership test --
+        would tear down whatever run had claimed the number since (ODL-357
+        round 2: measured detaching a device another process had flocked and
+        attached).
         """
         entry = cls._loops.get(device)
-        fd = entry[0] if entry else None
+        if entry is None:
+            return
+        fd, backing = entry
         try:
-            cls._detach(device, entry[1] if entry else "")
+            cls._detach(device, backing)
         finally:
             cls._loops.pop(device, None)
-            if fd is not None:
-                cls._drop_loop_lock(fd)
+            cls._drop_loop_lock(fd)
+
+    def live_pid(self) -> int:
+        """A pid that stays alive for this test, standing in for a sibling run.
+
+        A fabricated orphan has to name a pid that no other suite declares
+        dead. `os.getppid()` is the wrong choice: two `unittest` processes
+        started by one parent share it, so both suites declare it dead and each
+        sweep closes the other's fixture (ODL-357 round 2, measured red on a
+        same-parent pair). A spawned sleeper's pid is neither this run's nor
+        the parent's, and it is alive, so every sweep skips it.
+        """
+        proc = subprocess.Popen(["/usr/bin/python3", "-c", "import time; time.sleep(300)"],
+                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        self.addCleanup(self._stop_pid, proc)
+        return proc.pid
+
+    @staticmethod
+    def _stop_pid(proc: subprocess.Popen) -> None:
+        if proc.poll() is None:
+            proc.kill()
+        proc.wait(timeout=60)
 
     def release_loop(self, device: str) -> None:
         """Give one claimed loop back; idempotent, for addCleanup and tests."""
@@ -3744,6 +3776,10 @@ class FirstBootReKeyTests(unittest.TestCase):
         its fixture, so its loops are skipped even while this sweep runs. A
         loop whose path carries no pid is an old-code run's and is left alone,
         as the mapper sweep leaves the legacy fixed names.
+
+        A fabricated orphan names this run's own pid and the sweep is told it
+        is dead; its live counterpart names a spawned sleeper (see `live_pid`).
+        Never `os.getppid()`: two suites started by one parent share it.
         """
         declared = dead or set()
         for device in cls._loop_devices():
@@ -4109,13 +4145,16 @@ class FirstBootReKeyTests(unittest.TestCase):
 
         A run's temp dir is named `odile-rekey-<pid>-<rand>`, which is how the
         sweep tells a corpse from a concurrent fixture without trusting the
-        device number. `getppid()` stands in for a dead run and this process
-        for a live sibling, so two concurrent suites cannot sweep each other's
-        fabricated loop.
+        device number. The live loop's path names a spawned sleeper -- alive,
+        and no suite's parent -- and the dead one names this process, which the
+        sweep is told is dead. A sibling suite declares only its own pid, so it
+        sees both of these alive and leaves them alone. Keying them on
+        `os.getppid()` was the round-2 bug: two suites started by one parent
+        share it, so each declared the other's fixture dead.
         """
         base = pathlib.Path(tempfile.mkdtemp(dir=self.dir))
-        live_dir = base / f"odile-rekey-{os.getpid()}-{os.urandom(4).hex()}"
-        dead_dir = base / f"odile-rekey-{os.getppid()}-{os.urandom(4).hex()}"
+        live_dir = base / f"odile-rekey-{self.live_pid()}-{os.urandom(4).hex()}"
+        dead_dir = base / f"odile-rekey-{os.getpid()}-{os.urandom(4).hex()}"
         live_dir.mkdir()
         dead_dir.mkdir()
         loops = []
@@ -4126,7 +4165,7 @@ class FirstBootReKeyTests(unittest.TestCase):
         for attached in loops:
             self.addCleanup(subprocess.run, ["losetup", "-d", attached],
                             capture_output=True, text=True)
-        type(self).close_stale_loops(dead={os.getppid()})
+        type(self).close_stale_loops(dead={os.getpid()})
         self.assertEqual(type(self)._loop_backing(loops[0]), str(live_dir / "root.img"),
                          "the sweep detached a live pid's loop")
         self.assertEqual(type(self)._loop_backing(loops[1]), "",
@@ -4135,14 +4174,16 @@ class FirstBootReKeyTests(unittest.TestCase):
     def test_an_orphan_mapping_is_swept_and_a_live_run_is_left_alone(self) -> None:
         """A killed run's mapping is closed; a concurrent run's is not.
 
-        `dmsetup create` makes the two mappings a run can leave: one named
-        for this live pid and one the sweep is told is dead. Both carry this
-        run's random tag and a live pid, so a sibling gate sees a live owner
-        and leaves them alone; the sweep is the only thing that closes one.
+        `dmsetup create` makes the two mappings a run can leave: one named for
+        a spawned sleeper (alive, and no suite's parent) and one the sweep is
+        told is dead because it carries this run's own pid. Both pids are alive
+        to a sibling suite, so it leaves them alone; the sweep here is the only
+        thing that closes one. Never `os.getppid()`: suites that share a
+        parent share it too, and each would sweep the other's fixture.
         """
         tag = os.urandom(4).hex()
-        live = f"odile-rekey-check-{os.getpid()}-{tag}-1"
-        orphan = f"odile-rekey-check-{os.getppid()}-{tag}-2"
+        live = f"odile-rekey-check-{self.live_pid()}-{tag}-1"
+        orphan = f"odile-rekey-check-{os.getpid()}-{tag}-2"
         for name in (live, orphan):
             made = subprocess.run(["dmsetup", "create", name, "--table", "0 1 zero"],
                                   capture_output=True, text=True, env=self.env())
@@ -4152,7 +4193,7 @@ class FirstBootReKeyTests(unittest.TestCase):
                             capture_output=True, text=True, env=self.env())
         self.assertEqual(self.crypt("status", live).returncode, 0)
         self.assertEqual(self.crypt("status", orphan).returncode, 0)
-        type(self).close_stale_mappers(dead={os.getppid()})
+        type(self).close_stale_mappers(dead={os.getpid()})
         self.assertEqual(self.crypt("status", live).returncode, 0,
                          "the sweep closed a live pid's mapping")
         self.assertNotEqual(self.crypt("status", orphan).returncode, 0,
@@ -4165,13 +4206,14 @@ class FirstBootReKeyTests(unittest.TestCase):
         the kernel holds the device -- so `openers` stays 1. The old sweep
         read that as "someone is using it" and skipped the orphan forever.
         This is the shape the verifier reproduced: killed while mounted. The
-        name carries a live pid (the parent make) and this run's random tag,
-        and the sweep is told that pid is dead, so a concurrent gate neither
-        creates the same name nor sweeps it.
+        name carries this run's own pid and the sweep is told it is dead; a
+        sibling suite declares only its own pid (alive to this one), so it
+        neither creates the same name nor sweeps ours -- the round-1 failure
+        was `os.getppid()` here, which two suites started by one parent share.
         """
         fx = self.fixture()
         tag = os.urandom(4).hex()
-        name = f"odile-rekey-check-{os.getppid()}-{tag}-1"
+        name = f"odile-rekey-check-{os.getpid()}-{tag}-1"
         opened = self.crypt("--key-file", str(fx["build"]), "luksOpen",
                             fx["root_loop"], name)
         self.assertEqual(opened.returncode, 0, opened.stderr)
@@ -4183,10 +4225,79 @@ class FirstBootReKeyTests(unittest.TestCase):
         self.assertTrue(mnt.is_mount())
         self.assertEqual(self.crypt("status", name).returncode, 0,
                          "the fixture's mapping did not open")
-        type(self).close_stale_mappers(dead={os.getppid()})
+        type(self).close_stale_mappers(dead={os.getpid()})
         self.assertNotEqual(self.crypt("status", name).returncode, 0,
                             "the sweep left a dead run's mounted mapping")
         self.assertFalse(mnt.is_mount(), "the sweep left the dead run's mount")
+
+    def test_a_repeat_release_does_not_detach_the_next_owner(self) -> None:
+        """ODL-357 round 2: a release with no claim is a no-op, not a detach.
+
+        `claim_loop` registers `addCleanup(self.release_loop, device)`, and the
+        tests that release a device explicitly leave that cleanup pending, so
+        every run reaches an entry-less release. It used to call `_detach` with
+        an empty backing -- which skips the ownership test -- after the first
+        release had already dropped the flock, so the second call would
+        `losetup -d` a device another suite had claimed in between. Here the
+        next owner is this process: it takes the device's flock and attaches
+        its own file, and the repeat release must leave that file attached.
+        """
+        fx = self.fixture()
+        device = fx["root_loop"]
+        self.release_loop(device)
+        self.assertNotIn(device, type(self)._loops)
+        sibling = fx["base"] / "sibling.img"
+        sibling.write_bytes(b"\0" * (1 << 20))
+        lock = type(self)._loop_lock(device)
+        self.assertIsNotNone(lock, f"{device} was not free after its release")
+        assert lock is not None  # narrowed for the type checker
+
+        def detached() -> bool:
+            backing = type(self)._loop_backing(device)
+            return not backing or os.path.realpath(backing) != os.path.realpath(str(sibling))
+
+        try:
+            made = subprocess.run(["losetup", device, str(sibling)], capture_output=True,
+                                  text=True, timeout=60, env=self.env())
+            self.assertEqual(made.returncode, 0, made.stderr)
+            self.release_loop(device)  # the pending addCleanup: no entry left
+            self.assertFalse(detached(),
+                             "a release with no claim detached the next owner's loop")
+        finally:
+            if not detached():
+                subprocess.run(["losetup", "-d", device], capture_output=True,
+                               text=True, timeout=60, env=self.env())
+            type(self)._drop_loop_lock(lock)
+
+    def test_two_suites_sharing_a_parent_do_not_sweep_each_other(self) -> None:
+        """ODL-357 round 2: two runs started together share one parent.
+
+        The round-1 orphan named itself after `os.getppid()` and declared that
+        pid dead. Two suites started by the same shell share it, so each sweep
+        closed the other's mapping -- measured: one of the pair red with
+        `mount: special device ... does not exist`, the sweep landing between
+        the sibling's `luksOpen` and its `mount`. Here both children are
+        started by this test process, so they share a parent, and each runs the
+        mounted-orphan case; both must pass. At `bf7a27e` the same pair was
+        red, which is what the names keyed on the run's own pid fix.
+        """
+        env = self.env()
+        env["TMPDIR"] = str(self.dir)
+        command = ["/usr/bin/python3", "-m", "unittest", "-v",
+                   "test_sealed_image.FirstBootReKeyTests."
+                   "test_a_mounted_orphans_mapping_is_unmounted_and_closed"]
+        runs = [subprocess.Popen(command, cwd=str(ROOT / "tests"), env=env,
+                                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                 text=True, start_new_session=True) for _ in (0, 1)]
+        for proc in runs:
+            self.addCleanup(self._kill_child, proc)
+        outputs = [proc.communicate(timeout=900)[0] for proc in runs]
+        for proc, output in zip(runs, outputs):
+            self.assertEqual(proc.returncode, 0,
+                             f"a same-parent pair was not green (pid {proc.pid}):\n{output}")
+            self.assertIn("Ran 1 test", output)
+            self.assertNotIn("OK (skipped", output,
+                             f"the child skipped instead of running the case:\n{output}")
 
     def _child_driver(self) -> pathlib.Path:
         """The program the SIGTERM test starts: this class's own code, held open."""
