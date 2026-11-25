@@ -1115,6 +1115,29 @@ manifest `7031d4a0…`). The id ledger: `-4` is t_509f85e4's support-grant help 
 (15:30Z), `-5` was this card's pre-review cut (16:35Z), and `-6` is later than
 every cut by `generated_at` (17:45Z).
 
+**The `2026.11.23-7` cut (the ODL-947 follow-up: the seeded first boot writes
+the seed's verifier before the state says it is set).** Release `2026.11.23-5`
+stamped `signin_set_at` on the seed's mere presence, before the installer ran,
+so the first boot kept the image's placeholder `.env` and the first visit served
+a login nobody could pass. The pre-installer state now starts unstamped,
+`install-stack.sh` writes the seed's verifier when the `.env` does not hold it
+and stamps after the write, and `installer.ensure_env` writes it when a run
+finds a placeholder and keeps a hash the owner's own visit recorded. `install.md`
+§12.6 has the full record: installer `44fad8b0…` (1,577,925 bytes), manifest
+`f93f9b6c…` (50,044 bytes; its diff against `-6` is `installer_sha256` alone),
+skills `9a10a63e…` (852,667 bytes, unchanged, so no fresh-root rebuild is
+claimed), `release.json` `04a45212…` (1,384 bytes) naming `2026.11.23-7` at
+`2026-11-25T05:40:00Z`, `--verify-signature` OK on the checkout's installer
+(`signature: OK (sha256 44fad8b0…)`), a one-byte edit `7d55f8b9…` (1,577,926
+bytes) and `signature: BAD`, exit 3, and `tools/recut_release.py --check`
+eleven `ok` lines. Committed, not deployed: measured 2026-11-25T05:37Z, the URL
+serves the deployed `2026.11.23-4` (installer `84860db3…`, 1,576,209 bytes;
+manifest `7a217601…`). The id ledger: `-4` is ODL-929's `/verify`-page and
+installed-help cut (16:45Z); `-5` is t_fc412bd9's `/verify` header-margin cut
+(2026-11-23T21:01:30Z); `-6` is the ODL-925 follow-up's first-run-close cut
+(2026-11-24T01:45:00Z); and `2026.11.23-7` is later than every cut by
+`generated_at` (2026-11-25T05:40:00Z).
+
 **The `2026.11.23-6` cut (the ODL-925 follow-up: the first-run close names no
 unlock).** The tenant first-run skill's closing sentence said a job "runs when
 you unlock" — false under the sealed boot, where the disk unlocks on the boot the

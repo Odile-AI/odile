@@ -14,14 +14,14 @@
   "boot": {
     "kernel": "6.12.115+deb13.1-amd64"
   },
-  "generated_at": "2026-11-24T01:45:00Z",
+  "generated_at": "2026-11-25T05:40:00Z",
   "manifest": {
     "sha256": "f93f9b6cb3fc0354c602c72849b40b82b878e4743fe4d54e40932a97116118ab",
     "signature_url": "manifest.json.sig",
     "url": "manifest.json"
   },
-  "notes": "ODL-925 follow-up (A2), re-cut over t_fc412bd9's tenant /verify header-margin cut: the tenant first-run skill's close sentence is the deck's repeating-job row (A11) \u2014 \"and if it was due while the machine was down, it runs when the machine comes back up.\" The retired clause promised a run at the unlock; the sealed boot has no unlock step. The installer re-embeds skills/odile-first-run/SKILL.md (d95b5061\u2026, 8,167 bytes) and carries t_fc412bd9's templates/verify.html (1f5314db\u2026, 42,959 bytes \u2014 the \u2264560 header margin rises from 24 to 32 px); the manifest moves installer_sha256 and the odile-first-run row, and skills.tar.gz is the fresh root's build (9a10a63e\u2026).",
+  "notes": "ODL-947 follow-up (A2's cold-walk gate): the seeded first boot writes the seed's verifier before the state says signin_set_at. odile-firstboot.py's pre-installer state starts unstamped; install-stack.sh's production branch no longer trusts a stamp written before the installer ran, writes the seed's verifier when the .env does not hold it, and stamps only after the write; installer.ensure_env does the same on a run that finds a placeholder and keeps a hash the owner's own visit recorded (used_at/first_login_at). The installer re-embeds no surface, so the manifest's diff against 2026.11.23-6 is installer_sha256 alone and skills.tar.gz is unchanged (9a10a63e\u2026, 852,667 bytes).",
   "product": "odile",
-  "release": "2026.11.23-6",
+  "release": "2026.11.23-7",
   "schema": 1
 }
