@@ -1013,6 +1013,51 @@ class FixtureFlowTest(TempConfigMixin):
         self.assertTrue(create["body"]["measured"])
         self.assertEqual(transport.calls[2]["id"], SERVER_ID)
 
+    def test_provision_orders_the_nano_default_from_the_config(self):
+        """The shipped config's 138 / 365 / 1 reaches the vendor as the order.
+
+        Measured through the create body, not the source text: a config carrying
+        the Nano defaults must order plan 138 for 365 days with no --plan or
+        --days flag. A Core order (108/113) would fail here.
+        """
+        transport = self._flow_transport(measured_release="2026.09.9")
+        config_path = self.make_config(
+            default_plan_id="138", default_days="365", default_vcpus="1")
+        code, out, err = run_cli(
+            [
+                "provision", SLUG,
+                "--key", str(self.key_file()),
+                "--pin", str(self.pin_file()),
+                "--interval", "0",
+                "--apply", "--json",
+            ],
+            config_path,
+            provider_factory=lambda _config: servury.ServuryProvider(TEST_KEY, transport=transport),
+        )
+        self.assertEqual(code, 0, err)
+        create = transport.calls[1]
+        self.assertEqual(create["body"]["plan_id"], 138)
+        self.assertEqual(create["body"]["days"], 365)
+
+    def test_provision_with_no_plan_in_the_config_refuses_rather_than_defaulting(self):
+        """A missing default_plan_id is an error, never a silent Core order."""
+        transport = self._flow_transport()
+        config_path = self.make_config(default_plan_id=None)
+        code, out, err = run_cli(
+            [
+                "provision", SLUG,
+                "--key", str(self.key_file()),
+                "--pin", str(self.pin_file()),
+                "--interval", "0",
+                "--apply", "--json",
+            ],
+            config_path,
+            provider_factory=lambda _config: servury.ServuryProvider(TEST_KEY, transport=transport),
+        )
+        self.assertNotEqual(code, 0)
+        self.assertIn("default_plan_id", out + err)
+        self.assertEqual([call["action"] for call in transport.calls], [])
+
     def _destroyed_row(self, config_path) -> Path:
         """A tenant that reached ready and was then destroyed (ADR-007)."""
         db = Path(config_path).parent / "waitlist.db"

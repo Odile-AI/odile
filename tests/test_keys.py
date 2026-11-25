@@ -292,6 +292,7 @@ class SeedFixture(unittest.TestCase):
         ("odl-keyi", "srv-keyi"),
         ("odl-keyj", "srv-keyj"),
         ("odl-keyk", "srv-keyk"),
+        ("odl-keyl", "srv-keyl"),
     )
 
     @classmethod
@@ -829,6 +830,65 @@ class ReissueTest(SeedFixture):
         self.assertEqual(history[0].detail.get("reason"), "superseded")
         self.assertEqual(history[1].key_prefix, second_key[:6] + "****")
         self.assertNotIn(first_key, self.db_bytes().decode("utf-8", "replace"))
+
+
+    def test_a_remint_moves_the_account_rows_key_label(self):
+        """ODL-947: a re-mint through `provision` also names the new key on the account.
+
+        The account page, the ready mail and the daily brief read
+        `accounts.key_label`/`key_prefix`; the re-issue path updated only
+        `tenant_keys`, so after a replacement mint the row still named the key
+        the provider had revoked.
+        """
+        slug, server = "odl-keyl", "srv-keyl"
+        con = sqlite3.connect(self.db)
+        try:
+            con.execute(
+                "INSERT INTO accounts (slug, email, password_hash, confirm_token_hash,"
+                " confirm_expires_at, trial_started_at, trial_ends_at,"
+                " provision_state, key_label, key_prefix, created_at)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, 'ready', ?, ?, ?)",
+                (slug, slug + "@example.com", "scrypt$1$1$1$c2FsdA==$aGFzaA==",
+                 "confirm:" + slug, "2026-12-01T00:00:00Z", "2026-11-24T00:00:00Z",
+                 "2026-12-08T00:00:00Z", "odile-" + slug, "sk-old****", iso_now()),
+            )
+            con.commit()
+        finally:
+            con.close()
+
+        config = self.make_config()
+        near = FakeNear()
+        with self.shared_fallback():
+            with mock.patch.object(keys, "TRANSPORT", near):
+                code, err, _ = self.provision(slug, server, config)
+                self.assertEqual(code, 0, err)
+                first_token = self._tokens[slug]
+                status, body = self.redeem(first_token, server)
+                self.assertEqual(status, 200, body)
+
+                code, err, _ = self.provision(
+                    slug, server, config,
+                    provider=self.active_provider(slug, server).provider,
+                )
+                self.assertEqual(code, 0, err)
+                newest = self.handoff()[slug]["key"]
+                record = self.handoff()[slug]
+
+        con = sqlite3.connect(self.db)
+        try:
+            row = con.execute(
+                "SELECT key_label, key_prefix FROM accounts WHERE slug = ?", (slug,)
+            ).fetchone()
+            newest_record = con.execute(
+                "SELECT label, key_prefix, state FROM tenant_keys WHERE key_id = ?",
+                (record["key_id"],)).fetchone()
+        finally:
+            con.close()
+        expected = newest[:6] + "****"
+        self.assertEqual(row[1], expected)
+        self.assertEqual(row[0], newest_record[0])
+        self.assertEqual(newest_record[1], expected)
+        self.assertEqual(newest_record[2], "issued")
 
 
 # ------------------------------------------------- a rotated / issued token

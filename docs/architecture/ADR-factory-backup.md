@@ -322,8 +322,8 @@ other bucket and cannot touch DNS.
 | `rsync -a` to a box, no restic | No client-side encryption (the host reads the signing key), no snapshots (a deleted or corrupted file is gone with the next sync), no dedupe. A partial transfer is a plausible-looking corrupt backup. |
 | `git push` the repo to GitHub and call the rest done | Covers 173 MB of the 1.1 GiB — not the board, not the seats, not the secrets. Putting `/root/.odile` in a git history means the signing key sits in a third party's object store and can never be rotated out of history. |
 | Borg to the same destination | Equivalent tool, one more binary and a different repository format; restic is in Ubuntu's archive and ODL-215 already uses it for tenant guests — one tool, two uses, one runbook idiom. |
-| **Hetzner Storage Box BX11, or rsync.net** — SFTP on port 23, restic's native backend | Rejected by Savio's decision C on 2026-11-10. It is €3.20/month (≈$3.58 net) for 1 TB of capacity roughly 900× the set, against $0.00 on R2, and SFTP brings an SSH key, an SSH alias, a pinned host-key fingerprint and port 23 through whatever network the restore machine sits on — four moving parts where HTTPS has one. Its one real advantage, a key confined to one directory, is matched by an R2 token confined to one bucket. Kept in this table because it is the option to revisit if the S3 credential ever becomes the thing that breaks at 03:30. |
-| **Backblaze B2** — the documented fallback, not the choice here | The same restic tool and the same S3 backend, so switching is one line and a fresh `restic init` (§7). 10 GB free, $6.95/TB-month, egress free up to 3× stored, free API calls. Not chosen here because Cloudflare already has an account, a card and the DNS zone, and B2 is a second console for a saving of nothing at this size. It is the fallback precisely because it shares **no** account with our DNS. **19 November 2026:** B2 is now the **tenant** target (ADR-004 §4) once Savio's suspended account is restored; R2 is the tenant interim, not this bucket. |
+| **Hetzner Storage Box BX11, or rsync.net** — SFTP on port 23, restic's native backend | Rejected by Savio's decision C on 2026-11-10 **for this bucket**. It is €3.20/month (≈$3.58 net) for 1 TB of capacity roughly 900× the set, against $0.00 on R2, and SFTP brings an SSH key, an SSH alias, a pinned host-key fingerprint and port 23 through whatever network the restore machine sits on — four moving parts where HTTPS has one. Its one real advantage, a key confined to one directory, is matched by an R2 token confined to one bucket. Kept in this table because it is the option to revisit if the S3 credential ever becomes the thing that breaks at 03:30. **24 November 2026:** the option became the **tenant** destination, not this bucket's — Savio chose a BX11 for all Odile user backups (ADR-004 v3), and the four moving parts are what that design now pays for deliberately: port **22**, which is always on, instead of 23; the SFTP key generated at provision and pinned in the seed; the host key pinned per tenant. |
+| **Backblaze B2** — the documented fallback, not the choice here | The same restic tool and the same S3 backend, so switching is one line and a fresh `restic init` (§7). 10 GB free, $6.95/TB-month, egress free up to 3× stored, free API calls. Not chosen here because Cloudflare already has an account, a card and the DNS zone, and B2 is a second console for a saving of nothing at this size. It is the fallback precisely because it shares **no** account with our DNS. **19 November 2026:** B2 was made the **tenant** target (ADR-004 §4) once Savio's suspended account was restored; R2 became the tenant interim, not this bucket. **24 November 2026:** B2 is **superseded** too — the account never came back, no key was ever minted, and the tenant destination is now a Hetzner Storage Box BX11 (ADR-004 v3). This bucket and its token are untouched by any of it. |
 | A second Servury box | The same provider, the same reseller API, the same account: a Servury wipe or suspension takes both. The backup must survive the provider, not duplicate it. |
 
 ### 4.3 The trust boundary this creates
@@ -407,6 +407,19 @@ against that 9 GB, so this ADR's bucket growth is now inside the same cap.
 **When B2 is restored** the tenant buckets migrate to B2 (ADR-004 §10) and this
 account holds only HQ's backup again; §4.3's original two-provider argument then
 describes the live state once more.
+
+**24 November 2026 — the tenant copies leave this account.** Savio chose a
+**Hetzner Storage Box BX11**, on a Hetzner account dedicated to backups, as the
+destination for all Odile user backups (ADR-004 v3). The B2 account never came
+back, so nothing migrated to it; the two R2 buckets that exist hold no tenant
+data (two read-write token pairs, no read-only twin, no byte written), and the
+provisioning card that would have used them never landed. What this section
+records is therefore the **19–20 November interim and its end**: the 9 GB cap,
+the three-bucket ceiling, the `enam` hint and the shared-fate acceptance are
+history, and this account holds **only HQ's backup** again. §4.3's two-provider
+argument describes the live state once more — with the tenant copy at a third
+provider in the EU rather than in Toronto. The bucket, its token and its drill
+are unaffected; nothing in this section moved a byte of HQ's backup.
 
 ## 5. The restore drill
 

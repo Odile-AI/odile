@@ -1155,7 +1155,8 @@ class FirstbootUnitTests(unittest.TestCase):
             line = ("root=/dev/mapper/root_crypt bb.iid=%s bb.host=odl-bench bb.key=%s"
                     % (self.IID, base64.b64encode(BOOT_KEY_TEXT.encode()).decode()))
             record, fingerprint, reason, note = firstboot.boot_record_facts(
-                line, pin_path=str(pin), boot_key_path=str(root / "absent.pub"),
+                line, boot_report_path=str(root / "absent-attest.json"),
+                pin_path=str(pin), boot_key_path=str(root / "absent.pub"),
                 boot_record_path=str(root / "absent.json"),
                 host_key_path=str(root / "absent-host.pub"),
                 first_visit_path=str(root / "absent.json"),
@@ -1173,11 +1174,16 @@ class FirstbootUnitTests(unittest.TestCase):
             pin.write_text(json.dumps({"release": "2026.11.1"}), encoding="utf-8")
             boot_record = root / "boot-record.json"
             boot_record.write_text(json.dumps({"release": "2026.10.1"}), encoding="utf-8")
-            self.assertEqual(firstboot.pinned_release(str(pin), str(boot_record)),
-                             ("2026.11.1", ""))
+            absent = str(root / "absent-attest.json")
+            self.assertEqual(
+                firstboot.pinned_release(boot_report_path=absent, pin_path=str(pin),
+                                         boot_record_path=str(boot_record)),
+                ("2026.11.1", ""))
             pin.unlink()
-            self.assertEqual(firstboot.pinned_release(str(pin), str(boot_record)),
-                             ("2026.10.1", ""))
+            self.assertEqual(
+                firstboot.pinned_release(boot_report_path=absent, pin_path=str(pin),
+                                         boot_record_path=str(boot_record)),
+                ("2026.10.1", ""))
 
     def test_a_multi_line_or_unknown_key_is_not_a_public_key(self) -> None:
         self.assertIsNone(firstboot.public_key_line("ssh-ed25519 AAAA\nssh-ed25519 BBBB"))
@@ -1212,7 +1218,8 @@ class FirstbootUnitTests(unittest.TestCase):
 
             def facts(**kwargs):
                 return firstboot.boot_record_facts(
-                    line, pin_path=str(pin), boot_key_path=str(key_file),
+                    line, boot_report_path=str(root / "absent-attest.json"),
+                    pin_path=str(pin), boot_key_path=str(key_file),
                     boot_record_path=str(root / "absent.json"),
                     host_key_path=str(root / "absent-host.pub"),
                     first_visit_path=str(root / "absent.json"), **kwargs)
@@ -1562,6 +1569,7 @@ class FirstbootExchangeTests(unittest.TestCase):
             # this root, never the test host's /etc/ssh.
             "--ssh-root", str(self.ssh_root),
             "--ssh-keygen", str(self.keygen),
+            "--boot-report", str(self.dir / "attest.json"),
             "--pin", str(self.pin),
             "--boot-key", str(self.boot_key_path),
             "--boot-record", str(self.dir / "boot-record.json"),

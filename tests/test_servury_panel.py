@@ -798,5 +798,50 @@ class PowerTests(AuditIsolatedTests):
         self.assertEqual(self.live_count("POWER server=a1b2c3d4"), live_before)
 
 
+class OrderDefaultsTests(AuditIsolatedTests):
+    """The shipped order default is a Nano at the annual term, never a Core.
+
+    Savio's 2026-11-24 direction makes the new machine a Blackbox Nano (plan
+    138, the Canada 1 vCPU / 2 GB / 25 GB tier) at 365 days. The tier matters
+    because Servury cannot downgrade a machine: a tester placed on a Core cannot
+    move to a Nano without a rebuild.
+    """
+
+    def setUp(self) -> None:
+        super().setUp()
+        patcher = mock.patch.object(panel, "_ACCOUNT", "lkbxu6i9")
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.key = Path(self.audit_dir.name) / "servury_reseller_key_lkbxu6i9"
+        self.key.write_text("k" * 64 + "\n", encoding="utf-8")
+        self.pub = Path(self.audit_dir.name) / "id_ed25519.pub"
+        self.pub.write_text("ssh-ed25519 AAAA test@host\n", encoding="utf-8")
+
+    def test_an_order_with_no_flags_is_a_nano_for_a_year(self) -> None:
+        args = panel.build_parser().parse_args(["--order"])
+        self.assertEqual(args.plan, "138")
+        self.assertEqual(args.days, "365")
+
+    def test_an_explicit_plan_and_term_still_win(self) -> None:
+        args = panel.build_parser().parse_args(
+            ["--order", "--plan", "113", "--days", "31"])
+        self.assertEqual((args.plan, args.days), ("113", "31"))
+
+    def test_the_dry_run_of_the_defaults_names_the_nano_and_the_year(self) -> None:
+        args = panel.build_parser().parse_args([
+            "--order", "--hostname", "odl600",
+            "--ssh-key-file", str(self.pub), "--key-file", str(self.key),
+        ])
+        printed = io.StringIO()
+        with contextlib.redirect_stdout(printed):
+            code = panel.order(
+                None, args.plan, args.location, args.os_name or "debian12", args.days,
+                args.hostname, args.apply, args.ssh_key_file, args.key_file, args.preorder,
+            )
+        self.assertEqual(code, 0)
+        self.assertIn("would order plan 138 for 365 days", printed.getvalue())
+        self.assertIn("ORDER route=api plan=138", self.audit_lines()[0])
+
+
 if __name__ == "__main__":
     unittest.main()

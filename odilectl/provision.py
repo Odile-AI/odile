@@ -812,7 +812,7 @@ def _iso_epoch(epoch: int | None) -> str | None:
 
 
 def _point_web_row_at_machine(
-    connection: sqlite3.Connection, spec: CreateSpec, machine: Machine, release: str
+    connection: sqlite3.Connection, spec: CreateSpec, machine: Machine
 ) -> str:
     """Point the web `tenants` row at the machine this run ordered.
 
@@ -821,12 +821,13 @@ def _point_web_row_at_machine(
     refused the new machine's measured line ("is ordered for instance
     'srv-old', the measured line boots 'srv-new'"). This is the write the claim
     path makes when it orders (server_id, ipv4, expires_at, state
-    `provisioned`), plus the facts a rebuild needs to be honest: the release
-    the new machine is ordered under and the key it is ordered with;
-    `installed_at` goes back to NULL because this machine has not installed.
-    `setup_token_hash` is untouched — `seed.bind` wrote the new token's hash
-    moments before this write. A row that already names this machine is not
-    rewritten, so a second run cannot move an `active` row backwards.
+    `provisioned`), plus the key it is ordered with; `installed_at` goes back
+    to NULL because this machine has not installed. The release is not written
+    here: `StateStore.record_release` is its one owner, so the spine and the
+    web row cannot name different releases. `setup_token_hash` is untouched —
+    `seed.bind` wrote the new token's hash moments before this write. A row
+    that already names this machine is not rewritten, so a second run cannot
+    move an `active` row backwards.
 
     Returns "absent" (a state-only database, or a row the claim never made),
     "unchanged" (the row already names this machine) or "repointed".
@@ -843,14 +844,13 @@ def _point_web_row_at_machine(
     try:
         connection.execute(
             "UPDATE tenants SET server_id = ?, ipv4 = ?, expires_at = ?,"
-            " state = 'provisioned', ssh_public_key = ?, release = ?,"
+            " state = 'provisioned', ssh_public_key = ?,"
             " installed_at = NULL WHERE id = ?",
             (
                 machine.server_id,
                 machine.ipv4,
                 _iso_epoch(machine.expires_at),
                 spec.ssh_key.strip(),
-                release,
                 row["id"],
             ),
         )
@@ -879,8 +879,10 @@ def _record_machine(
     A tenant created by the claim spine already has a state row; a manual
     provision creates the missing one at `invited` and walks it to
     `provisioning`, the same path the claim code uses. A second run does not
-    move the state again, and `record_release` fills a NULL release only, so
-    the release the machine was actually ordered under is never rewritten.
+    move the state again. `record_release` names the order's release on both
+    rows, unless the machine has already reported what it installed — that
+    observation wins (ODL-947), so a re-run cannot walk a booted row back to a
+    stale pin.
 
     An order is recorded in both schemas (ODL-218 follow-up, ADR-007). The
     state row carries the machine and then reaches `first_boot` — the order
@@ -942,7 +944,13 @@ def _record_machine(
                 "Run this, then this command again:\n"
                 f"  odilectl reconcile {spec.hostname} --apply"
             )
-        web_row = _point_web_row_at_machine(store.connection, spec, machine, release)
+        web_row = _point_web_row_at_machine(store.connection, spec, machine)
+        if web_row == "repointed":
+            # The boot facts belonged to the dead machine; the new order's
+            # release is the best evidence until the new machine boots, so drop
+            # the old observation before the release is written again.
+            store.note(spec.hostname, detail={"boot_release": None})
+        tenant = store.record_release(spec.hostname, release)
         if tenant.state == "provisioning":
             tenant = store.await_boot(spec.hostname)
         return {

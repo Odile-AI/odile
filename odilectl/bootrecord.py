@@ -5,9 +5,13 @@ what it *did* boot, once, from the machine's own measured line:
 
 * the public key in `bb.key=` (the throwaway boot key with no private half),
   written to `tenants.ssh_public_key` and `tenant_state.detail.boot_key`;
-* the pinned release the image was built from (`tenant-image.pin`'s `release`),
-  written to `tenants.release` and `tenant_state.release` when those are empty
-  (first write wins: the order is not rewritten by an observation);
+* the release the machine reports it booted (the boot report's `release`; the
+  image pin's for an image that predates the report), written to
+  `tenants.release` and `tenant_state.release`; a later record that names a
+  different release (a recycle or a re-install) moves both rows, because the row
+  must name the release the machine installed (ODL-947). The order's release is
+  the pre-boot value, and after a boot record it is never rewritten —
+  `StateStore.record_release` refuses to walk it back;
 * the state the machine is in — `first_boot` advances to `first_visit` while the
   first-visit page serves, and to `ready` once the sign-in is set — and the
   current SSH host key in `detail.host_key`; the old `initramfs_host_key` is
@@ -220,7 +224,8 @@ def parse_record(record: Any, *, instance_id: str | None = None,
         )
     release = record.get("release")
     if not isinstance(release, str) or not RELEASE_ID_RE.match(release.strip()):
-        raise BootRecordError("the boot record's release must look like 2026.11.1")
+        raise BootRecordError(
+            "the boot record's release must look like 2026.11.1 or 2026.11.23-5")
     first_visit = record.get("first_visit")
     if first_visit not in FIRST_VISIT_VALUES:
         raise BootRecordError("the boot record's first_visit must be 'pending' or 'done'")
@@ -308,7 +313,8 @@ def record_boot(
         )
     release = (record.get("release") or "").strip()
     if not RELEASE_ID_RE.match(release):
-        raise BootRecordError("the boot record's release must look like 2026.11.1")
+        raise BootRecordError(
+            "the boot record's release must look like 2026.11.1 or 2026.11.23-5")
     first_visit = record.get("first_visit")
     if first_visit not in FIRST_VISIT_VALUES:
         raise BootRecordError("the boot record's first_visit must be 'pending' or 'done'")
@@ -358,10 +364,11 @@ def record_boot(
     if record.get("serving"):
         detail["serving"] = record["serving"]
 
-    # The web row first: the throwaway key and the pinned release are the
-    # record CLAIMS 4.11 names. `release` is COALESCE'd so the order is never
-    # rewritten by an observation. `installed_at` and `detail.recorded_at` are
-    # the first record's time; a replay keeps both.
+    # The web row first: the throwaway key and the machine's state are the
+    # record CLAIMS 4.11 names. The release is written by `record_boot_release`
+    # below, which moves both rows only when the machine names a different one.
+    # `installed_at` and `detail.recorded_at` are the first record's time; a
+    # replay keeps both.
     current = tenant["state"]
     if first_visit == "done" and spine.state != "destroyed":
         target_web = "active"
@@ -370,6 +377,7 @@ def record_boot(
     else:
         target_web = current
     new_web = _web_state(current, target_web)
+    installed_at = stamp if new_web in ("installed", "active") else None
     before = {
         "tenants.ssh_public_key": tenant["ssh_public_key"],
         "tenants.release": tenant["release"],
@@ -379,20 +387,24 @@ def record_boot(
         "tenant_state.initramfs_host_key": spine.initramfs_host_key,
         "tenant_state.detail": dict(spine.detail),
     }
-    try:
-        con.execute(
-            "UPDATE tenants SET ssh_public_key = ?, release = COALESCE(release, ?),"
-            " state = ?, installed_at = CASE WHEN ? IS NOT NULL THEN"
-            " COALESCE(installed_at, ?) ELSE installed_at END WHERE id = ?",
-            (measured["boot_key"], release, new_web,
-             stamp if new_web in ("installed", "active") else None,
-             stamp if new_web in ("installed", "active") else None,
-             tenant["id"]),
-        )
-        con.commit()
-    except sqlite3.Error as error:
-        con.rollback()
-        raise BootRecordError("cannot write the tenant row: %s" % error) from None
+    web_changed = (
+        tenant["ssh_public_key"] != measured["boot_key"]
+        or new_web != current
+        or (installed_at is not None and tenant["installed_at"] is None)
+    )
+    if web_changed:
+        try:
+            con.execute(
+                "UPDATE tenants SET ssh_public_key = ?, state = ?, installed_at ="
+                " CASE WHEN ? IS NOT NULL THEN COALESCE(installed_at, ?)"
+                " ELSE installed_at END WHERE id = ?",
+                (measured["boot_key"], new_web, installed_at, installed_at,
+                 tenant["id"]),
+            )
+            con.commit()
+        except sqlite3.Error as error:
+            con.rollback()
+            raise BootRecordError("cannot write the tenant row: %s" % error) from None
 
     # The spine: one transition per edge the machine passed through. A machine
     # that is already ready takes only the note, and the note writes nothing
@@ -406,7 +418,7 @@ def record_boot(
             store.ready(name, detail=detail)
         else:
             store.note(name, detail=detail)
-        store.record_release(name, release)
+        release_moved = store.record_boot_release(name, release)
         # The strict image has no initramfs wait; the old column's meaning is
         # retired (ODL-467), so the first strict record drops it. The current
         # host key lives in `detail.host_key` instead.
@@ -432,6 +444,7 @@ def record_boot(
         "state": after_spine.state,
         "tenants_state": after_tenant["state"],
         "release": release,
+        "release_moved": release_moved,
         "boot_key_fingerprint": measured["boot_key_fingerprint"],
         "first_visit": first_visit,
         "changed": changed,
@@ -543,8 +556,13 @@ def run(ctx: Context, args) -> Report:
         f"  release:   {written['release']}",
         f"  web row:   {written['tenants_state']}",
     ]
-    if written["changed"]:
-        lines.append("  moved:     " + ", ".join(written["changed"]))
+    if written["release_moved"]:
+        lines.append("  release rows: " + ", ".join(written["release_moved"]))
+    moved = list(written["changed"])
+    if written["release_moved"]:
+        moved.append("release: " + written["release"])
+    if moved:
+        lines.append("  moved:     " + ", ".join(moved))
     else:
         lines.append("  moved:     nothing (already recorded)")
     return result(

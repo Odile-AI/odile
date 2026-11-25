@@ -265,7 +265,7 @@ live grant still shows the plan.
 ## 3. The destroy — measured on two scratch tenants
 
 The live tenant `odl-fake01` is Savio's own agent and its destroy + rebuild is
-**t_8d50106b** (the $18.99 order and the panel's disk image are his: see §5). The
+**t_8d50106b** (the $47.44 order and the panel's disk image are his: see §5). The
 destroy path itself was measured end to end on two scratch tenants ordered for
 this card, on the host account, at $2.15 each:
 
@@ -550,11 +550,15 @@ guest's own recovery file carries the old password and `backup.py init` says
 / 7 days** — the drill config's `default_plan_id: 120` and `default_days: 7`,
 the panel's Blackbox Core (the Netherlands; $9.49 per 31 days, billed $2.15
 for the drill's 7 days), invoice `e0e6fbce` (§3). The live rebuild orders the
-live config's default, **plan 113 / 31 days**: `/root/.odile/config.yaml`
-carries `default_plan_id: 113` and `default_days: 31`, and the live tenant
-itself is on plan 113 (`?action=server&id=0badc0de` → `plan_id: 113`, Blackbox
-Plus, Canada, $18.99 reseller / $19.99 retail per 31 days, active to
-2026-12-10; `evidence/plans.txt`). Plan 121 is also Blackbox Plus at $18.99
+live config's default — **plan 113 / 31 days at the drill's date**, when
+`/root/.odile/config.yaml` carried `default_plan_id: 113` and
+`default_days: 31`. Since 2026-11-24 that file carries `default_plan_id: 138`
+and `default_days: 365`, so a rebuild today orders a **Blackbox Nano at the
+annual term** rather than a Plus (`docs/runbooks/deploy.md`; the default's
+measurement is `docs/evidence/nano-baseline.md`). The live tenant itself is on
+plan 113 (`?action=server&id=0badc0de` → `plan_id: 113`, Blackbox Plus, Canada,
+$18.99 reseller / $19.99 retail per 31 days, active to 2026-12-10;
+`evidence/plans.txt`). Plan 121 is also Blackbox Plus at $18.99
 per 31 days, but in the Netherlands — it is not what the live config orders.
 The flags differ, the path does not: a same-slug rebuild orders a new machine,
 the row reopens and moves `claimed → provisioning → first_boot` with release
@@ -689,7 +693,8 @@ image is the panel's, not the API's*).
 ### The live tenant
 
 `odl-fake01` is Savio's own agent and was **left running**: destroying it costs
-nothing but rebuilding it needs a **plan 113 / 31-day** order (**$18.99**) and
+nothing but rebuilding it needs a **plan 138 / 365-day** order (**$47.44**, the
+partner price after the term and partner discounts) and
 the panel's two images, which is a human action. **t_8d50106b** asks for that
 one decision (A: destroy and rebuild now, recommended for the M2 exit criterion;
 B: keep it, the scratch drills stand as the evidence). The plan for the live
@@ -702,7 +707,7 @@ tenant is §2 — complete, with the record id, the server id and the backup dat
 | Gap | Why it is not here | Card |
 |---|---|---|
 | ~~a destroyed slug cannot come back~~ **resolved** | ADR-007: `destroyed -> claimed`, the named `reopen()`, and `provision` reopens before the order, points the web row and the state row at the new machine and reaches `first_boot` (so its boot record lands); the slug, the URL and the `tenants/<slug>` repository keep their names | **t_ce52bb8d** |
-| the live tenant's destroy + rebuild | $18.99 and the panel's disk image — a real-world action | **t_8d50106b** |
+| the live tenant's destroy + rebuild | $47.44 (plan 138 / 365 days) and the panel's disk image — a real-world action | **t_8d50106b** |
 | the live tenant's Webapp refuses `/login` (`400 Invalid Host header`) | measured 2026-11-13T05:33Z after a boot-time release install; that boot's release setup ended `rc=1` at `odile-access-report` and the 10:29Z retry ended `rc=4` at the recovery confirmation. It was installer/release work, not the offboard path: the agent is restarted whenever a file the gateway reads at start changed (so a rewritten `webapp.public_url` goes live), a failed access report no longer aborts that restart, and the boot half passes `--i-have-copied-it`. **Recovered on the live tenant 2026-11-15T20:12Z**: `=== rc=0`, `/login?next=%2F` 200, `POST /auth/password-login` 200 with four `__Host-` cookies, `/verify` 200. The machine's own name `odl-fake01.odile.fyi` still answers 400 by design (`demo-public.md` §Host check) | **t_d95b8c13** fixed and recovered 2026-11-15 |
 | the purge on the real box | the command is `odilectl purge` (**t_9d6fb595**, §4), drilled on a scratch repository and a copy of the state store; the off-site box, and how its chroot meets HQ's state store, are the purchase's | **t_8eb17a54** |
 

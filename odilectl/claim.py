@@ -51,9 +51,9 @@ no human in the loop.
 The fixture provider is a test seam, like ODL-211's recorded transport. The
 live provision is ODL-332's evidence.
 
-    python3 -m odilectl.claim invite ada@example.com --plan "Blackbox Plus" --apply
+    python3 -m odilectl.claim invite ada@example.com --plan "Blackbox Nano" --apply
     python3 -m odilectl.claim accept <claim-token> --key ~/.ssh/odile.pub --apply
-    python3 -m odilectl.claim mark-paid odl-7f3a2c --plan "Blackbox Plus" --apply
+    python3 -m odilectl.claim mark-paid odl-7f3a2c --plan "Blackbox Nano" --apply
     python3 -m odilectl.claim run --apply
     python3 -m odilectl.claim status odl-7f3a2c --json
 
@@ -129,7 +129,7 @@ EXAMPLE = "python3 -m odilectl.claim run --apply"
 
 DEFAULT_STATE_DB = "/var/lib/odile/waitlist.db"
 DEFAULT_OUTBOX = "/var/lib/odile/outbox"
-DEFAULT_PLAN_NAME = "Blackbox Plus"
+DEFAULT_PLAN_NAME = "Blackbox Nano"
 DEFAULT_TTL_HOURS = 168
 SETUP_TOKEN_TTL_HOURS = 24
 DEFAULT_TIMEOUT = 900.0
@@ -1096,7 +1096,7 @@ def provision_tenant(
             expires_at=tenant["expires_at"],
             kit_path=str(existing.kit) if existing else None,
             email_path=str(existing.message) if existing else None,
-            state_note=_advance_state_provisioned(con, slug, release=tenant["release"]),
+            state_note=_advance_state_provisioned(con, slug, backfill=tenant["release"]),
         )
 
     # Validate the one config value the ready email promises before any spend:
@@ -1153,7 +1153,11 @@ def provision_tenant(
         # word for "the machine exists"; the ready email is the next event. The
         # release is the pin's instruction, recorded beside the order (ODL-398):
         # `tenants.release` is what ODL-232 reads, `tenant_state.release` is
-        # what `odilectl status` compares with the guest's heartbeat.
+        # what `odilectl status` compares with the guest's heartbeat. The
+        # `COALESCE` is only the staging write — it keeps an existing row's
+        # value on this machine's behalf — and `_advance_state_provisioned`
+        # converges both rows on the order's release before the run is done, so
+        # a rebuilt tenant does not keep the dead machine's release (ODL-947).
         con.execute(
             "UPDATE tenants SET server_id = ?, ipv4 = ?, expires_at = ?,"
             " state = 'provisioned', setup_token_hash = NULL,"
@@ -1364,7 +1368,11 @@ def _backup_repo(config: Config, slug: str) -> str | None:
 
 
 def _advance_state_provisioned(
-    con: sqlite3.Connection, slug: str, *, release: str | None = None
+    con: sqlite3.Connection,
+    slug: str,
+    *,
+    release: str | None = None,
+    backfill: str | None = None,
 ) -> str:
     """Record the machine on the state spine: claimed → provisioning → first_boot.
 
@@ -1373,10 +1381,22 @@ def _advance_state_provisioned(
     the tenant and the queued email are already correct, and a later run
     repairs the state row.
 
-    ``release`` is the pin's ``provision_release``. It is written in the same
-    transition that records the order; a row that predates ODL-398 (or a second
-    run) gets the value through ``record_release``, which fills a NULL once and
-    never rewrites the release the machine was actually ordered under.
+    ``release`` is the pin's ``provision_release``: the order's instruction, and
+    the value both release rows must name once it is written. It is written in
+    the same transition that records the order; a row that predates ODL-398 (or
+    a second run) gets the value through ``record_release``, which converges both
+    rows unless the machine has already reported what it installed — that
+    observation wins (ODL-947). A rebuilt tenant reaches this write with the web
+    row still naming the dead machine (`claim.provision_tenant`'s order write is
+    `COALESCE`), so the order's pin has to move the web row too, not only fill
+    an empty one.
+
+    ``backfill`` is the release the caller found on the web row, for a run that
+    places no order (the skip path). It is used only when the spine has none: a
+    skip is not a new order, and the web row's `COALESCE` value is never newer
+    than the spine's — a re-ordered tenant's web row still names the dead
+    machine — so replaying it as the order's release would walk the spine
+    backwards. A spine with a value is the record the web row converges to.
     """
     if not _has_state_table(con):
         return ""
@@ -1399,8 +1419,12 @@ def _advance_state_provisioned(
             )
         if tenant.state == "provisioning":
             tenant = store.await_boot(slug)
-        if release and tenant.release is None and tenant.state != "destroyed":
-            tenant = store.record_release(slug, release)
+        if tenant.state != "destroyed":
+            # The order's pin first, then the spine's own record (a skip), then
+            # the web row's value only to fill an empty spine.
+            chosen = release or tenant.release or backfill
+            if chosen:
+                tenant = store.record_release(slug, chosen)
     except (StateError, UnknownTenant, ValueError) as error:
         return str(error)
     return ""

@@ -82,6 +82,9 @@ ACCOUNT_HOST = "https://test.odile.fyi"
 NOW = int(datetime(2026, 11, 9, 12, 0, tzinfo=timezone.utc).timestamp())
 MACHINE_EXPIRES = int(datetime(2026, 12, 11, 12, 0, tzinfo=timezone.utc).timestamp())
 RELEASE = "2026.11.1"
+# The re-ordered machine's pin (ODL-947): a rebuild under a newer release, so
+# the web row written `COALESCE` at the first order has to be moved, not kept.
+NEXT_RELEASE = "2026.12.0"
 # What the provider claims its machine booted. ODL-398's rule: an observation,
 # never an instruction — the pin's `provision_release` is the only source.
 PROVIDER_RELEASE = "2026.09.9"
@@ -324,6 +327,16 @@ class ClaimBase(unittest.TestCase):
 
     def tenant(self) -> sqlite3.Row:
         return self.con.execute("SELECT * FROM tenants WHERE slug = ?", (SLUG,)).fetchone()
+
+    def spine_release(self) -> str | None:
+        return self.con.execute(
+            "SELECT release FROM tenant_state WHERE slug = ?", (SLUG,)
+        ).fetchone()["release"]
+
+    def state(self) -> str:
+        return self.con.execute(
+            "SELECT state FROM tenant_state WHERE slug = ?", (SLUG,)
+        ).fetchone()["state"]
 
 
 # --------------------------------------------------------------------- schema
@@ -699,6 +712,81 @@ class ProvisionTests(ClaimBase):
             ).fetchone()["release"],
             RELEASE,
         )
+
+    def test_a_rebuild_orders_the_new_release_on_both_rows(self) -> None:
+        """ODL-947: a rebuilt machine's pin moves the web row too.
+
+        The shape is a rebuild: the first machine is destroyed, the spine row
+        is reopened (its machine columns and detail go, so no boot record
+        survives), and the worker orders the replacement under a newer pin. The
+        web row's release was written `COALESCE` at the first order and nothing
+        after it touches the column, so the state advance is the write that has
+        to bring the two rows together. Until this card it did not: the gate
+        skipped a spine row that already had a release, which `store.provision`
+        had just set to the new pin, and the account page, the ready mail and
+        the daily brief kept reading the dead machine's release.
+        """
+        from odilectl.state import StateStore
+
+        self.paid_claim()
+        first = self.provision(FixtureProvider())
+        self.assertTrue(first.ok, first.reason)
+        self.assertEqual(self.tenant()["release"], RELEASE)
+        self.assertEqual(self.spine_release(), RELEASE)
+
+        store = StateStore(self.con)
+        store.destroy(SLUG, reason="the fixture machine died")
+        store.reopen(SLUG, reason="replacement machine")
+        self.assertEqual(self.state(), "claimed")
+        # The operator marks the dead machine on the web row: it is no longer a
+        # ready tenant, so the worker orders rather than skips.
+        self.con.execute("UPDATE tenants SET state = 'churned' WHERE slug = ?", (SLUG,))
+        self.con.commit()
+        self.write_pin(release=NEXT_RELEASE)
+
+        second = self.provision(FixtureProvider(ipv4="203.0.113.121"), now=NOW + 600)
+        self.assertTrue(second.ok, second.reason)
+        self.assertFalse(second.skipped)
+
+        self.assertEqual(self.tenant()["release"], NEXT_RELEASE)
+        self.assertEqual(self.spine_release(), NEXT_RELEASE)
+        assert second.email_path is not None
+        facts = json.loads(
+            Path(second.email_path).with_suffix(".json").read_text(encoding="utf-8")
+        )
+        self.assertEqual(facts["release"], NEXT_RELEASE)
+
+    def test_a_repeat_provision_agrees_the_rows_on_the_spine(self) -> None:
+        """ODL-947: the skip path never replays the web row's stale release.
+
+        A rebuild can leave the web row on the dead machine's release (the
+        `COALESCE` order write) while the spine names the new order. A re-run
+        of provision skips — the machine is ordered and the ready mail queued —
+        and the skip path re-advances the state. The spine's release is the
+        newer record, so it is the value the web row converges to; passing the
+        web row's value as the order's release would walk the spine backwards.
+        """
+        self.paid_claim()
+        first = self.provision(FixtureProvider())
+        self.assertTrue(first.ok, first.reason)
+        # The shape to repair: the spine has the new order, the web row the
+        # dead machine's release.
+        self.con.execute("UPDATE tenants SET release = ? WHERE slug = ?", (RELEASE, SLUG))
+        self.con.execute(
+            "UPDATE tenant_state SET release = ? WHERE slug = ?", (NEXT_RELEASE, SLUG)
+        )
+        self.con.commit()
+
+        replay = self.provision(FixtureProvider(), now=NOW + 60)
+        self.assertTrue(replay.skipped)
+
+        self.assertEqual(self.spine_release(), NEXT_RELEASE)
+        self.assertEqual(self.tenant()["release"], NEXT_RELEASE)
+        # A second skip is the convergence check: nothing moves.
+        third = self.provision(FixtureProvider(), now=NOW + 120)
+        self.assertTrue(third.skipped)
+        self.assertEqual(self.spine_release(), NEXT_RELEASE)
+        self.assertEqual(self.tenant()["release"], NEXT_RELEASE)
 
     def test_a_pin_without_provision_release_orders_nothing(self) -> None:
         """An unpinned boot release fails closed before the provider is called."""
@@ -1230,6 +1318,16 @@ class CliTests(ClaimBase):
         self.assertTrue(json.loads(out)["dry_run"])
         self.assertEqual(self.con.execute("SELECT count(*) FROM tenants").fetchone()[0], 0)
 
+    def test_mark_paid_without_a_plan_records_the_nano(self) -> None:
+        """The unflagged label is the tier the config orders — a Nano, not a Plus."""
+        self.issue(plan=None)
+        code, out, err = self.run_cli(["mark-paid", SLUG, "--apply", "--json"])
+        self.assertEqual(code, 0, err)
+        self.assertEqual(json.loads(out)["plan"], "Blackbox Nano")
+        row = self.con.execute(
+            "SELECT plan FROM tenants WHERE slug = ?", (SLUG,)).fetchone()
+        self.assertEqual(row[0], "Blackbox Nano")
+
     def test_the_cli_exits_one_when_the_provision_fails(self) -> None:
         self.paid_claim()
         provider = FixtureProvider(fail_poll=True)
@@ -1477,6 +1575,53 @@ def transcript() -> None:
         con2.close()
     finally:
         shutil.rmtree(directory, ignore_errors=True)
+
+
+class NanoDefaultTests(unittest.TestCase):
+    """The config's provisioning defaults describe a Nano, never a Core.
+
+    Plan 138 is the Canada Blackbox Nano (1 vCPU / 2 GB / 25 GB); the 365-day
+    term is the provisioning default (Savio, 2026-11-24) and the 31-day value
+    that remains the fallback is Nano's own minimum term, not a Core default.
+    """
+
+    def config(self, **values):
+        directory = tempfile.mkdtemp(prefix="odile-nano-")
+        self.addCleanup(shutil.rmtree, directory, ignore_errors=True)
+        base = {"default_plan_id": "138", "default_days": "365", "default_vcpus": "1"}
+        base.update(values)
+        path = Path(directory) / "config.yaml"
+        path.write_text(
+            "".join(f"{key}: {value}\n" for key, value in base.items() if value is not None),
+            encoding="utf-8")
+        path.chmod(0o600)
+        return Config(path, {key: value for key, value in base.items() if value is not None})
+
+    def test_the_shipped_defaults_reach_the_order_and_the_kit(self):
+        config = self.config()
+        self.assertEqual(
+            (claim._plan_id(config), claim._days(config), claim._vcpus(config)),
+            (138, 365, 1))
+
+    def test_a_missing_plan_is_refused_rather_than_defaulted_to_a_core(self):
+        config = self.config(default_plan_id=None)
+        with self.assertRaises(ConfigError):
+            claim._plan_id(config)
+
+    def test_a_missing_term_is_the_nano_minimum_not_a_core_default(self):
+        config = self.config(default_days=None)
+        self.assertEqual(claim._days(config), 31)
+
+    def test_the_unflagged_mark_paid_records_a_nano(self):
+        """`tenants.plan` is the tier a human later reads; an unflagged write is a Nano.
+
+        The machine an unflagged `claim mark-paid` precedes is the config's
+        order — plan 138 — so the label the CLI writes must name the same tier.
+        """
+        self.assertEqual(claim.DEFAULT_PLAN_NAME, "Blackbox Nano")
+        args = claim.build_parser().parse_args(
+            ["--config", "/etc/odile/config.yaml", "mark-paid", "odl-7f3a2c"])
+        self.assertEqual(args.plan, "Blackbox Nano")
 
 
 if __name__ == "__main__":
