@@ -1,7 +1,7 @@
 # ADR-005 — Upgrade inventory and the default-model switch
 
-**Status:** Proposed, with the trigger for rows 1–5 **confirmed by Savio on 24
-November 2026** (`t_ce72ed5b`): a rebuild is a prompted, clicked, windowed event,
+**Status:** Proposed, with the trigger for rows 1–5 confirmed by Savio on 24
+November 2026 (`t_ce72ed5b`): a rebuild is a prompted, clicked, windowed event,
 and §5.3–§5.4 are its flow. The inventory (§3) and the app-layer timer default
 still wait on A4's exit criterion 2. Two things are Savio's: the heartbeat's one
 new fact and the one-sentence privacy row it needs (§5.3), and the windowed
@@ -642,7 +642,7 @@ column, no second copy — the same discipline that keeps the release in `releas
 
 ## 5. The trigger
 
-**The answer, in one line: the user never presses *update*. The machine updates
+**The answer, in one line: the user never presses update. The machine updates
 itself for every layer that can move in place; the layers that cannot are a
 rebuild the machine **books with one click** into its own next window, prepares
 with a T-0 snapshot, and finishes on the first visit — HQ writes the disk in
