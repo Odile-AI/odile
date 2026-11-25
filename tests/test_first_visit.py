@@ -38,6 +38,7 @@ import threading
 import time
 import unittest
 from html.parser import HTMLParser
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -108,13 +109,39 @@ A9_DECIDED = (
     "them off the machine. While the machine is still running, the agent can "
     "show it again."
 )
-# D-6 (docs/CLAIMS.md v3.11), the row that replaces A9's tail: the two
-# first-visit pages carry it verbatim (ODL-925).
+# D-6 (docs/CLAIMS.md v3.11), the row that replaces A9's tail: the first-visit
+# pages carry it verbatim (ODL-925/ODL-926).
 D6_DECIDED = (
     "A recovery code and a recovery file are the way back: the code resets your "
     "sign-in, the file opens your backup. Your first visit gives you both; keep "
     "them off the machine. While the machine is still running, the agent can "
     "replace the code and show you the new one."
+)
+# D-20 (ODL-926): the stability rule; the reset page carries it verbatim and
+# the done pages carry the allowed subset.
+D20_DECIDED = (
+    "Your recovery code works at both places until you replace it; using it "
+    "does not spend it."
+)
+D20_SUBSET = "Your recovery code is unchanged; using it does not spend it."
+# D-4 and D-5 (ODL-926): the one-code and lost-code facts, where a page says
+# them.
+D4_DECIDED = (
+    "One recovery code resets both: your account password at the account page "
+    "and your machine's sign-in on the machine. There is no emailed reset."
+)
+D5_DECIDED = (
+    "If you lose your recovery code there is no other way back: you start a new "
+    "account, and a backup is the only way to bring the files."
+)
+# The retiring wordings (ODL-579's single-use/rotation). No rendered page and
+# no kit may carry them (ODL-926).
+RETIRED = (
+    "The code you used stops working; a new one is shown next.",
+    "The code you use stops working; a new one is shown next.",
+    "This is the only time the new code is shown. The page will not show it again.",
+    "the agent can show it again",
+    "using it there rotates it too",
 )
 # D-1 (docs/CLAIMS.md v3.11): the page's footer, verbatim.
 D1_DECIDED = (
@@ -228,7 +255,7 @@ class FirstVisitHarness:
 
     def __init__(self, reload_command: str = "", username: str = "odile",
                  recovery: str | None = None, caddy_stores: list[Path] | None = None,
-                 seeded: bool = False):
+                 seeded: bool = False, push_command: str = ""):
         self.tmp = tempfile.TemporaryDirectory(prefix="odl457-")
         self.root = Path(self.tmp.name)
         self.hermes = self.root / "home" / "odile" / ".hermes"
@@ -256,6 +283,7 @@ class FirstVisitHarness:
         for name, _ctype in ICON_FILES:
             shutil.copyfile(ROOT / "web" / name, self.icons / name)
         self.reload_log = self.root / "reload.log"
+        self.push_log = self.root / "push.log"
         self.port = free_port()
         command = [
             sys.executable, str(SERVICE),
@@ -270,6 +298,10 @@ class FirstVisitHarness:
             command += ["--reload-command", reload_command]
         else:
             command += ["--reload-command", f"sh -c 'date >> {self.reload_log}'"]
+        if push_command:
+            command += ["--push-command", push_command]
+        else:
+            command += ["--push-command", f"sh -c 'date >> {self.push_log}'"]
         self.process = subprocess.Popen(
             command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True
         )
@@ -341,9 +373,22 @@ class FirstVisitHarness:
         return match.group(1)
 
     def use_code(self, code: str, headers: dict[str, str] | None = None):
-        """Spend the code at the recovery page; the response shows a new one."""
+        """Present the code at the recovery page; the code is not spent."""
         return self.call("POST", "/first-visit/recovery", {"code": code},
                          headers=headers)
+
+    def replace(self, password: str = PASSWORD,
+                headers: dict[str, str] | None = None):
+        """The signed-in replace action: the current sign-in and a new code."""
+        return self.call("POST", "/first-visit/replace", {"password": password},
+                         headers=headers)
+
+    def push_requests(self) -> int:
+        """How many times the service asked for the recovery push."""
+        try:
+            return len(self.push_log.read_text(encoding="utf-8").splitlines())
+        except OSError:
+            return 0
 
     # -- state -----------------------------------------------------------
 
@@ -708,6 +753,21 @@ class SignInLoginTests(unittest.TestCase):
         self.assertNotIn("set on your machine at first visit", page)
         self.assertNotIn("We never see it", page)
 
+    def test_the_sign_in_page_offers_no_replace_link_before_a_code_exists(self):
+        """Designer round 2: the login must not promise a code that does not exist.
+
+        Before the first sign-in the state's ``recovery_hash`` is null and
+        ``/first-visit/replace`` answers 409 "This link is closed.", so the
+        sign-in page carries no replace foot and no replace link. The
+        ``signed-in`` state is the one that names the action.
+        """
+        self.assertIsNone(self.harness.load_state()["recovery_hash"])
+        status, _, page = self.harness.call("GET", "/first-visit")
+        self.assertEqual(status, 200)
+        self.assertNotIn("/first-visit/replace", page)
+        self.assertNotIn("Replace it", page)
+        self.assertNotIn("unchanged after the first visit", page)
+
     def test_a_wrong_password_re_renders_one_error_and_writes_nothing(self):
         before = self.harness.env_text()
         status, _, page = self.harness.signin(PASSWORD + "x")
@@ -752,6 +812,8 @@ class SignInLoginTests(unittest.TestCase):
         self.assertEqual(headers.get("Cache-Control"), "no-store")
         match = CODE_RE.search(page)
         self.assertIsNotNone(match, "the done page does not show a recovery code")
+        code = match.group(1)
+        self.assertEqual(len(code.replace("-", "")), 20, "the code is from the 20-character alphabet")
         self.assertIn("I have saved the code and the file", page)
         self.assertIn("Open your workspace", page)
         self.assertIn(D6_DECIDED, page)
@@ -759,14 +821,27 @@ class SignInLoginTests(unittest.TestCase):
         self.assertIsNotNone(state["first_login_at"])
         self.assertEqual(state["signin_set_at"], self.harness.load_state()["signin_set_at"])
         self.assertIsNone(state["used_at"], "a login does not spend the setup token")
-        self.assertTrue(fv.verify_password(fv.normalise_code(match.group(1)),
+        self.assertTrue(fv.verify_password(fv.normalise_code(code),
                                            state["recovery_hash"]))
         # The .env is untouched: the password was already its verifier.
         self.assertTrue(fv.verify_password(PASSWORD, self.harness.stored_hash()))
-        # The page opens again as a login, and never shows the code twice.
-        status, _, again = self.harness.call("GET", "/first-visit")
+        # The first mint requests the push once; the timer is the retry.
+        self.assertEqual(self.harness.push_requests(), 1,
+                         "the first code did not ask for the HQ push")
+        # A later sign-in keeps the code and shows no code again (ODL-926).
+        first_login = state["first_login_at"]
+        status, _, again = self.harness.signin()
         self.assertEqual(status, 200)
-        self.assertNotIn(match.group(1), again)
+        self.assertIn("You are signed in.", again)
+        self.assertIn(D20_SUBSET, again)
+        self.assertEqual(CODE_RE.search(again), None,
+                         "a later sign-in showed the recovery code again")
+        now = self.harness.load_state()
+        self.assertEqual(now["recovery_hash"], state["recovery_hash"],
+                         "a later sign-in rotated the recovery code")
+        self.assertEqual(now["first_login_at"], first_login)
+        self.assertEqual(self.harness.push_requests(), 1,
+                         "a later sign-in asked for a push")
 
     def test_a_stale_token_on_a_seeded_machine_never_renders_or_writes(self):
         before = self.harness.env_text()
@@ -1104,34 +1179,46 @@ class ResetTests(unittest.TestCase):
         self.assertIn("Use at least 16 characters.", page)
         self.assertTrue(fv.verify_password(PASSWORD, self.harness.stored_hash()))
 
-    def test_the_reset_works_and_rotates_the_code(self):
-        old_code = self.sign_in_and_read_code()
+    def test_the_reset_works_twice_with_the_same_code_and_shows_no_new_code(self):
+        """ODL-926: the code is stable, so the same code resets twice."""
+        code = self.sign_in_and_read_code()
         status, headers, page = self.harness.call(
             "POST", "/first-visit/reset",
-            {"code": old_code, "password": NEW_PASSWORD, "password2": NEW_PASSWORD})
+            {"code": code, "password": NEW_PASSWORD, "password2": NEW_PASSWORD})
         self.assertEqual(status, 200)
         self.assertEqual(headers.get("Cache-Control"), "no-store")
-        new_match = CODE_RE.search(page)
-        self.assertIsNotNone(new_match, "a reset must show the new recovery code once")
-        new_code = new_match.group(1)
-        self.assertNotEqual(new_code, old_code)
+        self.assertEqual(CODE_RE.search(page), None,
+                         "the reset showed a new recovery code")
+        self.assertIn("Your sign-in is changed.", page)
+        self.assertIn(D20_SUBSET, page)
         self.assertTrue(fv.verify_password(NEW_PASSWORD, self.harness.stored_hash()))
         self.assertFalse(fv.verify_password(PASSWORD, self.harness.stored_hash()))
         state = self.harness.load_state()
-        self.assertFalse(fv.verify_password(fv.normalise_code(old_code), state["recovery_hash"]))
-        self.assertTrue(fv.verify_password(fv.normalise_code(new_code), state["recovery_hash"]))
+        self.assertTrue(fv.verify_password(fv.normalise_code(code), state["recovery_hash"]),
+                        "the reset rotated the recovery code")
         self.assertIsNone(state["recovery_used_at"],
-                          "the new code is live: only a spent code carries used_at")
+                          "the reset wrote a spend marker that is no longer read")
         self.assertNotIn(NEW_PASSWORD, self.harness.env_text())
-        # The rotated-out code is dead; the new one still opens the reset form.
+        # The same code resets a second time, and the reset page says why.
         status, _, page = self.harness.call(
             "POST", "/first-visit/reset",
-            {"code": old_code, "password": "third-long-password-0003",
+            {"code": code, "password": "third-long-password-0003",
              "password2": "third-long-password-0003"})
         self.assertEqual(status, 200)
-        self.assertIn("That recovery code does not match.", page)
-        status, _, _ = self.harness.call("GET", "/first-visit/reset")
+        self.assertIn("Your sign-in is changed.", page)
+        self.assertNotIn("That recovery code does not match.", page)
+        self.assertTrue(fv.verify_password("third-long-password-0003",
+                                           self.harness.stored_hash()))
+        status, _, form = self.harness.call("GET", "/first-visit/reset")
         self.assertEqual(status, 200)
+        self.assertIn(D20_DECIDED, form, "the reset page does not carry D-20 verbatim")
+        # A wrong code is still refused.
+        status, _, page = self.harness.call(
+            "POST", "/first-visit/reset",
+            {"code": "AAAA-BBBB-CCCC-DDDD-EEEE", "password": NEW_PASSWORD,
+             "password2": NEW_PASSWORD})
+        self.assertEqual(status, 200)
+        self.assertIn("That recovery code does not match.", page)
 
     def test_a_pasted_code_with_spaces_and_lowercase_works(self):
         code = self.sign_in_and_read_code()
@@ -1200,15 +1287,19 @@ class RecoveryDownloadTests(unittest.TestCase):
             "POST", "/first-visit/reset",
             {"code": code, "password": NEW_PASSWORD, "password2": NEW_PASSWORD})
         self.assertEqual(status, 200)
+        replaced = harness.replace(NEW_PASSWORD)[2]
         for number, (page, warning) in enumerate((
                 (done, "This is the only time the code is shown."),
-                (reset_done, "This is the only time the new code is shown."))):
+                (replaced, "This is the only time the new code is shown."))):
             with self.subTest(state=number):
                 self.assertIn('class="download"', page)
                 self.assertNotIn('class="primary"', page,
                                  "the download is the done page's one filled control")
                 self.assertLess(page.index(warning), page.index('class="download"'),
                                 "the warning sits above the download")
+        # The reset's file-only page keeps the download and shows no code.
+        self.assertIn('class="download"', reset_done)
+        self.assertEqual(CODE_RE.search(reset_done), None)
         refused = harness.call("GET", "/first-visit?t=" + "a" * 64)[2]
         self.assertEqual(refused.count('class="primary"'), 1,
                          "the refused state keeps its one filled link")
@@ -1412,69 +1503,56 @@ class RecoveryDownloadTests(unittest.TestCase):
         self.assertEqual(status, 410)
         self.assertNotIn(BACKUP_PASSWORD, body)
 
-    def test_the_reset_done_page_offers_the_new_code_and_a_fresh_download_token(self):
+    def test_the_reset_done_page_offers_the_recovery_file_and_no_code(self):
         harness = self.harness(recovery=recovery_text())
-        old_code, first = self.signed_in(harness)
+        code, first = self.signed_in(harness)
         first_token = harness.download_token(first)
         status, _, page = harness.call(
             "POST", "/first-visit/reset",
-            {"code": old_code, "password": NEW_PASSWORD, "password2": NEW_PASSWORD})
+            {"code": code, "password": NEW_PASSWORD, "password2": NEW_PASSWORD})
         self.assertEqual(status, 200)
-        match = CODE_RE.search(page)
-        assert match is not None
-        new_code = match.group(1)
+        self.assertEqual(CODE_RE.search(page), None,
+                         "the reset done page showed a recovery code")
+        self.assertIn(D20_SUBSET, page)
+        self.assertNotIn("I have saved the code and the file", page)
         token = harness.download_token(page)
         self.assertNotEqual(token, first_token, "the reset reused the first visit's token")
-        self.assertNotIn(new_code, token)
         self.assertEqual(harness.download(first_token)[0], 404,
                          "the reset kills the first visit's download token")
         status, _, body = harness.download(token)
         self.assertEqual(status, 200)
         self.assertIn(BACKUP_PASSWORD, body)
 
-    def test_a_recovery_page_use_rotates_the_code_and_shows_it_once(self):
+    def test_the_recovery_page_use_neither_spends_nor_rotates_the_code(self):
         harness = self.harness(recovery=recovery_text())
-        old_code, _page = self.signed_in(harness)
-        status, headers, page = harness.use_code(old_code)
+        code, _page = self.signed_in(harness)
+        before = harness.load_state()["recovery_hash"]
+        status, headers, page = harness.use_code(code)
         self.assertEqual(status, 200)
         self.assertEqual(headers.get("Cache-Control"), "no-store")
-        match = CODE_RE.search(page)
-        self.assertIsNotNone(match, "a recovery-page use must show the new code once")
-        new_code = match.group(1)
-        self.assertNotEqual(new_code, old_code)
+        self.assertEqual(CODE_RE.search(page), None,
+                         "a recovery-page use showed a new recovery code")
+        self.assertIn(D20_SUBSET, page)
         token = harness.download_token(page)
         status, _, body = harness.download(token)
         self.assertEqual(status, 200)
         self.assertIn(BACKUP_PASSWORD, body)
         state = harness.load_state()
-        self.assertFalse(fv.verify_password(fv.normalise_code(old_code),
-                                            state["recovery_hash"]))
-        self.assertTrue(fv.verify_password(fv.normalise_code(new_code),
-                                           state["recovery_hash"]))
-        # The code used at the recovery page is dead at both use sites.
-        status, _, page = harness.use_code(old_code)
-        self.assertEqual(status, 200)
-        self.assertIn("That recovery code does not match.", page)
+        self.assertEqual(state["recovery_hash"], before,
+                         "the recovery page rotated the code")
+        # The same code still opens both sites, repeatedly (ODL-926).
+        for _ in range(2):
+            status, _, again = harness.use_code(code)
+            self.assertEqual(status, 200)
+            self.assertNotIn("That recovery code does not match.", again)
         status, _, page = harness.call(
             "POST", "/first-visit/reset",
-            {"code": old_code, "password": "third-long-password-0003",
+            {"code": code, "password": "third-long-password-0003",
              "password2": "third-long-password-0003"})
         self.assertEqual(status, 200)
-        self.assertIn("That recovery code does not match.", page)
-        self.assertFalse(fv.verify_password("third-long-password-0003",
-                                            harness.stored_hash()))
-        # And a reset spends the code for the recovery page too.
-        status, _, page = harness.call(
-            "POST", "/first-visit/reset",
-            {"code": new_code, "password": "third-long-password-0003",
-             "password2": "third-long-password-0003"})
-        self.assertEqual(status, 200)
-        third = CODE_RE.search(page)
-        assert third is not None
-        self.assertNotEqual(third.group(1), new_code)
-        status, _, page = harness.use_code(new_code)
-        self.assertEqual(status, 200)
-        self.assertIn("That recovery code does not match.", page)
+        self.assertIn("Your sign-in is changed.", page)
+        self.assertTrue(fv.verify_password("third-long-password-0003",
+                                           harness.stored_hash()))
 
     def test_the_recovery_page_renders_a_form_and_no_code_bearer(self):
         harness = self.harness(recovery=recovery_text())
@@ -1487,11 +1565,12 @@ class RecoveryDownloadTests(unittest.TestCase):
         self.assertNotIn("?c=", page)
         self.assertNotIn("?d=", page)
 
-    def test_a_spent_code_is_refused_even_if_the_hash_still_matches(self):
-        """recovery_used_at is the single-use gate, not decoration (ODL-579).
+    def test_the_legacy_spent_marker_no_longer_refuses_the_code(self):
+        """ODL-926: ``recovery_used_at`` is a retired marker, not a gate.
 
-        This is the state a crash between the spend and the rotation leaves:
-        the stored hash still verifies, and the state says the code was used.
+        An older state that carries one (ODL-579 wrote it) still accepts its
+        code at both sites; a state whose marker is set by hand proves the
+        marker is never read.
         """
         harness = self.harness(recovery=recovery_text())
         code, _page = self.signed_in(harness)
@@ -1501,12 +1580,13 @@ class RecoveryDownloadTests(unittest.TestCase):
         self.assertTrue(fv.verify_password(fv.normalise_code(code), state["recovery_hash"]))
         status, _, page = harness.use_code(code)
         self.assertEqual(status, 200)
-        self.assertIn("That recovery code does not match.", page)
+        self.assertNotIn("That recovery code does not match.", page)
         status, _, page = harness.call(
             "POST", "/first-visit/reset",
             {"code": code, "password": NEW_PASSWORD, "password2": NEW_PASSWORD})
         self.assertEqual(status, 200)
-        self.assertIn("That recovery code does not match.", page)
+        self.assertNotIn("That recovery code does not match.", page)
+        self.assertIn("Your sign-in is changed.", page)
 
 
 class ConnectionTests(unittest.TestCase):
@@ -1583,10 +1663,21 @@ class PageTests(unittest.TestCase):
                               {"t": self.harness.token, "password": "short",
                                "password2": "short"})[2],
             self.harness.call("GET", "/first-visit/reset")[2],
+            self.harness.call("GET", "/first-visit/replace")[2],
         ]
         status, _, done = self.harness.set_signin()
         self.assertEqual(status, 200)
         pages.append(done)
+        code = CODE_RE.search(done).group(1)
+        pages.append(self.harness.call("GET", "/first-visit/replace")[2])
+        pages.append(self.harness.replace()[2])
+        pages.append(self.harness.call("POST", "/first-visit/recovery",
+                                       {"code": code})[2])
+        status, _, reset = self.harness.call(
+            "POST", "/first-visit/reset",
+            {"code": code, "password": NEW_PASSWORD, "password2": NEW_PASSWORD})
+        self.assertEqual(status, 200)
+        pages.append(reset)
         for number, page in enumerate(pages):
             with self.subTest(state=number):
                 self.assertNotIn("<script", page.lower())
@@ -1621,24 +1712,49 @@ class PageTests(unittest.TestCase):
         text = PAGE.read_text(encoding="utf-8")
         self.assertIn(D6_DECIDED, text)
         self.assertIn(D1_DECIDED, text)
-        self.assertNotIn("the agent can show it again", text)
+        for retired in RETIRED:
+            self.assertNotIn(retired, text, f"a retiring wording survives: {retired!r}")
         self.assertNotIn("We hold neither", text)
         self.assertNotIn("Only its hash stays on this machine.", text)
         self.assertIn("A7 and A9", text)
         status, _, done = self.harness.set_signin()
         self.assertEqual(status, 200)
         self.assertIn(D6_DECIDED, done)
-        match = CODE_RE.search(done)
-        assert match is not None, "the done page has no recovery code"
-        code = match.group(1)
+        code = CODE_RE.search(done).group(1)
         status, _, reset_done = self.harness.call(
             "POST", "/first-visit/reset",
             {"code": code, "password": NEW_PASSWORD, "password2": NEW_PASSWORD})
         self.assertEqual(status, 200)
-        self.assertIn(D6_DECIDED, reset_done)
+        self.assertIn(D20_SUBSET, reset_done)
+        self.assertEqual(CODE_RE.search(reset_done), None)
+        replace_done = self.harness.replace(NEW_PASSWORD)[2]
+        self.assertEqual(status, 200)
+        self.assertIn(D6_DECIDED, replace_done)
+        self.assertIn("Your new recovery code.", replace_done)
 
-    def test_the_reset_page_carries_the_decided_copy_and_the_checkbox(self):
-        """§3.4's copy, and a no-JavaScript gate on the workspace link."""
+    def test_consecutive_notes_take_the_sheet_gap_and_stay_on_the_deck(self):
+        """Designer round 2: D-20 gets the sheet's paragraph gap, and the
+        replaced page prints no reliability sentence the deck does not carry.
+
+        The four notes rendered at 0 px gaps because ``.note{margin:0}``; the
+        adjacency rule is the sheet's 16 px paragraph gap and fires only where
+        two notes meet. "Your account follows when the machine's signed note
+        reaches it…" was a new public reliability sentence with no deck row, so
+        it is cut.
+        """
+        text = PAGE.read_text(encoding="utf-8")
+        self.assertIn(".note + .note{margin-top:16px}", text)
+        self.assertNotIn("Your account follows", text)
+        status, _, _ = self.harness.set_signin()
+        self.assertEqual(status, 200)
+        replaced = self.harness.replace()[2]
+        self.assertNotIn("Your account follows", replaced)
+        self.assertGreaterEqual(
+            replaced.count('class="note"'), 2,
+            "the replaced page no longer prints D-20 after a note")
+
+    def test_the_reset_page_carries_the_decided_copy_and_the_stability_row(self):
+        """D-14's copy, D-20 verbatim, and a no-JavaScript gate on the link."""
         status, _, page = self.harness.set_signin()
         self.assertEqual(status, 200)
         code = CODE_RE.search(page).group(1)
@@ -1652,6 +1768,8 @@ class PageTests(unittest.TestCase):
         # drops the fragment a stranger cannot type (designer review, round 2).
         self.assertIn("Your account password is reset at your account site.", page)
         self.assertNotIn("under /forgot", page)
+        self.assertIn(D20_DECIDED, page,
+                      "the reset page does not carry D-20 verbatim")
         self.assertEqual(CODE_RE.search(page), None, "the form shows no code")
         status, _, done = self.harness.call(
             "POST", "/first-visit/reset",
@@ -1660,11 +1778,80 @@ class PageTests(unittest.TestCase):
         self.assertIn("Your sign-in is changed.", done)
         self.assertIn("Every other signed-in browser on this machine has been "
                       "signed out.", done)
-        self.assertIn("This is the only time the new code is shown. The page will "
-                      "not show it again.", done)
-        self.assertIn('input type="checkbox" id="saved"', done)
-        self.assertIn("I have saved the code and the file", done)
-        self.assertIn(D6_DECIDED, done)
+        self.assertEqual(CODE_RE.search(done), None,
+                         "the reset done page showed a code")
+        self.assertIn(D20_SUBSET, done)
+        self.assertNotIn('input type="checkbox" id="saved"', done)
+
+    def test_the_replace_action_shows_the_new_code_once_with_the_checkbox(self):
+        """ODL-926: the one rotation is the signed-in replace, on the machine."""
+        status, _, first = self.harness.set_signin()
+        self.assertEqual(status, 200)
+        old_code = CODE_RE.search(first).group(1)
+        old_hash = self.harness.load_state()["recovery_hash"]
+        # The account's acknowledged hash is the old one: after the replace it
+        # still is, until the push lands (the five-minute tail, §3.2 and §6).
+        state = self.harness.load_state()
+        state["recovery_pushed_hash"] = old_hash
+        state["recovery_pushed_at"] = "2026-11-20T00:00:00Z"
+        self.harness.state.write_text(json.dumps(state), encoding="utf-8")
+        pushes = self.harness.push_requests()
+
+        form = self.harness.call("GET", "/first-visit/replace")[2]
+        self.assertIn("Replace your recovery code", form)
+        self.assertIn('action="/first-visit/replace"', form)
+        self.assertIn('name="password"', form)
+        self.assertEqual(CODE_RE.search(form), None)
+
+        status, _, wrong = self.harness.replace(PASSWORD + "x")
+        self.assertEqual(status, 200)
+        self.assertIn("That password does not match this machine&#x27;s sign-in.", wrong)
+        self.assertEqual(wrong.count('aria-invalid="true"'), 1)
+        self.assertEqual(self.harness.load_state()["recovery_hash"], old_hash,
+                         "a wrong password minted a code")
+
+        status, headers, page = self.harness.replace()
+        self.assertEqual(status, 200)
+        self.assertEqual(headers.get("Cache-Control"), "no-store")
+        match = CODE_RE.search(page)
+        self.assertIsNotNone(match, "the replace page did not show the new code")
+        new_code = match.group(1)
+        self.assertNotEqual(new_code, old_code)
+        self.assertRegex(new_code, r"^[A-HJ-NP-Z2-9]{4}(?:-[A-HJ-NP-Z2-9]{4}){4}$")
+        self.assertIn('input type="checkbox" id="saved"', page)
+        self.assertIn("I have saved the code and the file", page)
+        self.assertIn(D6_DECIDED, page)
+        self.assertIn(D20_DECIDED, page)
+        self.assertTrue(fv.verify_password(fv.normalise_code(new_code),
+                                           self.harness.load_state()["recovery_hash"]))
+        self.assertFalse(fv.verify_password(fv.normalise_code(old_code),
+                                            self.harness.load_state()["recovery_hash"]))
+        # The old code stops working at the machine in the same transaction.
+        status, _, page = self.harness.use_code(old_code)
+        self.assertEqual(status, 200)
+        self.assertIn("That recovery code does not match.", page)
+        status, _, page = self.harness.call(
+            "POST", "/first-visit/reset",
+            {"code": old_code, "password": NEW_PASSWORD, "password2": NEW_PASSWORD})
+        self.assertEqual(status, 200)
+        self.assertIn("That recovery code does not match.", page)
+        # The account still holds the old hash; the new one is pending.
+        state = self.harness.load_state()
+        self.assertEqual(state["recovery_pushed_hash"], old_hash,
+                         "the replace claimed the account already has the new hash")
+        self.assertTrue(fv.push_pending(state))
+        self.assertEqual(self.harness.push_requests(), pushes + 1,
+                         "the replace did not ask for the push")
+
+    def test_the_replace_route_is_closed_before_a_code_exists(self):
+        status, _, page = self.harness.call("GET", "/first-visit/replace")
+        self.assertEqual(status, 409)
+        self.assertIn("This link is closed", page)
+        self.assertEqual(
+            re.findall(r'<a\b[^>]*href="(/[^"]*)"', page), ["/first-visit"])
+        status, _, page = self.harness.replace(PASSWORD)
+        self.assertEqual(status, 409)
+        self.assertIn("This link is closed", page)
 
     def test_the_consent_checkbox_gates_the_workspace_link(self):
         """The gate is on the label that holds the input, and it hides the link.
@@ -1678,9 +1865,10 @@ class PageTests(unittest.TestCase):
         """
         status, _, done = self.harness.set_signin()
         self.assertEqual(status, 200)
-        code = CODE_RE.search(done).group(1)
+        replaced = self.harness.replace()[2]
         recovery = self.harness.call(
-            "POST", "/first-visit/recovery", {"code": code})[2]
+            "POST", "/first-visit/recovery",
+            {"code": CODE_RE.search(replaced).group(1)})[2]
         text = PAGE.read_text(encoding="utf-8")
         gate = (".consent:not(:has(input:checked)) + .act .quiet"
                 "{visibility:hidden}")
@@ -1689,7 +1877,7 @@ class PageTests(unittest.TestCase):
                          "the inert round-1 selector is back")
         self.assertNotIn("opacity:.45", text,
                          "a dimmed link is still in the tab order")
-        for name, body in (("done", done), ("recovery-done", recovery)):
+        for name, body in (("done", done), ("replaced-done", replaced)):
             with self.subTest(state=name):
                 self.assertIn('class="consent"', body)
                 self.assertIn('<div class="act">', body)
@@ -1702,6 +1890,10 @@ class PageTests(unittest.TestCase):
                               "the input is outside the label")
                 self.assertTrue(between.rstrip().endswith("</label>"),
                                 "something sits between the consent label and .act")
+        # A page that shows no code carries no save-it checkbox.
+        for name, body in (("recovery-done", recovery),):
+            with self.subTest(state=name):
+                self.assertNotIn('class="consent"', body)
 
     def test_the_consent_control_is_the_sheets_checkbox(self):
         """BRAND.md's checkbox row: 18 px, edge border, paper fill, 10 px mark.
@@ -1742,6 +1934,9 @@ class PageTests(unittest.TestCase):
         self.assertNotIn("the button below works once", page)
         self.assertIn("This link works once, for ten minutes.", page,
                       "the constraint left the note under the button")
+        self.assertEqual(CODE_RE.search(page), None,
+                         "the recovery page showed a code")
+        self.assertIn(D20_SUBSET, page)
 
     def test_the_wordmark_is_plain_until_the_sign_in_exists(self):
         form = self.harness.call("GET", "/first-visit?t=" + self.harness.token)[2]
@@ -1898,6 +2093,7 @@ class KeyboardContractTests(unittest.TestCase):
             "GET", "/first-visit?t=" + self.harness.token)[2]
         pages["reset-form"] = self.harness.call("GET", "/first-visit/reset")[2]
         pages["recover-form"] = self.harness.call("GET", "/first-visit/recovery")[2]
+        pages["replace-form"] = self.harness.call("GET", "/first-visit/replace")[2]
         code_match = CODE_RE.search(done)
         assert code_match is not None, "the done page has no recovery code"
         code = code_match.group(1)
@@ -1906,12 +2102,13 @@ class KeyboardContractTests(unittest.TestCase):
             {"code": code, "password": NEW_PASSWORD, "password2": NEW_PASSWORD})
         self.assertEqual(status, 200)
         pages["reset-done"] = reset_done
-        new_code = CODE_RE.search(reset_done)
-        assert new_code is not None, "the reset-done page has no recovery code"
         status, _, recovery_done = self.harness.call(
-            "POST", "/first-visit/recovery", {"code": new_code.group(1)})
+            "POST", "/first-visit/recovery", {"code": code})
         self.assertEqual(status, 200)
         pages["recovery-done"] = recovery_done
+        status, _, replaced_done = self.harness.replace(NEW_PASSWORD)
+        self.assertEqual(status, 200)
+        pages["replaced-done"] = replaced_done
         return pages
 
     def test_the_first_tab_stop_in_every_state_is_a_skip_link_to_that_pages_main(self):
@@ -1944,8 +2141,10 @@ class KeyboardContractTests(unittest.TestCase):
         """
         expected = {
             "form": [], "signin": [], "refused": [], "reset-form": [], "recover-form": [],
+            "replace-form": [],
             "done": ["recovery"], "reset-done": ["recovery"],
-            "recovery-done": ["recovery"], "refused-unknown": ["what-next"],
+            "recovery-done": ["recovery"], "replaced-done": ["recovery"],
+            "refused-unknown": ["what-next"],
         }
         for name, body in self.states().items():
             with self.subTest(state=name):
@@ -2291,6 +2490,257 @@ class FirstBootLogTests(unittest.TestCase):
             encoding="utf-8")
         self.assertIn("UMask=0077", unit)
         self.assertNotRegex(unit, r"\b[0-9a-f]{64}\b")
+
+
+class RecoveryPushTests(unittest.TestCase):
+    """The guest half's client: signed, idempotent, and it leaves work pending.
+
+    The receiver here is a stand-in for app.py's `/tenant/recovery`; it answers
+    the same statuses and verifies the same Ed25519 signature. The real
+    endpoint's transcript is in the card's evidence file.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        spec = importlib.util.spec_from_file_location(
+            "odl926_heartbeat", ROOT / "scripts" / "heartbeat.py")
+        assert spec is not None and spec.loader is not None
+        cls.heartbeat = importlib.util.module_from_spec(spec)
+        sys.modules["odl926_heartbeat"] = cls.heartbeat
+        spec.loader.exec_module(cls.heartbeat)
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory(prefix="odl926-push-")
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name)
+        key_dir = self.root / "keys"
+        key_dir.mkdir()
+        subprocess.run(["openssl", "genpkey", "-algorithm", "ED25519",
+                        "-out", str(key_dir / "heartbeat.key")],
+                       check=True, capture_output=True)
+        (key_dir / "heartbeat.key").chmod(0o600)
+        subprocess.run(["openssl", "pkey", "-in", str(key_dir / "heartbeat.key"),
+                        "-pubout", "-out", str(key_dir / "heartbeat.pub")],
+                       check=True, capture_output=True)
+        self.key = key_dir / "heartbeat.key"
+        self.public = (key_dir / "heartbeat.pub").read_text(encoding="utf-8")
+        self.state = self.root / "first-visit.json"
+        self.code_hash = fv.hash_password(fv.normalise_code("ABCD-EFGH-JKLM-NPQR-STUV"))
+        self.write_state({"version": 1, "token_sha256": "0" * 64,
+                          "recovery_hash": self.code_hash,
+                          "recovery_pushed_hash": None})
+        self.received: list[dict] = []
+        self.registered = False
+        self.changed = True
+        self.fail_next = 0
+        self.post_seen: threading.Event | None = None
+        self.answer_now: threading.Event | None = None
+
+    def write_state(self, values: dict) -> None:
+        self.state.write_text(json.dumps(values), encoding="utf-8")
+        self.state.chmod(0o600)
+
+    def read_state(self) -> dict:
+        return json.loads(self.state.read_text(encoding="utf-8"))
+
+    def start_receiver(self, port: int = 0):
+        test = self
+
+        class Handler(BaseHTTPRequestHandler):
+            def log_message(self, *args):
+                pass
+
+            def do_POST(self):  # noqa: N802 - stdlib spelling
+                length = int(self.headers.get("Content-Length", "0"))
+                body = self.rfile.read(length)
+                signature = base64.b64decode(self.headers.get("X-Odile-Signature", ""))
+                verified = test.heartbeat.verify_ed25519(body, signature, test.public)
+                path = self.path.split("?")[0]
+                test.received.append({"path": path, "body": body, "verified": verified})
+                if not verified:
+                    return self.answer(401, {"ok": False, "error": "signature"})
+                if test.fail_next:
+                    test.fail_next -= 1
+                    return self.answer(503, {"ok": False, "error": "down"})
+                if path == "/heartbeat":
+                    test.registered = True
+                    return self.answer(200, {"ok": True})
+                payload = json.loads(body)
+                if not test.registered:
+                    return self.answer(409, {"ok": False, "error": "no key"})
+                if test.post_seen is not None:
+                    test.post_seen.set()
+                if test.answer_now is not None:
+                    test.answer_now.wait(30)
+                changed = payload["recovery_hash"] != test.pushed
+                test.pushed = payload["recovery_hash"]
+                return self.answer(200, {"ok": True, "changed": changed})
+
+            def answer(self, status: int, payload: dict) -> None:
+                data = json.dumps(payload).encode("utf-8")
+                self.send_response(status)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
+
+        self.pushed = None
+        self.server = ThreadingHTTPServer(("127.0.0.1", port), Handler)
+        self.port = self.server.server_address[1]
+        thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+        thread.start()
+        self.addCleanup(self.server.server_close)
+        self.addCleanup(self.server.shutdown)
+
+    def run_client(self, *extra: str, url: str | None = None):
+        command = [
+            sys.executable, str(ROOT / "scripts" / "heartbeat.py"), "recovery",
+            "--state", str(self.state), "--slug", "odl-926",
+            "--instance-id", "srv-926-fixture",
+            "--url", url or f"http://127.0.0.1:{self.port}/tenant/recovery",
+            "--heartbeat-url", f"http://127.0.0.1:{self.port}/heartbeat",
+            "--key", str(self.key), "--public-key", str(self.key.with_suffix(".pub")),
+        ]
+        command.extend(extra)
+        return subprocess.run(command, capture_output=True, text=True, timeout=60)
+
+    def test_the_push_is_signed_idempotent_and_marks_the_state(self):
+        self.start_receiver()
+        self.registered = True
+        result = self.run_client()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("changed=true", result.stdout)
+        push = [item for item in self.received if item["path"] == "/tenant/recovery"]
+        self.assertEqual(len(push), 1)
+        self.assertTrue(push[0]["verified"], "the push was not signed with the heartbeat key")
+        body = json.loads(push[0]["body"])
+        self.assertEqual(sorted(body), ["instance_id", "recovery_hash", "slug"],
+                         "the push body carries more than the machine's identity and the hash")
+        self.assertEqual(body["recovery_hash"], self.code_hash)
+        self.assertEqual(body["slug"], "odl-926")
+        self.assertNotIn("ABCD", push[0]["body"].decode("utf-8"))
+        state = self.read_state()
+        self.assertEqual(state["recovery_pushed_hash"], self.code_hash)
+        self.assertIsNotNone(state["recovery_pushed_at"])
+        self.assertFalse(fv.push_pending(state))
+        # A second run is a no-op: no request, no state change.
+        result = self.run_client()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("already acknowledged", result.stdout)
+        self.assertEqual(
+            len([item for item in self.received if item["path"] == "/tenant/recovery"]), 1)
+
+    def test_a_409_registers_the_first_heartbeat_and_retries(self):
+        self.start_receiver()
+        result = self.run_client("--no-register")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("409", result.stderr)
+        self.assertIsNone(self.read_state()["recovery_pushed_hash"])
+        # The unit's default path: the 409 makes the machine offer its public
+        # half in its first signed heartbeat, then the push lands.
+        result = self.run_client()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("changed=true", result.stdout)
+        paths = [item["path"] for item in self.received]
+        self.assertEqual(paths.count("/heartbeat"), 1)
+        self.assertEqual(paths.count("/tenant/recovery"), 3,
+                         "expected the refused push, the retry and none after")
+        registration = [item for item in self.received if item["path"] == "/heartbeat"][0]
+        self.assertTrue(registration["verified"])
+        self.assertIn("BEGIN PUBLIC KEY", json.loads(registration["body"])["public_key"])
+        self.assertEqual(self.read_state()["recovery_pushed_hash"], self.code_hash)
+
+    def test_an_outage_leaves_the_push_pending_for_the_timer(self):
+        self.start_receiver()
+        self.registered = True
+        self.fail_next = 100
+        result = self.run_client()
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("503", result.stderr)
+        state = self.read_state()
+        self.assertIsNone(state["recovery_pushed_hash"])
+        self.assertTrue(fv.push_pending(state),
+                        "a failed push marked the hash as acknowledged")
+        # The timer's next tick lands it with no user action.
+        self.fail_next = 0
+        result = self.run_client()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("changed=true", result.stdout)
+        self.assertEqual(self.read_state()["recovery_pushed_hash"], self.code_hash)
+
+    def test_a_replace_during_the_push_is_not_undone_by_the_stale_copy(self):
+        """The timer's push must never rewrite a replace that landed mid-POST.
+
+        The service rewrites the whole state on a replace while this client is
+        waiting for HQ. Reproduced before the fix: the client's stale copy put
+        the retired hash back, verified the old code again, and marked the new
+        one as pushed — so the code the user saved was dead and never reached
+        HQ. The client now re-reads under the service's lock and writes only
+        the two marker keys.
+        """
+        self.start_receiver()
+        self.registered = True
+        self.post_seen = threading.Event()
+        self.answer_now = threading.Event()
+        outcome: dict[str, subprocess.CompletedProcess] = {}
+
+        def run_client() -> None:
+            outcome["result"] = self.run_client()
+
+        thread = threading.Thread(target=run_client, daemon=True)
+        thread.start()
+        self.assertTrue(self.post_seen.wait(30), "the client never posted")
+
+        # The replace, exactly as the service writes it: the service's lock,
+        # the service's save, a new hash in one write.
+        new_code = "NPQR-STUV-WXYZ-2345-6789"
+        new_hash = fv.hash_password(fv.normalise_code(new_code))
+        with fv.locked(self.state):
+            live = json.loads(self.state.read_text(encoding="utf-8"))
+            live["recovery_hash"] = new_hash
+            fv.save_state(self.state, live)
+        self.answer_now.set()
+        thread.join(30)
+        result = outcome["result"]
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("stays pending", result.stdout)
+
+        state = self.read_state()
+        self.assertEqual(state["recovery_hash"], new_hash,
+                         "the push's stale copy restored the retired code")
+        self.assertIsNone(state["recovery_pushed_hash"])
+        self.assertTrue(fv.push_pending(state),
+                        "the new code was marked as pushed and would never reach HQ")
+        self.assertTrue(fv.verify_password(fv.normalise_code(new_code), state["recovery_hash"]))
+        self.assertFalse(fv.verify_password(
+            fv.normalise_code("ABCD-EFGH-JKLM-NPQR-STUV"), state["recovery_hash"]),
+            "the retired code verifies again")
+
+    def test_the_recovery_file_names_the_instance_when_no_flag_does(self):
+        self.start_receiver()
+        recovery = self.root / "recovery.txt"
+        recovery.write_text("Odile recovery file\nTenant:              odl-926\n"
+                            "Instance:            srv-from-file\n", encoding="utf-8")
+        command = [
+            sys.executable, str(ROOT / "scripts" / "heartbeat.py"), "recovery",
+            "--state", str(self.state), "--slug", "odl-926",
+            "--recovery-file", str(recovery),
+            "--url", f"http://127.0.0.1:{self.port}/tenant/recovery",
+            "--heartbeat-url", f"http://127.0.0.1:{self.port}/heartbeat",
+            "--key", str(self.key), "--public-key", str(self.key.with_suffix(".pub")),
+        ]
+        result = subprocess.run(command, capture_output=True, text=True, timeout=60)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        push = [item for item in self.received if item["path"] == "/tenant/recovery"][0]
+        self.assertEqual(json.loads(push["body"])["instance_id"], "srv-from-file")
+
+    def test_with_no_minted_code_the_client_is_a_no_op(self):
+        self.start_receiver()
+        self.write_state({"version": 1, "token_sha256": "0" * 64,
+                          "recovery_hash": None, "recovery_pushed_hash": None})
+        result = self.run_client()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("nothing to push", result.stdout)
 
 
 if __name__ == "__main__":

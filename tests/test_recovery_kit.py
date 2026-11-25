@@ -3,8 +3,11 @@
 
 The kit attached to the ready email is the machine's own document: its facts,
 the tokenless first-sign-in page, and the two ways back (the recovery code and
-the recovery file). It carries no terminal, no key the user handles and no
-passphrase — A9, A7 and A5 of `docs/product/CLAIMS-RECUT-STRICT.md`.
+the recovery file). The code is stable — it does not rotate on use and does not
+expire; only a replace from the machine mints a new one (D-20, ODL-926) — and
+the kit prints that rule, not the rotation line it retired. It carries no
+terminal, no key the user handles and no passphrase — A9, A7 and A5 of
+`docs/product/CLAIMS-RECUT-STRICT.md`.
 
 Hermetic. The render tests call the real CLI; the seed test starts the real
 seed service against a throwaway database and key, issues a token, renders the
@@ -59,24 +62,44 @@ URL = f"https://{SLUG}.odile.fyi"
 FIRST_VISIT = f"{URL}/first-visit"
 ACCOUNT = "https://test.odile.fyi"
 
-# The sentence a reader acts on when the renderer is given no account host: the
-# fallback is byte-for-byte the paragraph ODL-579 shipped, so a caller that
-# passes no slot reads exactly what it read before.
+# The sentence a reader acts on when the renderer is given no account host. The
+# one-code facts replaced the ODL-579 rotation wording (ODL-926): the account
+# password is reset at the account site, not on the machine, and the machine's
+# reset is the one that needs the machine up.
 FALLBACK_PARAGRAPH = (
     "Your account password is not reset on the machine. It resets at your account\n"
     "site — the site in your invitation email. Open that site and add /forgot. That\n"
-    "reset works while the machine is down; the recovery code needs the machine up.\n"
+    "reset works while the machine is down; the machine's reset needs the machine up.\n"
 )
 
-# Every one of these is a decided v3.9 row (`docs/product/CLAIMS-RECUT-STRICT.md`)
-# or a deck row that row keeps. The kit may not coin a trust sentence of its own.
-DECK_SENTENCES = (
-    # ODL-926 owns the kit's code sentences; this board's A9 tail stays as it
-    # is here until that card's re-cut.
+# The four code rows of ODL-926, quoted verbatim from docs/CLAIMS.md and named
+# so a test can say which row it pins: D-6 (`:61`, the replace clause) retires
+# the A9 "the agent can show it again" tail; D-20 (`:62`) is the stability rule;
+# D-4 (`:111`) is one code on two surfaces; D-5 (`:112`) is the lost-code answer.
+D6 = (
     "A recovery code and a recovery file are the way back: the code resets your "
     "sign-in, the file opens your backup. Your first visit gives you both; keep "
-    "them off the machine. While the machine is still running, the agent can show "
-    "it again.",
+    "them off the machine. While the machine is still running, the agent can "
+    "replace the code and show you the new one."
+)
+D20 = (
+    "Your recovery code works at both places until you replace it; using it does "
+    "not spend it."
+)
+D4 = (
+    "One recovery code resets both: your account password at the account page and "
+    "your machine's sign-in on the machine. There is no emailed reset."
+)
+D5 = (
+    "If you lose your recovery code there is no other way back: you start a new "
+    "account, and a backup is the only way to bring the files."
+)
+
+# Every one of these is a deck row (`docs/CLAIMS.md` §1 Access and §1 First run)
+# or a decided v3.9 row that deck keeps. The kit may not coin a trust sentence of
+# its own.
+DECK_SENTENCES = (
+    D6,
     "Your Odile password opens your machine and your account page. You chose it "
     "when you registered. It is the only app-layer gate: no 2FA in alpha.0.",
     "The disk unlocks only on the boot you verify. Change the image, and it "
@@ -91,6 +114,19 @@ DECK_SENTENCES = (
     "exits or you kill it.",
     "The encrypted backup is kept 30 days after cancellation, then deleted. "
     "Odile can delete it, not read it.",
+    D20,
+    D4,
+    D5,
+)
+
+# The rotation wordings ODL-926 retires (DECISION-one-recovery-code §2.2 and §5,
+# and the stale-copy census that greps them). Quoted here only as the negative
+# pin's evidence; none may appear in a rendered kit.
+RETIRED_ROTATION_WORDINGS = (
+    "the agent can show it again",
+    "using it there rotates it too",
+    "After a reset the old code stops working",
+    "a new one is shown",
 )
 
 # The v3.7 Model A access sentences the kit used to carry. None may survive.
@@ -265,15 +301,33 @@ class RenderTests(unittest.TestCase):
 
     def test_the_two_ways_back_are_printed(self) -> None:
         text = flat(kit_text())
-        self.assertIn(flat(DECK_SENTENCES[0]), text, "A9 is the recovery story")
+        self.assertIn(flat(D6), text, "D-6 is the recovery story")
         self.assertIn(f"{URL}/first-visit/reset", text, "the recovery code resets the sign-in")
         self.assertIn(f"odile-recovery-{SLUG}.txt", text, "the downloaded recovery file is named")
         self.assertIn(f"odile-{SLUG}-recovery-kit.txt", text, "this kit is named separately")
         self.assertIn("backup password", text)
         self.assertIn("certificate fingerprint", text)
 
+    def test_the_retired_rotation_wording_is_gone(self) -> None:
+        """NEGATIVE PIN (ODL-926): the code is stable, so no rotation copy survives.
+
+        The four wordings in `RETIRED_ROTATION_WORDINGS` are the ones the
+        one-code decision retires; the kit said three of them before this cut.
+        A render that prints one again is the regression this test exists for,
+        in both the fallback and the `--account-host` branch.
+        """
+        for label, text in (("fallback", kit_text()),
+                            ("account slot", kit_text(account_host=ACCOUNT))):
+            with self.subTest(label):
+                rendered = flat(text)
+                for phrase in RETIRED_ROTATION_WORDINGS:
+                    self.assertNotIn(phrase, rendered,
+                                     f"retired rotation wording survived: {phrase!r}")
+                self.assertIn(flat(D20), rendered, "D-20 is the stability rule")
+                self.assertIn(flat(D4), rendered, "D-4 is the one-code rule")
+
     def test_without_the_account_slot_the_sentence_is_byte_identical(self) -> None:
-        """No slot: the paragraph the reader acts on is exactly ODL-579's bytes."""
+        """No slot: the paragraph the reader acts on is exactly FALLBACK_PARAGRAPH."""
         text = kit_text()
         self.assertIn(FALLBACK_PARAGRAPH, text)
         self.assertNotIn("{{", text)
@@ -287,7 +341,7 @@ class RenderTests(unittest.TestCase):
         self.assertIn(
             "Your account password is not reset on the machine. It resets at\n"
             f"{ACCOUNT}/forgot. That reset works while the machine is down;\n"
-            "the recovery code needs the machine up.\n",
+            "the machine's reset needs the machine up.\n",
             text)
         self.assertNotIn("{{", text, "no placeholder survives a render")
         self.assertNotIn("invitation email", text)
