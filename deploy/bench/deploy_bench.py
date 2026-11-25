@@ -61,6 +61,17 @@ ODL-936. Two additions keep a dead bench from reading as healthy:
     is red, raises the bench's own alert in the existing HQ ledger, outbox and
     transports (odilectl.health); a green tick resolves that alert.
 
+ODL-353 follow-up. `Persistent=true` makes the timer run the tick it missed
+during a reboot the moment the timer starts, and `odile-bench.service` is
+`Type=simple`: systemd marks it active when `app.py` is exec'd, before it binds
+127.0.0.1:8082. On 2026-11-25T04:55:41Z both happened in the same second and
+that tick's one line was `bench probe: FAIL … 502` — the only failed unit in
+the boot record. The tick therefore waits, bounded by `BENCH_WAIT_SECONDS`, for
+the bench's listener before it probes: `bench_listening()` is one TCP connect,
+`wait_for_bench()` polls it, and a listener that never appears is *not* an
+error — the probe still runs, still prints its red line and still raises the
+alert, so the boot race is fixed without hiding a dead bench.
+
 Exit codes: 0 success (changed, converged or rolled back), 1 a failed apply
 (Caddy was restored), 2 a bad input, a missing prerequisite or a foreign port
 holder.
@@ -186,6 +197,16 @@ ALERT_FIRST_COMMAND = (
     "systemctl status odile-bench; ss -ltnp 'sport = :8082'")
 #: How long a reaped orphan gets between SIGTERM and SIGKILL.
 REAP_SECONDS = 5.0
+#: ODL-353 follow-up — how long the tick waits for the bench's listener before
+#: it probes. A cold boot starts odile-bench.service and the timer's
+#: Persistent catch-up tick in the same transaction; Type=simple marks the unit
+#: active when app.py is exec'd, before app.py binds 127.0.0.1:8082, so the tick
+#: that met the first bind in the same second (2026-11-25T04:55:41Z) measured a
+#: 502 and was the boot record's only failed unit. The wait is bounded and its
+#: expiry is not an error: a bench that never binds must still probe red and
+#: still raise the alert.
+BENCH_WAIT_SECONDS = 20.0
+BENCH_WAIT_POLL = 0.2
 
 #: Directories a release copy never carries. `git ls-files` already excludes
 #: them; the walk fallback needs the list.
@@ -1361,6 +1382,36 @@ def poll_health(url: str, seconds: float) -> tuple[bool, str]:
         time.sleep(0.5)
 
 
+def bench_listening(port: int = APP_PORT) -> bool:
+    """True when something accepts a connection on the bench's own port."""
+    try:
+        with socket.create_connection(("127.0.0.1", port), timeout=BENCH_WAIT_POLL):
+            return True
+    except OSError:
+        return False
+
+
+def wait_for_bench(seconds: float = BENCH_WAIT_SECONDS, *, listener=bench_listening,
+                   clock=time.monotonic, sleep=time.sleep,
+                   port: int = APP_PORT) -> float | None:
+    """Wait up to `seconds` for 127.0.0.1:`port` to accept a connection.
+
+    Returns the seconds it waited (0.0 when the listener was already up), or
+    None at the deadline. `clock`, `sleep` and `listener` are injected so a
+    test can hold both halves of the bound without sleeping or touching the
+    host's bench port.
+    """
+    start = clock()
+    if listener(port):
+        return 0.0
+    while True:
+        if clock() - start >= seconds:
+            return None
+        sleep(BENCH_WAIT_POLL)
+        if listener(port):
+            return clock() - start
+
+
 def snapshot_production() -> dict:
     """The three production pages and the unit's restart counter, hashed."""
     snapshot = {}
@@ -1479,7 +1530,7 @@ def resolve_bench_alert(now: int) -> bool:
 
 
 def probe_tick() -> int:
-    """One liveness tick: clear the bench's orphan, probe, feed the alert path.
+    """One liveness tick: clear the bench's orphan, wait for its listener, probe.
 
     Exit 0 is a green bench (any open bench alert resolved), 1 is red after
     the alert was raised, 2 is a probe that could not run at all.
@@ -1489,6 +1540,10 @@ def probe_tick() -> int:
     orphan dies with its worktree inside five minutes instead of waiting for a
     human to run the deployer. A foreign holder is left alone — killing it is
     the deployer's refusal (exit 2) — and the probe's red line names it.
+
+    The bounded wait for the bench's listener exists for the boot catch-up tick
+    (ODL-353 follow-up): it is spent only when the port is not yet bound, and
+    its expiry does not change the exit — the probe runs either way.
     """
     if not PROBE_SCRIPT.is_file():
         print(f"bench probe: FAIL {PROBE_SCRIPT} is missing from {REPO}")
@@ -1510,6 +1565,17 @@ def probe_tick() -> int:
             print(f"active       {UNIT_SITE_NAME} {active}, {APP_HEALTH} {detail}")
         except SystemExit as exc:
             print(f"bench probe: {UNIT_SITE_NAME} did not start: {exc}")
+    # ODL-353 follow-up — wait for the bench's listener before measuring it. At
+    # boot the timer's Persistent catch-up tick and odile-bench's first bind can
+    # meet in the same second; Type=simple is active before app.py binds, so
+    # without this the tick's one line is a 502 for a bench that is coming up.
+    waited = wait_for_bench()
+    if waited is None:
+        print(f"bench probe: 127.0.0.1:{APP_PORT} did not accept a connection "
+              f"within {BENCH_WAIT_SECONDS:.0f}s; probing anyway")
+    elif waited > 0:
+        print(f"wait         127.0.0.1:{APP_PORT} accepting after {waited:.1f}s "
+              "(the catch-up tick waits for the bench's first bind)")
     try:
         result = run(["/bin/sh", str(PROBE_SCRIPT), "--probe"], timeout=PROBE_TIMEOUT)
     except SystemExit as exc:
