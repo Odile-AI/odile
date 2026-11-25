@@ -808,17 +808,24 @@ A rebuild is a *replacement*, not an installation: nothing is installed on the
 old machine, the same server gets a new disk and boot image, and the user's data
 comes back from the repository. Nine stages (0–8), and who owns each:
 
-| # | Stage | Who | The user sees | The record it reads |
-|---|---|---|---|---|
-| 0 | the offer | the machine | nothing yet | `odile-update` refuses the newest signed release (`exit 5`, §2.9) and writes `rebuild.json` |
-| 1 | the prompt | the machine | a corner notice (and the same fact in chat) | `rebuild.json`, `snooze.json` |
-| 2 | the click | the machine → HQ | "Booked for 03:10" | the signed `facts.upgrade` beat; the booking row |
-| 3 | the window | the machine | the date, in the notice | the machine's own clock |
-| 4 | quiesce + T-0 | the machine | nothing (≈03:10) | the backup unit's status record and its beat |
-| 5 | the write | HQ | "Upgrading your machine" | the executor's row (§5.4) |
-| 6 | boot | HQ, then the machine | "Booting", then "Waiting for your file" | the panel's `Running`; the seed token's `used_at` |
-| 7 | restore | the machine | "Restoring your data…", then the snapshot id and time | `odile-restore.service`'s status |
-| 8 | sign in | the user | the app | the verifier the seed carried |
+0. **the offer** — the machine; the user sees nothing yet. It reads
+   `odile-update`'s refusal of the newest signed release (`exit 5`, §2.9) and
+   writes `rebuild.json`.
+1. **the prompt** — the machine; a corner notice (and the same fact in chat).
+   It reads `rebuild.json` and `snooze.json`.
+2. **the click** — the machine → HQ; "Booked for 03:10". It reads the signed
+   `facts.upgrade` beat and the booking row.
+3. **the window** — the machine; the date, in the notice. It reads the machine's
+   own clock.
+4. **quiesce + T-0** — the machine; nothing (≈03:10). It reads the backup unit's
+   status record and its beat.
+5. **the write** — HQ; "Upgrading your machine". It reads the executor's row
+   (§5.4).
+6. **boot** — HQ, then the machine; "Booting", then "Waiting for your file". It
+   reads the panel's `Running` and the seed token's `used_at`.
+7. **restore** — the machine; "Restoring your data…", then the snapshot id and
+   time. It reads `odile-restore.service`'s status.
+8. **sign in** — the user; the app. The check is the verifier the seed carried.
 
 **The prompt.** A corner notice, not a modal: *"An upgrade is available — about
 20 minutes. [Not now] [Upgrade]"* — that line and two buttons, nothing else.
@@ -872,15 +879,24 @@ X-Odile-Signature: <base64 Ed25519 over the exact body>
 }
 ```
 
-| Field | Rule | On failure |
-|---|---|---|
-| signature | the key `heartbeat_keys` holds for the slug (`odilectl/health.py:1179`–`:1182`); a different key is `409` | `409`; retried, and §5.4's clear is what lets a rebuilt machine register again |
-| `at` | a Unix second **newer** than the last accepted beat (`odilectl/health.py:1191`–`:1196`); the retry re-signs with `at = now` | `409`; retry |
-| `release` | `RELEASE_ID_RE`; at booking time it must be the release HQ intends for this tenant | `400` on shape; the answer carries `stale: true` on policy, and the notice refreshes |
-| `window` | `YYYY-MM-DDTHH:MM:SSZ`, ≥ 15 minutes and ≤ 26 hours after receipt | `400`; the guest recomputes the next window |
-| `origin` | `click` or `deadline`. **Any other value is refused**, because its presence selects a write | `400` — an action enum is closed even when the key around it is open (playbook rule 13) |
-| `request_id` | 32 hex, minted once per decision and stable across retries; the booking's idempotency key | a duplicate is the same booking |
-| no `upgrade` key | an older machine, or one that never decided: no booking | not an error |
+- **`signature`** — the key `heartbeat_keys` holds for the slug
+  (`odilectl/health.py:1179`–`:1182`); a different key is `409`, retried, and
+  §5.4's clear is what lets a rebuilt machine register again.
+- **`at`** — a Unix second **newer** than the last accepted beat
+  (`odilectl/health.py:1191`–`:1196`); a `409`, and the retry re-signs with
+  `at = now`.
+- **`release`** — `RELEASE_ID_RE`; at booking time it must be the release HQ
+  intends for this tenant. A `400` on shape; the answer carries `stale: true` on
+  policy, and the notice refreshes.
+- **`window`** — `YYYY-MM-DDTHH:MM:SSZ`, ≥ 15 minutes and ≤ 26 hours after
+  receipt; a `400`, and the guest recomputes the next window.
+- **`origin`** — `click` or `deadline`. **Any other value is refused**, because
+  its presence selects a write: a `400`, because an action enum is closed even
+  when the key around it is open (playbook rule 13).
+- **`request_id`** — 32 hex, minted once per decision and stable across retries;
+  the booking's idempotency key, so a duplicate is the same booking.
+- **no `upgrade` key** — an older machine, or one that never decided; no
+  booking, and not an error.
 
 `facts.last_backup_at` and `facts.backup` ride along because `record()` keeps the
 latest beat, and the freshness watchdog, the drift report and the account page
@@ -988,15 +1004,19 @@ queued → backed up ✓ → upgrading your machine → booting → waiting for 
        → restoring your data → done
 ```
 
-| Stage | The record behind it |
-|---|---|
-| queued | the booking row: the release and the window the answer named |
-| backed up ✓ | the T-0 beat's `facts.backup.snapshot` and `.at`, shown with the id and the time |
-| upgrading your machine | the executor's own row, written before the reinstall call (§5.4) |
-| booting | the panel answers `Running`; the seed token's `used_at` marks the installer |
-| waiting for your file | the machine is up and the restore has not finished — no post-restore beat yet |
-| restoring your data | the `backup.py run` that `odile-restore.service` makes after the restore (ADR-backup §7.2 step 5) posts the beat that flips this stage |
-| done | that beat, plus the page's own link to the machine |
+- **queued** — the booking row: the release and the window the answer named.
+- **backed up ✓** — the T-0 beat's `facts.backup.snapshot` and `.at`, shown
+  with the id and the time.
+- **upgrading your machine** — the executor's own row, written before the
+  reinstall call (§5.4).
+- **booting** — the panel answers `Running`; the seed token's `used_at` marks
+  the installer.
+- **waiting for your file** — the machine is up and the restore has not finished
+  — no post-restore beat yet.
+- **restoring your data** — the `backup.py run` that `odile-restore.service`
+  makes after the restore (ADR-backup §7.2 step 5) posts the beat that flips
+  this stage.
+- **done** — that beat, plus the page's own link to the machine.
 
 Every stage is an existing record; the page adds no fact. **Range, not a number.**
 The measured components are build 7m48s, boot to first-visit 6m29s and a 0.861 s
