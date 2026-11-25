@@ -1638,6 +1638,144 @@ class TenantHttpProbe:
             return HttpObservation(None, str(error)[:200])
 
 
+# ---------------------------------------------------------------- guest ready
+#
+# ODL-947: "ready" means the machine's own guest half is serving, not that the
+# provider says the VM is active. The one definition both the account queue and
+# the claim queue use is this probe: the machine's own `/verify` page answers
+# 200 *and* its own `/attestation` report is available, and the page prints the
+# same measurement the report carries. The page is the object the ready email
+# tells the tester to read, so a mail written from a report the page does not
+# show would be the defect this card measured. No credential, no SSH, no port
+# other than 443: the two URLs are the machine's public surfaces.
+
+VERIFY_TIMEOUT = 45.0        # /verify runs the machine's audit: ~20 s measured
+ATTESTATION_TIMEOUT = 15.0
+HEX96_RE = re.compile(r"^[0-9a-f]{96}$")
+REPORT_RELEASE_RE = re.compile(r"^[0-9]{4}\.[0-9]{1,2}\.[0-9]{1,2}(-[0-9]+)?$")
+
+
+@dataclass(frozen=True)
+class GuestAnswer:
+    """The machine answered at its own name: its page and its own report."""
+
+    slug: str
+    host: str
+    measurement: str
+    release: str
+    verify_bytes: int
+    checked_at: str
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "slug": self.slug,
+            "host": self.host,
+            "measurement": self.measurement,
+            "release": self.release,
+            "verify_bytes": self.verify_bytes,
+            "checked_at": self.checked_at,
+        }
+
+
+def _guest_get(url: str, timeout: float,
+               opener: Callable[..., Any] | None = None) -> tuple[int, bytes] | None:
+    """One GET; `(status, body)` for any HTTP answer, None for no answer.
+
+    A 404/502 is an answer ("not ready"), not an error: the caller only tests
+    200. A connection refused or a timeout is also "not ready". Nothing here
+    raises, because a machine that is still booting is the normal case.
+    """
+    request = urllib.request.Request(url, headers={"User-Agent": "odile-ready/0.1"})
+    fetch = opener or urllib.request.urlopen
+    try:
+        with fetch(request, timeout=timeout) as response:
+            return int(response.status), response.read(2 * 1024 * 1024)
+    except urllib.error.HTTPError as error:
+        try:
+            body = error.read(4096)
+        except OSError:
+            body = b""
+        return int(error.code), body
+    except (urllib.error.URLError, TimeoutError, OSError, ValueError):
+        return None
+
+
+def machine_measurement(domain: str, slug: str, *,
+                        timeout: float = ATTESTATION_TIMEOUT,
+                        opener: Callable[..., Any] | None = None) -> str | None:
+    """The machine's own 96-hex boot-report measurement, or None.
+
+    This is the number the ready email prints (ODL-947) and the one its
+    `/verify` page reports: the 48-byte SHA-384 launch digest from the SEV-SNP
+    report, which is also what the machine's boot record calls `measurement`.
+    Cheap: one JSON file served by the machine's own Caddy.
+    """
+    if not SLUG_RE.match(slug or "") or not domain or "/" in domain or "?" in domain:
+        return None
+    host = "%s.%s" % (slug, domain)
+    attestation = _guest_get("https://%s/attestation" % host, timeout, opener)
+    if attestation is None or attestation[0] != 200:
+        return None
+    try:
+        document = json.loads(attestation[1].decode("utf-8"))
+    except (UnicodeDecodeError, ValueError):
+        return None
+    if not isinstance(document, dict) or document.get("available") is not True:
+        return None
+    measurement = document.get("measurement")
+    if not isinstance(measurement, str) or not HEX96_RE.match(measurement):
+        return None
+    return measurement
+
+
+def guest_answer(domain: str, slug: str, *,
+                 verify_timeout: float = VERIFY_TIMEOUT,
+                 attestation_timeout: float = ATTESTATION_TIMEOUT,
+                 opener: Callable[..., Any] | None = None) -> GuestAnswer | None:
+    """The machine's own answer, or None while the guest half is not up.
+
+    `domain` is the tenant suffix (`test.odile.fyi` on the bench); the host is
+    built from it, never from a request header. The order is deliberate: the
+    report first (cheap JSON, and the value the mail needs), then the page
+    (the expensive audit) only when the report exists. The page must print the
+    report's measurement; a page that answers without it is a machine whose
+    verify surface is half up, and the row keeps waiting.
+    """
+    if not SLUG_RE.match(slug or "") or not domain or "/" in domain or "?" in domain:
+        return None
+    host = "%s.%s" % (slug, domain)
+    attestation = _guest_get("https://%s/attestation" % host, attestation_timeout, opener)
+    if attestation is None or attestation[0] != 200:
+        return None
+    try:
+        document = json.loads(attestation[1].decode("utf-8"))
+    except (UnicodeDecodeError, ValueError):
+        return None
+    if not isinstance(document, dict) or document.get("available") is not True:
+        return None
+    measurement = document.get("measurement")
+    if not isinstance(measurement, str) or not HEX96_RE.match(measurement):
+        return None
+    release = document.get("release")
+    if not isinstance(release, str) or not REPORT_RELEASE_RE.match(release):
+        release = ""
+    verify = _guest_get("https://%s/verify" % host, verify_timeout, opener)
+    if verify is None or verify[0] != 200 or len(verify[1]) < 1024:
+        return None
+    if measurement.encode("ascii") not in verify[1]:
+        # The page the tester is told to read does not carry the value the
+        # mail would print; the comparison sentence in /verify would be false.
+        return None
+    return GuestAnswer(
+        slug=slug,
+        host=host,
+        measurement=measurement,
+        release=release,
+        verify_bytes=len(verify[1]),
+        checked_at=datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+    )
+
+
 def _host_key_symptom(observation: HostKeyObservation | None) -> str:
     if observation is None:
         return "port 22 was not probed"
