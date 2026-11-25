@@ -725,7 +725,6 @@ def verify_password(password: str, encoded: str) -> bool:
 # for "is this address registered?", ASVS V2.2.1). Built once, lazily.
 _DUMMY_HASH: str | None = None
 
-
 def verify_password_or_dummy(password: str, encoded: str | None) -> bool:
     global _DUMMY_HASH
     if not encoded:
@@ -734,6 +733,18 @@ def verify_password_or_dummy(password: str, encoded: str | None) -> bool:
         verify_password(password, _DUMMY_HASH)
         return False
     return verify_password(password, encoded)
+
+
+def normalise_recovery_code(raw: str) -> str:
+    """What the user typed, in the form the guest hashed it.
+
+    The first-visit page prints the code in groups and accepts a pasted code
+    with spaces or lower case; the machine hashes the upper-case letters and
+    digits only (installer/first_visit.py:normalise_code). The account reset
+    must read the same value, or the one code only works at HQ when typed
+    without its dashes (ODL-926).
+    """
+    return re.sub(r"[^A-Z2-9]", "", (raw or "").upper())
 
 
 def new_slug() -> str:
@@ -3174,7 +3185,10 @@ class Handler(BaseHTTPRequestHandler):
             # person's next reset waits (DECISION-one-recovery-code.md §3.3).
             row = account_for_name(con, email)
             stored = row["recovery_hash"] if row is not None else None
-            if not verify_password_or_dummy(code, stored):
+            # The page prints the code in groups; the machine hashed the
+            # letters and digits only, so the typed value is normalised the
+            # same way before the verifier sees it (ODL-926).
+            if not verify_password_or_dummy(normalise_recovery_code(code), stored):
                 return self._send(401, render_forgot(
                     email=email_raw, error=FORGOT_MISMATCH))
             assert row is not None  # the verifier above passed, so the row exists

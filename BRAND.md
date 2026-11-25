@@ -103,7 +103,8 @@ and the lexicon: `docs/brand/ST-ODILE.md`.
   `/verify` and `/verify-public`, 20.0 px at 390, 320 and 1440 on `/roadmap`,
   `/status` and the tenant `/verify` page (`templates/verify.html`, whose ≤560
   header margin rose from 24 to 32 px in t_fc412bd9 and re-embedded it in
-  `2026.11.23-5`), 16.6 px on `/first-visit` and 37.6 px on
+  `2026.11.23-5`, and which ODL-926 re-embedded again in `2026.11.23-8` with
+  its first-visit page), 16.6 px on `/first-visit` and 37.6 px on
   `/first-visit-preview` at both widths. Claim, ceremony, register and forgot
   sit exactly at the 12 px floor at 390, and every other page clears its floor
   at both widths. (The inked text sits

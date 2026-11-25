@@ -19,10 +19,12 @@ it seals the rebuild blob (``seed/seed.py``) — and neither is this service's.
     GET  /first-visit             the form: a sign-in (seeded) or a setup (classic)
     POST /first-visit             verify the password, or write the setup hash
     GET  /first-visit/recovery    the recovery page: enter the code, get the file
-    POST /first-visit/recovery    spend the code, rotate it, mint a download token
+    POST /first-visit/recovery    verify the code (not spent), mint a download token
     GET  /first-visit/recovery?d=<download token>   the recovery file, once
     GET  /first-visit/reset       the reset form (recovery code + new sign-in)
-    POST /first-visit/reset       write a new hash; rotate the code and the session secret
+    POST /first-visit/reset       write a new hash; rotate the session secret
+    GET  /first-visit/replace     the replace form (the current sign-in)
+    POST /first-visit/replace     mint a new code, show it once, push it to HQ
     GET  /health                  ok
     GET  /favicon.ico             the website icon, 16/32/48
     GET  /icon-32.png             the website icon, 32
@@ -51,14 +53,21 @@ Design notes a reviewer should check:
   code once and links the recovery file with a **one-time download token**
   (``?d=``, 32 bytes, stored as its SHA-256, ten minutes, one use). The code is
   only ever POSTed: at ``/first-visit/recovery`` (download the file) and at
-  ``/first-visit/reset`` (change the sign-in). Both spend it and both rotate it,
-  and the response shows the new code once; the first visit's download does not
-  spend the code, so the code it shows stays live.
-* **A use is recorded, not just replaced.** ``recovery_used_at`` marks the
-  stored code as spent before the new code is written, and a presented code is
-  refused while that marker is set. The write order is spend, then rotate, so a
-  crash between them can never replay a code (the machine then needs the
-  recovery file's restore, exactly as a lost response would).
+  ``/first-visit/reset`` (change the sign-in). Neither spends it.
+* **The code is stable (ODL-926).** It does not rotate on use and never
+  expires: one code verifies at HQ and on this machine, and a burn on one side
+  cannot reach the other, so a rotation on use would leave a stale code at one
+  end (docs/product/DECISION-one-recovery-code.md §2.2). It is replaced only
+  on request, from this machine, at ``/first-visit/replace``: the current
+  sign-in is asked for, a new code is minted from the same alphabet, its
+  scrypt hash is written in one transaction, the code is shown once with the
+  save-it checkbox and the recovery file, and the push to HQ is requested.
+  The front-end is stable between visits; the account follows the push.
+* **The push rides the heartbeat key.** The new hash is POSTed to HQ's
+  ``/tenant/recovery`` by ``scripts/heartbeat.py recovery``, signed with the
+  Ed25519 key the machine's first heartbeat registered — no new secret. The
+  timer retries every five minutes until HQ acknowledges, so a push that failed
+  while HQ was down heals without the user doing anything.
 * **The recovery file is behind the code or a live download token.** The file
   holds the backup password, so neither an unauthenticated URL nor a permanent
   one may serve it. The link is same-origin, the page is
@@ -159,6 +168,9 @@ DEFAULT_ATTEST = "/var/lib/odile/attestation.json"
 # not `start`: the unit is RemainAfterExit=yes and already active after boot,
 # so a start would be a no-op and the report would keep the placeholder line.
 DEFAULT_REPORT_COMMAND = "systemctl restart --no-block odile-access-report.service"
+# The replace action asks systemd to try the push now; the five-minute timer
+# retries until HQ acknowledges, so a failed start is not a failed replace.
+DEFAULT_PUSH_COMMAND = ""
 # Caddy stores a leaf certificate at <root>/<issuer>/<host>/<host>.crt. Read
 # only; the unit's ReadWritePaths already includes /etc/odile for the write-back.
 DEFAULT_CADDY_STORES = (
@@ -222,8 +234,8 @@ CODE_SENTINEL = "\x00recovery-code\x00"
 ERROR_FIELDS = ("code", "password", "password2")
 
 BLOCK_RE = re.compile(
-    r"<!--(form|signin|done|recover|recovery-done|reset-done|reset"
-    r"|refused-unknown|refused-set|refused)-->(.*?)<!--/\1-->", re.S)
+    r"<!--(form|signin|signed-in|done|recover|recovery-done|reset-done|reset"
+    r"|replace|replaced-done|refused-unknown|refused-set|refused)-->(.*?)<!--/\1-->", re.S)
 
 _hits: dict[str, list[float]] = {}
 _lock = threading.Lock()
@@ -308,7 +320,14 @@ def empty_state() -> dict:
         "first_login_at": None,
         "recovery_hash": None,
         "recovery_issued_at": None,
+        # Legacy marker (ODL-579). Kept so an older state still validates; the
+        # code is stable now (ODL-926) and nothing reads this key.
         "recovery_used_at": None,
+        # When HQ last acknowledged this hash (ODL-926): set by the push client
+        # after a 200. A hash that does not match its `recovery_pushed_hash`
+        # is pending; the five-minute timer retries until it lands.
+        "recovery_pushed_at": None,
+        "recovery_pushed_hash": None,
         # The recovery file's one-time bearer (ODL-579): its SHA-256, when it
         # expires, and when it was spent. All null until a page mints one.
         "download_sha256": None,
@@ -327,7 +346,8 @@ def validate_state(state: object) -> dict:
     if not isinstance(token_hash, str) or not TOKEN_RE.match(token_hash):
         raise ValueError("token_sha256 is not 64 lowercase hex")
     for key in ("used_at", "signin_set_at", "first_login_at", "recovery_issued_at",
-                "recovery_used_at", "download_expires_at", "download_used_at"):
+                "recovery_used_at", "recovery_pushed_at", "download_expires_at",
+                "download_used_at"):
         value = state.get(key)
         if value is not None and not isinstance(value, str):
             raise ValueError("%s is not a string or null" % key)
@@ -338,6 +358,9 @@ def validate_state(state: object) -> dict:
     recovery = state.get("recovery_hash")
     if recovery is not None and not (isinstance(recovery, str) and recovery.startswith("scrypt$")):
         raise ValueError("recovery_hash is not an scrypt hash")
+    pushed = state.get("recovery_pushed_hash")
+    if pushed is not None and not (isinstance(pushed, str) and pushed.startswith("scrypt$")):
+        raise ValueError("recovery_pushed_hash is not an scrypt hash")
     return state
 
 
@@ -556,12 +579,11 @@ def recovery_filename(recovery: RecoveryFile) -> str:
 
 
 def recovery_status(state: dict, raw: str) -> str:
-    """'ok', 'used' or 'bad' for a code presented at either use site.
+    """'ok' or 'bad' for a code presented at either use site.
 
-    A code that verifies against the stored hash is still refused while
-    ``recovery_used_at`` is set: that marker is written before the rotation, so
-    a crash between the two writes cannot leave a spent code replayable. The
-    marker is cleared in the same write that stores the new code.
+    The code is stable (ODL-926): a use does not spend it and it never expires,
+    so a verifying code is always 'ok'. The legacy ``recovery_used_at`` marker
+    is no longer read; an older state that carries one still accepts its code.
     """
     stored = state.get("recovery_hash")
     if not isinstance(stored, str) or not stored.startswith("scrypt$"):
@@ -569,23 +591,28 @@ def recovery_status(state: dict, raw: str) -> str:
     normalised = normalise_code(raw)
     if not CODE_RE.match(normalised):
         return "bad"
-    if not verify_password(normalised, stored):
-        return "bad"
-    return "used" if state.get("recovery_used_at") else "ok"
+    return "ok" if verify_password(normalised, stored) else "bad"
 
 
-def spend_code(state: dict) -> None:
-    """Mark the live code spent; the caller saves before minting the next one."""
-    state["recovery_used_at"] = utc_now()
+def mint_code(state: dict) -> str:
+    """Issue the next code and make it live; returns the code to show once.
 
-
-def rotate_code(state: dict) -> str:
-    """Issue the next code and make it live; returns the code to show once."""
+    The one rotation is a replace on request (ODL-926), not a use: the caller
+    writes this hash in the same transaction that retires the old one. The
+    push marker is left as it was, so the new hash reads as pending until HQ
+    acknowledges it.
+    """
     code = new_recovery_code()
     state["recovery_hash"] = hash_password(normalise_code(code))
     state["recovery_issued_at"] = utc_now()
     state["recovery_used_at"] = None
     return code
+
+
+def push_pending(state: dict) -> bool:
+    """True when the live hash is not the one HQ acknowledged."""
+    stored = state.get("recovery_hash")
+    return bool(stored) and state.get("recovery_pushed_hash") != stored
 
 
 def issue_download(state: dict) -> str:
@@ -1010,7 +1037,8 @@ class FirstVisit:
                  report: Path = Path(DEFAULT_REPORT),
                  attest: Path = Path(DEFAULT_ATTEST),
                  report_command: list[str] | None = None,
-                 icons: Path = Path(DEFAULT_ICONS)):
+                 icons: Path = Path(DEFAULT_ICONS),
+                 push_command: list[str] | None = None):
         self.state = state
         self.env = env
         self.page = page
@@ -1024,6 +1052,7 @@ class FirstVisit:
         self.attest = attest
         self.report_command = report_command or []
         self.icons = icons
+        self.push_command = push_command or []
 
     # -- helpers ---------------------------------------------------------
 
@@ -1055,6 +1084,31 @@ class FirstVisit:
                                % (result.returncode, detail[-1] if detail else "no output"))
         print("first-visit: agent restarted", flush=True)
 
+    def push(self) -> None:
+        """Ask for the recovery hash to be pushed; the timer is the fallback.
+
+        Best effort by design: a replace must not fail because HQ is down. The
+        five-minute unit retries until the account acknowledges (ODL-926).
+        """
+        if not self.push_command:
+            return
+        try:
+            result = subprocess.run(
+                self.push_command, capture_output=True, text=True, timeout=60,
+                env={"PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+                     "LANG": "C.UTF-8"},
+            )
+        except (OSError, subprocess.SubprocessError) as exc:
+            print("first-visit: recovery push not started: %s" % exc, flush=True)
+            return
+        if result.returncode != 0:
+            detail = (result.stderr or result.stdout).strip().splitlines()
+            print("first-visit: recovery push not started (%d): %s"
+                  % (result.returncode, detail[-1] if detail else "no output"),
+                  flush=True)
+            return
+        print("first-visit: recovery push requested", flush=True)
+
     def complete_recovery(self, host: str, secure: bool) -> RecoveryFile | None:
         return complete_recovery(self.recovery, host, secure, self.caddy_stores)
 
@@ -1070,6 +1124,28 @@ class FirstVisit:
         body = render(self.template(), keep, title=title, recovery=code,
                       username=username,
                       recovery_file=recovery_file_block(recovery, download))
+        return 200, body
+
+    def signed_in(self) -> tuple[int, str]:
+        """A later sign-in: the code exists and is not shown again (ODL-926)."""
+        body = render(self.template(), "signed-in",
+                      title="You are signed in — Odile", username=self.username())
+        return 200, body
+
+    def file_done(self, keep: str, title: str, host: str, secure: bool,
+                  download: str) -> tuple[int, str]:
+        """The file-only done page: no code is shown, so none is implied."""
+        recovery = self.complete_recovery(host, secure)
+        body = render(self.template(), keep, title=title, username=self.username(),
+                      recovery_file=recovery_file_block(recovery, download))
+        return 200, body
+
+    def replace_form(self, error: FieldError | None = None,
+                     notice: str = "") -> tuple[int, str]:
+        """The replace form: it asks for this machine's current sign-in."""
+        body = render(self.template(), "replace",
+                      title="Replace your recovery code — Odile", error=error,
+                      notice=notice, username=self.username())
         return 200, body
 
     def recover_form(self, error: FieldError | None = None,
@@ -1390,6 +1466,17 @@ def build_handler(service: FirstVisit):
                     return self._send(code, body, head)
                 code, body = service.reset_form()
                 return self._send(code, body, head)
+            if path in ("/first-visit/replace", "/first-visit/replace/"):
+                state = self._load_state()
+                if state is None:
+                    return
+                if not state.get("recovery_hash"):
+                    # There is no code to replace yet: the one action is the
+                    # sign-in page that mints the first one.
+                    code, body = service.refused(409, state)
+                    return self._send(code, body, head)
+                code, body = service.replace_form()
+                return self._send(code, body, head)
             return self._send(404, "not found\n", head, "text/plain; charset=utf-8")
 
         # -- POST --------------------------------------------------------
@@ -1401,7 +1488,7 @@ def build_handler(service: FirstVisit):
             except ValueError:
                 length = 0
             if path not in ("/first-visit", "/first-visit/reset",
-                            "/first-visit/recovery"):
+                            "/first-visit/recovery", "/first-visit/replace"):
                 # Drain a small body so the next request on this connection
                 # starts where it should; a large one is not worth reading.
                 if 0 < length <= MAX_BODY:
@@ -1419,6 +1506,8 @@ def build_handler(service: FirstVisit):
                 return self._set_signin(fields)
             if path == "/first-visit/recovery":
                 return self._recover_file(fields)
+            if path == "/first-visit/replace":
+                return self._replace_code(fields)
             return self._reset_signin(fields)
 
         def _too_many(self, path: str) -> None:
@@ -1440,6 +1529,8 @@ def build_handler(service: FirstVisit):
                     code, body = service.form(notice=notice)
             elif path == "/first-visit/recovery":
                 code, body = service.recover_form(notice=notice)
+            elif path == "/first-visit/replace":
+                code, body = service.replace_form(notice=notice)
             else:
                 code, body = service.reset_form(notice=notice)
             return self._send(429, body)
@@ -1491,8 +1582,14 @@ def build_handler(service: FirstVisit):
                         return self._send(500, page[1])
 
                 at = utc_now()
-                code_value = new_recovery_code()
-                state["first_login_at"] = at
+                # The code is minted once, at the first sign-in, and is stable
+                # after that (ODL-926): a later sign-in neither rotates it nor
+                # shows it again. A replace is the only rotation.
+                first = not state.get("recovery_hash")
+                code_value = ""
+                if first:
+                    code_value = mint_code(state)
+                state["first_login_at"] = state.get("first_login_at") or at
                 # `signin_set_at` is a fact about the .env (DECISION-first-visit-
                 # state §1): the seeded deploy already made it true, and a
                 # classic setup makes it true with the write above. Both keys
@@ -1500,12 +1597,10 @@ def build_handler(service: FirstVisit):
                 state["signin_set_at"] = state.get("signin_set_at") or at
                 if not login:
                     state["used_at"] = at
-                state["recovery_hash"] = hash_password(normalise_code(code_value))
-                state["recovery_issued_at"] = at
-                # The code stays live: the button beside it carries a one-time
-                # download token, so fetching the file does not spend the code
-                # the visitor is being asked to save (ODL-579).
-                download = issue_download(state)
+                # The button beside the first code carries a one-time download
+                # token, so fetching the file does not spend the code the
+                # visitor is being asked to save (ODL-579).
+                download = issue_download(state) if first else ""
                 save_state(service.state, state)
             print("first-visit: %s for %r"
                   % ("signed in" if login else "sign-in set", username), flush=True)
@@ -1513,19 +1608,25 @@ def build_handler(service: FirstVisit):
             # just wrote; on the seeded path it already names the owner's hash.
             if not login:
                 service.refresh_report()
-            # The recovery code exists only in this response: no-store, and the
-            # state keeps its scrypt hash, never the code.
+            if not first:
+                code, body = service.signed_in()
+                return self._send(code, body)
+            # The first code exists only in this response: no-store, and the
+            # state keeps its scrypt hash, never the code. The push that mirrors
+            # it at the account is requested now; the timer retries.
+            service.push()
             code, body = service.done("done", "Your sign-in is set — Odile",
                                       code_value, username, self._host(), self._secure(),
                                       download)
             return self._send(code, body)
 
         def _recover_file(self, fields: dict[str, list[str]]) -> None:
-            """Spend the code at the recovery page: rotate it, serve the file once.
+            """Verify the code at the recovery page and serve the file once.
 
             The file holds the backup password, so the page asks for the code
-            and the response carries only a one-time download token. Both uses
-            of the code (here and the reset) spend it and show the next one.
+            and the response carries only a one-time download token. The code is
+            not spent (ODL-926): the same code opens this page, the reset and
+            the account, until it is replaced.
             """
             code_value = (fields.get("code") or [""])[0]
             with locked(service.state):
@@ -1539,19 +1640,13 @@ def build_handler(service: FirstVisit):
                     code, body = service.recover_form(
                         FieldError("That recovery code does not match.", "code", ("code",)))
                     return self._send(code, body)
-                # Spend first, then rotate: a crash between the two writes can
-                # never leave the used code replayable (recovery_status reads
-                # the marker). The new code exists only in this response.
-                spend_code(state)
-                save_state(service.state, state)
-                new_code = rotate_code(state)
                 download = issue_download(state)
                 save_state(service.state, state)
             print("first-visit: recovery file unlocked with the recovery code; "
-                  "the code rotated", flush=True)
-            code, body = service.done("recovery-done", "Your recovery file — Odile",
-                                      new_code, service.username(), self._host(),
-                                      self._secure(), download)
+                  "the code is unchanged", flush=True)
+            code, body = service.file_done(
+                "recovery-done", "Your recovery file — Odile",
+                self._host(), self._secure(), download)
             return self._send(code, body)
 
         def _reset_signin(self, fields: dict[str, list[str]]) -> None:
@@ -1590,16 +1685,52 @@ def build_handler(service: FirstVisit):
                         notice="The sign-in was not reset. Try again.")
                     return self._send(500, body)
 
-                spend_code(state)
-                save_state(service.state, state)
-                new_code = rotate_code(state)
+                # The code is not spent or rotated by a reset (ODL-926); only
+                # the file's one-time bearer is minted, for the download the
+                # success page offers.
                 download = issue_download(state)
                 save_state(service.state, state)
-            print("first-visit: sign-in reset with the recovery code; the code rotated, "
-                  "the session secret rotated", flush=True)
+            print("first-visit: sign-in reset with the recovery code; the code is "
+                  "unchanged, the session secret rotated", flush=True)
             service.refresh_report()
-            code, body = service.done("reset-done", "Your sign-in is reset — Odile",
-                                      new_code, username, self._host(), self._secure(),
+            code, body = service.file_done(
+                "reset-done", "Your sign-in is reset — Odile",
+                self._host(), self._secure(), download)
+            return self._send(code, body)
+
+        def _replace_code(self, fields: dict[str, list[str]]) -> None:
+            """Mint a new code on request, show it once, and request the push.
+
+            The signed-in action of the one-card model (ODL-926): the current
+            sign-in is presented, the new scrypt hash replaces the old one in
+            one state write (so the old code stops working at this machine at
+            once), the code is shown once with the checkbox and the recovery
+            file, and the heartbeat-signed push to HQ is requested. HQ keeps
+            the old hash until that push lands.
+            """
+            password = (fields.get("password") or [""])[0]
+            with locked(service.state):
+                state = self._load_state()
+                if state is None:
+                    return
+                if not state.get("recovery_hash"):
+                    code, body = service.refused(409, state)
+                    return self._send(code, body)
+                stored = stored_hash(service.env)
+                if not stored or not verify_password(password, stored):
+                    code, body = service.replace_form(FieldError(
+                        "That password does not match this machine's sign-in.",
+                        "password", ("password",)))
+                    return self._send(code, body)
+                username = service.username()
+                code_value = mint_code(state)
+                download = issue_download(state)
+                save_state(service.state, state)
+            print("first-visit: recovery code replaced for %r; "
+                  "the old code is retired on this machine" % username, flush=True)
+            service.push()
+            code, body = service.done("replaced-done", "Your new recovery code — Odile",
+                                      code_value, username, self._host(), self._secure(),
                                       download)
             return self._send(code, body)
 
@@ -1647,6 +1778,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--report-command", default=DEFAULT_REPORT_COMMAND,
                         help="command run after a sign-in is set, to rewrite the "
                              "access report; empty disables it")
+    parser.add_argument("--push-command", default=DEFAULT_PUSH_COMMAND,
+                        help="command run when a code is minted, to push its hash "
+                             "to HQ now; the five-minute timer is the fallback")
     parser.add_argument("--icons", default=DEFAULT_ICONS,
                         help="the website-icon set this service serves "
                              "(default %s)" % DEFAULT_ICONS)
@@ -1666,6 +1800,9 @@ def summary(state: dict) -> dict:
         "recovery_hash": ("scrypt…" if state.get("recovery_hash") else None),
         "recovery_issued_at": state["recovery_issued_at"],
         "recovery_used_at": state["recovery_used_at"],
+        "recovery_pushed_at": state.get("recovery_pushed_at"),
+        "recovery_pushed_hash": ("scrypt…" if state.get("recovery_pushed_hash") else None),
+        "recovery_push_pending": push_pending(state),
         "download_sha256": (state.get("download_sha256") or "")[:16] + "…"
         if state.get("download_sha256") else None,
         "download_expires_at": state.get("download_expires_at"),
@@ -1681,6 +1818,7 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     reload_command = shlex.split(args.reload_command) if args.reload_command else []
     report_command = shlex.split(args.report_command) if args.report_command else []
+    push_command = shlex.split(args.push_command) if args.push_command else []
     stores = (tuple(Path(raw) for raw in args.caddy_store) if args.caddy_store
               else tuple(Path(raw) for raw in DEFAULT_CADDY_STORES))
     service = FirstVisit(
@@ -1697,6 +1835,7 @@ def main(argv: list[str] | None = None) -> int:
         attest=Path(args.attest_file),
         report_command=report_command,
         icons=Path(args.icons),
+        push_command=push_command,
     )
     page_text(service.page)  # fail before binding, not on the first visit
     # A machine where ODL-473 has not landed has no verify page; /verify then
