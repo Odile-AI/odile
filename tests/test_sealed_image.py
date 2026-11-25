@@ -3299,7 +3299,7 @@ class FirstBootReKeyTests(unittest.TestCase):
     RUN_TAG = ""
     _open: set[str] = set()
     _mounts: dict[str, str] = {}
-    _loops: dict[str, int] = {}
+    _loops: dict[str, tuple[int, str]] = {}
     _seq = 0
     _handlers: dict = {}
 
@@ -3621,20 +3621,32 @@ class FirstBootReKeyTests(unittest.TestCase):
             os.close(fd)
 
     @classmethod
-    def _detach(cls, device: str, retries: int = 20) -> bool:
-        """Detach `device`, unmounting its mounts first; True when unbound.
+    def _detach(cls, device: str, backing: str = "", retries: int = 50) -> bool:
+        """Detach `device`, unmounting its mounts first; True when it is ours no more.
 
         A fresh loop device is held open by udev for a moment after it
         appears, so `losetup -d` can return 0 while sysfs still names the
         backing file; the retry is what makes "detached" a fact rather than a
         hope. The lock is the caller's, so a sibling cannot claim the device
-        between the retries.
+        between the retries. When `backing` is given and sysfs names a
+        different file, another allocator has already taken the number -- the
+        device is not ours to detach, and taking it would be the cross-run
+        detach this card removes.
         """
+        expected = os.path.realpath(backing) if backing else ""
         for point in cls._sourced_mounts(device):
             cls._umount(point)
         for _ in range(retries):
-            if cls._loop_backing(device) == "":
+            current = cls._loop_backing(device)
+            if current == "":
                 return True
+            if expected:
+                try:
+                    now = os.path.realpath(current.removesuffix(" (deleted)"))
+                except OSError:
+                    now = current
+                if now != expected:
+                    return True
             subprocess.run(["losetup", "-d", device], capture_output=True,
                            text=True, timeout=60, env=cls.tool_env())
             if cls._loop_backing(device) == "":
@@ -3650,9 +3662,10 @@ class FirstBootReKeyTests(unittest.TestCase):
         until the device is detached, so a sibling cannot claim it mid-detach;
         the unmount comes first because a mounted loop is not free to detach.
         """
-        fd = cls._loops.get(device)
+        entry = cls._loops.get(device)
+        fd = entry[0] if entry else None
         try:
-            cls._detach(device)
+            cls._detach(device, entry[1] if entry else "")
         finally:
             cls._loops.pop(device, None)
             if fd is not None:
@@ -3702,7 +3715,7 @@ class FirstBootReKeyTests(unittest.TestCase):
                         cls._drop_loop_lock(lock)
                         reason = f"{device} reported {attached!r} after the attach"
                         continue
-                    cls._loops[device] = lock
+                    cls._loops[device] = (lock, str(backing))
                     self.addCleanup(self.release_loop, device)
                     return device
                 finally:
@@ -3748,7 +3761,7 @@ class FirstBootReKeyTests(unittest.TestCase):
             try:
                 if cls._loop_backing(device) != backing:
                     continue
-                cls._detach(device)
+                cls._detach(device, backing)
             finally:
                 cls._drop_loop_lock(lock)
 
@@ -4045,8 +4058,9 @@ class FirstBootReKeyTests(unittest.TestCase):
         self.assertNotIn(other, (fx["root_loop"], fx["boot_loop"]),
                          "a claim took a loop this test owns")
         self.release_loop(other)
-        self.assertEqual(type(self)._loop_backing(other), "",
-                         f"{other} survived its release")
+        backing = type(self)._loop_backing(other)
+        self.assertTrue(not backing or os.path.realpath(backing) != os.path.realpath(str(spare)),
+                        f"{other} still carries the fixture's spare file")
         self.release_loop(other)  # idempotent; addCleanup calls it again
 
     def test_releasing_a_loop_detaches_it(self) -> None:
@@ -4055,8 +4069,10 @@ class FirstBootReKeyTests(unittest.TestCase):
         device = fx["root_loop"]
         self.assertNotEqual(type(self)._loop_backing(device), "")
         self.release_loop(device)
-        self.assertEqual(type(self)._loop_backing(device), "",
-                         f"{device} stayed attached after its fixture released it")
+        backing = type(self)._loop_backing(device)
+        self.assertTrue(
+            not backing or os.path.realpath(backing) != os.path.realpath(str(fx["root"])),
+            f"{device} still carries its fixture's file")
         self.assertNotIn(device, type(self)._loops)
 
     def _abandoned_loop(self, image: pathlib.Path) -> str:
@@ -4188,6 +4204,7 @@ class FirstBootReKeyTests(unittest.TestCase):
             "held.mkdir()\n"
             "case.mount(device, held, '-o', 'ro')\n"
             "print(json.dumps({'name': name, 'device': device, 'mount': str(held),\n"
+            "                  'base': str(fx['base']),\n"
             "                  'loops': [fx['root_loop'], fx['boot_loop']]}), flush=True)\n"
             "while True:\n"
             "    time.sleep(1)\n"
@@ -4221,6 +4238,25 @@ class FirstBootReKeyTests(unittest.TestCase):
             if pipe is not None:
                 pipe.close()
 
+    def _detach_if_under(self, devices: list[str], root: str) -> None:
+        """Detach a device only while it still carries a file under `root`.
+
+        The child's temp tree is unique to the run. A loop number another
+        allocator re-used between the kill and this cleanup must not be
+        detached -- that cross-run detach is the very collision this card
+        removes, so the guard is the same ownership test the sweep uses.
+        """
+        wanted = os.path.realpath(root) + os.sep
+        for device in devices:
+            backing = type(self)._loop_backing(device)
+            try:
+                mine = bool(backing) and os.path.realpath(backing).startswith(wanted)
+            except OSError:
+                mine = False
+            if mine:
+                subprocess.run(["losetup", "-d", device], capture_output=True,
+                               text=True, timeout=60)
+
     def test_a_sigterm_held_across_a_mount_leaves_no_mapping(self) -> None:
         """DoD 2: a run interrupted with a mounted mapping leaves nothing.
 
@@ -4238,8 +4274,7 @@ class FirstBootReKeyTests(unittest.TestCase):
                                 text=True, env=env, start_new_session=True)
         self.addCleanup(self._kill_child, proc)
         info = self._child_ready(proc)
-        self.addCleanup(subprocess.run, ["losetup", "-d", *info["loops"]],
-                        capture_output=True, text=True)
+        self.addCleanup(self._detach_if_under, info["loops"], info["base"])
         self.addCleanup(subprocess.run, ["dmsetup", "remove", info["name"]],
                         capture_output=True, text=True)
         self.addCleanup(subprocess.run, ["umount", info["mount"]],
@@ -4257,8 +4292,11 @@ class FirstBootReKeyTests(unittest.TestCase):
                           if name.startswith("odile-rekey-")
                           and f"-{proc.pid}-" in name], [])
         for device in info["loops"]:
-            self.assertEqual(type(self)._loop_backing(device), "",
-                             f"{device} outlived its run")
+            backing = type(self)._loop_backing(device)
+            self.assertFalse(
+                backing and os.path.realpath(backing).startswith(
+                    os.path.realpath(info["base"]) + os.sep),
+                f"{device} still carries the killed run's file: {backing!r}")
 
     # -- the behaviour -----------------------------------------------------
 
