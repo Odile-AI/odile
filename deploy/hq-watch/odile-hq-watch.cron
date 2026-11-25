@@ -1,0 +1,7 @@
+# Odile HQ liveness watcher (ODL-354) — runs off HQ, on the watcher box.
+# One probe every five minutes; the script decides when a message is due.
+# Install: install -m 0644 deploy/hq-watch/odile-hq-watch.cron \
+#            /etc/cron.d/odile-hq-watch
+SHELL=/bin/sh
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+*/5 * * * * root /usr/bin/python3 /opt/odile-hq-watch/watch.py >> /var/log/odile-hq-watch.log 2>&1
