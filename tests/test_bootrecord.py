@@ -236,14 +236,39 @@ class RecordWriterTests(BootRecordFixture):
         self.assertEqual(json.loads(spine["detail"])["boot_key"], KEY_TEXT)
         self.assertEqual(self.events(con), [])
 
-    def test_the_order_release_is_not_rewritten_by_the_observation(self) -> None:
-        con = self.make_db(release="2026.10.1")
-        parsed = bootrecord.parse_record(record(), instance_id=INSTANCE, slug=SLUG)
+    def test_a_recycle_moves_both_release_rows_to_the_boot_record(self) -> None:
+        """ODL-947: after a re-install the row names the release the machine booted.
+
+        The old rule (first write wins, the order is not rewritten by an
+        observation) left HQ saying `2026.11.1` while the machine's own boot
+        record said `2026.11.23-5`; the gate's "names the release the machine
+        installed" was true of the machine and false of HQ.
+        """
+        con = self.make_db(release="2026.11.1")
+        parsed = bootrecord.parse_record(
+            record(release="2026.11.23-5"), instance_id=INSTANCE, slug=SLUG)
         written = bootrecord.record_boot(con, slug=SLUG, record=parsed)
         tenant, spine = self.rows(con)
-        self.assertEqual(written["release"], "2026.11.1")
-        self.assertEqual(tenant["release"], "2026.10.1")
-        self.assertEqual(spine["release"], "2026.10.1")
+        self.assertEqual(written["release"], "2026.11.23-5")
+        self.assertEqual(tenant["release"], "2026.11.23-5")
+        self.assertEqual(spine["release"], "2026.11.23-5")
+        self.assertEqual(json.loads(spine["detail"])["boot_release"], "2026.11.23-5")
+
+    def test_the_same_release_is_not_rewritten(self) -> None:
+        """A record that names the release the rows already hold writes nothing."""
+        con = self.make_db(release="2026.11.23-5")
+        parsed = bootrecord.parse_record(
+            record(release="2026.11.23-5", first_visit="pending"),
+            instance_id=INSTANCE, slug=SLUG)
+        bootrecord.record_boot(con, slug=SLUG, record=parsed)
+        before = self.rows(con)
+        changes = con.total_changes
+        again = bootrecord.record_boot(con, slug=SLUG, record=parsed)
+        after = self.rows(con)
+        self.assertEqual(again["release"], "2026.11.23-5")
+        self.assertEqual(before[1]["updated_at"], after[1]["updated_at"])
+        self.assertEqual(before[1]["detail"], after[1]["detail"])
+        self.assertEqual(con.total_changes, changes, "a replay wrote the release rows")
 
     def test_a_row_that_never_reached_first_boot_is_refused(self) -> None:
         con = self.make_db(spine_state="provisioning")

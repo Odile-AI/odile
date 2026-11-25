@@ -1035,6 +1035,12 @@ def queue_ready(row: sqlite3.Row, tenant: sqlite3.Row | None) -> str:
                                          domain="odile.fyi"),
             }
         at = int(facts.get("at") or time.time())
+        # The `tenants` row is the source: a recycle or re-install can move the
+        # release under a sidecar that was written earlier, and a press must
+        # re-print the release HQ holds, not the copy (ODL-947). The release is
+        # not part of the message body, so the bytes a press writes do not move.
+        if tenant is not None:
+            facts["release"] = tenant["release"]
         message_id = facts.get("message_id") or make_msgid(
             idstring="odile-ready.%s" % slug, domain="odile.fyi")
         url = str(facts.get("url") or "https://%s.%s" % (slug, TENANT_DOMAIN))

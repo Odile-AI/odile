@@ -1375,8 +1375,9 @@ def _advance_state_provisioned(
 
     ``release`` is the pin's ``provision_release``. It is written in the same
     transition that records the order; a row that predates ODL-398 (or a second
-    run) gets the value through ``record_release``, which fills a NULL once and
-    never rewrites the release the machine was actually ordered under.
+    run) gets the value through ``record_release``, which converges both release
+    rows unless the machine has already reported what it installed — that
+    observation wins (ODL-947).
     """
     if not _has_state_table(con):
         return ""

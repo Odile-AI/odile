@@ -135,6 +135,11 @@ HOST_KEY_KINDS = ("rsa", "ecdsa", "ed25519")
 # pin is placed inside the production disk by place-pin.sh; the installer's own
 # boot record is the fallback for an image built before that.
 PIN_PATH = "/etc/odile/tenant-image.pin"
+# The boot's own report: Servury's bb-seed copies it before switch-root, and
+# its `release` is the image release this boot measured. It is the first
+# source, because the image pin can be older than the disk's release after a
+# recycle: the row HQ keeps must name what the machine installed (ODL-947).
+BOOT_REPORT_PATH = "/run/blackbox/attest.json"
 BOOT_KEY_PATH = "/etc/odile/boot-key.pub"
 BOOT_RECORD_PATH = "/etc/odile/boot-record.json"
 HOST_KEY_PATH = "/etc/ssh/ssh_host_ed25519_key.pub"
@@ -146,7 +151,7 @@ HOST_KEY_PATH = "/etc/ssh/ssh_host_ed25519_key.pub"
 HOSTNAME_PATH = "/etc/hostname"
 HOSTS_PATH = "/etc/hosts"
 IMAGE_HOST_MARKER = "tenant.odile.test"
-RELEASE_ID_RE = re.compile(r"^[0-9]{4}\.[0-9]{2}(?:\.[0-9]+)?$")
+RELEASE_ID_RE = re.compile(r"^[0-9]{4}\.[0-9]{2}(?:\.[0-9]+)?(?:-[0-9]+)?$")
 KEY_TYPES = (
     "ssh-ed25519",
     "ssh-rsa",
@@ -575,10 +580,19 @@ def measured_boot_key(cmdline: str, boot_key_path: str = BOOT_KEY_PATH,
     return parsed[0], parsed[1], "", note
 
 
-def pinned_release(pin_path: str = PIN_PATH,
+def pinned_release(boot_report_path: str = BOOT_REPORT_PATH,
+                   pin_path: str = PIN_PATH,
                    boot_record_path: str = BOOT_RECORD_PATH) -> tuple[str, str]:
-    """`(release, reason)` from the image pin, else the installer's boot record."""
-    for path, label in ((pin_path, "pin"), (boot_record_path, "boot record")):
+    """`(release, reason)` from this boot's own report, else the pin, else the record.
+
+    The boot report names the release the running image measured, so it wins:
+    after a recycle the image pin can still name the release the disk was first
+    built with, and posting that pin made HQ's row stale while the machine had
+    installed the newer release (ODL-947).
+    """
+    for path, label in ((boot_report_path, "boot report"),
+                        (pin_path, "pin"),
+                        (boot_record_path, "boot record")):
         value = load_state(path)
         release = value.get("release") or value.get("provision_release")
         if isinstance(release, str) and release.strip():
@@ -586,7 +600,8 @@ def pinned_release(pin_path: str = PIN_PATH,
             if RELEASE_ID_RE.match(chosen):
                 return chosen, ""
             return "", "the %s release %r is not a release id" % (label, chosen)
-    return "", "no pinned release at %s or %s" % (pin_path, boot_record_path)
+    return "", "no pinned release at %s, %s or %s" % (boot_report_path, pin_path,
+                                                      boot_record_path)
 
 
 def current_host_key(path: str = HOST_KEY_PATH) -> str:
@@ -602,7 +617,8 @@ def signin_is_set(path: str = FIRST_VISIT_STATE) -> bool:
     return isinstance(value, str) and bool(value.strip())
 
 
-def boot_record_facts(cmdline: str, *, pin_path: str = PIN_PATH,
+def boot_record_facts(cmdline: str, *, boot_report_path: str = BOOT_REPORT_PATH,
+                      pin_path: str = PIN_PATH,
                       boot_key_path: str = BOOT_KEY_PATH,
                       boot_record_path: str = BOOT_RECORD_PATH,
                       host_key_path: str = HOST_KEY_PATH,
@@ -624,7 +640,7 @@ def boot_record_facts(cmdline: str, *, pin_path: str = PIN_PATH,
         line, boot_key_path, refresh=refresh)
     if not key_line:
         return None, "", reason, ""
-    release, reason = pinned_release(pin_path, boot_record_path)
+    release, reason = pinned_release(boot_report_path, pin_path, boot_record_path)
     if not release:
         return None, "", reason, ""
     record = {
@@ -1401,8 +1417,10 @@ def main(argv: list[str] | None = None) -> int:
                         help="the image pin the machine booted (its release)")
     parser.add_argument("--boot-key", default=BOOT_KEY_PATH,
                         help="the image's own copy of the measured boot key")
+    parser.add_argument("--boot-report", default=BOOT_REPORT_PATH,
+                        help="this boot's attest report (its release wins)")
     parser.add_argument("--boot-record", default=BOOT_RECORD_PATH,
-                        help="the installer's boot record (the pin fallback)")
+                        help="the installer's boot record (the pin's fallback)")
     parser.add_argument("--host-key", default=HOST_KEY_PATH,
                         help="the sshd host key the record carries in detail.host_key")
     parser.add_argument("--hostname-path", default=HOSTNAME_PATH,
@@ -1464,7 +1482,8 @@ def main(argv: list[str] | None = None) -> int:
                 log_placements(args.log, ["%-12s %s" % (verb, detail)],
                                label="hostname")
         record, record_key, record_reason, record_note = boot_record_facts(
-            cmdline_text, pin_path=args.pin, boot_key_path=args.boot_key,
+            cmdline_text, boot_report_path=args.boot_report,
+            pin_path=args.pin, boot_key_path=args.boot_key,
             boot_record_path=args.boot_record, host_key_path=args.host_key,
             first_visit_path=args.first_visit_state,
             # --check is a read-only probe: it must not rewrite the image's

@@ -499,8 +499,13 @@ class StateMachineTest(TempStoreMixin):
         self.addCleanup(reopened.close)
         self.assertEqual(reopened.get(SLUG).release, "2026.11.1")
 
-    def test_record_release_fills_a_null_release_once(self):
-        """A second provision names the pin again; the first order wins."""
+    def test_record_release_converges_the_ordered_release(self):
+        """A new order names the pin; a row that still holds an older order follows.
+
+        ODL-947: the row must agree with the release the machine was ordered
+        under, so a rebuild (or a re-run under a new pin) moves it. First fill
+        is no longer the whole rule.
+        """
         self.store.invite(SLUG)
         self.store.claim(SLUG)
         self.store.provision(SLUG, server_id=SERVER_ID)
@@ -508,7 +513,63 @@ class StateMachineTest(TempStoreMixin):
         first = self.store.record_release(SLUG, "2026.11.1")
         second = self.store.record_release(SLUG, "2026.12.0")
         self.assertEqual(first.release, "2026.11.1")
-        self.assertEqual(second.release, "2026.11.1")
+        self.assertEqual(second.release, "2026.12.0")
+
+    def test_record_release_keeps_the_release_the_machine_reported(self):
+        """Once a boot record exists, the order cannot rewrite it (ODL-947)."""
+        self.store.invite(SLUG)
+        self.store.claim(SLUG)
+        self.store.provision(SLUG, server_id=SERVER_ID)
+        self.store.await_boot(SLUG)
+        self.store.note(SLUG, detail={"boot_release": "2026.11.23-5"})
+        self.store.record_boot_release(SLUG, "2026.11.23-5")
+        ordered = self.store.record_release(SLUG, "2026.11.1")
+        self.assertEqual(ordered.release, "2026.11.23-5")
+
+    def test_record_boot_release_writes_both_rows_once(self):
+        """The boot record's release moves the spine and the web row, idempotently."""
+        self.store.connection.execute(
+            "CREATE TABLE tenants (slug TEXT PRIMARY KEY, release TEXT)")
+        self.store.connection.execute(
+            "INSERT INTO tenants (slug, release) VALUES (?, ?)", (SLUG, "2026.11.1"))
+        self.store.connection.commit()
+        self.store.invite(SLUG)
+        self.store.claim(SLUG)
+        self.store.provision(SLUG, server_id=SERVER_ID, release="2026.11.1")
+        moved = self.store.record_boot_release(SLUG, "2026.11.23-5")
+        self.assertEqual(moved, ["tenants.release", "tenant_state.release"])
+        self.assertEqual(self.store.get(SLUG).release, "2026.11.23-5")
+        web = self.store.connection.execute(
+            "SELECT release FROM tenants WHERE slug = ?", (SLUG,)).fetchone()
+        self.assertEqual(web["release"], "2026.11.23-5")
+        changes = self.store.connection.total_changes
+        self.assertEqual(self.store.record_boot_release(SLUG, "2026.11.23-5"), [])
+        self.assertEqual(self.store.connection.total_changes, changes,
+                         "a replay wrote the release rows")
+
+    def test_record_key_names_the_newest_key_on_the_account_row(self):
+        """The re-issue path's key write moves `accounts.key_prefix` with it."""
+        con = self.store.connection
+        con.execute(
+            "CREATE TABLE accounts (slug TEXT PRIMARY KEY, key_label TEXT, key_prefix TEXT)")
+        con.execute(
+            "INSERT INTO accounts (slug, key_label, key_prefix) VALUES (?, ?, ?)",
+            (SLUG, "odile-odl-7f3a2c", "sk-old****"))
+        con.commit()
+        self.store.invite(SLUG)
+        self.store.record_key(
+            slug=SLUG, label="odile-odl-7f3a2c", workspace_id="ws-1",
+            spend_limit_nano=10, key_id="key-1", key_prefix="sk-new****")
+        row = con.execute(
+            "SELECT key_label, key_prefix FROM accounts WHERE slug = ?", (SLUG,)).fetchone()
+        self.assertEqual((row["key_label"], row["key_prefix"]),
+                         ("odile-odl-7f3a2c", "sk-new****"))
+        changes = con.total_changes
+        self.store.record_key(
+            slug=SLUG, label="odile-odl-7f3a2c", workspace_id="ws-1",
+            spend_limit_nano=10, key_id="key-1", key_prefix="sk-new****")
+        self.assertEqual(con.total_changes, changes,
+                         "the same key rewrote the account row")
 
     def test_a_malformed_release_is_refused(self):
         self.store.invite(SLUG)
