@@ -163,10 +163,53 @@ def write_public(path: Path, data: bytes) -> None:
         handle.write(data)
 
 
+_PEM_BEGIN = "-----BEGIN " + "OPENSSH PRIVATE KEY-----"
+_PEM_END = "-----END " + "OPENSSH PRIVATE KEY-----"
+
+
+def _fixture_private_key(half: str) -> str:
+    return _PEM_BEGIN + "\nbench-fixture-%s-not-a-real-key\n" % half + _PEM_END + "\n"
+
+
+def fixture_pair(slug: str) -> dict:
+    """The fixture tenant's sub-account pair (ODL-924), shaped like a real one.
+
+    The seed service validates every entry with `seed.validate_backup_pair`, so
+    this has to carry the provider's login shape, the nested homes, the no-port
+    URLs, both private keys and one host-key line. The keys and the login are
+    inert — nothing in the bench connects to a Storage Box — and the host key is
+    a syntactically valid line, not a scanned one.
+    """
+    login = "u728180-sub9"
+    readonly = "u728180-sub10"
+    return {
+        "box_id": 709870,
+        "box_server": "u728180.your-storagebox.de",
+        "subaccount_id": 392599,
+        "subaccount_username": login,
+        "subaccount_home": "tenants/%s" % slug,
+        "readonly_subaccount_id": 392600,
+        "readonly_subaccount_username": readonly,
+        "readonly_subaccount_home": "tenants/%s/data" % slug,
+        "repo_url": "sftp:%s@%s.your-storagebox.de:data/restic" % (login, login),
+        "readonly_repo_url": "sftp:%s@%s.your-storagebox.de:restic" % (readonly, readonly),
+        "ssh_port": 22,
+        "known_hosts": ("%s.your-storagebox.de ssh-ed25519 "
+                        "AAAAC3NzaC1lZDI1NTE5AAAAIBenchHostKeyFixture" % login),
+        # Concatenated so `tools/secret_scan.py` does not read a fixture as a
+        # leaked key; the value still has the PEM's begin/end lines.
+        "ssh_private_key": _fixture_private_key("read-write"),
+        "readonly_ssh_private_key": _fixture_private_key("read-only"),
+        "previous_instance": "",
+        "provisioned_at": "2026-11-24T00:00:00Z",
+    }
+
+
 def prepare(directory: Path, instance: str, slug: str, key: str,
             backup_password: str | None = None,
             token: str | None = None,
-            release_key: str | None = None) -> dict:
+            release_key: str | None = None,
+            previous_instance: str | None = None) -> dict:
     directory.mkdir(parents=True, exist_ok=True)
     os.chmod(directory, 0o700)
     seed = _seed_module()
@@ -230,6 +273,11 @@ def prepare(directory: Path, instance: str, slug: str, key: str,
             ("SHA256:fixture-initramfs-key", slug),
         )
         con.commit()
+        if previous_instance:
+            # A rebuild's provenance (ODL-924): the row carries the id of the
+            # machine this one replaces, and `seed.build_seed` reads it from
+            # the spine's detail.
+            store.note(slug, detail={"previous_instance": previous_instance})
         if token is None:
             binding = seed.bind(con, slug, instance)
         else:
@@ -285,11 +333,23 @@ def prepare(directory: Path, instance: str, slug: str, key: str,
 
     write_private(directory / "token", (binding["token"] + "\n").encode())
     write_private(directory / "instance", (instance + "\n").encode())
+
+    # The tenant's pair (ODL-924): the entry the seed service reads per
+    # exchange, so the bench proves the seed's `backup` block and the first
+    # boot's `/etc/odile/backup-*.{txt,env}` paths without a Storage Box. The
+    # entry goes through the service's own validator when it is written.
+    pair_file = directory / "seed-backup-pairs.json"
+    pair = fixture_pair(slug)
+    if previous_instance:
+        pair["previous_instance"] = previous_instance
+    seed.set_backup_pair(str(pair_file), slug, pair)
+
     return {
         "dir": str(directory), "db": str(db), "config": str(config_path),
         "key": key, "slug": slug, "instance": instance, "token": binding["token"],
         "expires_at": binding["expires_at"], "rebuild": rebuild,
-        "rebuilds": str(rebuild_file),
+        "rebuilds": str(rebuild_file), "backup_pairs": str(pair_file),
+        "previous_instance": previous_instance or "",
         "certificate": str(directory / "seed-key.crt"),
         "seed_pubkey": str(directory / "seed-key.pub"),
         "release_pubkey": str(directory / "release-key.pub"),
@@ -329,6 +389,7 @@ def serve(directory: Path, port: int) -> int:
     os.environ["ODILE_SEED_BIND"] = "127.0.0.1"
     os.environ["ODILE_SEED_PORT"] = str(port)
     os.environ["ODILE_SEED_REBUILDS"] = str(directory / "seed-rebuilds.json")
+    os.environ["ODILE_SEED_BACKUP_PAIRS"] = str(directory / "seed-backup-pairs.json")
     return seed.serve()
 
 
@@ -350,6 +411,9 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--token-file", metavar="PATH",
                    help="re-arm this token instead of minting one: a bench rerun of "
                         "an image whose measured cmdline already carries it")
+    p.add_argument("--previous-instance", metavar="ID", default=None,
+                   help="record ID as the machine this one replaces (a rebuild's "
+                        "marker; the seed's backup.previous_instance)")
 
     p = sub.add_parser("serve", help="run seed/seed.py serve on the fixture")
     p.add_argument("--dir", required=True)
@@ -380,11 +444,14 @@ def main(argv: list[str] | None = None) -> int:
         if args.token_file:
             token = Path(args.token_file).read_text(encoding="utf-8").strip()
         result = prepare(directory, args.instance, args.slug, str(key_copy), password, token,
-                         args.release_key)
+                         args.release_key, args.previous_instance)
         print("tenant     %s" % result["slug"])
         print("instance   %s" % result["instance"])
         print("expires    %s" % result["expires_at"])
         print("rebuild    %s (%s)" % (result["rebuild"], result["rebuilds"]))
+        print("backup     %s" % result["backup_pairs"])
+        if result["previous_instance"]:
+            print("previous   %s" % result["previous_instance"])
         print("seed cert  %s (release public key %s)"
               % (result["certificate"], result["release_pubkey"]))
         print("token      %s%s" % (result["token"],

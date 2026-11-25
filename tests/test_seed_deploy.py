@@ -311,7 +311,8 @@ class DeployerTests(unittest.TestCase):
         self.recorder = Recorder()
         self.saved = {name: getattr(deploy, name) for name in (
             "UNIT_TARGET", "CADDYFILE", "CONFIG_FILE", "SEED_KEY_FILE", "SEED_PUB",
-            "SEED_CERT", "RELEASE_PUBKEY", "RUNTIME_SEED", "REBUILDS", "run",
+            "SEED_CERT", "RELEASE_PUBKEY", "RUNTIME_SEED", "REBUILDS",
+            "BACKUP_PAIRS", "run",
             "require_root", "PROBE_SECONDS")}
         deploy.UNIT_TARGET = self.unit
         deploy.CADDYFILE = self.caddyfile
@@ -322,6 +323,9 @@ class DeployerTests(unittest.TestCase):
         deploy.RELEASE_PUBKEY = self.release_pub
         deploy.RUNTIME_SEED = self.runtime_seed
         deploy.REBUILDS = self.rebuilds
+        # ODL-924: the per-tenant pair file too, or the deploy reads the live
+        # host's and a converged run prints its entry count.
+        deploy.BACKUP_PAIRS = Path(self.tmp.name) / "seed-backup-pairs.json"
         deploy.run = self.recorder
         deploy.require_root = lambda: None
         deploy.PROBE_SECONDS = 0.01

@@ -54,6 +54,7 @@ from odilectl import cli as odilectl_cli  # noqa: E402
 from odilectl.config import Config  # noqa: E402
 from odilectl.providers.base import Machine, Provider  # noqa: E402
 from odilectl.providers.servury import ServuryProvider  # noqa: E402
+from tests import box_fixture  # noqa: E402
 
 EXPECTED_FIELDS = {
     "slug", "instance_id", "near_api_key", "model", "support_public_key",
@@ -1404,6 +1405,11 @@ def _odilectl_config(directory: str, slug: str, db: str,
         "default_days: 31",
         "state_db: " + db,
         "seed_db: " + db,
+        # ODL-924: the pairing's four paths, under this test's directory.
+        "hetzner_box_id: 709870",
+        "hetzner_dir: " + os.path.join(directory, "hetzner"),
+        "hetzner_keys: " + os.path.join(directory, "keys"),
+        "seed_backup_pairs: " + os.path.join(directory, "seed-backup-pairs.json"),
     ]
     if seed_rebuilds is not None:
         lines.append("seed_rebuilds: " + seed_rebuilds)
@@ -1411,6 +1417,109 @@ def _odilectl_config(directory: str, slug: str, db: str,
         f.write("\n".join(lines) + "\n")
     os.chmod(path, 0o600)
     return path
+
+
+class BackupPairs(unittest.TestCase):
+    """ODL-924: one shape for the per-tenant pair the seed service reads.
+
+    The file at `/var/lib/odile/seed-backup-pairs.json` carries both private
+    halves, so every rule here is one the guest's first boot depends on. The
+    validator is the service's own, run on the way in and on the way out.
+    """
+
+    def setUp(self) -> None:
+        self.seed = load_seed_module()
+        self.slug = "odl-7f3a2c"
+        self.entry = {
+            "box_id": 709870,
+            "box_server": "u728180.your-storagebox.de",
+            "subaccount_id": 392550,
+            "subaccount_username": "u728180-sub1",
+            "subaccount_home": "tenants/%s" % self.slug,
+            "readonly_subaccount_id": 392556,
+            "readonly_subaccount_username": "u728180-sub2",
+            "readonly_subaccount_home": "tenants/%s/data" % self.slug,
+            "repo_url": "sftp:u728180-sub1@u728180-sub1.your-storagebox.de:data/restic",
+            "readonly_repo_url": "sftp:u728180-sub2@u728180-sub2.your-storagebox.de:restic",
+            "ssh_port": 22,
+            "known_hosts": ("u728180-sub1.your-storagebox.de ssh-ed25519 "
+                            "AAAAC3NzaC1lZDI1NTE5AAAAIFixtureHostKey"),
+            "ssh_private_key": box_fixture.PRIVATE_KEY,
+            "readonly_ssh_private_key": box_fixture.PRIVATE_KEY,
+            "previous_instance": "",
+            "provisioned_at": "2026-11-25T00:00:00Z",
+        }
+
+    def test_the_entry_round_trips_at_0600_and_a_rerun_is_byte_identical(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = os.path.join(directory, "seed-backup-pairs.json")
+            self.seed.set_backup_pair(path, self.slug, self.entry)
+            text = Path(path).read_text(encoding="utf-8")
+            self.assertEqual(os.stat(path).st_mode & 0o777, 0o600)
+            self.assertEqual(self.seed.load_backup_pairs(path), {self.slug: self.entry})
+            self.seed.set_backup_pair(path, self.slug, self.entry)
+            self.assertEqual(Path(path).read_text(encoding="utf-8"), text)
+            self.seed.set_backup_pair(path, self.slug, None)
+            self.assertEqual(self.seed.load_backup_pairs(path), {})
+
+    def test_a_plaintext_subaccount_password_is_refused_by_name(self) -> None:
+        for plaintext in ("password", "passphrase"):
+            with self.assertRaisesRegex(self.seed.ConfigError, "plaintext %s" % plaintext):
+                self.seed.validate_backup_pair(dict(self.entry, **{plaintext: "hunter2"}),
+                                               "fixture")
+
+    def test_the_two_homes_must_nest_and_never_be_the_same_home(self) -> None:
+        with self.assertRaisesRegex(self.seed.ConfigError, "one home"):
+            self.seed.validate_backup_pair(
+                dict(self.entry, readonly_subaccount_home=self.entry["subaccount_home"]),
+                "fixture")
+        with self.assertRaisesRegex(self.seed.ConfigError, "not a subdirectory"):
+            self.seed.validate_backup_pair(
+                dict(self.entry, readonly_subaccount_home="tenants/another/data"), "fixture")
+
+    def test_the_url_has_no_port_and_the_login_is_the_providers(self) -> None:
+        with self.assertRaisesRegex(self.seed.ConfigError, "port in the URL"):
+            self.seed.validate_backup_pair(
+                dict(self.entry, repo_url="sftp:u728180-sub1@u728180-sub1"
+                                          ".your-storagebox.de:22/data/restic"), "fixture")
+        with self.assertRaisesRegex(self.seed.ConfigError, "provider login"):
+            self.seed.validate_backup_pair(
+                dict(self.entry, subaccount_username=self.slug), "fixture")
+
+    def test_the_keys_and_the_one_host_key_line_are_checked(self) -> None:
+        for broken, reason in (
+            (dict(self.entry, ssh_private_key="not-a-key"), "not a private key"),
+            (dict(self.entry, readonly_ssh_private_key=""), "not a private key"),
+            (dict(self.entry, known_hosts=self.entry["known_hosts"] + "\nsecond line"),
+             "one pinned host-key line"),
+            (dict(self.entry, ssh_port=2222), "ssh_port must be 22"),
+            (dict(self.entry, subaccount_id=self.entry["readonly_subaccount_id"]),
+             "one sub-account twice"),
+        ):
+            with self.assertRaisesRegex(self.seed.ConfigError, reason):
+                self.seed.validate_backup_pair(broken, "fixture")
+
+    def test_build_seed_carries_the_pair_and_overrides_the_config_template(self) -> None:
+        seed = self.seed.build_seed({"slug": self.slug}, "srv-fixture", CONFIG,
+                                    backup_pair=self.entry)
+        self.assertEqual(seed["backup_repo_url"], self.entry["repo_url"])
+        self.assertEqual(seed["backup"]["repo_url"], self.entry["repo_url"])
+        self.assertEqual(seed["backup"]["subaccount_id"], 392550)
+        self.assertEqual(seed["backup"]["subaccount_username"], "u728180-sub1")
+        self.assertEqual(seed["backup"]["ssh_port"], 22)
+        self.assertIn("PRIVATE KEY", seed["backup"]["ssh_private_key"])
+        self.assertEqual(seed["backup"]["previous_instance"], "")
+        # A row's own marker wins over the pair's (a rebuild).
+        rebuilt = self.seed.build_seed({"slug": self.slug}, "srv-fixture", CONFIG,
+                                       backup_pair=self.entry,
+                                       previous_instance="srv-old-0001")
+        self.assertEqual(rebuilt["backup"]["previous_instance"], "srv-old-0001")
+        # Without a pair the config's template is what the bench and a manual
+        # seed still get, and no `backup` block appears.
+        plain = self.seed.build_seed({"slug": self.slug}, "srv-fixture", CONFIG)
+        self.assertNotIn("backup", plain)
+        self.assertEqual(plain["backup_repo_url"],
+                         CONFIG["backup_repo_url"].replace("{slug}", self.slug))
 
 
 class ProvisionBinding(unittest.TestCase):
@@ -1425,11 +1534,13 @@ class ProvisionBinding(unittest.TestCase):
         cls.pub = cls.key + ".pub"
         cls.seed_config = os.path.join(d, "seed-config.json")
         cls.seed_rebuilds = os.path.join(d, "seed-rebuilds.json")
+        cls.backup_pairs = os.path.join(d, "seed-backup-pairs.json")
         cls.env = dict(
             os.environ,
             ODILE_DB=cls.db,
             ODILE_SEED_CONFIG=cls.seed_config,
             ODILE_SEED_REBUILDS=cls.seed_rebuilds,
+            ODILE_SEED_BACKUP_PAIRS=cls.backup_pairs,
             ODILE_SEED_SIGNING_KEY=cls.key,
             ODILE_SEED_CERT=os.path.join(d, "seed-key.crt"),
             ODILE_SEED_RELEASE_PUBKEY=os.path.join(d, "release-signing.pem.pub"),
@@ -1474,6 +1585,14 @@ class ProvisionBinding(unittest.TestCase):
         self.key_file, self.pin = _tenant_files(self.tmp.name, self.slug)
         self.config = _odilectl_config(self.tmp.name, self.slug, self.db,
                                        self.seed_rebuilds)
+        # ODL-924: the box API, ssh-keygen, the host-key scan and the key
+        # install are seams; this class proves the wiring end to end without a
+        # socket or a command.
+        box_fixture.patchers(self)
+
+    def box(self) -> box_fixture.FakeBox:
+        """The fake box this test's store-of-record directory owns."""
+        return box_fixture.box_for(Path(self.tmp.name) / "hetzner")
 
     def add_tenant(self) -> None:
         con = sqlite3.connect(self.db)
@@ -1775,6 +1894,173 @@ class ProvisionBinding(unittest.TestCase):
             )
         finally:
             con.close()
+
+    # ------------------------------------------------- the pair (ODL-924)
+
+    def store_path(self) -> Path:
+        return Path(self.tmp.name) / "hetzner" / ("odile-%s.env" % self.slug)
+
+    def pairs_path(self) -> Path:
+        return Path(self.tmp.name) / "seed-backup-pairs.json"
+
+    def test_a_provision_mints_the_pair_in_the_measured_order(self):
+        """Create, update settings, key install, readback, then readonly: true."""
+        self.add_tenant()
+        code, out, err, _transport = self.provision()
+        self.assertEqual(code, 0, err)
+        payload = json.loads(out)
+        backup = payload["backup"]
+        self.assertEqual(backup["state"], "created")
+        # Two resets per account: one to make the password live for the key
+        # install, one to discard it.
+        self.assertEqual(backup["password_resets"], 4)
+        box = self.box()
+        self.assertEqual([account["name"] for account in box.accounts],
+                         ["odile-%s-rw" % self.slug, "odile-%s-ro" % self.slug])
+        rw, ro = box.accounts
+        # The nested homes: never the same home (shared homes share keys).
+        self.assertEqual(rw["home_directory"], "tenants/%s" % self.slug)
+        self.assertEqual(ro["home_directory"], "tenants/%s/data" % self.slug)
+        self.assertFalse(rw["access_settings"]["readonly"])
+        self.assertTrue(ro["access_settings"]["readonly"])
+        # The lock came after both key installs, and a readback preceded it.
+        lock = next(index for index, (what, detail) in enumerate(box_fixture.EVENTS)
+                    if what.endswith("update_access_settings") and detail == "readonly=True")
+        installs = [index for index, (what, _detail) in enumerate(box_fixture.EVENTS)
+                    if what == "install"]
+        self.assertEqual(len(installs), 2)
+        self.assertLess(max(installs), lock)
+        readbacks = [index for index, (what, _detail) in enumerate(box_fixture.EVENTS)
+                     if re.match(r"^GET /storage_boxes/\d+/subaccounts/\d+$", what)]
+        self.assertTrue(readbacks and min(readbacks) < lock)
+        # The logins are the provider's, recorded from the API.
+        self.assertEqual(backup["subaccount_username"], rw["username"])
+        self.assertRegex(rw["username"], r"^u728180-sub\d+$")
+        self.assertEqual(backup["readonly_subaccount_username"], ro["username"])
+        # The store of record: 0600, both private halves, no password.
+        env = self.store_path()
+        self.assertEqual(os.stat(env).st_mode & 0o777, 0o600)
+        text = env.read_text(encoding="utf-8")
+        self.assertIn("BACKUP_RW_PRIVATE_KEY=", text)
+        self.assertIn("BACKUP_RO_PRIVATE_KEY=", text)
+        self.assertIn("BACKUP_REPOSITORY=sftp:%s@%s:data/restic"
+                      % (rw["username"], rw["server"]), text)
+        for password in box.passwords:
+            self.assertNotIn(password, text)
+        # The seed handoff: 0600, one entry, the no-port URL, both keys.
+        pairs = json.loads(self.pairs_path().read_text(encoding="utf-8"))
+        entry = pairs[self.slug]
+        self.assertEqual(os.stat(self.pairs_path()).st_mode & 0o777, 0o600)
+        self.assertEqual(entry["subaccount_id"], rw["id"])
+        self.assertEqual(entry["readonly_subaccount_id"], ro["id"])
+        self.assertEqual(entry["repo_url"],
+                         "sftp:%s@%s:data/restic" % (rw["username"], rw["server"]))
+        self.assertNotIn(":22", entry["repo_url"])
+        self.assertIn("ssh_private_key", entry)
+        self.assertIn("known_hosts", entry)
+        # The row's cache names both ids and both logins.
+        con = sqlite3.connect(self.db)
+        try:
+            detail = json.loads(con.execute(
+                "SELECT detail FROM tenant_state WHERE slug = ?", (self.slug,)
+            ).fetchone()[0])
+        finally:
+            con.close()
+        for key in ("backup_box_id", "backup_subaccount_id",
+                    "backup_readonly_subaccount_id", "backup_subaccount_username",
+                    "backup_readonly_subaccount_username", "previous_instance"):
+            self.assertIn(key, detail)
+        self.assertEqual(detail["backup_subaccount_id"], rw["id"])
+        self.assertEqual(detail["backup_readonly_subaccount_username"], ro["username"])
+        # The seed the guest gets carries the whole pair, and no password.
+        status, seed = exchange(self.port, payload["seed"]["token"], self.server_id)
+        self.assertEqual(status, 200, seed)
+        self.assertEqual(seed["backup_repo_url"], entry["repo_url"])
+        self.assertEqual(seed["backup"]["repo_url"], entry["repo_url"])
+        self.assertEqual(seed["backup"]["subaccount_username"], rw["username"])
+        self.assertEqual(seed["backup"]["known_hosts"], entry["known_hosts"])
+        self.assertTrue(seed["backup"]["ssh_private_key"].startswith("-----BEGIN"))
+        self.assertEqual(seed["backup"]["previous_instance"], "")
+        self.assertNotIn("password", json.dumps(seed).lower())
+
+    def test_the_existing_pair_is_adopted_and_a_second_run_prints_same(self):
+        self.add_tenant()
+        box = self.box()
+        rw, ro = box.add_pair(self.slug)
+        keys = Path(self.tmp.name) / "keys" / self.slug
+        keys.mkdir(parents=True, exist_ok=True)
+        (keys / ("odile-%s-rw" % self.slug)).write_text(box_fixture.PRIVATE_KEY,
+                                                         encoding="utf-8")
+        (keys / ("odile-%s-ro" % self.slug)).write_text(box_fixture.PRIVATE_KEY,
+                                                         encoding="utf-8")
+        (keys / "known_hosts").write_text(box_fixture.HOST_LINE + "\n", encoding="utf-8")
+        before = len(box.calls)
+
+        code, out, err, _transport = self.provision()
+        self.assertEqual(code, 0, err)
+        backup = json.loads(out)["backup"]
+        self.assertEqual(backup["state"], "adopted")
+        self.assertEqual(backup["subaccount_id"], rw["id"])
+        self.assertEqual(backup["readonly_subaccount_id"], ro["id"])
+        self.assertEqual([call for call in box.calls[before:] if call[0] == "POST"], [],
+                         "an adopted pair is never re-created")
+
+        # The idempotent second run reads the pair back and prints `same`.
+        before = len(box.calls)
+        transport = RecordedProvision(self.db, self.slug, self.server_id, listed=True)
+        code, out, err = run_odilectl(
+            ["provision", self.slug, "--key", self.key_file, "--pin", self.pin,
+             "--interval", "0", "--apply"],
+            self.config,
+            lambda _cfg: ServuryProvider("fixture-reseller-key", transport=transport),
+        )
+        self.assertEqual(code, 0, err)
+        self.assertIn("same", out)
+        self.assertEqual([call for call in box.calls[before:] if call[0] == "POST"], [])
+
+    def test_the_51st_pair_is_refused_by_name_before_any_provider_call(self):
+        directory = tempfile.mkdtemp(prefix="odl924-51st-")
+        self.addCleanup(shutil.rmtree, directory, ignore_errors=True)
+        store = Path(directory) / "hetzner"
+        store.mkdir(mode=0o700, parents=True, exist_ok=True)
+        for index in range(50):
+            (store / ("odile-odl-%06x.env" % index)).write_text(
+                "BACKUP_SLUG=fixture\n", encoding="utf-8")
+        slug = "odl-51st01"
+        config = _odilectl_config(directory, slug, self.db, self.seed_rebuilds)
+        transport = RecordedProvision(self.db, slug, self.server_id)
+        code, out, err = run_odilectl(
+            ["provision", slug, "--key", self.key_file, "--pin", self.pin,
+             "--interval", "0", "--apply"],
+            config,
+            lambda _cfg: ServuryProvider("fixture-reseller-key", transport=transport),
+        )
+        self.assertEqual(code, 4, out + err)
+        self.assertIn("51st", err)
+        self.assertIn(slug, err)
+        self.assertIn("100 sub-accounts", err)
+        box = box_fixture.box_for(Path(directory) / "hetzner")
+        self.assertEqual(box.calls, [], "the count is the store's; no API call was made")
+        self.assertEqual(transport.calls, [], "no machine was ordered")
+
+    def test_the_ro_home_must_nest_and_the_ro_key_must_be_locked(self):
+        self.add_tenant()
+        box = self.box()
+        rw, ro = box.add_pair(self.slug)
+        ro["home_directory"] = "tenants/%s" % self.slug
+        keys = Path(self.tmp.name) / "keys" / self.slug
+        keys.mkdir(parents=True, exist_ok=True)
+        (keys / ("odile-%s-rw" % self.slug)).write_text(box_fixture.PRIVATE_KEY,
+                                                         encoding="utf-8")
+        (keys / ("odile-%s-ro" % self.slug)).write_text(box_fixture.PRIVATE_KEY,
+                                                         encoding="utf-8")
+        (keys / "known_hosts").write_text(box_fixture.HOST_LINE + "\n", encoding="utf-8")
+        code, out, err, _transport = self.provision()
+        self.assertEqual(code, 4, out + err)
+        self.assertIn("data", out + err)
+        self.assertIn("never the same home", out + err)
+        self.assertFalse(self.store_path().exists(),
+                         "a refused pair writes no store of record")
 
 
 def transcript() -> None:
