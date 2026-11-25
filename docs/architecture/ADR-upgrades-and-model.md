@@ -233,7 +233,7 @@ carries. But the tenant's own sender is the installer's embedded
 `backup.py heartbeat`, and it sends only the backup facts and the slug
 (`installer/odile_install.py:2220`–`:2232`): no app release, no model, and none of
 the other facts the row lists. `scripts/heartbeat.py` is the richer sender, with
-a `versions` map at `:263`, and the tenant does not run it. HQ's one drift
+a `versions` map at `:279`, and the tenant does not run it. HQ's one drift
 detector, `release_report` (`odilectl/health.py:1020`), compares the **boot**
 release it intended with the one the guest reports — there is no app-layer or
 model analogue. §8 lists the signal; today it does not exist.
@@ -283,7 +283,7 @@ tenant's status as a signed heartbeat (`scripts/backup.py:797`–`:808`), and th
 body already carries `facts.backup.snapshot` and its `at`
 (`installer/odile_install.py:2220`–`:2232`), so the T-0 snapshot id needs **no new
 fact** to reach HQ; the heartbeat answer is already read by the guest — it is
-`{ok, slug, at, received_at}` (`scripts/heartbeat.py:404`–`:409`) and
+`{ok, slug, at, received_at}` (`scripts/heartbeat.py:406`–`:409`) and
 `heartbeat.py post` prints it (`:522`), so a new answer key is additive; and
 `_validated_facts` validates the five facts it knows and **ignores the rest**
 (`odilectl/health.py:962`), while `heartbeats.body` stores the whole object — an
@@ -888,7 +888,7 @@ read the latest beat's facts (`odilectl/health.py:1983`). A consent beat without
 them would make the newest beat thinner than the nightly one; both are already in
 the approved privacy row.
 
-The answer gains one key and keeps the four it has (`scripts/heartbeat.py:404`–`:409`):
+The answer gains one key and keeps the four it has (`scripts/heartbeat.py:406`–`:409`):
 
 ```json
 {"ok": true, "slug": "odl-7f3a2c", "at": 1795611600,
@@ -935,7 +935,14 @@ the one place a machine can be replaced without a vendor dependency created by
 the user's click.
 
 **Quiesce and T-0.** At the booked window the machine runs one oneshot
-(`odile-rebuild-prepare.service`), and every step has a bound:
+(`odile-rebuild-prepare.service`). It has no timer of its own: the same
+five-minute `odile-upgrade.timer` that re-posts while the state says `pending`
+starts it once `/var/lib/odile/upgrade/state.json` holds the answer's booking
+and the clock has reached that booking's `window`. The oneshot writes the window
+it is running for into the same state file before its first step and exits at
+once if the file already names that window, so a later tick cannot start a
+second quiesce for the same booking — the trigger is periodic, the work is once
+per window. Every step then has a bound:
 
 1. `systemctl stop odile-agent`. The unit's own `TimeoutStopSec=90` and
    `KillMode=mixed` (`installer/odile_install.py:12756`–`:12757`) end the only
@@ -1009,12 +1016,19 @@ repository (D19). **Wording:** *"Upgrading your machine"* for the build and boot
 for rows 1–5: nothing is installed on the old machine, it is replaced.
 
 **The first visit: restore before the sign-in.** The rebuild seed decides it
-(ADR-backup §6, §7.2–§7.3). The seed carries `previous_instance` (the rebuild
-marker), `sign_in_hash` (the account's own scrypt verifier — the string
-`accounts.password_hash` holds; the installer reads it from the seed at
-`installer/odile_install.py:18708` and writes it through `write_env_hash`,
-`:4715`) and, new in this cut, **`backup_snapshot`** — the T-0 id, armed by HQ
-after the gate (§5.4).
+(ADR-backup §6, §7.2–§7.3). The seed carries `sign_in_hash` (the account's own
+scrypt verifier — the string `accounts.password_hash` holds; the installer reads
+it from the seed at `installer/odile_install.py:18708` and writes it through
+`write_env_hash`, `:4715`) and **two keys new in this cut**, both written by the
+executor's arming (§5.4 step 3) through `seed/seed.py`'s `build_seed` and read
+by the first visit. **`previous_instance`** is the old machine's id, and the
+rebuild marker the first visit reads; it is new because the marker it replaces
+does not survive the BX11 re-cut — at this head a rebuild is a seed's sealed
+`rebuild` object, which `odile-firstboot.py:1559` unseals for the old repository
+password, and the provisioning card retires that password (ADR-backup §8) — while
+`build_seed` writes only the *new* `instance_id` today. **`backup_snapshot`** is
+the T-0 id, armed by the same step after the gate.
+
 The page asks for the recovery file first; `odile-restore.service` restores
 **that id**, not `latest` (`backup.py restore <id>` takes it positionally,
 `scripts/backup.py:930`; `latest` stays the fallback for a seed that names none,
@@ -1120,13 +1134,13 @@ is the data-loss control: **the write follows the snapshot, never the clock.**
    being replaced: forged facts, not a wipe. Reversed (clear, then gate), a
    forged `facts.backup` could open the gate for a machine that never snapshotted.
    The residual is a denial of the "restored" signal, not data.
-3. **arm the rebuild seed**: `previous_instance` (the old machine's id, the
-   marker the first visit reads), `backup_snapshot` (the T-0 id), `sign_in_hash`
-   (the account's verifier), and a **fresh per-machine seed token bound to the
-   instance id the command line bakes** — the spike's §5 failure, a recycled
-   machine that boots a stock-looking box that never installs, is exactly the
-   row this step inserts. Arming twice is the same row (the seed ledger's
-   `UNIQUE` shape).
+3. **arm the rebuild seed**: `previous_instance` and `backup_snapshot` (both
+   new in this cut — the old machine's id, the marker the first visit reads;
+   and the T-0 id), `sign_in_hash` (the account's verifier), and a **fresh
+   per-machine seed token bound to the instance id the command line bakes** —
+   the spike's §5 failure, a recycled machine that boots a stock-looking box
+   that never installs, is exactly the row this step inserts. Arming twice is
+   the same row (the seed ledger's `UNIQUE` shape).
 4. `--recycle --apply --confirm` with the UKI and disk image
    `deploy/image/tenant-image.pin` names — the same pair the release's boot chain
    is pinned to (§2.3), and the order the spike measured: reinstall, boot image,
@@ -1263,15 +1277,16 @@ updatable (11–13).
 
 **The rebuild flow's parts, counted the same way.** One fact (`facts.upgrade`),
 one guest verb (`heartbeat.py upgrade`), one guest unit and its timer
-(`odile-upgrade.timer`, retrying while unacknowledged), one guest oneshot
-(`odile-rebuild-prepare.service`), two guest state files (`upgrade/state.json`,
-`upgrade/snooze.json`), one guest record (`rebuild.json`), one optional seed key
-(`backup_snapshot`), one optional release-document key (`upgrade.security_deadline`),
-one HQ table (`upgrade_windows`) with a partial unique index for the one open
-booking per machine, one HQ booker in the heartbeat path, one HQ executor
-(`odilectl upgrade window`) and its timer, one block on `/account/<slug>`, and
-one re-cut of ODL-937's restore step. Nothing on the machine is a listener, and
-nothing new is reachable from the internet.
+(`odile-upgrade.timer`, re-posting while unacknowledged and starting the oneshot
+at the window), one guest oneshot (`odile-rebuild-prepare.service`), two guest
+state files (`upgrade/state.json`, `upgrade/snooze.json`), one guest record
+(`rebuild.json`), two optional seed keys (`previous_instance`,
+`backup_snapshot`), one optional release-document key
+(`upgrade.security_deadline`), one HQ table (`upgrade_windows`) with a partial
+unique index for the one open booking per machine, one HQ booker in the
+heartbeat path, one HQ executor (`odilectl upgrade window`) and its timer, one
+block on `/account/<slug>`, and one re-cut of ODL-937's restore step. Nothing
+on the machine is a listener, and nothing new is reachable from the internet.
 
 **Follow-on cards this ADR names but does not do:**
 
@@ -1303,17 +1318,20 @@ nothing new is reachable from the internet.
    new one; not built, and row 12 says so.
 7. **The machine half of the rebuild flow** — `facts.upgrade`'s validation at
    HQ's door (`_validated_facts`), the booker and the `upgrade_windows` table,
-   the `heartbeat.py upgrade` verb, `odile-upgrade.timer`, the notice's
-   `rebuild.json` and `snooze.json`, and `odile-rebuild-prepare.service`. **Order:
+   the `heartbeat.py upgrade` verb, `odile-upgrade.timer` (which also starts the
+   prepare oneshot at the window), the notice's `rebuild.json` and
+   `snooze.json`, and `odile-rebuild-prepare.service`. **Order:
    the HQ half first** — the reader before any tenant can write (§5.3).
 8. **The windowed executor** — `odilectl upgrade window` and its timer, the
-   gate, the `heartbeat_keys` clear, the seed arming with `backup_snapshot`, and
-   the account page's stage block. **Savio's**, because it drives the Servury
-   API and the panel (authority matrix: Servury API); the allow-list must admit
+   gate, the `heartbeat_keys` clear, the seed arming with `previous_instance`
+   and `backup_snapshot`, and the account page's stage block. **Savio's**,
+   because it drives the Servury API and the panel (authority matrix: Servury
+   API); the allow-list must admit
    the tenant's server id before it runs unattended.
-9. **ODL-937's re-cut** — the first visit restores the seed's `backup_snapshot`,
-   not `latest`, and re-writes `sign_in_hash` after the restore and before the
-   sign-in page (§5.3). The card is `todo`; its DoD names `restore latest`, so
+9. **ODL-937's re-cut** — the first visit reads `previous_instance` as the
+   rebuild marker, restores the seed's `backup_snapshot`, not `latest`, and
+   re-writes `sign_in_hash` after the restore and before the sign-in page
+   (§5.3). The card is `todo`; its DoD names `restore latest`, so
    the change lands there, not in a new card.
 10. **The heartbeat privacy sentence** — the approved row enumerates what a
     heartbeat carries, and `facts.upgrade` is one more. The Product lead edits
@@ -1361,10 +1379,11 @@ are shipped surfaces — a machine that has posted `facts.upgrade` holds a booki
 in its own state file and expects to be quiesced at 03:10 — so removing the flow
 is a release plus a `systemctl disable` on every machine, the same cost as the
 model mechanism's.
-**The seed key and the fact are the two reversible-by-construction pieces.**
-`backup_snapshot` is optional, so an older installer ignores it and a newer
-installer reading an older seed falls back to `latest`; `facts.upgrade` is a fact,
-so an older HQ stores it and does not book, and a newer HQ reading an older
+**The seed keys and the fact are the reversible-by-construction pieces.** Both
+keys are optional: an older installer ignores them, and a newer installer
+reading an older seed falls back to `latest` — and a seed with no
+`previous_instance` is a first install, exactly as today; `facts.upgrade` is a
+fact, so an older HQ stores it and does not book, and a newer HQ reading an older
 machine sees no key and books nothing. **One piece is one-way once used:** the
 `heartbeat_keys` clear is irreversible by design — the old machine's key is gone
 and the rebuilt machine's key is registered on first sight (trust on first use).
@@ -1701,7 +1720,7 @@ invariant this ADR turns on is also in a tracked file, verbatim:
 | a re-run would also revert an owner-moved public host | `installer/odile_install.py:18474`, `:18681`, `:12136`, `:12142`; `merge_block` `:13452`; `deploy/image/odile-release-setup.sh:140`–`:156` |
 | the seed cannot be refreshed | `installer/odile_install.py:14278`, `:14682`; `SEED_KEYS` |
 | the manifest records the seed's model, not the live one | `scripts/manifest.py:537` |
-| the tenant's heartbeat sends no versions at all; the contract accepts one | `installer/odile_install.py:2220`; `odilectl/health.py:964`; `scripts/heartbeat.py:263` |
+| the tenant's heartbeat sends no versions at all; the contract accepts one | `installer/odile_install.py:2220`; `odilectl/health.py:964`; `scripts/heartbeat.py:279` |
 | HQ's only drift detector is the boot release | `odilectl/health.py:1020` (`release_report`) |
 | no Odile service is in the prompt path today | `docs/MVP-V0.1.md` §6.1 invariant 4; `docs/CLAIMS.md` §1 *Inference*; `docs/runbooks/install.md` §4 |
 | the proxy re-creates the retired meter and central key | `docs/CLAIMS.md` §1 *Money and place* (v3.9c, ODL-205) |
