@@ -550,11 +550,15 @@ guest's own recovery file carries the old password and `backup.py init` says
 / 7 days** — the drill config's `default_plan_id: 120` and `default_days: 7`,
 the panel's Blackbox Core (the Netherlands; $9.49 per 31 days, billed $2.15
 for the drill's 7 days), invoice `e0e6fbce` (§3). The live rebuild orders the
-live config's default, **plan 113 / 31 days**: `/root/.odile/config.yaml`
-carries `default_plan_id: 113` and `default_days: 31`, and the live tenant
-itself is on plan 113 (`?action=server&id=0badc0de` → `plan_id: 113`, Blackbox
-Plus, Canada, $18.99 reseller / $19.99 retail per 31 days, active to
-2026-12-10; `evidence/plans.txt`). Plan 121 is also Blackbox Plus at $18.99
+live config's default — **plan 113 / 31 days at the drill's date**, when
+`/root/.odile/config.yaml` carried `default_plan_id: 113` and
+`default_days: 31`. Since 2026-11-24 that file carries `default_plan_id: 138`
+and `default_days: 365`, so a rebuild today orders a **Blackbox Nano at the
+annual term** rather than a Plus (`docs/runbooks/deploy.md`; the default's
+measurement is `docs/evidence/nano-baseline.md`). The live tenant itself is on
+plan 113 (`?action=server&id=0badc0de` → `plan_id: 113`, Blackbox Plus, Canada,
+$18.99 reseller / $19.99 retail per 31 days, active to 2026-12-10;
+`evidence/plans.txt`). Plan 121 is also Blackbox Plus at $18.99
 per 31 days, but in the Netherlands — it is not what the live config orders.
 The flags differ, the path does not: a same-slug rebuild orders a new machine,
 the row reopens and moves `claimed → provisioning → first_boot` with release

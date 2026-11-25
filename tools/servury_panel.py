@@ -17,7 +17,7 @@ the panel drivable with a cookie jar — no headless browser, no brittle clickin
         --url … --sha256 … [--apply --confirm]
     ./tools/servury_panel.py --power --server <server:ukitest> --action restart
     ./tools/servury_panel.py --console --server <server:ukitest> --action on|off|read
-    ./tools/servury_panel.py --order --plan 108 --ssh-key-file key.pub --apply
+    ./tools/servury_panel.py --order --ssh-key-file key.pub --apply   # Nano 138, 365 days
     ./tools/servury_panel.py --reinstall --server <server:ukitest> --os debian13 \\
         --want-snp --want-fde --want-measured --ssh-key-file key.pub [--apply --confirm]
     ./tools/servury_panel.py --recycle --server <server:ukitest> \\
@@ -1233,7 +1233,8 @@ def order(opener, plan: str, location: str, os_name: str, days: str, hostname: s
 
     The panel order form charges list price even on an account that holds a key,
     so it is no longer an order path. `location` does not travel: a plan id names
-    its location (108 is Canada Core, 127 the US one), and it stays in the
+    its location and tier (138 is the Canada Nano, 139 the Netherlands Nano, 141
+    the US Nano, 108 the Canada Core, 127 the US Core), and it stays in the
     signature only so the audit line reads the same way it always did. A measured
     box takes exactly one SSH key and it must be given here — there is no later
     add.
@@ -1304,7 +1305,16 @@ def _recycle_missing(args, cmdline: str) -> str | None:
     return ", ".join(missing) or None
 
 
-def main(argv: list[str] | None = None) -> int:
+def build_parser() -> argparse.ArgumentParser:
+    """The CLI surface, split out so the defaults are testable without a network.
+
+    The two order defaults are the provisioning default (Savio, 2026-11-24):
+    plan **138** is Blackbox Nano in Canada (1 vCPU / 2 GB / 25 GB) and **365**
+    days is the longest term and the biggest discount — $47.44 a year at the
+    partner price against $56.88 for twelve 31-day orders. A Core (108/127) is
+    never the default: Servury cannot downgrade a machine, so a tester placed on
+    a Core cannot move to a Nano without a rebuild.
+    """
     parser = argparse.ArgumentParser(description="Drive Servury's panel (boot image, disk, power, console) without a browser.")
     parser.add_argument("--login", action="store_true", help="log in once and save the session cookies")
     parser.add_argument("--dump", action="store_true", help="print the forms and their fields (input, select, textarea)")
@@ -1342,12 +1352,13 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--url", default="")
     parser.add_argument("--sha256", default="")
     parser.add_argument("--order", action="store_true", help="buy one machine through the API at the partner price")
-    parser.add_argument("--plan", default="108", help="API plan id (a plan id names its location: 108 Canada, 127 US)")
+    parser.add_argument("--plan", default="138", help="API plan id (a plan id names its location and tier: 138 Canada Nano, 139 Netherlands Nano, 141 US Nano, 108 Canada Core, 127 US Core)")
     parser.add_argument("--location", default="2", help="label only — the plan id names the location")
     parser.add_argument("--os", dest="os_name", default=None,
                         help="the stock template id (required for --reinstall/--recycle; "
                              "default debian12 for --order)")
-    parser.add_argument("--days", default="31")
+    parser.add_argument("--days", default="365",
+                        help="the term in days; Nano's minimum is 31, the 365-day term carries the 15%% discount")
     parser.add_argument("--hostname", default="odl-dev")
     parser.add_argument("--key-file", default=str(ORDER_KEY_FILE),
                         help="the account's API key: what --order charges and what the "
@@ -1361,6 +1372,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--dry-run", action="store_true", help="with --power/--console: print the action, change nothing")
     parser.add_argument("--format", default="auto", choices=("auto", "qcow2", "raw"), help="image format")
     parser.add_argument("--allow-server", action="append", default=[], help="extra server id this tool may touch")
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = build_parser()
     args = parser.parse_args(argv)
 
     fresh = bool(args.login or args.whoami)

@@ -446,10 +446,20 @@ exists at mode 0600 with at least:
 | key | value |
 |---|---|
 | `reseller_key` | the Servury reseller key |
-| `default_plan_id` | the numeric plan a machine is ordered on |
+| `default_plan_id` | the numeric plan a machine is ordered on. **138** — Blackbox Nano, Canada (1 vCPU / 2 GB / 25 GB). 139 is the Netherlands Nano and 141 the US Nano; 108/127 are the larger Core and are never the default (Servury cannot downgrade a machine) |
+| `default_days` | the term: **365**, the longest term and the largest discount ($47.44 a year at the partner price, measured 2026-11-24). A shorter term names its measured reason on the card; Nano's own minimum is 31 days, and 7 would be refused |
+| `default_vcpus` | **1** — the Nano's size; the plan id already names the tier, this keeps the order's own record honest |
 | `dns_zone_id` | the Cloudflare zone id for `odile.fyi` |
 | `outbox` | `/var/lib/odile/outbox` |
 | `alert_email` | where a failed provision is reported |
+
+The default new machine is a Blackbox Nano at the 365-day term (Savio, 2026-11-24;
+`docs/ops/evidence/2026-11-24-servury-nano/README.md`). The test bench carries the
+same plan id but a 31-day term (`/root/.odile/config.test.yaml`): Nano's minimum
+term is 31 days and a bench machine is disposable, so a year would cost ten times
+a two-week trial. `tools/servury_panel.py --order` defaults to the same
+138 / 365, and `docs/evidence/nano-baseline.md` records the bench measurement of
+the Nano envelope.
 
 The provider key and the Cloudflare token also exist as their own 0600 files
 (`/root/.odile/servury_reseller_key`, `/root/.odile/cloudflare_dns_token`). HQ's

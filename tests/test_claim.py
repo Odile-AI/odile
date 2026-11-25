@@ -1479,6 +1479,42 @@ def transcript() -> None:
         shutil.rmtree(directory, ignore_errors=True)
 
 
+class NanoDefaultTests(unittest.TestCase):
+    """The config's provisioning defaults describe a Nano, never a Core.
+
+    Plan 138 is the Canada Blackbox Nano (1 vCPU / 2 GB / 25 GB); the 365-day
+    term is the provisioning default (Savio, 2026-11-24) and the 31-day value
+    that remains the fallback is Nano's own minimum term, not a Core default.
+    """
+
+    def config(self, **values):
+        directory = tempfile.mkdtemp(prefix="odile-nano-")
+        self.addCleanup(shutil.rmtree, directory, ignore_errors=True)
+        base = {"default_plan_id": "138", "default_days": "365", "default_vcpus": "1"}
+        base.update(values)
+        path = Path(directory) / "config.yaml"
+        path.write_text(
+            "".join(f"{key}: {value}\n" for key, value in base.items() if value is not None),
+            encoding="utf-8")
+        path.chmod(0o600)
+        return Config(path, {key: value for key, value in base.items() if value is not None})
+
+    def test_the_shipped_defaults_reach_the_order_and_the_kit(self):
+        config = self.config()
+        self.assertEqual(
+            (claim._plan_id(config), claim._days(config), claim._vcpus(config)),
+            (138, 365, 1))
+
+    def test_a_missing_plan_is_refused_rather_than_defaulted_to_a_core(self):
+        config = self.config(default_plan_id=None)
+        with self.assertRaises(ConfigError):
+            claim._plan_id(config)
+
+    def test_a_missing_term_is_the_nano_minimum_not_a_core_default(self):
+        config = self.config(default_days=None)
+        self.assertEqual(claim._days(config), 31)
+
+
 if __name__ == "__main__":
     if sys.argv[1:] == ["--transcript"]:
         transcript()
