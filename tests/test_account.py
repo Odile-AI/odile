@@ -393,9 +393,10 @@ class FourStateTests(AccountBase):
         _email, row, cookie = self.state_account("building")
         _headers, text = self.page(cookie)
         self.assertIn("We have your address. The machine is being set up.", text)
-        # ODL-947: the wait is named — the machine's own report page.
-        self.assertIn("then the machine's own report page; we are waiting for "
-                      "that page to answer.", text)
+        # ODL-947: the wait is named once — the machine's own report answers.
+        self.assertIn("Its first boot prepares the encrypted disk, which is the "
+                      "slow part. We wait for the machine's own report to answer.",
+                      text)
         self.assertIn(WAIT, text)
         self.assertIn("Your machine is <strong>%s.test.odile.fyi</strong>. "
                       "It answers when it is ready." % row["slug"], text)

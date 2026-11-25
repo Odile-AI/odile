@@ -173,9 +173,9 @@ class ReadyPathTests(FlowBase):
         text = self.page(cookie)
         self.assertIn("<h1>Building.</h1>", text)
         self.assertNotIn("Your machine is ready.", text)
-        self.assertIn("Its first boot prepares the encrypted disk, then the "
-                      "machine's own report page; we are waiting for that page "
-                      "to answer.", text)
+        self.assertIn("Its first boot prepares the encrypted disk, which is the "
+                      "slow part. We wait for the machine's own report to answer.",
+                      text)
 
         # 2. The machine answers at its own name. One run of the same timer
         #    writes exactly one mail, with no press; the row moves to ready.
