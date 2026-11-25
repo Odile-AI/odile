@@ -29,6 +29,7 @@ from __future__ import annotations
 import email
 import hashlib
 import http.client
+import json
 import os
 import re
 import socket
@@ -455,6 +456,55 @@ class FourStateTests(AccountBase):
 
 
 class ResendTests(AccountBase):
+    def test_a_press_repairs_the_facts_release_after_a_recycle(self):
+        """ODL-947: the ready mail's facts name the release the row now holds.
+
+        The sidecar is written once at provisioning. A recycle or re-install can
+        move `tenants.release` afterwards, and a press rebuilds the mail from the
+        sidecar — so the sidecar must follow the row, while the message bytes
+        (which do not print the release) stay identical.
+        """
+        address = self.email()
+        row = self.seed_account(address, "ready", tenant_ipv4="203.0.113.42")
+        cookie = self.sign_in(address)
+        slug = row["slug"]
+        self.seed_provisioned_ready(row)
+        facts_path = self.outbox / "ready" / ("%s.json" % slug)
+        message_path = self.queued_ready(slug)
+        self.assertEqual(json.loads(facts_path.read_text(encoding="utf-8"))["release"],
+                         "2026.11.1")
+        # The first press is the tokenless re-cut; that mail is the baseline.
+        status, _headers, _body = self.resend(
+            cookie, origin="http://127.0.0.1:%d" % self.port)
+        self.assertEqual(status, 303)
+        before_message = hashlib.sha256(message_path.read_bytes()).hexdigest()
+
+        connection = self.connect()
+        try:
+            connection.execute("UPDATE tenants SET release = ? WHERE slug = ?",
+                               ("2026.11.23-5", slug))
+            connection.commit()
+        finally:
+            connection.close()
+
+        status, _headers, _body = self.resend(
+            cookie, origin="http://127.0.0.1:%d" % self.port)
+        self.assertEqual(status, 303)
+        after_facts = json.loads(facts_path.read_text(encoding="utf-8"))
+        self.assertEqual(after_facts["release"], "2026.11.23-5")
+        self.assertEqual(before_message,
+                         hashlib.sha256(message_path.read_bytes()).hexdigest(),
+                         "the press changed the mail's bytes")
+
+        # A second press is the same sidecar and the same mail.
+        settled = facts_path.read_bytes()
+        status, _headers, _body = self.resend(
+            cookie, origin="http://127.0.0.1:%d" % self.port)
+        self.assertEqual(status, 303)
+        self.assertEqual(settled, facts_path.read_bytes())
+        self.assertEqual(before_message,
+                         hashlib.sha256(message_path.read_bytes()).hexdigest())
+
     def test_the_resend_queues_a_tokenless_ready_email_and_repeats_byte_for_byte(self):
         address = self.email()
         row = self.seed_account(address, "ready", tenant_ipv4="203.0.113.42")

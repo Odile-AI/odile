@@ -96,8 +96,11 @@ DEFAULT_STATE_DB = "/var/lib/odile/waitlist.db"
 STATE_SCHEMA_VERSION = 3
 
 # A release id comes from the pin (`provision_release`) or the guest's boot
-# report, never from the provider. 2026.12 and 2026.12.0 are both valid ids.
-RELEASE_ID_RE = re.compile(r"^[0-9]{4}\.[0-9]{2}(?:\.[0-9]+)?$")
+# report, never from the provider. 2026.12, 2026.12.0 and 2026.11.23-5 are all
+# valid ids: the last is the image release the machine reports in
+# /run/blackbox/attest.json, and refusing its hyphen until ODL-947 meant a boot
+# record naming the release the machine installed could not be recorded.
+RELEASE_ID_RE = re.compile(r"^[0-9]{4}\.[0-9]{2}(?:\.[0-9]+)?(?:-[0-9]+)?$")
 
 # Ten minutes without a heartbeat is a stopped machine, not a slow one: the
 # guest's job fires every five minutes, so two misses is the smallest signal
@@ -874,30 +877,87 @@ class StateStore:
         )
 
     def record_release(self, slug: str, release: str) -> Tenant:
-        """Record the intended release when the row already exists.
+        """Record the release the machine was ordered to boot when the row exists.
 
         Used by `provision` on a second run: the state has already moved past
         `claimed`, so there is no transition to make, but a row created before
-        ODL-398 may still have a NULL release. First write wins — a re-run must
-        not rewrite the release the machine was actually ordered under.
+        ODL-398 may still have a NULL release. The order's release converges —
+        a newer pin on a rebuild is the release the new machine is ordered
+        under — except once a boot record has named what the machine actually
+        installed: that observation wins, so a re-run cannot walk the row back
+        to a stale pin (ODL-947). A row that already names the value is not
+        rewritten.
         """
         chosen = (release or "").strip()
         if not RELEASE_ID_RE.match(chosen):
             raise ValueError(f"release {release!r} is not a release id")
         tenant = self.get(slug)
-        if tenant.release is not None:
+        booted = str(tenant.detail.get("boot_release") or "").strip()
+        if booted and booted != chosen:
+            return tenant
+        spine_same = tenant.release == chosen
+        web_needs = False
+        if _table_exists(self._con, "tenants"):
+            web = self._con.execute(
+                "SELECT release FROM tenants WHERE slug = ?", (slug,)
+            ).fetchone()
+            web_needs = web is not None and web["release"] != chosen
+        if spine_same and not web_needs:
             return tenant
         stamp = _iso(self.now())
         try:
-            self._con.execute(
-                "UPDATE tenant_state SET release = ?, updated_at = ? WHERE slug = ?",
-                (chosen, stamp, slug),
-            )
+            if not spine_same:
+                self._con.execute(
+                    "UPDATE tenant_state SET release = ?, updated_at = ? WHERE slug = ?",
+                    (chosen, stamp, slug),
+                )
+            if web_needs:
+                # The app's row is what the account page and the ready mail
+                # read; the two schemas cannot name different releases.
+                self._con.execute(
+                    "UPDATE tenants SET release = ? WHERE slug = ?",
+                    (chosen, slug),
+                )
             self._con.commit()
         except Exception:
             self._con.rollback()
             raise
         return self.get(slug)
+
+    def record_boot_release(self, slug: str, release: str) -> list[str]:
+        """Let the machine's own boot record name the release on both rows.
+
+        The boot record is the one observation of what the machine installed, so
+        it is authoritative where the order's pin is not: a recycle or a
+        re-install that changed the release must move the `tenants` row and the
+        `tenant_state` row to it (ODL-947). Returns the rows that moved, oldest
+        name first; a row that already names the release is not rewritten.
+        """
+        chosen = (release or "").strip()
+        if not RELEASE_ID_RE.match(chosen):
+            raise ValueError(f"release {release!r} is not a release id")
+        tenant = self.get(slug)
+        moved: list[str] = []
+        stamp = _iso(self.now())
+        try:
+            if _table_exists(self._con, "tenants"):
+                cursor = self._con.execute(
+                    "UPDATE tenants SET release = ? WHERE slug = ? AND release IS NOT ?",
+                    (chosen, slug, chosen),
+                )
+                if cursor.rowcount:
+                    moved.append("tenants.release")
+            if tenant.release != chosen:
+                self._con.execute(
+                    "UPDATE tenant_state SET release = ?, updated_at = ? WHERE slug = ?",
+                    (chosen, stamp, slug),
+                )
+                moved.append("tenant_state.release")
+            self._con.commit()
+        except Exception:
+            self._con.rollback()
+            raise
+        return moved
 
     def await_boot(self, slug: str) -> Tenant:
         """The order exists; the machine now runs its zero-touch first boot."""
@@ -1048,7 +1108,33 @@ class StateStore:
         ).fetchone()
         if chosen is None:
             raise StateError(f"the key record {key_id} did not land for {slug}")
-        return _tenant_key(chosen)
+        record = _tenant_key(chosen)
+        self._sync_account_key(record)
+        return record
+
+    def _sync_account_key(self, record: TenantKey) -> None:
+        """Point the web `accounts` row at the newest key record (ODL-947).
+
+        `tenant_keys` is the source; the account page, the ready mail and the
+        daily brief read `accounts.key_label`/`key_prefix`, and a re-mint
+        through `odilectl provision` used to leave those two columns naming a
+        key the provider had already revoked. A row that already names the
+        record is not rewritten, so a replay of the same key writes nothing.
+        A state-only database has no `accounts` table and is left alone.
+        """
+        if not _table_exists(self._con, "accounts"):
+            return
+        try:
+            self._con.execute(
+                "UPDATE accounts SET key_label = ?, key_prefix = ?"
+                " WHERE slug = ? AND (key_label IS NOT ? OR key_prefix IS NOT ?)",
+                (record.label, record.key_prefix, record.slug,
+                 record.label, record.key_prefix),
+            )
+            self._con.commit()
+        except Exception:
+            self._con.rollback()
+            raise
 
     def revoke_key(self, key_id: str, *, reason: str = "") -> TenantKey | None:
         """Mark one key revoked; a second call changes nothing.

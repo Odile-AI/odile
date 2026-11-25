@@ -16,9 +16,12 @@ in the card's evidence; the URL is correct here.
 
 from __future__ import annotations
 
+import base64
 import importlib.util
 import json
 import os
+import shutil
+import tempfile
 import threading
 import unittest
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -27,6 +30,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 FIRSTBOOT = ROOT / "deploy" / "image" / "odile-firstboot.py"
 TOKEN = "a" * 64
+
+from tests.test_bootrecord import KEY_TEXT  # noqa: E402  (one valid measured key)
 
 
 def load_firstboot_module():
@@ -99,6 +104,68 @@ class ReporterEndpointTests(unittest.TestCase):
         self.assertEqual(seen[0][0], "/seed")
         self.assertEqual(seen[0][1]["instance_id"], "168020b4")
         self.assertEqual(seen[0][1]["record"]["cmdline"], measured_line(url))
+
+
+class ReleaseSourceTests(unittest.TestCase):
+    """ODL-947: the record names the release this boot measured, not the pin."""
+
+    def setUp(self) -> None:
+        self.firstboot = load_firstboot_module()
+        self.directory = tempfile.mkdtemp(prefix="odile-firstboot-release-")
+        self.addCleanup(shutil.rmtree, self.directory, ignore_errors=True)
+        self.boot_key = Path(self.directory) / "boot-key.pub"
+        self.boot_key.write_text(KEY_TEXT + "\n", encoding="utf-8")
+        self.host_key = Path(self.directory) / "host-key.pub"
+        self.host_key.write_text(KEY_TEXT + "\n", encoding="utf-8")
+        self.first_visit = Path(self.directory) / "first-visit.json"
+        self.first_visit.write_text("{}", encoding="utf-8")
+        self.pin = Path(self.directory) / "tenant-image.pin"
+        self.pin.write_text(json.dumps({"release": "2026.11.1"}), encoding="utf-8")
+        self.boot_record = Path(self.directory) / "boot-record.json"
+        self.boot_record.write_text(json.dumps({"release": "2026.10.1"}),
+                                    encoding="utf-8")
+        self.boot_report = Path(self.directory) / "attest.json"
+        encoded = base64.b64encode(KEY_TEXT.encode()).decode()
+        self.cmdline = (
+            "root=/dev/mapper/root_crypt ro console=tty0 bb.host=odl-test"
+            " bb.iid=168020b4 bb.key=" + encoded
+        )
+
+    def facts(self, *, boot_report: bool = True):
+        if boot_report:
+            self.boot_report.write_text(json.dumps({"release": "2026.11.23-5"}),
+                                        encoding="utf-8")
+        return self.firstboot.boot_record_facts(
+            self.cmdline, boot_report_path=str(self.boot_report),
+            pin_path=str(self.pin), boot_key_path=str(self.boot_key),
+            boot_record_path=str(self.boot_record),
+            host_key_path=str(self.host_key),
+            first_visit_path=str(self.first_visit))
+
+    def test_the_boot_reports_release_wins_over_an_older_pin(self) -> None:
+        record, _key, reason, _note = self.facts()
+        self.assertEqual(reason, "")
+        assert record is not None
+        self.assertEqual(record["release"], "2026.11.23-5")
+
+    def test_without_a_boot_report_the_pin_is_the_source(self) -> None:
+        record, _key, reason, _note = self.facts(boot_report=False)
+        self.assertEqual(reason, "")
+        assert record is not None
+        self.assertEqual(record["release"], "2026.11.1")
+
+    def test_without_a_boot_report_or_pin_the_boot_record_is_the_source(self) -> None:
+        self.pin.unlink()
+        record, _key, reason, _note = self.facts(boot_report=False)
+        self.assertEqual(reason, "")
+        assert record is not None
+        self.assertEqual(record["release"], "2026.10.1")
+
+    def test_a_malformed_boot_report_is_named_not_silently_replaced(self) -> None:
+        self.boot_report.write_text(json.dumps({"release": "latest"}), encoding="utf-8")
+        record, _key, reason, _note = self.facts(boot_report=False)
+        self.assertIsNone(record)
+        self.assertIn("boot report", reason)
 
 
 if __name__ == "__main__":
