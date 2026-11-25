@@ -15847,6 +15847,22 @@ def first_visit_signin_set(layout: Layout) -> bool:
     return isinstance(state, dict) and bool(state.get("signin_set_at"))
 
 
+def first_visit_owner_visited(layout: Layout) -> bool:
+    """True once the owner's own use of the page recorded the sign-in.
+
+    ``used_at`` (the classic setup, a reset, a deploy) and ``first_login_at``
+    (the seeded login) are the state's record that the hash in the .env is the
+    owner's, not a placeholder. Both survive a reset, so a seeded writer must
+    not revert a password the owner chose (ODL-947).
+    """
+    try:
+        state = json.loads(layout.first_visit_state.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    return isinstance(state, dict) and bool(
+        state.get("used_at") or state.get("first_login_at"))
+
+
 def stamp_signin_set(layout: Layout, dry: bool) -> bool:
     """Record that the .env now holds the owner's sign-in (ODL-925).
 
@@ -15888,8 +15904,11 @@ def ensure_env(layout: Layout, password: str | None, username: str,
     Under ``--first-visit`` the hash is the sign-in the seed carries: the
     registration password's scrypt verifier (B-once, ODL-925), written before
     the Webapp's first boot so the first visit is a login. A state whose
-    ``signin_set_at`` is set already says the .env holds the owner's sign-in,
-    so the file is kept. A run with **no** seeded verifier (a classic install)
+    ``signin_set_at`` is set says the .env holds the owner's sign-in, so the
+    file is kept **when it holds the seed's verifier** — or a hash the owner's
+    own visit recorded. A stamp alone is not proof: release ``2026.11.23-5``
+    stamped it before any writer ran, and the image's placeholder survived
+    under it (ODL-947). A run with **no** seeded verifier (a classic install)
     writes a placeholder for a discarded random password until the first-visit
     page writes the owner's: nobody can sign in before that. The placeholder is
     rewritten on every run before the visit, even when the allowlist already
@@ -15900,6 +15919,9 @@ def ensure_env(layout: Layout, password: str | None, username: str,
     """
     target = layout.hermes_home / ".env"
     signin_set = first_visit_signin_set(layout) if first_visit else False
+    owner_visited = first_visit_owner_visited(layout) if first_visit else False
+    seeded = bool(first_visit and sign_in_hash)
+    existing_hash = ""
     if target.is_file():
         text = target.read_text(encoding="utf-8")
         outside, seat = count_env_violations(text)
@@ -15912,8 +15934,13 @@ def ensure_env(layout: Layout, password: str | None, username: str,
                 "error: --signin-password does not match the existing hash in "
                 f"{target}; omit it to keep the current password, or reset the file"
             )
+        # The stamp is trusted only while the .env agrees with it: when this
+        # run carries the seed's verifier and the file does not hold it — and
+        # no page visit recorded a hash of the owner's own — this run writes
+        # the verifier and stamps after the write (ODL-947).
+        seeded_hash_missing = seeded and existing_hash != sign_in_hash and not owner_visited
         if (sorted(keys) == sorted(TENANT_ENV_KEYS) and outside == 0 and seat == 0
-                and not (first_visit and not signin_set)):
+                and not (first_visit and not signin_set) and not seeded_hash_missing):
             mode = target.stat().st_mode & 0o777
             changed = False
             if mode != 0o600:
@@ -15923,9 +15950,12 @@ def ensure_env(layout: Layout, password: str | None, username: str,
                 changed = True
             print(f"same         {target} (mode 0600, 3 allowlisted keys, allowlist ok)")
             return changed, password
-        reason = ("the sign-in hash is a placeholder until first visit"
-                  if first_visit and not signin_set
-                  else "outside the allowlist: %d; seat secrets: %d" % (outside, seat))
+        if seeded_hash_missing:
+            reason = "the .env does not hold the seed's verifier"
+        elif first_visit and not signin_set:
+            reason = "the sign-in hash is a placeholder until first visit"
+        else:
+            reason = "outside the allowlist: %d; seat secrets: %d" % (outside, seat)
         print(f"{'would rewrite' if dry else 'rewrite':<12} {target} ({reason})")
     else:
         values = {}
@@ -15934,7 +15964,7 @@ def ensure_env(layout: Layout, password: str | None, username: str,
     if dry:
         return True, password
     password_hash = values.get("HERMES_DASHBOARD_BASIC_AUTH_PASSWORD_HASH") or ""
-    if first_visit and not signin_set and sign_in_hash:
+    if seeded and (not signin_set or (existing_hash != sign_in_hash and not owner_visited)):
         # B-once: the seed carries the account's own verifier, and this is the
         # one write that puts it in front of the gate before the first visit.
         # The plaintext is never here — only the scrypt string.
@@ -15964,9 +15994,10 @@ def ensure_env(layout: Layout, password: str | None, username: str,
     if outside or seat:
         raise SystemExit(f"error: rendered .env violates the allowlist (outside={outside}, seat={seat})")
     write_atomic(target, desired.encode("utf-8"), 0o600, *user_ids(layout))
-    if first_visit and not signin_set and sign_in_hash:
-        # The state's meaning follows the .env: a seeded verifier is a usable
-        # sign-in, so the page serves the login form from the first boot.
+    if seeded and password_hash == sign_in_hash:
+        # The state's meaning follows the .env: this run ends with the seed's
+        # verifier in the file, so the page serves the login form. An already
+        # stamped state is left alone by stamp_signin_set (ODL-947).
         stamp_signin_set(layout, dry)
     return True, password
 

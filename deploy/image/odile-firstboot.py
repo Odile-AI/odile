@@ -418,16 +418,22 @@ def cached_seed_bytes(seed_cache: str, instance_id: str) -> bytes | None:
     return raw
 
 
-def first_visit_state(token: str, created_at: str | None = None,
-                      signin_set: bool = False) -> bytes:
+def first_visit_state(token: str, created_at: str | None = None) -> bytes:
     """ODL-457's state file: the token's SHA-256, and nothing secret.
 
     Written before the installer runs, so the page it enables has a hash to
     check. A machine that already has the file keeps it: a spent page stays
-    spent, and a re-run must not re-open it. B-once (ODL-925): a seeded first
-    boot writes its sign-in verifier into the tenant .env in the same run, so
-    the state is stamped ``signin_set_at`` — the page serves a login, not a
-    setup — and ``first_login_at`` stays null until the owner signs in.
+    spent, and a re-run must not re-open it.
+
+    ``signin_set_at`` is null here and stays null until a writer of the owner's
+    sign-in has put it in the tenant ``.env``: the key is a fact about that
+    file (``docs/security/DECISION-first-visit-state.md`` §1). The seeded first
+    boot's verifier reaches the file inside the installer — ``install-stack.sh``
+    writes it, then ``installer.ensure_env`` — so those writers stamp it, not
+    this one. Stamping on the seed's mere presence made the installer keep the
+    image's placeholder and the page serve a login nobody could pass (ODL-947,
+    release 2026.11.23-5). ``first_login_at`` stays null until the owner signs
+    in.
     """
     created = created_at or utcnow()
     return (json.dumps({
@@ -435,7 +441,7 @@ def first_visit_state(token: str, created_at: str | None = None,
         "token_sha256": sha256(token.encode("ascii")),
         "created_at": created,
         "used_at": None,
-        "signin_set_at": created if signin_set else None,
+        "signin_set_at": None,
         "first_login_at": None,
         "recovery_hash": None,
         "recovery_issued_at": None,
@@ -443,11 +449,11 @@ def first_visit_state(token: str, created_at: str | None = None,
     }, indent=2, sort_keys=True) + "\n").encode()
 
 
-def write_first_visit_state(path: str, token: str, signin_set: bool = False) -> bool:
+def write_first_visit_state(path: str, token: str) -> bool:
     """Write the state once; True when written, False when it already existed."""
     if os.path.exists(path):
         return False
-    write_atomic(path, first_visit_state(token, signin_set=signin_set), 0o600)
+    write_atomic(path, first_visit_state(token), 0o600)
     return True
 
 
@@ -1548,9 +1554,11 @@ def main(argv: list[str] | None = None) -> int:
                          base64.b64encode(signature) + b"\n", 0o600)
         if not token:
             raise Refusal("no setup token for the seed exchange")
+        # The pre-installer state: no sign-in yet. The seeded verifier reaches
+        # the .env inside the installer, and that writer stamps the state after
+        # the write (ODL-947).
         write_first_visit_state(os.path.join(os.path.dirname(args.seed_cache),
-                                             "first-visit.json"), token,
-                                signin_set=bool(seed.get("sign_in_hash")))
+                                             "first-visit.json"), token)
 
         # A rebuild (ODL-215 follow-up): the seed carries the tenant's OLD
         # repository password, sealed under this boot's setup token. Write it

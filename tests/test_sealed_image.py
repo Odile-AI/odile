@@ -2987,10 +2987,11 @@ class FirstbootScriptTests(unittest.TestCase):
         The build writes a random secret into the image, so every disk built
         from one image shared it. The first boot (`--seed` is in the argv) of a
         published image must replace it with a secret generated on this
-        machine, and must leave the file alone once the first-visit page has
-        set the owner's sign-in (`signin_set_at`), so a reboot keeps the secret
-        byte for byte. Both halves live in install-stack.sh's production
-        branch; the boot behaviour is measured in docs/runbooks/image.md §13.
+        machine, and must leave the file alone once the .env already holds the
+        seed's verifier or the owner's own visit recorded the sign-in, so a
+        reboot keeps the secret byte for byte. Both halves live in
+        install-stack.sh's production branch; the boot behaviour is measured in
+        docs/runbooks/image.md §13.
         """
         installer = (IMAGE / "install-stack.sh").read_text(encoding="utf-8")
         self.assertIn("fresh_secret", installer)
@@ -3001,12 +3002,23 @@ class FirstbootScriptTests(unittest.TestCase):
         # The first boot is the run that carries --seed; the build has none.
         self.assertIn('[ -n "$SEED_FILE" ]', branch)
         self.assertIn("this machine's own secret", branch)
-        # Keep once the sign-in exists: that check must come before the
-        # rewrite, or a reboot after the visit would rotate the secret and
-        # invalidate every session cookie the owner holds.
-        self.assertLess(branch.index("first_visit_signin_set"),
-                        branch.index("this machine's own secret"),
-                        "the first boot must keep the secret once signin_set_at exists")
+        # Keep once the sign-in exists: both keep-checks — the .env already
+        # carries the seed's verifier, or the owner's own visit recorded the
+        # hash — must come before the rewrite, or a reboot would rotate the
+        # secret and invalidate every session cookie the owner holds. The stamp
+        # is not trusted as the keep signal on its own: release 2026.11.23-5
+        # stamped it before the verifier was written (ODL-947).
+        opened = branch.index('    elif [ -n "$SEED_SIGNIN" ]; then')
+        closed = branch.index("    elif first_visit_signin_set; then", opened)
+        seeded = branch[opened:closed]
+        self.assertIn('if env_holds_signin "$SEED_SIGNIN"; then', seeded)
+        self.assertIn("first_visit_signin_set && first_visit_owner_visited", seeded)
+        write = seeded.index("write_env")
+        self.assertLess(seeded.index('if env_holds_signin "$SEED_SIGNIN"; then'), write,
+                        "the first boot must keep the secret once the verifier is in the .env")
+        self.assertLess(seeded.index("first_visit_signin_set && first_visit_owner_visited"),
+                        write,
+                        "the first boot must keep the secret once the owner has visited")
         # And the rewrite must be a fresh value, never the image's.
         self.assertIn("$(fresh_secret)", branch)
         self.assertIn("$(discarded_scrypt_hash)", branch)
