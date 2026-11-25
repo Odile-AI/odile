@@ -1036,17 +1036,19 @@ issued — fails against the same detached signature:
 $ cp installer/odile_install.py /tmp/edited.py
 $ printf 'x' >> /tmp/edited.py
 $ sha256sum /tmp/edited.py
-3d19994053721dd69700b309b440d8bbfd99a1fed9f98ce86ace6ace7859a048  /tmp/edited.py
+22914d1fc0032eef4c9948597f110359ebda0dd486a85c1eeabdb3ce0d1b7f89  /tmp/edited.py
 $ /usr/bin/python3 /tmp/edited.py --verify-signature \
       --pubkey installer/odile-signing-key.pub --signature installer/odile_install.py.sig
 signing key  sha256 13e8c2aee8263f550033448c8193a82b89498f533f52943e09c14d22e5b036e2 · SHA256:ZyFEbkw2oetDml63XaHTix0kUrR2kAVGZaaeDAHvXu8
-signature: BAD (sha256 3d19994053721dd69700b309b440d8bbfd99a1fed9f98ce86ace6ace7859a048)
+signature: BAD (sha256 22914d1fc0032eef4c9948597f110359ebda0dd486a85c1eeabdb3ce0d1b7f89)
 $ echo $?
 3
 ```
 
-Recorded on 2026-11-14 and re-measured on 2026-11-23 from the installer at this
-head (ODL-925's follow-up re-cut, `2026.11.23-6`; over t_fc412bd9's tenant
+Recorded on 2026-11-14 and re-measured on 2026-11-25 from the installer at this
+head (the ODL-947 follow-up's `2026.11.23-9`; over ODL-926's one-code re-cut,
+`2026.11.23-8`; over ODL-925's follow-up re-cut, `2026.11.23-6`; over
+t_fc412bd9's tenant
 `/verify` header-margin cut, `2026.11.23-5`; over ODL-929's
 verify-page and installed-help cut, `2026.11.23-4`; over ODL-925's B-once
 re-cut, `2026.11.23-3`; over the same card's brand-round cut,
