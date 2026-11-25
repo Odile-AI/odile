@@ -82,6 +82,9 @@ ACCOUNT_HOST = "https://test.odile.fyi"
 NOW = int(datetime(2026, 11, 9, 12, 0, tzinfo=timezone.utc).timestamp())
 MACHINE_EXPIRES = int(datetime(2026, 12, 11, 12, 0, tzinfo=timezone.utc).timestamp())
 RELEASE = "2026.11.1"
+# The re-ordered machine's pin (ODL-947): a rebuild under a newer release, so
+# the web row written `COALESCE` at the first order has to be moved, not kept.
+NEXT_RELEASE = "2026.12.0"
 # What the provider claims its machine booted. ODL-398's rule: an observation,
 # never an instruction — the pin's `provision_release` is the only source.
 PROVIDER_RELEASE = "2026.09.9"
@@ -324,6 +327,16 @@ class ClaimBase(unittest.TestCase):
 
     def tenant(self) -> sqlite3.Row:
         return self.con.execute("SELECT * FROM tenants WHERE slug = ?", (SLUG,)).fetchone()
+
+    def spine_release(self) -> str | None:
+        return self.con.execute(
+            "SELECT release FROM tenant_state WHERE slug = ?", (SLUG,)
+        ).fetchone()["release"]
+
+    def state(self) -> str:
+        return self.con.execute(
+            "SELECT state FROM tenant_state WHERE slug = ?", (SLUG,)
+        ).fetchone()["state"]
 
 
 # --------------------------------------------------------------------- schema
@@ -699,6 +712,81 @@ class ProvisionTests(ClaimBase):
             ).fetchone()["release"],
             RELEASE,
         )
+
+    def test_a_rebuild_orders_the_new_release_on_both_rows(self) -> None:
+        """ODL-947: a rebuilt machine's pin moves the web row too.
+
+        The shape is a rebuild: the first machine is destroyed, the spine row
+        is reopened (its machine columns and detail go, so no boot record
+        survives), and the worker orders the replacement under a newer pin. The
+        web row's release was written `COALESCE` at the first order and nothing
+        after it touches the column, so the state advance is the write that has
+        to bring the two rows together. Until this card it did not: the gate
+        skipped a spine row that already had a release, which `store.provision`
+        had just set to the new pin, and the account page, the ready mail and
+        the daily brief kept reading the dead machine's release.
+        """
+        from odilectl.state import StateStore
+
+        self.paid_claim()
+        first = self.provision(FixtureProvider())
+        self.assertTrue(first.ok, first.reason)
+        self.assertEqual(self.tenant()["release"], RELEASE)
+        self.assertEqual(self.spine_release(), RELEASE)
+
+        store = StateStore(self.con)
+        store.destroy(SLUG, reason="the fixture machine died")
+        store.reopen(SLUG, reason="replacement machine")
+        self.assertEqual(self.state(), "claimed")
+        # The operator marks the dead machine on the web row: it is no longer a
+        # ready tenant, so the worker orders rather than skips.
+        self.con.execute("UPDATE tenants SET state = 'churned' WHERE slug = ?", (SLUG,))
+        self.con.commit()
+        self.write_pin(release=NEXT_RELEASE)
+
+        second = self.provision(FixtureProvider(ipv4="203.0.113.121"), now=NOW + 600)
+        self.assertTrue(second.ok, second.reason)
+        self.assertFalse(second.skipped)
+
+        self.assertEqual(self.tenant()["release"], NEXT_RELEASE)
+        self.assertEqual(self.spine_release(), NEXT_RELEASE)
+        assert second.email_path is not None
+        facts = json.loads(
+            Path(second.email_path).with_suffix(".json").read_text(encoding="utf-8")
+        )
+        self.assertEqual(facts["release"], NEXT_RELEASE)
+
+    def test_a_repeat_provision_agrees_the_rows_on_the_spine(self) -> None:
+        """ODL-947: the skip path never replays the web row's stale release.
+
+        A rebuild can leave the web row on the dead machine's release (the
+        `COALESCE` order write) while the spine names the new order. A re-run
+        of provision skips — the machine is ordered and the ready mail queued —
+        and the skip path re-advances the state. The spine's release is the
+        newer record, so it is the value the web row converges to; passing the
+        web row's value as the order's release would walk the spine backwards.
+        """
+        self.paid_claim()
+        first = self.provision(FixtureProvider())
+        self.assertTrue(first.ok, first.reason)
+        # The shape to repair: the spine has the new order, the web row the
+        # dead machine's release.
+        self.con.execute("UPDATE tenants SET release = ? WHERE slug = ?", (RELEASE, SLUG))
+        self.con.execute(
+            "UPDATE tenant_state SET release = ? WHERE slug = ?", (NEXT_RELEASE, SLUG)
+        )
+        self.con.commit()
+
+        replay = self.provision(FixtureProvider(), now=NOW + 60)
+        self.assertTrue(replay.skipped)
+
+        self.assertEqual(self.spine_release(), NEXT_RELEASE)
+        self.assertEqual(self.tenant()["release"], NEXT_RELEASE)
+        # A second skip is the convergence check: nothing moves.
+        third = self.provision(FixtureProvider(), now=NOW + 120)
+        self.assertTrue(third.skipped)
+        self.assertEqual(self.spine_release(), NEXT_RELEASE)
+        self.assertEqual(self.tenant()["release"], NEXT_RELEASE)
 
     def test_a_pin_without_provision_release_orders_nothing(self) -> None:
         """An unpinned boot release fails closed before the provider is called."""

@@ -215,8 +215,11 @@ _lock = threading.Lock()
 # `manage.py migrate`, so the live database and a test database cannot drift.
 # Every statement is IF NOT EXISTS: running this twice changes nothing.
 #
-# v3 adds `tenants.release`: the release the machine was ordered to boot
-# (ODL-398). The migration is an additive `ALTER TABLE`, guarded by
+# v3 adds `tenants.release`: the release the account page, the ready mail and
+# the daily brief read. It is the pin's `provision_release` from the order
+# until the machine's boot record names what it installed — that observation
+# wins, and every writer converges the row on it (ODL-398, ODL-947).
+# The migration is an additive `ALTER TABLE`, guarded by
 # `PRAGMA table_info`, because `CREATE TABLE IF NOT EXISTS` cannot add a
 # column to a table that already exists.
 #
@@ -264,7 +267,8 @@ CREATE TABLE IF NOT EXISTS tenants (
     server_id        TEXT    UNIQUE,
     ipv4             TEXT,
     plan             TEXT,
-    -- the release the machine was ordered to boot, from the pin (ODL-398)
+    -- the release the machine reports it installed (the pin before its first
+    -- boot record; ODL-398, ODL-947)
     release          TEXT,
     expires_at       TEXT,
     setup_token_hash TEXT    UNIQUE,
