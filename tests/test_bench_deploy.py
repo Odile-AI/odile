@@ -993,11 +993,16 @@ class ProbeTickTests(unittest.TestCase):
         self.script.write_text("#!/bin/sh\n", encoding="utf-8")
         self.saved = (deploy.PROBE_SCRIPT, deploy.PROBE_TIMEOUT, deploy.run,
                       deploy.open_bench_alert, deploy.resolve_bench_alert,
-                      deploy.port_holders, deploy.is_bench_unit, deploy.terminate)
+                      deploy.port_holders, deploy.is_bench_unit, deploy.terminate,
+                      deploy.wait_for_bench)
         deploy.PROBE_SCRIPT = self.script
         # The tick looks at the live port before it probes; keep the test off
         # this host's 8082 unless a test puts a holder there.
         deploy.port_holders = lambda port: []
+        # ODL-353 follow-up: the tick waits for the bench's listener before it
+        # probes. Already bound is the steady state, so the wait costs nothing
+        # and prints nothing — the wait's own class asserts the rest.
+        deploy.wait_for_bench = lambda *args, **kwargs: 0.0
         deploy.is_bench_unit = lambda pid: False
         self.terminated: list[int] = []
         deploy.terminate = lambda pid: self.terminated.append(pid)
@@ -1009,7 +1014,8 @@ class ProbeTickTests(unittest.TestCase):
     def tearDown(self) -> None:
         (deploy.PROBE_SCRIPT, deploy.PROBE_TIMEOUT, deploy.run,
          deploy.open_bench_alert, deploy.resolve_bench_alert,
-         deploy.port_holders, deploy.is_bench_unit, deploy.terminate) = self.saved
+         deploy.port_holders, deploy.is_bench_unit, deploy.terminate,
+         deploy.wait_for_bench) = self.saved
         self.tmp.cleanup()
 
     def tick(self, returncode: int, text: str) -> tuple[int, str]:
@@ -1142,6 +1148,118 @@ class ProbeTickTests(unittest.TestCase):
         self.assertIn("pid 5151", out)
         self.assertEqual(self.opened, [line])
         self.assertEqual(self.resolved, [])
+
+
+class ProbeWaitsForTheBindTests(unittest.TestCase):
+    """ODL-353 follow-up — the Persistent catch-up tick must not race the bind.
+
+    On 2026-11-25T04:55:41Z the timer caught up the tick it missed during the
+    reboot in the same second ``odile-bench.service`` (``Type=simple``) first
+    bound 127.0.0.1:8082, so the tick's one line was ``bench probe: FAIL … 502``
+    and the boot record's only failed unit was this one. The tick now waits
+    (bounded) for the bench's listener before it probes; a bench that never
+    binds still probes red and still raises the alert, because the wait is a
+    measurement of the bench, never a substitute for the probe.
+    """
+
+    class Clock:
+        """A monotonic clock whose sleep moves it; the tests never sleep."""
+
+        def __init__(self, step: float = 0.2) -> None:
+            self.now = 0.0
+            self.step = step
+            self.sleeps: list[float] = []
+
+        def __call__(self) -> float:
+            return self.now
+
+        def sleep(self, seconds: float) -> None:
+            self.sleeps.append(seconds)
+            self.now += seconds
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.script = Path(self.tmp.name) / "check_bench.sh"
+        self.script.write_text("#!/bin/sh\n", encoding="utf-8")
+        self.saved = (deploy.PROBE_SCRIPT, deploy.run, deploy.port_holders,
+                      deploy.open_bench_alert, deploy.resolve_bench_alert,
+                      deploy.wait_for_bench)
+        deploy.PROBE_SCRIPT = self.script
+        deploy.port_holders = lambda port: []
+        self.opened: list[str] = []
+        deploy.open_bench_alert = lambda line, now: self.opened.append(line)
+        deploy.resolve_bench_alert = lambda now: False
+
+    def tearDown(self) -> None:
+        (deploy.PROBE_SCRIPT, deploy.run, deploy.port_holders,
+         deploy.open_bench_alert, deploy.resolve_bench_alert,
+         deploy.wait_for_bench) = self.saved
+        self.tmp.cleanup()
+
+    def test_the_wait_returns_the_moment_the_listener_answers(self) -> None:
+        clock = self.Clock()
+        answers = [False, False, True]
+        waited = deploy.wait_for_bench(1.0, listener=lambda port: answers.pop(0),
+                                       clock=clock, sleep=clock.sleep)
+        self.assertAlmostEqual(waited, 0.4)
+        self.assertEqual(clock.sleeps, [0.2, 0.2])
+        self.assertAlmostEqual(clock.now, 0.4)
+
+    def test_the_wait_gives_up_at_its_deadline_and_returns_none(self) -> None:
+        clock = self.Clock()
+        waited = deploy.wait_for_bench(1.0, listener=lambda port: False,
+                                       clock=clock, sleep=clock.sleep)
+        self.assertIsNone(waited)
+        self.assertGreaterEqual(clock.now, 1.0)
+        self.assertGreater(len(clock.sleeps), 0)
+
+    def test_an_already_bound_port_costs_no_sleep(self) -> None:
+        clock = self.Clock()
+        waited = deploy.wait_for_bench(1.0, listener=lambda port: True,
+                                       clock=clock, sleep=clock.sleep)
+        self.assertEqual(waited, 0.0)
+        self.assertEqual(clock.sleeps, [])
+
+    def test_the_tick_waits_before_it_probes_and_says_how_long(self) -> None:
+        order: list[str] = []
+        line = ("bench probe: OK https://test.odile.fyi/ -> 200 server: odile-bench; "
+                "127.0.0.1:8082 pid 9 /usr/bin/python3 /opt/odile-test/current/app.py")
+
+        def wait(*args, **kwargs):
+            order.append("wait")
+            return 1.4
+
+        def fake_run(command, **kwargs):
+            order.append("probe")
+            return subprocess.CompletedProcess(args=command, returncode=0,
+                                               stdout=line + "\n", stderr="")
+
+        deploy.wait_for_bench = wait
+        deploy.run = fake_run
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            code = deploy.probe_tick()
+        shown = out.getvalue()
+        self.assertEqual(code, 0)
+        self.assertEqual(order, ["wait", "probe"])
+        self.assertIn("127.0.0.1:8082 accepting after 1.4s", shown)
+        self.assertLess(shown.index("accepting after 1.4s"), shown.index(line))
+
+    def test_a_bench_that_never_binds_still_probes_red_and_alerts(self) -> None:
+        line = ("bench probe: FAIL https://test.odile.fyi/ -> 502 server: odile-bench; "
+                "127.0.0.1:8082 no listener")
+        deploy.wait_for_bench = lambda *args, **kwargs: None
+        deploy.run = lambda command, **kwargs: subprocess.CompletedProcess(
+            args=command, returncode=1, stdout="", stderr=line + "\n")
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            code = deploy.probe_tick()
+        shown = out.getvalue()
+        self.assertEqual(code, 1)
+        self.assertIn("did not accept a connection within", shown)
+        self.assertEqual(shown.count(line), 1)
+        self.assertEqual(self.opened, [line])
+        self.assertLess(shown.index("did not accept a connection"), shown.index(line))
 
 
 if __name__ == "__main__":

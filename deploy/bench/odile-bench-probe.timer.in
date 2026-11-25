@@ -3,6 +3,12 @@
 # The same cadence as HQ's other five-minute checks (odile-claim.timer,
 # odile-attest-refresh.timer). Persistent=true catches one missed tick after a
 # host reboot: a bench must not read healthy merely because the box restarted.
+#
+# ODL-353 follow-up: that catch-up is also why this timer and the bench's first
+# bind can collide at boot. OnCalendar=*:0/5 is kept as the only cadence — the
+# tick itself waits for 127.0.0.1:8082 (odile-bench-probe.service.in) rather
+# than moving the first tick to OnBootSec, because Persistent's catch-up is what
+# makes a rebooted box measure its bench instead of assuming it healthy.
 [Unit]
 Description=Odile bench liveness probe — every five minutes (ODL-936)
 

@@ -9,6 +9,18 @@
 #
 # ExecStart is `--probe-tick`, not the probe itself: the tick prints the one
 # line and feeds the alert path, while the probe stays a plain manual script.
+#
+# ODL-353 follow-up — the boot race. `odile-bench-probe.timer` is Persistent,
+# so the tick missed during a reboot runs the moment the timer starts; this
+# unit is ordered `After=odile-bench.service`, but that unit is Type=simple and
+# systemd marks it active when app.py is exec'd, before it binds
+# 127.0.0.1:8082. On 2026-11-25T04:55:41Z the catch-up tick and the first bind
+# met in the same second, the tick measured a Caddy 502, and this unit was the
+# boot record's only failed one. The tick now waits for the bench's listener
+# (`--probe-tick` → `wait_for_bench`, bounded by BENCH_WAIT_SECONDS in
+# deploy_bench.py) before it probes. The wait is not a failure path: a bench
+# that never binds still probes red and still raises the alert, and the timeout
+# below leaves room for the 20 s wait plus the probe's own 90 s.
 [Unit]
 Description=Odile bench liveness probe — test.odile.fyi (ODL-936)
 Documentation=https://odile.fyi
@@ -26,4 +38,4 @@ PrivateTmp=yes
 ProtectSystem=strict
 ProtectHome=read-only
 ReadWritePaths=/var/lib/odile
-TimeoutStartSec=120
+TimeoutStartSec=180
