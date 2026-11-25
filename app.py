@@ -215,8 +215,11 @@ _lock = threading.Lock()
 # `manage.py migrate`, so the live database and a test database cannot drift.
 # Every statement is IF NOT EXISTS: running this twice changes nothing.
 #
-# v3 adds `tenants.release`: the release the machine was ordered to boot
-# (ODL-398). The migration is an additive `ALTER TABLE`, guarded by
+# v3 adds `tenants.release`: the release the account page, the ready mail and
+# the daily brief read. It is the pin's `provision_release` from the order
+# until the machine's boot record names what it installed — that observation
+# wins, and every writer converges the row on it (ODL-398, ODL-947).
+# The migration is an additive `ALTER TABLE`, guarded by
 # `PRAGMA table_info`, because `CREATE TABLE IF NOT EXISTS` cannot add a
 # column to a table that already exists.
 #
@@ -264,7 +267,8 @@ CREATE TABLE IF NOT EXISTS tenants (
     server_id        TEXT    UNIQUE,
     ipv4             TEXT,
     plan             TEXT,
-    -- the release the machine was ordered to boot, from the pin (ODL-398)
+    -- the release the machine reports it installed (the pin before its first
+    -- boot record; ODL-398, ODL-947)
     release          TEXT,
     expires_at       TEXT,
     setup_token_hash TEXT    UNIQUE,
@@ -981,11 +985,13 @@ def queue_ready(row: sqlite3.Row, tenant: sqlite3.Row | None, *,
     ODL-947: `measurement` is the machine's own boot-report measurement, the
     value the worker read from the machine's `/attestation` once its `/verify`
     answered. With a facts sidecar already written, the sidecar's value is the
-    mail's. A legacy account with no sidecar (a row from before this card) is
-    read from the machine itself; if the machine has not reported yet the press
-    fails rather than printing the release pin as if it were this machine's.
-    `domain` and `outbox` let the root worker (the account queue) write the
-    same bytes from another process, with the bench's own suffix and queue.
+    mail's. A sidecar that still carries the release pin is a row or a fact
+    file from before this card (the mail's old value) and is re-cut from the
+    machine itself; so is a legacy account with no sidecar. If the machine has
+    not reported yet the press fails rather than printing the release pin as if
+    it were this machine's. `domain` and `outbox` let the root worker (the
+    account queue) write the same bytes from another process, with the bench's
+    own suffix and queue.
     """
     slug = row["slug"]
     outbox_dir = outbox or OUTBOX
@@ -994,8 +1000,14 @@ def queue_ready(row: sqlite3.Row, tenant: sqlite3.Row | None, *,
     url = "https://" + host
     value = measurement
     if value is None:
-        facts_path = claim.ReadyOutbox(outbox_dir).facts_path(slug)
-        if not facts_path.is_file():
+        staged = claim.ReadyOutbox(outbox_dir).facts(slug)
+        staged_value = str((staged or {}).get("measurement") or "").strip().lower()
+        if not staged_value or staged_value == pinned_measurement():
+            # No sidecar, or one whose value is still the release pin: a row or
+            # a sidecar from before this card, or facts staged at order time,
+            # before the machine reported. The press reads the machine's own
+            # boot-report value. If the machine has not answered, the press
+            # fails rather than printing the pin as if it were this machine's.
             value = claim.machine_measurement(suffix, slug)
             if value is None:
                 raise RuntimeError(

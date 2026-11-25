@@ -74,8 +74,13 @@ from odilectl.provision import DEFAULT_PIN, pinned_release  # noqa: E402
 BASE_URL = "https://servury.com/api/reseller.php"
 SECRET_FILE = "/root/.odile/servury_reseller_key"
 DEFAULT_DB = os.environ.get("ODILE_DB", "/var/lib/odile/waitlist.db")
-DEFAULT_PLAN = 113  # Blackbox Plus, 4 vCPU / 8 GB / 100 GB, Canada
-DEFAULT_DAYS = 31
+# Savio's 2026-11-24 direction: a new machine is a Blackbox Nano at the annual
+# term (docs/runbooks/deploy.md, docs/evidence/nano-baseline.md). The tier is
+# not a preference — Servury cannot downgrade a machine, so a tenant placed on a
+# larger plan cannot move to a Nano without a rebuild. 138 is the Canada Nano
+# (1 vCPU / 2 GB / 25 GB); 139 is the Netherlands Nano and 141 the US one.
+DEFAULT_PLAN = 138  # Blackbox Nano, 1 vCPU / 2 GB / 25 GB, Canada
+DEFAULT_DAYS = 365
 MIN_RELEASE = (2026, 11, 1)
 
 SLUG_RE = re.compile(r"^odl-[0-9a-f]{6}$")
@@ -936,8 +941,10 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--slug", help="tenant slug, odl- plus six hex digits")
     parser.add_argument("--email", help="the tenant's email (tenants.email)")
     parser.add_argument("--key", help="the user's boot PUBLIC key file (exactly one line)")
-    parser.add_argument("--plan", type=int, default=DEFAULT_PLAN, help="plan id (default 113)")
-    parser.add_argument("--days", type=int, default=DEFAULT_DAYS, help="term in days (default 31)")
+    parser.add_argument("--plan", type=int, default=DEFAULT_PLAN,
+                        help=f"plan id (default {DEFAULT_PLAN}: Blackbox Nano)")
+    parser.add_argument("--days", type=int, default=DEFAULT_DAYS,
+                        help=f"term in days (default {DEFAULT_DAYS})")
     parser.add_argument("--preorder", action="store_true", help="pay now and queue a sold-out plan")
     parser.add_argument("--db", default=DEFAULT_DB, help=f"SQLite database (default {DEFAULT_DB})")
     parser.add_argument("--secret-file", default=SECRET_FILE, help="reseller key file")

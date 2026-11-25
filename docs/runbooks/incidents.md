@@ -757,7 +757,7 @@ There is no machine to restart and no disk to rebuild; the fix is a retry. Once
 the machine is recorded, a later run of the same timer asks its own
 `/attestation` and `/verify`; only an answering machine gets the recovery kit
 and the one ready email, and a failure in that second half keeps the machine and
-retries on the next tick (`claim status` reads `vm_ready_no_email`).
+retries on the next tick (`claim status` reads `waiting_for_guest`).
 
 ```sh
 1. /usr/bin/python3 -m odilectl.claim status <slug> --json   # provision: "failed"

@@ -439,7 +439,7 @@ records the machine and stages the mail's facts, and a later run asks the
 machine's own `/attestation` and `/verify` at `https://<slug>.<tenant domain>`.
 Only a machine that answers gets the one ready email, rendered from the staged
 facts with the machine's own launch measurement (the number its `/verify` page
-prints). Until then `claim status` says `vm_ready_no_email`, and the row stays
+prints). Until then `claim status` says `waiting_for_guest`, and the row stays
 `provisioned`.
 
 `scripts/deploy.sh` installs `odile-claim.service` (oneshot) and `odile-claim.timer`

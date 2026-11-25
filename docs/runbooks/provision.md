@@ -90,6 +90,11 @@ dry run: no money spent. The create body above is what --apply sends;
 balance 20.65 -> 1.66 USD after the order.
 ```
 
+That transcript is the 2026-11-09 run: `plan 113 … 31 days` was the script's
+default then. Since 2026-11-24 the defaults are **plan 138 (Blackbox Nano,
+Canada) and 365 days** — the same pair as the live config
+(`docs/runbooks/deploy.md`); the transcript below keeps its dated values.
+
 The equivalent `curl`, with the key line abridged here — the script sends the
 file's line byte for byte:
 
