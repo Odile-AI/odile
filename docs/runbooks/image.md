@@ -1481,11 +1481,19 @@ and after the visit. Three writers now make it the machine's:
 
 1. **The build** writes a random secret, as it must.
 2. **The first boot** (`install-stack.sh --seed` on a production image)
-   replaces it with this machine's own value and a fresh discarded hash. It is
-   the only writer that changes the secret, and it changes it once: when
-   `signin_set_at` exists the same branch prints
-   `same … (the owner's sign-in; this machine's own secret)` and touches
-   nothing, so a reboot never rotates the key under a live session.
+   replaces it with this machine's own value, and replaces the sign-in with
+   the seed's verifier (the password chosen at registration) when the seed
+   carries `sign_in_hash`; without one the file keeps a discarded hash no
+   password accepts (ODL-521/ODL-522). It is the only writer that changes the
+   secret, and it changes it once: when the `.env` already holds the seed's
+   verifier the same branch prints
+   `same … (the seed's verifier; this machine's own secret)`, and when the
+   owner's own visit recorded the hash (`used_at`/`first_login_at`) it prints
+   `same … (the owner's sign-in; this machine's own secret)`; either way it
+   touches nothing, so a reboot never rotates the key under a live session.
+   `signin_set_at` alone is not the keep signal: a state stamped by the
+   pre-ODL-947 order sits over the image's placeholder, and the branch then
+   writes the verifier and a fresh secret (ODL-947).
 3. **Every later writer keeps it.** The release installer's `ensure_env` reads
    the old value and writes it back byte for byte; the page's `write_env_hash`
    replaces the hash line only, and refuses a `.env` with no
