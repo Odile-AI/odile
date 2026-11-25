@@ -71,6 +71,22 @@ BOOT_KEY = (
     "tenant@odile"
 )
 
+# ODL-947: the two guest answers the worker's second phase can get. `no_answer`
+# is the real bench state right after the provider says "active"; `ready_answer`
+# is the machine's own report once its /verify serves.
+def no_answer(domain: str, slug: str):
+    return None
+
+
+def ready_answer(measurement: str):
+    def probe(domain: str, slug: str):
+        from odilectl.health import GuestAnswer
+
+        return GuestAnswer(slug=slug, host="%s.%s" % (slug, domain),
+                           measurement=measurement, release="2026.11.1",
+                           verify_bytes=50000, checked_at="2026-11-24T08:49:07Z")
+    return probe
+
 
 # --------------------------------------------------------------------- helpers
 
@@ -590,7 +606,12 @@ class ConfirmTests(FlowBase):
         self.assertIn("p.next{margin:8px 0 12px}", text)
 
     def test_a_machine_that_already_exists_is_not_queued_again(self):
-        """A replayed confirmation on an existing machine lands `ready`."""
+        """A replayed confirmation on an existing machine lands `building`.
+
+        ODL-947: the machine exists but its own report has not answered, so the
+        row is not `ready` and no ready mail exists; the account queue's second
+        phase moves it when the machine answers.
+        """
         email = self.email()
         # A tenant the claim path already provisioned, with the address of the
         # registration: the account adopts it instead of ordering a second one.
@@ -611,10 +632,12 @@ class ConfirmTests(FlowBase):
         token = self.confirmation_token(account["id"])
         self.assertEqual(request(self.port, "POST", "/confirm", form(token=token))[0], 303)
         confirmed = self.account(email)
-        self.assertEqual(confirmed["provision_state"], "ready")
+        self.assertEqual(confirmed["provision_state"], "building")
         self.assertIsNone(confirmed["provision_queued_at"])
         self.assertEqual(confirmed["server_id"], "srv-existing")
         self.assertEqual(confirmed["ipv4"], "203.0.113.7")
+        self.assertFalse((self.outbox / "ready" / ("%s.eml" % slug)).exists(),
+                         "an adopted machine queued a ready mail before answering")
 
 
 # --------------------------------------------------------------------- sessions
@@ -790,7 +813,6 @@ class RateLimitTests(unittest.TestCase):
 
 class FakeProvider:
     """The provider seam: no socket, no order, one recorded machine."""
-
     name = "fake"
 
     def __init__(self, *, fail_poll: bool = False, machines: list | None = None):
@@ -903,7 +925,8 @@ class WorkerTests(unittest.TestCase):
         with mock.patch.object(provision.keys, "issue", return_value=self.issued()), \
                 mock.patch.object(provision, "_ensure_dns", return_value="created"):
             results = provision.provision_queue(
-                self.load_config(), apply=True, provider_factory=lambda _c: provider)
+                self.load_config(), apply=True, provider_factory=lambda _c: provider,
+                guest_probe=no_answer)
         self.assertEqual(len(results), 1, results)
         self.assertTrue(results[0]["ok"], results)
         self.assertEqual(len(provider.created), 1)
@@ -919,7 +942,13 @@ class WorkerTests(unittest.TestCase):
             raw = connection.execute("SELECT * FROM tenant_keys").fetchone()
         finally:
             connection.close()
-        self.assertEqual(account["provision_state"], "ready")
+        # ODL-947: the provider's active is not the product's ready. The order
+        # finishes and its stamp is written; the row stays `building` until the
+        # machine's own answer, and no ready email exists yet.
+        self.assertEqual(account["provision_state"], "building")
+        self.assertIsNotNone(account["provision_finished_at"])
+        self.assertFalse((self.dir / "outbox" / "ready" /
+                          ("%s.eml" % self.slug)).exists())
         self.assertEqual(account["server_id"], "srv-1")
         self.assertEqual(account["ipv4"], "203.0.113.41")
         self.assertEqual(account["key_label"], "odile-" + self.slug)
@@ -930,14 +959,64 @@ class WorkerTests(unittest.TestCase):
         self.assertIsNotNone(raw)
         self.assertEqual(raw["key_prefix"], "sk-abc****")
 
+    def test_ready_needs_the_machines_own_verify_and_queues_the_mail_once(self):
+        """ODL-947: ordered is not ready; the machine's /verify is."""
+        measured = "c0" * 48
+        provider = FakeProvider()
+        with mock.patch.object(provision.keys, "issue", return_value=self.issued()), \
+                mock.patch.object(provision, "_ensure_dns", return_value="created"):
+            provision.provision_queue(
+                self.load_config(), apply=True, provider_factory=lambda _c: provider,
+                guest_probe=no_answer)
+        ready_path = self.dir / "outbox" / "ready" / ("%s.eml" % self.slug)
+        self.assertFalse(ready_path.exists(), "a ready mail was queued at order time")
+        connection = sqlite3.connect(self.db)
+        connection.row_factory = sqlite3.Row
+        try:
+            account = connection.execute("SELECT * FROM accounts WHERE id = ?",
+                                         (self.account_id,)).fetchone()
+        finally:
+            connection.close()
+        self.assertEqual(account["provision_state"], "building")
+
+        # The machine answers at its own name: exactly one mail, no press.
+        with mock.patch.object(provision.keys, "issue", return_value=self.issued()), \
+                mock.patch.object(provision, "_ensure_dns", return_value="same"):
+            results = provision.provision_queue(
+                self.load_config(), apply=True, provider_factory=lambda _c: provider,
+                guest_probe=ready_answer(measured))
+        self.assertEqual(len(results), 1, results)
+        self.assertTrue(results[0]["ready"], results)
+        self.assertTrue(ready_path.exists(), "the ready mail was not queued")
+        message = email.message_from_bytes(ready_path.read_bytes(),
+                                           policy=email.policy.default)
+        body = message.get_body(("plain",)).get_content()
+        self.assertIn("Measurement %s" % measured, body)
+        self.assertEqual(re.findall(r"\b[0-9a-f]{96}\b", body), [measured])
+        facts = json.loads(ready_path.with_suffix(".json").read_text(encoding="utf-8"))
+        self.assertEqual(facts["measurement"], measured)
+        before = hashlib.sha256(ready_path.read_bytes()).hexdigest()
+
+        # A later run with a different machine answer touches nothing: the row
+        # is ready and the queued bytes are the row's mail.
+        with mock.patch.object(provision.keys, "issue", return_value=self.issued()), \
+                mock.patch.object(provision, "_ensure_dns", return_value="same"):
+            again = provision.provision_queue(
+                self.load_config(), apply=True, provider_factory=lambda _c: provider,
+                guest_probe=ready_answer("d0" * 48))
+        self.assertEqual(again, [])
+        self.assertEqual(before, hashlib.sha256(ready_path.read_bytes()).hexdigest())
+
     def test_a_second_run_orders_nothing(self):
         provider = FakeProvider()
         with mock.patch.object(provision.keys, "issue", return_value=self.issued()), \
                 mock.patch.object(provision, "_ensure_dns", return_value="same"):
             provision.provision_queue(self.load_config(), apply=True,
-                                      provider_factory=lambda _c: provider)
+                                      provider_factory=lambda _c: provider,
+                                      guest_probe=no_answer)
             second = provision.provision_queue(self.load_config(), apply=True,
-                                               provider_factory=lambda _c: provider)
+                                               provider_factory=lambda _c: provider,
+                                               guest_probe=no_answer)
         self.assertEqual(second, [])
         self.assertEqual(len(provider.created), 1)
 
@@ -946,7 +1025,8 @@ class WorkerTests(unittest.TestCase):
         with mock.patch.object(provision.keys, "issue", return_value=self.issued()), \
                 mock.patch.object(provision, "_ensure_dns", return_value="same"):
             results = provision.provision_queue(
-                self.load_config(), apply=True, provider_factory=lambda _c: provider)
+                self.load_config(), apply=True, provider_factory=lambda _c: provider,
+                guest_probe=no_answer)
         self.assertEqual(len(results), 1)
         self.assertFalse(results[0]["ok"])
         self.assertIn("build failed", results[0]["reason"])
@@ -970,7 +1050,8 @@ class WorkerTests(unittest.TestCase):
         with mock.patch.object(provision.keys, "issue", return_value=self.issued()), \
                 mock.patch.object(provision, "_ensure_dns", return_value="same"):
             provision.provision_queue(self.load_config(), apply=True,
-                                      provider_factory=lambda _c: failing)
+                                      provider_factory=lambda _c: failing,
+                                      guest_probe=no_answer)
         connection = sqlite3.connect(self.db)
         try:
             connection.execute("UPDATE accounts SET provision_state = 'queued'"
@@ -982,7 +1063,8 @@ class WorkerTests(unittest.TestCase):
         with mock.patch.object(provision.keys, "issue", return_value=self.issued()), \
                 mock.patch.object(provision, "_ensure_dns", return_value="created"):
             results = provision.provision_queue(
-                self.load_config(), apply=True, provider_factory=lambda _c: provider)
+                self.load_config(), apply=True, provider_factory=lambda _c: provider,
+                guest_probe=no_answer)
         self.assertTrue(results[0]["ok"], results)
         self.assertEqual(len(provider.created), 1)
         self.assertEqual(provider.terminated, [])
@@ -1004,7 +1086,8 @@ class WorkerTests(unittest.TestCase):
         with mock.patch.object(provision.keys, "issue", return_value=self.issued()), \
                 mock.patch.object(provision, "_ensure_dns", return_value="same"):
             provision.provision_queue(self.load_config(), apply=True,
-                                      provider_factory=lambda _c: provider)
+                                      provider_factory=lambda _c: provider,
+                                      guest_probe=no_answer)
         self.assertEqual([m.hostname for m in provider.created], [self.slug])
 
 

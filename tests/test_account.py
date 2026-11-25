@@ -42,6 +42,7 @@ import unittest
 import urllib.parse
 from email import policy as email_policy
 from pathlib import Path
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
@@ -55,6 +56,10 @@ TRIAL_END = "2026-12-04T09:00:00Z"
 BRAND_TRIAL = "4 December 2026"
 D17 = "Your Odile password opens your machine too."
 WAIT = "You can close this page. We email you when the machine is ready."
+#: The value a provisioner writes after ODL-947: the machine's own boot-report
+#: measurement, distinct from the release pin on purpose (the two differ).
+MACHINE_MEASUREMENT = "c0" * 48
+MEASUREMENT_RE = re.compile(r"\b[0-9a-f]{96}\b")
 
 
 def free_port() -> int:
@@ -226,7 +231,8 @@ class AccountBase(unittest.TestCase):
         return self.outbox / "confirm" / ("%d.eml" % int(account_id))
 
     def seed_provisioned_ready(self, row: sqlite3.Row, *,
-                               at: int = 1795379886) -> tuple[str, str]:
+                               at: int = 1795379886,
+                               measurement: str | None = None) -> tuple[str, str]:
         """Write the outbox the provisioner writes: kit, facts, then the `.eml`.
 
         This is the installed shape the verifier reproduced: the ready email
@@ -235,6 +241,11 @@ class AccountBase(unittest.TestCase):
         login with the password chosen at registration; the token is the
         machine-side seed badge and the rebuild-seal key). It is also the shape
         that made every serialization pick a fresh random MIME boundary.
+
+        `measurement` defaults to the machine's own value, which is what the
+        provisioner writes after ODL-947; pass `app.pinned_measurement()` to
+        seed the pre-card shape whose mail printed the release pin.
+
         Returns the token and the kit text, so a test can assert where each one
         went — and that neither prints it.
         """
@@ -243,7 +254,8 @@ class AccountBase(unittest.TestCase):
         url = "https://" + host
         token = "ab" * 32
         first_visit_url = url + "/first-visit"
-        measurement = app.pinned_measurement()
+        if measurement is None:
+            measurement = MACHINE_MEASUREMENT
         kit_text = claim.render_recovery_kit(
             slug=slug,
             ipv4="203.0.113.42",
@@ -394,7 +406,10 @@ class FourStateTests(AccountBase):
         _email, row, cookie = self.state_account("building")
         _headers, text = self.page(cookie)
         self.assertIn("We have your address. The machine is being set up.", text)
-        self.assertIn("Its first boot prepares the encrypted disk, which is the slow part.", text)
+        # ODL-947: the wait is named once — the machine's own report answers.
+        self.assertIn("Its first boot prepares the encrypted disk, which is the "
+                      "slow part. We wait for the machine's own report to answer.",
+                      text)
         self.assertIn(WAIT, text)
         self.assertIn("Your machine is <strong>%s.test.odile.fyi</strong>. "
                       "It answers when it is ready." % row["slug"], text)
@@ -504,6 +519,77 @@ class ResendTests(AccountBase):
         self.assertEqual(settled, facts_path.read_bytes())
         self.assertEqual(before_message,
                          hashlib.sha256(message_path.read_bytes()).hexdigest())
+
+    def test_a_press_recuts_a_pre_card_sidecar_that_holds_the_release_pin(self):
+        """ODL-947 review round 2: the one pre-card ready tenant's sidecar.
+
+        `odl-12bceb.json` was written by the old press, so its measurement is
+        the release pin (`app.pinned_measurement()`) while the machine's own
+        `/attestation` prints a different value. `queue_ready` — the function
+        `/account/resend` calls for a ready row — must re-cut the sidecar and
+        the mail from the machine's own number; and once re-cut, a second press
+        must leave the same bytes. The app runs as a subprocess in this suite,
+        so the press is driven here directly, as the resend test above does.
+        """
+        row = self.seed_account(self.email(), "ready", tenant_ipv4="203.0.113.42")
+        slug = row["slug"]
+        pin = app.pinned_measurement()
+        self.seed_provisioned_ready(row, measurement=pin)
+        facts_path = self.outbox / "ready" / ("%s.json" % slug)
+        message_path = self.queued_ready(slug)
+        self.assertEqual(json.loads(facts_path.read_text(encoding="utf-8"))["measurement"],
+                         pin, "the fixture is not the pre-card shape")
+        seeded = message_path.read_bytes()
+        seeded_part = email.message_from_bytes(
+            seeded, policy=email_policy.default).get_body(("plain",))
+        self.assertIsNotNone(seeded_part)
+        assert seeded_part is not None
+        self.assertEqual(MEASUREMENT_RE.findall(seeded_part.get_content()), [pin],
+                         "the seeded pre-card mail does not print the release pin")
+
+        original_outbox = app.OUTBOX
+        app.OUTBOX = str(self.outbox)
+        try:
+            tenant = self.tenant(slug)
+            # A machine that cannot be read yet: the press fails rather than
+            # reprinting the release pin as if it were this machine's number.
+            with mock.patch.object(claim, "machine_measurement", return_value=None):
+                with self.assertRaises(RuntimeError):
+                    app.queue_ready(row, tenant)
+            self.assertEqual(seeded, message_path.read_bytes(),
+                             "the press rewrote the pre-card mail without the machine")
+            self.assertEqual(
+                json.loads(facts_path.read_text(encoding="utf-8"))["measurement"], pin)
+
+            # The machine answers at its own name: the press writes its value.
+            with mock.patch.object(claim, "machine_measurement",
+                                   return_value=MACHINE_MEASUREMENT):
+                app.queue_ready(row, tenant)
+            facts = json.loads(facts_path.read_text(encoding="utf-8"))
+            self.assertEqual(facts["measurement"], MACHINE_MEASUREMENT,
+                             "the press kept the release pin in the sidecar")
+            message = email.message_from_bytes(message_path.read_bytes(),
+                                              policy=email_policy.default)
+            body = message.get_body(("plain",))
+            self.assertIsNotNone(body)
+            assert body is not None
+            text = body.get_content()
+            self.assertEqual(MEASUREMENT_RE.findall(text), [MACHINE_MEASUREMENT],
+                             "the ready mail does not print exactly the machine's number")
+            self.assertNotIn(pin, text, "the ready mail still prints the release pin")
+            settled_mail = message_path.read_bytes()
+            settled_facts = facts_path.read_bytes()
+
+            # Re-cut once, then settled: a second press is the same bytes.
+            with mock.patch.object(claim, "machine_measurement",
+                                   return_value=MACHINE_MEASUREMENT):
+                app.queue_ready(row, tenant)
+            self.assertEqual(settled_mail, message_path.read_bytes(),
+                             "a second press changed the re-cut mail's bytes")
+            self.assertEqual(settled_facts, facts_path.read_bytes(),
+                             "a second press changed the re-cut facts")
+        finally:
+            app.OUTBOX = original_outbox
 
     def test_the_resend_queues_a_tokenless_ready_email_and_repeats_byte_for_byte(self):
         address = self.email()
