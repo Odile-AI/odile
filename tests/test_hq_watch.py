@@ -11,6 +11,8 @@ retry can get wrong:
 
   * two failures send nothing; the third sends one;
   * a fourth and fifth failure do not send a second alert;
+  * the alert attempt (``alert_open``, ``alert_delivered=false``) is on disk
+    *before* the Matrix PUT, so a crash between the two leaves an alert owed;
   * a failure to deliver is retried with the *same* transaction id, so the
     homeserver deduplicates it;
   * an alert that landed but whose state write was lost is resent once with the
@@ -162,6 +164,46 @@ class StateMachineTest(unittest.TestCase):
         # The next success is not another recovery.
         self.run_probe(ok_probe, sender, 4)
         self.assertEqual(len(sender.calls), 2)
+
+    def test_alert_attempt_is_persisted_before_the_put(self):
+        """The phase-1 record must be on disk when the PUT is made.
+
+        A crash between the PUT and the confirming write leaves
+        ``alert_delivered=false``; the next tick must read that record, resend
+        the same transaction id (the homeserver deduplicates it) and still send
+        the recovery.  If the phase-1 ``save_state`` is deleted or moved after
+        the send, the state read inside ``send_fn`` is still the two-failure
+        state and this test fails.
+        """
+        seen = {}
+
+        def sender(_config, _text, _transaction):
+            on_disk = hq_watch.load_state(self.state)
+            seen["alert_open"] = on_disk.get("alert_open")
+            seen["alert_delivered"] = on_disk.get("alert_delivered")
+            seen["consecutive_failures"] = on_disk.get("consecutive_failures")
+            seen["probes_total"] = on_disk.get("probes_total")
+            seen["last_alert_at"] = on_disk.get("last_alert_at")
+            return hq_watch.SendResult(True, "$event", "")
+
+        self.run_probe(fail_probe, sender, 0)
+        self.run_probe(fail_probe, sender, 1)
+        result = self.run_probe(fail_probe, sender, 2)
+        self.assertEqual(result["action"], "alert")
+
+        # What the sender saw on disk at PUT time: the phase-1 attempt.
+        self.assertIs(seen["alert_open"], True)
+        self.assertIs(seen["alert_delivered"], False)
+        self.assertEqual(seen["consecutive_failures"], 3)
+        self.assertEqual(seen["probes_total"], 3)
+        self.assertIsNone(seen["last_alert_at"])
+
+        # And the confirmation that follows the PUT records the delivery.
+        final = hq_watch.load_state(self.state)
+        self.assertTrue(final["alert_open"])
+        self.assertTrue(final["alert_delivered"])
+        self.assertEqual(final["alerts_total"], 1)
+        self.assertEqual(final["last_alert_event_id"], "$event")
 
     def test_failed_alert_is_retried_with_the_same_transaction(self):
         sender = Recorder([(False, "HTTP 502: bad gateway")])

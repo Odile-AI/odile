@@ -7,5 +7,6 @@
  "matrix_homeserver": "https://matrix.org",
  "matrix_room_id": "!odile-room:matrix.org",
  "matrix_token_file": "/etc/odile-hq-watch/matrix-token",
- "state_file": "/var/lib/odile-hq-watch/state.json"
+ "state_file": "/var/lib/odile-hq-watch/state.json",
+ "probe_name": "hqrecover (13474647)"
 }
