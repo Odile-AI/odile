@@ -91,6 +91,28 @@ PROVIDER_RELEASE = "2026.09.9"
 MEASUREMENT = "ab" * 48
 
 
+def ready_answer(measurement: str = MEASUREMENT):
+    """The machine answered at its own name: the probe the workers inject.
+
+    ODL-947: `ready` is the machine's own `/attestation` + `/verify` answer,
+    not the provider's `active`. Tests use this stand-in; the network shape is
+    pinned in tests/test_ready_path.py.
+    """
+    def probe(domain: str, slug: str):
+        from odilectl.health import GuestAnswer
+
+        return GuestAnswer(slug=slug, host="%s.%s" % (slug, domain),
+                           measurement=measurement, release=RELEASE,
+                           verify_bytes=50000, checked_at="2026-11-24T08:49:07Z")
+    return probe
+
+
+def waiting_answer(domain: str, slug: str):
+    """The guest half is not up yet: the provider says active, the page does not."""
+    return None
+
+
+
 def at(epoch: int) -> datetime:
     return datetime.fromtimestamp(epoch, timezone.utc)
 
@@ -249,6 +271,12 @@ class ClaimBase(unittest.TestCase):
         self.dns_client = dns.CloudflareDNS(
             "fixture-dns-token", ZONE, zone_id=ZONE_ID, transport=self.cloud
         )
+        # The claim worker's default probe is the machine's own answer. A test
+        # of the waiting state passes `guest_probe=waiting_answer`; patching
+        # the default keeps every existing order test on the ready path.
+        patcher = mock.patch.object(claim, "_default_guest_probe", ready_answer())
+        patcher.start()
+        self.addCleanup(patcher.stop)
 
     def write_pin(self, release: str | None = RELEASE) -> None:
         """A fixture pin; `release=None` leaves `provision_release` out."""
@@ -300,7 +328,7 @@ class ClaimBase(unittest.TestCase):
         return claim.accept(self.con, issued.token, key, now=at(now))
 
     def provision(self, provider: FixtureProvider, *, now: int = NOW,
-                  slug: str = SLUG) -> claim.ProvisionResult:
+                  slug: str = SLUG, guest_probe=None) -> claim.ProvisionResult:
         return claim.provision_tenant(
             self.con,
             slug,
@@ -310,6 +338,7 @@ class ClaimBase(unittest.TestCase):
             outbox=claim.ReadyOutbox(self.outbox_path),
             now=now,
             interval=0.0,
+            guest_probe=guest_probe,
         )
 
     def ready_files(self) -> list[Path]:
@@ -858,6 +887,50 @@ class ProvisionTests(ClaimBase):
         self.assertEqual(provider.created, 0)
         self.assertEqual(self.tenant()["state"], "claimed")
 
+    def test_the_order_waits_for_the_machines_answer_before_the_one_mail(self) -> None:
+        """ODL-947: the claim path defines ready the same way the register path does."""
+        self.paid_claim()
+        provider = FixtureProvider()
+        ordered = self.provision(provider, guest_probe=waiting_answer)
+        self.assertTrue(ordered.ok, ordered.reason)
+        self.assertTrue(ordered.pending, ordered.reason)
+        self.assertEqual(self.tenant()["state"], "provisioned")
+        self.assertEqual(self.tenant()["server_id"], "srv-fixture0001")
+        self.assertEqual([p for p in self.ready_files() if p.suffix == ".eml"], [])
+        token_hash = self.tenant()["setup_token_hash"]
+        self.assertIsNotNone(token_hash, "the order staged no setup token")
+        steps = [json.loads(row["detail"]).get("step") for row in self.events()
+                 if row["detail"]]
+        self.assertIn("vm", steps)
+        self.assertNotIn("ready", steps)
+
+        measured = "cd" * 48
+        answered = self.provision(FixtureProvider(), now=NOW + 120,
+                                  guest_probe=ready_answer(measured))
+        self.assertTrue(answered.ok, answered.reason)
+        self.assertEqual(len(FixtureProvider().live()), 0)
+        # The machine was adopted, not ordered again; the token the machine is
+        # already using was not rotated by the second phase.
+        self.assertEqual(self.tenant()["setup_token_hash"], token_hash)
+        mails = [p for p in self.ready_files() if p.suffix == ".eml"]
+        self.assertEqual(len(mails), 1, "the machine answered and no single mail exists")
+        message = email.message_from_bytes(mails[0].read_bytes(),
+                                           policy=email_policy.default)
+        part = message.get_body(preferencelist=("plain",))
+        self.assertIsNotNone(part)
+        assert part is not None
+        body = part.get_content()
+        self.assertIn("Measurement %s" % measured, body)
+        self.assertNotIn(MEASUREMENT, body)
+        facts = json.loads(mails[0].with_suffix(".json").read_text(encoding="utf-8"))
+        self.assertEqual(facts["measurement"], measured)
+
+        # Ready is the event, so a third run neither orders nor mails again.
+        again = self.provision(FixtureProvider(), now=NOW + 600,
+                               guest_probe=ready_answer("ef" * 48))
+        self.assertTrue(again.skipped, again.reason)
+        self.assertEqual(len([p for p in self.ready_files() if p.suffix == ".eml"]), 1)
+
     def test_a_second_run_does_not_create_a_second_machine_or_email(self) -> None:
         self.paid_claim()
         first = FixtureProvider()
@@ -1042,23 +1115,38 @@ class FailureTests(ClaimBase):
         self.assertEqual(self.tenant()["state"], "claimed")
         self.assertEqual(len(self.alerts()), 1)
 
-    def test_a_failure_after_the_record_is_written_rolls_everything_back(self) -> None:
+    def test_a_kit_failure_after_the_order_keeps_the_machine_and_waits(self) -> None:
+        """ODL-947: the mail is a second phase; its failure is not a failed order.
+
+        The kit is rendered when the machine answers (it prints the machine's own
+        measurement), so a kit failure now happens after the order is recorded.
+        The machine is kept, the row stays `provisioned` with no ready event, and
+        the next run retries the same facts — terminating a healthy machine
+        because one queue file could not be written would bill a re-order.
+        """
         self.paid_claim()
         provider = FixtureProvider()
         with mock.patch.object(
             claim, "render_recovery_kit", side_effect=claim.ClaimError("kit failed")
         ):
             result = self.provision(provider)
-        self.assertFalse(result.ok)
-        self.assertTrue(result.terminated)
-        self.assertEqual(provider.live(), [])
-        self.assertEqual(self.cloud.records, {})
-        self.assertEqual(self.tenant()["state"], "claimed")
-        self.assertIsNone(self.tenant()["server_id"])
-        self.assertIsNone(self.tenant()["setup_token_hash"])
-        self.assertEqual(self.ready_files(), [])
-        self.assertEqual(self.alerts()[0]["kind"], "provision_failed")
+        self.assertTrue(result.ok, result.reason)
+        self.assertTrue(result.pending, result.reason)
         self.assertIn("kit failed", result.reason)
+        self.assertEqual(len(provider.live()), 1)
+        self.assertEqual(self.tenant()["state"], "provisioned")
+        self.assertEqual(self.tenant()["server_id"], "srv-fixture0001")
+        self.assertEqual([p for p in self.ready_files() if p.suffix == ".eml"], [])
+        self.assertEqual([row for row in self.events()
+                          if row["detail"] and json.loads(row["detail"]).get("step") == "ready"],
+                         [])
+
+        # The next run, with the kit working, writes exactly one mail from the
+        # facts the order staged — and does not order a second machine.
+        retry = self.provision(FixtureProvider(), now=NOW + 120)
+        self.assertTrue(retry.ok, retry.reason)
+        self.assertEqual(len(provider.live()), 1)
+        self.assertEqual(len([p for p in self.ready_files() if p.suffix == ".eml"]), 1)
 
     def test_a_dns_failure_after_the_machine_exists_rolls_both_back(self) -> None:
         self.paid_claim()

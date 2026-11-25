@@ -1697,6 +1697,12 @@ class ProvisionBinding(unittest.TestCase):
                 con, self.slug, provider=FixtureProvider(), config=config,
                 dns_client=FakeDNS(), outbox=claim_module.ReadyOutbox(outbox),
                 now=int(time.time()), interval=0.0,
+                # ODL-947: the mail is queued when the machine answers at its
+                # own name; this test is about the token, so the machine
+                # answers on the first run.
+                guest_probe=lambda domain, slug: SimpleNamespace(
+                    measurement="c0" * 48, release=PROVISION_RELEASE,
+                    verify_bytes=50000, checked_at="2026-11-24T08:49:07Z"),
             )
         finally:
             claim_module._SEED.rotate = original_rotate
