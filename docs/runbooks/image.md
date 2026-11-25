@@ -962,20 +962,27 @@ Four writers, in order, and one state key.
    bench artefact and is not written at all. A bench build (no
    `/etc/odile/production`) keeps the documented fixture password its QEMU
    smoke signs in with, under `# bench-password-sha256:`.
-2. **The first boot.** `odile-firstboot.py` runs `install-stack.sh --seed`; the
-   production branch sees a scrypt hash that rejects the fixture and, because
-   the run carries `--seed` and the page has not set the owner's sign-in,
-   writes this machine's own session secret and — when the seed carries
-   `sign_in_hash`, which every ODL-341 provisioned seed does — **the seed's
-   verifier** (the registration password), stamped `signin_set_at` in the
-   `/etc/odile/first-visit.json` state it writes (ODL-925; §13.4 and §13.5
-   below are the pre-change records, at their recorded heads). Only a classic
-   no-seed run writes another discarded hash (ODL-522, §13.9). Once
-   `signin_set_at` exists the same branch prints
-   `same … (the owner's sign-in; this machine's own secret)` and the file stays
-   byte for byte. A file with no scrypt hash at all (the vendor bootstrap
-   leaves its own `.env.example` copy) or one that *does* accept the fixture is
-   replaced either way.
+2. **The first boot.** `odile-firstboot.py` writes
+   `/etc/odile/first-visit.json` with `signin_set_at` **null** — at that point
+   the `.env` is still the image's placeholder, and the key is a fact about the
+   `.env`, not about the seed — and then runs `install-stack.sh --seed`. The
+   production branch sees a scrypt hash that rejects the fixture and, when the
+   run carries a seed with `sign_in_hash` (every ODL-341 provisioned seed
+   does), writes this machine's own session secret and **the seed's verifier**
+   (the registration password), and only then stamps `signin_set_at` in the
+   state it finds. The branch does not trust that stamp on its own: it writes
+   the verifier whenever the `.env` does not already hold it, and keeps a hash
+   the owner's own visit recorded (`used_at`/`first_login_at`), so a manual
+   re-run cannot revert a reset. Once the `.env` holds the verifier it prints
+   `same … (the seed's verifier; this machine's own secret)` and the file stays
+   byte for byte. Before ODL-947 the state was stamped on the seed's mere
+   presence, before any writer had run, so the branch kept the image's
+   placeholder and the first visit served a login nobody could pass (release
+   `2026.11.23-5`; the cold walk's gate blocker). Only a classic no-seed run
+   writes another discarded hash (ODL-522, §13.9). A file with no scrypt hash
+   at all (the vendor bootstrap leaves its own `.env.example` copy) or one that
+   *does* accept the fixture is replaced either way. §13.4 and §13.5 below are
+   the pre-change records, at their recorded heads.
 3. **Every `--first-visit` run of the release installer.** `ensure_env` reads
    `/etc/odile/first-visit.json`; while `signin_set_at` is absent it writes the
    hash the seed carries when the run is seeded (ODL-925), and a discarded one
