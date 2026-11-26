@@ -44,11 +44,17 @@ endif
 # `make check` is the CPU ceiling on this host: the sealed-image fixture drives
 # `cryptsetup reencrypt` at about four cores, so two suites that overlap take
 # the six vCPUs and a third makes load 13 (measured 2026-11-14). One host-wide
-# lock serializes the gate; a suite started in another worktree queues behind
-# this one and prints why (tools/check_lock.py). Override CHECK_LOCK only to
-# exercise the mechanism: a distinct path stops serializing the host.
+# lock serializes the gate; a suite started in another worktree takes a ticket
+# and queues behind this one, in order, and prints why (tools/check_lock.py).
+# Override CHECK_LOCK only to exercise the mechanism: a distinct path stops
+# serializing the host (its queue is derived from it, `<lock>.queue`).
 CHECK_LOCK ?= /var/lock/odile-check.lock
-CHECK_LOCK_WAIT ?= 3600
+# The queue cap: about one full suite, measured at the shared lock as p50
+# 744.7 s and p90 876.0 s over 84 holds on 2026-11-25/26. A caller still
+# queued at 900 s gets one last lock attempt if it is the head, then exits 69
+# naming its ticket, the live tickets ahead and the holder's elapsed hold —
+# it is never killed at a caller's terminal cap with nothing to show.
+CHECK_LOCK_WAIT ?= 900
 # The wait journal: one JSON line per acquisition, with the exact wait, the
 # holder pid and the outcome. `make check` announces a wait once and is silent
 # until it takes the lock, so this is the only exact per-run wait there is.
@@ -185,9 +191,14 @@ test-unit:
 # splicing, the DNS way-back line, the lenient YAML read) and of the tenant
 # apply's own self-test: it failed for days with no gate running it, so it runs
 # here too (ODL-901 retired the README table its first check read).
+#
+# The release verb's suite drives publish and the prune over a fixture tree.
+# The prune deletes files from a served directory (the ODL-356 retention rule),
+# so a silent regression there is not caught by any other step: it runs here too.
 self-test: prereqs
 	@$(CHECK_LOCK_PY) $(PYTHON) installer/odile_install.py --self-test
 	@$(CHECK_LOCK_PY) $(PYTHON) deploy/demo-host/deploy_demo_public.py --self-test
+	@$(CHECK_LOCK_PY) $(PYTHON) deploy/caddy/deploy_releases.py --self-test
 
 compile: prereqs
 	@test -n "$(PY_FILES)" || { echo "make compile: no .py files found" >&2; exit 1; }

@@ -545,6 +545,18 @@ class ReceiverTest(TempStoreMixin):
         self.assertEqual(status, 401)
         self.assertFalse(payload["ok"])
 
+    def test_a_plain_heartbeat_answer_keeps_its_four_keys(self) -> None:
+        # ODL-950: the upgrade booking adds exactly one key to the answer; a
+        # beat with no `facts.upgrade` keeps the four it had.
+        body = json.dumps(
+            {"slug": "odl-7f3a2c", "at": NOW, "facts": facts(), "public_key": self.public_pem},
+            sort_keys=True,
+        ).encode()
+        signature = base64.b64encode(heartbeat.sign_ed25519(body, self.private)).decode()
+        status, payload = self._post(body, signature)
+        self.assertEqual(status, 200)
+        self.assertEqual(set(payload), {"ok", "slug", "at", "received_at"})
+
     def test_a_malformed_boot_object_is_a_400_on_the_wire(self) -> None:
         body = json.dumps(
             {

@@ -835,7 +835,8 @@ def password_error(password: str, repeat: str) -> FieldError | None:
 
 def render(template: str, keep: str, *, title: str, error: FieldError | None = None,
            notice: str = "", token: str = "", username: str = DEFAULT_USERNAME,
-           code: str = "", recovery: str = "", recovery_file: str = "") -> str:
+           code: str = "", recovery: str = "", recovery_file: str = "",
+           heading: str = "") -> str:
     """Keep one state block, drop the rest, then fill the slots.
 
     Values go in last, so a literal ``{{TOKEN}}`` typed by a user is never
@@ -843,7 +844,9 @@ def render(template: str, keep: str, *, title: str, error: FieldError | None = N
     user can fill with braces, so it goes in after the unfilled-slot check.
     ``recovery_file`` is this service's own HTML (a link or the unavailable
     sentence), never a user value. ``notice`` is a form-level line (the rate
-    limit and a refused write), never a field error.
+    limit and a refused write), never a field error. ``heading`` is the done
+    page's h1: the action this visit completed (a seeded login signed in, a
+    classic setup set the sign-in), never a fixed sentence.
     """
     def pick(match: re.Match[str]) -> str:
         return match.group(2) if match.group(1) == keep else ""
@@ -862,6 +865,7 @@ def render(template: str, keep: str, *, title: str, error: FieldError | None = N
     body = body.replace("{{SIGNIN_PASSWORD_ATTRS}}", field_attrs("password", error))
     body = body.replace("{{PASSWORD2_ATTRS}}", field_attrs("password2", error))
     body = body.replace("{{TITLE}}", html.escape(title))
+    body = body.replace("{{DONE_HEADING}}", html.escape(heading))
     body = body.replace("{{RECOVERY}}", html.escape(recovery))
     body = body.replace("{{RECOVERY_FILE}}", recovery_file)
     body = body.replace("{{USERNAME}}", html.escape(username))
@@ -1118,11 +1122,15 @@ class FirstVisit:
     # -- responses -------------------------------------------------------
 
     def done(self, keep: str, title: str, code: str, username: str,
-             host: str, secure: bool, download: str) -> tuple[int, str]:
-        """The one page that shows the code, and the file it unlocks once."""
+             host: str, secure: bool, download: str, heading: str = "") -> tuple[int, str]:
+        """The one page that shows the code, and the file it unlocks once.
+
+        ``title`` and ``heading`` name the action the visitor just completed:
+        the seeded login signed in, the classic setup set the sign-in.
+        """
         recovery = self.complete_recovery(host, secure)
         body = render(self.template(), keep, title=title, recovery=code,
-                      username=username,
+                      username=username, heading=heading,
                       recovery_file=recovery_file_block(recovery, download))
         return 200, body
 
@@ -1615,9 +1623,17 @@ def build_handler(service: FirstVisit):
             # state keeps its scrypt hash, never the code. The push that mirrors
             # it at the account is requested now; the timer retries.
             service.push()
-            code, body = service.done("done", "Your sign-in is set — Odile",
+            # The h1 and the title name the action this visit completed. On the
+            # seeded path the registration password was *verified* (a sign-in);
+            # on the classic path the visit *chose* the sign-in. The code and
+            # the download are identical in both, so only the two sentences move.
+            if login:
+                title, heading = "You are signed in — Odile", "You are signed in."
+            else:
+                title, heading = "Your sign-in is set — Odile", "Your sign-in is set."
+            code, body = service.done("done", title,
                                       code_value, username, self._host(), self._secure(),
-                                      download)
+                                      download, heading)
             return self._send(code, body)
 
         def _recover_file(self, fields: dict[str, list[str]]) -> None:

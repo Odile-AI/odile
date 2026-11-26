@@ -23,7 +23,9 @@ cd "$(git rev-parse --show-toplevel)"
 # the hook (and the suite it started) would otherwise keep running; passing the
 # caller's pid lets tools/check_lock.py leave the queue and stop the child when
 # that caller is gone. The fast gate takes no lock, so this matters for any
-# nested full gate (`make acceptance`) a commit may run.
+# nested full gate (`make acceptance`) a commit may run; that gate now takes a
+# fair ticket and gives up at its queue cap (900 s, exit 69) rather than
+# waiting out a caller's terminal cap.
 ODILE_GATE_PARENT_PID="${PPID:-0}"
 export ODILE_GATE_PARENT_PID
 ODILE_GATE_EVENT_LOG="${ODILE_GATE_EVENT_LOG:-/var/lock/odile-check-waits.jsonl}"

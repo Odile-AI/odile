@@ -54,7 +54,7 @@ from email.utils import formatdate, make_msgid
 from pathlib import Path
 from typing import Any, Callable, Iterable, Sequence
 
-from . import state
+from . import backup_usage, state
 from .config import Config
 from .core import Context, Report
 from .errors import ConfigError, OdileError, UsageError
@@ -685,6 +685,12 @@ ALERT_KINDS = (
     "disk",
     "spend",
     "backup",
+    # The box-level pair (ODL-934): the BX11's own bytes against 800/950 GiB.
+    # Two kinds, not one, because the ledger is keyed by (slug, kind): a warn
+    # row that stayed open would swallow the promotion to critical and its
+    # delivery.
+    "backup_usage",
+    "backup_usage_critical",
 )
 
 KIND_LABELS = {
@@ -696,12 +702,69 @@ KIND_LABELS = {
     "disk": "disk filling",
     "spend": "spend near cap",
     "backup": "backup stale",
+    "backup_usage": "backup box filling",
+    "backup_usage_critical": "backup box almost full",
 }
+
+# A legacy ledger value (ODL-467 retired the initramfs park).  Nothing new
+# raises it, but a database cut before that still holds rows with it, and a
+# rebuild copies them verbatim — so the CHECK keeps it.
+LEGACY_ALERT_KINDS = ("waiting_for_owner",)
+
+# One SQL text for the ledger's kind CHECK, built from ALERT_KINDS: a kind can
+# never be listed in Python and missing from the table (or the rebuild below).
+_KIND_CHECK = ", ".join(f"'{kind}'" for kind in (*ALERT_KINDS, *LEGACY_ALERT_KINDS))
 
 DEFAULT_HEARTBEAT_DB = state.DEFAULT_STATE_DB
 DEFAULT_OUTBOX = "/var/lib/odile/outbox"
 DEFAULT_TENANT_DOMAIN = "odile.fyi"
 DEFAULT_USER_KEY = "~/.ssh/odile"
+
+# ---------------------------------------------------------------------------
+# The upgrade booking (ODL-950, ADR-005 §5.3)
+# ---------------------------------------------------------------------------
+#
+# A machine's click rides the heartbeat it already sends: one signed
+# `facts.upgrade` object.  HQ validates the window even though the machine
+# computes it — the 15 minutes are the machine's quiesce, the 26 hours are HQ's
+# gate — and records exactly one open booking per slug.  The row and the beat
+# are written in one transaction; the email is the human's receipt.
+UPGRADE_ORIGINS = ("click", "deadline")
+UPGRADE_OPEN_STATES = ("booked", "writing", "booted")
+UPGRADE_STATES = ("booked", "writing", "booted", "restored", "skipped", "failed")
+UPGRADE_MIN_SECONDS = 15 * 60
+UPGRADE_MAX_SECONDS = 26 * 60 * 60
+UPGRADE_WINDOW_RE = re.compile(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$")
+UPGRADE_REQUEST_RE = re.compile(r"^[0-9a-f]{32}$")
+
+# The receipt the owner can act on.  The body is the card's verbatim copy in
+# `templates/emails/upgrade-booked.txt`; the subject is the card's line.  The
+# reply address is the help mailbox, because the one action that can change a
+# booking is a reply before its window.
+UPGRADE_SUBJECT = "Your upgrade is booked"
+UPGRADE_TEMPLATE = Path(__file__).resolve().parent.parent / "templates" / "emails" / "upgrade-booked.txt"
+UPGRADE_SENDER = "Odile <invite@mail.odile.fyi>"
+UPGRADE_REPLY_TO = "help@odile.fyi"
+
+# The document app.py serves at `/release.json` (`RELEASE_DIR`, app.py:83).
+# The booking compares the machine's `release` with this file's `release`: a
+# well-formed id that is not the served one books nothing and answers `stale`.
+# `ODILE_RELEASE_DIR` is the same override app.py honours.
+def _default_release_document() -> Path:
+    directory = os.environ.get("ODILE_RELEASE_DIR")
+    if directory:
+        return Path(directory) / "release.json"
+    return Path(__file__).resolve().parent.parent / "release" / "release.json"
+
+
+DEFAULT_RELEASE_DOCUMENT = _default_release_document()
+# The template's deadline paragraph; removed whole (with its blank line) when
+# the served document carries no `upgrade` block, so the body is the card's
+# text without it.
+DEADLINE_SENTENCE = (
+    "This is a security update: if you do nothing, it is applied after {{DEADLINE}}."
+)
+DEADLINE_PARAGRAPH = DEADLINE_SENTENCE + "\n\n"
 
 # Thresholds from ODL-216.  `HEARTBEAT_STOP_SECONDS` is imported from the
 # state machine so the alert and the transition can never disagree.
@@ -733,6 +796,10 @@ class Heartbeat:
     received_at: str
     body: dict[str, Any]
     signature: str
+    # The booking this beat made, when it carried a `facts.upgrade`.  Present
+    # only on the record that wrote the row (and on the idempotent replay of
+    # its request id); `latest()` reads beats, not bookings, so it is None.
+    upgrade: dict[str, Any] | None = None
 
     @property
     def facts(self) -> dict[str, Any]:
@@ -751,7 +818,7 @@ class Heartbeat:
         return value if isinstance(value, dict) else None
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        payload = {
             "id": self.id,
             "slug": self.slug,
             "at": self.at,
@@ -759,6 +826,43 @@ class Heartbeat:
             "received_at": self.received_at,
             "facts": dict(self.facts),
             "boot": dict(self.boot) if self.boot is not None else None,
+        }
+        if self.upgrade is not None:
+            payload["upgrade"] = dict(self.upgrade)
+        return payload
+
+
+@dataclass(frozen=True)
+class UpgradeBooking:
+    """One row of `upgrade_windows`: a machine's own choice of release/window."""
+
+    id: int
+    slug: str
+    request_id: str
+    release: str
+    window: str
+    origin: str
+    state: str
+    heartbeat_id: int | None
+    created_at: str
+    updated_at: str
+
+    def answer(self) -> dict[str, Any]:
+        """The one key the heartbeat answer gains; never the whole row."""
+        return {"booked": True, "release": self.release, "window": self.window}
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "id": self.id,
+            "slug": self.slug,
+            "request_id": self.request_id,
+            "release": self.release,
+            "window": self.window,
+            "origin": self.origin,
+            "state": self.state,
+            "heartbeat_id": self.heartbeat_id,
+            "created_at": self.created_at,
+            "updated_at": self.updated_at,
         }
 
 
@@ -829,7 +933,7 @@ class AlertRecord:
         }
 
 
-HEARTBEAT_SCHEMA = """
+HEARTBEAT_SCHEMA = f"""
 CREATE TABLE IF NOT EXISTS heartbeat_keys (
     slug          TEXT PRIMARY KEY,
     public_key    TEXT NOT NULL,
@@ -854,12 +958,11 @@ CREATE TABLE IF NOT EXISTS health_alerts (
     id            INTEGER PRIMARY KEY,
     slug          TEXT    NOT NULL,
     kind          TEXT    NOT NULL
-                  CHECK (kind IN ('down', 'waiting_for_owner', 'brief_missing',
-                                  'disk', 'spend', 'backup')),
+                  CHECK (kind IN ({_KIND_CHECK})),
     tenant        TEXT    NOT NULL DEFAULT '',
     symptom       TEXT    NOT NULL,
     first_command TEXT    NOT NULL,
-    detail        TEXT    NOT NULL DEFAULT '{}' CHECK (json_valid(detail)),
+    detail        TEXT    NOT NULL DEFAULT '{{}}' CHECK (json_valid(detail)),
     first_seen_at INTEGER NOT NULL,
     last_seen_at  INTEGER NOT NULL,
     resolved_at   INTEGER,
@@ -869,13 +972,194 @@ CREATE TABLE IF NOT EXISTS health_alerts (
 CREATE UNIQUE INDEX IF NOT EXISTS health_alerts_open
     ON health_alerts(slug, kind) WHERE resolved_at IS NULL;
 CREATE INDEX IF NOT EXISTS health_alerts_slug ON health_alerts(slug, id);
+
+-- One booking per machine decision (ODL-950).  The row is written in the same
+-- transaction as the heartbeat that carried `facts.upgrade`: no beat without a
+-- row, no row without a beat.  The partial unique index is what makes a double
+-- click one booking and a second booking while one is open a 409; the
+-- (slug, request_id) pair is the idempotency key across retries.  The states
+-- are ODL-953's page stages and ODL-954's work list.
+CREATE TABLE IF NOT EXISTS upgrade_windows (
+    id           INTEGER PRIMARY KEY,
+    slug         TEXT    NOT NULL,
+    request_id   TEXT    NOT NULL,
+    release      TEXT    NOT NULL,
+    window       TEXT    NOT NULL,
+    origin       TEXT    NOT NULL CHECK (origin IN ('click', 'deadline')),
+    state        TEXT    NOT NULL DEFAULT 'booked'
+                 CHECK (state IN ('booked', 'writing', 'booted', 'restored',
+                                  'skipped', 'failed')),
+    heartbeat_id INTEGER REFERENCES heartbeats(id),
+    created_at   TEXT    NOT NULL,
+    updated_at   TEXT    NOT NULL,
+    UNIQUE (slug, request_id)
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS upgrade_windows_open
+    ON upgrade_windows(slug) WHERE state IN ('booked', 'writing', 'booted');
+CREATE INDEX IF NOT EXISTS upgrade_windows_due ON upgrade_windows(state, window);
 """
+
+# The ledger's CHECK is part of the table, so a new alert kind cannot be added
+# by `CREATE TABLE IF NOT EXISTS`; the upgrade is the rebuild below, run only
+# when the live table's SQL predates a kind in `ALERT_KINDS`.  It is one
+# transaction (`BEGIN IMMEDIATE` … `COMMIT`) because `executescript` autocommits:
+# a crash between `DROP TABLE health_alerts` and the rename would otherwise leave
+# the rows only in `health_alerts_new`, and the next open would recreate an empty
+# table whose SQL names every kind — a permanent no-op guard and a lost ledger.
+# Every row is copied by name, ids kept, so an open alert stays open.
+_MIGRATE_ALERT_KINDS = f"""
+BEGIN IMMEDIATE;
+DROP TABLE IF EXISTS health_alerts_new;
+CREATE TABLE health_alerts_new (
+    id            INTEGER PRIMARY KEY,
+    slug          TEXT    NOT NULL,
+    kind          TEXT    NOT NULL
+                  CHECK (kind IN ({_KIND_CHECK})),
+    tenant        TEXT    NOT NULL DEFAULT '',
+    symptom       TEXT    NOT NULL,
+    first_command TEXT    NOT NULL,
+    detail        TEXT    NOT NULL DEFAULT '{{}}' CHECK (json_valid(detail)),
+    first_seen_at INTEGER NOT NULL,
+    last_seen_at  INTEGER NOT NULL,
+    resolved_at   INTEGER,
+    deliveries    TEXT    NOT NULL DEFAULT '[]' CHECK (json_valid(deliveries))
+);
+INSERT INTO health_alerts_new (id, slug, kind, tenant, symptom, first_command,
+                               detail, first_seen_at, last_seen_at, resolved_at,
+                               deliveries)
+    SELECT id, slug, kind, tenant, symptom, first_command, detail,
+           first_seen_at, last_seen_at, resolved_at, deliveries
+      FROM health_alerts;
+DROP TABLE health_alerts;
+ALTER TABLE health_alerts_new RENAME TO health_alerts;
+CREATE UNIQUE INDEX IF NOT EXISTS health_alerts_open
+    ON health_alerts(slug, kind) WHERE resolved_at IS NULL;
+CREATE INDEX IF NOT EXISTS health_alerts_slug ON health_alerts(slug, id);
+COMMIT;
+"""
+
+# The interrupted-rebuild rescue: the copy is the only ledger, so it becomes the
+# table before anything reads an empty one.  Defensive (the transaction above
+# makes the state unreachable on a clean run) and idempotent.
+_RECOVER_ALERT_KINDS = """
+BEGIN IMMEDIATE;
+ALTER TABLE health_alerts_new RENAME TO health_alerts;
+CREATE UNIQUE INDEX IF NOT EXISTS health_alerts_open
+    ON health_alerts(slug, kind) WHERE resolved_at IS NULL;
+CREATE INDEX IF NOT EXISTS health_alerts_slug ON health_alerts(slug, id);
+COMMIT;
+"""
+
+
+def _migrate_alert_kinds(connection: sqlite3.Connection) -> None:
+    """Give an older alert ledger the new kinds without losing a row.
+
+    `sqlite_master` is the guard, and it is the *SQL text* that answers: a
+    fresh table already names every kind in `ALERT_KINDS`, a migrated one does
+    too, and a table cut before ODL-934 does not.  Idempotent because the
+    second open sees the new text and returns.
+    """
+    present = {
+        row[0] for row in connection.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table'"
+            " AND name IN ('health_alerts', 'health_alerts_new')"
+        )
+    }
+    if "health_alerts" not in present and "health_alerts_new" in present:
+        try:
+            connection.executescript(_RECOVER_ALERT_KINDS)
+        except sqlite3.Error as error:
+            connection.rollback()
+            raise HeartbeatError(
+                f"cannot finish an interrupted alert-ledger rebuild: {error}"
+            ) from None
+    row = connection.execute(
+        "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'health_alerts'"
+    ).fetchone()
+    if row is None:
+        return
+    sql = row["sql"] if isinstance(row, sqlite3.Row) else row[0]
+    if not sql or all(f"'{kind}'" in sql for kind in ALERT_KINDS):
+        return
+    connection.commit()
+    try:
+        connection.executescript(_MIGRATE_ALERT_KINDS)
+    except sqlite3.Error as error:
+        connection.rollback()
+        raise HeartbeatError(f"cannot migrate the alert ledger: {error}") from None
 
 Verifier = Callable[[bytes, bytes, str], bool]
 
 
 def _iso(epoch: int) -> str:
     return datetime.fromtimestamp(int(epoch), timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _upgrade_window_instant(text: str) -> datetime:
+    """Parse the one window spelling HQ accepts; raise ValueError otherwise."""
+    return datetime.strptime(text, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+
+
+_MONTH_NAMES = (
+    "January", "February", "March", "April", "May", "June",
+    "July", "August", "September", "October", "November", "December",
+)
+
+
+def owner_window_text(text: str) -> str:
+    """`03:10 UTC on 1 December 2026` — BRAND.md §Voice's owner-facing form.
+
+    The account has no zone, so UTC is named; the date is `1 December 2026`,
+    never `01/12/2026` or `December 1`.  The month names are spelled here so
+    the message does not change with the service's locale.
+    """
+    moment = _upgrade_window_instant(text)
+    return (
+        f"{moment.strftime('%H:%M UTC on')} {moment.day}"
+        f" {_MONTH_NAMES[moment.month - 1]} {moment.year}"
+    )
+
+
+def render_upgrade_body(window: str, deadline: str | None = None) -> str:
+    """The booking email's body from `templates/emails/upgrade-booked.txt`.
+
+    The deadline paragraph is present only when the served release document
+    carries an `upgrade` block; without one the body is the card's text, byte
+    for byte, so the two rendered forms differ by exactly that paragraph.
+    """
+    template = UPGRADE_TEMPLATE.read_text(encoding="utf-8")
+    if deadline is None:
+        template = template.replace(DEADLINE_PARAGRAPH, "")
+    else:
+        template = template.replace("{{DEADLINE}}", owner_window_text(deadline))
+    return template.replace("{{WINDOW}}", owner_window_text(window))
+
+
+def served_deadline(document: dict[str, Any] | None) -> str | None:
+    """The document's deadline: its own `security_deadline`, else +14 days.
+
+    A document with no `upgrade` block has no deadline, so the email drops the
+    paragraph.  `generated_at + 14 days` is the ADR's fallback when the block
+    carries no date; a malformed value is treated as no date rather than
+    inventing one.
+    """
+    if not isinstance(document, dict):
+        return None
+    block = document.get("upgrade")
+    if not isinstance(block, dict):
+        return None
+    value = block.get("security_deadline")
+    if isinstance(value, str) and UPGRADE_WINDOW_RE.match(value):
+        return value
+    generated = document.get("generated_at")
+    if isinstance(generated, str) and UPGRADE_WINDOW_RE.match(generated):
+        try:
+            moment = _upgrade_window_instant(generated) + timedelta(days=14)
+        except ValueError:
+            return None
+        return moment.strftime("%Y-%m-%dT%H:%M:%SZ")
+    return None
 
 
 def _epoch(text: str | None) -> int | None:
@@ -1015,6 +1299,45 @@ def _validated_facts(facts: dict[str, Any]) -> None:
             raise HeartbeatRejected(
                 "facts.boot.measurement must be 96 hex characters", 400
             )
+    upgrade = facts.get("upgrade")
+    if upgrade is not None:
+        _validated_upgrade(upgrade)
+
+
+def _validated_upgrade(upgrade: Any) -> None:
+    """The consent fact's shape (ODL-950, ADR-005 §5.3).
+
+    The window's *range* needs the receipt time, so `HeartbeatStore.record`
+    checks it after the signature and the idempotency lookup; an idempotent
+    replay of an old booking must still answer 200 even when its window has
+    since slipped inside the 15-minute quiesce.  Shape is checked here, at the
+    door, for every beat.
+    """
+    if not isinstance(upgrade, dict):
+        raise HeartbeatRejected("facts.upgrade must be an object", 400)
+    release = upgrade.get("release")
+    if not isinstance(release, str) or not state.RELEASE_ID_RE.match(release.strip()):
+        raise HeartbeatRejected("facts.upgrade.release must look like 2026.12.1", 400)
+    window = upgrade.get("window")
+    if not isinstance(window, str) or not UPGRADE_WINDOW_RE.match(window):
+        raise HeartbeatRejected(
+            "facts.upgrade.window must be YYYY-MM-DDTHH:MM:SSZ", 400
+        )
+    try:
+        _upgrade_window_instant(window)
+    except ValueError:
+        raise HeartbeatRejected(
+            "facts.upgrade.window must be YYYY-MM-DDTHH:MM:SSZ", 400
+        ) from None
+    if upgrade.get("origin") not in UPGRADE_ORIGINS:
+        raise HeartbeatRejected(
+            "facts.upgrade.origin must be click or deadline", 400
+        )
+    request_id = upgrade.get("request_id")
+    if not isinstance(request_id, str) or not UPGRADE_REQUEST_RE.match(request_id):
+        raise HeartbeatRejected(
+            "facts.upgrade.request_id must be 32 lowercase hex characters", 400
+        )
 
 
 def release_report(intended: str | None, beat: Heartbeat | None) -> dict[str, Any]:
@@ -1050,6 +1373,21 @@ def _heartbeat(row: sqlite3.Row) -> Heartbeat:
     )
 
 
+def _upgrade_booking(row: sqlite3.Row) -> UpgradeBooking:
+    return UpgradeBooking(
+        id=row["id"],
+        slug=row["slug"],
+        request_id=row["request_id"],
+        release=row["release"],
+        window=row["window"],
+        origin=row["origin"],
+        state=row["state"],
+        heartbeat_id=row["heartbeat_id"],
+        created_at=row["created_at"],
+        updated_at=row["updated_at"],
+    )
+
+
 def _alert(row: sqlite3.Row) -> AlertRecord:
     return AlertRecord(
         id=row["id"],
@@ -1081,10 +1419,18 @@ class HeartbeatStore:
         *,
         clock: Callable[[], int | float] = time.time,
         verifier: Verifier | None = None,
+        outbox: str | Path | None = None,
+        release_document: str | Path | None = None,
     ) -> None:
         self._con = connection
         self._clock = clock
         self._verifier = verifier
+        self._outbox = Path(outbox).expanduser() if outbox else Path(DEFAULT_OUTBOX)
+        self._release_document = (
+            Path(release_document).expanduser()
+            if release_document
+            else DEFAULT_RELEASE_DOCUMENT
+        )
         # The receiver serves requests on a thread pool; one connection plus a
         # re-entrant lock is enough because SQLite serialises the writes.
         self._lock = threading.RLock()
@@ -1096,15 +1442,28 @@ class HeartbeatStore:
         *,
         clock: Callable[[], int | float] = time.time,
         verifier: Verifier | None = None,
+        outbox: str | Path | None = None,
+        release_document: str | Path | None = None,
     ) -> "HeartbeatStore":
         try:
             connection = sqlite3.connect(str(path), timeout=5.0, check_same_thread=False)
             connection.row_factory = sqlite3.Row
+            # The ledger's rebuild runs *before* the schema script: after an
+            # interrupted rebuild only `health_alerts_new` exists, and
+            # `CREATE TABLE IF NOT EXISTS health_alerts` would create an empty
+            # table that shadows the copy (and pass the kind guard forever).
+            _migrate_alert_kinds(connection)
             connection.executescript(HEARTBEAT_SCHEMA)
             connection.commit()
         except sqlite3.Error as error:
             raise HeartbeatError(f"cannot open the heartbeat database {path}: {error}") from None
-        return cls(connection, clock=clock, verifier=verifier)
+        return cls(
+            connection,
+            clock=clock,
+            verifier=verifier,
+            outbox=outbox,
+            release_document=release_document,
+        )
 
     def close(self) -> None:
         self._con.close()
@@ -1156,6 +1515,11 @@ class HeartbeatStore:
         must verify against that registered key; a different key in the body is
         a conflict, not a quiet re-registration.  `at` must move forward, so a
         captured heartbeat cannot be replayed.
+
+        A beat that carries `facts.upgrade` books its window in the same
+        transaction as the beat (ODL-950).  The request id is the idempotency
+        key: a replay is the same booking and sends no second email; a second
+        decision while one is open is a 409 naming that window.
         """
         payload = _validated_body(body)
         raw_signature = decode_signature(signature)
@@ -1188,6 +1552,59 @@ class HeartbeatStore:
         if not check(body, raw_signature, chosen):
             raise HeartbeatRejected("heartbeat signature does not verify", 401)
 
+        facts = payload["facts"]
+        upgrade = facts.get("upgrade")
+        if not isinstance(upgrade, dict):
+            upgrade = None
+        booking: UpgradeBooking | None = None
+        answer: dict[str, Any] | None = None
+        document: dict[str, Any] | None = None
+        if upgrade is not None:
+            # The idempotency lookup runs before the `at` and window-range
+            # gates: a retry of the same decision is the same booking and gets
+            # the same 200, even once its window has slipped inside the quiesce
+            # and (ODL-954) even once the row has advanced to a later window.
+            existing = self.booking_for(slug, upgrade["request_id"])
+            if existing is not None:
+                original = None
+                if existing.heartbeat_id is not None:
+                    original = self._con.execute(
+                        "SELECT * FROM heartbeats WHERE id = ?",
+                        (int(existing.heartbeat_id),),
+                    ).fetchone()
+                if original is None:
+                    raise HeartbeatError(
+                        f"booking {existing.id} has no heartbeat row to replay"
+                    )
+                return replace(_heartbeat(original), upgrade=existing.answer())
+            open_row = self.open_booking(slug)
+            if open_row is not None:
+                raise HeartbeatRejected(
+                    f"an upgrade is already booked for {open_row.window}"
+                    f" (request {open_row.request_id})",
+                    409,
+                )
+            after = int(_upgrade_window_instant(upgrade["window"]).timestamp()) - moment
+            if after < UPGRADE_MIN_SECONDS:
+                raise HeartbeatRejected(
+                    f"facts.upgrade.window is {after}s after receipt;"
+                    " it must be at least 15 minutes",
+                    400,
+                )
+            if after > UPGRADE_MAX_SECONDS:
+                raise HeartbeatRejected(
+                    f"facts.upgrade.window is {after}s after receipt;"
+                    " it must be at most 26 hours",
+                    400,
+                )
+            # The release must be the one HQ serves, not merely well-formed:
+            # a machine that has not re-read the document (or names the previous
+            # cut) stores its beat and gets `stale`, with no row and no email.
+            document = self._served_release_document()
+            served = document.get("release") if document else None
+            if not isinstance(served, str) or upgrade["release"].strip() != served.strip():
+                answer = {"booked": False, "stale": True}
+
         latest = self.latest(slug)
         if latest is not None and at <= latest.at:
             raise HeartbeatRejected(
@@ -1197,6 +1614,7 @@ class HeartbeatStore:
 
         stamp = _iso(moment)
         signature_text = base64.b64encode(raw_signature).decode("ascii")
+        email_path: Path | None = None
         try:
             if first:
                 self._con.execute(
@@ -1208,14 +1626,182 @@ class HeartbeatStore:
                 " VALUES (?, ?, ?, ?, ?)",
                 (slug, at, stamp, body.decode("utf-8"), signature_text),
             )
+            if upgrade is not None and answer is None:
+                heartbeat_id = cursor.lastrowid
+                if heartbeat_id is None:
+                    raise HeartbeatError("the heartbeat insert returned no row id")
+                booking = self._insert_booking(
+                    slug, upgrade, moment, int(heartbeat_id)
+                )
+                email_path = self._queue_upgrade_email(booking, moment, document)
             self._con.commit()
         except Exception:
             self._con.rollback()
+            if email_path is not None:
+                try:
+                    email_path.unlink()
+                except OSError:
+                    pass
             raise
         row = self._con.execute(
             "SELECT * FROM heartbeats WHERE id = ?", (cursor.lastrowid,)
         ).fetchone()
-        return _heartbeat(row)
+        beat = _heartbeat(row)
+        if booking is not None:
+            answer = booking.answer()
+        if answer is not None:
+            beat = replace(beat, upgrade=answer)
+        return beat
+
+    # ----------------------------------------------------------- upgrade booking
+
+    def booking_for(self, slug: str, request_id: str) -> UpgradeBooking | None:
+        """The booking this idempotency key already made, if any."""
+        row = self._con.execute(
+            "SELECT * FROM upgrade_windows WHERE slug = ? AND request_id = ?",
+            (slug, request_id),
+        ).fetchone()
+        return _upgrade_booking(row) if row else None
+
+    def open_booking(self, slug: str) -> UpgradeBooking | None:
+        """The one row that is still open for this machine, if any."""
+        row = self._con.execute(
+            "SELECT * FROM upgrade_windows WHERE slug = ?"
+            " AND state IN ('booked', 'writing', 'booted')"
+            " ORDER BY id DESC LIMIT 1",
+            (slug,),
+        ).fetchone()
+        return _upgrade_booking(row) if row else None
+
+    def upgrade_bookings(self, slug: str | None = None) -> tuple[UpgradeBooking, ...]:
+        """Every booking, newest first; the executor's work list starts here."""
+        if slug is None:
+            rows = self._con.execute(
+                "SELECT * FROM upgrade_windows ORDER BY id DESC"
+            ).fetchall()
+        else:
+            rows = self._con.execute(
+                "SELECT * FROM upgrade_windows WHERE slug = ? ORDER BY id DESC",
+                (slug,),
+            ).fetchall()
+        return tuple(_upgrade_booking(row) for row in rows)
+
+    def _insert_booking(
+        self, slug: str, upgrade: dict[str, Any], moment: int, heartbeat_id: int
+    ) -> UpgradeBooking:
+        stamp = _iso(moment)
+        self._con.execute(
+            "INSERT INTO upgrade_windows (slug, request_id, release, window, origin,"
+            " state, heartbeat_id, created_at, updated_at)"
+            " VALUES (?, ?, ?, ?, ?, 'booked', ?, ?, ?)",
+            (
+                slug,
+                upgrade["request_id"],
+                upgrade["release"].strip(),
+                upgrade["window"],
+                upgrade["origin"],
+                int(heartbeat_id),
+                stamp,
+                stamp,
+            ),
+        )
+        row = self._con.execute(
+            "SELECT * FROM upgrade_windows WHERE slug = ? AND request_id = ?",
+            (slug, upgrade["request_id"]),
+        ).fetchone()
+        return _upgrade_booking(row)
+
+    def _served_release_document(self) -> dict[str, Any] | None:
+        """The document app.py serves at `/release.json`, or None if unreadable.
+
+        The booking compares its `release` and reads its deadline block; an
+        unreadable document means "no release HQ intends", which books nothing
+        (`stale`) rather than guessing.
+        """
+        try:
+            document = json.loads(self._release_document.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, ValueError):
+            return None
+        return document if isinstance(document, dict) else None
+
+    def _queue_upgrade_email(
+        self, booking: UpgradeBooking, moment: int, document: dict[str, Any] | None
+    ) -> Path:
+        """Queue the one receipt for this booking row, at 0600 until it is sent.
+
+        Keyed by the request id, so a retry rewrites the same file rather than
+        adding a second message.  The caller removes it if the transaction
+        rolls back.
+        """
+        directory = self._outbox / "upgrade"
+        directory.mkdir(parents=True, exist_ok=True)
+        for path in (self._outbox, directory):
+            try:
+                path.chmod(0o700)
+            except OSError:
+                pass
+        message = EmailMessage()
+        message["From"] = UPGRADE_SENDER
+        message["To"] = self._owner_address(booking.slug) or "unassigned"
+        message["Reply-To"] = UPGRADE_REPLY_TO
+        message["Subject"] = UPGRADE_SUBJECT
+        message["Date"] = formatdate(int(moment), usegmt=True)
+        message["Message-ID"] = make_msgid(
+            idstring=f"odile-upgrade.{booking.request_id}", domain="odile.fyi"
+        )
+        message.set_content(
+            render_upgrade_body(booking.window, served_deadline(document)),
+            cte="8bit",
+        )
+        path = directory / f"{booking.slug}-{booking.request_id}.eml"
+        try:
+            path.write_bytes(message.as_bytes())
+        except Exception:
+            try:
+                path.unlink()
+            except OSError:
+                pass
+            raise
+        try:
+            path.chmod(0o600)
+        except OSError:
+            pass
+        return path
+
+    def _owner_address(self, slug: str) -> str | None:
+        """The owner's address: the web tenants row, then the state detail.
+
+        The heartbeat receiver and the web app share one database, but a test
+        store may carry only `tenant_state`; a missing table is "no address",
+        never a failed booking.
+        """
+        try:
+            row = self._con.execute(
+                "SELECT email FROM tenants WHERE slug = ?", (slug,)
+            ).fetchone()
+        except sqlite3.Error:
+            row = None
+        if row is not None and row["email"]:
+            return str(row["email"])
+        try:
+            row = self._con.execute(
+                "SELECT detail FROM tenant_state WHERE slug = ?", (slug,)
+            ).fetchone()
+        except sqlite3.Error:
+            row = None
+        if row is not None:
+            value = _json_object(row["detail"]).get("owner_email")
+            if isinstance(value, str) and "@" in value:
+                return value
+        try:
+            row = self._con.execute(
+                "SELECT email FROM accounts WHERE slug = ?", (slug,)
+            ).fetchone()
+        except sqlite3.Error:
+            row = None
+        if row is not None and row["email"]:
+            return str(row["email"])
+        return None
 
     def latest(self, slug: str) -> Heartbeat | None:
         row = self._con.execute(
@@ -1888,6 +2474,10 @@ class HealthResult:
     planned: tuple[Alert, ...]
     resolved: tuple[tuple[str, str], ...]
     applied: bool
+    # The box readback this poll was handed (ODL-934); `problem` says why
+    # there is none, so a missing or broken record is visible, not green.
+    box_usage: dict[str, Any] | None = None
+    box_usage_problem: str | None = None
 
     @property
     def delivery_errors(self) -> list[dict[str, Any]]:
@@ -1926,6 +2516,8 @@ class HealthResult:
             "resolved": [
                 {"slug": slug, "kind": kind} for slug, kind in self.resolved
             ],
+            "backup_usage": self.box_usage,
+            "backup_usage_problem": self.box_usage_problem,
             "delivery_errors": self.delivery_errors,
         }
 
@@ -1951,6 +2543,7 @@ def check(
     backup_seconds: int = BACKUP_ALERT_SECONDS,
     owner_of: Callable[[Tenant], str | None] | None = None,
     alert_email: str | None = None,
+    backup_usage_path: str | Path | None = None,
 ) -> HealthResult:
     """One poll: reconcile the heartbeat, classify, then raise or clear alerts.
 
@@ -1962,6 +2555,11 @@ def check(
     is stopped, and is its own `brief_missing` alert while heartbeats are live.
     The alert ledger is idempotent: an open condition is one row and one
     delivery per channel, not one per five-minute poll.
+
+    `backup_usage_path` is the box readback ODL-934 writes; `None` means this
+    poll was not handed one (the unit tests), `odilectl health` always passes
+    the configured path.  The box's bytes are its own `stats`, so this is one
+    box-level alert under `backup-box-<id>`, never a tenant's.
     """
     moment = int(now)
     owner_lookup = owner_of or (lambda tenant: _owner_email(store, tenant))
@@ -2162,6 +2760,75 @@ def check(
             )
         )
 
+    # The box's own bytes (ODL-934): one box-level condition, read from the
+    # record the readback wrote.  It is not a tenant's row, so its ledger slug
+    # is the box's; a warn and a critical are two kinds so a promotion is a new
+    # row and a new delivery, not a rewrite of the open warn row.
+    box_usage: dict[str, Any] | None = None
+    box_usage_problem: str | None = None
+    if backup_usage_path is not None:
+        box_usage, box_usage_problem = backup_usage.read_record(backup_usage_path)
+    if box_usage is not None:
+        box = box_usage["box"]
+        total = int(box["total_bytes"])
+        level = backup_usage.level_for(total)
+        identifier = backup_usage.box_slug(int(box["id"]))
+        pieces = [
+            f"the backup box {box.get('id')} {box.get('name') or '(unnamed)'} uses"
+            f" {backup_usage.human_bytes(total)}"
+        ]
+        size = box.get("size_bytes")
+        if isinstance(size, int) and size > 0:
+            pieces[-1] += (
+                f" ({total * 100.0 / size:.1f}% of {backup_usage.human_bytes(size)})"
+            )
+        pieces.append(
+            f"{box.get('subaccounts')} of {box.get('subaccounts_limit')} sub-accounts"
+        )
+        strangers = box_usage.get("unaccounted")
+        if isinstance(strangers, list) and strangers:
+            pieces.append(f"{len(strangers)} unaccounted")
+        readback_at = box_usage.get("at")
+        if isinstance(readback_at, int) and not isinstance(readback_at, bool):
+            pieces.append(f"readback {_duration(moment - readback_at)} ago")
+        symptom = "; ".join(pieces)
+        if level == "ok":
+            resolutions.extend(
+                [(identifier, "backup_usage"), (identifier, "backup_usage_critical")]
+            )
+        else:
+            kind = "backup_usage" if level == "warn" else "backup_usage_critical"
+            other = "backup_usage_critical" if level == "warn" else "backup_usage"
+            threshold = (
+                backup_usage.WARN_BYTES if level == "warn" else backup_usage.CRITICAL_BYTES
+            )
+            planned.append(
+                Alert(
+                    slug=identifier,
+                    kind=kind,
+                    tenant="",
+                    symptom=(
+                        f"{symptom}; {backup_usage.human_bytes(threshold)}"
+                        f" {level} line reached"
+                    ),
+                    first_command="python3 -m odilectl backup-usage --apply --json",
+                    at=moment,
+                    detail={
+                        "box_id": box.get("id"),
+                        "total_bytes": total,
+                        "threshold_bytes": threshold,
+                        "level": level,
+                        "readback_at": readback_at,
+                        "unaccounted": [
+                            entry.get("name")
+                            for entry in (strangers or [])
+                            if isinstance(entry, dict)
+                        ],
+                    },
+                )
+            )
+            resolutions.append((identifier, other))
+
     # One alert per (slug, kind), even if two branches produced the same one.
     unique: dict[tuple[str, str], Alert] = {}
     for alert in planned:
@@ -2202,6 +2869,8 @@ def check(
         planned=tuple(planned),
         resolved=tuple(resolved_now),
         applied=bool(apply),
+        box_usage=box_usage,
+        box_usage_problem=box_usage_problem,
     )
 
 
@@ -2293,6 +2962,22 @@ def _health_lines(result: HealthResult, *, applied: bool) -> list[str]:
             f"  alert {alert.kind} {alert.slug} {mark} at {_iso(alert.first_seen_at)}:"
             f" {alert.symptom}"
         )
+    if result.box_usage is not None:
+        box = result.box_usage["box"]
+        size = box.get("size_bytes")
+        share = (
+            f" ({box['total_bytes'] * 100.0 / size:.1f}%)"
+            if isinstance(size, int) and size > 0 else ""
+        )
+        lines.append(
+            f"  box {box.get('id')} {box.get('name') or '(unnamed)'}:"
+            f" {backup_usage.human_bytes(box['total_bytes'])} used{share};"
+            f" {box.get('subaccounts')} of {box.get('subaccounts_limit')} sub-accounts;"
+            f" level {backup_usage.level_for(int(box['total_bytes']))};"
+            f" readback {_iso(int(result.box_usage.get('at') or 0))}"
+        )
+    elif result.box_usage_problem is not None:
+        lines.append(f"  backup usage: {result.box_usage_problem}")
     return lines
 
 
@@ -2351,6 +3036,12 @@ def add_arguments(parser: ArgumentParser) -> None:
         metavar="EPOCH",
         help="evaluate at a fixed Unix time; the fixture replay uses it",
     )
+    parser.add_argument(
+        "--backup-usage",
+        metavar="PATH",
+        help="the box usage record ODL-934 writes"
+        f" (default: {backup_usage.DEFAULT_USAGE_PATH})",
+    )
 
 
 def run(ctx: Context, args: Any) -> Report:
@@ -2383,6 +3074,11 @@ def run(ctx: Context, args: Any) -> Report:
             http_probe = TenantHttpProbe(template, timeout=args.http_timeout)
         alert_email = args.alert_email or ctx.config.get("alert_email")
         courier = build_courier(ctx.config, args, now=now)
+        usage_path = (
+            Path(args.backup_usage).expanduser()
+            if args.backup_usage
+            else Path(backup_usage.DEFAULT_USAGE_PATH)
+        )
         result = check(
             store,
             heartbeats,
@@ -2392,6 +3088,7 @@ def run(ctx: Context, args: Any) -> Report:
             courier=courier,
             apply=ctx.mutate,
             alert_email=alert_email,
+            backup_usage_path=usage_path,
         )
     finally:
         heartbeats.close()

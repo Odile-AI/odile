@@ -53,6 +53,19 @@ replayed.
 | `disk` | latest heartbeat reports disk > 80% | "disk 91.0% used (threshold 80%)" | `ssh -i ~/.ssh/odile … 'df -h /'` |
 | `spend` | a heartbeat reports `facts.spend` above 80% of the `cap_usd` it names | "spend $95.00 of $100.00 cap (95.0%)" | `ssh -i ~/.ssh/odile … 'journalctl -u odile-agent -n 50 --no-pager'` |
 | `backup` | last successful backup > 36 h ago | "last backup 1d 16h ago (threshold 1d 12h)" | `ssh -i ~/.ssh/odile … 'cat /var/lib/odile/backup.json'` |
+| `backup_usage` | the box's `stats.size_data` + `stats.size_snapshots` ≥ 800 GiB (858,993,459,200 bytes) | "the backup box 709870 odile-backups uses 800.0 GiB (78.1% of 1.0 TiB); 2 of 100 sub-accounts; readback 0m 0s ago; 800.0 GiB warn line reached" | `python3 -m odilectl backup-usage --apply --json` |
+| `backup_usage_critical` | the same total ≥ 950 GiB (1,020,054,732,800 bytes) | "the backup box 709870 odile-backups uses 950.0 GiB (92.8% of 1.0 TiB); …; 950.0 GiB critical line reached" | `python3 -m odilectl backup-usage --apply --json` |
+
+`backup_usage` and `backup_usage_critical` are box-level, not a tenant's: the
+ledger slug is `backup-box-<id>` (`backup-box-709870` for the BX11), no tenant
+is named, and `status/status.py`'s `INCIDENT_KINDS` is `('down',)`, so neither
+reaches the public status page. Both are inclusive — `>=` 800 GiB, `>=` 950
+GiB — while disk, spend and backup stay strict `>`: a ceiling is a place the
+bytes reach, an age is a duration that has passed. Their input is the record
+`odilectl backup-usage --apply` writes, run daily; the poll reads whatever the
+last run left and the symptom carries the readback's age. A promotion is a new
+row and a new delivery: the critical kind opens while the warn row is resolved,
+so an operator who saw the warn also gets the critical.
 
 `waiting_for_owner` and `unlock_email` are retired (ODL-467). Under the sealed
 boot a reboot comes back by itself, so a stopped heartbeat is `down`; the
@@ -192,7 +205,14 @@ heartbeat that carries one.
 
 Without `--apply` it is a dry run: it prints what it would raise and send, and
 writes nothing. `--json` is the machine view; the human lines name each tenant
-and alert. A systemd timer every five minutes:
+and alert. `--backup-usage PATH` names the box readback the poll reads
+(default `/var/lib/odile/backup/usage.json`); its units are bytes, and its two
+ceilings are 800 GiB = 858,993,459,200 bytes and 950 GiB = 1,020,054,732,800
+bytes, inclusive. A record that is missing or malformed is printed by name and
+reason (`backup usage: no readback at <path>`) and plans no box alert — never a
+green box. The readback is a separate daily command:
+`python3 -m odilectl backup-usage --apply --json`. The poll's systemd timer
+every five minutes:
 
 ```ini
 # /etc/systemd/system/odile-health.service

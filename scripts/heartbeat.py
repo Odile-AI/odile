@@ -403,10 +403,17 @@ class HeartbeatHandler(BaseHTTPRequestHandler):
         except health.HeartbeatError as error:
             self._json(500, {"ok": False, "error": str(error)})
             return
-        self._json(
-            200,
-            {"ok": True, "slug": beat.slug, "at": beat.at, "received_at": beat.received_at},
-        )
+        answer = {
+            "ok": True,
+            "slug": beat.slug,
+            "at": beat.at,
+            "received_at": beat.received_at,
+        }
+        # The booking is one added key (ODL-950, ADR-005 §5.3): a plain beat
+        # keeps the four, and a refused one carries no `upgrade` at all.
+        if beat.upgrade is not None:
+            answer["upgrade"] = beat.upgrade
+        self._json(200, answer)
 
     def log_message(self, format: str, *args) -> None:  # noqa: A002 - stdlib signature
         sys.stderr.write(

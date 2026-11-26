@@ -1,8 +1,8 @@
 {
   "artifacts": {
     "installer": {
-      "sha256": "ebbe5b5aad92742aa3377cafb866a659b89f5ad702881678bba1bb1e262c3dbb",
-      "size": 1633588,
+      "sha256": "b3678523e8cb1acefe60317f5dc41c19f8d0f671ec092fe5ff0752aaab11add8",
+      "size": 1640996,
       "url": "odile_install.py"
     },
     "skills": {
@@ -14,14 +14,14 @@
   "boot": {
     "kernel": "6.12.115+deb13.1-amd64"
   },
-  "generated_at": "2026-11-26T00:35:02Z",
+  "generated_at": "2026-11-26T10:06:00Z",
   "manifest": {
-    "sha256": "a77ab0041ae2623e01b766684b2e3d4cab686061433ad4d453759bc5ee03adbf",
+    "sha256": "48ca0c7ee33c956742372409aa3c1e064809e32908bd963f10ef8fd1d786cf45",
     "signature_url": "manifest.json.sig",
     "url": "manifest.json"
   },
-  "notes": "ODL-947 follow-up (t_370d2664): the access report is checked against a number this boot can have. The installer re-embeds installer/access_report.sh (7c5629c2\u2026, 5,322 bytes): the wrapper passes the image pin as --expect only when this boot's own report agrees with it, and otherwise passes the boot's own measurement and names both numbers on one line \u2014 a pin is a file's measurement (an empty command line and the builder's vCPU count), while a tenant's boot line is per machine, so the seal row failed at every boot of an image that had its pin and odile-access-report never started (odile-release-setup.sh logs the same disagreement for the installer). This cut is 2026.11.25-1 over main's 2026.11.23-9 (the ODL-947 follow-up on the seeded first boot: install-stack.sh's production branch writes the seed's verifier when the .env does not hold it and stamps only after the write, and installer.ensure_env does the same on a run that finds a placeholder and keeps a hash the owner's own visit recorded), which carries 2026.11.23-8 (ODL-926's one-code cut). Against -9 only installer_sha256, the manifest and this document's hashes move; no skill, page or template changed.",
+  "notes": "ODL-950 (t_910bfe88): HQ accepts the upgrade consent fact and books the window. The installer re-embeds scripts/heartbeat.py (51981cec\u2026, 34,356 bytes): POST /heartbeat validates facts.upgrade (release against the served release.json, window 15 min to 26 h after receipt, origin click|deadline, request_id 32 hex), writes the beat and one upgrade_windows row in one transaction, answers 200 with one added upgrade key, and queues one booking email per row. This cut is 2026.11.25-4 over main's 2026.11.25-2 (the ODL-947 follow-up's /verify pace and done-page cut, 7b8b34e3\u2026 installer, 1,640,715 bytes) and merges main 68f7f1a; against -2 only installer_sha256, the manifest and this document's hashes move. web/privacy.html gains the upgrade_windows inventory row (no installer bytes). No skill, page or template embedded in the installer changed.",
   "product": "odile",
-  "release": "2026.11.25-1",
+  "release": "2026.11.25-4",
   "schema": 1
 }
