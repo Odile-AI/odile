@@ -43,6 +43,15 @@ It also prints which Hermes version it installs; if the exact build the backup
 recorded was never published, it installs the nearest published release and
 says so. That is expected — leave it alone.
 
+It starts everything those three names need: the site, the desktop backend
+behind `gw.odile.fyi`, and the test bench at `test.odile.fyi`. The **chat bot**
+(Matrix/Telegram) is left stopped on purpose — a restored `.env` may have a
+stale device — and starts later with:
+
+```sh
+systemctl --user enable --now hermes-gateway.service
+```
+
 If you want to see the plan before it changes anything, run
 `bash recover.sh --dry-run` first (it needs `restic`:
 `apt-get install -y restic`). It prints the Hermes version, the old server's
@@ -56,7 +65,30 @@ When it finishes, wait five minutes, then open:
 https://odile.fyi
 ```
 
-## 5. Only if it says `DNS NOT UPDATED`
+## 5. Only if you need to install a new machine — the release images
+
+The machine images the server panel downloads are **not** in the backup (they
+are 32 GB of build output). After a restore, `https://odile.fyi/releases/...`
+answers **404**, so the panel cannot install a new machine until one build is
+published. The site itself is fine; only those download links are missing.
+
+The script prints these four commands when it finishes. A person who knows
+Linux runs them once, on the new server, and pastes the two lines each one
+prints into the server panel:
+
+```sh
+cd ~/odile
+sudo ./deploy/image/sealed-image.sh --out deploy/image/out-sealed
+./deploy/image/uki.sh --in deploy/image/out-sealed --sign --pin deploy/image/tenant-image.pin
+./deploy/caddy/deploy_releases.py --publish-disk deploy/image/out-sealed/odile-tenant-sealed.raw
+./tools/publish_uki.py --uki deploy/image/out-sealed/odile-tenant.efi
+```
+
+Paste each `URL` + `SHA-256` pair into **Manage → Disk image** and **Manage →
+Boot image**. The rule for keeping old builds, and what to prune, is
+`docs/runbooks/release.md` §7.
+
+## 6. Only if it says `DNS NOT UPDATED`
 
 Open the Cloudflare dashboard for `odile.fyi` → DNS. Change the **A** records
 for `odile.fyi`, `gw.odile.fyi`, `mail.odile.fyi`, `testing.odile.fyi` and

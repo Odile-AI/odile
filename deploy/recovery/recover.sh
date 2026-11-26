@@ -116,6 +116,10 @@ printf '%s' "$ZONE_ID" | grep -Eq '^[0-9a-fA-F]{32}$' \
 STATE_DIR=${ODILE_STATE_DIR:-/root/.odile}
 ETC_DIR=${ODILE_ETC_DIR:-/etc/odile}
 REPO=${ODILE_REPO:-$HOME/odile}
+# Not a backup root (ADR-factory-backup §3.1): the release images are 32.4 GiB
+# of build output the restored checkpoint rebuilds. Overridable so a test can
+# run the republish block against a fixture directory.
+RELEASES_DIR=${ODILE_RELEASES_DIR:-/srv/odile-releases}
 
 R2_ENDPOINT=${R2_ENDPOINT%/}
 # shellcheck source=/dev/null
@@ -309,7 +313,10 @@ if [ "$DRY_RUN" = 1 ]; then
     "$STATE_DIR" "${HERMES_PLAN:-the installer default}"
   printf 'restore %s to / (leaving this kit folder and the log in place);\n' "$SNAP"
   printf 'start Caddy/Postfix/OpenDKIM, the Odile units and the backend hermes-serve;\n'
+  printf 'start the test bench (odile-bench, odile-bench-seed) so test.odile.fyi answers;\n'
   printf 'point %s at %s; leave the messaging gateway stopped.\n' "$DNS_NAMES" "$NEW_IP"
+  printf 'print the %s republish commands (the release images are not in the backup).\n' \
+    "$RELEASES_DIR"
   exit 0
 fi
 
@@ -465,9 +472,11 @@ restic restore "$SNAP" --target / \
   --include /var/backups/odile/live \
   --include /root --include /var/lib/caddy --include /var/lib/odile \
   --include /srv \
+  --include /opt/odile-test --include /var/lib/odile-test \
   --include /etc/caddy --include /etc/dkimkeys --include /etc/opendkim.conf \
   --include /etc/postfix --include /etc/ssl/private \
-  --include /etc/ssl/certs/mail.odile.fyi.crt --include /etc/systemd/system
+  --include /etc/ssl/certs/mail.odile.fyi.crt --include /etc/systemd/system \
+  --include /etc/odile-bench
 
 # The restore is --include /root, so it writes every backed-up path under
 # /root (and deletes nothing). A kit copy that a snapshot does carry is
@@ -518,6 +527,14 @@ if [ -d /var/lib/odile ]; then
 else
   warn "/var/lib/odile is missing after the restore; odile.service will fail"
 fi
+# The bench's state (session key, boot report, database). The unit creates it
+# when it is absent — the bench then starts from an empty database — but a
+# restored copy keeps the test accounts and the session cookie key.
+if [ -d /var/lib/odile-test ]; then
+  chown -R odile:odile /var/lib/odile-test
+else
+  warn "/var/lib/odile-test is missing after the restore; the bench starts empty"
+fi
 if [ -d /var/lib/caddy ]; then
   chown -R caddy:caddy /var/lib/caddy
 else
@@ -562,12 +579,44 @@ systemctl daemon-reload
 # never re-arms them takes one snapshot and then silently ages. `hermes-serve`
 # is the system unit behind gw.odile.fyi (127.0.0.1:9119), restored from the
 # snapshot's /etc/systemd/system, and that name is in dns_names — leaving it
-# stopped would move the record to a box that answers 502.
+# stopped would move the record to a box that answers 502. The two bench units
+# are the same case for test.odile.fyi: their ExecStart is
+# /opt/odile-test/current/…, which the restore above puts back, and the DNS
+# step moves the name in this same run. The bench's *register* timer is
+# restored enabled and orders the machine a test registration asks for; it is
+# not started here by name, and it fires on the next boot.
 for unit in odile.service odile-seed.service odile-attest-refresh.timer \
             odile-claim.timer odile-backup.timer odile-backup-check.timer \
-            hermes-serve.service; do
+            hermes-serve.service odile-bench.service odile-bench-seed.service; do
   systemctl enable --now "$unit" 2>/dev/null || warn "$unit did not start; check systemctl status"
 done
+
+# --- release-images begin --------------------------------------------------
+# /srv/odile-releases is deliberately not a backup root (ADR §3.1: 34.8 GB of
+# build output, 4.3x the whole 7.5 GiB set). A restore therefore leaves
+# /releases/* answering 404 and the Servury panel unable to install a machine
+# until one republish. Name the commands; a 404 with no instruction is the
+# defect this block exists to remove.
+release_images=0
+if [ -d "$RELEASES_DIR/disks" ]; then
+  release_images=$(find "$RELEASES_DIR/disks" -maxdepth 1 -name '*.raw' | wc -l)
+fi
+if [ "${release_images:-0}" -eq 0 ]; then
+  say "Release images: none restored ($RELEASES_DIR is not in the backup)"
+  printf '  /releases/* answers 404 until one republish. On a box that can build\n'
+  printf '  images (docs/runbooks/release.md §7), from the restored checkpoint:\n'
+  printf '    cd %s\n' "$REPO"
+  printf '    sudo ./deploy/image/sealed-image.sh --out deploy/image/out-sealed\n'
+  printf '    ./deploy/image/uki.sh --in deploy/image/out-sealed --sign --pin deploy/image/tenant-image.pin\n'
+  printf '    ./deploy/caddy/deploy_releases.py --publish-disk deploy/image/out-sealed/odile-tenant-sealed.raw\n'
+  printf '    ./tools/publish_uki.py --uki deploy/image/out-sealed/odile-tenant.efi\n'
+  printf '  Then paste each URL + SHA-256 the publish prints into the panel\n'
+  printf '  (Manage → Disk image / Boot image). No image is read from the backup.\n'
+else
+  printf 'release images: %s file(s) restored in %s/disks\n' \
+    "$release_images" "$RELEASES_DIR"
+fi
+# --- release-images end ----------------------------------------------------
 
 loginctl enable-linger root || true
 systemctl --user daemon-reload || true
@@ -697,6 +746,7 @@ hermes kanban --board odile list 2>/dev/null | tail -1 || true
 
 say "RECOVERY COMPLETE"
 printf 'New IPv4: %s\nSite: https://odile.fyi (DNS may take up to 5 minutes)\n' "$NEW_IP"
+printf 'Test bench: https://test.odile.fyi (odile-bench.service + odile-bench-seed.service)\n'
 printf 'Log: %s\n' "$LOG"
 printf 'Optional messaging gateway: systemctl --user enable --now hermes-gateway.service\n'
 # The copy that kept this run out of the restore set; it holds no secret the
