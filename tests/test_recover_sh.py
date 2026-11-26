@@ -88,14 +88,14 @@ HERMES_REF_COMMIT = "caafe5389ae585ef77387a962aee05b1bcf17029"
 
 MANIFEST = {
     "generated_at": "2026-11-26T03:35:34Z",
-    "host": "oqwaclzm",
+    "host": "hq-box",
     "stage": "/var/backups/odile/live",
     "git_head": "45fd806abc",
     "databases": [],
     "recovery": {
         "schema": "odile.factory-recovery.v1",
         "written_at": "2026-11-26T03:35:34Z",
-        "hostname": "oqwaclzm",
+        "hostname": "hq-box",
         "ipv4": OLD_IP,
         "hermes_version": "Hermes Agent v0.23.3+5.gedc8a22.dirty (2026.9.24) · stable · local edc8a222a801",
         "hermes_commit": "edc8a222a801",
@@ -122,7 +122,7 @@ for _key in ("hermes_commit_fetchable", "hermes_ref", "hermes_ref_commit"):
 # The first cut's snapshot shape: no recovery block, so the kit's fallback runs.
 OLD_MANIFEST = {
     "generated_at": "2026-11-25T03:35:34Z",
-    "host": "oqwaclzm",
+    "host": "hq-box",
     "stage": "/var/backups/odile/live",
     "git_head": "1e9c0d3abc",
     "databases": [],
@@ -132,7 +132,7 @@ KIT_MANIFEST = {
     "recovery": {
         "schema": "odile.factory-recovery.v1",
         "written_at": "2026-11-26T07:23:43Z",
-        "hostname": "oqwaclzm",
+        "hostname": "hq-box",
         "ipv4": OLD_IP,
         "hermes_version": "Hermes Agent v0.23.3+5.gedc8a22 (2026.9.24)",
         "hermes_commit": "edc8a222a801",
