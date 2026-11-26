@@ -1818,6 +1818,15 @@ class ProvisionBinding(unittest.TestCase):
                 "release": PROVISION_RELEASE,
                 "default_plan_id": "113",
                 "default_days": "31",
+                # ODL-924 follow-up: the claim path mints the pair before the
+                # order, and this Config replaces the file's values wholesale —
+                # without these four the recorder would use the live host's
+                # store of record and seed handoff.
+                "hetzner_box_id": "709870",
+                "hetzner_dir": os.path.join(self.tmp.name, "hetzner"),
+                "hetzner_keys": os.path.join(self.tmp.name, "keys"),
+                "seed_backup_pairs": os.path.join(self.tmp.name,
+                                                  "seed-backup-pairs.json"),
             })
 
             def recording_rotate(*args, **kwargs):
