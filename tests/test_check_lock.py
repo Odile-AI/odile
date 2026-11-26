@@ -474,6 +474,20 @@ class TicketQueueTest(unittest.TestCase):
         self.assertGreaterEqual(cap[0]["holder_s"], 100.0)
         self.assertEqual(cap[0]["ticket"], 1)
 
+    def test_the_cap_names_a_raw_flock_holder_from_the_kernel(self) -> None:
+        """A `flock(1)` holder writes no pid; /proc/locks still names it."""
+        fd = os.open(self.lock, os.O_RDWR | os.O_CREAT, 0o666)
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        self.addCleanup(self._close, fd)
+        result = subprocess.run(self.command("never", wait=1), capture_output=True,
+                                text=True, timeout=30, env=self.env())
+        self.assertEqual(result.returncode, CAP_EXIT, result.stderr)
+        self.assertIn(f"pid {os.getpid()}", result.stderr,
+                      "the cap did not name the kernel's flock holder")
+        cap = [row for row in self.records()
+               if row["event"] == "acquire" and row["outcome"] == "timeout"]
+        self.assertEqual(cap[-1]["holder_pid"], os.getpid())
+
     def test_a_killed_wrapper_keeps_the_lock_until_its_suite_exits(self) -> None:
         """The flock follows the suite, not the killed wrapper (no second suite)."""
         marker = self.tmp / "suite-started"

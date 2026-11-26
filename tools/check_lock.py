@@ -119,13 +119,52 @@ def ticket_name(number: int) -> str:
 
 
 def holder_pid(path: str) -> int | None:
-    """The pid the current holder wrote, or None when it is unreadable."""
+    """The pid holding the lock: the file's write, else the kernel's lock table.
+
+    A holder that could write leaves its pid in the file. A raw `flock(1)`
+    caller, a read-only holder, or a holder killed between the truncate and the
+    write leaves the file empty, and the cap message must still name the holder
+    — `/proc/locks` names the process the kernel granted the lock to.
+    """
     try:
         with open(path, encoding="ascii", errors="replace") as handle:
             first = handle.read(64).split()
         return int(first[0])
     except (OSError, ValueError, IndexError):
+        return flock_holder_pid(path)
+
+
+def flock_holder_pid(path: str) -> int | None:
+    """The pid of the exclusive flock holder, from `/proc/locks`.
+
+    Linux keeps one line per lock: `1: FLOCK ADVISORY WRITE <pid> <dev>:<ino>`
+    and a `-> ` marker on a waiter's line. The device is printed as
+    `%02x:%02x` from the kernel's encoded dev_t, which is what `os.major` and
+    `os.minor` give us. Any parsing or permission failure returns None.
+    """
+    try:
+        info = os.stat(path)
+    except OSError:
         return None
+    wanted = f"{os.major(info.st_dev):02x}:{os.minor(info.st_dev):02x}:{info.st_ino}"
+    try:
+        with open("/proc/locks", encoding="ascii", errors="replace") as handle:
+            for line in handle:
+                fields = line.split()
+                if "FLOCK" not in fields:
+                    continue
+                index = fields.index("FLOCK")
+                if index and fields[index - 1] == "->":
+                    continue  # a waiter, not the holder
+                if len(fields) < index + 5 or fields[index + 4] != wanted:
+                    continue
+                try:
+                    return int(fields[index + 3])
+                except ValueError:
+                    continue
+    except OSError:
+        return None
+    return None
 
 
 def holder_elapsed(path: str) -> float | None:
@@ -322,16 +361,22 @@ def high_water(qdir: str) -> int:
     while `max(live names)` keeps every published ticket ordered.
     """
     try:
-        with open(os.path.join(qdir, HIGH_WATER), encoding="ascii", errors="replace") as handle:
-            return int(handle.read(32).split()[0])
+        fd = os.open(os.path.join(qdir, HIGH_WATER), os.O_RDONLY | os.O_NOFOLLOW)
+    except OSError:
+        return 0
+    try:
+        return int(os.read(fd, 32).split()[0])
     except (OSError, ValueError, IndexError):
         return 0
+    finally:
+        os.close(fd)
 
 
 def note_high_water(qdir: str, number: int) -> None:
     """Remember the highest issued number; a failure must never fail the gate."""
     try:
-        fd = os.open(os.path.join(qdir, HIGH_WATER), os.O_RDWR | os.O_CREAT, 0o666)
+        fd = os.open(os.path.join(qdir, HIGH_WATER),
+                     os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o666)
     except OSError:
         return
     try:
@@ -489,7 +534,8 @@ def acquire(path: str, wait: int, parent: int | None = None,
             })
             where = f"{ahead} live ticket{'s' if ahead != 1 else ''} ahead" if number is not None else "no ticket"
             for_how_long = f"{held:.1f}s" if held is not None else "an unknown time"
-            print(f"make check: gave up ticket {number} after {wait}s ({where}); "
+            placed = f"ticket {number if number is not None else '?'}"
+            print(f"make check: gave up {placed} after {wait}s ({where}); "
                   f"pid {holder if holder is not None else 'unknown'} has held "
                   f"{os.path.abspath(path)} for {for_how_long}; the suite never started. "
                   "another suite still holds it",
