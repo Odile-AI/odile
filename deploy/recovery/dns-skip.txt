@@ -1,0 +1,10 @@
+# DNS names the restore must NOT move.
+# One fnmatch pattern per line; the restore matches the record's full name.
+# `demo.odile.fyi` is the live demo tenant, not an HQ record;
+# `www` is a CNAME to the apex; `odl-*` are tenant guests. The demo tenant's
+# own hostname is named exactly and also covered by its pattern, so a pattern
+# that ever narrowed would still leave the live demo where it is.
+demo.odile.fyi
+www.odile.fyi
+odl-7971a8.odile.fyi
+odl-*.test.odile.fyi
