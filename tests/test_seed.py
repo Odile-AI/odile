@@ -2225,6 +2225,13 @@ def transcript() -> None:
         /usr/bin/python3 tests/test_seed.py --transcript
     """
     directory = tempfile.mkdtemp(prefix="odile-455-")
+    # The Box API, ssh-keygen, the host-key scan and install-ssh-key are
+    # seams, and §4's claim now mints the tenant's pair (ODL-924 follow-up):
+    # start the fake box for the whole run, so neither §1's provision nor §4's
+    # claim can dial the live API or create a real sub-account. The temp
+    # config's hetzner_* keys keep the store of record and the seed handoff in
+    # `directory` as well.
+    box_patchers = box_fixture.start_patchers()
     proc = None
     try:
         db = os.path.join(directory, "waitlist.db")
@@ -2341,6 +2348,14 @@ def transcript() -> None:
             "state_db": db, "seed_db": db, "outbox": outbox,
             "release": PROVISION_RELEASE, "default_plan_id": "113",
             "default_days": "31",
+            # ODL-924 follow-up: the claim path mints the pair before the
+            # order, and this Config replaces the file's values wholesale, so
+            # the four paths must be named here or the recorder writes the
+            # live host's store and seed handoff.
+            "hetzner_box_id": "709870",
+            "hetzner_dir": os.path.join(directory, "hetzner"),
+            "hetzner_keys": os.path.join(directory, "keys"),
+            "seed_backup_pairs": os.path.join(directory, "seed-backup-pairs.json"),
         })
         captured = {}
         original_rotate = claim_module._SEED.rotate
@@ -2385,6 +2400,8 @@ def transcript() -> None:
         print("$ make check                                       # output in the handoff")
         con.close()
     finally:
+        for patcher in box_patchers:
+            patcher.stop()
         if proc is not None:
             proc.terminate()
             try:

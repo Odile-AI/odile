@@ -50,7 +50,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 import app  # noqa: E402
-from odilectl import claim, dns  # noqa: E402
+from odilectl import claim, dns, provision  # noqa: E402
 from odilectl import cli as odilectl_cli  # noqa: E402
 from odilectl.config import Config  # noqa: E402
 from odilectl.errors import ConfigError, ProviderError, UsageError  # noqa: E402
@@ -1245,6 +1245,97 @@ class PairProvisionTests(ClaimBase):
         self.assertIn("51st", alerts[0]["body"])
         self.assertEqual(json.loads(self.events()[-1]["detail"])["step"],
                          "provision_failed")
+
+
+# ------------------------------------------------------------- the deployed unit
+
+
+class ClaimWorkerUnitTests(unittest.TestCase):
+    """The unit that runs a claim may write everything the claim path writes.
+
+    Round 2 of ODL-924's review: `provision_tenant` now mints the BX11 pair
+    before the paid order, which writes the store of record
+    (`/root/.odile/hetzner/odile-<slug>.env`) and the pair's keys
+    (`/root/.odile/keys/<slug>/`) beside the queue under `/var/lib/odile`. The
+    unit keeps its sandbox (`ProtectSystem=strict`, `ProtectHome=read-only`), so
+    a path missing from `ReadWritePaths=` is `EROFS` at the first key write and
+    every claim dies before the order — green in-process tests never see the
+    unit's namespace. The other half is start-up: a `ReadWritePaths=` path that
+    does not exist is `226/NAMESPACE`, so `scripts/deploy.sh` has to create the
+    two directories before it starts the unit.
+
+    The paths come from `provision._backup_settings`' own defaults, not a
+    literal list, so a future move of the store or the keys moves the assertion
+    with it.
+    """
+
+    UNIT = ROOT / "deploy" / "claim-worker" / "odile-claim.service"
+    DEPLOY = ROOT / "scripts" / "deploy.sh"
+
+    def settings(self) -> provision.BackupSettings:
+        # The values, not the file: `_backup_settings` reads only `values`, and
+        # an empty mapping leaves the module's defaults in place.
+        config = Config(self.UNIT, {})
+        return provision._backup_settings(provision.Context(config=config))
+
+    def directives(self, text: str, name: str) -> list[str]:
+        """The whitespace-separated values of every `name=` line, comments out."""
+        values: list[str] = []
+        for line in text.splitlines():
+            if line.lstrip().startswith("#"):
+                continue
+            key, separator, value = line.partition("=")
+            if separator and key.strip() == name:
+                values.extend(value.split())
+        return values
+
+    def test_the_unit_can_write_the_store_the_keys_and_the_queue(self) -> None:
+        settings = self.settings()
+        text = self.UNIT.read_text(encoding="utf-8")
+        # `-` marks a path systemd may skip if missing; it is still writable.
+        writable = [Path(value.lstrip("-")) for value in
+                    self.directives(text, "ReadWritePaths")]
+        for label, path in (("store of record", settings.store),
+                            ("pair keys", settings.keys),
+                            ("seed handoff", settings.pairs)):
+            covered = any(path == root or path.is_relative_to(root)
+                          for root in writable)
+            self.assertTrue(
+                covered,
+                "%s at %s is outside the unit's ReadWritePaths=%s; under "
+                "ProtectSystem=strict + ProtectHome=read-only the claim fails "
+                "with EROFS at the first pair write, before the paid order"
+                % (label, path, " ".join(str(root) for root in writable)))
+        # The sandbox is the reason the line exists; keep both halves honest.
+        self.assertIn("ProtectSystem=strict", text)
+        self.assertIn("ProtectHome=read-only", text)
+
+    def test_the_unit_comment_names_the_two_trees_outside_var_lib_odile(self) -> None:
+        text = self.UNIT.read_text(encoding="utf-8")
+        header = text.split("[Unit]", 1)[0]
+        self.assertIn("/var/lib/odile", header)
+        self.assertIn(str(provision.HETZNER_STORE_DIR), header)
+        self.assertIn(str(provision.HETZNER_KEYS_DIR), header)
+        self.assertNotIn("Everything it writes is under /var/lib/odile", header)
+
+    def test_deploy_creates_both_directories_before_starting_the_unit(self) -> None:
+        settings = self.settings()
+        lines = self.DEPLOY.read_text(encoding="utf-8").splitlines()
+        start = next((index for index, line in enumerate(lines)
+                      if line.strip().startswith("systemctl start odile-claim.service")),
+                     None)
+        self.assertIsNotNone(start, "deploy.sh no longer starts odile-claim.service")
+        made = [line for line in lines[:start]
+                if line.strip().startswith("install -d")
+                and str(settings.store) in line and str(settings.keys) in line]
+        self.assertTrue(
+            made,
+            "deploy.sh never creates %s and %s before starting the worker; a "
+            "missing ReadWritePaths= path is a 226/NAMESPACE start failure"
+            % (settings.store, settings.keys))
+        for expected in ("-o root", "-g root", "-m 0700"):
+            self.assertIn(expected, made[0],
+                          "the pair directories must be root-only: %r" % made[0])
 
 
 # --------------------------------------------------------------------- failure
