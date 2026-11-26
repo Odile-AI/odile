@@ -7,8 +7,8 @@ queues:
 
 * the claim form asks for the invited email and one consent tick, and the POST
   stores a throwaway public key with no private half;
-* the ready email carries the URL, the expected measurement and one link, and
-  none of the old ceremony commands;
+* the ready email carries the URL, the measurement the machine reports and one
+  link, and none of the old ceremony commands;
 * the ceremony page explains the first visit, not a terminal ritual.
 
 Hermetic: a throwaway SQLite file, the real app on loopback, and no provider,
