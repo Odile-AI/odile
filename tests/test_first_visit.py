@@ -1230,6 +1230,51 @@ class ResetTests(unittest.TestCase):
         self.assertTrue(fv.verify_password(NEW_PASSWORD, self.harness.stored_hash()))
 
 
+class DonePageHeadingTests(unittest.TestCase):
+    """The done page's h1 and title name the action the visit completed.
+
+    ODL-947 follow-up: on a seeded first boot the sign-in was chosen at
+    registration, so the visit signed in; only a classic setup sets one. The
+    code, the file and the state are the same in both, so only the two
+    sentences may move.
+    """
+
+    def page(self, *, seeded: bool) -> str:
+        harness = FirstVisitHarness(seeded=seeded)
+        self.addCleanup(harness.close)
+        status, _, page = (harness.signin() if seeded else harness.set_signin())
+        self.assertEqual(status, 200)
+        return page
+
+    def test_a_seeded_login_says_it_signed_in(self):
+        page = self.page(seeded=True)
+        self.assertIn("<title>You are signed in \u2014 Odile</title>", page)
+        self.assertIn("<h1>You are signed in.</h1>", page)
+        self.assertNotIn("Your sign-in is set", page)
+        self.assertIn("This is the only time the code is shown.", page)
+        self.assertIsNotNone(CODE_RE.search(page))
+
+    def test_a_classic_setup_says_it_set_the_sign_in(self):
+        page = self.page(seeded=False)
+        self.assertIn("<title>Your sign-in is set \u2014 Odile</title>", page)
+        self.assertIn("<h1>Your sign-in is set.</h1>", page)
+        self.assertNotIn("You are signed in", page)
+        self.assertIn("This is the only time the code is shown.", page)
+        self.assertIsNotNone(CODE_RE.search(page))
+
+    def test_the_two_pages_differ_only_in_the_title_and_the_heading(self):
+        pages = {seeded: self.page(seeded=seeded) for seeded in (True, False)}
+
+        def normalise(page: str) -> str:
+            page = re.sub(r"<title>[^<]*</title>", "<title>T</title>", page, count=1)
+            page = re.sub(r"<h1>[^<]*</h1>", "<h1>H</h1>", page, count=1)
+            page = re.sub(r'id="code">[^<]*</p>', 'id="code">CODE</p>', page, count=1)
+            return re.sub(r"\?d=[0-9a-f]{64}", "?d=TOKEN", page)
+
+        self.assertEqual(normalise(pages[True]), normalise(pages[False]),
+                         "the two done pages differ outside the title and the h1")
+
+
 class RecoveryDownloadTests(unittest.TestCase):
     """The recovery file is a download beside the code (ODL-471)."""
 
