@@ -313,21 +313,33 @@ jobs:
           git fetch --no-tags --depth=1 origin "$BASE_REF"
           base_sha=$(git rev-parse FETCH_HEAD)
           echo "base: pull_request at $base_sha"
-          git show "$base_sha:tools/leak_scan.py" > /tmp/base-leak_scan.py
-          git show "$base_sha:leak-allow.tsv" > /tmp/base-leak-allow.tsv
-          cp leak-allow.tsv /tmp/pr-leak-allow.tsv
+          # The scratch paths are per run, never fixed shared names: a host
+          # that runs two gate suites at once used to let a sibling's write of
+          # the fixed /tmp scanner path land between this run's write and its
+          # exec, so the wrong scanner ran (measured 2026-11-26: three
+          # concurrent suites on one host, two red on `unrecognized arguments:
+          # --history --forbid-only`). A fresh directory per run is what keeps
+          # the scanner and both allowlist copies this run's alone.
+          scratch=$(mktemp -d "${RUNNER_TEMP:-${TMPDIR:-/tmp}}/odile-leak.XXXXXXXXXX")
+          # Replaced below once the restore copy exists; this covers a failed
+          # `git show` before then.
+          trap 'rm -rf "$scratch"' EXIT
+          git show "$base_sha:tools/leak_scan.py" > "$scratch/base-leak_scan.py"
+          git show "$base_sha:leak-allow.tsv" > "$scratch/base-leak-allow.tsv"
+          cp leak-allow.tsv "$scratch/pr-leak-allow.tsv"
           # `set -e` aborts on the scan's non-zero exit, so the restore is a
           # trap: a plain `cp` after the scan would be skipped on the red path.
-          trap 'cp /tmp/pr-leak-allow.tsv leak-allow.tsv' EXIT
-          cp /tmp/base-leak-allow.tsv leak-allow.tsv
+          # The same trap drops this run's scratch directory, whatever the exit.
+          trap 'cp "$scratch/pr-leak-allow.tsv" leak-allow.tsv; rm -rf "$scratch"' EXIT
+          cp "$scratch/base-leak-allow.tsv" leak-allow.tsv
           # The base scanner's default is the documented path too, but name it:
           # a flag makes a list that vanished between steps exit 2, not skip.
           if [ -f docs/ops/leak-forbid.txt ]; then
-            /usr/bin/python3 /tmp/base-leak_scan.py --tree --root "$PWD" \
+            /usr/bin/python3 "$scratch/base-leak_scan.py" --tree --root "$PWD" \
               --forbid-file docs/ops/leak-forbid.txt
           else
             echo "forbid list: absent (the forbidden-value and forbidden-path classes are off in this tree)"
-            /usr/bin/python3 /tmp/base-leak_scan.py --tree --root "$PWD"
+            /usr/bin/python3 "$scratch/base-leak_scan.py" --tree --root "$PWD"
           fi
       # On a push to main this is the whole gate: the tree's own scanner with
       # the tree's own allowlist, over the merged result the push lands.
@@ -450,18 +462,30 @@ jobs:
             echo "forbid list: absent (the forbidden-value and forbidden-path classes are off in this run)"
             exit 0
           fi
-          git show "$base_sha:tools/leak_scan.py" > /tmp/base-leak_scan.py
-          git show "$base_sha:leak-allow.tsv" > /tmp/base-leak-allow.tsv
-          cp leak-allow.tsv /tmp/pr-leak-allow.tsv
+          # The scratch paths are per run, never fixed shared names: a host
+          # that runs two gate suites at once used to let a sibling's write of
+          # the fixed /tmp scanner path land between this run's write and its
+          # exec, so the wrong scanner ran (measured 2026-11-26: three
+          # concurrent suites on one host, two red on `unrecognized arguments:
+          # --history --forbid-only`). A fresh directory per run is what keeps
+          # the scanner and both allowlist copies this run's alone.
+          scratch=$(mktemp -d "${RUNNER_TEMP:-${TMPDIR:-/tmp}}/odile-leak.XXXXXXXXXX")
+          # Replaced below once the restore copy exists; this covers a failed
+          # `git show` before then.
+          trap 'rm -rf "$scratch"' EXIT
+          git show "$base_sha:tools/leak_scan.py" > "$scratch/base-leak_scan.py"
+          git show "$base_sha:leak-allow.tsv" > "$scratch/base-leak-allow.tsv"
+          cp leak-allow.tsv "$scratch/pr-leak-allow.tsv"
           # `set -e` aborts on the scan's non-zero exit, so the restore is a
           # trap: a plain `cp` after the scan would be skipped on the red path.
-          trap 'cp /tmp/pr-leak-allow.tsv leak-allow.tsv' EXIT
-          cp /tmp/base-leak-allow.tsv leak-allow.tsv
+          # The same trap drops this run's scratch directory, whatever the exit.
+          trap 'cp "$scratch/pr-leak-allow.tsv" leak-allow.tsv; rm -rf "$scratch"' EXIT
+          cp "$scratch/base-leak-allow.tsv" leak-allow.tsv
           # `--forbid-only` landed with the list, so a base that predates this
           # branch has a scanner that rejects the flag. Fall back to the tree's
           # scanner for that one transition run (the pull request that lands the
           # flag), with a line saying so; every later run reads the base's.
-          scanner=/tmp/base-leak_scan.py
+          scanner="$scratch/base-leak_scan.py"
           if ! /usr/bin/python3 "$scanner" --help 2>&1 | grep -q -- "--forbid-only"; then
             echo "base scanner predates --forbid-only; this run uses the tree's scanner"
             scanner=tools/leak_scan.py
