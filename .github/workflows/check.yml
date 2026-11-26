@@ -64,6 +64,18 @@
 # `fresh-check`). Both toolchain installs add iproute2, so the probe runs rather
 # than exiting 2.
 #
+# The SSH prerequisites. `make check`'s prereqs also names the three OpenSSH
+# binaries the Hetzner pair's key install shells out to: `ssh-keygen` and
+# `ssh-keyscan` pin the host key, and `sshpass` hands the one-time password to
+# `ssh` through a 0600 file (`odilectl/provision.py`, ODL-924 review 1). Both
+# toolchain installs carry `openssh-client` — which is `ssh`, `ssh-keygen` and
+# `ssh-keyscan` — and `sshpass`, a separate package. Without it the gate stops
+# in `prereqs` before one test runs (run 45762410714, 2026-11-26: `check` and
+# `fresh-check` both red in 6 s at `Makefile:165`, `make check: sshpass is not
+# installed`). HQ had the binary, so every local gate was green and only CI was
+# red. A prereq added to `prereqs` belongs in both apt lists here in the same
+# change.
+#
 # There is no secret in this file, no job writes to the repository, every action
 # is pinned to a full commit SHA (the comment names the release), the base image
 # is pinned by digest, and the shellcheck binary by SHA-256. The checkout is
@@ -97,7 +109,7 @@ jobs:
           apt-get -o Acquire::Retries=3 install -y -qq git python3 python3-yaml openssl ca-certificates procps iproute2 debconf sudo make build-essential systemd fdisk e2fsprogs curl xz-utils
           echo "postfix postfix/main_mailer_type select Internet Site" | debconf-set-selections
           echo "postfix postfix/mailname string ci.invalid" | debconf-set-selections
-          apt-get -o Acquire::Retries=3 install -y -qq restic caddy postfix debootstrap cryptsetup squashfs-tools qemu-utils ovmf openssh-client gnupg rsync sqlite3 jq
+          apt-get -o Acquire::Retries=3 install -y -qq restic caddy postfix debootstrap cryptsetup squashfs-tools qemu-utils ovmf openssh-client sshpass gnupg rsync sqlite3 jq
           curl -fsSL -o /tmp/shellcheck.tar.xz https://github.com/koalaman/shellcheck/releases/download/v0.11.0/shellcheck-v0.11.0.linux.x86_64.tar.xz
           echo "8c3be12b05d5c177a04c29e3c78ce89ac86f1595681cab149b65b97c4e227198  /tmp/shellcheck.tar.xz" | sha256sum -c -
           tar -xJf /tmp/shellcheck.tar.xz -C /tmp
@@ -133,7 +145,7 @@ jobs:
           apt-get -o Acquire::Retries=3 install -y -qq git python3 python3-yaml openssl ca-certificates procps iproute2 debconf sudo make build-essential systemd fdisk e2fsprogs curl xz-utils
           echo "postfix postfix/main_mailer_type select Internet Site" | debconf-set-selections
           echo "postfix postfix/mailname string ci.invalid" | debconf-set-selections
-          apt-get -o Acquire::Retries=3 install -y -qq restic caddy postfix debootstrap cryptsetup squashfs-tools qemu-utils ovmf openssh-client gnupg rsync sqlite3 jq
+          apt-get -o Acquire::Retries=3 install -y -qq restic caddy postfix debootstrap cryptsetup squashfs-tools qemu-utils ovmf openssh-client sshpass gnupg rsync sqlite3 jq
           curl -fsSL -o /tmp/shellcheck.tar.xz https://github.com/koalaman/shellcheck/releases/download/v0.11.0/shellcheck-v0.11.0.linux.x86_64.tar.xz
           echo "8c3be12b05d5c177a04c29e3c78ce89ac86f1595681cab149b65b97c4e227198  /tmp/shellcheck.tar.xz" | sha256sum -c -
           tar -xJf /tmp/shellcheck.tar.xz -C /tmp
