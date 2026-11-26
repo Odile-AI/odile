@@ -64,6 +64,32 @@
 # `fresh-check`). Both toolchain installs add iproute2, so the probe runs rather
 # than exiting 2.
 #
+# The SSH prerequisites. `make check`'s prereqs also names the three OpenSSH
+# binaries the Hetzner pair's key install shells out to: `ssh-keygen` and
+# `ssh-keyscan` pin the host key, and `sshpass` hands the one-time password to
+# `ssh` through a 0600 file (`odilectl/provision.py`, ODL-924 review 1). Both
+# toolchain installs carry `openssh-client` — which is `ssh`, `ssh-keygen` and
+# `ssh-keyscan` — and `sshpass`, a separate package. Without it the gate stops
+# in `prereqs` before one test runs (run 45762410714, 2026-11-26: `check` and
+# `fresh-check` both red in 6 s at `Makefile:165`, `make check: sshpass is not
+# installed`). HQ had the binary, so every local gate was green and only CI was
+# red. A prereq added to `prereqs` belongs in both apt lists here in the same
+# change.
+#
+# The seed identity's prerequisite. `tests/test_seed.py`'s BackupPairs (ODL-924)
+# calls `build_seed` with no explicit identity, so `seed_identity()` reads the
+# host's seed key and the committed certificate over it. HQ has
+# /root/.odile/seed-signing.pem; a runner does not, and with `sshpass` fixed the
+# run failed there instead (`signing key /root/.odile/seed-signing.pem: [Errno 2]
+# No such file or directory` — run 45773205870, `Ran 2741 tests ... errors=1`).
+# Both jobs therefore mint a throwaway chain for the run — a seed key, a release
+# key (the verb refuses one under /root) and the certificate over the seed
+# public key — and pass it to the gate through ODILE_SEED_SIGNING_KEY,
+# ODILE_SEED_CERT and ODILE_SEED_RELEASE_PUBKEY. No secret is in this file: the
+# key exists only for the lifetime of the job. The seed key's real public half
+# is committed at deploy/seed/seed-key.pub, but `openssl pkey -pubout` reads a
+# private PEM, so the runner mints its own pair rather than restoring that one.
+#
 # There is no secret in this file, no job writes to the repository, every action
 # is pinned to a full commit SHA (the comment names the release), the base image
 # is pinned by digest, and the shellcheck binary by SHA-256. The checkout is
@@ -97,7 +123,7 @@ jobs:
           apt-get -o Acquire::Retries=3 install -y -qq git python3 python3-yaml openssl ca-certificates procps iproute2 debconf sudo make build-essential systemd fdisk e2fsprogs curl xz-utils
           echo "postfix postfix/main_mailer_type select Internet Site" | debconf-set-selections
           echo "postfix postfix/mailname string ci.invalid" | debconf-set-selections
-          apt-get -o Acquire::Retries=3 install -y -qq restic caddy postfix debootstrap cryptsetup squashfs-tools qemu-utils ovmf openssh-client gnupg rsync sqlite3 jq
+          apt-get -o Acquire::Retries=3 install -y -qq restic caddy postfix debootstrap cryptsetup squashfs-tools qemu-utils ovmf openssh-client sshpass gnupg rsync sqlite3 jq
           curl -fsSL -o /tmp/shellcheck.tar.xz https://github.com/koalaman/shellcheck/releases/download/v0.11.0/shellcheck-v0.11.0.linux.x86_64.tar.xz
           echo "8c3be12b05d5c177a04c29e3c78ce89ac86f1595681cab149b65b97c4e227198  /tmp/shellcheck.tar.xz" | sha256sum -c -
           tar -xJf /tmp/shellcheck.tar.xz -C /tmp
@@ -112,7 +138,20 @@ jobs:
       # container, which git refuses as "dubious ownership" without this.
       - name: Trust this checkout
         run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+      - name: Mint the gate's throwaway seed identity
+        run: |
+          set -euo pipefail
+          /usr/bin/python3 seed/seed.py keygen --out /root/.odile/seed-signing.pem --force
+          /usr/bin/python3 seed/seed.py keygen --out /var/tmp/odile-ci-release-key.pem --force
+          /usr/bin/python3 seed/seed.py seed-cert \
+            --file /root/.odile/seed-signing.pem.pub \
+            --key /var/tmp/odile-ci-release-key.pem \
+            --out /var/tmp/odile-ci-seed.crt
       - name: make check
+        env:
+          ODILE_SEED_SIGNING_KEY: /root/.odile/seed-signing.pem
+          ODILE_SEED_CERT: /var/tmp/odile-ci-seed.crt
+          ODILE_SEED_RELEASE_PUBKEY: /var/tmp/odile-ci-release-key.pem.pub
         run: make check
 
   fresh-check:
@@ -133,7 +172,7 @@ jobs:
           apt-get -o Acquire::Retries=3 install -y -qq git python3 python3-yaml openssl ca-certificates procps iproute2 debconf sudo make build-essential systemd fdisk e2fsprogs curl xz-utils
           echo "postfix postfix/main_mailer_type select Internet Site" | debconf-set-selections
           echo "postfix postfix/mailname string ci.invalid" | debconf-set-selections
-          apt-get -o Acquire::Retries=3 install -y -qq restic caddy postfix debootstrap cryptsetup squashfs-tools qemu-utils ovmf openssh-client gnupg rsync sqlite3 jq
+          apt-get -o Acquire::Retries=3 install -y -qq restic caddy postfix debootstrap cryptsetup squashfs-tools qemu-utils ovmf openssh-client sshpass gnupg rsync sqlite3 jq
           curl -fsSL -o /tmp/shellcheck.tar.xz https://github.com/koalaman/shellcheck/releases/download/v0.11.0/shellcheck-v0.11.0.linux.x86_64.tar.xz
           echo "8c3be12b05d5c177a04c29e3c78ce89ac86f1595681cab149b65b97c4e227198  /tmp/shellcheck.tar.xz" | sha256sum -c -
           tar -xJf /tmp/shellcheck.tar.xz -C /tmp
@@ -157,7 +196,20 @@ jobs:
           set -euo pipefail
           git checkout --quiet -B main HEAD
           echo "fresh-check source branch: $(git symbolic-ref --short HEAD) at $(git rev-parse --short HEAD)"
+      - name: Mint the gate's throwaway seed identity
+        run: |
+          set -euo pipefail
+          /usr/bin/python3 seed/seed.py keygen --out /root/.odile/seed-signing.pem --force
+          /usr/bin/python3 seed/seed.py keygen --out /var/tmp/odile-ci-release-key.pem --force
+          /usr/bin/python3 seed/seed.py seed-cert \
+            --file /root/.odile/seed-signing.pem.pub \
+            --key /var/tmp/odile-ci-release-key.pem \
+            --out /var/tmp/odile-ci-seed.crt
       - name: make fresh-check
+        env:
+          ODILE_SEED_SIGNING_KEY: /root/.odile/seed-signing.pem
+          ODILE_SEED_CERT: /var/tmp/odile-ci-seed.crt
+          ODILE_SEED_RELEASE_PUBKEY: /var/tmp/odile-ci-release-key.pem.pub
         run: make fresh-check
 
   demo-check:
