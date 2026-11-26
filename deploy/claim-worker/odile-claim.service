@@ -4,8 +4,14 @@
 # scripts/deploy.sh installs it; odile-claim.timer starts it every five minutes.
 #
 # Root, because the worker reads /root/.odile/config.yaml (0600) and the
-# provider and Cloudflare credentials beside it. Everything it writes is under
-# /var/lib/odile: the queue, the ready outbox and the recovery kits.
+# provider and Cloudflare credentials beside it. It writes three trees: the
+# queue, the ready outbox and the recovery kits under /var/lib/odile, and — for
+# the tenant's backup pair (ODL-924) — the store of record under
+# /root/.odile/hetzner and the pair's keys under /root/.odile/keys, which the
+# sandbox below must name or the first key write is EROFS before the paid
+# order. scripts/deploy.sh creates both /root/.odile directories 0700 root
+# first: a ReadWritePaths= path that does not exist is a 226/NAMESPACE start
+# failure, not a warning.
 [Unit]
 Description=Odile claim worker — provision every paid, claimed, keyed tenant
 Documentation=https://odile.fyi
@@ -29,4 +35,7 @@ NoNewPrivileges=yes
 PrivateTmp=yes
 ProtectSystem=strict
 ProtectHome=read-only
-ReadWritePaths=/var/lib/odile
+# /var/lib/odile: the queue WAL, the outbox, the recovery kits.
+# /root/.odile/hetzner: the pair's store of record, odile-<slug>.env (0600).
+# /root/.odile/keys: the pair's two private halves and known_hosts.
+ReadWritePaths=/var/lib/odile /root/.odile/hetzner /root/.odile/keys

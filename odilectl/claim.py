@@ -32,6 +32,13 @@ What this module promises
   to ``claimed`` and the failure is written to the append-only event log; the
   claim stays usable and ``claim run`` retries it. Savio is alerted in the
   same outbox the health poller writes.
+* **A claim mints the tenant's BX11 pair before it orders.** The sub-account
+  recorder `odilectl provision` runs (ODL-924) is called from this path too,
+  before the paid call: the store of record, the seed handoff file and the
+  row's `detail` are written, so a claim-ordered machine's seed carries the
+  `backup` block, and the 51st pair is refused by name with no machine
+  ordered. A pair minted for an order that then fails is reused by the retry
+  (idempotent by name), never minted twice.
 * **One ready email per tenant.** The queue item is an RFC 5322 message at
   ``<outbox>/ready/<slug>.eml`` with the recovery kit attached, plus a JSON
   sidecar with the non-secret facts. A second run that finds the message
@@ -97,7 +104,7 @@ from .health import (
     machine_measurement,
 )
 from .providers.base import CreateSpec, Machine, Provider, validate_ssh_public_key
-from .provision import DEFAULT_PIN, pinned_release
+from .provision import DEFAULT_PIN, BackupPair, pinned_release, _provision_backup
 from .state import SCHEMA as STATE_SCHEMA
 from .state import StateError, StateStore, UnknownTenant
 
@@ -1472,6 +1479,12 @@ def provision_tenant(
     dns_written = False
     queued: QueuedEmail | None = None
     try:
+        # The tenant's BX11 sub-account pair, minted and recorded before any
+        # paid call — the same recorder `odilectl provision` runs (ODL-924).
+        # The 51st pair, a half pair or a box the store cannot match all
+        # refuse here, so no machine is billed; a claim is a first machine,
+        # never a rebuild, so `previous_instance` is "".
+        backup = _provision_backup(Context(config=config), slug, "")
         machine = _find_machine(provider, slug)
         if machine is not None:
             adopted = True
@@ -1619,7 +1632,8 @@ def provision_tenant(
             alert_path=alert_path,
         )
 
-    note = _advance_state_provisioned(con, slug, release=release)
+    note = _advance_state_provisioned(con, slug, release=release,
+                                      backup=_pair_detail(backup.pair))
     finished = _finish_ready(con, slug, config=config, outbox=outbox,
                              now=moment, guest_probe=guest_probe)
     return ProvisionResult(
@@ -1691,12 +1705,32 @@ def _backup_repo(config: Config, slug: str) -> str | None:
     return raw.replace("{slug}", slug) if raw else None
 
 
+def _pair_detail(pair: BackupPair) -> dict[str, Any]:
+    """The row's cache of a minted pair: the same seven keys `provision` writes.
+
+    `odilectl.provision._record_backup_detail` is the other writer of this
+    shape, and the claim path must not spell it differently: the ids and the
+    provider logins are cached here so a later run can name the pair without
+    the root-only store of record. The env file stays the truth.
+    """
+    return {
+        "backup_box_id": pair.box_id,
+        "backup_subaccount_id": pair.subaccount_id,
+        "backup_subaccount_username": pair.subaccount_username,
+        "backup_readonly_subaccount_id": pair.readonly_subaccount_id,
+        "backup_readonly_subaccount_username": pair.readonly_subaccount_username,
+        "backup_repository": pair.repo_url,
+        "previous_instance": pair.previous_instance,
+    }
+
+
 def _advance_state_provisioned(
     con: sqlite3.Connection,
     slug: str,
     *,
     release: str | None = None,
     backfill: str | None = None,
+    backup: dict[str, Any] | None = None,
 ) -> str:
     """Record the machine on the state spine: claimed → provisioning → first_boot.
 
@@ -1723,6 +1757,10 @@ def _advance_state_provisioned(
     than the spine's — a re-ordered tenant's web row still names the dead
     machine — so replaying it as the order's release would walk the spine
     backwards. A spine with a value is the record the web row converges to.
+
+    ``backup`` is the pair's cache from `_pair_detail`, merged into this one
+    detail write: `store.provision` replaces the row's detail, so a separate
+    `note` before it would be thrown away (ODL-924 follow-up).
     """
     if not _has_state_table(con):
         return ""
@@ -1742,7 +1780,8 @@ def _advance_state_provisioned(
                 ipv4=_tenant(con, slug)["ipv4"],
                 release=release,
                 detail={"source": "claim", "ready": False,
-                        "ready_note": "waiting for the machine's /verify"},
+                        "ready_note": "waiting for the machine's /verify",
+                        **(backup or {})},
             )
         if tenant.state == "provisioning":
             tenant = store.await_boot(slug)
