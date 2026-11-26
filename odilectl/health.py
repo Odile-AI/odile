@@ -738,9 +738,10 @@ UPGRADE_WINDOW_RE = re.compile(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[
 UPGRADE_REQUEST_RE = re.compile(r"^[0-9a-f]{32}$")
 
 # The receipt the owner can act on.  The body is the card's verbatim copy in
-# `templates/emails/upgrade-booked.txt`; the subject is the card's line.  The
-# reply address is the help mailbox, because the one action that can change a
-# booking is a reply before its window.
+# `templates/emails/upgrade-booked.txt`, followed by the sign-off and the alpha
+# footer BRAND.md §Email gives every account email; the subject is the card's
+# line.  The reply address is the help mailbox, because the one action that can
+# change a booking is a reply before its window.
 UPGRADE_SUBJECT = "Your upgrade is booked"
 UPGRADE_TEMPLATE = Path(__file__).resolve().parent.parent / "templates" / "emails" / "upgrade-booked.txt"
 UPGRADE_SENDER = "Odile <invite@mail.odile.fyi>"

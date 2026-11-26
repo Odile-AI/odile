@@ -50,11 +50,12 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 import app  # noqa: E402
-from odilectl import claim, dns  # noqa: E402
+from odilectl import claim, dns, provision  # noqa: E402
 from odilectl import cli as odilectl_cli  # noqa: E402
 from odilectl.config import Config  # noqa: E402
 from odilectl.errors import ConfigError, ProviderError, UsageError  # noqa: E402
 from odilectl.providers.base import Machine, Provider  # noqa: E402
+from tests import box_fixture  # noqa: E402
 
 # A real ed25519 public key; the private half was generated for the ODL-211
 # fixture and thrown away. A public key is not a secret.
@@ -89,6 +90,19 @@ NEXT_RELEASE = "2026.12.0"
 # never an instruction — the pin's `provision_release` is the only source.
 PROVIDER_RELEASE = "2026.09.9"
 MEASUREMENT = "ab" * 48
+# The seed service's config, cut to the keys `build_seed` reads: the pair
+# itself never comes from here (it is the file the claim wrote).
+SEED_CONFIG = {
+    "mail_relay": {"host": "smtp.example.invalid", "port": 587,
+                   "username": "tenant@example.invalid", "secret": "relay-fixture",
+                   "tls_ca": "-----BEGIN CERTIFICATE-----\nfixture\n-----END CERTIFICATE-----\n"},
+    "model": "near/llama-fixture",
+    "support_public_key": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAISupportKeyFixture",
+    "backup_repo_url": "sftp:fallback@example.invalid:/tenants/{slug}/restic",
+    "hermes_version": "0.23.0",
+    "near_api_key": "sk-fixture" + "-not-a-real-key",
+}
+SEED_IDENTITY = (b"fixture-seed-signing-key", b"fixture-seed-certificate")
 
 
 def ready_answer(measurement: str = MEASUREMENT):
@@ -263,8 +277,20 @@ class ClaimBase(unittest.TestCase):
         # provider's measured_release is ignored must control both sources.
         self.pin_path = self.directory / "odile-verify.pin"
         self.write_pin()
+        # ODL-924's pair: every claim provision now mints the BX11 sub-account
+        # pair before the order, so the box API, `ssh-keygen`, the host-key
+        # scan and the key install are the same four seams tests/test_seed.py
+        # uses. This test's own store-of-record directory backs its own fake
+        # box, so no other test's tenants are visible.
+        self.hetzner_store = self.directory / "hetzner"
+        self.hetzner_keys = self.directory / "keys"
+        self.seed_pairs = self.directory / "seed-backup-pairs.json"
+        self.hetzner_token = self.directory / "hetzner-api-token"
+        self.hetzner_token.write_text("fixture-box-token\n", encoding="utf-8")
+        self.hetzner_token.chmod(0o600)
         self.write_config()
         self.config = Config.load(self.config_path)
+        box_fixture.patchers(self)
         self.con = claim.open_db(self.db_path)
         self.addCleanup(self.con.close)
         self.cloud = CloudflareFixture()
@@ -305,6 +331,13 @@ class ClaimBase(unittest.TestCase):
             # in the file must not win over the pin's provision_release.
             "release": PROVIDER_RELEASE,
             "expected_measurement": MEASUREMENT,
+            # ODL-924: the BX11 pair's four paths. The claim path mints and
+            # records the pair before the order, exactly as `provision` does.
+            "hetzner_box_id": "709870",
+            "hetzner_token": str(self.hetzner_token),
+            "hetzner_dir": str(self.hetzner_store),
+            "hetzner_keys": str(self.hetzner_keys),
+            "seed_backup_pairs": str(self.seed_pairs),
         }
         values.update(overrides)
         self.config_path.write_text(
@@ -1049,6 +1082,262 @@ class ProvisionTests(ClaimBase):
         self.assertNotIn("{{", kit_text)
 
 
+# ----------------------------------------------------------------- the pair
+
+
+class PairProvisionTests(ClaimBase):
+    """ODL-924 on the claim path: the claim mints and records the BX11 pair.
+
+    A tenant whose machine is ordered by a claim used to get a seed with no
+    `backup` block: `provision_tenant` ordered the machine and bound the token
+    without ever calling the recorder `odilectl provision` runs. These tests
+    hold the claim path to the same contract, offline: the fake box from
+    `tests/box_fixture.py` is the provider's API, and the seed the guest
+    receives is built by the service's own `load_backup_pairs` + `redeem` from
+    the file the claim wrote — not by the test's own dictionary.
+    """
+
+    def pair(self) -> tuple[dict, dict]:
+        box = box_fixture.box_for(self.hetzner_store)
+        found = [account for account in box.accounts
+                 if re.fullmatch(r"odile-%s-(rw|ro)" % re.escape(SLUG),
+                                 account["name"])]
+        self.assertEqual([account["name"] for account in found],
+                         ["odile-%s-rw" % SLUG, "odile-%s-ro" % SLUG])
+        return found[0], found[1]
+
+    def token_of(self, provider: FixtureProvider) -> tuple[claim.ProvisionResult, str]:
+        """Provision through the claim path, catching the one token it mints."""
+        tokens: list[str] = []
+        real_rotate = claim._SEED.rotate
+
+        def recording_rotate(*args, **kwargs):
+            issued = real_rotate(*args, **kwargs)
+            tokens.append(issued["token"])
+            return issued
+
+        with mock.patch.object(claim._SEED, "rotate", recording_rotate):
+            result = self.provision(provider)
+        self.assertEqual(len(tokens), 1, "the claim bound no setup token")
+        return result, tokens[0]
+
+    def test_a_claimed_tenant_seed_carries_the_pair_and_no_previous_instance(self) -> None:
+        self.paid_claim()
+        provider = FixtureProvider()
+        result, token = self.token_of(provider)
+        self.assertTrue(result.ok, result.reason)
+        self.assertEqual(provider.created, 1)
+
+        rw, ro = self.pair()
+        self.assertEqual(rw["home_directory"], "tenants/%s" % SLUG)
+        self.assertEqual(ro["home_directory"], "tenants/%s/data" % SLUG)
+        self.assertFalse(rw["access_settings"]["readonly"])
+        self.assertTrue(ro["access_settings"]["readonly"])
+
+        # The store of record is 0600 and carries both private halves; the
+        # password the create used is nowhere in it.
+        store = self.hetzner_store / ("odile-%s.env" % SLUG)
+        self.assertEqual(os.stat(store).st_mode & 0o777, 0o600)
+        store_text = store.read_text(encoding="utf-8")
+        for password in box_fixture.box_for(self.hetzner_store).passwords:
+            self.assertNotIn(password, store_text)
+
+        # The seed handoff: 0600, the no-port colon URL, both keys, both hosts.
+        self.assertEqual(os.stat(self.seed_pairs).st_mode & 0o777, 0o600)
+        entry = claim._SEED.load_backup_pairs(str(self.seed_pairs))[SLUG]
+        self.assertEqual(entry["subaccount_id"], rw["id"])
+        self.assertEqual(entry["readonly_subaccount_id"], ro["id"])
+        self.assertEqual(entry["repo_url"],
+                         "sftp:%s@%s:data/restic" % (rw["username"], rw["server"]))
+        self.assertNotIn(":22/", entry["repo_url"])
+        self.assertIn("PRIVATE KEY", entry["ssh_private_key"])
+        self.assertIn("PRIVATE KEY", entry["readonly_ssh_private_key"])
+        self.assertEqual([line.split(" ")[0] for line in entry["known_hosts"].splitlines()],
+                         [rw["server"], ro["server"]])
+        self.assertEqual(entry["previous_instance"], "")
+
+        # The seed itself: the service's own read of that file and its own
+        # exchange, so the assertion is about the bytes a guest receives.
+        seed = claim._SEED.redeem(
+            self.con, token, result.server_id, dict(SEED_CONFIG),
+            backup_pairs_file=str(self.seed_pairs),
+            identity=SEED_IDENTITY, keys={}, now=at(NOW + 60),
+        )
+        self.assertEqual(seed["backup_repo_url"], entry["repo_url"])
+        self.assertEqual(seed["backup"]["repo_url"], entry["repo_url"])
+        self.assertEqual(seed["backup"]["repo_url"],
+                         "sftp:%s@%s:data/restic" % (rw["username"], rw["server"]))
+        self.assertEqual(seed["backup"]["ssh_private_key"], entry["ssh_private_key"])
+        self.assertEqual(seed["backup"]["readonly_ssh_private_key"],
+                         entry["readonly_ssh_private_key"])
+        self.assertIn(rw["server"] + " ", seed["backup"]["known_hosts"])
+        self.assertIn(ro["server"] + " ", seed["backup"]["known_hosts"])
+        self.assertEqual(seed["backup"]["subaccount_id"], rw["id"])
+        self.assertEqual(seed["backup"]["readonly_subaccount_id"], ro["id"])
+        self.assertEqual(seed["backup"]["subaccount_username"], rw["username"])
+        self.assertEqual(seed["backup"]["readonly_subaccount_username"], ro["username"])
+        self.assertEqual(seed["backup"]["previous_instance"], "")
+        self.assertEqual(os.stat(self.seed_pairs).st_mode & 0o777, 0o600)
+
+        # The row's cache is written by the claim's own spine write, not a
+        # second one: the pair's ids survive beside the order's detail.
+        detail = json.loads(self.con.execute(
+            "SELECT detail FROM tenant_state WHERE slug = ?", (SLUG,)
+        ).fetchone()["detail"])
+        self.assertEqual(detail["source"], "claim")
+        self.assertEqual(detail["backup_box_id"], 709870)
+        self.assertEqual(detail["backup_subaccount_id"], rw["id"])
+        self.assertEqual(detail["backup_subaccount_username"], rw["username"])
+        self.assertEqual(detail["backup_readonly_subaccount_id"], ro["id"])
+        self.assertEqual(detail["backup_readonly_subaccount_username"], ro["username"])
+        self.assertEqual(detail["backup_repository"], entry["repo_url"])
+        self.assertEqual(detail["previous_instance"], "")
+
+    def test_a_retried_claim_reuses_the_pair_and_posts_nothing(self) -> None:
+        """A pair minted for an order that failed is the retry's pair, not a new one."""
+        self.paid_claim()
+        broken = FixtureProvider(fail_poll=True)
+        first = self.provision(broken)
+        self.assertFalse(first.ok)
+        self.assertEqual(self.tenant()["state"], "claimed")
+        entry_before = claim._SEED.load_backup_pairs(str(self.seed_pairs))[SLUG]
+
+        box = box_fixture.box_for(self.hetzner_store)
+        before = len(box.mutating())
+        healthy = FixtureProvider()
+        retry = self.provision(healthy, now=NOW + 120)
+        self.assertTrue(retry.ok, retry.reason)
+        self.assertEqual(box.mutating()[before:], [],
+                         "a retry re-creates the pair instead of reading it back")
+        entry_after = claim._SEED.load_backup_pairs(str(self.seed_pairs))[SLUG]
+        self.assertEqual(entry_after, entry_before)
+        self.assertEqual(entry_after["previous_instance"], "")
+        self.assertEqual(len(box.passwords), 4, "a retry reset a password again")
+
+    def test_a_claim_for_the_51st_pair_is_refused_before_the_paid_call(self) -> None:
+        box = box_fixture.box_for(self.hetzner_store)
+        for index in range(50):
+            box.add_pair("odl-fill%02d" % index)
+        before = len(box.calls)
+
+        self.paid_claim()
+        provider = FixtureProvider()
+        result = self.provision(provider)
+
+        self.assertFalse(result.ok)
+        self.assertIn(SLUG, result.reason, "the refusal must name the tenant")
+        self.assertIn("51st", result.reason)
+        # Before the paid call: the provider was never asked to create.
+        self.assertEqual(provider.calls, [])
+        self.assertEqual(provider.created, 0)
+        self.assertEqual(provider.machines, {})
+        # And the box saw no write after the pair count read.
+        self.assertEqual([call for call in box.calls[before:] if call[0] == "POST"], [])
+        self.assertFalse((self.hetzner_store / ("odile-%s.env" % SLUG)).exists())
+        self.assertFalse(self.seed_pairs.exists())
+
+        # The claim stays usable and the refusal is where a human reads it.
+        self.assertEqual(self.tenant()["state"], "claimed")
+        self.assertIsNone(self.tenant()["server_id"])
+        alerts = self.alerts()
+        self.assertEqual(len(alerts), 1)
+        self.assertEqual(alerts[0]["kind"], "provision_failed")
+        self.assertIn("51st", alerts[0]["body"])
+        self.assertEqual(json.loads(self.events()[-1]["detail"])["step"],
+                         "provision_failed")
+
+
+# ------------------------------------------------------------- the deployed unit
+
+
+class ClaimWorkerUnitTests(unittest.TestCase):
+    """The unit that runs a claim may write everything the claim path writes.
+
+    Round 2 of ODL-924's review: `provision_tenant` now mints the BX11 pair
+    before the paid order, which writes the store of record
+    (`/root/.odile/hetzner/odile-<slug>.env`) and the pair's keys
+    (`/root/.odile/keys/<slug>/`) beside the queue under `/var/lib/odile`. The
+    unit keeps its sandbox (`ProtectSystem=strict`, `ProtectHome=read-only`), so
+    a path missing from `ReadWritePaths=` is `EROFS` at the first key write and
+    every claim dies before the order — green in-process tests never see the
+    unit's namespace. The other half is start-up: a `ReadWritePaths=` path that
+    does not exist is `226/NAMESPACE`, so `scripts/deploy.sh` has to create the
+    two directories before it starts the unit.
+
+    The paths come from `provision._backup_settings`' own defaults, not a
+    literal list, so a future move of the store or the keys moves the assertion
+    with it.
+    """
+
+    UNIT = ROOT / "deploy" / "claim-worker" / "odile-claim.service"
+    DEPLOY = ROOT / "scripts" / "deploy.sh"
+
+    def settings(self) -> provision.BackupSettings:
+        # The values, not the file: `_backup_settings` reads only `values`, and
+        # an empty mapping leaves the module's defaults in place.
+        config = Config(self.UNIT, {})
+        return provision._backup_settings(provision.Context(config=config))
+
+    def directives(self, text: str, name: str) -> list[str]:
+        """The whitespace-separated values of every `name=` line, comments out."""
+        values: list[str] = []
+        for line in text.splitlines():
+            if line.lstrip().startswith("#"):
+                continue
+            key, separator, value = line.partition("=")
+            if separator and key.strip() == name:
+                values.extend(value.split())
+        return values
+
+    def test_the_unit_can_write_the_store_the_keys_and_the_queue(self) -> None:
+        settings = self.settings()
+        text = self.UNIT.read_text(encoding="utf-8")
+        # `-` marks a path systemd may skip if missing; it is still writable.
+        writable = [Path(value.lstrip("-")) for value in
+                    self.directives(text, "ReadWritePaths")]
+        for label, path in (("store of record", settings.store),
+                            ("pair keys", settings.keys),
+                            ("seed handoff", settings.pairs)):
+            covered = any(path == root or path.is_relative_to(root)
+                          for root in writable)
+            self.assertTrue(
+                covered,
+                "%s at %s is outside the unit's ReadWritePaths=%s; under "
+                "ProtectSystem=strict + ProtectHome=read-only the claim fails "
+                "with EROFS at the first pair write, before the paid order"
+                % (label, path, " ".join(str(root) for root in writable)))
+        # The sandbox is the reason the line exists; keep both halves honest.
+        self.assertIn("ProtectSystem=strict", text)
+        self.assertIn("ProtectHome=read-only", text)
+
+    def test_the_unit_comment_names_the_two_trees_outside_var_lib_odile(self) -> None:
+        text = self.UNIT.read_text(encoding="utf-8")
+        header = text.split("[Unit]", 1)[0]
+        self.assertIn("/var/lib/odile", header)
+        self.assertIn(str(provision.HETZNER_STORE_DIR), header)
+        self.assertIn(str(provision.HETZNER_KEYS_DIR), header)
+        self.assertNotIn("Everything it writes is under /var/lib/odile", header)
+
+    def test_deploy_creates_both_directories_before_starting_the_unit(self) -> None:
+        settings = self.settings()
+        lines = self.DEPLOY.read_text(encoding="utf-8").splitlines()
+        start = next((index for index, line in enumerate(lines)
+                      if line.strip().startswith("systemctl start odile-claim.service")),
+                     None)
+        self.assertIsNotNone(start, "deploy.sh no longer starts odile-claim.service")
+        made = [line for line in lines[:start]
+                if line.strip().startswith("install -d")
+                and str(settings.store) in line and str(settings.keys) in line]
+        self.assertTrue(
+            made,
+            "deploy.sh never creates %s and %s before starting the worker; a "
+            "missing ReadWritePaths= path is a 226/NAMESPACE start failure"
+            % (settings.store, settings.keys))
+        for expected in ("-o root", "-g root", "-m 0700"):
+            self.assertIn(expected, made[0],
+                          "the pair directories must be root-only: %r" % made[0])
+
+
 # --------------------------------------------------------------------- failure
 
 
@@ -1434,11 +1723,21 @@ class CliTests(ClaimBase):
 def transcript() -> None:
     """Print the card's end-to-end evidence; safe to rerun on a fresh box."""
     directory = Path(tempfile.mkdtemp(prefix="odile-claim-transcript-"))
+    # ODL-924: the claim path mints the BX11 pair before the order, so the
+    # transcript patches the same four seams the suite does; without them a
+    # "safe to rerun" transcript would dial the real box API.
+    seams = box_fixture.start_patchers()
     try:
         db_path = directory / "waitlist.db"
         outbox = directory / "outbox"
         config_path = directory / "config.yaml"
         pin_path = directory / "odile-verify.pin"
+        hetzner_store = directory / "hetzner"
+        hetzner_keys = directory / "keys"
+        seed_pairs = directory / "seed-backup-pairs.json"
+        hetzner_token = directory / "hetzner-api-token"
+        hetzner_token.write_text("fixture-box-token\n", encoding="utf-8")
+        hetzner_token.chmod(0o600)
         pin_path.write_text(json.dumps({
             "schema": 2,
             "provision_release": RELEASE,
@@ -1461,6 +1760,12 @@ def transcript() -> None:
                 # The pin is the source; a stale `release:` must not win.
                 f"release_pin: {pin_path}",
                 f"release: {PROVIDER_RELEASE}",
+                # ODL-924's pair paths, under this transcript's directory.
+                "hetzner_box_id: 709870",
+                f"hetzner_token: {hetzner_token}",
+                f"hetzner_dir: {hetzner_store}",
+                f"hetzner_keys: {hetzner_keys}",
+                f"seed_backup_pairs: {seed_pairs}",
             ]) + "\n",
             encoding="utf-8",
         )
@@ -1486,10 +1791,25 @@ def transcript() -> None:
 
         print("== provision (fixture provider + recorded Cloudflare) ==")
         provider = FixtureProvider()
-        result = claim.provision_tenant(
-            con, SLUG, provider=provider, config=config, dns_client=dns_client,
-            outbox=claim.ReadyOutbox(outbox), now=NOW, interval=0.0,
-        )
+        minted: dict[str, str] = {}
+        original_rotate = claim._SEED.rotate
+
+        def recording_rotate(*args, **kwargs):
+            issued_token = original_rotate(*args, **kwargs)
+            minted["token"] = issued_token["token"]
+            return issued_token
+
+        claim._SEED.rotate = recording_rotate
+        try:
+            result = claim.provision_tenant(
+                con, SLUG, provider=provider, config=config, dns_client=dns_client,
+                outbox=claim.ReadyOutbox(outbox), now=NOW, interval=0.0,
+                # ODL-947: the mail is queued when the machine answers at its
+                # own name; a transcript must not depend on public DNS.
+                guest_probe=ready_answer(),
+            )
+        finally:
+            claim._SEED.rotate = original_rotate
         print("fixture calls:", provider.calls)
         print("machine:", json.dumps(result.machine, sort_keys=True))
         print("pin:", json.dumps(json.loads(pin_path.read_text(encoding="utf-8")),
@@ -1532,6 +1852,41 @@ def transcript() -> None:
         print(f"kit: {kit} ({len(kit_text.splitlines())} lines, "
               f"mode {oct(kit.stat().st_mode & 0o777)})")
         print("files queued:", sorted(p.name for p in (outbox / 'ready').iterdir()))
+
+        print("== the tenant's BX11 pair: the store of record and the seed ==")
+        box = box_fixture.box_for(hetzner_store)
+        box_pair = [account for account in box.accounts
+                    if re.fullmatch(r"odile-%s-(rw|ro)" % re.escape(SLUG),
+                                    account["name"])]
+        print("box pair:", [(account["name"], account["home_directory"],
+                            account["access_settings"]["readonly"])
+                           for account in box_pair])
+        store = hetzner_store / ("odile-%s.env" % SLUG)
+        print("store of record:", store, "mode", oct(store.stat().st_mode & 0o777))
+        entry = claim._SEED.load_backup_pairs(str(seed_pairs))[SLUG]
+        shown = dict(entry)
+        for key in ("ssh_private_key", "readonly_ssh_private_key"):
+            shown[key] = "%s … %d bytes" % (entry[key].splitlines()[0],
+                                            len(entry[key].encode()))
+        shown["known_hosts"] = " | ".join(line.split(" ")[0]
+                                          for line in entry["known_hosts"].splitlines())
+        print("seed handoff:", json.dumps(shown, sort_keys=True))
+        exchanged = claim._SEED.redeem(
+            con, minted["token"], result.server_id, dict(SEED_CONFIG),
+            backup_pairs_file=str(seed_pairs), identity=SEED_IDENTITY,
+            keys={}, now=datetime.fromtimestamp(NOW + 60, timezone.utc),
+        )
+        block = dict(exchanged["backup"])
+        for key in ("ssh_private_key", "readonly_ssh_private_key"):
+            block[key] = "%s … %d bytes" % (block[key].splitlines()[0],
+                                            len(block[key].encode()))
+        block["known_hosts"] = " | ".join(line.split(" ")[0] for line in
+                                          block["known_hosts"].splitlines())
+        print("seed backup block:", json.dumps(block, sort_keys=True))
+        print("seed top-level backup_repo_url:", exchanged["backup_repo_url"])
+        print("row detail:", json.dumps(json.loads(con.execute(
+            "SELECT detail FROM tenant_state WHERE slug = ?", (SLUG,)
+        ).fetchone()["detail"]), sort_keys=True))
 
         print("== retry ==")
         again = FixtureProvider()
@@ -1659,9 +2014,46 @@ def transcript() -> None:
         print("worker after the web claim:",
               web_result.ok, web_result.server_id, web_result.email_path)
         web_con.close()
+
+        print("== the 51st pair is refused before the paid call ==")
+        index = 0
+        while len([account for account in box.accounts
+                   if account["name"].endswith("-rw")]) < 50:
+            box.add_pair("odl-fill%03d" % index)
+            index += 1
+        boxes = len([account for account in box.accounts
+                     if account["name"].endswith("-rw")])
+        fifty_db = directory / "fifty.db"
+        fifty_con = claim.open_db(fifty_db)
+        try:
+            issued_fifty = claim.issue_claim(
+                fifty_con, "fifty@example.com", plan="Blackbox Plus",
+                slug="odl-5b5b5b", now=at(NOW),
+            )
+            claim.accept(fifty_con, issued_fifty.token, KEY_TEXT, now=at(NOW))
+            before = len(box.calls)
+            provider_fifty = FixtureProvider()
+            result_fifty = claim.provision_tenant(
+                fifty_con, "odl-5b5b5b", provider=provider_fifty, config=config,
+                dns_client=dns_client,
+                outbox=claim.ReadyOutbox(directory / "fifty-outbox"),
+                now=NOW, interval=0.0,
+            )
+            print("pairs now on the box:", boxes)
+            print("ok:", result_fifty.ok, "· reason:", result_fifty.reason)
+            print("provider calls:", provider_fifty.calls,
+                  "· box POSTs after the count:",
+                  len([call for call in box.calls[before:] if call[0] == "POST"]))
+            print("tenant:", json.dumps(dict(fifty_con.execute(
+                "SELECT state, server_id FROM tenants WHERE slug = ?",
+                ("odl-5b5b5b",)).fetchone()), sort_keys=True))
+        finally:
+            fifty_con.close()
         con.close()
         con2.close()
     finally:
+        for patcher in seams:
+            patcher.stop()
         shutil.rmtree(directory, ignore_errors=True)
 
 

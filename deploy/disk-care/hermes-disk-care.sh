@@ -383,16 +383,36 @@ TMP_STALE_HOURS=${TMP_STALE_HOURS:-2}
 TMP_MIN_BYTES=${TMP_MIN_BYTES:-1073741824}
 # open_fd uses lsof when it exists; TMP_FD_CHECK=proc forces the /proc scan,
 # which is also what a host without lsof gets.
+#
+# The /proc scan is ONE snapshot per run — every open fd's device and inode, in a
+# single `stat` pass — not a forked `readlink` per fd per candidate. The per-fd
+# fork cost ~15 ms on a loaded host, so a run over ~2000 fd links took 30 s at
+# load 15 and 120 s under a gate with seven suites at once, and the host's
+# process count decided whether the sweep finished at all (t_031c589a). The
+# snapshot is taken at the first candidate, a few milliseconds before any unlink,
+# so the run costs one pass whatever the number of candidates.
 TMP_FD_CHECK=${TMP_FD_CHECK:-auto}
+tmp_fd_snapshot=
 tmp_before=$(df -P "$TMP_ROOT" 2>/dev/null | awk 'NR==2{print $3}')
+snapshot_open_files() {  # fill tmp_fd_snapshot with device:inode of every open fd
+  [ -z "$tmp_fd_snapshot" ] || return 0
+  tmp_fd_snapshot=$(
+    find /proc/[0-9]*/fd -maxdepth 1 -type l -print0 2>/dev/null |
+      xargs -0 -r stat -L -c '%d:%i' 2>/dev/null | sort -u
+  )
+}
 open_fd() {  # 0 when some process holds $1 open
   if [ "$TMP_FD_CHECK" != proc ] && command -v lsof >/dev/null 2>&1; then
     lsof -t -- "$1" >/dev/null 2>&1
     return $?
   fi
-  for fd in /proc/[0-9]*/fd/*; do
-    [ "$(readlink "$fd" 2>/dev/null)" = "$1" ] && return 0
-  done
+  local id
+  snapshot_open_files
+  # a file that vanished between find and here has no id: not held, delete it
+  id=$(stat -L -c '%d:%i' -- "$1" 2>/dev/null) || return 1
+  case $'\n'"$tmp_fd_snapshot"$'\n' in
+    *$'\n'"$id"$'\n'*) return 0 ;;
+  esac
   return 1
 }
 find "$TMP_ROOT" -xdev -type f -size +$((TMP_MIN_BYTES - 1))c -mmin +$((TMP_STALE_HOURS * 60)) -print0 2>/dev/null |

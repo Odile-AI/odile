@@ -9,3 +9,7 @@ What happens
 - The agent is offline until the restore finishes.
 
 If that window is wrong, reply to this email before {{WINDOW}}.
+
+— Odile
+
+Private alpha · Odile pays for the machine and the inference · no price

@@ -48,14 +48,20 @@ own Hermes cron, which is the same path the user has.
 **Vintage of the R2 code paths (20 November 2026).** The destination, the
 bucket layout and the R2 rows in §1 and §3.1 are the interim **design**
 (ADR-004 §8); the code that operates them is **not shipped at this head**. The
-`s3:` branch of `scripts/backup.py`, the guest's `/etc/odile/backup-s3.env` and
-the cap check are **ODL-933**; the bucket-emptying half of `odilectl purge`
-is **ODL-935**; the provisioning that records the bucket and the tokens is
-**ODL-924**, still blocked on Savio's minting. **ODL-934 is the exception:
-`odilectl backup-usage` shipped at this head, against the Hetzner box rather
-than R2 (§3.2), with 800 GiB warn / 950 GiB critical byte ceilings; the R2
-design's 8.0/9.0 GB account line is superseded.** Read every R2 sentence below
-as those cards' design until they land; the SFTP material stays the v5 record.
+`s3:` branch of `scripts/backup.py` and the guest's `/etc/odile/backup-s3.env`
+were planned as **ODL-933** and never shipped (ODL-933 shipped the `sftp:`
+shape and the cap check instead); the `odilectl backup-usage` readback and its
+800 GiB warn / 950 GiB critical byte ceilings are **ODL-934**, shipped at this
+head against the Hetzner box rather than R2 (§3.2; the R2 design's 8.0/9.0 GB
+account line is superseded); the provisioning that records the BX11 pair, its
+store of record and the Console API token is **ODL-924**, shipped (merged
+82fb9ba; the token was minted on t_a548cb0a and is the one this card's exit
+uses). `odilectl purge`'s
+bucket half was planned as **ODL-935** and was re-cut to the BX11 before it
+shipped: the exit is now the SFTP/Console-API path of §7 "Exit" and
+`docs/runbooks/offboard.md` §4.1 (measured 2026-11-26), and no `s3:` purge
+path exists. Read every R2 sentence below as those cards' design until they
+land; the SFTP material stays the v5 record.
 
 **24 November 2026 — the destination is a Hetzner Storage Box BX11.** Savio
 chose it for all Odile user backups, and `docs/architecture/ADR-backup.md` v3
@@ -99,13 +105,14 @@ reads only the row's `detail.backup`, runs `restic snapshots` as the control
 check (with the user's recovery file when the operator has it, and without it
 otherwise — restic's "wrong password" still proves the directory is a restic
 repository), deletes `/srv/odile-backup/tenants/<slug>` and the guest's
-`authorized_keys` line, and records the purge on the row. **Both of those
-paths are v5 (the SFTP stand-in): on an interim tenant the same command is
-designed to empty `odile-t-<slug>` through the tenant's own token, and the empty
-bucket is then deleted in the Cloudflare dashboard — §3.1, and ADR-004 §8's exit
-row gives that change to **ODL-935**, not shipped at this head; `t_9d6fb595` is
-the shipped v5 command and has no bucket path.** The command reads no file name,
-decrypts nothing, and prints no password.
+`authorized_keys` line, and records the purge on the row. **That is the HQ-root branch, kept byte for
+byte. The BX11 exit shipped with ODL-935 on 2026-11-26:** a row whose URL is the
+pair's account-relative `data/restic` (or a `repo-<4 hex>` start-fresh) is
+pruned over SFTP with the tenant's read-write key and both sub-accounts are
+deleted through the Console API — §7 "Exit" and `docs/runbooks/offboard.md`
+§4.1 carry the measured transcript, the two survivors and the refusals. No
+`s3:` path exists; the R2 bucket sentences are history. The command reads no
+file name, decrypts nothing, and prints no password.
 
 **HQ cannot read the repository.** Measured 2026-11-12T23:24Z on the host that
 stores the bytes (the password is the live tenant's, from the recovery file
@@ -545,8 +552,9 @@ password against an existing repository is refused by name, never re-initialised
 > loaded them, and ODL-933 adapted nothing — it shipped the `sftp:` shape in §2.
 > Kept because the drill records and the cap arithmetic still read correctly.
 
-The interim destination until B2 is restored — designed, not yet provisioned
-(**ODL-924**). A tenant repository is an R2 bucket,
+The interim destination until B2 is restored — designed for R2 and never built
+(**ODL-924** shipped the BX11 pair instead; see §7 "Exit"). A tenant repository
+is an R2 bucket,
 **one bucket per tenant**, and the URL is the provider's, not ours:
 
 ```
@@ -588,13 +596,14 @@ dashboard step in that branch.
 - **Verification after minting:** `HeadBucket` on `odile-t-<slug>` must answer,
   and `HeadBucket` on `hermes-hq-backup` with the tenant token must **not** be
   200. Record both codes in the handoff — that is the proof the token is scoped.
-- **Purge (ODL-935; not shipped at this head):** an Object Read & Write token
-  can empty its bucket but **cannot delete the bucket**. At `keep_until`,
-  `odilectl purge` empties `odile-t-<slug>` through the tenant token and records
-  `bucket_emptied_at` — ODL-935's bucket path; not shipped at this head, so the
-  dashboard's **Empty Bucket** is the fallback. The empty bucket
-  is deleted in the Cloudflare dashboard. The 30-day promise and the
-  deletion are unchanged; only the last click is manual.
+- **Purge (ODL-935; shipped 2026-11-26 on the BX11, not on R2):** the R2
+  design emptied the bucket through the tenant token; no `s3:` path shipped
+  and the bucket row is history. The exit is the BX11 one — §7 "Exit" and
+  `docs/runbooks/offboard.md` §4.1 carry the measured transcript: prune with
+  the tenant's read-write key over SFTP, `DELETE` both sub-accounts, record
+  `detail.backup.subaccount_deleted_at`, and state the two survivors (the
+  `tenants/<slug>` directory with no user data, and the box's own 04:30 × 10
+  snapshots, up to about ten days). The 30-day promise is unchanged.
 
 **Init — ODL-933; not shipped at this head.** No code loads
 `/etc/odile/backup-s3.env` today — `git grep -n 'backup-s3' -- '*.py' '*.sh' '*.service'` matches nothing — and `scripts/backup.py`'s `_environment()` sets
@@ -1045,8 +1054,18 @@ sentence is quoted (ODL-474 lands it).
 - **Exit:** the encrypted repository is kept 30 days after cancellation, then
   deleted. The user can download it with the password before then; Odile can
   delete it, not read it. The deletion is `odilectl purge <slug>`
-  (`docs/runbooks/offboard.md` §4, **t_9d6fb595**). On an interim tenant the
-  bucket half is **ODL-935**'s and is not shipped at this head (§3.1).
+  (`docs/runbooks/offboard.md` §4.1, **ODL-935**, measured 2026-11-26 on the
+  bench pair). On the BX11 it forgets and prunes every snapshot with the
+  tenant's read-write key over SFTP on port 22 — or, when the user's password
+  is not at hand (the production case), deletes the snapshot objects with that
+  key, leaving the repository's `config` and `keys/` — then deletes **both**
+  sub-accounts through the Console API and records
+  `detail.backup.subaccount_deleted_at`. Two things outlive the deletion: the
+  `tenants/<slug>` directory stays, with no user data but with `.ssh` and the
+  repository's `config` and `keys/` (only the box's main account can delete
+  it, and HQ does not hold that credential), and the box's own snapshots
+  (04:30 UTC, 10 kept) can carry the deleted directory for up to about ten
+  days. The 30-day promise and `keep_until` are unchanged.
 
 ---
 
@@ -1127,12 +1146,14 @@ sentence is quoted (ODL-474 lands it).
   `odilectl purge <slug>` keeps the row's `keep_until`, refuses before
   it, and past it runs `restic snapshots`, deletes the box's directory and
   drops the guest's key line; a second run says `already purged`
-  (`docs/runbooks/offboard.md` §4). The off-site box it will run against is
-  **t_8eb17a54**'s; the drill's chroot is on HQ. On an interim tenant the
-  bucket-emptying half is **ODL-935**'s and is not shipped at this head (§3.1).
+  (`docs/runbooks/offboard.md` §4.2). The BX11 exit is **ODL-935**'s and is
+  shipped (2026-11-26): prune with the read-write key over SFTP, delete both
+  sub-accounts, record `detail.backup.subaccount_deleted_at` — §7 "Exit" and
+  `offboard.md` §4.1. The HQ-root path above is kept for the demo and bench
+  migration; no bucket path shipped.
 
 The follow-ups are board cards, not prose: **t_fec9f699** (rebuild keeps
 the repository), **t_19148cba** (installer places the program and the units,
 heartbeat reachable — this card), **t_8eb17a54** (Savio buys the box and
-sets DNS), **t_9d6fb595** (the v5 30-day purge, §9) and **ODL-935** (the
-interim bucket half, §3.1).
+sets DNS), **t_9d6fb595** (the v5 30-day purge, §9) and **ODL-935** (the BX11
+exit, §7 "Exit" — shipped 2026-11-26; no bucket half exists).

@@ -55,6 +55,10 @@ REQUEST = "3f0c8ad2f0e14a8b9c6d5e4f3a2b1c0d"
 REQUEST_2 = "00112233445566778899aabbccddeeff"
 SLUG = "odl-7f3a2c"
 
+# `docs/backlog.yaml` ODL-950's body, verbatim, plus the account footer
+# BRAND.md §Email gives every account email.  The receipt signs because its one
+# action is a reply, and `— Odile` is who the reader is writing back to
+# (t_d2fc0dfd).  Nothing between the first line and the sign-off moved.
 CARD_BODY = """Your machine will be replaced at 03:10 UTC on 1 December 2026. It takes about 20 minutes, and
 then your data comes back from your backup.
 
@@ -64,6 +68,10 @@ What happens
 - The agent is offline until the restore finishes.
 
 If that window is wrong, reply to this email before 03:10 UTC on 1 December 2026.
+
+— Odile
+
+Private alpha · Odile pays for the machine and the inference · no price
 """
 
 SECURITY_PARAGRAPH = (
@@ -407,7 +415,7 @@ class StoreTest(BookingFixture):
         self.assertEqual(self.beats.upgrade_bookings(SLUG), ())
         self.assertEqual(self.emails(), [])
 
-    def test_the_template_is_the_cards_body_verbatim(self) -> None:
+    def test_the_template_is_the_cards_body_verbatim_plus_the_account_footer(self) -> None:
         template = (ROOT / "templates" / "emails" / "upgrade-booked.txt").read_text(
             encoding="utf-8"
         )

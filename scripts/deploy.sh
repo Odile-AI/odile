@@ -177,6 +177,7 @@ if [ "$DRY" -eq 1 ]; then
   echo "would install, enable and probe the seed service and its /seed route:"
   /usr/bin/python3 deploy/seed/deploy_seed.py --dry-run --previous-seed-sha "$PREV_SEED"
   echo "would install odile-claim.service and odile-claim.timer"
+  echo "would create /root/.odile/hetzner and /root/.odile/keys (0700 root) for the worker"
   echo "would enable and start odile-claim.timer"
   echo "would install, enable and run odile-roadmap.service and odile-roadmap.timer"
   echo "(every fifteen minutes; the page is written to /var/lib/odile/roadmap.html)"
@@ -218,6 +219,13 @@ install -m 644 deploy/claim-worker/odile-claim.service \
   /etc/systemd/system/odile-claim.service
 install -m 644 deploy/claim-worker/odile-claim.timer \
   /etc/systemd/system/odile-claim.timer
+# The claim path mints the tenant's backup pair (ODL-924) and writes the store
+# of record (/root/.odile/hetzner/odile-<slug>.env) and the pair's keys
+# (/root/.odile/keys/<slug>/). The unit's ReadWritePaths names both trees; a
+# ReadWritePaths= path that does not exist is a 226/NAMESPACE start failure, so
+# create them before the timer can run the worker. /var/lib/odile is the web
+# service's and already exists.
+install -d -o root -g root -m 0700 /root/.odile/hetzner /root/.odile/keys
 install -m 644 deploy/roadmap/odile-roadmap.service \
   /etc/systemd/system/odile-roadmap.service
 install -m 644 deploy/roadmap/odile-roadmap.timer \

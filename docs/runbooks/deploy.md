@@ -476,6 +476,18 @@ Because the worker runs as root, a message it queues is `root:root` 0600 inside
 the `odile`-owned outbox. The mailer that sends it (ODL-232) has to run as root
 too, or take ownership of the queued files when it picks them up.
 
+**What it writes outside `/var/lib/odile`.** Before it orders a machine, a claim
+mints the tenant's BX11 backup pair (ODL-924), so the worker also writes the
+pair's store of record `/root/.odile/hetzner/odile-<slug>.env` (0600 root: the
+box id, both sub-account ids and both private halves; ADR-004 §4.2) and the
+pair's keys under `/root/.odile/keys/<slug>/`. `odile-claim.service` keeps its
+sandbox (`ProtectSystem=strict`, `ProtectHome=read-only`) and names all three
+trees in `ReadWritePaths=` — drop a tree from that line and the first key write
+is `EROFS` before the paid order. `scripts/deploy.sh` creates the two
+`/root/.odile` directories `0700 root` before it starts the unit: a
+`ReadWritePaths=` path that does not exist is a `226/NAMESPACE` start failure,
+not a warning.
+
 **The queue rule.** A row in `tenants` is work when all of these hold: `plan`
 is non-empty, `ssh_public_key` is set, `claimed_at` is set, `state` is
 `claimed` or `provisioned`, and there is no `provisioned` event whose
