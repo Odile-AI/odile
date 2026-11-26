@@ -50,6 +50,7 @@ vendor-resource-id	*	sha256:95aa03e40369	constant	no	the tenant's current slug; 
 vendor-resource-id	*	sha256:0cca50f512f3	constant	no	the tenant's current Servury instance id; the public build replaces it with 0badc0de, and the forbid list names it	never
 vendor-resource-id	*	sha256:bbd2e45d545b	constant	no	the bench machine's instance id in two recorded reports; the public build replaces it with cafebabe	never
 vendor-resource-id	*	sha256:421fe1d07ee8	constant	no	the HQ host name in two recorded reports; the public build replaces it with hostfake	never
+vendor-resource-id	*	sha256:e2cc8cbf7c6b	constant	no	the cold-walk tenant's instance id in the release runbook; the public build replaces it with 0badc0de	never
 vendor-resource-id	tests/test_odilectl.py	sha256:e91b57c18037	constant	no	a fixture machine id in the two-machines-with-one-name tests	never
 vendor-resource-id	tests/test_seed.py	sha256:bb177d79d4f1	constant	no	a fixture machine id in the claim-fallback rehearsal	never
 machine-identity	docs/runbooks/image-bench.md	sha256:64a777ff70aa	constant	no	the real volume's PARTUUID inside a recorded measured command line; redaction would invalidate the recorded measurement	never

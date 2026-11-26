@@ -36,7 +36,7 @@ if str(ROOT) not in sys.path:
 
 import app  # noqa: E402
 from odilectl import (  # noqa: E402
-    bootrecord, cli, config, health, offboard, provision, providers, state,
+    backup_usage, bootrecord, cli, config, health, offboard, provision, providers, state,
 )
 from odilectl.core import Context  # noqa: E402
 from odilectl.errors import ConfigError, ProviderError, ProviderTimeout  # noqa: E402
@@ -2262,6 +2262,541 @@ class BackupPairRecordTests(TempConfigMixin):
                                {"name": "odile-%s-ro" % SLUG, "id": 392556}]
         with self.assertRaisesRegex(ProviderError, "refusing to guess"):
             provision._named_pair(duplicate, SLUG)
+
+
+class BackupUsageTests(TempConfigMixin):
+    """ODL-934: the box readback, its two ceilings and the watchdog.
+
+    The Box API is the in-memory fake the provisioning tests use, plus the one
+    route this card reads (`GET /storage_boxes`). A command resolves
+    `provision._hetzner_api` at call time, so patching it for the duration of
+    one test keeps the whole check off the network without touching the module
+    under test.
+    """
+
+    NOW = 1_800_100_000
+
+    def box(self, *, size_data: int = 2_097_152, size_snapshots: int = 0,
+            subaccounts_limit: int = 100, **overrides) -> dict:
+        document = {
+            "id": 709870,
+            "name": "odile-backups",
+            "location": {"name": "hel1", "country": "FI", "city": "Helsinki"},
+            "system": "HEL1-BX192",
+            "stats": {"size": size_data + size_snapshots,
+                      "size_data": size_data, "size_snapshots": size_snapshots},
+            "storage_box_type": {"name": "bx11", "size": 1_099_511_627_776,
+                                 "subaccounts_limit": subaccounts_limit},
+        }
+        document.update(overrides)
+        return document
+
+    def fake_box(self, box: dict | None = None,
+                 boxes: list[dict] | None = None) -> box_fixture.FakeBox:
+        fake = box_fixture.FakeBox()
+        listed = boxes if boxes is not None else [box or self.box()]
+
+        def api(settings, method, path, body=None):
+            if method == "GET" and path == "/storage_boxes":
+                fake.calls.append((method, path, dict(body or {})))
+                return 200, {"storage_boxes": listed}
+            return fake.api(settings, method, path, body)
+
+        patcher = mock.patch.object(provision, "_hetzner_api", api)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        return fake
+
+    def token(self, mode: int = 0o600) -> Path:
+        path = self._directory / "hetzner-api-token"
+        path.write_text("HETZNER_API_TOKEN=fixture-project-token\n", encoding="utf-8")
+        path.chmod(mode)
+        return path
+
+    def seed_tenants(self, config_path: Path, *, tenants, heartbeats) -> Path:
+        """One state row per slug, and one signed heartbeat where facts are given."""
+        db = Path(config_path).parent / "waitlist.db"
+        store = state.StateStore.open(db)
+        try:
+            for slug in tenants:
+                store.invite(slug)
+                store.claim(slug)
+        finally:
+            store.close()
+        beats = health.HeartbeatStore.open(
+            db, clock=lambda: self.NOW, verifier=lambda *_args: True
+        )
+        try:
+            for slug, facts in heartbeats.items():
+                body = json.dumps(
+                    {
+                        "slug": slug,
+                        "at": self.NOW - 60,
+                        "facts": facts,
+                        "public_key": "-----BEGIN PUBLIC KEY-----\nAAAA\n-----END PUBLIC KEY-----",
+                    },
+                    sort_keys=True,
+                ).encode()
+                beats.record(body, b"\x00" * 64, now=self.NOW - 60)
+        finally:
+            beats.close()
+        return db
+
+    def record(self, *, size_data: int, size_snapshots: int = 0,
+               subaccounts_limit: int = 100) -> dict:
+        return backup_usage.collect(
+            [],
+            {},
+            self.box(size_data=size_data, size_snapshots=size_snapshots,
+                     subaccounts_limit=subaccounts_limit),
+            [],
+            now=self.NOW,
+            token_path=Path(provision.HETZNER_TOKEN_FILE),
+            token_mode="0600",
+            api_calls=[],
+        )
+
+    def test_the_command_sums_the_tenants_and_names_the_unaccounted_pair(self) -> None:
+        """One row per tenant with its own number, the box total, the strangers."""
+        config_path = self.make_config()
+        token = self.token()
+        fake = self.fake_box(self.box(size_data=1_000_000_000, size_snapshots=500_000_000))
+        self.seed_tenants(
+            config_path,
+            tenants=["odl-alpha1", "odl-beta22"],
+            heartbeats={
+                "odl-alpha1": {
+                    "backup": {"repo_bytes": 750_000_000, "status": "ok",
+                               "at": self.NOW - 3600}
+                }
+            },
+        )
+        fake.add_pair("odl-alpha1")
+        fake.add_pair("odl-bench")  # the drill's pair: on the box, no tenant row
+        out_path = self._directory / "usage.json"
+
+        code, out, err = run_cli(
+            ["backup-usage", "--token", str(token), "--out", str(out_path),
+             "--now", str(self.NOW), "--apply"],
+            config_path,
+        )
+
+        self.assertEqual(code, 0, err)
+        self.assertIn("size_data 1000000000 bytes", out)
+        self.assertIn("size_snapshots 500000000 bytes", out)
+        self.assertIn("total 1500000000 bytes", out)
+        self.assertIn("odl-alpha1: 750000000 bytes", out)
+        self.assertIn("odl-beta22: no restic number", out)
+        self.assertIn("unaccounted: 2 sub-account(s)", out)
+        self.assertIn("odile-odl-bench-rw", out)
+        self.assertIn("odile-odl-bench-ro", out)
+        self.assertIn("sub-accounts: 4 of 100 (2 of 50 tenant pairs)", out)
+        self.assertIn("ceiling:   ok", out)
+
+        self.assertEqual(out_path.stat().st_mode & 0o777, 0o600)
+        record = json.loads(out_path.read_text(encoding="utf-8"))
+        self.assertEqual(record["schema"], backup_usage.SCHEMA)
+        # The box total is the provider's own two stats, never the tenants' sum.
+        self.assertEqual(record["box"]["size_data"], 1_000_000_000)
+        self.assertEqual(record["box"]["size_snapshots"], 500_000_000)
+        self.assertEqual(record["box"]["total_bytes"], 1_500_000_000)
+        self.assertEqual(record["totals"]["tenant_bytes"], 750_000_000)
+        self.assertEqual(record["totals"]["tenants_with_a_number"], 1)
+        self.assertEqual(record["totals"]["tenants"], 2)
+        self.assertEqual(
+            [entry["name"] for entry in record["unaccounted"]],
+            ["odile-odl-bench-ro", "odile-odl-bench-rw"],
+        )
+        self.assertEqual(record["box"]["subaccounts"], 4)
+        self.assertEqual(record["box"]["subaccounts_limit"], 100)
+        self.assertEqual(record["box"]["pair_limit"], 50)
+        self.assertEqual(record["credential"]["token_path"], str(token))
+        self.assertEqual(record["credential"]["token_mode"], "0600")
+        self.assertEqual(
+            record["credential"]["api_calls"],
+            ["GET /storage_boxes", "GET /storage_boxes/709870/subaccounts"],
+        )
+        # No new credential and no write to the box: two GETs, nothing else.
+        self.assertEqual(
+            [(method, path) for method, path, _body in fake.calls],
+            [("GET", "/storage_boxes"), ("GET", "/storage_boxes/709870/subaccounts")],
+        )
+        self.assertEqual(fake.mutating(), [])
+
+    def test_both_ceilings_are_inclusive_and_the_record_carries_the_level(self) -> None:
+        warn, critical = backup_usage.WARN_BYTES, backup_usage.CRITICAL_BYTES
+        self.assertEqual(warn, 800 * 1024 ** 3)
+        self.assertEqual(critical, 950 * 1024 ** 3)
+        for total, level in (
+            (0, "ok"),
+            (warn - 1, "ok"),
+            (warn, "warn"),
+            (critical - 1, "warn"),
+            (critical, "critical"),
+            (critical + 1, "critical"),
+        ):
+            self.assertEqual(backup_usage.level_for(total), level, total)
+
+        config_path = self.make_config()
+        token = self.token()
+        cases = ((warn, "warn"), (critical, "critical"))
+        for index, (total, level) in enumerate(cases):
+            self.fake_box(self.box(size_data=total))
+            out_path = self._directory / ("usage-%d.json" % index)
+            code, out, err = run_cli(
+                ["backup-usage", "--token", str(token), "--out", str(out_path),
+                 "--now", str(self.NOW), "--apply"],
+                config_path,
+            )
+            self.assertEqual(code, 0, err)
+            self.assertIn("ceiling:   %s" % level, out)
+            record = json.loads(out_path.read_text(encoding="utf-8"))
+            self.assertEqual(record["thresholds"]["level"], level)
+            self.assertEqual(record["thresholds"]["warn_bytes"], warn)
+            self.assertEqual(record["thresholds"]["critical_bytes"], critical)
+
+    def test_the_watchdog_raises_warn_then_critical_then_clears(self) -> None:
+        """The existing poll, fed the record: two kinds, so a promotion delivers."""
+        config_path = self.make_config()
+        db = Path(config_path).parent / "waitlist.db"
+        usage_path = self._directory / "usage.json"
+        store = state.StateStore.open(db)
+        beats = health.HeartbeatStore.open(db)
+        try:
+            backup_usage.write_record(usage_path, self.record(size_data=800 * 1024 ** 3))
+            result = health.check(
+                store, beats, now=self.NOW, apply=True, backup_usage_path=usage_path
+            )
+            warn = beats.open_alert("backup-box-709870", "backup_usage")
+            self.assertIsNotNone(warn)
+            self.assertIn("the backup box 709870 odile-backups uses", warn.symptom)
+            self.assertIn("800.0 GiB warn line reached", warn.symptom)
+            self.assertEqual(warn.detail["level"], "warn")
+            self.assertEqual(warn.detail["threshold_bytes"], 800 * 1024 ** 3)
+            self.assertIsNotNone(result.box_usage)
+            self.assertIn("box 709870", "\n".join(health._health_lines(result, applied=True)))
+
+            backup_usage.write_record(usage_path, self.record(size_data=950 * 1024 ** 3))
+            health.check(store, beats, now=self.NOW + 300, apply=True,
+                         backup_usage_path=usage_path)
+            critical = beats.open_alert("backup-box-709870", "backup_usage_critical")
+            self.assertIsNotNone(critical)
+            self.assertIn("950.0 GiB critical line reached", critical.symptom)
+            self.assertIsNone(beats.open_alert("backup-box-709870", "backup_usage"))
+
+            backup_usage.write_record(usage_path, self.record(size_data=1_000))
+            health.check(store, beats, now=self.NOW + 600, apply=True,
+                         backup_usage_path=usage_path)
+            self.assertIsNone(beats.open_alert("backup-box-709870", "backup_usage"))
+            self.assertIsNone(beats.open_alert("backup-box-709870", "backup_usage_critical"))
+        finally:
+            beats.close()
+            store.close()
+
+    def test_a_missing_or_broken_record_is_named_not_reported_green(self) -> None:
+        config_path = self.make_config()
+        db = Path(config_path).parent / "waitlist.db"
+        store = state.StateStore.open(db)
+        beats = health.HeartbeatStore.open(db)
+        try:
+            result = health.check(
+                store, beats, now=self.NOW, apply=False,
+                backup_usage_path=self._directory / "absent.json",
+            )
+            self.assertIsNone(result.box_usage)
+            self.assertIn("no readback at", result.box_usage_problem or "")
+            self.assertEqual(result.planned, ())
+
+            broken = self._directory / "broken.json"
+            broken.write_text("{not json", encoding="utf-8")
+            self.assertEqual(
+                backup_usage.read_record(broken)[0], None
+            )
+            self.assertIn("is not JSON", backup_usage.read_record(broken)[1] or "")
+        finally:
+            beats.close()
+            store.close()
+
+    def test_an_old_alert_ledger_is_migrated_and_keeps_its_rows(self) -> None:
+        """A live database cut before this card still accepts the new kinds."""
+        self.make_config()
+        db = self._directory / "old-heartbeats.db"
+        connection = sqlite3.connect(str(db))
+        try:
+            connection.executescript(
+                """
+                CREATE TABLE health_alerts (
+                    id            INTEGER PRIMARY KEY,
+                    slug          TEXT    NOT NULL,
+                    kind          TEXT    NOT NULL
+                                  CHECK (kind IN ('down', 'waiting_for_owner',
+                                                  'brief_missing', 'disk', 'spend',
+                                                  'backup')),
+                    tenant        TEXT    NOT NULL DEFAULT '',
+                    symptom       TEXT    NOT NULL,
+                    first_command TEXT    NOT NULL,
+                    detail        TEXT    NOT NULL DEFAULT '{}' CHECK (json_valid(detail)),
+                    first_seen_at INTEGER NOT NULL,
+                    last_seen_at  INTEGER NOT NULL,
+                    resolved_at   INTEGER,
+                    deliveries    TEXT    NOT NULL DEFAULT '[]' CHECK (json_valid(deliveries))
+                );
+                CREATE UNIQUE INDEX health_alerts_open
+                    ON health_alerts(slug, kind) WHERE resolved_at IS NULL;
+                INSERT INTO health_alerts (id, slug, kind, symptom, first_command,
+                                           first_seen_at, last_seen_at)
+                    VALUES (17, 'odl-old001', 'backup', 'last backup 2d 0h ago',
+                            'cat /var/lib/odile/backup.json', 1, 1);
+                """
+            )
+            connection.commit()
+        finally:
+            connection.close()
+
+        beats = health.HeartbeatStore.open(db)
+        try:
+            kept = beats.open_alert("odl-old001", "backup")
+            self.assertIsNotNone(kept)
+            self.assertEqual(kept.id, 17)
+            record, created = beats.raise_alert(
+                health.Alert(
+                    slug="backup-box-709870", kind="backup_usage", tenant="",
+                    symptom="the backup box uses 800.0 GiB", first_command="backup-usage",
+                    at=self.NOW,
+                ),
+                self.NOW,
+            )
+            self.assertTrue(created)
+            self.assertEqual(record.kind, "backup_usage")
+            schema = beats.connection.execute(
+                "SELECT sql FROM sqlite_master WHERE name = 'health_alerts'"
+            ).fetchone()[0]
+            self.assertIn("backup_usage_critical", schema)
+            indexes = {
+                row[0] for row in beats.connection.execute(
+                    "SELECT name FROM sqlite_master WHERE type = 'index'"
+                    " AND tbl_name = 'health_alerts'"
+                )
+            }
+            self.assertIn("health_alerts_open", indexes)
+            self.assertIn("health_alerts_slug", indexes)
+            self.assertIsNone(
+                beats.connection.execute(
+                    "SELECT name FROM sqlite_master WHERE name = 'health_alerts_new'"
+                ).fetchone()
+            )
+        finally:
+            beats.close()
+
+        # A second open is a true no-op: same rows, no error, no second rebuild.
+        again = health.HeartbeatStore.open(db)
+        try:
+            self.assertEqual(len(again.alerts(open_only=False)), 2)
+            self.assertIsNotNone(again.open_alert("odl-old001", "backup"))
+        finally:
+            again.close()
+
+    def test_an_interrupted_rebuild_leaves_the_copy_readable(self) -> None:
+        """Only `health_alerts_new` present: the rows come back, not an empty table."""
+        self.make_config()
+        db = self._directory / "interrupted.db"
+        connection = sqlite3.connect(str(db))
+        try:
+            connection.executescript(
+                """
+                CREATE TABLE health_alerts_new (
+                    id            INTEGER PRIMARY KEY,
+                    slug          TEXT    NOT NULL,
+                    kind          TEXT    NOT NULL,
+                    tenant        TEXT    NOT NULL DEFAULT '',
+                    symptom       TEXT    NOT NULL,
+                    first_command TEXT    NOT NULL,
+                    detail        TEXT    NOT NULL DEFAULT '{}' CHECK (json_valid(detail)),
+                    first_seen_at INTEGER NOT NULL,
+                    last_seen_at  INTEGER NOT NULL,
+                    resolved_at   INTEGER,
+                    deliveries    TEXT    NOT NULL DEFAULT '[]' CHECK (json_valid(deliveries))
+                );
+                INSERT INTO health_alerts_new (id, slug, kind, symptom, first_command,
+                                               first_seen_at, last_seen_at)
+                    VALUES (23, 'odl-old002', 'down', 'heartbeat stopped', 'status', 1, 1);
+                """
+            )
+            connection.commit()
+        finally:
+            connection.close()
+
+        beats = health.HeartbeatStore.open(db)
+        try:
+            kept = beats.open_alert("odl-old002", "down")
+            self.assertIsNotNone(kept)
+            self.assertEqual(kept.id, 23)
+            schema = beats.connection.execute(
+                "SELECT sql FROM sqlite_master WHERE name = 'health_alerts'"
+            ).fetchone()[0]
+            self.assertIn("backup_usage", schema)
+        finally:
+            beats.close()
+
+    def test_the_only_credential_is_the_project_token(self) -> None:
+        """No account-wide key, no main-account password, no per-tenant call."""
+        config_path = self.make_config()
+        ctx = Context(config=config.Config.load(config_path))
+        settings = backup_usage._settings(
+            ctx, mock.Mock(token=None, box_id=None, api_base=None)
+        )
+        self.assertEqual(settings.token, Path(provision.HETZNER_TOKEN_FILE))
+        self.assertEqual(settings.token, Path("/root/.odile/hetzner-api-token"))
+
+        source = (PACKAGE / "backup_usage.py").read_text(encoding="utf-8").lower()
+        for forbidden in ("hetzner_login", "hetzner-account.env", "hetzner_password",
+                          "r2_token", "bucket_token", "aws_access"):
+            self.assertNotIn(forbidden, source)
+        # The module's one mention of a password is the docstring's promise
+        # that there is none; a password argument or file read adds a second.
+        self.assertEqual(source.count("password"), 1)
+        self.assertNotIn("/subaccounts/", source)
+
+        fake = self.fake_box()
+        fake.add_pair("odl-alpha1")
+        code, out, err = run_cli(
+            ["backup-usage", "--token", str(self.token()), "--now", str(self.NOW),
+             "--json", "--apply", "--out", str(self._directory / "usage.json")],
+            config_path,
+        )
+        self.assertEqual(code, 0, err)
+        calls = [(method, path) for method, path, _body in fake.calls]
+        self.assertEqual(
+            calls, [("GET", "/storage_boxes"), ("GET", "/storage_boxes/709870/subaccounts")]
+        )
+        self.assertFalse([path for _method, path in calls if re.search(r"/subaccounts/\d", path)])
+        self.assertEqual(fake.mutating(), [])
+
+    def test_the_operator_poll_reads_the_record_and_opens_the_alert(self) -> None:
+        """The wiring the DoD names: `odilectl health`, not `check()` directly.
+
+        A build where `health.run` forgets `--backup-usage` still passes every
+        unit test that calls `check(..., backup_usage_path=...)`; this one runs
+        the command the operator runs and reads the ledger afterwards.
+        """
+        config_path = self.make_config()
+        db = Path(config_path).parent / "waitlist.db"
+        usage_path = self._directory / "usage.json"
+        outbox = self._directory / "outbox"
+        backup_usage.write_record(usage_path, self.record(size_data=950 * 1024 ** 3))
+
+        code, out, err = run_cli(
+            ["health", "--db", str(db), "--backup-usage", str(usage_path),
+             "--no-http", "--outbox", str(outbox), "--now", str(self.NOW), "--apply"],
+            config_path,
+        )
+        self.assertEqual(code, 0, err)
+        self.assertIn("alert backup_usage_critical backup-box-709870 open", out)
+        self.assertIn("950.0 GiB critical line reached", out)
+        self.assertIn("box 709870 odile-backups: 950.0 GiB used (92.8%)", out)
+
+        store = state.StateStore.open(db)
+        try:
+            self.assertIsNotNone(store)
+        finally:
+            store.close()
+        beats = health.HeartbeatStore.open(db)
+        try:
+            self.assertIsNotNone(
+                beats.open_alert("backup-box-709870", "backup_usage_critical")
+            )
+        finally:
+            beats.close()
+        self.assertEqual(backup_usage.DEFAULT_USAGE_PATH, "/var/lib/odile/backup/usage.json")
+
+    def test_two_boxes_with_one_id_and_a_box_without_stats_are_refused(self) -> None:
+        config_path = self.make_config()
+        token = self.token()
+        duplicate = self.box()
+        self.fake_box(boxes=[duplicate, dict(duplicate, name="another")])
+        code, out, err = run_cli(
+            ["backup-usage", "--token", str(token), "--now", str(self.NOW),
+             "--out", str(self._directory / "usage.json"), "--apply"],
+            config_path,
+        )
+        self.assertEqual(code, 4, out + err)
+        self.assertIn("2 box(es) with id 709870", err)
+
+        self.fake_box(self.box(stats={"size": 0}))
+        code, out, err = run_cli(
+            ["backup-usage", "--token", str(token), "--now", str(self.NOW),
+             "--out", str(self._directory / "usage.json"), "--apply"],
+            config_path,
+        )
+        self.assertEqual(code, 4, out + err)
+        self.assertIn("stats.size_data", err)
+
+    def test_an_http_api_base_off_loopback_is_refused(self) -> None:
+        """The bearer token must not cross a clear-text hop."""
+        config_path = self.make_config()
+        self.fake_box()
+        code, out, err = run_cli(
+            ["backup-usage", "--token", str(self.token()), "--api-base",
+             "http://api.example.invalid/v1", "--now", str(self.NOW),
+             "--out", str(self._directory / "usage.json"), "--apply"],
+            config_path,
+        )
+        self.assertEqual(code, 5, out + err)
+        self.assertIn("clear text", err)
+
+    def test_a_schema_valid_record_without_a_box_id_is_named(self) -> None:
+        self.make_config()
+        path = self._directory / "usage.json"
+        record = self.record(size_data=2048)
+        del record["box"]["id"]
+        backup_usage.write_record(path, record)
+        self.assertEqual(backup_usage.read_record(path)[0], None)
+        self.assertIn("box.id", backup_usage.read_record(path)[1] or "")
+        lines = health._health_lines(
+            health.HealthResult(
+                now=self.NOW, tenants=(), alerts=(), planned=(), resolved=(),
+                applied=False, box_usage=None,
+                box_usage_problem=backup_usage.read_record(path)[1],
+            ),
+            applied=False,
+        )
+        self.assertIn("backup usage: ", "\n".join(lines))
+
+    def test_a_loose_token_is_refused_before_the_first_call(self) -> None:
+        config_path = self.make_config()
+        fake = self.fake_box()
+        code, out, err = run_cli(
+            ["backup-usage", "--token", str(self.token(0o644)), "--now", str(self.NOW),
+             "--out", str(self._directory / "usage.json"), "--apply"],
+            config_path,
+        )
+        self.assertEqual(code, 5, out + err)
+        self.assertIn("must be 0600", err)
+        self.assertEqual(fake.calls, [])
+
+    def test_the_record_is_atomic_and_a_dry_run_writes_nothing(self) -> None:
+        config_path = self.make_config()
+        token = self.token()
+        self.fake_box()
+        out_path = self._directory / "usage.json"
+
+        code, out, err = run_cli(
+            ["backup-usage", "--token", str(token), "--now", str(self.NOW),
+             "--out", str(out_path)],
+            config_path,
+        )
+        self.assertEqual(code, 0, err)
+        self.assertFalse(out_path.exists())
+        self.assertIn("would write; pass --apply", out)
+
+        out_path.write_text("{}", encoding="utf-8")
+        out_path.chmod(0o644)
+        backup_usage.write_record(out_path, self.record(size_data=2048))
+        self.assertEqual(out_path.stat().st_mode & 0o777, 0o600)
+        self.assertEqual(json.loads(out_path.read_text(encoding="utf-8"))["box"]["total_bytes"], 2048)
+        left = sorted(path.name for path in self._directory.iterdir()
+                      if path.name.startswith(".usage-"))
+        self.assertEqual(left, [])
 
 
 class BoundaryTest(unittest.TestCase):
