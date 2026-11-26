@@ -54,7 +54,7 @@ from email.utils import formatdate, make_msgid
 from pathlib import Path
 from typing import Any, Callable, Iterable, Sequence
 
-from . import state
+from . import backup_usage, state
 from .config import Config
 from .core import Context, Report
 from .errors import ConfigError, OdileError, UsageError
@@ -685,6 +685,12 @@ ALERT_KINDS = (
     "disk",
     "spend",
     "backup",
+    # The box-level pair (ODL-934): the BX11's own bytes against 800/950 GiB.
+    # Two kinds, not one, because the ledger is keyed by (slug, kind): a warn
+    # row that stayed open would swallow the promotion to critical and its
+    # delivery.
+    "backup_usage",
+    "backup_usage_critical",
 )
 
 KIND_LABELS = {
@@ -696,7 +702,18 @@ KIND_LABELS = {
     "disk": "disk filling",
     "spend": "spend near cap",
     "backup": "backup stale",
+    "backup_usage": "backup box filling",
+    "backup_usage_critical": "backup box almost full",
 }
+
+# A legacy ledger value (ODL-467 retired the initramfs park).  Nothing new
+# raises it, but a database cut before that still holds rows with it, and a
+# rebuild copies them verbatim — so the CHECK keeps it.
+LEGACY_ALERT_KINDS = ("waiting_for_owner",)
+
+# One SQL text for the ledger's kind CHECK, built from ALERT_KINDS: a kind can
+# never be listed in Python and missing from the table (or the rebuild below).
+_KIND_CHECK = ", ".join(f"'{kind}'" for kind in (*ALERT_KINDS, *LEGACY_ALERT_KINDS))
 
 DEFAULT_HEARTBEAT_DB = state.DEFAULT_STATE_DB
 DEFAULT_OUTBOX = "/var/lib/odile/outbox"
@@ -916,7 +933,7 @@ class AlertRecord:
         }
 
 
-HEARTBEAT_SCHEMA = """
+HEARTBEAT_SCHEMA = f"""
 CREATE TABLE IF NOT EXISTS heartbeat_keys (
     slug          TEXT PRIMARY KEY,
     public_key    TEXT NOT NULL,
@@ -941,12 +958,11 @@ CREATE TABLE IF NOT EXISTS health_alerts (
     id            INTEGER PRIMARY KEY,
     slug          TEXT    NOT NULL,
     kind          TEXT    NOT NULL
-                  CHECK (kind IN ('down', 'waiting_for_owner', 'brief_missing',
-                                  'disk', 'spend', 'backup')),
+                  CHECK (kind IN ({_KIND_CHECK})),
     tenant        TEXT    NOT NULL DEFAULT '',
     symptom       TEXT    NOT NULL,
     first_command TEXT    NOT NULL,
-    detail        TEXT    NOT NULL DEFAULT '{}' CHECK (json_valid(detail)),
+    detail        TEXT    NOT NULL DEFAULT '{{}}' CHECK (json_valid(detail)),
     first_seen_at INTEGER NOT NULL,
     last_seen_at  INTEGER NOT NULL,
     resolved_at   INTEGER,
@@ -983,6 +999,95 @@ CREATE UNIQUE INDEX IF NOT EXISTS upgrade_windows_open
     ON upgrade_windows(slug) WHERE state IN ('booked', 'writing', 'booted');
 CREATE INDEX IF NOT EXISTS upgrade_windows_due ON upgrade_windows(state, window);
 """
+
+# The ledger's CHECK is part of the table, so a new alert kind cannot be added
+# by `CREATE TABLE IF NOT EXISTS`; the upgrade is the rebuild below, run only
+# when the live table's SQL predates a kind in `ALERT_KINDS`.  It is one
+# transaction (`BEGIN IMMEDIATE` … `COMMIT`) because `executescript` autocommits:
+# a crash between `DROP TABLE health_alerts` and the rename would otherwise leave
+# the rows only in `health_alerts_new`, and the next open would recreate an empty
+# table whose SQL names every kind — a permanent no-op guard and a lost ledger.
+# Every row is copied by name, ids kept, so an open alert stays open.
+_MIGRATE_ALERT_KINDS = f"""
+BEGIN IMMEDIATE;
+DROP TABLE IF EXISTS health_alerts_new;
+CREATE TABLE health_alerts_new (
+    id            INTEGER PRIMARY KEY,
+    slug          TEXT    NOT NULL,
+    kind          TEXT    NOT NULL
+                  CHECK (kind IN ({_KIND_CHECK})),
+    tenant        TEXT    NOT NULL DEFAULT '',
+    symptom       TEXT    NOT NULL,
+    first_command TEXT    NOT NULL,
+    detail        TEXT    NOT NULL DEFAULT '{{}}' CHECK (json_valid(detail)),
+    first_seen_at INTEGER NOT NULL,
+    last_seen_at  INTEGER NOT NULL,
+    resolved_at   INTEGER,
+    deliveries    TEXT    NOT NULL DEFAULT '[]' CHECK (json_valid(deliveries))
+);
+INSERT INTO health_alerts_new (id, slug, kind, tenant, symptom, first_command,
+                               detail, first_seen_at, last_seen_at, resolved_at,
+                               deliveries)
+    SELECT id, slug, kind, tenant, symptom, first_command, detail,
+           first_seen_at, last_seen_at, resolved_at, deliveries
+      FROM health_alerts;
+DROP TABLE health_alerts;
+ALTER TABLE health_alerts_new RENAME TO health_alerts;
+CREATE UNIQUE INDEX IF NOT EXISTS health_alerts_open
+    ON health_alerts(slug, kind) WHERE resolved_at IS NULL;
+CREATE INDEX IF NOT EXISTS health_alerts_slug ON health_alerts(slug, id);
+COMMIT;
+"""
+
+# The interrupted-rebuild rescue: the copy is the only ledger, so it becomes the
+# table before anything reads an empty one.  Defensive (the transaction above
+# makes the state unreachable on a clean run) and idempotent.
+_RECOVER_ALERT_KINDS = """
+BEGIN IMMEDIATE;
+ALTER TABLE health_alerts_new RENAME TO health_alerts;
+CREATE UNIQUE INDEX IF NOT EXISTS health_alerts_open
+    ON health_alerts(slug, kind) WHERE resolved_at IS NULL;
+CREATE INDEX IF NOT EXISTS health_alerts_slug ON health_alerts(slug, id);
+COMMIT;
+"""
+
+
+def _migrate_alert_kinds(connection: sqlite3.Connection) -> None:
+    """Give an older alert ledger the new kinds without losing a row.
+
+    `sqlite_master` is the guard, and it is the *SQL text* that answers: a
+    fresh table already names every kind in `ALERT_KINDS`, a migrated one does
+    too, and a table cut before ODL-934 does not.  Idempotent because the
+    second open sees the new text and returns.
+    """
+    present = {
+        row[0] for row in connection.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table'"
+            " AND name IN ('health_alerts', 'health_alerts_new')"
+        )
+    }
+    if "health_alerts" not in present and "health_alerts_new" in present:
+        try:
+            connection.executescript(_RECOVER_ALERT_KINDS)
+        except sqlite3.Error as error:
+            connection.rollback()
+            raise HeartbeatError(
+                f"cannot finish an interrupted alert-ledger rebuild: {error}"
+            ) from None
+    row = connection.execute(
+        "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'health_alerts'"
+    ).fetchone()
+    if row is None:
+        return
+    sql = row["sql"] if isinstance(row, sqlite3.Row) else row[0]
+    if not sql or all(f"'{kind}'" in sql for kind in ALERT_KINDS):
+        return
+    connection.commit()
+    try:
+        connection.executescript(_MIGRATE_ALERT_KINDS)
+    except sqlite3.Error as error:
+        connection.rollback()
+        raise HeartbeatError(f"cannot migrate the alert ledger: {error}") from None
 
 Verifier = Callable[[bytes, bytes, str], bool]
 
@@ -1343,6 +1448,11 @@ class HeartbeatStore:
         try:
             connection = sqlite3.connect(str(path), timeout=5.0, check_same_thread=False)
             connection.row_factory = sqlite3.Row
+            # The ledger's rebuild runs *before* the schema script: after an
+            # interrupted rebuild only `health_alerts_new` exists, and
+            # `CREATE TABLE IF NOT EXISTS health_alerts` would create an empty
+            # table that shadows the copy (and pass the kind guard forever).
+            _migrate_alert_kinds(connection)
             connection.executescript(HEARTBEAT_SCHEMA)
             connection.commit()
         except sqlite3.Error as error:
@@ -2364,6 +2474,10 @@ class HealthResult:
     planned: tuple[Alert, ...]
     resolved: tuple[tuple[str, str], ...]
     applied: bool
+    # The box readback this poll was handed (ODL-934); `problem` says why
+    # there is none, so a missing or broken record is visible, not green.
+    box_usage: dict[str, Any] | None = None
+    box_usage_problem: str | None = None
 
     @property
     def delivery_errors(self) -> list[dict[str, Any]]:
@@ -2402,6 +2516,8 @@ class HealthResult:
             "resolved": [
                 {"slug": slug, "kind": kind} for slug, kind in self.resolved
             ],
+            "backup_usage": self.box_usage,
+            "backup_usage_problem": self.box_usage_problem,
             "delivery_errors": self.delivery_errors,
         }
 
@@ -2427,6 +2543,7 @@ def check(
     backup_seconds: int = BACKUP_ALERT_SECONDS,
     owner_of: Callable[[Tenant], str | None] | None = None,
     alert_email: str | None = None,
+    backup_usage_path: str | Path | None = None,
 ) -> HealthResult:
     """One poll: reconcile the heartbeat, classify, then raise or clear alerts.
 
@@ -2438,6 +2555,11 @@ def check(
     is stopped, and is its own `brief_missing` alert while heartbeats are live.
     The alert ledger is idempotent: an open condition is one row and one
     delivery per channel, not one per five-minute poll.
+
+    `backup_usage_path` is the box readback ODL-934 writes; `None` means this
+    poll was not handed one (the unit tests), `odilectl health` always passes
+    the configured path.  The box's bytes are its own `stats`, so this is one
+    box-level alert under `backup-box-<id>`, never a tenant's.
     """
     moment = int(now)
     owner_lookup = owner_of or (lambda tenant: _owner_email(store, tenant))
@@ -2638,6 +2760,75 @@ def check(
             )
         )
 
+    # The box's own bytes (ODL-934): one box-level condition, read from the
+    # record the readback wrote.  It is not a tenant's row, so its ledger slug
+    # is the box's; a warn and a critical are two kinds so a promotion is a new
+    # row and a new delivery, not a rewrite of the open warn row.
+    box_usage: dict[str, Any] | None = None
+    box_usage_problem: str | None = None
+    if backup_usage_path is not None:
+        box_usage, box_usage_problem = backup_usage.read_record(backup_usage_path)
+    if box_usage is not None:
+        box = box_usage["box"]
+        total = int(box["total_bytes"])
+        level = backup_usage.level_for(total)
+        identifier = backup_usage.box_slug(int(box["id"]))
+        pieces = [
+            f"the backup box {box.get('id')} {box.get('name') or '(unnamed)'} uses"
+            f" {backup_usage.human_bytes(total)}"
+        ]
+        size = box.get("size_bytes")
+        if isinstance(size, int) and size > 0:
+            pieces[-1] += (
+                f" ({total * 100.0 / size:.1f}% of {backup_usage.human_bytes(size)})"
+            )
+        pieces.append(
+            f"{box.get('subaccounts')} of {box.get('subaccounts_limit')} sub-accounts"
+        )
+        strangers = box_usage.get("unaccounted")
+        if isinstance(strangers, list) and strangers:
+            pieces.append(f"{len(strangers)} unaccounted")
+        readback_at = box_usage.get("at")
+        if isinstance(readback_at, int) and not isinstance(readback_at, bool):
+            pieces.append(f"readback {_duration(moment - readback_at)} ago")
+        symptom = "; ".join(pieces)
+        if level == "ok":
+            resolutions.extend(
+                [(identifier, "backup_usage"), (identifier, "backup_usage_critical")]
+            )
+        else:
+            kind = "backup_usage" if level == "warn" else "backup_usage_critical"
+            other = "backup_usage_critical" if level == "warn" else "backup_usage"
+            threshold = (
+                backup_usage.WARN_BYTES if level == "warn" else backup_usage.CRITICAL_BYTES
+            )
+            planned.append(
+                Alert(
+                    slug=identifier,
+                    kind=kind,
+                    tenant="",
+                    symptom=(
+                        f"{symptom}; {backup_usage.human_bytes(threshold)}"
+                        f" {level} line reached"
+                    ),
+                    first_command="python3 -m odilectl backup-usage --apply --json",
+                    at=moment,
+                    detail={
+                        "box_id": box.get("id"),
+                        "total_bytes": total,
+                        "threshold_bytes": threshold,
+                        "level": level,
+                        "readback_at": readback_at,
+                        "unaccounted": [
+                            entry.get("name")
+                            for entry in (strangers or [])
+                            if isinstance(entry, dict)
+                        ],
+                    },
+                )
+            )
+            resolutions.append((identifier, other))
+
     # One alert per (slug, kind), even if two branches produced the same one.
     unique: dict[tuple[str, str], Alert] = {}
     for alert in planned:
@@ -2678,6 +2869,8 @@ def check(
         planned=tuple(planned),
         resolved=tuple(resolved_now),
         applied=bool(apply),
+        box_usage=box_usage,
+        box_usage_problem=box_usage_problem,
     )
 
 
@@ -2769,6 +2962,22 @@ def _health_lines(result: HealthResult, *, applied: bool) -> list[str]:
             f"  alert {alert.kind} {alert.slug} {mark} at {_iso(alert.first_seen_at)}:"
             f" {alert.symptom}"
         )
+    if result.box_usage is not None:
+        box = result.box_usage["box"]
+        size = box.get("size_bytes")
+        share = (
+            f" ({box['total_bytes'] * 100.0 / size:.1f}%)"
+            if isinstance(size, int) and size > 0 else ""
+        )
+        lines.append(
+            f"  box {box.get('id')} {box.get('name') or '(unnamed)'}:"
+            f" {backup_usage.human_bytes(box['total_bytes'])} used{share};"
+            f" {box.get('subaccounts')} of {box.get('subaccounts_limit')} sub-accounts;"
+            f" level {backup_usage.level_for(int(box['total_bytes']))};"
+            f" readback {_iso(int(result.box_usage.get('at') or 0))}"
+        )
+    elif result.box_usage_problem is not None:
+        lines.append(f"  backup usage: {result.box_usage_problem}")
     return lines
 
 
@@ -2827,6 +3036,12 @@ def add_arguments(parser: ArgumentParser) -> None:
         metavar="EPOCH",
         help="evaluate at a fixed Unix time; the fixture replay uses it",
     )
+    parser.add_argument(
+        "--backup-usage",
+        metavar="PATH",
+        help="the box usage record ODL-934 writes"
+        f" (default: {backup_usage.DEFAULT_USAGE_PATH})",
+    )
 
 
 def run(ctx: Context, args: Any) -> Report:
@@ -2859,6 +3074,11 @@ def run(ctx: Context, args: Any) -> Report:
             http_probe = TenantHttpProbe(template, timeout=args.http_timeout)
         alert_email = args.alert_email or ctx.config.get("alert_email")
         courier = build_courier(ctx.config, args, now=now)
+        usage_path = (
+            Path(args.backup_usage).expanduser()
+            if args.backup_usage
+            else Path(backup_usage.DEFAULT_USAGE_PATH)
+        )
         result = check(
             store,
             heartbeats,
@@ -2868,6 +3088,7 @@ def run(ctx: Context, args: Any) -> Report:
             courier=courier,
             apply=ctx.mutate,
             alert_email=alert_email,
+            backup_usage_path=usage_path,
         )
     finally:
         heartbeats.close()
