@@ -26,6 +26,16 @@ A server whose `auto_renew` is true is skipped and named: renewing it as well
 would stack days and pull cash forward while the panel still charges list price.
 That applies to any box whose account we have no panel session on.
 
+A server that is being retired by policy buys no more days. The list is
+`deploy/servury/run-off.txt` (one 8-character id per line, `#` starts a
+comment, a missing file means none; `--run-off-file` names another), and every
+Blackbox Core is on it by plan: the three Cores on the dev account are pinned
+there, and a Core a bench test orders later is skipped without an edit. Such a
+server is recorded as `run_off` in the status document and the audit log — no
+price, no balance check, no `--max-charge` alert, no renewal — and its provider
+term is left to run out. `run_off` is not `trial_ended`: one says the fleet is
+being retired, the other that the trial that paid for the machine has finished.
+
 The trial pays for the machine. Each tenant DB the service writes — the bench's
 `/var/lib/odile-test/waitlist.db` and production's `/var/lib/odile/waitlist.db`
 — carries the account row's `trial_ends_at` beside the provider's `server_id`,
@@ -65,7 +75,17 @@ TRIAL_DBS = (
     Path("/var/lib/odile-test/waitlist.db"),
     Path("/var/lib/odile/waitlist.db"),
 )
-TRIAL_STAMP = "%Y-%m-%dT%H:%M:%SZ"
+# The retirement list the daily job reads. A committed file, not a constant in
+# this module: the policy changes without the tool changing. A missing file is
+# an empty list.
+RUN_OFF_FILE = Path(__file__).resolve().parents[1] / "deploy" / "servury" / "run-off.txt"
+# Blackbox Core, measured 2026-11-24 from `?action=servers`: the three boxes on
+# the dev account carry `plan_id` 108 and `plan` "Blackbox Core". Every Core is
+# internal R&D until it expires (Savio, 2026-11-24), so the plan is the rule and
+# the ids in the file are the pinned cases — a Core a bench test orders later is
+# retired without an edit. The Nano is plan 138 and is kept.
+RUN_OFF_PLAN_IDS = frozenset({108})
+STAMP = "%Y-%m-%dT%H:%M:%SZ"
 DAY = 86400
 
 
@@ -141,6 +161,46 @@ def read_key(path: Path) -> str:
     return path.read_text(encoding="utf-8").strip()
 
 
+def stamp_of(epoch: int | float | None) -> str:
+    """A provider epoch (seconds) as the UTC stamp the audit log writes."""
+    return datetime.datetime.fromtimestamp(float(epoch or 0), datetime.UTC).strftime(STAMP)
+
+
+def looks_like_server_id(token: str) -> bool:
+    """The provider's ids are eight lowercase hex characters."""
+    return len(token) == 8 and all(ch in "0123456789abcdef" for ch in token)
+
+
+def read_run_off(path: Path) -> tuple[set[str], list[str]]:
+    """The ids retired by policy, and a note for anything the file got wrong.
+
+    The file is data, not code: one 8-character id per line, `#` starts a
+    comment to the end of the line, and blank lines are ignored. A missing file
+    is an empty list — the plan rule still retires every Blackbox Core — and a
+    line that is not an id is named in the notes rather than obeyed, so a typo
+    cannot silently retire the wrong box or silently fail to retire the right
+    one.
+    """
+    ids: set[str] = set()
+    if not path.is_file():
+        return ids, [f"run-off list {path}: absent — no pinned ids"]
+    notes: list[str] = []
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError as error:
+        return ids, [f"run-off list {path}: {error} — no pinned ids"]
+    for number, line in enumerate(lines, 1):
+        token = line.split("#", 1)[0].strip().lower()
+        if not token:
+            continue
+        if not looks_like_server_id(token):
+            notes.append(f"run-off list {path}:{number}: ignoring {token!r} — "
+                         f"not an 8-character server id")
+            continue
+        ids.add(token)
+    return ids, notes
+
+
 def trial_ends(paths: tuple[Path, ...]) -> tuple[dict[str, tuple[str, datetime.datetime]], list[str]]:
     """`server_id` -> (the stamp as written, its instant), read from the tenant DBs.
 
@@ -168,7 +228,7 @@ def trial_ends(paths: tuple[Path, ...]) -> tuple[dict[str, tuple[str, datetime.d
             continue
         for server_id, stamp in rows:
             try:
-                when = datetime.datetime.strptime(stamp, TRIAL_STAMP).replace(tzinfo=datetime.UTC)
+                when = datetime.datetime.strptime(stamp, STAMP).replace(tzinfo=datetime.UTC)
             except (TypeError, ValueError):
                 notes.append(f"trial db {path}: account for {server_id} has "
                              f"trial_ends_at {stamp!r} — unreadable, treated as no trial")
@@ -192,6 +252,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--trial-db", action="append", metavar="PATH",
                         help="tenant database whose accounts.trial_ends_at stops a machine; "
                              "repeatable (default: the bench and production databases)")
+    parser.add_argument("--run-off-file", metavar="PATH", default="",
+                        help="the retirement list: one 8-character server id per line, "
+                             f"comments allowed (default: {RUN_OFF_FILE.name} under deploy/servury/)")
     parser.add_argument("--json", action="store_true", help="print the status document")
     args = parser.parse_args(argv)
 
@@ -217,6 +280,9 @@ def main(argv: list[str] | None = None) -> int:
     notes: list[str] = []
     trials, trial_notes = trial_ends(tuple(Path(p) for p in (args.trial_db or TRIAL_DBS)))
     notes.extend(trial_notes)
+    run_off_ids, run_off_notes = read_run_off(
+        Path(args.run_off_file) if args.run_off_file else RUN_OFF_FILE)
+    notes.extend(run_off_notes)
 
     with LOCK.open("w", encoding="utf-8") as lock:
         try:
@@ -247,6 +313,23 @@ def main(argv: list[str] | None = None) -> int:
                     continue
                 left = days_left(brief.get("expiration_date", 0), at)
                 if left > args.threshold:
+                    continue
+                plan_id = brief.get("plan_id")
+                listed = server_id.lower() in run_off_ids
+                if listed or plan_id in RUN_OFF_PLAN_IDS:
+                    # Retired by policy: buy no days, leave the last term to run
+                    # out, and raise no balance or cap alert — nothing is due.
+                    source = "listed" if listed else f"plan {plan_id}"
+                    expires = stamp_of(brief.get("expiration_date"))
+                    actions.append({
+                        "key": label, "server": server_id, "hostname": brief.get("hostname"),
+                        "days_left": round(left, 1), "term": args.days,
+                        "plan_id": plan_id, "plan": brief.get("plan"),
+                        "expires": expires, "auto_renew": bool(brief.get("auto_renew")),
+                        "applied": False, "skipped": "run_off", "run_off_source": source,
+                    })
+                    notes.append(f"{server_id}: run-off ({source}) — not renewed; expires {expires}")
+                    audit(f"RUN_OFF key={label} server={server_id} expires={expires}")
                     continue
                 trial = trials.get(server_id)
                 if trial is not None and at >= trial[1]:

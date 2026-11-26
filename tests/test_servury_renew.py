@@ -102,6 +102,10 @@ class RunTests(unittest.TestCase):
         self.trial_db = base / "trial.db"
         with sqlite3.connect(self.trial_db) as db:
             db.execute("CREATE TABLE accounts (server_id TEXT, trial_ends_at TEXT NOT NULL)")
+        # The run-off list: empty unless a test writes one, so no test depends on
+        # the committed file's contents.
+        self.run_off = base / "run-off.txt"
+        self.run_off.write_text("# no pinned ids\n", encoding="utf-8")
 
     def add_account(self, server_id: str, trial_ends_at: str) -> None:
         with sqlite3.connect(self.trial_db) as db:
@@ -113,26 +117,39 @@ class RunTests(unittest.TestCase):
 
     def run_tool(self, server, *, balance=10.0, auto_renew=False, days_left=3, apply=True,
                  extra: list[str] | None = None, at: datetime.datetime | None = None,
-                 trial_flag: bool = True) -> tuple[int, str, list[tuple]]:
+                 trial_flag: bool = True, plan_id: int = 109,
+                 others: list[tuple[str, int]] | None = None,
+                 run_off_text: str | None = None,
+                 run_off_file: pathlib.Path | None = None) -> tuple[int, str, list[tuple]]:
         calls: list[tuple] = []
         at = at or renew.now()
         expires = int(at.timestamp() + days_left * renew.DAY)
+        plans = {server: plan_id, **dict(others or [])}
+        if run_off_text is not None:
+            self.run_off.write_text(run_off_text, encoding="utf-8")
+
+        def brief(server_id: str) -> dict:
+            plan = plans.get(server_id, plan_id)
+            return {"id": server_id, "hostname": "h", "expiration_date": expires,
+                    "plan_id": plan,
+                    "plan": "Blackbox Core" if plan == 108 else "Blackbox Max"}
 
         def fake_call(action, key, *, params=None, server_id=None, timeout=40.0):
             calls.append((action, server_id, params))
             if action == "account":
                 return {"balance": balance, "discount_percent": 5}
             if action == "servers":
-                return {"servers": [{"id": server, "hostname": "h", "expiration_date": expires}]}
+                return {"servers": [brief(server)] + [brief(s) for s, _ in (others or [])]}
             if action == "server":
-                return {"server": {"id": server, "hostname": "h", "expiration_date": expires,
-                                   "rate_monthly": 9.99, "auto_renew": auto_renew}}
+                assert server_id is not None
+                return {"server": {**brief(server_id), "rate_monthly": 9.99, "auto_renew": auto_renew}}
             if action == "renew":
                 return {"amount_charged": "2.47", "new_expiration": expires + 7 * renew.DAY}
             raise AssertionError(action)
 
         argv = ["--key-file", f"dev={self.key}"] \
             + (["--trial-db", str(self.trial_db)] if trial_flag else []) \
+            + ["--run-off-file", str(run_off_file or self.run_off)] \
             + (["--apply"] if apply else []) + (extra or [])
         out = io.StringIO()
         with mock.patch.object(renew, "call", fake_call), \
@@ -295,6 +312,95 @@ class RunTests(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertIn("unreadable", out)
         self.assertIn(("renew", "a1b2c3d4", {"days": 7}), calls)
+
+    # Run-off. A box retired by policy buys no more days: no price, no balance
+    # check, no cap alert, no renewal. It is not `trial_ended` — that says the
+    # trial that paid for the machine has finished, this says the fleet is going.
+
+    def test_a_listed_server_is_skipped_as_run_off_and_never_priced(self) -> None:
+        at = renew.now()
+        code, out, calls = self.run_tool(
+            "a1b2c3d4", plan_id=109, at=at,
+            run_off_text="# retired by policy\n\na1b2c3d4   # the pinned box\n")
+        self.assertEqual(code, 0)
+        self.assertIn("skipped a1b2c3d4 — run_off", out)
+        self.assertNotIn("renew", [c[0] for c in calls])
+        # Not even the per-server detail call: a run-off box is not priced.
+        self.assertNotIn("server", [c[0] for c in calls])
+        status = json.loads(self.status.read_text(encoding="utf-8"))
+        self.assertEqual(status["actions"][0]["skipped"], "run_off")
+        self.assertEqual(status["actions"][0]["run_off_source"], "listed")
+        self.assertFalse(status["actions"][0]["applied"])
+        self.assertEqual(status["alerts"], [])
+        expires = (at + datetime.timedelta(days=3)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        self.assertIn(f"RUN_OFF key=dev server=a1b2c3d4 expires={expires}",
+                      self.audit.read_text(encoding="utf-8"))
+
+    def test_a_blackbox_core_is_run_off_by_plan_without_being_listed(self) -> None:
+        # The rule, not the list: a Core the bench orders later needs no edit to
+        # the committed file to be retired at its own term's end.
+        code, out, calls = self.run_tool("0badc0de", plan_id=108)
+        self.assertEqual(code, 0)
+        self.assertIn("skipped 0badc0de — run_off", out)
+        self.assertNotIn("renew", [c[0] for c in calls])
+        status = json.loads(self.status.read_text(encoding="utf-8"))
+        self.assertEqual(status["actions"][0]["skipped"], "run_off")
+        self.assertEqual(status["actions"][0]["run_off_source"], "plan 108")
+        self.assertEqual(status["actions"][0]["plan_id"], 108)
+        self.assertIn("RUN_OFF key=dev server=0badc0de expires=",
+                      self.audit.read_text(encoding="utf-8"))
+
+    def test_a_run_off_box_raises_no_balance_or_cap_alert(self) -> None:
+        code, out, calls = self.run_tool(
+            "a1b2c3d4", balance=0.0, extra=["--max-charge", "0.01"],
+            run_off_text="a1b2c3d4\n")
+        self.assertEqual(code, 0)
+        status = json.loads(self.status.read_text(encoding="utf-8"))
+        self.assertEqual(status["alerts"], [])
+        self.assertNotIn("renew", [c[0] for c in calls])
+
+    def test_a_control_server_keeps_the_old_behaviour_beside_a_run_off_box(self) -> None:
+        code, out, calls = self.run_tool(
+            "a1b2c3d4", others=[("c0ffee11", 109)], run_off_text="a1b2c3d4\n")
+        self.assertEqual(code, 0)
+        self.assertIn("skipped a1b2c3d4 — run_off", out)
+        self.assertIn("renewed c0ffee11 7d $2.47", out)
+        self.assertEqual([c[1] for c in calls if c[0] == "renew"], ["c0ffee11"])
+
+    def test_run_off_beats_an_ended_trial_and_carries_no_trial_reason(self) -> None:
+        at = renew.now()
+        self.add_account("a1b2c3d4", self.stamp(at, -1))
+        code, out, calls = self.run_tool("a1b2c3d4", at=at, run_off_text="a1b2c3d4\n")
+        self.assertEqual(code, 0)
+        self.assertNotIn("renew", [c[0] for c in calls])
+        status = json.loads(self.status.read_text(encoding="utf-8"))
+        self.assertEqual(status["actions"][0]["skipped"], "run_off")
+        self.assertNotIn("trial_ends_at", status["actions"][0])
+        log = self.audit.read_text(encoding="utf-8")
+        self.assertIn("RUN_OFF", log)
+        self.assertNotIn("TRIAL_ENDED", log)
+
+    def test_a_missing_run_off_list_is_an_empty_list(self) -> None:
+        absent = pathlib.Path(self.dir.name) / "absent-run-off.txt"
+        code, out, calls = self.run_tool("a1b2c3d4", run_off_file=absent)
+        self.assertEqual(code, 0)
+        self.assertIn(f"run-off list {absent}: absent", out)
+        self.assertIn(("renew", "a1b2c3d4", {"days": 7}), calls)
+
+    def test_a_malformed_run_off_line_is_named_not_obeyed(self) -> None:
+        code, out, calls = self.run_tool("a1b2c3d4", run_off_text="a1b2c3d4-extra\n")
+        self.assertEqual(code, 0)
+        self.assertIn("not an 8-character server id", out)
+        self.assertIn(("renew", "a1b2c3d4", {"days": 7}), calls)
+
+
+class RunOffFileTests(unittest.TestCase):
+    """The committed list is the data the daily job reads: pin what it names."""
+
+    def test_the_committed_list_names_exactly_the_three_blackbox_cores(self) -> None:
+        ids, notes = renew.read_run_off(ROOT / "deploy" / "servury" / "run-off.txt")
+        self.assertEqual(notes, [])
+        self.assertEqual(ids, {"998405b2", "4b0f450a", "168020b4"})
 
 
 if __name__ == "__main__":
