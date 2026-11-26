@@ -1,8 +1,8 @@
 {
   "artifacts": {
     "installer": {
-      "sha256": "ebbe5b5aad92742aa3377cafb866a659b89f5ad702881678bba1bb1e262c3dbb",
-      "size": 1633588,
+      "sha256": "00942e9c788f0e43ff4e4ee96afb7c60f1f02230daa60652da96ba174bea25fb",
+      "size": 1653692,
       "url": "odile_install.py"
     },
     "skills": {
@@ -14,14 +14,14 @@
   "boot": {
     "kernel": "6.12.115+deb13.1-amd64"
   },
-  "generated_at": "2026-11-26T00:35:02Z",
+  "generated_at": "2026-11-26T06:56:00Z",
   "manifest": {
-    "sha256": "a77ab0041ae2623e01b766684b2e3d4cab686061433ad4d453759bc5ee03adbf",
+    "sha256": "735a6c5d778ba5da5c3fbf07816c9591fe26eeeffa955aef77af1b0a2f2cb248",
     "signature_url": "manifest.json.sig",
     "url": "manifest.json"
   },
-  "notes": "ODL-947 follow-up (t_370d2664): the access report is checked against a number this boot can have. The installer re-embeds installer/access_report.sh (7c5629c2\u2026, 5,322 bytes): the wrapper passes the image pin as --expect only when this boot's own report agrees with it, and otherwise passes the boot's own measurement and names both numbers on one line \u2014 a pin is a file's measurement (an empty command line and the builder's vCPU count), while a tenant's boot line is per machine, so the seal row failed at every boot of an image that had its pin and odile-access-report never started (odile-release-setup.sh logs the same disagreement for the installer). This cut is 2026.11.25-1 over main's 2026.11.23-9 (the ODL-947 follow-up on the seeded first boot: install-stack.sh's production branch writes the seed's verifier when the .env does not hold it and stamps only after the write, and installer.ensure_env does the same on a run that finds a placeholder and keeps a hash the owner's own visit recorded), which carries 2026.11.23-8 (ODL-926's one-code cut). Against -9 only installer_sha256, the manifest and this document's hashes move; no skill, page or template changed.",
+  "notes": "ODL-933 (t_fda54dd4): the tenant backup over the BX11. scripts/backup.py now asks restic for two SFTP connections (-o sftp.connections=2, five runs = the box's published ten), puts -p 22 in sftp.command because the colon form has no port field and refuses one by name, reads the repository before the upload and again after the prune against BACKUP_TENANT_CAP_BYTES (default 2,000,000,000) and writes status: over_cap with the size (a run that starts over the cap uploads nothing), and renders the timer from the slug (02:00 UTC + int(sha256(slug)[:2], 16) % 240, RandomizedDelaySec=0, Persistent=true). The backup service carries ConditionPathExists=/etc/odile/recovery.txt, and the installer's ensure_recovery mints no password on a rebuild until the user's paste exists. The installer writes /etc/odile/backup-repo.txt, /etc/odile/backup-ssh/id_ed25519 (0600) and known_hosts from the seed, and no backup-s3.env. This cut is 2026.11.26-1 over main's 2026.11.25-1: installer_sha256, backup_sha256, the manifest and this document's hashes move; no skill, page or template changed.",
   "product": "odile",
-  "release": "2026.11.25-1",
+  "release": "2026.11.26-1",
   "schema": 1
 }
