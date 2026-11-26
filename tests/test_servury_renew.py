@@ -5,6 +5,12 @@ The failure this pins is a silent one: the panel's auto-renew charges list price
 every term. The tool must renew only inside its window, only when the balance
 covers it, never above the per-charge cap, and never on a box whose auto-renew
 is still on (that would stack days and pull cash forward).
+
+The price it guards is the vendor's, measured 2026-11-24: a term under 31 days
+carries a 15% short-term fee, terms of 90/180/365 days take 5/10/15% off, and
+the account's partner discount applies last. The old linear quote under-read a
+7-day renewal by 15%, so the balance and cap checks admitted a charge they were
+meant to refuse.
 """
 
 from __future__ import annotations
@@ -28,15 +34,48 @@ import servury_renew as renew  # noqa: E402
 
 
 class PriceTests(unittest.TestCase):
-    def test_the_partner_price_is_the_documented_double_rounding(self) -> None:
-        # retail/31*days rounded, then minus 5%, rounded again.
-        self.assertEqual(renew.term_price(9.99, 31, 5), Decimal("9.49"))
-        self.assertEqual(renew.term_price(9.99, 7, 5), Decimal("2.15"))
-        self.assertEqual(renew.term_price(39.99, 7, 5), Decimal("8.58"))
+    """The vendor's order of operations, as measured on 2026-11-24.
 
-    def test_no_discount_is_the_list_term(self) -> None:
-        self.assertEqual(renew.term_price(9.99, 7, 0), Decimal("2.26"))
-        self.assertEqual(renew.term_price(39.99, 7, 0), Decimal("9.03"))
+    `retail = rate/31 * days` rounded to the cent; a 15% fee under 31 days, or
+    the highest term discount reached (5% at 90 days, 10% at 180, 15% at 365);
+    then the partner discount, rounded again. Rounding happens at every step.
+    """
+
+    def test_a_short_term_carries_the_fee_before_the_partner_discount(self) -> None:
+        # The dev box's real 7-day renewal charged $2.47 (invoice 4330d310);
+        # the linear model quoted $2.15.
+        self.assertEqual(renew.term_price(9.99, 7, 5), Decimal("2.47"))
+
+    def test_a_month_term_has_neither_fee_nor_discount(self) -> None:
+        self.assertEqual(renew.term_price(9.99, 31, 5), Decimal("9.49"))
+
+    def test_a_year_term_takes_the_discount_before_the_partner_discount(self) -> None:
+        # Both are the API's own quotes on 2026-11-24, refused on balance so
+        # nothing was charged: the dev box's 365-day and HQ's.
+        self.assertEqual(renew.term_price(9.99, 365, 5), Decimal("94.98"))
+        self.assertEqual(renew.term_price(39.99, 365, 5), Decimal("380.21"))
+
+    def test_the_short_term_fee_runs_to_thirty_days_and_stops_at_thirty_one(self) -> None:
+        # The boundary is a cliff, not a taper: 30 days still pays the 15% fee,
+        # 31 does not. Without the 30-day side a fee test one day short of the
+        # vendor's threshold would stay green.
+        self.assertEqual(renew.term_price(9.99, 30, 5), Decimal("10.56"))
+        self.assertEqual(renew.term_price(9.99, 31, 5), Decimal("9.49"))
+
+    def test_the_highest_term_discount_reached_applies(self) -> None:
+        # One discount, not a stack: nothing at 89 days, 5% from 90, 10% from
+        # 180, 15% from 365.
+        self.assertEqual(renew.term_price(9.99, 89, 5), Decimal("27.25"))
+        self.assertEqual(renew.term_price(9.99, 90, 5), Decimal("26.17"))
+        self.assertEqual(renew.term_price(9.99, 179, 5), Decimal("52.06"))
+        self.assertEqual(renew.term_price(9.99, 180, 5), Decimal("49.60"))
+        self.assertEqual(renew.term_price(9.99, 364, 5), Decimal("100.29"))
+        self.assertEqual(renew.term_price(9.99, 365, 5), Decimal("94.98"))
+
+    def test_no_partner_discount_leaves_the_vendor_price(self) -> None:
+        self.assertEqual(renew.term_price(9.99, 7, 0), Decimal("2.60"))
+        self.assertEqual(renew.term_price(39.99, 7, 0), Decimal("10.38"))
+        self.assertEqual(renew.term_price(9.99, 31, 0), Decimal("9.99"))
 
     def test_days_left_is_signed_and_exact(self) -> None:
         at = renew.now()
@@ -89,7 +128,7 @@ class RunTests(unittest.TestCase):
                 return {"server": {"id": server, "hostname": "h", "expiration_date": expires,
                                    "rate_monthly": 9.99, "auto_renew": auto_renew}}
             if action == "renew":
-                return {"amount_charged": "2.15", "new_expiration": expires + 7 * renew.DAY}
+                return {"amount_charged": "2.47", "new_expiration": expires + 7 * renew.DAY}
             raise AssertionError(action)
 
         argv = ["--key-file", f"dev={self.key}"] \
@@ -105,7 +144,7 @@ class RunTests(unittest.TestCase):
     def test_a_box_inside_the_window_is_renewed_for_seven_days(self) -> None:
         code, out, calls = self.run_tool("a1b2c3d4")
         self.assertEqual(code, 0)
-        self.assertIn("renewed a1b2c3d4 7d $2.15", out)
+        self.assertIn("renewed a1b2c3d4 7d $2.47", out)
         self.assertIn(("renew", "a1b2c3d4", {"days": 7}), calls)
         self.assertIn("RENEW key=dev server=a1b2c3d4", self.audit.read_text(encoding="utf-8"))
 
@@ -128,9 +167,18 @@ class RunTests(unittest.TestCase):
         self.assertNotIn("renew", [c[0] for c in calls])
 
     def test_a_charge_over_the_cap_alerts_instead_of_charging(self) -> None:
-        code, out, calls = self.run_tool("a1b2c3d4", extra=["--max-charge", "2.10"])
+        # $2.30 admitted the old linear quote ($2.15) and refuses the real $2.47,
+        # so the cap is compared against the fee-inclusive price.
+        code, out, calls = self.run_tool("a1b2c3d4", extra=["--max-charge", "2.30"])
         self.assertEqual(code, 3)
-        self.assertIn("exceeds --max-charge", out)
+        self.assertIn("$2.47 for 7d exceeds --max-charge $2.30", out)
+        self.assertNotIn("renew", [c[0] for c in calls])
+
+    def test_the_balance_check_sees_the_short_term_fee(self) -> None:
+        # $2.30 covered the old linear quote and not the real $2.47.
+        code, out, calls = self.run_tool("a1b2c3d4", balance=2.30)
+        self.assertEqual(code, 3)
+        self.assertIn("balance $2.3 < $2.47", out)
         self.assertNotIn("renew", [c[0] for c in calls])
 
     def test_a_dry_run_charges_nothing_and_says_so(self) -> None:
@@ -182,7 +230,7 @@ class RunTests(unittest.TestCase):
         code, out, calls = self.run_tool("a1b2c3d4", at=at)
         self.assertEqual(code, 0)
         self.assertIn(("renew", "a1b2c3d4", {"days": 7}), calls)
-        self.assertIn("renewed a1b2c3d4 7d $2.15", out)
+        self.assertIn("renewed a1b2c3d4 7d $2.47", out)
         self.assertNotIn("TRIAL_ENDED", self.audit.read_text(encoding="utf-8"))
 
     def test_a_server_with_no_account_row_is_unchanged(self) -> None:
