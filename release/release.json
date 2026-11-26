@@ -1,8 +1,8 @@
 {
   "artifacts": {
     "installer": {
-      "sha256": "ab2ef37a58d112085c435f7a918c12119470f8ae3b840b5a3f87d59aaa746806",
-      "size": 1660819,
+      "sha256": "18bdf333ad52bc174f1336e5aac7dbf18a4dae905986a833ae93571d28d9dd6e",
+      "size": 1661100,
       "url": "odile_install.py"
     },
     "skills": {
@@ -14,13 +14,13 @@
   "boot": {
     "kernel": "6.12.115+deb13.1-amd64"
   },
-  "generated_at": "2026-11-26T09:33:14Z",
+  "generated_at": "2026-11-26T12:18:06Z",
   "manifest": {
-    "sha256": "0e34eadd4f58d8ac175156fce9bab894ba4db3eeef6ce988959c7531aec1ce75",
+    "sha256": "3bd2d35f9b5ddac15887ee0af902b7fe1d74459a8c53e863e68bb4c107ff4c28",
     "signature_url": "manifest.json.sig",
     "url": "manifest.json"
   },
-  "notes": "ODL-933 (t_fda54dd4): the tenant backup over the BX11. scripts/backup.py now asks restic for two SFTP connections (-o sftp.connections=2, five runs = the box's published ten), puts -p 22 in sftp.command because the colon form has no port field and refuses one by name, reads the repository before the upload and again after the prune against BACKUP_TENANT_CAP_BYTES (default 2,000,000,000) and writes status: over_cap with the size (a run that starts over the cap uploads nothing), and renders the timer from the slug (02:00 UTC + int(sha256(slug)[:2], 16) % 240, RandomizedDelaySec=0, Persistent=true). The backup service carries ConditionPathExists=/etc/odile/recovery.txt, and the installer's ensure_recovery mints no password on a rebuild until the user's paste exists. The installer writes /etc/odile/backup-repo.txt, /etc/odile/backup-ssh/id_ed25519 (0600) and known_hosts from the seed, and no backup-s3.env. This cut is 2026.11.26-1 over main's 2026.11.25-2 (the ODL-947 follow-up re-cut: verify/verify.py a1ac889e\u2026 and installer/first_visit.py 5dd8c97a\u2026, re-embedded, plus installer/access_report.sh 7c5629c2\u2026): installer_sha256 (ab2ef37a\u2026), backup_sha256 (6d15f06d\u2026), the manifest and this document's hashes move; no skill, page or template changed.",
+  "notes": "ODL-933 (t_fda54dd4): the tenant backup over the BX11. scripts/backup.py now asks restic for two SFTP connections (-o sftp.connections=2, five runs = the box's published ten), puts -p 22 in sftp.command because the colon form has no port field and refuses one by name, reads the repository before the upload and again after the prune against BACKUP_TENANT_CAP_BYTES (default 2,000,000,000) and writes status: over_cap with the size (a run that starts over the cap uploads nothing), and renders the timer from the slug (02:00 UTC + int(sha256(slug)[:2], 16) % 240, RandomizedDelaySec=0, Persistent=true). The backup service carries ConditionPathExists=/etc/odile/recovery.txt, and the installer's ensure_recovery mints no password on a rebuild until the user's paste exists. The installer writes /etc/odile/backup-repo.txt, /etc/odile/backup-ssh/id_ed25519 (0600) and known_hosts from the seed, and no backup-s3.env. This cut is 2026.11.26-1 over main's 2026.11.25-4 (the ODL-950 cut: the installer re-embeds scripts/heartbeat.py 51981cec\u2026; verify/verify.py a1ac889e\u2026, installer/first_visit.py 5dd8c97a\u2026 and installer/access_report.sh 7c5629c2\u2026 are -2's bytes, unchanged): installer_sha256 (18bdf333\u2026), backup_sha256 (6d15f06d\u2026), the manifest and this document's hashes move; no skill, page or template changed.",
   "product": "odile",
   "release": "2026.11.26-1",
   "schema": 1
