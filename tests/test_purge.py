@@ -795,6 +795,9 @@ class Bx11PurgeTest(Bx11PurgeFixture):
         self.assertFalse(self.calls("sftp"), "the plan opened an sftp batch")
 
     def test_apply_prunes_with_restic_deletes_both_and_records(self):
+        # restic leaves the object directories, empty: the recorded survivor
+        # note must name exactly the tree this run left behind.
+        self.build_key_only_repository()
         code, out, err = self.command("--password-file", self.password, apply=True)
         self.assertEqual(code, 0, err)
         self.assertIn("purge: applied", out)
@@ -816,6 +819,12 @@ class Bx11PurgeTest(Bx11PurgeFixture):
         self.assertEqual(backup["survivors"]["directory"], f"tenants/{SLUG}")
         self.assertEqual(backup["survivors"]["box_snapshots"]["kept"], 10)
         self.assertIn("ten days", backup["survivors"]["box_snapshots"]["note"])
+        # The note is derived from the tree this run left: restic kept the four
+        # object directories, empty, so the note may name them.
+        note = backup["survivors"]["directory_note"]
+        for name in ("data/", "index/", "snapshots/", "locks/"):
+            self.assertIn(name, note)
+        self.assertIn("config and keys/", note)
         self.assertNotIn(BARE_PASSWORD, out)
         self.assertNotIn(BARE_PASSWORD, err)
 
@@ -848,6 +857,12 @@ class Bx11PurgeTest(Bx11PurgeFixture):
         self.assertEqual(backup["pruned"]["ids"], [self.snapshot_id])
         self.assertEqual(self.api.deleted, [BX11_RO_ID, BX11_RW_ID])
         self.assertEqual(self.api.calls[0]["method"], "GET")
+        # The recorded survivor sentence follows the post-prune tree: this mode
+        # removes the four object directories, so the note must not name them.
+        note = backup["survivors"]["directory_note"]
+        self.assertIn("config and keys/", note)
+        for gone in ("data/", "index/", "snapshots/", "locks/"):
+            self.assertNotIn(gone, note)
 
     def test_the_key_only_plan_still_names_the_snapshot_ids(self):
         self.build_key_only_repository()

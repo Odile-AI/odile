@@ -48,8 +48,10 @@ bucket layout and the R2 rows in §1 and §3.1 are the interim **design**
 (ADR-004 §8); the code that operates them is **not shipped at this head**. The
 `s3:` branch of `scripts/backup.py`, the guest's `/etc/odile/backup-s3.env` and
 the cap check are **ODL-933**; the `odilectl backup-usage` readback and its
-8.0/9.0 GB alert are **ODL-934**; the provisioning that records the bucket and
-the tokens is **ODL-924**, still blocked on Savio's minting. `odilectl purge`'s
+8.0/9.0 GB alert are **ODL-934**; the provisioning that records the BX11 pair,
+its store of record and the Console API token is **ODL-924**, shipped (merged
+82fb9ba; the token was minted on t_a548cb0a and is the one this card's exit
+uses). `odilectl purge`'s
 bucket half was planned as **ODL-935** and was re-cut to the BX11 before it
 shipped: the exit is now the SFTP/Console-API path of §7 "Exit" and
 `docs/runbooks/offboard.md` §4.1 (measured 2026-11-26), and no `s3:` purge
@@ -488,8 +490,9 @@ password against an existing repository is refused by name, never re-initialised
 
 ### 3.1 The interim destination — Cloudflare R2, 19 November 2026
 
-The interim destination until B2 is restored — designed, not yet provisioned
-(**ODL-924**). A tenant repository is an R2 bucket,
+The interim destination until B2 is restored — designed for R2 and never built
+(**ODL-924** shipped the BX11 pair instead; see §7 "Exit"). A tenant repository
+is an R2 bucket,
 **one bucket per tenant**, and the URL is the provider's, not ours:
 
 ```
@@ -990,5 +993,5 @@ sentence is quoted (ODL-474 lands it).
 The follow-ups are board cards, not prose: **t_fec9f699** (rebuild keeps
 the repository), **t_19148cba** (installer places the program and the units,
 heartbeat reachable — this card), **t_8eb17a54** (Savio buys the box and
-sets DNS), **t_9d6fb595** (the v5 30-day purge, §9) and **ODL-935** (the
-interim bucket half, §3.1).
+sets DNS), **t_9d6fb595** (the v5 30-day purge, §9) and **ODL-935** (the BX11
+exit, §7 "Exit" — shipped 2026-11-26; no bucket half exists).

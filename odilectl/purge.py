@@ -623,26 +623,40 @@ def _settings_for(ctx: Context, pair: provision.BackupPair) -> provision.BackupS
     return replace(settings, box_id=pair.box_id)
 
 
-def _survivors(pair: provision.BackupPair, plan_now: dict) -> dict:
+def _survivors(pair: provision.BackupPair, plan_now: dict,
+               left: list[str] | None = None) -> dict:
     """The two things that outlive the deletion, as the runbook states them.
 
     Measured on the bench pair (2026-11-26): deleting a sub-account removes
-    the *account*, not its home — so the directory stays, with the pruned
-    repository's `config` and `keys/`, its empty `data/`, `index/`,
-    `snapshots/` and `locks/` directories, and `.ssh/authorized_keys`. "Empty"
-    means no user data, not a directory with nothing in it.
+    the *account*, not its home — so the directory stays, with `.ssh` and the
+    pruned repository's `config` and `keys/`. What else stays depends on the
+    mode: `restic forget --prune` leaves the four object directories, empty,
+    while the key-only prune removes them. `left` is the post-prune listing
+    when the caller has one (the apply), so the recorded sentence names only
+    what that run actually left; without it (the plan) the sentence is
+    mode-agnostic. "Empty" means no user data, not a directory with nothing
+    in it.
     """
     kept = plan_now.get("max_snapshots")
     hour = plan_now.get("hour")
     minute = plan_now.get("minute")
+    if left is None:
+        kept_note = (
+            "the pruned repository's config and keys/ and .ssh/authorized_keys "
+            "— no user data")
+    else:
+        empty = [name for name in left if name in ("data", "index", "locks", "snapshots")]
+        kept_note = (
+            "the pruned repository's config and keys/ and .ssh/authorized_keys")
+        if empty:
+            kept_note += ", its empty " + ", ".join(name + "/" for name in empty) + " directories"
+        kept_note += " — no user data"
     return {
         "directory": pair.subaccount_home,
         "directory_note": (
-            "stays after both sub-accounts are deleted: the pruned repository's "
-            "config and keys/, its empty data/, index/, snapshots/ and locks/ "
-            "directories, and .ssh/authorized_keys — no user data. Only the box's "
-            "main account can delete the directory, and HQ does not hold that "
-            "credential"
+            f"stays after both sub-accounts are deleted: {kept_note}. Only the "
+            "box's main account can delete the directory, and HQ does not hold "
+            "that credential"
         ),
         "box_snapshots": {
             "hour": hour,
@@ -1002,6 +1016,10 @@ def _purge_bx11(ctx: Context, args, *, slug: str, tenant, backup: dict, repo: st
             pruned = prune_with_key(transport)
             ids = list(pruned["ids"])
             left = pruned["left"]
+        if not fresh:
+            # The recorded sentence is the tree this run left, not the plan's
+            # mode-agnostic one: key-only removes the object directories.
+            survivors = _survivors(pair, plan_now, left)
         pruned = {
             "at": _iso(now),
             "mode": mode,
