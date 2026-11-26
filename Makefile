@@ -185,9 +185,14 @@ test-unit:
 # splicing, the DNS way-back line, the lenient YAML read) and of the tenant
 # apply's own self-test: it failed for days with no gate running it, so it runs
 # here too (ODL-901 retired the README table its first check read).
+#
+# The release verb's suite drives publish and the prune over a fixture tree.
+# The prune deletes files from a served directory (the ODL-356 retention rule),
+# so a silent regression there is not caught by any other step: it runs here too.
 self-test: prereqs
 	@$(CHECK_LOCK_PY) $(PYTHON) installer/odile_install.py --self-test
 	@$(CHECK_LOCK_PY) $(PYTHON) deploy/demo-host/deploy_demo_public.py --self-test
+	@$(CHECK_LOCK_PY) $(PYTHON) deploy/caddy/deploy_releases.py --self-test
 
 compile: prereqs
 	@test -n "$(PY_FILES)" || { echo "make compile: no .py files found" >&2; exit 1; }
