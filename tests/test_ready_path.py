@@ -53,8 +53,10 @@ from tests.test_register import (  # noqa: E402
     FakeProvider,
     FlowBase,
     form,
+    hetzner_paths,
     request,
 )
+from tests import box_fixture  # noqa: E402
 
 #: A fixture boot-report value. Deliberately not the release pin, and not the
 #: live machine's number: the whole point of the card is that the two differ.
@@ -77,6 +79,11 @@ def waiting_probe(domain: str, slug: str):
 class ReadyPathTests(FlowBase):
     """One registration, one order, one machine answer, one mail."""
 
+    def setUp(self) -> None:
+        # ODL-924: the queue mints the BX11 pair through `provision.run`; the
+        # fake Box API and a per-test store keep the suite off the live box.
+        box_fixture.patchers(self)
+
     def write_config(self) -> Path:
         path = self.dir / "config.yaml"
         values = {
@@ -91,6 +98,7 @@ class ReadyPathTests(FlowBase):
             "near_account": str(self.dir / "near-account.json"),
             "near_workspace_id": "ws-test",
             "expected_measurement": app.pinned_measurement(),
+            **hetzner_paths(self.dir),
         }
         path.write_text("".join("%s: %s\n" % item for item in values.items()),
                         encoding="utf-8")

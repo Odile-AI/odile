@@ -60,9 +60,29 @@ from odilectl import keys, provision  # noqa: E402
 from odilectl.config import Config  # noqa: E402
 from odilectl.errors import ProviderError  # noqa: E402
 from odilectl.providers.base import Machine  # noqa: E402
+from tests import box_fixture  # noqa: E402
 
 INSTALLER = ROOT / "installer" / "odile_install.py"
 SIGN_IN = "a long enough password"
+
+
+def hetzner_paths(directory: Path) -> dict:
+    """The BX11 pair's paths under a test's own directory (ODL-924).
+
+    `provision.run` mints the tenant's sub-account pair before the order, so a
+    test that runs the CLI without these four keys reads HQ's live token and
+    writes to `/root/.odile/hetzner` — it minted real sub-accounts on box
+    709870 (measured 2026-11-25: `odl-abc123`, `odl-e6e2bd`, `odl-c6e542` came
+    from suite runs). `tests/box_fixture.py` supplies the API seam.
+    """
+    return {
+        "hetzner_box_id": "709870",
+        "hetzner_dir": str(directory / "hetzner"),
+        "hetzner_keys": str(directory / "keys"),
+        "seed_backup_pairs": str(directory / "seed-backup-pairs.json"),
+    }
+
+
 EMAIL_RE = re.compile(r"/confirm\?t=([0-9a-f]{64})")
 SENTENCE = ("One password opens your machine and your account page. Your first "
             "sign-in shows you a recovery code \u2014 keep it somewhere off the machine.")
@@ -861,6 +881,11 @@ class WorkerTests(unittest.TestCase):
         self.email = "worker@example.com"
         self.account_id = self.add_account()
         self.config_path = self.write_config()
+        # ODL-924: the queue runs the same `provision.run`, which now mints
+        # the BX11 sub-account pair. Without these seams the suite read HQ's
+        # real token and minted live sub-accounts on box 709870 (measured
+        # 2026-11-25: odl-abc123, odl-e6e2bd, odl-c6e542 came from test runs).
+        box_fixture.patchers(self)
 
     def tearDown(self) -> None:
         self.tmp.cleanup()
@@ -904,6 +929,7 @@ class WorkerTests(unittest.TestCase):
             "default_days": "31",
             "near_account": str(self.dir / "near-account.json"),
             "near_workspace_id": "ws-test",
+            **hetzner_paths(self.dir),
             **overrides,
         }
         path.write_text("\n".join("%s: %s" % item for item in values.items()) + "\n",

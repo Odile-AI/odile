@@ -57,6 +57,7 @@ import app  # noqa: E402
 from odilectl import cli, keys, state  # noqa: E402
 from odilectl.config import Config  # noqa: E402
 from odilectl.providers import servury  # noqa: E402
+from tests import box_fixture  # noqa: E402
 from tests.test_odilectl import (  # noqa: E402
     KEY_TEXT,
     TEST_KEY,
@@ -304,6 +305,7 @@ class SeedFixture(unittest.TestCase):
         cls.config = os.path.join(directory, "seed-config.json")
         cls.seed_keys = os.path.join(directory, "seed-keys.json")
         cls.rebuilds = os.path.join(directory, "seed-rebuilds.json")
+        cls.backup_pairs = os.path.join(directory, "seed-backup-pairs.json")
         cls.credential = os.path.join(directory, "near-account.json")
         os.makedirs(os.path.join(directory, "etc"), exist_ok=True)
 
@@ -360,6 +362,9 @@ class SeedFixture(unittest.TestCase):
         finally:
             con.close()
 
+        # ODL-924: a provision mints the tenant's pair; the box API and the
+        # three host-side edges are seams in this class too.
+        cls.box_patchers = box_fixture.start_patchers()
         cls.port = free_port()
         cls.proc = subprocess.Popen(
             [sys.executable, str(SEED), "serve"],
@@ -370,6 +375,8 @@ class SeedFixture(unittest.TestCase):
 
     @classmethod
     def tearDownClass(cls):
+        for patcher in getattr(cls, "box_patchers", []):
+            patcher.stop()
         cls.proc.terminate()
         try:
             cls.proc.communicate(timeout=10)
@@ -386,6 +393,7 @@ class SeedFixture(unittest.TestCase):
             "ODILE_SEED_CONFIG": cls.config,
             "ODILE_SEED_KEYS": cls.seed_keys,
             "ODILE_SEED_REBUILDS": cls.rebuilds,
+            "ODILE_SEED_BACKUP_PAIRS": cls.backup_pairs,
             "ODILE_SEED_SIGNING_KEY": cls.signing_key,
             "ODILE_SEED_CERT": cls.cert,
             "ODILE_SEED_RELEASE_PUBKEY": cls.release_pub,
@@ -415,6 +423,12 @@ class SeedFixture(unittest.TestCase):
             "near_workspace_id": WORKSPACE,
             "near_org_id": ORG,
             "near_spend_limit_usd": "10",
+            # ODL-924: the box, the store of record, the key tree and the seed
+            # handoff all live under this config's own directory.
+            "hetzner_box_id": "709870",
+            "hetzner_dir": str(Path(directory) / "hetzner"),
+            "hetzner_keys": str(Path(directory) / "keys"),
+            "seed_backup_pairs": str(Path(directory) / "seed-backup-pairs.json"),
         }
         values.update(overrides)
         path.write_text(

@@ -84,6 +84,9 @@ Environment:
     ODILE_SEED_SIGNING_KEY      the seed's Ed25519 private key, mode 0600
     ODILE_SEED_CERT             the release key's signature over its public half
     ODILE_SEED_RELEASE_PUBKEY   the release public key (default: the repo's, then .prev)
+    ODILE_SEED_REBUILDS         sealed rebuild entries (default /var/lib/odile/seed-rebuilds.json)
+    ODILE_SEED_BACKUP_PAIRS     each tenant's Hetzner sub-account pair
+                                (default /var/lib/odile/seed-backup-pairs.json)
 """
 import argparse
 import base64
@@ -119,6 +122,14 @@ DEFAULT_REBUILDS = "/var/lib/odile/seed-rebuilds.json"
 # A file beside the ledger, like `seed-rebuilds`, because systemd hands the
 # service a copy of the config at start.
 DEFAULT_KEYS = "/var/lib/odile/seed-keys.json"
+# ODL-924: each tenant's Hetzner BX11 sub-account pair — the repository URL,
+# the read-write and read-only private keys, the pinned host-key line and the
+# two sub-account logins. `odilectl provision` writes it between two exchanges
+# and the service reads it per redeem, for the same reason as `seed-rebuilds`:
+# systemd hands the service a copy of the config at start, so a config rewrite
+# would be invisible until a restart. `{slug: entry}`, 0600, owned by the
+# service user.
+DEFAULT_BACKUP_PAIRS = "/var/lib/odile/seed-backup-pairs.json"
 # ODL-514: the seed key is not the release key. This one lives on HQ and signs
 # tenant seeds; the release key (offline) signs installers, manifests, releases
 # and the certificate over this key's public half.
@@ -609,6 +620,198 @@ def set_rebuild(path: str, slug: str, entry: dict | None) -> None:
     write_private(path, data, owner)
 
 
+# ------------------------------------------------------- the sub-account pair
+
+#: The keys of one tenant's pair entry (ODL-924). The two sub-account logins
+#: are what the provider assigned (`u<box>-sub<N>`), never derived from the
+#: slug, and the two private keys are the only credentials that open the
+#: tenant's own ciphertext directory. `previous_instance` is non-secret
+#: provenance: the machine this one replaces, or "" on a first install.
+BACKUP_PAIR_KEYS = (
+    "box_id", "box_server",
+    "subaccount_id", "subaccount_username", "subaccount_home",
+    "readonly_subaccount_id", "readonly_subaccount_username",
+    "readonly_subaccount_home",
+    "repo_url", "readonly_repo_url", "ssh_port", "known_hosts",
+    "ssh_private_key", "readonly_ssh_private_key",
+    "previous_instance", "provisioned_at",
+)
+#: The colon `sftp:` form carries no port (measured: `user@host:22/path` is a
+#: literal `22/path`), so a URL with a port in it is refused here rather than
+#: discovered as a missing repository on the guest.
+BACKUP_REPO_RE = re.compile(
+    r"^sftp:[A-Za-z0-9._-]+@[A-Za-z0-9.-]+\.your-storagebox\.de:[A-Za-z0-9._/-]+$")
+BACKUP_SUBACCOUNT_RE = re.compile(r"^u[0-9]+-sub[0-9]+$")
+BACKUP_HOSTKEY_RE = re.compile(
+    r"^[A-Za-z0-9.-]+ (ssh-ed25519|ssh-rsa|ecdsa-sha2-nistp[0-9]+) [A-Za-z0-9+/=]+$")
+#: The sub-account password is a one-time provisioning value; a plaintext one
+#: in this file would be a door into a tenant directory that outlives the run.
+BACKUP_FORBIDDEN = ("password", "passphrase", "luks")
+
+
+def backup_pairs_path() -> str:
+    """The sub-account pairs: `ODILE_SEED_BACKUP_PAIRS`, else the ledger's dir."""
+    return os.environ.get("ODILE_SEED_BACKUP_PAIRS", DEFAULT_BACKUP_PAIRS)
+
+
+def validate_backup_pair(entry: object, where: str = "seed backup pairs") -> dict:
+    """Check one tenant's pair entry; return it unchanged.
+
+    Every rule is a fact the guest's first boot depends on: the two logins are
+    the provider's and distinct, the homes nest (never the same home — two
+    accounts on one home share `.ssh/authorized_keys`), both URLs are in the
+    no-port colon form, the two private keys are present, and the seed pins the
+    host key of every hostname its URLs name (one `known_hosts` line per host,
+    because strict checking matches the host field). A plaintext sub-account
+    password is refused by name: the keys are the credential.
+    """
+    if not isinstance(entry, dict):
+        raise ConfigError("%s must be a JSON object" % where)
+    for key in BACKUP_PAIR_KEYS:
+        if key not in entry:
+            raise ConfigError("%s is missing %s" % (where, key))
+    for key in BACKUP_FORBIDDEN:
+        if key in entry:
+            raise ConfigError(
+                "%s carries a plaintext %s; the sub-account password is reset and "
+                "discarded at provision, and the keys are the credential" % (where, key))
+    box_id = entry["box_id"]
+    if not isinstance(box_id, int) or isinstance(box_id, bool) or box_id <= 0:
+        raise ConfigError("%s.box_id must be a positive integer" % where)
+    for key in ("subaccount_id", "readonly_subaccount_id"):
+        value = entry[key]
+        if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
+            raise ConfigError("%s.%s must be a positive integer" % (where, key))
+    if entry["subaccount_id"] == entry["readonly_subaccount_id"]:
+        raise ConfigError("%s names one sub-account twice; a pair is two accounts" % where)
+    for key in ("subaccount_username", "readonly_subaccount_username"):
+        if not isinstance(entry[key], str) or not BACKUP_SUBACCOUNT_RE.match(entry[key]):
+            raise ConfigError("%s.%s is not a provider login (u<box>-sub<N>)" % (where, key))
+    if entry["subaccount_username"] == entry["readonly_subaccount_username"]:
+        raise ConfigError("%s names one login twice; a pair is two accounts" % where)
+    for key in ("subaccount_home", "readonly_subaccount_home"):
+        home = entry[key]
+        if not isinstance(home, str) or not home or home.startswith("/") or ".." in home:
+            raise ConfigError("%s.%s must be a relative path inside the box" % (where, key))
+    if entry["readonly_subaccount_home"] == entry["subaccount_home"]:
+        raise ConfigError(
+            "%s puts both accounts on one home; the read-only home is a "
+            "subdirectory of the read-write home (shared homes share "
+            "authorized_keys)" % where)
+    if not entry["readonly_subaccount_home"].startswith(entry["subaccount_home"].rstrip("/") + "/"):
+        raise ConfigError(
+            "%s.readonly_subaccount_home is not a subdirectory of %s"
+            % (where, entry["subaccount_home"]))
+    for key in ("repo_url", "readonly_repo_url"):
+        value = entry[key]
+        if not isinstance(value, str) or not BACKUP_REPO_RE.match(value):
+            raise ConfigError(
+                "%s.%s is not an sftp: user@host:path URL (no port: the colon form "
+                "has no port field, and 22 lives in sftp.command)" % (where, key))
+        path = value.split(":", 2)[2]
+        if re.match(r"^\d+(/|$)", path):
+            raise ConfigError(
+                "%s.%s puts a port in the URL: %r is the path %r, not a port "
+                "(the colon form has no port field; 22 lives in sftp.command)"
+                % (where, key, value, path))
+    port = entry["ssh_port"]
+    if port != 22:
+        raise ConfigError("%s.ssh_port must be 22 (the steady-state port)" % where)
+    for key in ("ssh_private_key", "readonly_ssh_private_key"):
+        value = entry[key]
+        if not isinstance(value, str) or "PRIVATE KEY" not in value:
+            raise ConfigError("%s.%s is not a private key" % (where, key))
+    known = entry["known_hosts"]
+    if not isinstance(known, str) or not known.strip():
+        raise ConfigError(
+            "%s.known_hosts must carry one pinned host-key line per hostname" % where)
+    # A pair is two hostnames and the entry carries a repository URL for each,
+    # so the seed's consumer (restic on port 22, strict host-key checking)
+    # needs both pinned. Measured in review 1: a seed pinned only for the
+    # read-write hostname failed the read-only `snapshots --no-lock` with
+    # "No RSA host key is known for u728180-sub2 … Host key verification failed".
+    pinned_hosts: set[str] = set()
+    for line in known.splitlines():
+        if not BACKUP_HOSTKEY_RE.match(line):
+            raise ConfigError(
+                "%s.known_hosts has a line that is not a pinned host key: %r"
+                % (where, line[:60]))
+        pinned_hosts.add(line.split(" ", 1)[0])
+    for key in ("repo_url", "readonly_repo_url"):
+        host = entry[key].split("@", 1)[1].split(":", 1)[0]
+        if host not in pinned_hosts:
+            raise ConfigError(
+                "%s.known_hosts has no pinned line for %s (%s's hostname); the "
+                "seed must open every URL it carries" % (where, host, key))
+    if not isinstance(entry["previous_instance"], str):
+        raise ConfigError("%s.previous_instance must be a string" % where)
+    if not isinstance(entry["provisioned_at"], str) or not entry["provisioned_at"]:
+        raise ConfigError("%s.provisioned_at must be a timestamp" % where)
+    return entry
+
+
+def load_backup_pairs(path: str | None = None) -> dict:
+    """The `{slug: pair}` map the service reads per exchange; {} when absent.
+
+    Read by the unprivileged service user directly (no LoadCredential copy), so
+    a provision that writes it between two exchanges is visible to the next
+    redeem with no restart.
+    """
+    path = path or backup_pairs_path()
+    try:
+        with open(path, encoding="utf-8") as handle:
+            document = json.load(handle)
+    except FileNotFoundError:
+        return {}
+    except ValueError as exc:
+        raise ConfigError("%s is not valid JSON: %s" % (path, exc)) from exc
+    except OSError as exc:
+        raise ConfigError("cannot read %s: %s" % (path, exc)) from exc
+    if not isinstance(document, dict):
+        raise ConfigError("%s must be a JSON object" % path)
+    for slug, entry in document.items():
+        if not isinstance(slug, str) or not slug:
+            raise ConfigError("%s has a non-string slug" % path)
+        validate_backup_pair(entry, "%s.%s" % (path, slug))
+    return document
+
+
+def set_backup_pair(path: str, slug: str, entry: dict | None) -> None:
+    """Write (or remove) one tenant's pair entry, atomically, at 0600.
+
+    `odilectl provision` is the only writer. The file is 0600 and, when written
+    by root, given to the directory's owner (`odile`), the user the seed service
+    runs as — a root-only file would break the next provision with no request
+    to blame.
+    """
+    try:
+        with open(path, encoding="utf-8") as handle:
+            document = json.load(handle)
+    except FileNotFoundError:
+        document = {}
+    if not isinstance(document, dict):
+        raise ConfigError("%s must be a JSON object" % path)
+    if entry is None:
+        document.pop(slug, None)
+    else:
+        validate_backup_pair(entry, "%s.%s" % (path, slug))
+        document[slug] = entry
+    data = (json.dumps(document, indent=2, sort_keys=True) + "\n").encode("utf-8")
+    owner = None
+    if os.geteuid() == 0:
+        try:
+            info = os.stat(os.path.dirname(os.path.abspath(path)) or ".")
+            owner = (info.st_uid, info.st_gid)
+        except OSError:
+            owner = None
+    write_private(path, data, owner)
+
+
+def backup_pair_for(pairs: dict, slug: str) -> dict | None:
+    """One tenant's pair, or `None` for the config's `backup_repo_url` path."""
+    return pairs.get(slug)
+
+
 def fill(value: str, slug: str) -> str:
     """`{slug}` in a config value is the one per-tenant substitution."""
     return value.replace("{slug}", slug)
@@ -870,9 +1073,17 @@ def build_seed(tenant: sqlite3.Row, instance_id: str, config: dict,
                rebuild: dict | None = None,
                identity: tuple[bytes, bytes] | None = None,
                near_api_key_value: str | None = None,
-               sign_in_hash: str | None = None) -> dict:
+               sign_in_hash: str | None = None,
+               backup_pair: dict | None = None,
+               previous_instance: str | None = None) -> dict:
     slug = tenant["slug"]
     mail = config["mail_relay"]
+    # ODL-924: a tenant whose pair has been provisioned carries its own
+    # repository (the provider's logins are in the URL), so the config's
+    # template is only the fallback for a bench or a manual seed.
+    backup_repo_url = fill(config["backup_repo_url"], slug)
+    if backup_pair is not None:
+        backup_repo_url = backup_pair["repo_url"]
     seed = {
         "slug": slug,
         "instance_id": instance_id,
@@ -880,7 +1091,7 @@ def build_seed(tenant: sqlite3.Row, instance_id: str, config: dict,
         else fill(config.get("near_api_key") or "", slug),
         "model": fill(config["model"], slug),
         "support_public_key": fill(config["support_public_key"], slug),
-        "backup_repo_url": fill(config["backup_repo_url"], slug),
+        "backup_repo_url": backup_repo_url,
         "mail_relay": {
             "host": fill(mail["host"], slug),
             "port": mail["port"],
@@ -891,6 +1102,31 @@ def build_seed(tenant: sqlite3.Row, instance_id: str, config: dict,
         },
         "hermes_version": fill(config["hermes_version"], slug),
     }
+    # ODL-924: the rest of the pair travels beside `backup_repo_url`: the two
+    # private keys (the read-write one opens the tenant's own ciphertext
+    # directory; the read-only one is for the recovery file), the pinned
+    # host-key lines (one per hostname, so both URLs open under strict
+    # checking), and the provider's logins as non-secret provenance. The
+    # installer writes `/etc/odile/backup-repo.txt` and
+    # `/etc/odile/backup-ssh/id_ed25519` (0600) from these fields.
+    if backup_pair is not None:
+        seed["backup"] = {
+            "repo_url": backup_pair["repo_url"],
+            "readonly_repo_url": backup_pair["readonly_repo_url"],
+            "ssh_port": backup_pair["ssh_port"],
+            "known_hosts": backup_pair["known_hosts"],
+            "ssh_private_key": backup_pair["ssh_private_key"],
+            "readonly_ssh_private_key": backup_pair["readonly_ssh_private_key"],
+            "previous_instance": (previous_instance if previous_instance is not None
+                                  else backup_pair["previous_instance"]),
+            "box_id": backup_pair["box_id"],
+            "subaccount_id": backup_pair["subaccount_id"],
+            "subaccount_username": backup_pair["subaccount_username"],
+            "subaccount_home": backup_pair["subaccount_home"],
+            "readonly_subaccount_id": backup_pair["readonly_subaccount_id"],
+            "readonly_subaccount_username": backup_pair["readonly_subaccount_username"],
+            "readonly_subaccount_home": backup_pair["readonly_subaccount_home"],
+        }
     # B-once (Savio, 2026-11-20, card t_ab499d49): the account's scrypt
     # verifier is the machine's first sign-in. It is the installer's own
     # `scrypt$n$r$p$salt$dk` string, byte-equal to `accounts.password_hash` at
@@ -1262,12 +1498,40 @@ def list_tokens(con: sqlite3.Connection, slug: str, now: datetime | None = None)
     return out
 
 
+def _previous_instance(con: sqlite3.Connection, slug: str) -> str | None:
+    """The machine this one replaces, from the spine row's `detail`, or None.
+
+    ODL-924: a reopen clears the row's machine columns but keeps the detail
+    that `odilectl provision` wrote, so the seed's `backup.previous_instance`
+    is the non-secret provenance of the rebuild. `None` lets `build_seed` fall
+    back to the pair entry's own value (a first install writes "").
+    """
+    if not _has_table(con, "tenant_state"):
+        return None
+    try:
+        row = con.execute(
+            "SELECT detail FROM tenant_state WHERE slug = ?", (slug,)
+        ).fetchone()
+    except sqlite3.Error:
+        return None
+    if row is None:
+        return None
+    try:
+        detail = json.loads(row["detail"] or "{}")
+    except ValueError:
+        return None
+    value = detail.get("previous_instance") if isinstance(detail, dict) else None
+    return value if isinstance(value, str) and value else None
+
+
 def redeem(con: sqlite3.Connection, token: str, instance_id: str,
            config: dict, rebuilds: dict | None = None,
            now: datetime | None = None,
            identity: tuple[bytes, bytes] | None = None,
            keys: dict | None = None,
-           keys_file: str | None = None) -> dict:
+           keys_file: str | None = None,
+           backup_pairs: dict | None = None,
+           backup_pairs_file: str | None = None) -> dict:
     """Exchange a token for its seed, exactly once.
 
     Checks are ordered so a refused request never burns the token: only the
@@ -1318,7 +1582,11 @@ def redeem(con: sqlite3.Connection, token: str, instance_id: str,
                       rebuild=rebuild_for(rebuilds or {}, tenant["slug"], token_hash),
                       identity=identity,
                       near_api_key_value=key,
-                      sign_in_hash=account["password_hash"] if account is not None else None)
+                      sign_in_hash=account["password_hash"] if account is not None else None,
+                      backup_pair=backup_pair_for(
+                          backup_pairs if backup_pairs is not None
+                          else load_backup_pairs(backup_pairs_file), tenant["slug"]),
+                      previous_instance=_previous_instance(con, tenant["slug"]))
     cur = con.execute(
         "UPDATE seed_tokens SET used_at = ? WHERE id = ? AND used_at IS NULL AND expires_at > ?",
         (stamp, row["id"], stamp),
@@ -1501,7 +1769,8 @@ class Handler(BaseHTTPRequestHandler):
                           load_rebuilds(getattr(self.server, "rebuilds_path", None)),
                           identity=getattr(self.server, "identity", None),
                           keys=load_keys(getattr(self.server, "keys_path", None)),
-                          keys_file=getattr(self.server, "keys_path", None))
+                          keys_file=getattr(self.server, "keys_path", None),
+                          backup_pairs_file=getattr(self.server, "backup_pairs_path", None))
         except ConfigError as exc:
             print("seed: config error: %s" % exc, file=sys.stderr, flush=True)
             return self._json(500, {"error": "the seed config or its rebuild entries are invalid",

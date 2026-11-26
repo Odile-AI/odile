@@ -35,10 +35,13 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 import app  # noqa: E402
-from odilectl import bootrecord, cli, config, health, offboard, providers, state  # noqa: E402
+from odilectl import (  # noqa: E402
+    bootrecord, cli, config, health, offboard, provision, providers, state,
+)
 from odilectl.core import Context  # noqa: E402
 from odilectl.errors import ConfigError, ProviderError, ProviderTimeout  # noqa: E402
 from odilectl.providers import base, servury  # noqa: E402
+from tests import box_fixture  # noqa: E402
 
 # A real ed25519 public key; the private half was generated for this fixture
 # and thrown away. A public key is not a secret.
@@ -174,6 +177,10 @@ def setUpModule():
     )
     for patcher in _OFFBOARD_PATCHES:
         patcher.start()
+    # ODL-924: a provision mints the tenant's backup sub-account pair. The Box
+    # API, ssh-keygen, the host-key scan and install-ssh-key are the four
+    # seams; a provision in this module never opens a socket or runs a command.
+    _OFFBOARD_PATCHES.extend(box_fixture.start_patchers())
 
 
 def tearDownModule():
@@ -190,6 +197,7 @@ class TempConfigMixin(unittest.TestCase):
     def make_config(self, **overrides) -> Path:
         directory = tempfile.mkdtemp(prefix="odilectl-test-")
         self.addCleanup(shutil.rmtree, directory, ignore_errors=True)
+        self._directory = Path(directory)
         path = Path(directory) / "config.yaml"
         values = {
             "provider": "servury",
@@ -201,6 +209,12 @@ class TempConfigMixin(unittest.TestCase):
             "dns_token": "fixture-token",
             "dns_zone": "odile.fyi",
             "dns_zone_id": "fixture-zone",
+            # ODL-924: the box, the store of record, the key tree and the seed
+            # handoff all live under this test's own directory.
+            "hetzner_box_id": "709870",
+            "hetzner_dir": str(self._directory / "hetzner"),
+            "hetzner_keys": str(self._directory / "keys"),
+            "seed_backup_pairs": str(self._directory / "seed-backup-pairs.json"),
         }
         values.update(overrides)
         path.write_text(
@@ -2154,6 +2168,102 @@ class StatusDestroyTest(TempConfigMixin):
 # ------------------------------------------------------- no shell, no vendor leak
 
 
+class BackupPairRecordTests(TempConfigMixin):
+    """ODL-924: the recorded pair, the count and the 51st refusal.
+
+    The end-to-end provisioning run lives in `tests/test_seed.py` beside the
+    real seed service; these are the deterministic pieces a stranger can re-run
+    without any provider at all.
+    """
+
+    def pair(self, slug: str = SLUG) -> provision.BackupPair:
+        return provision.BackupPair(
+            slug=slug, box_id=709870, box_server="u728180.your-storagebox.de",
+            subaccount_id=392550, subaccount_username="u728180-sub1",
+            subaccount_server="u728180-sub1.your-storagebox.de",
+            subaccount_home="tenants/%s" % slug,
+            readonly_subaccount_id=392556, readonly_subaccount_username="u728180-sub2",
+            readonly_subaccount_server="u728180-sub2.your-storagebox.de",
+            readonly_subaccount_home="tenants/%s/data" % slug,
+            repo_url="sftp:u728180-sub1@u728180-sub1.your-storagebox.de:data/restic",
+            readonly_repo_url="sftp:u728180-sub2@u728180-sub2.your-storagebox.de:restic",
+            known_hosts=box_fixture.HOST_LINE,
+            rw_private_key=box_fixture.PRIVATE_KEY,
+            ro_private_key=box_fixture.PRIVATE_KEY,
+            previous_instance="", provisioned_at="2026-11-25T00:00:00Z",
+        )
+
+    def test_the_store_of_record_round_trips_both_keys_at_0600(self) -> None:
+        config_path = self.make_config()
+        ctx = Context(config=config.Config.load(config_path))
+        settings = provision._backup_settings(ctx)
+        path = settings.store / ("odile-%s.env" % SLUG)
+        provision._write_store(path, self.pair())
+        self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+        recorded = provision.BackupPair.from_env(path.read_text(encoding="utf-8"))
+        self.assertEqual(recorded, self.pair())
+        self.assertNotIn("password", path.read_text(encoding="utf-8").lower())
+
+    def test_the_count_is_complete_pairs_and_the_51st_is_refused_by_name(self) -> None:
+        accounts = []
+        for index in range(50):
+            accounts.append({"name": "odile-odl-%06d-rw" % index})
+            accounts.append({"name": "odile-odl-%06d-ro" % index})
+        self.assertEqual(provision._pair_count(accounts), 50)
+        self.assertEqual(provision._pair_count(accounts + [{"name": "odile-odl-half-rw"}]),
+                         50)
+
+        config_path = self.make_config()
+        ctx = Context(config=config.Config.load(config_path))
+        settings = provision._backup_settings(ctx)
+        settings.store.mkdir(mode=0o700, parents=True, exist_ok=True)
+        with self.assertRaises(ProviderError) as caught:
+            provision._refuse_the_51st(settings, "odl-51st01", 50)
+        self.assertIn("51st", str(caught.exception))
+        self.assertIn("odl-51st01", str(caught.exception))
+        self.assertIn("100 sub-accounts", str(caught.exception))
+        # The store of record alone is enough: no API call is needed to refuse.
+        for index in range(49):
+            (settings.store / ("odile-odl-%06d.env" % index)).write_text(
+                "BACKUP_SLUG=fixture\n", encoding="utf-8")
+        provision._refuse_the_51st(settings, "odl-ok0001", None)
+        (settings.store / "odile-odl-ok0001.env").write_text("BACKUP_SLUG=fixture\n",
+                                                             encoding="utf-8")
+        with self.assertRaises(ProviderError):
+            provision._refuse_the_51st(settings, "odl-51st02", None)
+
+    def test_the_api_pair_is_checked_for_the_nested_homes_and_the_lock(self) -> None:
+        rw = {"id": 392550, "name": "odile-%s-rw" % SLUG,
+              "username": "u728180-sub1", "server": "u728180-sub1.your-storagebox.de",
+              "home_directory": "tenants/%s" % SLUG,
+              "access_settings": {"readonly": False}}
+        ro = {"id": 392556, "name": "odile-%s-ro" % SLUG,
+              "username": "u728180-sub2", "server": "u728180-sub2.your-storagebox.de",
+              "home_directory": "tenants/%s/data" % SLUG,
+              "access_settings": {"readonly": True}}
+        self.assertEqual(provision._pair_from_api(SLUG, rw, ro)["rw"]["id"], 392550)
+        for broken, reason in (
+            (dict(ro, home_directory="tenants/%s" % SLUG), "never the same home"),
+            (dict(ro, home_directory="tenants/another/data"), "data"),
+            (dict(ro, access_settings={"readonly": False}), "not locked"),
+            (dict(ro, username="odl-%s" % SLUG), "u<box>-sub<N>"),
+        ):
+            with self.assertRaisesRegex(ProviderError, reason):
+                provision._pair_from_api(SLUG, rw, broken)
+        # A writable read-write half would starve the nightly backup.
+        with self.assertRaisesRegex(ProviderError, "read-only on the box"):
+            provision._pair_from_api(SLUG, dict(rw, access_settings={"readonly": True}), ro)
+
+    def test_half_a_pair_is_refused_and_a_duplicate_name_is_not_guessed(self) -> None:
+        only_rw = [{"name": "odile-%s-rw" % SLUG, "id": 392550}]
+        with self.assertRaisesRegex(ProviderError, "only the read-write half"):
+            provision._named_pair(only_rw, SLUG)
+        duplicate = only_rw + [{"name": "odile-%s-rw" % SLUG, "id": 392551},
+                               {"name": "odile-%s-ro" % SLUG, "id": 392556}]
+        with self.assertRaisesRegex(ProviderError, "refusing to guess"):
+            provision._named_pair(duplicate, SLUG)
+
+
 class BoundaryTest(unittest.TestCase):
     """Two architectural promises, checked on the source as a last resort.
 
@@ -2184,16 +2294,18 @@ class BoundaryTest(unittest.TestCase):
             "os.popen",
             "pty.spawn",
         )
-        # Two deliberate exceptions, both for the local `restic` binary and
-        # neither an operator shell on a tenant: ODL-215's `restore --apply`
-        # runs it on the machine that holds the user's recovery file (the
-        # user's laptop, or a rebuilt guest), and the ODL-218 follow-up's
-        # `purge` runs it on the backup box against the repository it is about
-        # to delete. Neither learns a tenant address or opens a session there;
-        # the SFTP transport is a string restic itself parses. Every other
-        # escape hatch stays banned in these files too, so a later `os.system`
-        # cannot hide behind the exception.
-        local_binary_exceptions = {PACKAGE / "restore.py", PACKAGE / "purge.py"}
+        # Three deliberate exceptions, all for local binaries and none an
+        # operator shell on a tenant: ODL-215's `restore --apply` runs `restic`
+        # on the machine that holds the user's recovery file (the user's
+        # laptop, or a rebuilt guest); the ODL-218 follow-up's `purge` runs it
+        # on the backup box against the repository it is about to delete; and
+        # ODL-924's `provision` runs `ssh-keygen`, `ssh-keyscan` and the
+        # documented `install-ssh-key` over port 23 on the Storage Box, which
+        # has no tenant address and no shell (a restricted command interface).
+        # Every other escape hatch stays banned in these files too, so a later
+        # `os.system` cannot hide behind the exception.
+        local_binary_exceptions = {PACKAGE / "restore.py", PACKAGE / "purge.py",
+                                   PACKAGE / "provision.py"}
         for path in self._package_files():
             for lineno, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
                 for token in forbidden:

@@ -1528,6 +1528,13 @@ class FirstbootExchangeTests(unittest.TestCase):
         server.config = json.loads(config.read_text())
         server.config_path = str(config)
         server.rebuilds_path = str(self.dir / "seed-rebuilds.json")
+        # ODL-924: the tenant's sub-account pair, read per exchange like the
+        # rebuild entries. The fixture pair is the bench's own (inert) one, so
+        # the seed's `backup` block and the first boot's path are proved
+        # without a Storage Box.
+        server.backup_pairs_path = str(self.dir / "seed-backup-pairs.json")
+        self.seed.set_backup_pair(server.backup_pairs_path, self.SLUG,
+                                  fixture.fixture_pair(self.SLUG))
         server.signing_key = str(key)
         if release_key is not None:
             # The service carries the pair it would load from disk: the seed
@@ -1797,6 +1804,42 @@ class FirstbootExchangeTests(unittest.TestCase):
         self.assertEqual([(row["kind"], row["from_state"], row["to_state"])
                           for row in events],
                          [("first_visit", "first_boot", "first_visit")])
+
+    def test_the_seed_carries_the_pair_and_the_rebuild_marker(self) -> None:
+        """ODL-924: the guest gets the repository URL, both keys, the host key."""
+        self.write_cmdline(self.token)
+        code, output = self.run_boot()
+        self.assertEqual(code, 0, output)
+        cache = json.loads(self.cache.read_text())
+        pair = fixture.fixture_pair(self.SLUG)
+        self.assertEqual(cache["backup_repo_url"], pair["repo_url"])
+        self.assertEqual(cache["backup"]["repo_url"], pair["repo_url"])
+        self.assertEqual(cache["backup"]["readonly_repo_url"], pair["readonly_repo_url"])
+        self.assertEqual(cache["backup"]["subaccount_username"], pair["subaccount_username"])
+        self.assertEqual(cache["backup"]["readonly_subaccount_id"],
+                         pair["readonly_subaccount_id"])
+        self.assertEqual(cache["backup"]["known_hosts"], pair["known_hosts"])
+        self.assertTrue(cache["backup"]["ssh_private_key"].startswith("-----BEGIN"))
+        self.assertTrue(cache["backup"]["readonly_ssh_private_key"].startswith("-----BEGIN"))
+        self.assertEqual(cache["backup"]["previous_instance"], "")
+        self.assertNotIn(":22/", cache["backup_repo_url"])
+
+        # The row's own marker (written at a reopen) wins over the pair's.
+        con = self.seed.connect(str(self.dir / "seed.db"))
+        try:
+            con.execute("UPDATE tenant_state SET detail = ? WHERE slug = ?",
+                        (json.dumps({"previous_instance": "srv-old-0001"}), self.SLUG))
+            con.commit()
+            binding = self.seed.bind(con, self.SLUG, self.IID)
+        finally:
+            con.close()
+        self.write_cmdline(binding["token"])
+        if self.cache.is_file():
+            self.cache.unlink()   # force a fresh exchange, not the first boot's cache
+        code, output = self.run_boot()
+        self.assertEqual(code, 0, output)
+        cache = json.loads(self.cache.read_text())
+        self.assertEqual(cache["backup"]["previous_instance"], "srv-old-0001")
 
     def test_a_reboot_after_the_first_visit_reports_ready_and_keeps_one_line(self) -> None:
         self.write_cmdline(self.token)
@@ -2554,7 +2597,11 @@ class FixtureRebuildTests(unittest.TestCase):
                 config = json.loads((directory / "seed-config.json").read_text(encoding="utf-8"))
                 served = seed_module.redeem(con, result["token"], self.INSTANCE,
                                             config, rebuilds,
-                                            identity=self.certified_identity(directory, key))
+                                            identity=self.certified_identity(directory, key),
+                                            # Hermetic: without this the seed
+                                            # service's default path is HQ's
+                                            # live `/var/lib/odile/seed-backup-pairs.json`.
+                                            backup_pairs={})
             finally:
                 con.close()
             self.assertEqual(firstboot_module.unseal_rebuild(served["rebuild"], result["token"]),
