@@ -826,4 +826,13 @@ DISK_SHA=$(sha256sum "$RAW" | cut -d' ' -f1)
 } > "$SEALD/seal.txt"
 
 say sealed "$BLOB ($(stat -c %s "$BLOB") bytes)"
-say next "./deploy/image/uki.sh --in $(printf '%q' "$OUT") --sign"
+if [ "$PRODUCTION" = 1 ]; then
+    # A production image's UKI step is also its pin step (ODL-947): uki.sh
+    # writes the pin and places it inside this disk, so no fourth command can be
+    # forgotten between them. The disk is opened with its bootstrap key, so the
+    # step needs root.
+    say next "sudo ./deploy/image/uki.sh --in $(printf '%q' "$OUT") --sign --pin $(printf '%q' "$OUT/tenant-image.pin")"
+    say next "  (the pin is written and placed inside the disk; a production build without it is refused)"
+else
+    say next "./deploy/image/uki.sh --in $(printf '%q' "$OUT") --sign"
+fi

@@ -171,21 +171,46 @@ journalctl -u odile-access-report.service -n 20  # the wrapper's two lines and t
 cat /var/lib/odile/access-report.txt             # the support bundle's report
 ```
 
-The unit runs a wrapper, `/usr/local/lib/odile/access_report.sh`. It resolves
-the pin, prints which file it used, and execs the strict bar:
+The unit runs a wrapper, `/usr/local/lib/odile/access_report.sh`. On the image
+the tenant account is `tenant`, so the wrapper's `ODILE_ACCESS_USER=tenant`
+(the image's unit sets it, and the drop-in
+`/etc/systemd/system/odile-access-report.service.d/10-tenant-user.conf` keeps it
+after the release installer rewrites the unit) makes it read the tenant's own
+home. The wrapper prints the command it execs:
 
 ```
-verify_and_unlock.sh --mode access --root / --user odile --expect <pin> \
+verify_and_unlock.sh --mode access --root / --user tenant --expect <number> \
     --out /var/lib/odile/access-report.txt
 ```
 
-The pin is the machine's own, in this order: `/etc/odile/tenant-image.pin`
+A tenant installed by `odile-install` on its own machine has no drop-in, and
+the wrapper's default `--user odile` is that machine's user.
+
+The pin is a **file's** measurement, in this order: `/etc/odile/tenant-image.pin`
 (`uki_signed.measurement` — the signed UKI this image boots), then
 `/etc/odile/boot-record.json` (the number the user passed to
 `odile_install.py --expect`), then `/var/lib/odile/attestation.json` (the boot
-report this machine produced), then `/etc/odile/odile-verify.pin`. No 96-hex
-measurement in any of them exits 2 and writes nothing, so `/verify` says the
-report has not been written rather than showing lines checked against nothing.
+report this machine produced), then `/etc/odile/odile-verify.pin`. The pin is
+not the boot's own number: the UKI carries an empty command line and the
+machine passes its own at launch (`--append`), so the launch measurement covers
+the per-machine tokens and the vCPU count; a pin built by `uki.sh --vcpus 2`
+can never equal a 1 vCPU tenant's launch. The wrapper therefore reads this
+boot's own report as well (`/var/lib/odile/attestation.json`, written by
+`odile-attest-boot`, which this unit is `After=` and `Wants=`), and chooses
+`--expect` by a two-number rule:
+
+- **the boot's number equals the pin's** — `--expect` is the pin, and the
+  journal says `access-report: <file> pins <number>`;
+- **the two disagree** (the ordinary case when the machine is launched at
+  another vCPU count) — `--expect` is this boot's own number, and one line
+  names both: `access-report: <file> pins <pin>, this boot is <boot>;
+  reporting with the boot's own measurement`;
+- **no boot report** (an image whose attest unit never ran) — the pin is the
+  only number there is.
+
+No 96-hex measurement in any of them exits 2 and writes nothing, so `/verify`
+says the report has not been written rather than showing lines checked against
+nothing.
 
 A FAIL is still a report: the five lines and their FAIL are written, and the
 file is replaced in one rename so a reader never sees half of it. `--out` keeps
