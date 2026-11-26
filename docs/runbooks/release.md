@@ -59,18 +59,9 @@ reinstalled. Read from the panel on 2026-11-25T16:14Z
 
 | Machine (`server`) | Disk image | UKI | Role |
 |---|---|---|---|
-| the cold-walk tenant (`<server:current>`) | `4b01dcf21fc1ae06.raw` | `63a3bf152772e578.efi` | **current release** (newest pair) |
+| the cold-walk tenant (`ce31aee1`) | `4b01dcf21fc1ae06.raw` | `63a3bf152772e578.efi` | **current release** (newest pair) |
 | the bench (`<server:bench>`) | `1f0ec18099aaa464.raw` | `7571cb22a591a5d4.efi` | predecessor 1 |
 | the demo tenant (`<server:demo>`) | `5ab78a3a61393cd3.raw` | `47be81ca41c24a9f.efi` | predecessor 2 |
-
-`<server:current>`, `<server:bench>` and `<server:demo>` stand for the panel's
-instance ids. Two of the three are named in `docs/ops/leak-forbid.txt` — the
-literals that must never appear in a public tree, which `make leak` and the
-pre-push hook enforce — and the newest one is newer than that list (t_699f2287
-covers it), so this page writes all three as `<…>` placeholders
-(`tools/servury_cycle.py`'s idiom). `--pins-out` prints the real ids on the
-host, and the evidence bundle (`docs/ops/`, git-excluded) records the printed
-lines.
 
 Every machine on the account that sets neither image field names nothing and
 keeps nothing.
@@ -192,7 +183,7 @@ run had something to prune:
 $ ./deploy/caddy/deploy_releases.py --retention
 keep      3 image(s) in disks/ of 4
 keep      3 image(s) in uki/ of 3
-pair      current         4b01dcf21fc1ae06.raw + 63a3bf152772e578.efi (live on <server:current>)
+pair      current         4b01dcf21fc1ae06.raw + 63a3bf152772e578.efi (live on ce31aee1)
 pair      predecessor 1   1f0ec18099aaa464.raw + 7571cb22a591a5d4.efi (live on <server:bench>)
 pair      predecessor 2   5ab78a3a61393cd3.raw + 47be81ca41c24a9f.efi (live on <server:demo>)
 prune     1 disk image(s) and 1 sidecar(s), 1.0 GB
@@ -266,7 +257,8 @@ A line starting with `#` is a comment; every other line needs exactly five
 whitespace-separated columns, and a file with no machine is an error. That
 header line is what `--pins-out` writes, so do not copy the header without
 its `#` — the parser would read it as a machine. The first column is the panel's
-instance id (a `<server:…>` placeholder above, as everywhere in this page).
+instance id (`<server:bench>` in this example; §2 names the current machine's
+id in full).
 
 `--pins-out FILE` writes that file from the panel, so the snapshot a prune ran
 against is the one in the evidence directory. The panel session is the pasted
