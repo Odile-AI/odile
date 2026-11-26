@@ -33,7 +33,11 @@ its ticket, how many live tickets are ahead, the holder's pid and how long the
 holder has held the lock, and exits **69** (EX_UNAVAILABLE: the gate never
 started inside the cap). 75 stays `caller-gone`. The lock file carries
 `<pid> <epoch>`; the first token is the old format, so an old holder's pid is
-still readable.
+still readable. The file is only a *claim*: a raw `flock(1)` holder and a
+read-only other-uid holder write nothing, and after any clean run the file
+still carries the previous holder's pid. So the holder named by the cap comes
+from `/proc/locks`, which names the process the kernel granted the lock to,
+and the file's epoch is used only when its pid agrees with that grantee.
 
 The lock fd is passed into the suite (`pass_fds`), and SIGTERM/SIGINT/SIGHUP
 stop the child's whole session. A wrapper killed by SIGKILL therefore no longer
@@ -118,34 +122,22 @@ def ticket_name(number: int) -> str:
     return f"{number:0{TICKET_DIGITS}d}"
 
 
-def holder_pid(path: str) -> int | None:
-    """The pid holding the lock: the file's write, else the kernel's lock table.
-
-    A holder that could write leaves its pid in the file. A raw `flock(1)`
-    caller, a read-only holder, or a holder killed between the truncate and the
-    write leaves the file empty, and the cap message must still name the holder
-    — `/proc/locks` names the process the kernel granted the lock to.
-    """
-    try:
-        with open(path, encoding="ascii", errors="replace") as handle:
-            first = handle.read(64).split()
-        return int(first[0])
-    except (OSError, ValueError, IndexError):
-        return flock_holder_pid(path)
-
-
-def flock_holder_pid(path: str) -> int | None:
-    """The pid of the exclusive flock holder, from `/proc/locks`.
+def kernel_holder(path: str) -> tuple[bool, int | None]:
+    """`(a FLOCK entry exists for this file, the kernel's pid when it has one)`.
 
     Linux keeps one line per lock: `1: FLOCK ADVISORY WRITE <pid> <dev>:<ino>`
     and a `-> ` marker on a waiter's line. The device is printed as
     `%02x:%02x` from the kernel's encoded dev_t, which is what `os.major` and
-    `os.minor` give us. Any parsing or permission failure returns None.
+    `os.minor` give us. `(False, None)` means the table could not be read (or
+    has no entry for this inode), which leaves the file's stamp as the only
+    source; `(True, None)` means the entry exists but carries no process pid —
+    a non-positive pid is an OFD lock, which `flock(2)` never creates, and
+    must not be papered over with a stale file stamp.
     """
     try:
         info = os.stat(path)
     except OSError:
-        return None
+        return False, None
     wanted = f"{os.major(info.st_dev):02x}:{os.minor(info.st_dev):02x}:{info.st_ino}"
     try:
         with open("/proc/locks", encoding="ascii", errors="replace") as handle:
@@ -159,32 +151,80 @@ def flock_holder_pid(path: str) -> int | None:
                 if len(fields) < index + 5 or fields[index + 4] != wanted:
                     continue
                 try:
-                    return int(fields[index + 3])
+                    return True, int(fields[index + 3])
                 except ValueError:
-                    continue
+                    return True, None
     except OSError:
-        return None
-    return None
+        return False, None
+    return False, None
 
 
-def holder_elapsed(path: str) -> float | None:
-    """How long the current holder has held the lock, from its epoch stamp.
+def stamp_fields(path: str) -> tuple[int | None, float | None]:
+    """The lock file's `<pid> <epoch>` claim, each field independently optional.
 
-    The lock file is `<pid> <epoch>`; a holder from the old code wrote only the
-    pid, so the elapsed time is unknown rather than guessed.
+    A holder from the old code wrote only the pid, a non-writable holder wrote
+    nothing, and a stale file keeps whichever holder could write last. The
+    caller decides whether the claim agrees with the kernel's grantee.
     """
     try:
         with open(path, encoding="ascii", errors="replace") as handle:
             fields = handle.read(128).split()
     except OSError:
-        return None
-    if len(fields) < 2:
-        return None
+        return None, None
+    try:
+        stamped = int(fields[0])
+    except (ValueError, IndexError):
+        stamped = None
     try:
         started = float(fields[1])
-    except ValueError:
+    except (ValueError, IndexError):
+        started = None
+    return stamped, started
+
+
+def stamped_pid(path: str) -> int | None:
+    """The pid in the lock file, if the file parses and names a real process."""
+    pid, _ = stamp_fields(path)
+    return pid if pid is not None and pid > 0 else None
+
+
+def holder_elapsed(path: str, pid: int | None = None) -> float | None:
+    """How long the current holder has held the lock, from its epoch stamp.
+
+    With `pid`, the stamp is believed only when the file names that same pid:
+    the file on a used host holds the *previous* holder's `<pid> <epoch>`, so
+    an unstamped holder (a raw `flock(1)` client, a read-only other-uid holder)
+    would otherwise inherit a dead pid's elapsed time. `pid=None` means "trust
+    the claim" and is used only right after acquiring, when the stamp is the
+    last record of the holder that just released.
+    """
+    stamped, started = stamp_fields(path)
+    if started is None:
+        return None
+    if pid is not None and stamped != pid:
         return None
     return max(0.0, time.time() - started)
+
+
+def holder_state(path: str) -> tuple[int | None, float | None]:
+    """Who holds the lock and for how long, from one consistent read.
+
+    The kernel's grantee wins; the file is the fallback only when `/proc/locks`
+    is unreadable or silent, and its epoch is reported only when it names the
+    same pid. Returns `(None, None)` for "a holder exists, its pid is unknown".
+    """
+    found, pid = kernel_holder(path)
+    if found:
+        if pid is None or pid <= 0:
+            return None, None
+        return pid, holder_elapsed(path, pid)
+    pid = stamped_pid(path)
+    return pid, holder_elapsed(path, pid) if pid is not None else None
+
+
+def holder_pid(path: str) -> int | None:
+    """The pid holding the lock, as the kernel names it (the file is a claim)."""
+    return holder_state(path)[0]
 
 
 def open_lock(path: str) -> tuple[int, bool]:
@@ -520,8 +560,7 @@ def acquire(path: str, wait: int, parent: int | None = None,
                     break
                 except OSError:
                     pass
-            holder = holder_pid(path)
-            held = holder_elapsed(path)
+            holder, held = holder_state(path)
             release_ticket(qdir, number, ticket_fd)
             os.close(fd)
             log_event(event_log, {
@@ -543,7 +582,7 @@ def acquire(path: str, wait: int, parent: int | None = None,
             return None, "timeout"
         time.sleep(POLL)
     waited = time.monotonic() - started
-    held_before = holder_elapsed(path)
+    held_before = holder_elapsed(path, holder)
     if writable:
         os.lseek(fd, 0, os.SEEK_SET)
         os.ftruncate(fd, 0)

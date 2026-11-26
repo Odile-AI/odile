@@ -19,7 +19,10 @@ a second uid the lock by deadlocking the gate.
 The ticket queue is pinned in `TicketQueueTest`: waiters run in ascending
 ticket order, a dead waiter's ticket does not block the next caller, the cap
 names the holder and its elapsed hold, and a wrapper killed by SIGKILL keeps
-the lock until the suite it started exits.
+the lock until the suite it started exits. The holder's *name* comes from
+`/proc/locks`, never from a lock file that may still hold the previous
+holder's stamp: both a raw `flock(1)` holder and a read-only other-uid holder
+write nothing, and the tests below cover each over a stale stamp.
 """
 
 from __future__ import annotations
@@ -51,6 +54,17 @@ CALLER_GONE_EXIT = 75
 HOLDER = ("import pathlib, sys, time\n"
           "pathlib.Path(sys.argv[1]).write_text('held')\n"
           "time.sleep(float(sys.argv[2]))\n")
+
+# A holder outside the queue, like `flock(1)`: it takes the lock and writes no
+# pid into the lock file, so only `/proc/locks` names it. The marker carries its
+# pid so the test can prove the kernel and the process agree.
+RAW_HOLDER = (
+    "import fcntl, os, pathlib, sys, time\n"
+    "fd = os.open(sys.argv[1], os.O_RDWR)\n"
+    "fcntl.flock(fd, fcntl.LOCK_EX)\n"
+    "pathlib.Path(sys.argv[2]).write_text(str(os.getpid()))\n"
+    "time.sleep(float(sys.argv[3]))\n"
+)
 
 # A suite that leaves a timestamped line in a shared file while it holds the
 # lock, sleeps, then leaves another. The line order is the acquisition order,
@@ -151,6 +165,41 @@ class TwoUidLockTest(unittest.TestCase):
             capture_output=True, text=True, timeout=120, env=self.env())
         self.assertEqual(result.returncode, 0, result.stderr)
 
+    def test_the_cap_names_a_read_only_holder_over_a_stale_stamp(self) -> None:
+        """A holder that cannot write the file is still named by the kernel.
+
+        The legacy `0644` path makes the nobody holder take `O_RDONLY`, so it
+        records no pid and the file keeps root's old stamp. The cap must name
+        the live holder and say the elapsed time is unknown, not report root's
+        stale hold.
+        """
+        lock = self.tmp / "lock"
+        lock.write_text(f"31337 {time.time() - 50:.3f}\n")
+        lock.chmod(0o644)
+        marker = self.tmp / "suite"
+        suite = (f"import pathlib, time\n"
+                 f"pathlib.Path({str(marker)!r}).write_text('held')\n"
+                 f"time.sleep(30)\n")
+        holder = subprocess.Popen(
+            self.command(lock, [PYTHON, "-c", suite], uid=NOBODY),
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=self.env())
+        try:
+            self.wait_for(marker)
+            result = subprocess.run(
+                self.command(lock, [PYTHON, "-c", "pass"], wait=1),
+                capture_output=True, text=True, timeout=60, env=self.env())
+        finally:
+            holder.terminate()
+            holder.communicate(timeout=30)
+        self.assertEqual(result.returncode, CAP_EXIT, result.stderr)
+        self.assertIn(f"pid {holder.pid}", result.stderr,
+                      f"the cap did not name the read-only holder: {result.stderr!r}")
+        self.assertNotIn("31337", result.stderr, "the cap named root's stale stamp")
+        self.assertIn("an unknown time", result.stderr,
+                      "a holder that wrote no epoch has no known elapsed time")
+        self.assertIsNone(re.search(r"for \d+\.\ds", result.stderr),
+                          f"the cap reported a stale elapsed hold: {result.stderr!r}")
+
     def test_the_creating_holder_opens_the_lock_to_every_uid(self) -> None:
         """A restrictive umask must not make the file uid-private."""
         lock = self.tmp / "lock"
@@ -250,7 +299,7 @@ class QueueInstrumentTest(unittest.TestCase):
     def test_the_journal_records_the_exact_wait_and_the_holder(self) -> None:
         fd = os.open(self.lock, os.O_RDWR | os.O_CREAT, 0o666)
         fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        os.write(fd, b"424242\n")
+        os.write(fd, f"{os.getpid()} {time.time():.3f}\n".encode("ascii"))
         os.lseek(fd, 0, os.SEEK_SET)
 
         def release() -> None:
@@ -278,12 +327,14 @@ class QueueInstrumentTest(unittest.TestCase):
         self.assertTrue(acquire[0]["queued"], "the run did not record that it queued")
         self.assertGreaterEqual(acquire[0]["waited_s"], 0.8,
                                 "the recorded wait is shorter than the hold")
-        self.assertEqual(acquire[0]["holder_pid"], 424242,
+        self.assertEqual(acquire[0]["holder_pid"], os.getpid(),
                          "the holder pid was not recorded")
         self.assertEqual(acquire[0]["ticket"], 1)
         self.assertEqual(acquire[0]["ahead"], 0)
-        self.assertIsNone(acquire[0]["holder_s"],
-                          "a pid-only holder must not invent an elapsed time")
+        self.assertIsNotNone(acquire[0]["holder_s"],
+                             "the holder's own epoch stamp was not believed")
+        self.assertGreaterEqual(acquire[0]["holder_s"], 0.8,
+                                "the recorded hold is shorter than the hold")
         self.assertEqual(stat.S_IMODE(os.stat(self.journal).st_mode) & 0o666, 0o666,
                          "the journal is not appendable by the next uid")
 
@@ -352,11 +403,17 @@ class TicketQueueTest(unittest.TestCase):
             command += ["--event-log", str(self.journal)]
         return command + ["--", PYTHON, "-c", RECORDER, str(self.order), label]
 
-    def hold(self, pid: int = 424242, age: float = 0.0) -> int:
-        """A holder outside the queue: a raw flock with a pid+epoch stamp."""
+    def hold(self, pid: int | None = None, age: float = 0.0) -> int:
+        """A holder outside the queue: a raw flock with a pid+epoch stamp.
+
+        `pid=None` stamps this process, which is the real grantee, so the
+        kernel and the file agree. Passing a pid writes a *claim* that does not
+        match the holder (the stale-stamp case).
+        """
         fd = os.open(self.lock, os.O_RDWR | os.O_CREAT, 0o666)
         fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        os.write(fd, f"{pid} {time.time() - age:.3f}\n".encode("ascii"))
+        writer = os.getpid() if pid is None else pid
+        os.write(fd, f"{writer} {time.time() - age:.3f}\n".encode("ascii"))
         os.lseek(fd, 0, os.SEEK_SET)
         self.addCleanup(lambda: self._close(fd))
         return fd
@@ -453,12 +510,12 @@ class TicketQueueTest(unittest.TestCase):
         self.assertIn("live start", self.order.read_text())
 
     def test_the_cap_names_the_holder_and_its_elapsed_hold(self) -> None:
-        self.hold(pid=424242, age=120)
+        self.hold(age=120)
         result = subprocess.run(self.command("never", wait=2), capture_output=True,
                                 text=True, timeout=30, env=self.env())
         self.assertEqual(result.returncode, CAP_EXIT, result.stderr)
         self.assertIn("gave up ticket", result.stderr)
-        self.assertIn("424242", result.stderr)
+        self.assertIn(f"pid {os.getpid()}", result.stderr)
         self.assertIn("the suite never started", result.stderr)
         match = re.search(r"for (\d+\.\d)s", result.stderr)
         self.assertIsNotNone(match, result.stderr)
@@ -470,7 +527,7 @@ class TicketQueueTest(unittest.TestCase):
                if row["event"] == "acquire" and row["outcome"] == "timeout"]
         self.assertEqual(len(cap), 1, self.records())
         self.assertEqual(cap[0]["code"], CAP_EXIT)
-        self.assertEqual(cap[0]["holder_pid"], 424242)
+        self.assertEqual(cap[0]["holder_pid"], os.getpid())
         self.assertGreaterEqual(cap[0]["holder_s"], 100.0)
         self.assertEqual(cap[0]["ticket"], 1)
 
@@ -487,6 +544,40 @@ class TicketQueueTest(unittest.TestCase):
         cap = [row for row in self.records()
                if row["event"] == "acquire" and row["outcome"] == "timeout"]
         self.assertEqual(cap[-1]["holder_pid"], os.getpid())
+
+    def test_the_cap_names_a_raw_holder_over_a_stale_stamp(self) -> None:
+        """The host's file always holds the *previous* holder's pid and epoch.
+
+        A raw `flock(1)` holder writes nothing, so a cap that trusts the file
+        names a dead pid with a dead elapsed time. The kernel names the truth.
+        """
+        self.lock.write_text(f"424242 {time.time() - 400:.3f}\n")
+        self.lock.chmod(0o666)
+        marker = self.tmp / "raw.pid"
+        raw = subprocess.Popen(
+            [PYTHON, "-c", RAW_HOLDER, str(self.lock), str(marker), "30"],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        try:
+            self.wait_for(marker.exists, what="the raw holder to take the lock")
+            raw_pid = int(marker.read_text())
+            self.assertEqual(raw_pid, raw.pid, "the marker and the process disagree")
+            result = subprocess.run(self.command("never", wait=1), capture_output=True,
+                                    text=True, timeout=30, env=self.env())
+        finally:
+            raw.terminate()
+            raw.communicate(timeout=10)
+        self.assertEqual(result.returncode, CAP_EXIT, result.stderr)
+        self.assertIn(f"pid {raw_pid}", result.stderr,
+                      "the cap named the file's stale stamp, not the kernel's holder")
+        self.assertNotIn("424242", result.stderr, "the cap named a dead pid")
+        self.assertIn("an unknown time", result.stderr,
+                      "an unstamped holder's elapsed time must not be invented")
+        self.assertIsNone(re.search(r"for \d+\.\ds", result.stderr),
+                          f"the cap reported a stale elapsed hold: {result.stderr!r}")
+        cap = [row for row in self.records()
+               if row["event"] == "acquire" and row["outcome"] == "timeout"]
+        self.assertEqual(cap[-1]["holder_pid"], raw_pid)
+        self.assertIsNone(cap[-1]["holder_s"])
 
     def test_a_killed_wrapper_keeps_the_lock_until_its_suite_exits(self) -> None:
         """The flock follows the suite, not the killed wrapper (no second suite)."""
