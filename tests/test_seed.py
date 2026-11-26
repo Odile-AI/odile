@@ -43,6 +43,7 @@ from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
+from unittest import mock
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SEED = os.path.join(ROOT, "seed", "seed.py")
@@ -1427,6 +1428,38 @@ class BackupPairs(unittest.TestCase):
     validator is the service's own, run on the way in and on the way out.
     """
 
+    @classmethod
+    def setUpClass(cls) -> None:
+        # ODL-360-FU1: `build_seed` takes its identity from the environment
+        # when the caller passes none, so this class mints its own throwaway
+        # chain — a seed key, a release key and the certificate over the seed
+        # public half — as SeedService and ProvisionBinding do. Before this,
+        # the test read /root/.odile/seed-signing.pem, a host path only HQ
+        # has, and CI passed only because the workflow minted one for it.
+        cls.tmp = tempfile.TemporaryDirectory()
+        directory = cls.tmp.name
+        cls.key = os.path.join(directory, "seed-signing.pem")
+        cls.cert = os.path.join(directory, "seed-key.crt")
+        keygen = subprocess.run(
+            [sys.executable, SEED, "keygen"],
+            env=dict(os.environ, ODILE_SEED_SIGNING_KEY=cls.key),
+            capture_output=True, text=True, timeout=30)
+        if keygen.returncode != 0:
+            raise RuntimeError(keygen.stderr)
+        os.chmod(cls.key, 0o600)
+        _release_key, cls.release_pub, cls.cert = seed_certificate(directory, cls.key)
+        cls.env = mock.patch.dict(os.environ, {
+            "ODILE_SEED_SIGNING_KEY": cls.key,
+            "ODILE_SEED_CERT": cls.cert,
+            "ODILE_SEED_RELEASE_PUBKEY": cls.release_pub,
+        })
+        cls.env.start()
+
+    @classmethod
+    def tearDownClass(cls) -> None:
+        cls.env.stop()
+        cls.tmp.cleanup()
+
     def setUp(self) -> None:
         self.seed = load_seed_module()
         self.slug = "odl-7f3a2c"
@@ -1516,6 +1549,10 @@ class BackupPairs(unittest.TestCase):
     def test_build_seed_carries_the_pair_and_overrides_the_config_template(self) -> None:
         seed = self.seed.build_seed({"slug": self.slug}, "srv-fixture", CONFIG,
                                     backup_pair=self.entry)
+        # ODL-360-FU1: the identity is this class's own throwaway pair, so no
+        # host seed key is involved and a runner needs no fixture.
+        self.assertEqual(seed["signing_key"],
+                         self.seed.public_key_bytes(self.key).decode("ascii"))
         self.assertEqual(seed["backup_repo_url"], self.entry["repo_url"])
         self.assertEqual(seed["backup"]["repo_url"], self.entry["repo_url"])
         self.assertEqual(seed["backup"]["subaccount_id"], 392550)
