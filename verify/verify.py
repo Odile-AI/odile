@@ -12,7 +12,7 @@ can run. Every row carries one tag: `checked from your laptop` or `read from
 the machine`. A root shell can change the machine rows; the CPU's signature is
 what it cannot fake.
 
-Where the numbers come from, all read at request time and none invented:
+Where the numbers come from, all read from the machine and none invented:
 
   /var/lib/odile/attestation.json   the boot report (ODL-397) — measurement,
                                     report bytes, release, command line, vCPUs
@@ -32,6 +32,18 @@ Where the numbers come from, all read at request time and none invented:
 The audit and the support program are the machine's own reviewed programs, so
 the page never re-implements a verdict: it wraps theirs. A row whose program is
 not on this machine says so instead of guessing.
+
+`odile-audit` walks the machine's persistent state and is the slow source: 1.7 s
+on a 2 vCPU tenant and 15-30 s on a 1 vCPU Nano, which is the whole page's cost
+on the smallest machine sold. Under `--serve` one answer is therefore kept for
+`--audit-ttl` seconds (default 20): a request inside that window renders it as it
+is, a request after it is answered from the same answer at once while one
+background thread reads a new one, and the page's provenance line says when the
+audit it shows was read (`audit as of …`). The rows the audit feeds — the boot
+key, authorized_keys, root's shadow entry, sshd's password setting, the accounts,
+the login list — change on a human timescale, so a window that short costs no
+accuracy; a support grant's key line appears within it. Every other source is
+still read per request, and `--json`/`--out` never use the cache.
 
     /usr/bin/python3 verify/verify.py                      # the page on stdout
     /usr/bin/python3 verify/verify.py --json               # the same rows
@@ -78,6 +90,11 @@ ROOT = Path(__file__).resolve().parent.parent
 _TEMPLATE_BESIDE = Path(__file__).resolve().parent / "verify.html"
 TEMPLATE_PATH = _TEMPLATE_BESIDE if _TEMPLATE_BESIDE.is_file() else ROOT / "templates" / "verify.html"
 DEFAULT_PORT = 8098
+#: Seconds one handoff audit answers every request (1.7 s of CPU on 2 vCPU,
+#: 15-30 s on a 1 vCPU Nano). Short enough that a support grant's key line is
+#: on the page inside half a minute, long enough that a visitor never waits for
+#: the walk twice in a row.
+AUDIT_TTL = 20.0
 
 ATTESTATION = "/var/lib/odile/attestation.json"
 BOOT_RECORD = "/etc/odile/boot-record.json"
@@ -241,6 +258,86 @@ class Source:
 
 
 @dataclass
+class Cached:
+    """One program's answer for this request, and when it was read.
+
+    ``read_at`` is the wall clock at which the program last answered (the ISO
+    string the page prints as ``audit as of …``), and ``fresh`` is True when
+    this very request ran the program.
+    """
+
+    source: Source
+    read_at: str
+    fresh: bool
+
+
+class AuditCache:
+    """The handoff audit's answer, kept briefly and refreshed behind a request.
+
+    ``produce`` runs the program (``Machine.audit``). An empty cache reads it
+    once and every concurrent caller waits for that one read; a fresh answer is
+    returned as it is; a stale one is returned at once while one background
+    thread replaces it, so a visitor never waits for the slow program twice in
+    a row. A failed answer is never treated as fresh: the next request retries
+    it, because a machine that has just booted may not have written the files
+    the audit walks yet. ``clock`` and ``stamp`` are injectable so the tests can
+    drive the window without sleeping.
+    """
+
+    def __init__(self, produce, *, ttl: float = AUDIT_TTL,
+                 clock=time.monotonic, stamp=None):
+        self.produce = produce
+        self.ttl = max(0.0, float(ttl))
+        self.clock = clock
+        self.stamp = stamp or (lambda: iso(now_utc()))
+        self._lock = threading.Lock()
+        self._source: Source | None = None
+        self._read_at = ""
+        self._read_clock = 0.0
+        self._refreshing = False
+
+    def get(self) -> Cached:
+        """This request's answer, reading it only when the cache is empty.
+
+        ``fresh`` is True only when this call ran the program; an answer kept
+        from an earlier read says when it was read, inside the window or past
+        it, so the page can name the one it shows.
+        """
+        with self._lock:
+            if self._source is None:
+                return self._read()
+            age = self.clock() - self._read_clock
+            usable = age < self.ttl and self._source.document is not None
+            if not usable and not self._refreshing:
+                self._refreshing = True
+                threading.Thread(target=self._refresh, daemon=True,
+                                 name="odile-audit-refresh").start()
+            return Cached(self._source, self._read_at, False)
+
+    def _read(self) -> Cached:
+        # Called with the lock held: one read, and every caller that arrived
+        # while it ran finds the answer in the cache.
+        source = self.produce()
+        self._source = source
+        self._read_at = self.stamp()
+        self._read_clock = self.clock()
+        return Cached(source, self._read_at, True)
+
+    def _refresh(self) -> None:
+        try:
+            source = self.produce()
+            read_at = self.stamp()
+            read_clock = self.clock()
+            with self._lock:
+                self._source = source
+                self._read_at = read_at
+                self._read_clock = read_clock
+        finally:
+            with self._lock:
+                self._refreshing = False
+
+
+@dataclass
 class Machine:
     root: Path
     now: datetime
@@ -248,6 +345,9 @@ class Machine:
     audit_program: Path | None = None
     support_program: Path | None = None
     now_pinned: bool = False
+    #: The audit's answer when the caller already has one (``--serve`` keeps it
+    #: for ``AUDIT_TTL``); None means collect() reads the audit itself.
+    cached_audit: Cached | None = None
     rows: list[Row] = field(default_factory=list)
     values: dict[str, str] = field(default_factory=dict)
 
@@ -613,9 +713,16 @@ def from_audit(source: Source, name: str, page_name: str,
 def collect(machine: Machine) -> Machine:
     """Every row the page shows, built from the machine and its programs."""
     # The handoff audit walks the machine's persistent state: 1.7 s on the demo
-    # tenant even after t_87943990 made the walk a find(1) one. The sources
-    # beside it are a handful of file and program reads, so the audit runs while
-    # they are gathered and the page waits for it, not for it plus them.
+    # tenant even after t_87943990 made the walk a find(1) one, and 15-30 s on a
+    # 1 vCPU Nano. Under --serve the caller hands in one answer kept for
+    # AUDIT_TTL; otherwise the audit runs while the cheap sources beside it are
+    # gathered and the page waits for it, not for it plus them.
+    audit = None
+    audit_as_of = ""
+    if machine.cached_audit is not None:
+        audit = machine.cached_audit.source
+        if not machine.cached_audit.fresh:
+            audit_as_of = machine.cached_audit.read_at
     audit_source = {}
 
     def read_audit():
@@ -625,7 +732,8 @@ def collect(machine: Machine) -> Machine:
             audit_source["error"] = error
 
     auditor = threading.Thread(target=read_audit, daemon=True)
-    auditor.start()
+    if audit is None:
+        auditor.start()
     support = machine.support()
     document, report, report_error = machine.attestation()
     record = machine.boot_record()
@@ -636,10 +744,11 @@ def collect(machine: Machine) -> Machine:
     agent = machine.guest_agent()
     manifest_state, manifest_detail, signing_fingerprint = machine.manifest()
     stamp_text = iso(machine.now)
-    auditor.join()
-    if "error" in audit_source:
-        raise audit_source["error"]
-    audit = audit_source["source"]
+    if audit is None:
+        auditor.join()
+        if "error" in audit_source:
+            raise audit_source["error"]
+        audit = audit_source["source"]
 
     release = None
     vcpus = None
@@ -668,6 +777,10 @@ def collect(machine: Machine) -> Machine:
         "signing_key": signing_fingerprint,
         "state": "available" if document is not None else "unavailable",
         "state_text": "" if document is not None else report_error,
+        # Set only when the audit shown was read by an earlier request; the
+        # page prints it beside the stamp so a cached answer is never passed
+        # off as a fresh one.
+        "audit_as_of": audit_as_of,
     }
 
     # -- from your laptop ---------------------------------------------------
@@ -934,8 +1047,8 @@ def render(machine: Machine, template: str) -> str:
             '<p class="note">%s. <a href="/verify">Try again</a> in a minute.</p>'
             % html.escape(values["state_text"] or "The CPU has not produced a report yet"))
     head = ""
+    parts = []
     if available:
-        parts = []
         if values["release"]:
             parts.append("release <span class=\"mono\">%s</span>" % html.escape(values["release"]))
         if values["vcpus"]:
@@ -943,8 +1056,13 @@ def render(machine: Machine, template: str) -> str:
         if values["measurement_short"]:
             parts.append("measurement <span class=\"mono\">%s\u2026</span>" % html.escape(
                 values["measurement_short"]))
-        if parts:
-            head = " <span class=\"mono\">\u00b7</span> " + " <span class=\"mono\">\u00b7</span> ".join(parts)
+    # An audit kept from an earlier request is named as such: the stamp is this
+    # request's clock, and these rows were read before it.
+    if values.get("audit_as_of"):
+        parts.append("audit as of <span class=\"mono\">%s</span>" % html.escape(
+            values["audit_as_of"]))
+    if parts:
+        head = " <span class=\"mono\">\u00b7</span> " + " <span class=\"mono\">\u00b7</span> ".join(parts)
     body = template
     for name, value in (
         ("TITLE", "Verify \u2014 Odile"),
@@ -992,6 +1110,7 @@ class Handler(BaseHTTPRequestHandler):
     luks_dump: Path | None = None
     audit_path: Path | None = None
     support_path: Path | None = None
+    audit_cache: AuditCache | None = None
     stamp: datetime | None = None
     template_path: Path = TEMPLATE_PATH
     server_version = "odile-verify"
@@ -1002,10 +1121,12 @@ class Handler(BaseHTTPRequestHandler):
 
     def _machine(self) -> Machine:
         # One Machine per request: collect() fills it in, so two requests must
-        # never share one.
+        # never share one. The audit's answer is the one thing shared, through
+        # the cache the server built (a request never runs it twice in a row).
+        cached = self.audit_cache.get() if self.audit_cache is not None else None
         return Machine(root=self.root, now=self.stamp or now_utc(),
                        luks_dump=self.luks_dump, audit_program=self.audit_path,
-                       support_program=self.support_path)
+                       support_program=self.support_path, cached_audit=cached)
 
     def _send(self, status: int, body: bytes, content_type: str) -> None:
         self.send_response(status)
@@ -1038,13 +1159,20 @@ class Handler(BaseHTTPRequestHandler):
     do_HEAD = do_GET
 
 
-def serve(machine: Machine, template_path: Path, bind: str, port: int) -> int:
+def serve(machine: Machine, template_path: Path, bind: str, port: int,
+          audit_ttl: float = AUDIT_TTL) -> int:
     if not template_path.is_file():
         print("verify: no template at %s" % template_path, file=sys.stderr)
         return 2
+    # One audit answers every request in the window, and the first request does
+    # not pay for it: the server reads it once in the background as it starts.
+    cache = AuditCache(machine.audit, ttl=audit_ttl)
+    threading.Thread(target=cache.get, daemon=True,
+                     name="odile-audit-warm").start()
     handler = type("BoundHandler", (Handler,), {
         "root": machine.root, "luks_dump": machine.luks_dump,
         "audit_path": machine.audit_program, "support_path": machine.support_program,
+        "audit_cache": cache,
         "stamp": machine.now if machine.now_pinned else None,
         "template_path": template_path})
     with ThreadingHTTPServer((bind, port), handler) as server:
@@ -1075,6 +1203,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--support", help="the grant program (default %s)" % SUPPORT_PROGRAM)
     parser.add_argument("--luks-dump", help="read this luksDump output instead of a live device")
     parser.add_argument("--now", help="pin the provenance clock (ISO-8601 UTC)")
+    parser.add_argument("--audit-ttl", type=float, default=AUDIT_TTL,
+                        help="seconds one handoff audit answers every request "
+                             "under --serve (default %g)" % AUDIT_TTL)
     parser.add_argument("--template", default=str(TEMPLATE_PATH),
                         help="the page template (default %s)" % TEMPLATE_PATH)
     return parser.parse_args(argv)
@@ -1104,7 +1235,7 @@ def main(argv: list[str] | None = None) -> int:
     template_path = Path(args.template).resolve()
 
     if args.serve:
-        return serve(machine, template_path, args.bind, args.port)
+        return serve(machine, template_path, args.bind, args.port, args.audit_ttl)
     if not template_path.is_file():
         print("verify: no template at %s" % template_path, file=sys.stderr)
         return 2
