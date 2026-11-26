@@ -39,6 +39,9 @@ bash recover.sh
 ```
 
 It prints what it is doing. Do not close the window. It takes about 45 minutes.
+It also prints which Hermes version it installs; if the exact build the backup
+recorded was never published, it installs the nearest published release and
+says so. That is expected — leave it alone.
 
 If you want to see the plan before it changes anything, run
 `bash recover.sh --dry-run` first (it needs `restic`:
@@ -65,7 +68,7 @@ for `odile.fyi`, `gw.odile.fyi`, `mail.odile.fyi`, `testing.odile.fyi` and
 
 ## If something fails
 
-Open `~/odile-recovery.log` on the new server and send it to
+Open `/var/tmp/odile-recovery.log` on the new server and send it to
 **help@odile.fyi**. The last line that starts with `==` names the step that
 stopped.
 
@@ -78,7 +81,7 @@ The technical appendix is `docs/runbooks/backup-hq.md` §5A.
 | `README.md` | this page |
 | `recovery.env` | the secrets: backup password, R2 token, Cloudflare token, zone |
 | `recover.sh` | the one command that performs the restore |
-| `manifest.json` | the Hermes commit, old IPv4 and DNS names known when the kit was made |
+| `manifest.json` | the Hermes build, old IPv4 and DNS names known when the kit was made |
 | `CHECKSUMS.txt` | SHA-256 of the files, so you can check the kit was not changed |
 
 The **facts** the restore needs — the Hermes commit, the old IPv4 and the DNS

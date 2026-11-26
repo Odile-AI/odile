@@ -55,6 +55,8 @@ SECRETS = (PASSPHRASE, R2_KEY, R2_SECRET, DNS_TOKEN)
 KIT = ["CHECKSUMS.txt", "README.md", "manifest.json", "recover.sh", "recovery.env"]
 HERMES_VERSION = "Hermes Agent v0.0.0-test (fixture) · stable · local " + "deadbeefdead"
 HERMES_COMMIT = "deadbeefdead"
+HERMES_REF = "v0.0.0-test"
+HERMES_REF_COMMIT = "caafe5389ae585ef77387a962aee05b1bcf17029"
 
 
 def read_names(path: Path) -> list[str]:
@@ -83,17 +85,20 @@ class KitTestCase(unittest.TestCase):
             encoding="utf-8",
         )
 
-    def env(self) -> dict[str, str]:
+    def env(self, fetchable: str = "false") -> dict[str, str]:
         env = {key: value for key, value in os.environ.items()
                if not key.startswith(("RESTIC_", "AWS_", "R2_", "CLOUDFLARE_"))}
         env["ODILE_HERMES_VERSION"] = HERMES_VERSION
         env["ODILE_HERMES_COMMIT"] = HERMES_COMMIT
+        env["ODILE_HERMES_REF"] = HERMES_REF
+        env["ODILE_HERMES_REF_COMMIT"] = HERMES_REF_COMMIT
+        env["ODILE_HERMES_COMMIT_FETCHABLE"] = fetchable
         return env
 
-    def run_kit(self, *args: str) -> subprocess.CompletedProcess:
+    def run_kit(self, *args: str, fetchable: str = "false") -> subprocess.CompletedProcess:
         return subprocess.run(
             [sys.executable, str(SCRIPT), "--state-dir", str(self.state), *args],
-            capture_output=True, text=True, env=self.env(), timeout=120,
+            capture_output=True, text=True, env=self.env(fetchable), timeout=120,
         )
 
     def write(self, text: str = "") -> subprocess.CompletedProcess:
@@ -170,6 +175,11 @@ class NoSecretTests(KitTestCase):
         self.assertRegex(recovery["written_at"], r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$")
         self.assertEqual(recovery["hermes_commit"], HERMES_COMMIT)
         self.assertEqual(recovery["hermes_version"], HERMES_VERSION)
+        # A local-only build cannot be fetched by a new box; the block names the
+        # published ref beside it and says which one to install.
+        self.assertIs(recovery["hermes_commit_fetchable"], False)
+        self.assertEqual(recovery["hermes_ref"], HERMES_REF)
+        self.assertEqual(recovery["hermes_ref_commit"], HERMES_REF_COMMIT)
         self.assertEqual(recovery["zone_id"], ZONE_ID)
         self.assertEqual(recovery["bucket"], "hermes-hq-backup")
         self.assertEqual(recovery["endpoint"], "https://b118cf213a0c4b6287c5826741e04bcf.eu.r2.cloudflarestorage.com")
@@ -177,6 +187,13 @@ class NoSecretTests(KitTestCase):
         self.assertEqual(recovery["dns_skip"], read_names(DNS_SKIP_FILE))
         self.assertRegex(recovery.get("ipv4", ""), r"^$|^(\d{1,3}\.){3}\d{1,3}$")
         self.assertTrue(recovery["hostname"])
+
+    def test_a_fetchable_commit_is_recorded_as_fetchable(self):
+        result = self.run_kit("--out", str(self.out), fetchable="true")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        recovery = self.manifest()["recovery"]
+        self.assertIs(recovery["hermes_commit_fetchable"], True)
+        self.assertEqual(recovery["hermes_ref"], HERMES_REF)
 
     def test_the_demo_tenant_and_the_guests_are_never_moved(self):
         self.assertEqual(self.write().returncode, 0)

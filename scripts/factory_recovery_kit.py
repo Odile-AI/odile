@@ -11,11 +11,12 @@ is the thing to put in 1Password and on a USB stick; if HQ is gone, the folder
 plus a fresh VPS is all the recovery needs.
 
 There is no "run this before the box dies" step for the *facts*: the nightly
-backup writes the Hermes commit, the host IPv4, the zone id and the DNS names
-into every snapshot's `manifest.json`, and `recover.sh` reads them from there.
-The kit is the secrets plus the script; its own `manifest.json` is the fallback
-for a snapshot taken before the backup wrote that block. Regenerate the kit
-after an R2 or Cloudflare token rotation, or when the tagged zone changes.
+backup writes the Hermes commit, the published ref it can be fetched by, the
+host IPv4, the zone id and the DNS names into every snapshot's `manifest.json`,
+and `recover.sh` reads them from there. The kit is the secrets plus the script;
+its own `manifest.json` is the fallback for a snapshot taken before the backup
+wrote that block. Regenerate the kit after an R2 or Cloudflare token rotation,
+or when the tagged zone changes.
 
 Files: README.md, recovery.env (0600), recover.sh (0700), manifest.json,
 CHECKSUMS.txt. The script and the one-page guide are the repository's
@@ -153,6 +154,9 @@ def detect_ipv4() -> str:
     return ""
 
 
+HERMES_CHECKOUT = Path("/root/.hermes/hermes-agent")
+
+
 def hermes_identity() -> tuple[str, str]:
     version = os.environ.get("ODILE_HERMES_VERSION", "")
     commit = os.environ.get("ODILE_HERMES_COMMIT", "")
@@ -162,10 +166,43 @@ def hermes_identity() -> tuple[str, str]:
     if not commit:
         match = re.search(r"local\s+([0-9a-f]{7,40})", version)
         commit = match.group(1) if match else ""
-    if not commit:
-        checkout = Path("/root/.hermes/hermes-agent")
-        commit = run("git", "-C", str(checkout), "rev-parse", "HEAD")
+    head = run("git", "-c", f"safe.directory={HERMES_CHECKOUT}", "-C",
+               str(HERMES_CHECKOUT), "rev-parse", "HEAD")
+    if head and (not commit or head.startswith(commit)):
+        commit = head
     return version, commit
+
+
+def hermes_pin(commit: str) -> dict:
+    """The published ref a new box can fetch, beside the commit HQ runs.
+
+    The nightly backup records the same three facts (`tools/backup_hq.py`):
+    a local-only build cannot be fetched by a fresh box, so the fallback
+    manifest names the nearest published tag and says whether the commit
+    itself is on a remote. `ODILE_HERMES_*` pin them for the tests.
+    """
+    if os.environ.get("ODILE_HERMES_REF") is not None:
+        return {
+            "hermes_commit_fetchable":
+                os.environ.get("ODILE_HERMES_COMMIT_FETCHABLE", "") == "true",
+            "hermes_ref": os.environ.get("ODILE_HERMES_REF", ""),
+            "hermes_ref_commit": os.environ.get("ODILE_HERMES_REF_COMMIT", ""),
+        }
+
+    def git(*args: str) -> str:
+        return run("git", "-c", f"safe.directory={HERMES_CHECKOUT}", "-C",
+                   str(HERMES_CHECKOUT), *args)
+
+    fetchable = bool(commit and git("branch", "-r", "--contains", commit))
+    if commit and not fetchable:
+        fetchable = bool(git("tag", "--contains", commit))
+    ref = git("describe", "--tags", "--abbrev=0") if commit else ""
+    ref_commit = git("rev-parse", f"{ref}^{{commit}}") if ref else ""
+    return {
+        "hermes_commit_fetchable": fetchable,
+        "hermes_ref": ref,
+        "hermes_ref_commit": ref_commit,
+    }
 
 
 def git_head() -> str:
@@ -183,6 +220,7 @@ def write_manifest(path: Path, values: dict[str, str]) -> None:
             "ipv4": detect_ipv4(),
             "hermes_version": version,
             "hermes_commit": commit,
+            **hermes_pin(commit),
             "git_head": git_head(),
             "zone_id": values["ZONE_ID"],
             "dns_names": values["DNS_NAMES"].split(","),

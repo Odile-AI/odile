@@ -10,8 +10,12 @@
 # It reads ./recovery.env (the kit's secrets), restores the latest `hq` restic
 # snapshot from Cloudflare R2, starts the site and updates the Cloudflare A
 # records to this server's IPv4. Nothing is read from the old HQ: the Hermes
-# commit, the old IPv4 and the DNS names come from the snapshot's own
-# `manifest.json`, and the kit's copy is the fallback for an older snapshot.
+# build, the old IPv4 and the DNS names come from the snapshot's own
+# `manifest.json`, and the kit's copy fills any field the snapshot predates.
+#
+# Hermes is installed at the commit the backup recorded when a new box can
+# fetch it; HQ runs local builds, so the backup also records the nearest
+# published tag and the script installs that instead, saying which and why.
 #
 # Flags: --dry-run (print the plan, change nothing), --no-dns (skip Cloudflare),
 #        --ip ADDRESS (override the detected IPv4). `--dry-run` needs `restic`
@@ -20,9 +24,11 @@
 
 set -Eeuo pipefail
 
-KIT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+KIT_DIR=${ODILE_KIT_DIR:-$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)}
 ENV_FILE=${ENV_FILE:-$KIT_DIR/recovery.env}
-LOG=${LOG:-$HOME/odile-recovery.log}
+# Outside /root on purpose: the restore includes /root and replaces files in
+# place, and the log is held open by `tee` for the whole run.
+LOG=${LOG:-/var/tmp/odile-recovery.log}
 DRY_RUN=0
 NO_DNS=0
 NEW_IP_OVERRIDE=""
@@ -34,13 +40,16 @@ Odile factory recovery.
   bash recover.sh [--dry-run] [--no-dns] [--ip ADDRESS]
 
   --dry-run     read the latest snapshot's manifest and print the Hermes
-                commit, the old IPv4 and the DNS plan; change nothing
+                build to install, the old IPv4 and the DNS plan; change nothing
   --no-dns      do not touch Cloudflare; print the records to change by hand
   --ip ADDRESS  use this IPv4 instead of detecting the server's own
 
 Run as root, in the folder that holds recovery.env.
 EOF
 }
+
+# Kept for the re-exec below: the parse loop consumes the positional args.
+ARGS=("$@")
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -56,6 +65,25 @@ while [ "$#" -gt 0 ]; do
     *) echo "unknown argument: $1" >&2; exit 2 ;;
   esac
 done
+
+# --- run-from-a-copy begin ------------------------------------------------
+# restic replaces a restored file in place, not by rename: an fd open on it
+# reads the snapshot's bytes afterwards (proved 2026-11-26). The kit sits under
+# /root, which the restore includes, so the run happens from /var/tmp and the
+# kit's current files are put back afterwards. Today's backup set is a list of
+# subtrees (the checkout, the state dir, the Hermes home, …) and does not carry
+# the kit folder; nothing here depends on that staying true.
+if [ "${ODILE_RECOVERY_RUNNING:-}" != 1 ] && [ "$DRY_RUN" = 0 ]; then
+  RUN_DIR=$(mktemp -d /var/tmp/odile-recovery-run.XXXXXX)
+  KIT_SAVED=$RUN_DIR/kit
+  cp -a -- "$KIT_DIR" "$KIT_SAVED"
+  cp -- "${BASH_SOURCE[0]}" "$RUN_DIR/recover.sh"
+  chmod 700 "$RUN_DIR/recover.sh"
+  export ODILE_RECOVERY_RUNNING=1 ODILE_KIT_DIR="$KIT_DIR" \
+    ODILE_KIT_SAVED="$KIT_SAVED" ODILE_RUN_DIR="$RUN_DIR" ENV_FILE LOG
+  exec bash "$RUN_DIR/recover.sh" "${ARGS[@]}"
+fi
+# --- run-from-a-copy end --------------------------------------------------
 
 # A dry run leaves the filesystem alone, log file included.
 if [ "$DRY_RUN" = 0 ]; then
@@ -170,24 +198,53 @@ if ! restic dump "$SNAP" /var/backups/odile/live/manifest.json >"$MANIFEST" 2>/d
     printf '{}\n' >"$MANIFEST"
   fi
 fi
-# The kit carries a manifest written when it was generated. It is the fallback
-# when the snapshot predates the backup job's recovery block.
-if ! grep -q '"hermes_commit": *"[0-9a-f]' "$MANIFEST" 2>/dev/null; then
-  if [ -f "$KIT_DIR/manifest.json" ]; then
-    warn "snapshot manifest has no Hermes commit; falling back to the kit's manifest"
-    cp "$KIT_DIR/manifest.json" "$MANIFEST"
-  fi
-fi
+# The snapshot's manifest is the source of truth. The kit carries a manifest
+# written when it was generated; it fills only the fields the snapshot
+# predates, so a fact added to the backup later still reaches this box.
+KIT_MANIFEST=""
+[ -f "$KIT_DIR/manifest.json" ] && KIT_MANIFEST=$KIT_DIR/manifest.json
 
-MANIFEST_VALUES=$(/usr/bin/python3 - "$MANIFEST" <<'PY'
+MANIFEST_VALUES=$(/usr/bin/python3 - "$MANIFEST" "$KIT_MANIFEST" <<'PY'
 import json, sys
-try:
-    data = json.load(open(sys.argv[1], encoding="utf-8"))
-except Exception:
-    data = {}
-recovery = data.get("recovery") if isinstance(data, dict) else {}
-if not isinstance(recovery, dict):
-    recovery = {}
+
+
+def load(path):
+    try:
+        with open(path, encoding="utf-8") as handle:
+            data = json.load(handle)
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def missing(block, key):
+    """A key the block does not carry: absent, null or an empty string."""
+    if key not in block:
+        return True
+    value = block[key]
+    return value is None or value == ""
+
+
+data = load(sys.argv[1])
+kit = load(sys.argv[2]) if len(sys.argv) > 2 and sys.argv[2] else {}
+recovery = data.get("recovery")
+recovery = recovery if isinstance(recovery, dict) else {}
+kit_recovery = kit.get("recovery")
+kit_recovery = kit_recovery if isinstance(kit_recovery, dict) else {}
+
+keys = ("hermes_commit", "hermes_version", "hermes_commit_fetchable",
+        "hermes_ref", "hermes_ref_commit", "ipv4", "dns_names", "dns_skip")
+filled = [key for key in keys
+          if missing(recovery, key) and not missing(kit_recovery, key)]
+for key in filled:
+    recovery[key] = kit_recovery[key]
+if "hermes_commit" in filled:
+    print("WARNING: the snapshot manifest has no Hermes commit; "
+          "falling back to the kit's manifest", file=sys.stderr)
+elif filled:
+    print("WARNING: the snapshot's recovery block has no %s; using the "
+          "kit's manifest" % ", ".join(filled), file=sys.stderr)
+
 names = recovery.get("dns_names") or data.get("dns_names") or []
 if isinstance(names, str):
     names = [n.strip() for n in names.split(",") if n.strip()]
@@ -197,6 +254,9 @@ if isinstance(skip, str):
 print("|".join([
     recovery.get("hermes_commit") or "",
     recovery.get("hermes_version") or "",
+    "true" if recovery.get("hermes_commit_fetchable") is True else "false",
+    recovery.get("hermes_ref") or "",
+    recovery.get("hermes_ref_commit") or "",
     recovery.get("ipv4") or "",
     recovery.get("git_head") or data.get("git_head") or "",
     ",".join(names) if names else "",
@@ -204,7 +264,8 @@ print("|".join([
 ]))
 PY
 )
-IFS='|' read -r HERMES_COMMIT HERMES_VERSION OLD_IP GIT_HEAD DNS_NAMES DNS_SKIP <<< "$MANIFEST_VALUES"
+IFS='|' read -r HERMES_COMMIT HERMES_VERSION HERMES_FETCHABLE HERMES_REF \
+  HERMES_REF_COMMIT OLD_IP GIT_HEAD DNS_NAMES DNS_SKIP <<<"$MANIFEST_VALUES"
 
 # The manifest is the source of truth; these defaults only cover a snapshot and
 # kit that both predate the recovery block. They are the same lists as
@@ -217,7 +278,23 @@ if [ -z "${DNS_SKIP:-}" ]; then
   DNS_SKIP="demo.odile.fyi,www.odile.fyi,odl-7971a8.odile.fyi,odl-*.test.odile.fyi"
 fi
 
+# Which Hermes build a new box can actually get. A recorded commit is usable
+# only when it is published: HQ ran a local build on 2026-11-26 (five commits
+# past v0.23.3, on no remote, 422 from GitHub), and a fresh clone cannot fetch
+# that object. The backup records the nearest published ref beside it.
+if [ -n "${HERMES_COMMIT:-}" ] && [ "${HERMES_FETCHABLE:-}" = true ]; then
+  HERMES_PLAN=$HERMES_COMMIT
+  HERMES_PLAN_WHY="the commit the backup recorded, which a new box can fetch"
+elif [ -n "${HERMES_REF:-}" ]; then
+  HERMES_PLAN=$HERMES_REF
+  HERMES_PLAN_WHY="the nearest published ref recorded with the backup (${HERMES_REF_COMMIT:0:12}); the recorded commit ${HERMES_COMMIT:-none} was a local build no new box can fetch"
+else
+  HERMES_PLAN=""
+  HERMES_PLAN_WHY="the installer's own build; the backup records nothing a new box can fetch"
+fi
+
 say "Hermes: ${HERMES_COMMIT:-latest} ${HERMES_VERSION:-}"
+say "Hermes to install: ${HERMES_PLAN:-the installed build} — $HERMES_PLAN_WHY"
 say "Product commit in the backup: ${GIT_HEAD:-unknown}"
 say "Old IPv4 in the backup: ${OLD_IP:-unknown}"
 say "DNS names to move: $DNS_NAMES"
@@ -226,8 +303,9 @@ say "DNS names to leave alone: $DNS_SKIP"
 if [ "$DRY_RUN" = 1 ]; then
   say "DRY RUN — no packages, secrets, restore, services or DNS changed"
   printf 'Would: write the kit secrets to %s; install packages; install Hermes at %s;\n' \
-    "$STATE_DIR" "${HERMES_COMMIT:-the installer default}"
-  printf 'restore %s to /; start Caddy/Postfix/OpenDKIM and the Odile units;\n' "$SNAP"
+    "$STATE_DIR" "${HERMES_PLAN:-the installer default}"
+  printf 'restore %s to / (leaving this kit folder and the log in place);\n' "$SNAP"
+  printf 'start Caddy/Postfix/OpenDKIM, the Odile units and the backend hermes-serve;\n'
   printf 'point %s at %s; leave the messaging gateway stopped.\n' "$DNS_NAMES" "$NEW_IP"
   exit 0
 fi
@@ -259,7 +337,7 @@ EOF
 chmod 644 "$ETC_DIR/backup.env"
 
 # ---------------------------------------------------------------------------
-# Hermes at the commit the backup recorded
+# Hermes at the build the backup recorded — or the nearest one it can fetch
 # ---------------------------------------------------------------------------
 say "Installing Hermes"
 curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash
@@ -268,24 +346,73 @@ curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash
 export PATH="/root/.local/bin:/root/.hermes/hermes-agent/.hermes/bin:/usr/local/bin:$PATH"
 HERMES_BIN=$(command -v hermes 2>/dev/null || true)
 [ -n "$HERMES_BIN" ] || warn "hermes is not on PATH after the install; the CLI steps will fail"
-if [ -n "${HERMES_COMMIT:-}" ]; then
-  (
-    cd /root/.hermes/hermes-agent || exit 1
-    git -c safe.directory=/root/.hermes/hermes-agent fetch --all --tags --prune \
-      || warn "git fetch failed; trying the commit anyway"
-    if ! git -c safe.directory=/root/.hermes/hermes-agent checkout -q "$HERMES_COMMIT" 2>/dev/null; then
-      git -c safe.directory=/root/.hermes/hermes-agent fetch --unshallow || true
-      git -c safe.directory=/root/.hermes/hermes-agent checkout -q "$HERMES_COMMIT" \
-        || warn "could not check out $HERMES_COMMIT; using the installed version"
+HERMES_CHECKOUT=${HERMES_CHECKOUT:-/root/.hermes/hermes-agent}
+
+# --- hermes-target begin ---------------------------------------------------
+# Pick the Hermes build to install: the recorded commit when a fresh clone can
+# fetch it, else the published ref recorded beside it, else the installer's
+# build. Always sets HERMES_TARGET (empty = keep the installed build) and
+# HERMES_TARGET_KIND, and says why in the operator's words.
+hermes_target() {
+  HERMES_TARGET=""
+  HERMES_TARGET_KIND=""
+  local dir=$HERMES_CHECKOUT commit=${HERMES_COMMIT:-} ref=${HERMES_REF:-}
+  local fetchable=${HERMES_FETCHABLE:-} on_remote=""
+  git -c safe.directory="$dir" -C "$dir" fetch --all --tags --prune >/dev/null 2>&1 \
+    || warn "git fetch failed; trying the recorded refs anyway"
+  if [ -n "$commit" ] && [ "$fetchable" != true ]; then
+    # The backup's flag says whether HEAD was on a remote when it ran; the
+    # clone in front of us is the authority now.
+    on_remote=$(git -c safe.directory="$dir" -C "$dir" branch -r --contains "$commit" 2>/dev/null || true)
+    if [ -n "$on_remote" ]; then
+      fetchable=true
     fi
-    HEAD_COMMIT=$(git -c safe.directory=/root/.hermes/hermes-agent rev-parse HEAD 2>/dev/null || true)
-    printf 'Hermes checkout: %s (manifest: %s)\n' "${HEAD_COMMIT:0:12}" "$HERMES_COMMIT"
-    case "$HEAD_COMMIT" in
-      "$HERMES_COMMIT"*) ;;
-      *) warn "Hermes HEAD does not start with the manifest commit $HERMES_COMMIT" ;;
-    esac
+  fi
+  if [ -n "$commit" ] && [ "$fetchable" = true ] \
+     && git -c safe.directory="$dir" -C "$dir" checkout -q "$commit" 2>/dev/null; then
+    HERMES_TARGET=$commit
+    HERMES_TARGET_KIND="the commit the backup recorded"
+    return 0
+  fi
+  if [ -n "$ref" ] \
+     && git -c safe.directory="$dir" -C "$dir" checkout -q "$ref" 2>/dev/null; then
+    HERMES_TARGET=$ref
+    HERMES_TARGET_KIND="the nearest published ref recorded with the backup"
+    if [ -n "$commit" ]; then
+      warn "the backup ran Hermes $commit, a local build no new box can fetch; installed $ref instead${HERMES_REF_COMMIT:+ (tag commit ${HERMES_REF_COMMIT:0:12})}"
+    fi
+    return 0
+  fi
+  HERMES_TARGET=""
+  HERMES_TARGET_KIND="the installer's own build (nothing recorded could be fetched)"
+  warn "no recorded Hermes build could be fetched; keeping the installer's version"
+  return 0
+}
+# --- hermes-target end -----------------------------------------------------
+
+if [ -n "${HERMES_COMMIT:-}${HERMES_REF:-}" ] && [ -d "$HERMES_CHECKOUT/.git" ]; then
+  (
+    hermes_target
+    HEAD_COMMIT=$(git -c safe.directory="$HERMES_CHECKOUT" -C "$HERMES_CHECKOUT" \
+      rev-parse HEAD 2>/dev/null || true)
+    printf 'Hermes target: %s — %s\n' "${HERMES_TARGET:-the installed build}" "$HERMES_TARGET_KIND"
+    printf 'Hermes checkout: %s\n' "${HEAD_COMMIT:0:12}"
+    if [ -n "$HERMES_TARGET" ] && [ "$HERMES_TARGET" = "${HERMES_REF:-}" ] \
+       && [ -n "${HERMES_REF_COMMIT:-}" ]; then
+      case "$HEAD_COMMIT" in
+        "$HERMES_REF_COMMIT"*) ;;
+        *) warn "checked out $HERMES_TARGET at $HEAD_COMMIT, but the backup recorded ${HERMES_REF_COMMIT:0:12}" ;;
+      esac
+    elif [ -n "$HERMES_TARGET" ]; then
+      case "$HEAD_COMMIT" in
+        "$HERMES_TARGET"*) ;;
+        *) warn "asked for $HERMES_TARGET but the checkout is $HEAD_COMMIT" ;;
+      esac
+    fi
+    [ -z "$HERMES_BIN" ] || "$HERMES_BIN" --version || true
   )
-  [ -z "$HERMES_BIN" ] || "$HERMES_BIN" --version || true
+elif [ -n "${HERMES_COMMIT:-}${HERMES_REF:-}" ]; then
+  warn "no Hermes checkout at $HERMES_CHECKOUT; keeping the installer's version"
 fi
 if [ -z "$HERMES_BIN" ] || ! "$HERMES_BIN" pm install --extra matrix; then
   warn "Matrix extra install failed; the gateway is left stopped (the site and CLI work)"
@@ -327,6 +454,10 @@ fi
 # Restore
 # ---------------------------------------------------------------------------
 say "Restoring $SNAP to /"
+# No --exclude here: restic 0.18 refuses `--include` and `--exclude` together
+# ("exclude and include patterns are mutually exclusive"). The kit folder under
+# /root is protected by running from /var/tmp and putting the current files
+# back below instead.
 restic restore "$SNAP" --target / \
   --include /var/backups/odile/live \
   --include /root --include /var/lib/caddy --include /var/lib/odile \
@@ -334,6 +465,18 @@ restic restore "$SNAP" --target / \
   --include /etc/caddy --include /etc/dkimkeys --include /etc/opendkim.conf \
   --include /etc/postfix --include /etc/ssl/private \
   --include /etc/ssl/certs/mail.odile.fyi.crt --include /etc/systemd/system
+
+# The restore is --include /root, so it writes every backed-up path under
+# /root (and deletes nothing). A kit copy that a snapshot does carry is
+# replaced; the copy taken before the restore is authoritative — it is newer
+# than the snapshot when a token was rotated — and goes back below.
+if [ -n "${ODILE_KIT_SAVED:-}" ] && [ -d "$ODILE_KIT_SAVED" ]; then
+  install -d -m 700 "$KIT_DIR"
+  cp -a -- "$ODILE_KIT_SAVED/." "$KIT_DIR/"
+  chmod 600 "$KIT_DIR/recovery.env"
+  chmod 700 "$KIT_DIR/recover.sh"
+  say "Kit: the current recovery.env and recover.sh are back in $KIT_DIR"
+fi
 
 # The restore replaces the state dir from the snapshot; the kit is authoritative
 # for the tokens (a token may have been rotated since the snapshot).
@@ -413,16 +556,22 @@ sed -i '\#^127\.0\.0\.1 odile\.fyi$#d' /etc/hosts
 
 systemctl daemon-reload
 # The backup timers are what keep the new machine's RPO: a restored box that
-# never re-arms them takes one snapshot and then silently ages.
+# never re-arms them takes one snapshot and then silently ages. `hermes-serve`
+# is the system unit behind gw.odile.fyi (127.0.0.1:9119), restored from the
+# snapshot's /etc/systemd/system, and that name is in dns_names — leaving it
+# stopped would move the record to a box that answers 502.
 for unit in odile.service odile-seed.service odile-attest-refresh.timer \
-            odile-claim.timer odile-backup.timer odile-backup-check.timer; do
+            odile-claim.timer odile-backup.timer odile-backup-check.timer \
+            hermes-serve.service; do
   systemctl enable --now "$unit" 2>/dev/null || warn "$unit did not start; check systemctl status"
 done
 
 loginctl enable-linger root || true
 systemctl --user daemon-reload || true
-# The gateway is deliberately left stopped: the recovered .env may have Matrix
-# disabled or a stale device. Start it later with:
+# The *messaging* gateway (hermes-gateway, the Matrix/Telegram bot) is
+# deliberately left stopped: the recovered .env may have Matrix disabled or a
+# stale device, and a bot that starts talking before anyone checks is worse than
+# one that waits. Start it later with:
 #   systemctl --user enable --now hermes-gateway.service
 
 # ---------------------------------------------------------------------------
@@ -545,5 +694,8 @@ hermes kanban --board odile list 2>/dev/null | tail -1 || true
 
 say "RECOVERY COMPLETE"
 printf 'New IPv4: %s\nSite: https://odile.fyi (DNS may take up to 5 minutes)\n' "$NEW_IP"
-[ "$DRY_RUN" = 1 ] || printf 'Log: %s\n' "$LOG"
+printf 'Log: %s\n' "$LOG"
 printf 'Optional messaging gateway: systemctl --user enable --now hermes-gateway.service\n'
+# The copy that kept this run out of the restore set; it holds no secret the
+# kit does not (the kit is authoritative and was put back above).
+[ -z "${ODILE_RUN_DIR:-}" ] || rm -rf -- "$ODILE_RUN_DIR"

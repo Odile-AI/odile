@@ -1,11 +1,11 @@
 #!/usr/bin/python3
 """The one-command restore: its `--dry-run`, and its DNS step, held offline.
 
-Two parts of `deploy/recovery/recover.sh` can be proved without a bucket and
-without restoring over a live box, and both answer the sudden-loss question
+Four parts of `deploy/recovery/recover.sh` can be proved without a bucket and
+without restoring over a live box, and each answers the sudden-loss question
 before the operator commits:
 
-* the **dry run** — *which* Hermes commit, *which* old IPv4 and *which* DNS
+* the **dry run** — *which* Hermes build, *which* old IPv4 and *which* DNS
   names does the latest snapshot name? A stub `restic` on `PATH` stands in for
   Cloudflare R2: it answers `snapshots --json` with one tag-`hq` snapshot and
   `dump` with a fixture manifest, and records every call, so the test proves the
@@ -17,12 +17,22 @@ before the operator commits:
   every name in `dns_skip` (`demo.odile.fyi` is the live demo tenant, `odl-*`
   are guests), print what it changed with no token, and be idempotent — a
   second run over the same records prints `no record needed a change`.
+* the **Hermes target** — the shipped `hermes_target` runs against a stub
+  `git`. A recorded commit that is not on a remote (HQ's local build) cannot be
+  fetched, so the script must install the published ref recorded beside it and
+  say why; when neither can be fetched it keeps the installer's build.
+* the **run from a copy** — the kit lives under `/root`, which the restore
+  replaces in place, and restic 0.18 refuses `--include` with `--exclude`. The
+  shipped block re-execs the script from `/var/tmp` and puts the kit's current
+  files back afterwards; the block is run twice here, the second pass being the
+  copy.
 
 The rules:
 
-* the facts come from the snapshot's `recovery` block — commit, old IPv4, DNS
-  names to move, DNS names to leave alone;
-* a snapshot that predates the recovery block falls back to the kit's own
+* the facts come from the snapshot's `recovery` block — build, old IPv4, DNS
+  names to move, DNS names to leave alone — and the kit's manifest fills only
+  the fields the snapshot predates;
+* a snapshot with no recovery block at all falls back to the kit's
   `manifest.json`, and says so;
 * a dry run writes nothing (no state dir, no secrets, no `/etc`), exits 0, and
   never prints a secret.
@@ -34,6 +44,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -55,6 +66,8 @@ ZONE_ID = "0123456789abcdef" * 2
 SNAPSHOT = "1a2b" + "3c4d"  # no bare 8-hex instance id
 OLD_IP = "203.0.113.23"
 DEMO_IP = "198.51.100.103"
+HERMES_REF = "v0.23.3"
+HERMES_REF_COMMIT = "caafe5389ae585ef77387a962aee05b1bcf17029"
 
 MANIFEST = {
     "generated_at": "2026-11-26T03:35:34Z",
@@ -69,6 +82,9 @@ MANIFEST = {
         "ipv4": OLD_IP,
         "hermes_version": "Hermes Agent v0.23.3+5.gedc8a22.dirty (2026.9.24) · stable · local edc8a222a801",
         "hermes_commit": "edc8a222a801",
+        "hermes_commit_fetchable": False,
+        "hermes_ref": HERMES_REF,
+        "hermes_ref_commit": HERMES_REF_COMMIT,
         "git_head": "45fd806abc",
         "zone_id": ZONE_ID,
         "dns_names": ["odile.fyi", "gw.odile.fyi", "mail.odile.fyi",
@@ -79,6 +95,12 @@ MANIFEST = {
         "endpoint": "https://b118cf213a0c4b6287c5826741e04bcf.eu.r2.cloudflarestorage.com",
     },
 }
+
+# A snapshot taken before the pin fields existed (the live f7d252db on
+# 2026-11-26): it has the commit but not the published ref beside it.
+OLD_PIN_MANIFEST = json.loads(json.dumps(MANIFEST))
+for _key in ("hermes_commit_fetchable", "hermes_ref", "hermes_ref_commit"):
+    del OLD_PIN_MANIFEST["recovery"][_key]
 
 # The first cut's snapshot shape: no recovery block, so the kit's fallback runs.
 OLD_MANIFEST = {
@@ -97,6 +119,9 @@ KIT_MANIFEST = {
         "ipv4": OLD_IP,
         "hermes_version": "Hermes Agent v0.23.3+5.gedc8a22 (2026.9.24)",
         "hermes_commit": "edc8a222a801",
+        "hermes_commit_fetchable": False,
+        "hermes_ref": HERMES_REF,
+        "hermes_ref_commit": HERMES_REF_COMMIT,
         "git_head": "45fd806abc",
         "zone_id": ZONE_ID,
         "dns_names": ["odile.fyi", "gw.odile.fyi"],
@@ -213,6 +238,40 @@ class DryRunTests(unittest.TestCase):
         for secret in (PASSPHRASE, R2_KEY, R2_SECRET, DNS_TOKEN):
             self.assertNotIn(secret, result.stdout)
             self.assertNotIn(secret, result.stderr)
+
+    def test_the_dry_run_installs_the_published_ref_when_the_commit_is_local_only(self):
+        result = self.run_dry()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn(f"Hermes to install: {HERMES_REF}", result.stdout)
+        self.assertIn("local build no new box can fetch", result.stdout)
+        flat = "".join(result.stdout.split())
+        self.assertIn(f"installHermesat{HERMES_REF};", flat)
+
+    def test_the_dry_run_pins_the_recorded_commit_when_it_is_fetchable(self):
+        fetchable = json.loads(json.dumps(MANIFEST))
+        fetchable["recovery"]["hermes_commit_fetchable"] = True
+        self.manifest.write_text(json.dumps(fetchable) + "\n", encoding="utf-8")
+        result = self.run_dry()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("Hermes to install: edc8a222a801", result.stdout)
+        self.assertIn("which a new box can fetch", result.stdout)
+
+    def test_an_older_snapshot_fills_the_pin_from_the_kit_manifest(self):
+        # The live f7d252db shape: the commit is there, the published ref is not.
+        self.manifest.write_text(json.dumps(OLD_PIN_MANIFEST) + "\n", encoding="utf-8")
+        (self.kit / "manifest.json").write_text(json.dumps(KIT_MANIFEST) + "\n",
+                                                encoding="utf-8")
+        result = self.run_dry()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("no hermes_commit_fetchable, hermes_ref, hermes_ref_commit",
+                      result.stderr)
+        self.assertIn("using the kit's manifest", result.stderr)
+        self.assertIn(f"Hermes to install: {HERMES_REF}", result.stdout)
+
+    def test_the_dry_run_says_the_kit_folder_survives_the_restore(self):
+        result = self.run_dry()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("leaving this kit folder and the log in place", result.stdout)
 
     def test_the_dns_skip_list_is_an_fnmatch_list_that_keeps_the_demo(self):
         result = self.run_dry()
@@ -398,3 +457,199 @@ class DnsUpdateTests(unittest.TestCase):
         self.assertEqual(result.returncode, 2)
         self.assertIn("DNS NOT UPDATED", result.stderr)
         self.assertNotIn(DNS_TOKEN, result.stderr)
+
+
+def hermes_target_block() -> str:
+    """The Hermes target selection the shipped script runs, verbatim."""
+    text = SCRIPT.read_text(encoding="utf-8")
+    return text[text.index("# --- hermes-target begin"):
+                text.index("# --- hermes-target end")]
+
+
+class HermesTargetTests(unittest.TestCase):
+    """A local build cannot be checked out; the script must say what it did.
+
+    The verifier's finding: `hermes_commit` on HQ was `edc8a222a8014b7e…`,
+    five commits past v0.23.3 and on no remote, so `git fetch --all --tags`
+    cannot bring the object. The shipped `hermes_target` runs here against a
+    stub `git` that answers like such a clone.
+    """
+
+    COMMIT = "edc8a222a8014b7e60414db02e689e519b46bb24"
+
+    def run_target(self, *, fetchable: bool, branch_has: bool,
+                   commit_rc: int, ref_rc: int):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        root = Path(tmp.name)
+        log = root / "git.log"
+        stub = root / "bin" / "git"
+        stub.parent.mkdir()
+        stub.write_text(
+            "#!/bin/sh\n"
+            f'printf "%s\\n" "$*" >> "{log}"\n'
+            'case " $* " in\n'
+            '  *" fetch "*) exit 0 ;;\n'
+            '  *" branch -r --contains "*)\n'
+            '    [ "${BRANCH_HAS}" = 1 ] && printf "origin/main\\n"; exit 0 ;;\n'
+            '  *" checkout -q ${GIT_COMMIT} "*) exit "${CHECKOUT_COMMIT}" ;;\n'
+            '  *" checkout -q ${GIT_REF} "*) exit "${CHECKOUT_REF}" ;;\n'
+            'esac\n'
+            "exit 0\n",
+            encoding="utf-8",
+        )
+        stub.chmod(0o755)
+        script = root / "target.sh"
+        script.write_text(
+            "warn() { printf 'WARNING: %s\\n' \"$*\" >&2; }\n"
+            + hermes_target_block()
+            + "\nhermes_target\n"
+            'printf "TARGET=%s\\nKIND=%s\\n" "$HERMES_TARGET" "$HERMES_TARGET_KIND"\n',
+            encoding="utf-8",
+        )
+        env = {
+            "PATH": f"{stub.parent}:/usr/bin:/bin",
+            "HOME": str(root),
+            "HERMES_COMMIT": self.COMMIT,
+            "HERMES_REF": HERMES_REF,
+            "HERMES_REF_COMMIT": HERMES_REF_COMMIT,
+            "HERMES_FETCHABLE": "true" if fetchable else "false",
+            "HERMES_CHECKOUT": str(root / "hermes"),
+            "GIT_COMMIT": self.COMMIT,
+            "GIT_REF": HERMES_REF,
+            "BRANCH_HAS": "1" if branch_has else "0",
+            "CHECKOUT_COMMIT": str(commit_rc),
+            "CHECKOUT_REF": str(ref_rc),
+        }
+        result = subprocess.run(["bash", str(script)], capture_output=True,
+                                text=True, env=env, timeout=60)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        return result
+
+    def test_an_unfetchable_commit_falls_back_to_the_published_ref(self):
+        result = self.run_target(fetchable=False, branch_has=False,
+                                 commit_rc=1, ref_rc=0)
+        self.assertIn(f"TARGET={HERMES_REF}", result.stdout)
+        self.assertIn("nearest published ref", result.stdout)
+        self.assertIn(f"the backup ran Hermes {self.COMMIT}", result.stderr)
+        self.assertIn("local build no new box can fetch", result.stderr)
+        self.assertIn(HERMES_REF_COMMIT[:12], result.stderr)
+
+    def test_a_fetchable_commit_is_checked_out_and_pinned(self):
+        result = self.run_target(fetchable=True, branch_has=True,
+                                 commit_rc=0, ref_rc=1)
+        self.assertIn(f"TARGET={self.COMMIT}", result.stdout)
+        self.assertIn("the commit the backup recorded", result.stdout)
+        self.assertNotIn("WARNING", result.stderr)
+
+    def test_a_commit_flagged_fetchable_but_absent_falls_back_to_the_ref(self):
+        # The flag is from the backup; the clone in front of us decides.
+        result = self.run_target(fetchable=True, branch_has=True,
+                                 commit_rc=1, ref_rc=0)
+        self.assertIn(f"TARGET={HERMES_REF}", result.stdout)
+        self.assertIn(f"the backup ran Hermes {self.COMMIT}", result.stderr)
+
+    def test_nothing_recorded_is_fetchable_keeps_the_installers_build(self):
+        result = self.run_target(fetchable=False, branch_has=False,
+                                 commit_rc=1, ref_rc=1)
+        self.assertIn("TARGET=\n", result.stdout)
+        self.assertIn("installer's own build", result.stdout)
+        self.assertIn("no recorded Hermes build could be fetched", result.stderr)
+
+
+def run_from_copy_block() -> str:
+    """The run-from-/var/tmp block the shipped script runs, verbatim."""
+    text = SCRIPT.read_text(encoding="utf-8")
+    return text[text.index("# --- run-from-a-copy begin"):
+                text.index("# --- run-from-a-copy end")]
+
+
+class RunFromCopyTests(unittest.TestCase):
+    """The kit lives under /root, and the restore writes under /root in place.
+
+    restic 0.18 refuses `--include` with `--exclude` ("mutually exclusive"), so
+    the exclusion cannot be done with a flag. The protection is a copy: the
+    script re-execs itself from /var/tmp and puts the kit's current files back
+    after the restore. (Today's backup set carries no kit folder — it is a list
+    of subtrees — but the script does not depend on that: a set that did carry
+    one would replace the running script and the newer secrets.) This runs the
+    shipped block twice — the second pass is the copy — and checks both halves.
+    """
+
+    def test_the_script_runs_from_a_var_tmp_copy_carrying_the_current_kit(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        root = Path(tmp.name)
+        kit = root / "odile-factory-recovery"
+        kit.mkdir(mode=0o700)
+        (kit / "recovery.env").write_text("CURRENT-KIT-SECRETS\n", encoding="utf-8")
+        (kit / "manifest.json").write_text("{}\n", encoding="utf-8")
+        script = root / "harness.sh"
+        script.write_text(
+            "#!/bin/bash\nset -Eeuo pipefail\n"
+            f"KIT_DIR={kit}\nENV_FILE={kit}/recovery.env\nLOG={root}/log\nDRY_RUN=0\n"
+            'ARGS=("$@")\n'
+            + run_from_copy_block()
+            + "\nprintf 'RUNNING=%s\\n' \"${ODILE_RECOVERY_RUNNING:-0}\"\n"
+            'printf "KIT_DIR=%s\\n" "$KIT_DIR"\n'
+            'printf "SCRIPT_DIR=%s\\n" "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"\n'
+            'printf "SAVED=%s\\n" "${ODILE_KIT_SAVED:-}"\n'
+            'printf "SAVED_ENV=%s\\n" "$(cat "${ODILE_KIT_SAVED:-/nonexistent}/recovery.env")"\n'
+            'printf "RUN_DIR=%s\\n" "${ODILE_RUN_DIR:-}"\n'
+            'printf "ARGS=%s\\n" "$*"\n',
+            encoding="utf-8",
+        )
+        script.chmod(0o700)
+        result = subprocess.run(["bash", str(script), "--no-dns"], capture_output=True,
+                                text=True, timeout=60)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        values = dict(line.split("=", 1) for line in result.stdout.splitlines()
+                      if "=" in line)
+        self.addCleanup(shutil.rmtree, values["RUN_DIR"], True)
+        self.assertEqual(values["RUNNING"], "1")
+        self.assertEqual(values["KIT_DIR"], str(kit))
+        self.assertTrue(values["SCRIPT_DIR"].startswith("/var/tmp/odile-recovery-run."),
+                        values["SCRIPT_DIR"])
+        self.assertNotEqual(values["SCRIPT_DIR"], str(kit))
+        self.assertEqual(values["SAVED_ENV"], "CURRENT-KIT-SECRETS")
+        # The re-exec must carry the flags: the parse loop consumed them.
+        self.assertEqual(values["ARGS"], "--no-dns")
+
+    def test_the_restore_has_no_exclude_and_the_kit_is_put_back(self):
+        text = SCRIPT.read_text(encoding="utf-8")
+        restore = text[text.index("\nrestic restore"):]
+        restore = restore[:restore.index("\n\n")]
+        self.assertIn("--include /root", restore)
+        self.assertNotIn("--exclude", restore)
+        self.assertIn('cp -a -- "$ODILE_KIT_SAVED/." "$KIT_DIR/"', text)
+        self.assertIn('chmod 600 "$KIT_DIR/recovery.env"', text)
+
+
+@unittest.skipUnless(shutil.which("restic"), "restic is not installed here")
+class ResticRestoreTests(unittest.TestCase):
+    """The constraint that shaped the fix, held as a test.
+
+    An `--exclude` of the kit folder beside `--include /root` is what the
+    obvious fix looks like, and restic 0.18.1 refuses it outright: "exclude and
+    include patterns are mutually exclusive".
+    """
+
+    def test_restic_refuses_include_and_exclude_together(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / "source"
+            source.mkdir()
+            (source / "file.txt").write_text("x\n", encoding="utf-8")
+            env = {**os.environ, "RESTIC_PASSWORD": "fixture-passphrase",
+                   "RESTIC_REPOSITORY": str(root / "repo")}
+            env.pop("AWS_ACCESS_KEY_ID", None)
+            subprocess.run(["restic", "init"], env=env, check=True,
+                           capture_output=True, timeout=120)
+            subprocess.run(["restic", "backup", str(source)], env=env, check=True,
+                           capture_output=True, timeout=120)
+            result = subprocess.run(
+                ["restic", "restore", "latest", "--target", str(root / "out"),
+                 "--include", str(source), "--exclude", str(source / "file.txt")],
+                env=env, capture_output=True, text=True, timeout=120)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("mutually exclusive", result.stderr)
