@@ -194,7 +194,8 @@ class TwoUidLockTest(unittest.TestCase):
         self.assertEqual(result.returncode, CAP_EXIT, result.stderr)
         self.assertIn(f"pid {holder.pid}", result.stderr,
                       f"the cap did not name the read-only holder: {result.stderr!r}")
-        self.assertNotIn("31337", result.stderr, "the cap named root's stale stamp")
+        self.assertNotIn("pid 31337 has held", result.stderr,
+                         "the cap named root's stale stamp")
         self.assertIn("an unknown time", result.stderr,
                       "a holder that wrote no epoch has no known elapsed time")
         self.assertIsNone(re.search(r"for \d+\.\ds", result.stderr),
@@ -569,7 +570,7 @@ class TicketQueueTest(unittest.TestCase):
         self.assertEqual(result.returncode, CAP_EXIT, result.stderr)
         self.assertIn(f"pid {raw_pid}", result.stderr,
                       "the cap named the file's stale stamp, not the kernel's holder")
-        self.assertNotIn("424242", result.stderr, "the cap named a dead pid")
+        self.assertNotIn("pid 424242 has held", result.stderr, "the cap named a dead pid")
         self.assertIn("an unknown time", result.stderr,
                       "an unstamped holder's elapsed time must not be invented")
         self.assertIsNone(re.search(r"for \d+\.\ds", result.stderr),
