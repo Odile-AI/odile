@@ -27,7 +27,7 @@ and the sheet's completeness.
 | Art direction | The Ruysch, its grade, its crop, the veil, product artwork |
 | The landing page | The four elements and the confirmation, with values |
 | Voice | Rules, five before/after pairs, formats, lexicon |
-| Email | Invite, ready and brief, with subject lines and structure |
+| Email | Invite, confirmation, ready, the booking receipt and the brief, with subject lines and structure |
 | Video | Title, caption and end cards at 1440 and 390 |
 | Product surfaces | What each surface carries and what it never carries |
 | Interaction | One primary, destructive actions, overlays, keyboard |
