@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import base64
 import contextlib
+import fcntl
 import hashlib
 import hmac
 import http.client
@@ -2987,10 +2988,11 @@ class FirstbootScriptTests(unittest.TestCase):
         The build writes a random secret into the image, so every disk built
         from one image shared it. The first boot (`--seed` is in the argv) of a
         published image must replace it with a secret generated on this
-        machine, and must leave the file alone once the first-visit page has
-        set the owner's sign-in (`signin_set_at`), so a reboot keeps the secret
-        byte for byte. Both halves live in install-stack.sh's production
-        branch; the boot behaviour is measured in docs/runbooks/image.md §13.
+        machine, and must leave the file alone once the .env already holds the
+        seed's verifier or the owner's own visit recorded the sign-in, so a
+        reboot keeps the secret byte for byte. Both halves live in
+        install-stack.sh's production branch; the boot behaviour is measured in
+        docs/runbooks/image.md §13.
         """
         installer = (IMAGE / "install-stack.sh").read_text(encoding="utf-8")
         self.assertIn("fresh_secret", installer)
@@ -3001,12 +3003,23 @@ class FirstbootScriptTests(unittest.TestCase):
         # The first boot is the run that carries --seed; the build has none.
         self.assertIn('[ -n "$SEED_FILE" ]', branch)
         self.assertIn("this machine's own secret", branch)
-        # Keep once the sign-in exists: that check must come before the
-        # rewrite, or a reboot after the visit would rotate the secret and
-        # invalidate every session cookie the owner holds.
-        self.assertLess(branch.index("first_visit_signin_set"),
-                        branch.index("this machine's own secret"),
-                        "the first boot must keep the secret once signin_set_at exists")
+        # Keep once the sign-in exists: both keep-checks — the .env already
+        # carries the seed's verifier, or the owner's own visit recorded the
+        # hash — must come before the rewrite, or a reboot would rotate the
+        # secret and invalidate every session cookie the owner holds. The stamp
+        # is not trusted as the keep signal on its own: release 2026.11.23-5
+        # stamped it before the verifier was written (ODL-947).
+        opened = branch.index('    elif [ -n "$SEED_SIGNIN" ]; then')
+        closed = branch.index("    elif first_visit_signin_set; then", opened)
+        seeded = branch[opened:closed]
+        self.assertIn('if env_holds_signin "$SEED_SIGNIN"; then', seeded)
+        self.assertIn("first_visit_signin_set && first_visit_owner_visited", seeded)
+        write = seeded.index("write_env")
+        self.assertLess(seeded.index('if env_holds_signin "$SEED_SIGNIN"; then'), write,
+                        "the first boot must keep the secret once the verifier is in the .env")
+        self.assertLess(seeded.index("first_visit_signin_set && first_visit_owner_visited"),
+                        write,
+                        "the first boot must keep the secret once the owner has visited")
         # And the rewrite must be a fresh value, never the image's.
         self.assertIn("$(fresh_secret)", branch)
         self.assertIn("$(discarded_scrypt_hash)", branch)
@@ -3239,6 +3252,18 @@ class SerialConsoleTests(unittest.TestCase):
         self.assertIn("unknown argument: --production", result.stderr)
 
 
+# ODL-357: a loop device is owned through a per-device flock, held from the
+# attach to the detach. `losetup -f --show` picks a number but reserves
+# nothing (the kernel hands the next caller a different number, yet any process
+# may still `losetup -d <path>`), so two suites on one box could detach or
+# reattach each other's devices. The lock file lives on the host, not in the
+# checkout, because the suites share /dev. `ODILE_LOOP_LOCK_DIR` and
+# `ODILE_LOOP_CLAIM_WAIT` let a test point the claim at its own directory or
+# shorten the wait; the defaults are the ones the gate runs.
+LOOP_LOCK_DIR = pathlib.Path(os.environ.get("ODILE_LOOP_LOCK_DIR", "/var/lock"))
+LOOP_CLAIM_WAIT = float(os.environ.get("ODILE_LOOP_CLAIM_WAIT", "900"))
+
+
 class FirstBootReKeyTests(unittest.TestCase):
     """ODL-454 follow-up: the first boot must replace the *volume* key.
 
@@ -3266,6 +3291,16 @@ class FirstBootReKeyTests(unittest.TestCase):
     run's mounts by their device source before closing its mapping. Without
     that, a run killed between `mount` and `umount` left both behind and no
     later run could recover the mapping (its opener count never fell).
+
+    The loops get the same treatment (ODL-357). `losetup -f --show` allocates
+    a device but leaves no owner: the ODL-353 merge gate failed with
+    `Cannot use device /dev/loop4 which is in use (already mapped or mounted)`
+    while a sibling suite's cryptsetup held the same device, and a SIGTERMed
+    run left its loops attached because `addCleanup` never ran. Each claim now
+    takes an exclusive flock on the device's lock file and keeps the fd for the
+    life of the test; a sibling skips a claimed device instead of sharing it,
+    and the class detaches what it owns on every path -- including the signal
+    handler -- with a dead-owner sweep for a run that could not.
     """
 
     VOLUME = 64 << 20
@@ -3276,6 +3311,7 @@ class FirstBootReKeyTests(unittest.TestCase):
     RUN_TAG = ""
     _open: set[str] = set()
     _mounts: dict[str, str] = {}
+    _loops: dict[str, tuple[int, str]] = {}
     _seq = 0
     _handlers: dict = {}
 
@@ -3296,12 +3332,14 @@ class FirstBootReKeyTests(unittest.TestCase):
         cls.RUN_TAG = f"{os.getpid()}-{os.urandom(4).hex()}"
         cls._open = set()
         cls._mounts = {}
+        cls._loops = {}
         cls._seq = 0
         cls._install_signal_cleanup()
         # A killed older run must not make this one fail: close what its dead
-        # pid left, and never touch a mapping a live pid owns.
+        # pid left, and never touch a mapping or loop a live pid owns.
         cls.close_stale_mappers()
-        cls.tmp = tempfile.TemporaryDirectory(prefix="odile-rekey-")
+        cls.close_stale_loops()
+        cls.tmp = tempfile.TemporaryDirectory(prefix=f"odile-rekey-{os.getpid()}-")
         cls.dir = pathlib.Path(cls.tmp.name)
         cls.bin = cls.dir / "snpreport-standin"
         subprocess.run(
@@ -3320,6 +3358,7 @@ class FirstBootReKeyTests(unittest.TestCase):
         try:
             cls.close_all()
             cls.close_stale_mappers()
+            cls.close_stale_loops()
         finally:
             cls._restore_signal_cleanup()
             cls.tmp.cleanup()
@@ -3360,11 +3399,13 @@ class FirstBootReKeyTests(unittest.TestCase):
 
     @classmethod
     def close_all(cls) -> None:
-        """Unmount what this run mounted, then close what it opened."""
+        """Unmount what this run mounted, close what it opened, detach its loops."""
         for point in sorted(cls._mounts, key=len, reverse=True):
             cls._umount(point)
         for name in sorted(cls._open):
             cls._close(name)
+        for device in sorted(cls._loops, key=cls._loop_number):
+            cls._release_loop(device)
 
     @classmethod
     def _umount(cls, point: str, retries: int = 20) -> bool:
@@ -3402,15 +3443,18 @@ class FirstBootReKeyTests(unittest.TestCase):
         return field
 
     @classmethod
-    def _mounts_for(cls, name: str) -> list[str]:
-        """Every mount point whose source is this mapping, from mountinfo.
+    def _sourced_mounts(cls, target: str) -> list[str]:
+        """Every mount point whose device source resolves to `target`.
 
         `mount` records the path it was given, so a mapper opened as
         `/dev/mapper/<name>` can appear as that path or as its `/dev/dm-N`
-        node; both resolve to the same realpath.
+        node, and a loop as `/dev/loopN`; both resolve to the same realpath.
         """
         points = []
-        mapper = f"/dev/mapper/{name}"
+        try:
+            wanted = os.path.realpath(target)
+        except OSError:
+            wanted = target
         try:
             rows = pathlib.Path("/proc/self/mountinfo").read_text().splitlines()
         except OSError:
@@ -3424,14 +3468,19 @@ class FirstBootReKeyTests(unittest.TestCase):
             if len(fields) < max(6, separator + 3):
                 continue
             source = cls._unescaped(fields[separator + 2])
-            if source not in (mapper, name):
-                try:
-                    if os.path.realpath(source) != os.path.realpath(mapper):
-                        continue
-                except OSError:
-                    continue
-            points.append(cls._unescaped(fields[4]))
+            try:
+                same = source == target or os.path.realpath(source) == wanted
+            except OSError:
+                same = source == target
+            if same:
+                points.append(cls._unescaped(fields[4]))
         return points
+
+    @classmethod
+    def _mounts_for(cls, name: str) -> list[str]:
+        """Every mount point sourced from the mapping `name`."""
+        return sorted(set(cls._sourced_mounts(f"/dev/mapper/{name}"))
+                      | set(cls._sourced_mounts(name)))
 
     @classmethod
     def _close(cls, name: str) -> bool:
@@ -3509,11 +3558,13 @@ class FirstBootReKeyTests(unittest.TestCase):
         old sweep skipped `openers>0` and so never recovered one: the mount
         kept the count up and every later run inherited the mapping.
 
-        `dead` names pids the caller has proven dead. The tests that fabricate
-        an orphan pass their own pid here (a real, live pid) instead of a
-        numeric dead one: a sibling gate then sees a live owner and leaves the
-        fabricated mapping alone, so two concurrent runs cannot sweep each
-        other's test fixture.
+        `dead` names pids the caller has proven dead. A test that fabricates an
+        orphan names it after its own pid and passes that pid here: a sibling
+        suite declares only its own pid, which is alive to this one, so the two
+        cannot sweep each other's fixture. Never key a synthetic name on
+        `os.getppid()` -- two suites started by one parent share it, so both
+        declare it dead and each sweep closes the other's fixture (ODL-357
+        round 2: measured one red on a same-parent pair, both green apart).
 
         A name without a pid is the old fixed form (`odile-rekey`,
         `odile-rekey-check`): a run still on that code may hold it with zero
@@ -3528,6 +3579,239 @@ class FirstBootReKeyTests(unittest.TestCase):
             if owner is None or (owner not in declared and cls._alive(owner)):
                 continue
             cls._close(name)
+
+    # -- loop ownership (ODL-357) ------------------------------------------
+
+    @staticmethod
+    def _loop_number(device: str) -> int:
+        suffix = pathlib.Path(device).name.removeprefix("loop")
+        return int(suffix) if suffix.isdigit() else 1 << 30
+
+    @classmethod
+    def _loop_devices(cls) -> list[str]:
+        """Every loop device the kernel exposes, in numeric order."""
+        found = []
+        for entry in pathlib.Path("/sys/block").glob("loop*"):
+            suffix = entry.name[len("loop"):]
+            if suffix.isdigit() and pathlib.Path("/dev", entry.name).exists():
+                found.append((int(suffix), f"/dev/{entry.name}"))
+        return [device for _number, device in sorted(found)]
+
+    @staticmethod
+    def _loop_backing(device: str) -> str:
+        """The file `device` is attached to, from sysfs; "" when unbound."""
+        try:
+            return pathlib.Path(
+                f"/sys/block/{pathlib.Path(device).name}/loop/backing_file").read_text().strip()
+        except OSError:
+            return ""
+
+    @classmethod
+    def _loop_lock(cls, device: str) -> int | None:
+        """The device's exclusive host lock, or None when a suite holds it.
+
+        The lock is keyed by device, not by run: two suites share /dev, and a
+        device is only claimed by a process that can prove it holds the token.
+        The kernel releases the flock when the holder dies, so a corpse never
+        blocks recovery -- only its still-attached device has to be swept.
+        """
+        path = LOOP_LOCK_DIR / f"odile-loop-{pathlib.Path(device).name}.lock"
+        try:
+            fd = os.open(path, os.O_CREAT | os.O_RDWR, 0o666)
+        except OSError:
+            return None
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            os.close(fd)
+            return None
+        return fd
+
+    @staticmethod
+    def _drop_loop_lock(fd: int) -> None:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+        finally:
+            os.close(fd)
+
+    @classmethod
+    def _detach(cls, device: str, backing: str = "", retries: int = 50) -> bool:
+        """Detach `device`, unmounting its mounts first; True when it is ours no more.
+
+        A fresh loop device is held open by udev for a moment after it
+        appears, so `losetup -d` can return 0 while sysfs still names the
+        backing file; the retry is what makes "detached" a fact rather than a
+        hope. The lock is the caller's, so a sibling cannot claim the device
+        between the retries. When `backing` is given and sysfs names a
+        different file, another allocator has already taken the number -- the
+        device is not ours to detach, and taking it would be the cross-run
+        detach this card removes.
+        """
+        expected = os.path.realpath(backing) if backing else ""
+        for point in cls._sourced_mounts(device):
+            cls._umount(point)
+        for _ in range(retries):
+            current = cls._loop_backing(device)
+            if current == "":
+                return True
+            if expected:
+                try:
+                    now = os.path.realpath(current.removesuffix(" (deleted)"))
+                except OSError:
+                    now = current
+                if now != expected:
+                    return True
+            subprocess.run(["losetup", "-d", device], capture_output=True,
+                           text=True, timeout=60, env=cls.tool_env())
+            if cls._loop_backing(device) == "":
+                return True
+            time.sleep(0.1)
+        return cls._loop_backing(device) == ""
+
+    @classmethod
+    def _release_loop(cls, device: str) -> None:
+        """Detach the loop this run claimed, then release its lock.
+
+        Safe in a signal handler: best effort, no assertion. The lock is held
+        until the device is detached, so a sibling cannot claim it mid-detach;
+        the unmount comes first because a mounted loop is not free to detach.
+
+        No entry means this run no longer owns the device, and the call is a
+        no-op: `claim_loop` leaves an `addCleanup`, and a test that releases
+        explicitly leaves that cleanup to run again. Detaching then -- with no
+        lock and an empty backing, which skips `_detach`'s ownership test --
+        would tear down whatever run had claimed the number since (ODL-357
+        round 2: measured detaching a device another process had flocked and
+        attached).
+        """
+        entry = cls._loops.get(device)
+        if entry is None:
+            return
+        fd, backing = entry
+        try:
+            cls._detach(device, backing)
+        finally:
+            cls._loops.pop(device, None)
+            cls._drop_loop_lock(fd)
+
+    def live_pid(self) -> int:
+        """A pid that stays alive for this test, standing in for a sibling run.
+
+        A fabricated orphan has to name a pid that no other suite declares
+        dead. `os.getppid()` is the wrong choice: two `unittest` processes
+        started by one parent share it, so both suites declare it dead and each
+        sweep closes the other's fixture (ODL-357 round 2, measured red on a
+        same-parent pair). A spawned sleeper's pid is neither this run's nor
+        the parent's, and it is alive, so every sweep skips it.
+        """
+        proc = subprocess.Popen(["/usr/bin/python3", "-c", "import time; time.sleep(300)"],
+                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        self.addCleanup(self._stop_pid, proc)
+        return proc.pid
+
+    @staticmethod
+    def _stop_pid(proc: subprocess.Popen) -> None:
+        if proc.poll() is None:
+            proc.kill()
+        proc.wait(timeout=60)
+
+    def release_loop(self, device: str) -> None:
+        """Give one claimed loop back; idempotent, for addCleanup and tests."""
+        type(self)._release_loop(device)
+
+    def claim_loop(self, backing: pathlib.Path) -> str:
+        """Attach `backing` to a loop this class owns for the test's life.
+
+        The per-device flock is the ownership token: a sibling suite skips a
+        claimed device, and `losetup -d <path>` is only ever run by the owner.
+        The signals are blocked across the attach and the bookkeeping, so a
+        SIGTERM delivered in that window is handled after the device is in
+        `_loops` and the handler detaches it rather than leaking it.
+        """
+        cls = type(self)
+        deadline = time.monotonic() + LOOP_CLAIM_WAIT
+        reason = "no loop device is present"
+        while time.monotonic() < deadline:
+            for device in cls._loop_devices():
+                if device in cls._loops:
+                    continue
+                lock = cls._loop_lock(device)
+                if lock is None:
+                    continue  # a live suite owns this device
+                if cls._loop_backing(device):
+                    cls._drop_loop_lock(lock)  # bound, but nobody claims it
+                    continue
+                previous = signal.pthread_sigmask(signal.SIG_BLOCK, cls.SIGNALS)
+                try:
+                    result = subprocess.run(
+                        ["losetup", device, str(backing)], capture_output=True,
+                        text=True, timeout=60, env=self.env())
+                    if result.returncode != 0:
+                        reason = result.stderr.strip() or result.stdout.strip()
+                        cls._drop_loop_lock(lock)
+                        continue
+                    attached = cls._loop_backing(device)
+                    if os.path.realpath(attached) != os.path.realpath(str(backing)):
+                        # The kernel reports the path it was given; a mismatch
+                        # is this attach gone wrong, so put it back.
+                        subprocess.run(["losetup", "-d", device], capture_output=True,
+                                       text=True, timeout=60, env=self.env())
+                        cls._drop_loop_lock(lock)
+                        reason = f"{device} reported {attached!r} after the attach"
+                        continue
+                    cls._loops[device] = (lock, str(backing))
+                    self.addCleanup(self.release_loop, device)
+                    return device
+                finally:
+                    signal.pthread_sigmask(signal.SIG_SETMASK, previous)
+            time.sleep(0.05)
+        raise RuntimeError(f"no loop device after {LOOP_CLAIM_WAIT:.0f}s: {reason}")
+
+    @staticmethod
+    def _backing_pid(backing: str) -> int | None:
+        """The pid in a temp-dir path: odile-rekey-<pid>-<rand>/...
+
+        The class temp dir and a fixture's directory both carry the prefix,
+        and the child driver nests one in the other, so the owner is the
+        innermost (last) component, not the first.
+        """
+        found = re.findall(r"(?:^|/)odile-rekey-(\d+)-", backing)
+        return int(found[-1]) if found else None
+
+    @classmethod
+    def close_stale_loops(cls, dead: set[int] | None = None) -> None:
+        """Detach loops a killed run left attached; never a live run's.
+
+        A run's temp dir is named `odile-rekey-<pid>-<rand>`, so a loop's
+        backing path names its owner. The device's flock is taken before
+        anything is touched: a sibling on this code holds it for the life of
+        its fixture, so its loops are skipped even while this sweep runs. A
+        loop whose path carries no pid is an old-code run's and is left alone,
+        as the mapper sweep leaves the legacy fixed names.
+
+        A fabricated orphan names this run's own pid and the sweep is told it
+        is dead; its live counterpart names a spawned sleeper (see `live_pid`).
+        Never `os.getppid()`: two suites started by one parent share it.
+        """
+        declared = dead or set()
+        for device in cls._loop_devices():
+            if device in cls._loops:
+                continue
+            backing = cls._loop_backing(device)
+            if not backing or "/odile-rekey-" not in backing:
+                continue
+            owner = cls._backing_pid(backing)
+            if owner is None or (owner not in declared and cls._alive(owner)):
+                continue
+            lock = cls._loop_lock(device)
+            if lock is None:
+                continue
+            try:
+                if cls._loop_backing(device) != backing:
+                    continue
+                cls._detach(device, backing)
+            finally:
+                cls._drop_loop_lock(lock)
 
     def mapper_name(self, purpose: str) -> str:
         """A name no other run, test or retry on this box can be holding."""
@@ -3617,12 +3901,8 @@ class FirstBootReKeyTests(unittest.TestCase):
                           "--key-file", str(fx["build"]), "luksFormat", str(fx["root"]))
         self.assertEqual(made.returncode, 0, made.stderr)
 
-        root_loop = subprocess.run(["losetup", "-f", "--show", str(fx["root"])],
-                                   check=True, capture_output=True, text=True).stdout.strip()
-        self.addCleanup(subprocess.run, ["losetup", "-d", root_loop], capture_output=True)
-        boot_loop = subprocess.run(["losetup", "-f", "--show", str(fx["boot"])],
-                                   check=True, capture_output=True, text=True).stdout.strip()
-        self.addCleanup(subprocess.run, ["losetup", "-d", boot_loop], capture_output=True)
+        root_loop = self.claim_loop(fx["root"])
+        boot_loop = self.claim_loop(fx["boot"])
         fx["root_loop"] = root_loop
         fx["boot_loop"] = boot_loop
 
@@ -3803,17 +4083,119 @@ class FirstBootReKeyTests(unittest.TestCase):
         self.assertNotEqual(self.crypt("status", name).returncode, 0,
                             f"{name} survived a failed test")
 
+    def test_a_claimed_loop_is_owned_until_its_fixture_releases_it(self) -> None:
+        """ODL-357: the device this test attached is not free for a sibling.
+
+        The ownership token is the per-device flock, not the number: a second
+        open of the lock file must fail while the fixture holds it, and a
+        second claim must land on a different device. The old fixture had no
+        way to say "this attached device is mine", which is how another
+        suite's `losetup -d <path>` could take it.
+        """
+        fx = self.fixture()
+        owned = ((fx["root_loop"], fx["root"]), (fx["boot_loop"], fx["boot"]))
+        for device, backing in owned:
+            self.assertIn(device, type(self)._loops)
+            self.assertEqual(os.path.realpath(type(self)._loop_backing(device)),
+                             os.path.realpath(str(backing)))
+        self.assertIsNone(type(self)._loop_lock(fx["root_loop"]),
+                          "the device's host lock did not exclude a second claim")
+        spare = fx["base"] / "spare.img"
+        spare.write_bytes(b"\0" * (1 << 20))
+        other = self.claim_loop(spare)
+        self.assertNotIn(other, (fx["root_loop"], fx["boot_loop"]),
+                         "a claim took a loop this test owns")
+        self.release_loop(other)
+        backing = type(self)._loop_backing(other)
+        self.assertTrue(not backing or os.path.realpath(backing) != os.path.realpath(str(spare)),
+                        f"{other} still carries the fixture's spare file")
+        self.release_loop(other)  # idempotent; addCleanup calls it again
+
+    def test_releasing_a_loop_detaches_it(self) -> None:
+        """ODL-357: the owner detaches its device; nothing is left bound."""
+        fx = self.fixture()
+        device = fx["root_loop"]
+        self.assertNotEqual(type(self)._loop_backing(device), "")
+        self.release_loop(device)
+        backing = type(self)._loop_backing(device)
+        self.assertTrue(
+            not backing or os.path.realpath(backing) != os.path.realpath(str(fx["root"])),
+            f"{device} still carries its fixture's file")
+        self.assertNotIn(device, type(self)._loops)
+
+    def _abandoned_loop(self, image: pathlib.Path) -> str:
+        """Attach `image` and leave it as a killed run does: bound, no owner.
+
+        The device is chosen under its own host lock -- never `losetup -f`,
+        whose number another suite can bind between the pick and the attach, the
+        very race this card removes -- and the lock is dropped after the attach
+        so the sweep sees the shape a SIGKILLed run leaves.
+        """
+        cls = type(self)
+        for device in cls._loop_devices():
+            lock = cls._loop_lock(device)
+            if lock is None:
+                continue
+            result = None
+            try:
+                if cls._loop_backing(device):
+                    continue
+                result = subprocess.run(["losetup", device, str(image)],
+                                        capture_output=True, text=True,
+                                        timeout=60, env=self.env())
+            finally:
+                cls._drop_loop_lock(lock)
+            if result is None or result.returncode != 0:
+                continue
+            if os.path.realpath(cls._loop_backing(device)) == os.path.realpath(str(image)):
+                return device
+            subprocess.run(["losetup", "-d", device], capture_output=True, text=True)
+        self.fail(f"no loop device could be attached to {image}")
+
+    def test_a_dead_runs_loop_is_swept_and_a_live_one_is_left_alone(self) -> None:
+        """ODL-357: the SIGKILL shape -- a loop with no owner process.
+
+        A run's temp dir is named `odile-rekey-<pid>-<rand>`, which is how the
+        sweep tells a corpse from a concurrent fixture without trusting the
+        device number. The live loop's path names a spawned sleeper -- alive,
+        and no suite's parent -- and the dead one names this process, which the
+        sweep is told is dead. A sibling suite declares only its own pid, so it
+        sees both of these alive and leaves them alone. Keying them on
+        `os.getppid()` was the round-2 bug: two suites started by one parent
+        share it, so each declared the other's fixture dead.
+        """
+        base = pathlib.Path(tempfile.mkdtemp(dir=self.dir))
+        live_dir = base / f"odile-rekey-{self.live_pid()}-{os.urandom(4).hex()}"
+        dead_dir = base / f"odile-rekey-{os.getpid()}-{os.urandom(4).hex()}"
+        live_dir.mkdir()
+        dead_dir.mkdir()
+        loops = []
+        for directory in (live_dir, dead_dir):
+            image = directory / "root.img"
+            image.write_bytes(b"\0" * (1 << 20))
+            loops.append(self._abandoned_loop(image))
+        for attached in loops:
+            self.addCleanup(subprocess.run, ["losetup", "-d", attached],
+                            capture_output=True, text=True)
+        type(self).close_stale_loops(dead={os.getpid()})
+        self.assertEqual(type(self)._loop_backing(loops[0]), str(live_dir / "root.img"),
+                         "the sweep detached a live pid's loop")
+        self.assertEqual(type(self)._loop_backing(loops[1]), "",
+                         "the sweep left a declared-dead pid's loop")
+
     def test_an_orphan_mapping_is_swept_and_a_live_run_is_left_alone(self) -> None:
         """A killed run's mapping is closed; a concurrent run's is not.
 
-        `dmsetup create` makes the two mappings a run can leave: one named
-        for this live pid and one the sweep is told is dead. Both carry this
-        run's random tag and a live pid, so a sibling gate sees a live owner
-        and leaves them alone; the sweep is the only thing that closes one.
+        `dmsetup create` makes the two mappings a run can leave: one named for
+        a spawned sleeper (alive, and no suite's parent) and one the sweep is
+        told is dead because it carries this run's own pid. Both pids are alive
+        to a sibling suite, so it leaves them alone; the sweep here is the only
+        thing that closes one. Never `os.getppid()`: suites that share a
+        parent share it too, and each would sweep the other's fixture.
         """
         tag = os.urandom(4).hex()
-        live = f"odile-rekey-check-{os.getpid()}-{tag}-1"
-        orphan = f"odile-rekey-check-{os.getppid()}-{tag}-2"
+        live = f"odile-rekey-check-{self.live_pid()}-{tag}-1"
+        orphan = f"odile-rekey-check-{os.getpid()}-{tag}-2"
         for name in (live, orphan):
             made = subprocess.run(["dmsetup", "create", name, "--table", "0 1 zero"],
                                   capture_output=True, text=True, env=self.env())
@@ -3823,7 +4205,7 @@ class FirstBootReKeyTests(unittest.TestCase):
                             capture_output=True, text=True, env=self.env())
         self.assertEqual(self.crypt("status", live).returncode, 0)
         self.assertEqual(self.crypt("status", orphan).returncode, 0)
-        type(self).close_stale_mappers(dead={os.getppid()})
+        type(self).close_stale_mappers(dead={os.getpid()})
         self.assertEqual(self.crypt("status", live).returncode, 0,
                          "the sweep closed a live pid's mapping")
         self.assertNotEqual(self.crypt("status", orphan).returncode, 0,
@@ -3836,13 +4218,14 @@ class FirstBootReKeyTests(unittest.TestCase):
         the kernel holds the device -- so `openers` stays 1. The old sweep
         read that as "someone is using it" and skipped the orphan forever.
         This is the shape the verifier reproduced: killed while mounted. The
-        name carries a live pid (the parent make) and this run's random tag,
-        and the sweep is told that pid is dead, so a concurrent gate neither
-        creates the same name nor sweeps it.
+        name carries this run's own pid and the sweep is told it is dead; a
+        sibling suite declares only its own pid (alive to this one), so it
+        neither creates the same name nor sweeps ours -- the round-1 failure
+        was `os.getppid()` here, which two suites started by one parent share.
         """
         fx = self.fixture()
         tag = os.urandom(4).hex()
-        name = f"odile-rekey-check-{os.getppid()}-{tag}-1"
+        name = f"odile-rekey-check-{os.getpid()}-{tag}-1"
         opened = self.crypt("--key-file", str(fx["build"]), "luksOpen",
                             fx["root_loop"], name)
         self.assertEqual(opened.returncode, 0, opened.stderr)
@@ -3854,10 +4237,79 @@ class FirstBootReKeyTests(unittest.TestCase):
         self.assertTrue(mnt.is_mount())
         self.assertEqual(self.crypt("status", name).returncode, 0,
                          "the fixture's mapping did not open")
-        type(self).close_stale_mappers(dead={os.getppid()})
+        type(self).close_stale_mappers(dead={os.getpid()})
         self.assertNotEqual(self.crypt("status", name).returncode, 0,
                             "the sweep left a dead run's mounted mapping")
         self.assertFalse(mnt.is_mount(), "the sweep left the dead run's mount")
+
+    def test_a_repeat_release_does_not_detach_the_next_owner(self) -> None:
+        """ODL-357 round 2: a release with no claim is a no-op, not a detach.
+
+        `claim_loop` registers `addCleanup(self.release_loop, device)`, and the
+        tests that release a device explicitly leave that cleanup pending, so
+        every run reaches an entry-less release. It used to call `_detach` with
+        an empty backing -- which skips the ownership test -- after the first
+        release had already dropped the flock, so the second call would
+        `losetup -d` a device another suite had claimed in between. Here the
+        next owner is this process: it takes the device's flock and attaches
+        its own file, and the repeat release must leave that file attached.
+        """
+        fx = self.fixture()
+        device = fx["root_loop"]
+        self.release_loop(device)
+        self.assertNotIn(device, type(self)._loops)
+        sibling = fx["base"] / "sibling.img"
+        sibling.write_bytes(b"\0" * (1 << 20))
+        lock = type(self)._loop_lock(device)
+        self.assertIsNotNone(lock, f"{device} was not free after its release")
+        assert lock is not None  # narrowed for the type checker
+
+        def detached() -> bool:
+            backing = type(self)._loop_backing(device)
+            return not backing or os.path.realpath(backing) != os.path.realpath(str(sibling))
+
+        try:
+            made = subprocess.run(["losetup", device, str(sibling)], capture_output=True,
+                                  text=True, timeout=60, env=self.env())
+            self.assertEqual(made.returncode, 0, made.stderr)
+            self.release_loop(device)  # the pending addCleanup: no entry left
+            self.assertFalse(detached(),
+                             "a release with no claim detached the next owner's loop")
+        finally:
+            if not detached():
+                subprocess.run(["losetup", "-d", device], capture_output=True,
+                               text=True, timeout=60, env=self.env())
+            type(self)._drop_loop_lock(lock)
+
+    def test_two_suites_sharing_a_parent_do_not_sweep_each_other(self) -> None:
+        """ODL-357 round 2: two runs started together share one parent.
+
+        The round-1 orphan named itself after `os.getppid()` and declared that
+        pid dead. Two suites started by the same shell share it, so each sweep
+        closed the other's mapping -- measured: one of the pair red with
+        `mount: special device ... does not exist`, the sweep landing between
+        the sibling's `luksOpen` and its `mount`. Here both children are
+        started by this test process, so they share a parent, and each runs the
+        mounted-orphan case; both must pass. At `bf7a27e` the same pair was
+        red, which is what the names keyed on the run's own pid fix.
+        """
+        env = self.env()
+        env["TMPDIR"] = str(self.dir)
+        command = ["/usr/bin/python3", "-m", "unittest", "-v",
+                   "test_sealed_image.FirstBootReKeyTests."
+                   "test_a_mounted_orphans_mapping_is_unmounted_and_closed"]
+        runs = [subprocess.Popen(command, cwd=str(ROOT / "tests"), env=env,
+                                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                 text=True, start_new_session=True) for _ in (0, 1)]
+        for proc in runs:
+            self.addCleanup(self._kill_child, proc)
+        outputs = [proc.communicate(timeout=900)[0] for proc in runs]
+        for proc, output in zip(runs, outputs):
+            self.assertEqual(proc.returncode, 0,
+                             f"a same-parent pair was not green (pid {proc.pid}):\n{output}")
+            self.assertIn("Ran 1 test", output)
+            self.assertNotIn("OK (skipped", output,
+                             f"the child skipped instead of running the case:\n{output}")
 
     def _child_driver(self) -> pathlib.Path:
         """The program the SIGTERM test starts: this class's own code, held open."""
@@ -3875,6 +4327,7 @@ class FirstBootReKeyTests(unittest.TestCase):
             "held.mkdir()\n"
             "case.mount(device, held, '-o', 'ro')\n"
             "print(json.dumps({'name': name, 'device': device, 'mount': str(held),\n"
+            "                  'base': str(fx['base']),\n"
             "                  'loops': [fx['root_loop'], fx['boot_loop']]}), flush=True)\n"
             "while True:\n"
             "    time.sleep(1)\n"
@@ -3908,6 +4361,25 @@ class FirstBootReKeyTests(unittest.TestCase):
             if pipe is not None:
                 pipe.close()
 
+    def _detach_if_under(self, devices: list[str], root: str) -> None:
+        """Detach a device only while it still carries a file under `root`.
+
+        The child's temp tree is unique to the run. A loop number another
+        allocator re-used between the kill and this cleanup must not be
+        detached -- that cross-run detach is the very collision this card
+        removes, so the guard is the same ownership test the sweep uses.
+        """
+        wanted = os.path.realpath(root) + os.sep
+        for device in devices:
+            backing = type(self)._loop_backing(device)
+            try:
+                mine = bool(backing) and os.path.realpath(backing).startswith(wanted)
+            except OSError:
+                mine = False
+            if mine:
+                subprocess.run(["losetup", "-d", device], capture_output=True,
+                               text=True, timeout=60)
+
     def test_a_sigterm_held_across_a_mount_leaves_no_mapping(self) -> None:
         """DoD 2: a run interrupted with a mounted mapping leaves nothing.
 
@@ -3925,8 +4397,7 @@ class FirstBootReKeyTests(unittest.TestCase):
                                 text=True, env=env, start_new_session=True)
         self.addCleanup(self._kill_child, proc)
         info = self._child_ready(proc)
-        self.addCleanup(subprocess.run, ["losetup", "-d", *info["loops"]],
-                        capture_output=True, text=True)
+        self.addCleanup(self._detach_if_under, info["loops"], info["base"])
         self.addCleanup(subprocess.run, ["dmsetup", "remove", info["name"]],
                         capture_output=True, text=True)
         self.addCleanup(subprocess.run, ["umount", info["mount"]],
@@ -3943,6 +4414,12 @@ class FirstBootReKeyTests(unittest.TestCase):
         self.assertEqual([name for name, _openers in self._mappings()
                           if name.startswith("odile-rekey-")
                           and f"-{proc.pid}-" in name], [])
+        for device in info["loops"]:
+            backing = type(self)._loop_backing(device)
+            self.assertFalse(
+                backing and os.path.realpath(backing).startswith(
+                    os.path.realpath(info["base"]) + os.sep),
+                f"{device} still carries the killed run's file: {backing!r}")
 
     # -- the behaviour -----------------------------------------------------
 

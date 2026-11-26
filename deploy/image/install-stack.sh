@@ -36,10 +36,11 @@
 # The published image carries no password a stranger can use (ODL-521): its
 # .env holds a scrypt hash of a discarded password, and the first-visit page is
 # the only writer of a usable sign-in. With a seed, the install writes the
-# seed's verifier instead (B-once, ODL-925) and stamps signin_set_at, because
-# that verifier *is* the owner's sign-in. It carries no SSH host private key
-# either (ODL-523): the build removes debootstrap's /etc/ssh/ssh_host_* and
-# fails if a private one survives; the first boot makes this machine's own.
+# seed's verifier instead (B-once, ODL-925) and stamps signin_set_at *after*
+# that write, because the stamp means "the .env holds the owner's sign-in"
+# (ODL-947). It carries no SSH host private key either (ODL-523): the build
+# removes debootstrap's /etc/ssh/ssh_host_* and fails if a private one
+# survives; the first boot makes this machine's own.
 #
 # Exit codes: 0 ok, 1 an apply failed, 2 bad input or a missing prerequisite.
 set -euo pipefail
@@ -315,6 +316,31 @@ raise SystemExit(0 if isinstance(state, dict) and state.get("signin_set_at") els
 PY
 }
 
+first_visit_owner_visited() {  # 0 once the page or a deploy recorded the owner's use
+    # `used_at` (the classic setup and a deploy) or `first_login_at` (the
+    # seeded login) is the record that a hash the .env carries is the owner's
+    # own, not a placeholder. A reset keeps it, so a manual re-run of this
+    # script cannot revert a password the owner chose.
+    [ -f /etc/odile/first-visit.json ] || return 1
+    /usr/bin/python3 - /etc/odile/first-visit.json <<'PY'
+import json, sys
+try:
+    state = json.load(open(sys.argv[1], encoding="utf-8"))
+except (OSError, ValueError):
+    raise SystemExit(1)
+visited = isinstance(state, dict) and (state.get("used_at") or state.get("first_login_at"))
+raise SystemExit(0 if visited else 1)
+PY
+}
+
+env_holds_signin() {  # 0 when $env_file already carries exactly this hash
+    [ -f "$env_file" ] || return 1
+    local current
+    current=$(grep -m1 -F 'HERMES_DASHBOARD_BASIC_AUTH_PASSWORD_HASH=' "$env_file" \
+        | cut -d= -f2-)
+    [ "$current" = "$1" ]
+}
+
 seed_signin_hash() {  # the seed's scrypt verifier, or exit 2 with a reason
     /usr/bin/python3 - "$SEED_FILE" <<'PY'
 import json, re, sys
@@ -409,6 +435,9 @@ SEED_SIGNIN=""
 if [ -n "$SEED_FILE" ]; then
     SEED_SIGNIN=$(seed_signin_hash)
 fi
+# Set when this run ends with the seed's verifier in the .env, so the state's
+# stamp below follows the write and never precedes it (ODL-947).
+ENV_HAS_SEED_SIGNIN=0
 
 if [ -f /etc/odile/production ]; then
     # The published image: no usable sign-in in the bytes, and no rewrite of a
@@ -425,19 +454,34 @@ if [ -f /etc/odile/production ]; then
         if [ -n "$SEED_SIGNIN" ]; then
             write_env "# odile-signin-seeded: 1" "$SEED_SIGNIN" "$(fresh_secret)" \
                 "the password chosen at registration (the seed's verifier)"
+            ENV_HAS_SEED_SIGNIN=1
         else
             write_env "# odile-signin-placeholder: 1" "$(discarded_scrypt_hash)" \
                 "$(fresh_secret)" "a discarded sign-in, no usable password"
         fi
+    elif [ -n "$SEED_SIGNIN" ]; then
+        # ODL-925/ODL-947: the seeded first boot. The seed's verifier is the
+        # owner's sign-in and this machine still generates its own session
+        # secret (ODL-522: the build's secret is shared by every disk from the
+        # image). The state is *not* trusted here: release 2026.11.23-5 stamped
+        # signin_set_at before the installer ran, so a stamp can say the
+        # sign-in is set while this file still holds the image's discarded
+        # hash — and keeping the file then served a login nobody could pass.
+        # Write when the .env does not already hold the seed's verifier, and
+        # keep a hash the owner's own visit recorded (a page setup, a reset, a
+        # deploy set used_at or first_login_at).
+        if env_holds_signin "$SEED_SIGNIN"; then
+            ENV_HAS_SEED_SIGNIN=1
+            say same "$env_file (the seed's verifier; this machine's own secret)"
+        elif first_visit_signin_set && first_visit_owner_visited; then
+            say same "$env_file (the owner's sign-in; this machine's own secret)"
+        else
+            write_env "# odile-signin-seeded: 1" "$SEED_SIGNIN" "$(fresh_secret)" \
+                "first boot: the password chosen at registration, this machine's own secret"
+            ENV_HAS_SEED_SIGNIN=1
+        fi
     elif first_visit_signin_set; then
         say same "$env_file (the owner's sign-in; this machine's own secret)"
-    elif [ -n "$SEED_SIGNIN" ]; then
-        # ODL-925: the seeded first boot. The seed's verifier is the owner's
-        # sign-in and this machine still generates its own session secret
-        # (ODL-522: the build's secret is shared by every disk from the image).
-        # One line, naming the sign-in and never printing a hash or a secret.
-        write_env "# odile-signin-seeded: 1" "$SEED_SIGNIN" "$(fresh_secret)" \
-            "first boot: the password chosen at registration, this machine's own secret"
     elif [ -n "$SEED_FILE" ]; then
         # ODL-522: the first boot of a published image. The build's secret is
         # shared by every disk built from that image, so this machine generates
@@ -455,6 +499,15 @@ else
     # with. It is public on purpose and never reaches a tenant.
     write_env "# bench-password-sha256: $password_sha" "$(scrypt_hash "$BENCH_PASSWORD")" \
         "$(fresh_secret)" "the bench fixture password"
+fi
+
+# The stamp follows the write (ODL-947): `signin_set_at` means "the .env holds
+# the owner's sign-in" (docs/security/DECISION-first-visit-state.md §1), so a
+# seeded run records it only when the file above carries the seed's verifier.
+# A state that already carries the timestamp is left alone (idempotent).
+if [ "$ENV_HAS_SEED_SIGNIN" -eq 1 ] && [ -f /etc/odile/first-visit.json ] \
+        && stamp_signin_state; then
+    say stamp "/etc/odile/first-visit.json (signin_set_at: the .env holds the seed's verifier)"
 fi
 install -d -o "$TENANT_USER" -g "$TENANT_USER" -m 0700 "$HERMES_HOME/scripts" "$HERMES_HOME/cron"
 
@@ -879,18 +932,17 @@ PY
     # The state is written once. A re-run must not re-open a page the user has
     # already spent; that is the one thing an idempotent apply must not repair.
     # B-once (ODL-925): a seeded run writes the seed's verifier into the .env,
-    # so the state is stamped signin_set_at — the page serves a login — and an
-    # older unstamped state is stamped when this run finds it.
+    # so the state says signin_set_at — the page serves a login — and the stamp
+    # is taken in section 4, after that write (ODL-947). A run that finds no
+    # state creates it stamped only when section 4 left the verifier in the
+    # file; a state that already exists keeps its timestamps.
     if [ -f /etc/odile/first-visit.json ]; then
-        if [ -n "$SEED_SIGNIN" ] && stamp_signin_state; then
-            say stamp "/etc/odile/first-visit.json (signin_set_at: the seed's verifier is the owner's sign-in)"
-        else
-            say same "/etc/odile/first-visit.json (written; a spent page stays spent)"
-        fi
+        say same "/etc/odile/first-visit.json (written; a spent page stays spent)"
     else
         state_tmp=$(mktemp)
         /usr/bin/python3 - "$FIRST_VISIT_TOKEN" \
-            "$([ -n "$SEED_SIGNIN" ] && echo seeded || echo classic)" > "$state_tmp" <<'PY'
+            "$([ "$ENV_HAS_SEED_SIGNIN" -eq 1 ] && echo seeded || echo classic)" \
+            > "$state_tmp" <<'PY'
 import hashlib, json, sys
 from datetime import datetime, timezone
 

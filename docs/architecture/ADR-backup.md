@@ -1,6 +1,6 @@
 # ADR-004 — The copy that outlives HQ: restic over SFTP to a Hetzner Storage Box BX11
 
-**Status:** Proposed (v3.3 re-cut) · 25 November 2026 · Architect. **The 17 November
+**Status:** Proposed (v3.4 re-cut) · 25 November 2026 · Architect. **The 17 November
 2026 cut named Backblaze B2 in Canada East as the destination; the 19 November
 2026 re-cut made Cloudflare R2 the interim and kept B2 as the target. Both are
 superseded. On 24 November 2026 Savio chose the Hetzner Storage Box BX11, on a
@@ -31,8 +31,9 @@ leaves Savio's console. List price: **€3.20/month excl. VAT for the whole box*
 **$0.07 at fifty** — and it is the **sub-account count, not the terabyte, that
 caps a box at fifty tenants**. A whole machine is restored by rebuilding the
 image and having the user **paste the recovery file into one page on the new
-machine**: one paste, one new sign-in, no CLI, no operator key, and nothing at
-HQ can decrypt the repository.
+machine**: one paste, one **sign-in with the password chosen at registration**
+(B-once, ODL-925 — the first visit is a login, not a setup), no CLI, no operator
+key, and nothing at HQ can decrypt the repository.
 
 ### Change log
 
@@ -46,6 +47,7 @@ HQ can decrypt the repository.
 | 24 November 2026 | v3.1 | Round-1 review corrections: the 26th-connection sentence (not the 11th); every `docs/CLAIMS.md` and public-tree pointer re-derived as a **section and row**, not a line; the 2 GB cap restated as **policy** (its constant, `restic stats` check and `over_cap` write are **added** by ODL-933's re-cut, not "kept"); the pair's name is in the API `name`, not `description`; the runbook banner names §1, §3.1, **§8 and §9** | Round-1 review: an evidence row must reproduce at the head it ships with |
 | 25 November 2026 | v3.2 | Round-3 review corrections: the `AGENTS.md` citation re-derived from a line number to the rule's **section and text** (line 61 is now the standing-credential rule; the quoted rule had moved to 63); §11's convention widened to **every mutable document**; the drill's three corrections given their own row above | Round 3: the same pointer drift the round-1 audit cleared, this time in an HQ-local file no `git grep` can see |
 | 25 November 2026 | v3.3 | Round-4 review corrections: the two `installer/odile_install.py` line pointers replaced by their **symbols** (`backup_unit_files`, `ensure_pin_files`); §11's citation rule extended to the **generated installer**; the verdict cited where it now lives (`main`), not on its old branch; the **RW-can-lock-out-RO** `authorized_keys` residual recorded with the nesting choice; the runbook's "box is empty" banner replaced by the landed drill's `stats` | ODL-926's merge changed 1,373 lines in that embedded file, so both numbers pointed at unrelated code at the tree that lands; the other three were the round's caveats, closed rather than carried |
+| 25 November 2026 | v3.4 | **The first visit is a login, and the restore names the snapshot.** §6's second consequence, §7.1, §7.2 steps 2–6 and §7.3 are re-cut: the user **signs in with the password chosen at registration** (B-once, ODL-925) instead of setting a new sign-in; the first-visit service re-writes the seed's `sign_in_hash` **after** the restore and before the sign-in, because the restored `.env` is the backup night's copy of the verifier and would otherwise accept a **retired** password while refusing the current one; the rebuild seed carries the **T-0 snapshot id** (ADR-005 rev 7) and `backup.py restore <id>` restores that id, with `latest` only as the fallback for a seed that names none; §7.1 gains the T-0 precondition for a windowed rebuild; the "your machine is back" link loses the `?t=` token, which the page has refused with `410` since ODL-925 | ODL-925 landed B-once after v2, so "set a new sign-in" was false at this head — and the order it prescribed (*restore, then set*) now has the opposite failure: the restore is what overwrites the gate. ADR-005 rev 7's windowed rebuild is the flow that makes the T-0 concrete. ODL-937 (`t_c31fb2aa`) is the card that builds both |
 
 **Related:** `docs/MVP-V0.1.md` §6.1, §6.7, §8, §12 (D19); `docs/CLAIMS.md` §1
 (Access: the recovery-code and recovery-file rows; Money and place: the
@@ -719,10 +721,19 @@ and exits 0 (both units name `/home/tenant` today; the failure is a rebuild that
 overrides it), so the drill asserts content, not an exit code: `state.db` opens
 and holds the sessions the user had, `cron/jobs.json` is present, and the `.env`
 hash the restore put back equals the one the backup carried (checked before the
-page's sign-in step replaces it). **Second, the sign-in hash is in the home**, so the
-order of the rebuilt machine's steps matters: restore first, then set the sign-in
-(§7.3) — the other order lets the restore silently replace the password the user
-just chose.
+first-visit service re-writes it from the seed). **Second, the sign-in hash is in
+the home, and the restore writes it back against the user's interest.** The page
+verifies against `.hermes/.env` (`installer/first_visit.py`'s `--env-file`), and
+that file is in the repository, so a restore puts the verifier **as of the backup
+night** over the one the seed wrote at first boot. Under B-once (ODL-925) the seed
+carries the account's current verifier (`sign_in_hash`), so the order is: restore
+first, then **write the seed's verifier back**, then offer the sign-in (§7.3).
+Reversed — or with the re-write omitted — a user who changed their password after
+the backup night finds the **retired** password accepted and the current one
+refused, silently. (The pre-B-once cut of this paragraph had the opposite fear,
+"the restore replaces the password the user just chose", because the page used to
+*set* one.) `/etc/odile` is not restored — the A3 rule — so the recovery-code
+hash and the machine's own state survive either way.
 
 ## 7. The restore path, step by step
 
@@ -736,7 +747,14 @@ not move.
 
 - The nightly run has succeeded: the heartbeat's `last_backup_at` is under **36
   hours** old (the freshness watchdog, ODL-216 — `odilectl/health.py`,
-  `BACKUP_ALERT_SECONDS = 36 * 60 * 60`) and `backup.json` says `ok`.
+  `BACKUP_ALERT_SECONDS = 36 * 60 * 60`) and `backup.json` says `ok`. For an
+  **unplanned** rebuild this is the floor: the machine died, and the last night is
+  the best copy there is.
+- **For a planned, windowed rebuild the gate is the T-0, not last night**
+  (ADR-005 §5.3): the quiesced run's status record says `ok`, its `snapshot` is
+  non-empty, and its `last_success_at` is at or after the window start. HQ refuses
+  to write the disk before that snapshot is on the record (ADR-005 §5.4), so the
+  loss window is the minutes between the two.
 - The user still has the recovery file, off the machine. Nothing else is needed
   from them — not a key, not a passphrase, not a shell.
 
@@ -746,11 +764,11 @@ not move.
 |---|---|---|---|
 | 0 | the user / HQ | The URL fails or the heartbeat stops. The alpha path is an email to `help@odile.fyi`; the 36-hour check catches a silence nobody reported | detection, not a step |
 | 1 | HQ | `odilectl provision <slug> --apply`: one machine in the same tenant row, the same slug, the published image, **no `--backup-password-file`**; the API token already holds the pair, and the seed carries the read-write key and the repository URL | the panel's order — **unmeasured for a rebuild**; the bench's build-to-first-visit term is 14m24s and the first boot's measured installer is 296–353 s |
-| 2 | the machine | the signed image boots and the installer runs zero-touch; the seed carries the repository URL, the read-write key, the pinned host key and the tenant row's **previous instance id**, so the page knows this is a rebuild from the row and not from an operator flag somebody forgot | included above |
-| 3 | the user | opens `https://<slug>.odile.fyi/first-visit?t=<token>` from the "your machine is back" email and **pastes the whole recovery file** into one textarea | under a minute |
+| 2 | the machine | the signed image boots and the installer runs zero-touch; the seed carries the repository URL, the read-write key, the pinned host key and the tenant row's **previous instance id** (`previous_instance`, new in ADR-005 rev 7 — the rebuild marker the first visit reads), so the page knows this is a rebuild from the row and not from an operator flag somebody forgot — and, for a windowed rebuild, the **T-0 snapshot id** (`backup_snapshot`, ADR-005 §5.4). A seed cut before that key existed names none, and `latest` on a rebuilt machine *is* the T-0: nothing newer exists until the restore's own run | included above |
+| 3 | the user | opens `https://<slug>.odile.fyi/first-visit` from the "your machine is back" email and **pastes the whole recovery file** into one textarea. No token in the URL: the page has answered `410` to `?t=` since ODL-925 (`docs/runbooks/incidents.md`), because the sign-in is the password, not a link | under a minute |
 | 4 | the machine | the first-visit service parses `Backup password:` with the installer's own grammar (`RECOVERY_PASSWORD_RE`), writes `/etc/odile/recovery.txt` (0600) **regenerated for this machine** — same password, new `Instance:`, new `Certificate SHA-256:`, the repository, the host key and the read-only key — starts `odile-restore.service`, and the page polls a text status endpoint with a meta refresh (no JavaScript) | — |
-| 5 | the machine | `odile-restore.service`: stop the backup timer and the agent unit, `backup.py restore latest --target / --include <home>`, start the agent unit, run one `backup.py run` so a fresh snapshot exists immediately, re-enable the timer, write the status. The timer is stopped first so a 02:00–06:00 run cannot snapshot a half-restored home; the restore's own run is the newest snapshot either way | repo ÷ throughput; the measured repository is **1.017 GB** |
-| 6 | the user | the page says "Restored snapshot `<id>` of 2026-11-17T03:00Z — 156,311 files, 3.14 GB"; they set a **new sign-in** (the page's normal step) and sign in | under a minute |
+| 5 | the machine | `odile-restore.service`: stop the backup timer and the agent unit, `backup.py restore <backup_snapshot> --target / --include <home>`, start the agent unit, run one `backup.py run` so a fresh snapshot exists immediately, re-enable the timer, write the status. The timer is stopped first so a 02:00–06:00 run cannot snapshot a half-restored home; the restore's own run is the newest snapshot either way, and its `ExecStartPost` heartbeat is what tells HQ the restore finished (ADR-005 §5.3) | repo ÷ throughput; the measured repository is **1.017 GB** |
+| 6 | the machine, then the user | the service re-writes the seed's `sign_in_hash` over the restored `.env` (§6) and the page says "Restored snapshot `<id>` of 2026-11-17T03:00Z — 156,311 files, 3.14 GB"; the user **signs in with the password they chose at registration** — the first visit is a login, not a setup (ODL-925) | under a minute |
 | 7 | the user | checks one thing they care about — a file, the last brief, the agent's memory of yesterday — and the page's own report names the snapshot and its time | a minute |
 | 8 | HQ | records the rebuild on the row: snapshot id, restore time, size; the next nightly run lands under the same `--host <slug>`, so the retention group stays one | — |
 
@@ -776,15 +794,18 @@ paragraph, and if it does not hold, `docs/CLAIMS.md` §1 "Reliability", the
 ### 7.3 The user's four actions, in one paragraph
 
 Open the link in the "your machine is back" email; paste the recovery file into
-the box; wait for the page to say which snapshot came back; set a new sign-in and
-look at one thing that matters. No terminal, no command, no SSH key, no chat
-message containing a secret.
+the box; wait for the page to say which snapshot came back; **sign in with the
+password you chose at registration** and look at one thing that matters. No
+terminal, no command, no SSH key, no chat message containing a secret — and no
+new password to invent, because the machine's gate is the account's verifier
+(B-once, ODL-925), which the restore re-writes after the home comes back.
 
 ### 7.4 The branches, and the failures this shape has to answer
 
 | Branch or failure | What happens |
 |---|---|
 | **Wrong password** | restic exits 12 (`wrong password or no key found`); the page says "that file does not open your backup", the home is untouched, the paste can be retried. A file from another tenant is caught by its own `Tenant:` and `Repository:` lines before restic runs, and a truncated paste fails at the page — the installer's `parse_recovery` grammar is reused, so a bad file never reaches a restic call |
+| **The restored `.env` is older than the account** | the sign-in accepts the **password the user retired** and refuses the current one — silently, and after a restore that otherwise succeeded. The control: the first-visit service writes the seed's `sign_in_hash` over the restored `.env` **after** the restore and **before** the page offers the sign-in (§6, §7.2 step 6; the same `write_env_hash` the installer uses); the drill asserts the `.env` hash equals the **seed's**, not the backup's, before the sign-in step |
 | **The read-only key is used to restore** | it works, with `--no-lock`; without it restic fails to write the lock. This is the failure the user will actually hit, so the command in the recovery file carries the flag and the page's help text repeats it |
 | **The user lost the recovery file** | the page offers "start fresh without a restore": the guest mints a new password into a new recovery file, uses a new repository directory (`repo-<4 hex>`) in the **same** sub-account, and the old directory is kept 30 days and then emptied by the exit (ODL-935's re-cut); no API call and no new sub-account. The page says, in one sentence, that the old data is unrecoverable without the old file — which is the promise, not a bug |
 | **The restore is interrupted** | `odile-restore.service` is a oneshot and the page re-offers the step; restic restore overwrites into the same target, so a second run converges. The backup timer stays stopped until a run completes, and if the user never comes back the 36-hour freshness watchdog is the signal. Nothing else in the machine depends on it, so the user is never blocked |
@@ -812,7 +833,7 @@ recovery file and the provisioning.
 | **Provisioning — the re-cut of ODL-924 (`t_83d6fd7d`)** | For each tenant: create the pair — `-rw` at `tenants/<slug>`, `-ro` at a **subdirectory of it that holds the repository** (never the same home: shared homes share `authorized_keys`, §4.1) — **call `update_access_settings` after every create** (the `POST` ignores `access_settings`), install each public half **while the home is still writable**, read both accounts back, and only then set `readonly: true`; generate both keypairs, reset and discard the sub-account passwords, write `/root/.odile/hetzner/odile-<slug>.env` (0600) and the row's `detail` (`backup_box_id`, `backup_subaccount_id`, `backup_readonly_subaccount_id`; the env file is the store of record and the reopen path re-records `detail` from it), put the repository URL, the read-write key, the host-key line and the read-only key in the seed **with the previous instance id**, and **refuse the 51st pair**. **Retires `--backup-password-file`** and with it the sealed password in `seed-rebuilds.json` | the evidence from `t_12b3720a` |
 | **`backup.py` + installer — the re-cut of ODL-933 (`t_fda54dd4`)** | Add **`-o sftp.connections=2`** to the SFTP options; render the timer from the slug (§4.3's offset, `RandomizedDelaySec=0`), keep `Persistent=true`; **add** `BACKUP_TENANT_CAP_BYTES=2000000000`, the after-prune `restic stats --mode raw-data` and the `status: over_cap` write (nothing to rename or keep: `scripts/backup.py` has none of them at this head); add `ConditionPathExists=/etc/odile/recovery.txt` to the backup **service**; **do not mint a recovery file on a rebuild** (`ensure_recovery` skips only while the file is absent and the seed carries the previous instance id). No `s3:` branch. Update `BACKUP_SHA256` and re-sign the installer | the seed fields |
 | **The usage readback — the re-cut of ODL-934 (`t_a316c2fe`)** | `odilectl backup-usage`: read `stats.size_data` and `stats.size_snapshots` from `GET /storage_boxes` with the existing API token, sum each tenant's last `restic stats` from its heartbeat, write `/var/lib/odile/backup/usage.json`, and feed the watchdog at **800 GB warn / 950 GB critical** (1 TB box, 2 GB cap, 50 tenants = 100 GB at the cap). No new credential: the API token is already there | provisioning |
-| **First visit — ODL-937 (`t_c31fb2aa`) stands** | the rebuild step: detect the previous instance id in the seed, ask for the recovery file before the sign-in step, write `/etc/odile/recovery.txt`, run `odile-restore.service`, show the snapshot and its time (no JavaScript). Its §8 row's bucket wording is re-cut to the repository URL | `backup.py`'s `restore` (already supports `--target /` and `--include`) |
+| **First visit — ODL-937 (`t_c31fb2aa`) stands, with two deltas** | the rebuild step: detect the previous instance id in the seed, ask for the recovery file before the sign-in step, write `/etc/odile/recovery.txt`, run `odile-restore.service`, **restore the seed's `backup_snapshot` (not `latest`; the card's DoD still says `latest` and is re-cut by this one)**, show the snapshot and its time (no JavaScript), and **re-write the seed's `sign_in_hash` after the restore, before the sign-in page** (§6, §7.2 step 6). Its §8 row's bucket wording is re-cut to the repository URL | `backup.py`'s `restore` (already supports `--target /` and `--include`) |
 | **Recovery file** | three new lines (the repository URL, the box host-key fingerprint and the read-only private key) and the parse that tolerates the key block; `first_visit.py`'s copy of the grammar stays the one source; the page's help text carries `--no-lock` | provisioning |
 | **The exit — the re-cut of ODL-935 (`t_1b578030`)** | at `keep_until`: forget and prune **every** snapshot with the tenant's **read-write key** (`restic snapshots --json` → `restic forget --prune <id>` for each), which removes all snapshot data and leaves only the repository's config and key files — no user data — then **`DELETE` both sub-accounts** with the API token and record `subaccount_deleted_at`. The shipped `odilectl purge` is a `shutil.rmtree` on HQ's `--root` and has **no SFTP path today**; that is the re-cut. **One constraint the API imposes:** Hetzner lets a sub-account's home directory be deleted only *after* the sub-account is gone, and the only credential that could then remove it is the box's **main account**, which HQ deliberately does not hold — so the empty `tenants/<slug>` directory stays, and the runbook says so. The promise is about the data, and the data is gone when the last snapshot is pruned and the two keys that could read it are deleted | provisioning |
 | **The demo and bench repositories** | one command (`backup.py init` against the Hetzner URL, then `run`) for the demo and the bench; the HQ `sshd` on 2222 stays 30 days and is then deleted. **`t_8eb17a54` becomes "delete the stand-in"**, not "buy a storage box" | the drill |
@@ -929,6 +950,21 @@ exactly that reason; round 4 found them.
 - The rebuild's password path: `docs/runbooks/offboard.md` §5 and
   `docs/runbooks/backup.md` §5.2, §9; `seed/seed.py:331` (`seal_backup_password`),
   `:508` (`backup_repo_url`), `:883` (the same-slug fill).
+- **The first visit is a login (v3.4):** `installer/first_visit.py`'s
+  `--env-file` (the page verifies against `~/.hermes/.env`) and its
+  "must not restore `/etc/odile`" rule; `installer/odile_install.py`
+  (`SEED_KEYS`' `sign_in_hash`, the seed write on a first visit,
+  `write_env_hash`); `docs/CLAIMS.md` §1 *Access* (D-1's clause and the D-3
+  row) and §4.4's "sign in with the password you chose when you registered".
+  **The failure this cut fixes is the reverse of the one v2 named:** the restore
+  writes the backup night's `.env` over the verifier, so the re-write from the
+  seed has to happen *after* the restore and *before* the sign-in page.
+- **The snapshot the restore names (v3.4):** `scripts/backup.py`
+  (`command_restore`'s positional `snapshot`, default `latest`) and ADR-005
+  §5.4's `backup_snapshot` seed key. `latest` on a rebuilt machine is the T-0 by
+  construction — nothing newer exists until the restore's own run — which is why
+  the fallback is safe and the key is still worth carrying: it makes the id a
+  *statement* rather than an inference, and it is the id the account page shows.
 - The restore primitives that already exist: `command_restore` in
   `installer/odile_install.py` (`--target`, repeatable `--include`);
   `backup.py init` answering `same` against an existing repository.
