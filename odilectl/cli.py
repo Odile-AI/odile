@@ -25,6 +25,7 @@ import sys
 from typing import Callable, Sequence, TextIO
 
 from . import (
+    backup_usage,
     bootrecord,
     destroy,
     dns,
@@ -55,6 +56,7 @@ MODULES = (
     keys,
     status,
     health,
+    backup_usage,
     destroy,
     release,
     purge,

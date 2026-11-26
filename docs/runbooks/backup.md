@@ -47,11 +47,13 @@ own Hermes cron, which is the same path the user has.
 bucket layout and the R2 rows in §1 and §3.1 are the interim **design**
 (ADR-004 §8); the code that operates them is **not shipped at this head**. The
 `s3:` branch of `scripts/backup.py`, the guest's `/etc/odile/backup-s3.env` and
-the cap check are **ODL-933**; the `odilectl backup-usage` readback and its
-8.0/9.0 GB alert are **ODL-934**; the bucket-emptying half of `odilectl purge`
+the cap check are **ODL-933**; the bucket-emptying half of `odilectl purge`
 is **ODL-935**; the provisioning that records the bucket and the tokens is
-**ODL-924**, still blocked on Savio's minting. Read every R2 sentence below as
-those cards' design until they land; the SFTP material stays the v5 record.
+**ODL-924**, still blocked on Savio's minting. **ODL-934 is the exception:
+`odilectl backup-usage` shipped at this head, against the Hetzner box rather
+than R2 (§3.2), with 800 GiB warn / 950 GiB critical byte ceilings; the R2
+design's 8.0/9.0 GB account line is superseded.** Read every R2 sentence below
+as those cards' design until they land; the SFTP material stays the v5 record.
 
 **24 November 2026 — the destination is a Hetzner Storage Box BX11.** Savio
 chose it for all Odile user backups, and `docs/architecture/ADR-backup.md` v3
@@ -516,10 +518,13 @@ dashboard step in that branch.
   account** (which already holds HQ's 1.15 GB). `backup.py run` reads
   `R2_TENANT_CAP_BYTES=2000000000` and reports `status: over_cap` with the size
   when the repository after prune exceeds it; a run that starts over cap does not
-  upload. `odilectl backup-usage` lists all four buckets daily and alerts at
-  **8.0 GB (warn) / 9.0 GB (critical)**. The **fourth bucket — the second
-  paying tenant — waits for B2.** The cap check in `backup.py` is **ODL-933**'s
-  and the daily readback **ODL-934**'s; neither is shipped at this head.
+  upload. The R2-era readback was designed to list all four buckets daily and
+  alert at **8.0 GB (warn) / 9.0 GB (critical)**; **ODL-934 shipped at this
+  head as the box's readback instead** (§3.2): two box `GET`s plus each
+  tenant's last restic number, warning at **800 GiB** and critical at
+  **950 GiB**. The **fourth bucket — the second paying tenant — waits for
+  B2.** The cap check in `backup.py` is **ODL-933**'s and is not shipped at
+  this head.
 - **Verification after minting:** `HeadBucket` on `odile-t-<slug>` must answer,
   and `HeadBucket` on `hermes-hq-backup` with the tenant token must **not** be
   200. Record both codes in the handoff — that is the proof the token is scoped.
@@ -547,6 +552,89 @@ and a second run answers `same`, exactly as in §3.
 The readback that proves HQ's bucket was untouched at the re-cut is in
 `docs/architecture/ADR-backup.md` §4.2 (75 objects / 1,149,539,702 bytes, one
 snapshot `8d521571…`), and the migration back to B2 is that ADR's §10.
+
+### 3.2 The box's usage readback (ODL-934)
+
+**Shipped at this head.** `odilectl backup-usage` reads the box's own `stats`
+and each tenant's last restic `repo_bytes` from its heartbeat, prints one row
+per tenant, and with `--apply` writes the record the watchdog reads. It is a
+command, not a systemd unit: run it **daily**. The watchdog reads whatever the
+last run wrote and prints the box's bytes, share, sub-account count and the
+readback's time; the alert's symptom carries its age, so a readback that
+stopped running is visible as an old time, not a fresh one.
+
+```
+$ python3 -m odilectl backup-usage --apply
+backup usage: box 709870 odile-backups (hel1, HEL1-BX192), 2.0 MiB of 1.0 TiB used (0.0%)
+  stats:     size_data 2097152 bytes, size_snapshots 0 bytes, total 2097152 bytes
+  tenants:   2 row(s); 0 with their own restic number, 0 bytes (0 B)
+    odl-7971a8: no restic number (heartbeat backup status: failed); pair odile-odl-7971a8-ro, odile-odl-7971a8-rw
+    odl-aa3442: no restic number (heartbeat backup status: no backup reported)
+  unaccounted: 2 sub-account(s) on the box with no tenant row
+    odile-odl-bench-ro u728180-sub2 (id 392556, tenants/odl-bench/data)
+    odile-odl-bench-rw u728180-sub1 (id 392550, tenants/odl-bench)
+  sub-accounts: 4 of 100 (2 of 50 tenant pairs)
+  ceiling:   ok (warn at 800.0 GiB = 858993459200 bytes, critical at 950.0 GiB = 1020054732800 bytes)
+  token:     /root/.odile/hetzner-api-token (mode 0600, project-scoped; no new credential)
+  calls:     GET /storage_boxes, GET /storage_boxes/709870/subaccounts
+  readback:  /var/lib/odile/backup/usage.json (wrote, mode 0600)
+```
+
+Without `--apply` it prints and writes nothing; `--dry-run` wins when both are
+given. The write is atomic (`os.replace` of a 0600 temp file in the same
+directory) to `/var/lib/odile/backup/usage.json`:
+
+```
+$ stat -c '%a %U:%G %s %n' /var/lib/odile/backup/usage.json
+600 root:root 1685 /var/lib/odile/backup/usage.json
+```
+
+The record's schema is `odile.backup-usage/1`:
+
+- `box{id,name,location,system,size_bytes,size_data,size_snapshots,total_bytes,subaccounts,subaccounts_limit,pairs,pair_limit}`
+- `tenants[{slug,state,subaccounts,repo_bytes,backup_at,status,source}]`
+- `unaccounted[{name,username,id,home_directory,slug}]`
+- `totals{tenants,tenants_with_a_number,tenant_bytes,box_bytes}`
+- `thresholds{warn_bytes,critical_bytes,level}`
+- `credential{token_path,token_mode,api_calls}`
+
+Flags: `--token`, `--box-id`, `--api-base`, `--db`, `--heartbeat-db`, `--out`,
+`--now`.
+
+The box is one fixed 1,024 GiB, and the ceilings are the byte counts the
+record carries: **800 GiB warn = 858,993,459,200 bytes**, **950 GiB critical =
+1,020,054,732,800 bytes**. Both are inclusive (`>=`): unlike the age
+thresholds, the byte line is a place, not a duration. At 2.0 MiB the readback
+prints `ceiling: ok`. A fake box served on `127.0.0.1` answers the same two
+`GET`s at exactly 800.0 GiB; the same command prints `ceiling: warn`, and the
+`odilectl health` poll fed that record prints:
+
+```
+  alert backup_usage backup-box-709870 open at 2026-11-26T07:29:39Z: the backup box 709870 odile-backups uses 800.0 GiB (78.1% of 1.0 TiB); 2 of 100 sub-accounts; readback 0m 0s ago; 800.0 GiB warn line reached
+```
+
+At exactly 950.0 GiB the readback prints `ceiling: critical`; a poll at that
+level resolves the warn row and opens the critical one:
+
+```
+  alert backup_usage backup-box-709870 resolved at 2026-11-26T07:29:39Z: the backup box 709870 odile-backups uses 800.0 GiB (78.1% of 1.0 TiB); 2 of 100 sub-accounts; readback 0m 0s ago; 800.0 GiB warn line reached
+  alert backup_usage_critical backup-box-709870 open at 2026-11-26T07:30:30Z: the backup box 709870 odile-backups uses 950.0 GiB (92.8% of 1.0 TiB); 2 of 100 sub-accounts; readback 0m 0s ago; 950.0 GiB critical line reached
+```
+
+The 2 unaccounted sub-accounts are the bench pair, by name:
+`odile-odl-bench-ro u728180-sub2` (id 392556, `tenants/odl-bench/data`) and
+`odile-odl-bench-rw u728180-sub1` (id 392550, `tenants/odl-bench`). They have
+no tenant row, so the command names them instead of folding their bytes into a
+tenant's. The box counts 4 of 100 sub-accounts (2 of 50 tenant pairs); the
+pair limit is half the sub-account limit because each tenant takes one `-rw`
+and one `-ro`.
+
+The command needs **no new credential** and never writes to the box: the two
+calls are `GET /storage_boxes` and `GET /storage_boxes/709870/subaccounts`,
+with the existing project-scoped token `/root/.odile/hetzner-api-token`
+(0600). Tenant bytes come from the heartbeat database the poll already opens;
+the provider reports the box as one number, so a per-tenant figure can only
+come from the tenant's own last restic stats.
 
 ---
 
@@ -913,8 +1001,9 @@ sentence is quoted (ODL-474 lands it).
   the bench `odl-bench`, the first paying tenant) and mints two bucket-scoped
   tokens each; `odilectl provision` records
   them and verifies the scope; the demo and bench repositories are re-initialised
-  against the R2 URL; and the 9 GB readback/alert lands with the usage card.
-  The return to B2 is ADR-004 §10, not a new design.
+  against the R2 URL; and the R2-era 9 GB readback/alert is superseded by the
+  box's readback (**ODL-934**, shipped at this head: §3.2, 800 GiB warn /
+  950 GiB critical). The return to B2 is ADR-004 §10, not a new design.
 - **The repository and its key registration.** The installer now places the
   program and arms the timer (t_19148cba), so a fresh tenant has the job. The
   repository still needs its first `backup.py init`: it generates the SFTP key
