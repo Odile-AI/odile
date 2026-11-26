@@ -1,0 +1,7 @@
+# The DNS names this backup's restore moves to the new server.
+# One name per line. The nightly manifest and the kit's fallback both read it.
+odile.fyi
+gw.odile.fyi
+mail.odile.fyi
+testing.odile.fyi
+test.odile.fyi
