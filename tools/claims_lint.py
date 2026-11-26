@@ -28,12 +28,12 @@ DECK = Path("docs/CLAIMS.md")
 # docs/backlog.yaml are deliberately out of scope: they *discuss* the
 # forbidden words while explaining the trust model.
 #
-# `templates/emails` is the four messages a tester receives — the invitation,
-# the confirmation, the ready email and the support reply (ODL-349). They are
-# not pages a visitor opens, so they were read by a person against BRAND.md
-# §Email while `tools/brand_lint.py` checked colours, type and surfaces. A
-# sentence the deck forbids in a browser is just as false in an inbox, and the
-# recipient cannot click to a page that corrects it.
+# `templates/emails` is the messages a tester receives — the invitation, the
+# confirmation, the ready email, the booking receipt (ODL-950) and the support
+# reply (ODL-349). They are not pages a visitor opens, so they were read by a
+# person against BRAND.md §Email while `tools/brand_lint.py` checked colours,
+# type and surfaces. A sentence the deck forbids in a browser is just as false
+# in an inbox, and the recipient cannot click to a page that corrects it.
 DEFAULT_PATHS = (
     "web",
     "prototype",
