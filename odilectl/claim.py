@@ -157,11 +157,11 @@ SETTLED_STATES = ("installed", "active", "waiting_for_owner", "churned")
 
 # The ready email is the one public surface this module writes. The subject is
 # BRAND.md's; the body is `templates/emails/ready.txt`: the machine URL and the
-# expected measurement as printed values, then the one action — the machine's
-# tokenless first-sign-in page (B-once, ODL-925: sign in with the password
-# chosen at registration) — and one navigation link to the guide. The strict
-# bar removed the four terminal commands; the setup token is the machine's seed
-# badge and the rebuild-seal key, and no message or kit prints it.
+# measurement the machine reports, printed values, then the one action — the
+# machine's tokenless first-sign-in page (B-once, ODL-925: sign in with the
+# password chosen at registration) — and one navigation link to the guide. The
+# strict bar removed the four terminal commands; the setup token is the
+# machine's seed badge and the rebuild-seal key, and no message or kit prints it.
 READY_SUBJECT = "Your machine is waiting."
 # The live mail runbook's transactional sender (ODL-102): mail.odile.fyi is
 # what DKIM signs and SPF authorises. BRAND.md's hello@odile.fyi predates that
@@ -1019,11 +1019,14 @@ def queue_ready_email(
 
 
 def expected_measurement(config: Config) -> str:
-    """The 96-hex launch measurement the ready email promises to match.
+    """The release pin's 96-hex launch measurement: the build-time expectation.
 
-    The release pin (`odile-verify.pin`, updated by ODL-454) is the default; an
-    operator can pass ``expected_measurement`` in the config while a re-pin is
-    pending. An invalid value is a config error, never a sentence on the page.
+    ODL-947 retired it from the ready email, which prints the machine's own boot
+    report and legitimately differs; the pin stays the value a rebuild is
+    compared with. The release pin (`odile-verify.pin`, updated by ODL-454) is
+    the default; an operator can pass ``expected_measurement`` in the config
+    while a re-pin is pending. An invalid value is a config error, never a
+    sentence on the page.
     """
     value = (config.get("expected_measurement") or "").strip().lower()
     if not value:
@@ -1049,10 +1052,10 @@ def ready_body(*, url: str, measurement: str,
                guide_url: str = READY_GUIDE_URL) -> str:
     """The ready email's plain-text body from `templates/emails/ready.txt`.
 
-    The machine URL and the expected measurement are printed values. The one
-    action names the machine's tokenless first-visit page (B-once, ODL-925):
-    the user signs in with the password chosen at registration, and no setup
-    token travels in the message. The guide is the one navigation link. No
+    The machine URL and the measurement the machine reports are printed values.
+    The one action names the machine's tokenless first-visit page (B-once,
+    ODL-925): the user signs in with the password chosen at registration, and no
+    setup token travels in the message. The guide is the one navigation link. No
     command, no key, no passphrase.
     """
     template = READY_TEMPLATE.read_text(encoding="utf-8")
@@ -1447,8 +1450,8 @@ def provision_tenant(
         return _finish_ready(con, slug, config=config, outbox=outbox,
                              now=moment, guest_probe=guest_probe)
 
-    # Validate the one config value the ready email promises before any spend:
-    # an invalid measurement is a config error, not a machine that gets built
+    # Validate the release pin's measurement before any spend: an invalid
+    # measurement is a config error, not a machine that gets built
     # and then terminated. The boot release is the pin's instruction, not the
     # provider's report; an unpinned release fails here, before the order.
     release = _release(config)

@@ -303,7 +303,7 @@ class SeededFirstBootTests(unittest.TestCase):
         self.start_service()
         status, body = self.sign_in(REG_PASSWORD)
         self.assertEqual(status, 200)
-        self.assertIn("Your sign-in is set", body,
+        self.assertIn("You are signed in", body,
                       "the first visit is not a login with the registration password")
 
     def test_the_pre_installer_state_carries_no_stamp_and_the_writer_stamps_it(self) -> None:

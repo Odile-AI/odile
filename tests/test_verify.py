@@ -22,16 +22,19 @@ from __future__ import annotations
 import base64
 import hashlib
 import html
+import http.client
 import importlib.util
 import json
 import re
 import shutil
+import socket
 import stat
 import struct
 import subprocess
 import sys
 import tempfile
 import threading
+import time
 import unittest
 import urllib.error
 import urllib.request
@@ -142,6 +145,23 @@ def document_with(**fields: object) -> str:
 
 def measurement() -> str:
     return json.loads(FIXTURE_BYTES)["measurement"]
+
+
+def free_port() -> int:
+    """A loopback port nobody is listening on (the kernel picks it)."""
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        return sock.getsockname()[1]
+
+
+def load_page():
+    """verify/verify.py as a module: the served page's cache is one object."""
+    spec = importlib.util.spec_from_file_location("odile_verify_page_odl947", PAGE)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
 
 
 class VerifyTests(unittest.TestCase):
@@ -3074,6 +3094,187 @@ Digests:
         self.assertEqual(len(re.findall(r"<h1\b", body)), 1)
         self.assertEqual(len(re.findall(r"<main\b", body)), 1)
         self.assertEqual(len(re.findall(r"<header\b", body)), 1)
+
+
+
+    # -- the served page's pace (ODL-947 follow-up) -------------------------
+
+    STUB_AUDIT = """\
+#!/usr/bin/python3
+\"\"\"A stand-in for odile-audit: one JSON answer, and a line per run.\"\"\"
+import json, sys
+from pathlib import Path
+counter = Path(__file__).resolve().parent / "audit-runs"
+with counter.open("a", encoding="utf-8") as handle:
+    handle.write("run\\n")
+checks = [{"name": name, "ok": True, "detail": "stub " + name, "command": "stub"}
+          for name in ("boot key", "authorized keys", "root password", "password auth",
+                       "operator account", "login history")]
+print(json.dumps({"checks": checks}))
+"""
+
+    def stub_audit(self, root: Path) -> Path:
+        """Replace the copied audit with one that counts its own runs."""
+        program = root / "usr/local/bin/odile-audit"
+        program.write_text(self.STUB_AUDIT, encoding="utf-8")
+        program.chmod(0o755)
+        return program.parent / "audit-runs"
+
+    def audit_runs(self, counter: Path) -> int:
+        try:
+            return len(counter.read_text(encoding="utf-8").splitlines())
+        except OSError:
+            return 0
+
+    def serve_page(self, root: Path, dump: Path, *extra: str) -> int:
+        port = free_port()
+        command = [sys.executable, str(PAGE), "--root", str(root),
+                   "--luks-dump", str(dump), "--serve", "--bind", "127.0.0.1",
+                   "--port", str(port), "--template", str(TEMPLATE), *extra]
+        process = subprocess.Popen(command, stdout=subprocess.PIPE,
+                                   stderr=subprocess.STDOUT, text=True)
+
+        def stop() -> None:
+            if process.poll() is None:
+                process.terminate()
+                try:
+                    process.wait(timeout=10)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+            if process.stdout is not None:
+                process.stdout.close()
+
+        self.addCleanup(stop)
+        for _ in range(200):
+            if process.poll() is not None:
+                break
+            try:
+                if self.http_get(port, "/health")[0] == 200:
+                    return port
+            except OSError:
+                pass
+            time.sleep(0.05)
+        raise AssertionError("the page server did not start: %s"
+                             % (process.stdout.read() if process.stdout else ""))
+
+    def http_get(self, port: int, path: str) -> tuple[int, str]:
+        connection = http.client.HTTPConnection("127.0.0.1", port, timeout=60)
+        try:
+            connection.request("GET", path)
+            response = connection.getresponse()
+            return response.status, response.read().decode("utf-8", "replace")
+        finally:
+            connection.close()
+
+    def test_the_served_page_keeps_one_audit_and_names_when_it_was_read(self) -> None:
+        """One audit answers every request, and a kept one says so."""
+        root, dump = self.build()
+        counter = self.stub_audit(root)
+        port = self.serve_page(root, dump)
+        for _ in range(100):
+            if self.audit_runs(counter) >= 1:
+                break
+            time.sleep(0.05)
+        self.assertEqual(self.audit_runs(counter), 1,
+                         "the server did not read the audit as it started")
+        status, first = self.http_get(port, "/verify")
+        self.assertEqual(status, 200)
+        self.assertIn("audit as of", first,
+                      "the page did not name the audit it kept")
+        status, second = self.http_get(port, "/verify")
+        self.assertEqual(status, 200)
+        self.assertEqual(self.audit_runs(counter), 1,
+                         "a second request ran the handoff audit again")
+        self.assertIn("audit as of", second)
+        rows = lambda body: re.findall(r'<tr class="check">.*?</tr>', body, re.S)
+        self.assertGreaterEqual(len(rows(second)), 15)
+        self.assertEqual(rows(first), rows(second),
+                         "the cached request changed a row")
+        self.assertIn("read from the machine", second)
+        self.assertIn("checked from your laptop", second)
+
+    def test_a_stale_audit_is_served_at_once_while_one_refresh_runs(self) -> None:
+        """Past the window the page does not wait: one thread replaces it."""
+        page = load_page()
+        now = [1000.0]
+        calls: list[float] = []
+        second_started = threading.Event()
+        release_second = threading.Event()
+
+        def produce():
+            calls.append(now[0])
+            if len(calls) == 2:
+                second_started.set()
+                release_second.wait(10)
+            return page.Source({"checks": []}, "")
+
+        cache = page.AuditCache(produce, ttl=10, clock=lambda: now[0],
+                                stamp=lambda: "T%d" % int(now[0]))
+        first = cache.get()
+        self.assertTrue(first.fresh)
+        self.assertEqual((first.read_at, len(calls)), ("T1000", 1))
+        now[0] = 1011.0
+        stale = cache.get()
+        self.assertFalse(stale.fresh)
+        self.assertEqual(stale.read_at, "T1000")
+        self.assertTrue(second_started.wait(5), "no background refresh started")
+        again = cache.get()
+        self.assertFalse(again.fresh)
+        time.sleep(0.05)
+        self.assertEqual(len(calls), 2, "a second request started a second read")
+        release_second.set()
+        for _ in range(200):
+            if cache.get().read_at != "T1000":
+                break
+            time.sleep(0.02)
+        self.assertEqual(cache.get().read_at, "T1011",
+                         "the background read never landed")
+        self.assertEqual(len(calls), 2)
+
+    def test_a_kept_audit_leaves_every_row_and_verdict_alone(self) -> None:
+        """The cache changes the age line, not a single row or verdict."""
+        page = load_page()
+        root, dump = self.build()
+        self.stub_audit(root)
+        stamp = page.parse_iso(self.NOW)
+        source = page.Machine(root=root, now=stamp, luks_dump=dump).audit()
+        self.assertIsNotNone(source.document, "the stub audit did not answer")
+        cached = page.Machine(root=root, now=stamp, luks_dump=dump,
+                              cached_audit=page.Cached(source, "2026-11-13T11:59:30Z",
+                                                       False))
+        page.collect(cached)
+        live = page.Machine(root=root, now=stamp, luks_dump=dump)
+        page.collect(live)
+        self.assertEqual(page.document(cached)["groups"], page.document(live)["groups"])
+        self.assertEqual(page.document(cached)["summary"], page.document(live)["summary"])
+        template = (ROOT / "templates" / "verify.html").read_text(encoding="utf-8")
+        body = page.render(cached, template)
+        self.assertIn("audit as of", body)
+        self.assertIn("2026-11-13T11:59:30Z", body)
+        self.assertNotIn("audit as of", page.render(live, template))
+
+    def test_a_failed_audit_is_never_kept(self) -> None:
+        """A boot that has not written the audit's files yet retries next time."""
+        page = load_page()
+        now = [1000.0]
+        calls: list[float] = []
+
+        def produce():
+            calls.append(now[0])
+            return page.Source(None, "no answer")
+
+        cache = page.AuditCache(produce, ttl=600, clock=lambda: now[0],
+                                stamp=lambda: "2026-11-25T00:00:00Z")
+        failed = cache.get()
+        self.assertTrue(failed.fresh)
+        now[0] = 1001.0
+        again = cache.get()
+        self.assertFalse(again.fresh)
+        for _ in range(200):
+            if len(calls) >= 2:
+                break
+            time.sleep(0.02)
+        self.assertEqual(len(calls), 2, "a failed audit was kept as fresh")
 
 
 if __name__ == "__main__":
