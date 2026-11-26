@@ -156,10 +156,13 @@ if [ "$DRY_RUN" = 0 ]; then
   say "Installing packages"
   export DEBIAN_FRONTEND=noninteractive
   apt-get update -qq
+  # sshpass is no package's dependency here: the gate's `prereqs` target
+  # refuses to run without it, and `odilectl provision` installs a tenant's key
+  # over port 23 with it. A recovered box without it cannot onboard a tenant.
   apt-get install -y -qq \
-    restic rsync sqlite3 openssh-server caddy postfix opendkim opendkim-tools \
-    python3 python3-yaml curl git make shellcheck openssl nftables e2fsprogs gh \
-    bind9-dnsutils libatomic1 iproute2 sudo psmisc \
+    restic rsync sqlite3 openssh-server sshpass caddy postfix opendkim \
+    opendkim-tools python3 python3-yaml curl git make shellcheck openssl \
+    nftables e2fsprogs gh bind9-dnsutils libatomic1 iproute2 sudo psmisc \
     build-essential libolm-dev cmake pkg-config
   ln -sf /usr/bin/gh /usr/local/bin/gh
 

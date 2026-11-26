@@ -26,6 +26,13 @@ before the operator commits:
   shipped block re-execs the script from `/var/tmp` and puts the kit's current
   files back afterwards; the block is run twice here, the second pass being the
   copy.
+* the **package list** — every binary the Makefile's `prereqs` target refuses
+  to run without is mapped to the Debian package that provides it and asserted
+  in the shipped `apt-get install` line (and in §5A step 3 when the HQ-only
+  runbook is in the tested tree, i.e. under `make check-hq`). `make check` does
+  not pull a package in: `sshpass` is in no dependency chain, and without it
+  the recovered box's gate exits 1 and `odilectl provision` cannot install a
+  key on port 23.
 
 The rules:
 
@@ -55,6 +62,16 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 SCRIPT = ROOT / "deploy" / "recovery" / "recover.sh"
+
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+# The gate's own prerequisite list lives in one place: main's parity test
+# derives it from the Makefile and maps each binary to a package. Reuse that
+# derivation here so the recovery kit cannot drift from the gate's list.
+from tests.test_ci_prereq_parity import (  # noqa: E402
+    APT_PACKAGES, TARBALLED, apt_packages, prereq_binaries)
+
 
 PASSPHRASE = "p" + "0" * 63
 R2_KEY = "AKIA" + "R2KEY" + "7" * 13
@@ -653,3 +670,96 @@ class ResticRestoreTests(unittest.TestCase):
                 env=env, capture_output=True, text=True, timeout=120)
             self.assertNotEqual(result.returncode, 0)
             self.assertIn("mutually exclusive", result.stderr)
+
+
+# ---------------------------------------------------------------------------
+# The package list, held against the Makefile's own prerequisites
+# ---------------------------------------------------------------------------
+MAKEFILE = ROOT / "Makefile"
+RUNBOOK = ROOT / "docs" / "runbooks" / "backup-hq.md"
+
+# A package the install line does not have to name because another listed
+# package depends on it (`apt-cache depends openssh-server` →
+# `Depends: openssh-client`). Everything else has to be named: nothing in the
+# list is a reverse-dependency of `sshpass` (`apt-cache rdepends sshpass` →
+# ansible, network-manager-ssh, freedombox …), so a missing entry is a box
+# whose gate exits 1 (`make check: sshpass is not installed`) and whose
+# `odilectl provision` cannot install a tenant key over port 23.
+COMES_WITH = {
+    "openssh-client": "openssh-server",
+}
+
+
+def prerequisite_packages() -> list[tuple[str, str, int]]:
+    """(binary, package, Makefile line) for every `prereqs` prerequisite.
+
+    The derivation and the binary→package map are `test_ci_prereq_parity`'s,
+    so a prerequisite added to the Makefile is a question in both tests. The
+    one difference is `shellcheck`: CI fetches a SHA-256-pinned tarball, while
+    a fresh box takes Debian's package of the same name.
+    """
+    makefile = MAKEFILE.read_text(encoding="utf-8")
+    found = []
+    for binary, line, token in prereq_binaries(makefile):
+        if binary in APT_PACKAGES:
+            package = APT_PACKAGES[binary]
+        elif binary in TARBALLED:
+            package = binary
+        else:
+            raise AssertionError(
+                f"Makefile:{line} (prereqs: command -v {token}) has no package "
+                f"in tests/test_ci_prereq_parity.py")
+        found.append((binary, package, line))
+    return found
+
+
+def missing_prerequisites(packages: set[str]) -> list[str]:
+    """`binary needs package` lines for every prerequisite the list lacks."""
+    return [f"make check needs {binary} ({package})"
+            for binary, package, _ in prerequisite_packages()
+            if package not in packages and COMES_WITH.get(package) not in packages]
+
+
+def runbook_step_3() -> str:
+    """§5A step 3 of the runbook — the by-hand package list — as written."""
+    text = RUNBOOK.read_text(encoding="utf-8")
+    start = text.index("**3. Packages.**")
+    return text[start:text.index("**4. ", start)]
+
+
+class PackageListTests(unittest.TestCase):
+    """A fresh box's gate and its provision path need packages nothing pulls in.
+
+    The kit's install step is the only place these arrive, and `make check`
+    cannot pull them in — a prerequisite is a binary on PATH, not a dependency.
+    """
+
+    def test_the_shipped_install_line_has_a_package_for_each_prerequisite(self):
+        self.assertGreaterEqual(len(prerequisite_packages()), 6,
+                                "the prereqs target names fewer binaries than expected")
+        packages = apt_packages(SCRIPT.read_text(encoding="utf-8"))
+        self.assertTrue(packages, "the script's install step names no package")
+        self.assertEqual(missing_prerequisites(packages), [])
+
+    def test_the_manual_appendix_installs_the_same_packages(self):
+        if not RUNBOOK.is_file():
+            self.skipTest("docs/runbooks/backup-hq.md is HQ-only; "
+                          "make check-hq overlays it and runs this")
+        step = runbook_step_3()
+        self.assertEqual(missing_prerequisites(apt_packages(step)), [])
+        # The prose names the gate's own prerequisites, so an operator who
+        # trims the list knows which lines are load-bearing. (Step 3 also
+        # carries the `ln -sf /usr/bin/gh` block, so read between the first
+        # package block and the next fence.)
+        prose = step.split("```", 2)[-1].split("```", 1)[0]
+        self.assertIn("`sshpass`", prose,
+                      "§5A step 3 must name sshpass beside openssl")
+
+    def test_the_checks_bite_on_a_list_without_sshpass(self):
+        # The pre-fix shape (commit 9fa482a): every package but sshpass.
+        shipped = SCRIPT.read_text(encoding="utf-8")
+        before = shipped.replace("openssh-server sshpass", "openssh-server", 1)
+        self.assertNotEqual(before, shipped)
+        self.assertEqual(missing_prerequisites(apt_packages(before)),
+                         ["make check needs sshpass (sshpass)"])
+
