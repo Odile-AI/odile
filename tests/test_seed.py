@@ -1929,9 +1929,14 @@ class ProvisionBinding(unittest.TestCase):
         # install, one to discard it.
         self.assertEqual(backup["password_resets"], 4)
         box = self.box()
-        self.assertEqual([account["name"] for account in box.accounts],
+        # This class shares one fake box, so a sibling test's pair is also in
+        # the list: assert this slug's pair, in creation order.
+        pair = [account for account in box.accounts
+                if re.fullmatch(r"odile-%s-(rw|ro)" % re.escape(self.slug),
+                                account["name"])]
+        self.assertEqual([account["name"] for account in pair],
                          ["odile-%s-rw" % self.slug, "odile-%s-ro" % self.slug])
-        rw, ro = box.accounts
+        rw, ro = pair
         # The nested homes: never the same home (shared homes share keys).
         self.assertEqual(rw["home_directory"], "tenants/%s" % self.slug)
         self.assertEqual(ro["home_directory"], "tenants/%s/data" % self.slug)
