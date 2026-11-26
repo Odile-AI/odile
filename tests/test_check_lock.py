@@ -1,5 +1,5 @@
 #!/usr/bin/python3
-"""Two uids on one host must be able to share the gate lock.
+"""Two uids on one host must be able to share the gate lock, in ticket order.
 
 `tools/check_lock.py` serialises `make check` across worktrees on one host.
 The lock file lives in a world-writable directory and is owned by whichever uid
@@ -12,8 +12,14 @@ These tests drive the helper as two real uids, in both orders (root holder with
 a nobody waiter, and the reverse), and pin the two mechanisms that make it
 work: a creating holder leaves the file open to every uid, and a legacy `0644`
 file falls back to `O_RDONLY` because `flock(2)` does not need write access.
-The timeout (rc 75) and re-entrant (`ODILE_CHECK_LOCK`) contracts stay pinned
-here too, so a fix cannot buy a second uid the lock by deadlocking the gate.
+The timeout is now the *queue cap* (rc 69) and caller-gone stays 75; the
+re-entrant (`ODILE_CHECK_LOCK`) contract stays pinned too, so a fix cannot buy
+a second uid the lock by deadlocking the gate.
+
+The ticket queue is pinned in `TicketQueueTest`: waiters run in ascending
+ticket order, a dead waiter's ticket does not block the next caller, the cap
+names the holder and its elapsed hold, and a wrapper killed by SIGKILL keeps
+the lock until the suite it started exits.
 """
 
 from __future__ import annotations
@@ -21,6 +27,7 @@ from __future__ import annotations
 import fcntl
 import json
 import os
+import re
 import shutil
 import stat
 import subprocess
@@ -36,13 +43,27 @@ HELPER = ROOT / "tools" / "check_lock.py"
 PYTHON = "/usr/bin/python3"
 NOBODY = 65534
 WAIT_LINE = "waiting for another make check (pid "
-TIMEOUT_EXIT = 75
+CAP_EXIT = 69
+CALLER_GONE_EXIT = 75
 
 # The holder's command: prove the lock is held (a marker the waiter cannot
 # mistake for anything else), then keep it a moment so the waiter must queue.
 HOLDER = ("import pathlib, sys, time\n"
           "pathlib.Path(sys.argv[1]).write_text('held')\n"
           "time.sleep(float(sys.argv[2]))\n")
+
+# A suite that leaves a timestamped line in a shared file while it holds the
+# lock, sleeps, then leaves another. The line order is the acquisition order,
+# and no two ranges may overlap if mutual exclusion holds.
+RECORDER = (
+    "import pathlib, sys, time\n"
+    "path = pathlib.Path(sys.argv[1]); label = sys.argv[2]\n"
+    "with path.open('a') as handle:\n"
+    "    handle.write(f'{label} start {time.monotonic():.3f}\\n'); handle.flush()\n"
+    "time.sleep(0.2)\n"
+    "with path.open('a') as handle:\n"
+    "    handle.write(f'{label} end {time.monotonic():.3f}\\n'); handle.flush()\n"
+)
 
 
 def _can_switch_uids() -> bool:
@@ -167,7 +188,7 @@ class LockContractTest(unittest.TestCase):
         self.addCleanup(os.close, fd)
         return fd
 
-    def test_a_waiter_that_times_out_exits_75_without_running_the_command(self) -> None:
+    def test_a_waiter_that_times_out_exits_cap_without_running_the_command(self) -> None:
         self.hold()
         marker = self.tmp / "ran"
         result = subprocess.run(
@@ -175,8 +196,10 @@ class LockContractTest(unittest.TestCase):
                           "import pathlib, sys; pathlib.Path(sys.argv[1]).write_text('ran')",
                           str(marker)], wait=1),
             capture_output=True, text=True, timeout=120, env=self.env())
-        self.assertEqual(result.returncode, TIMEOUT_EXIT, result.stderr)
+        self.assertEqual(result.returncode, CAP_EXIT, result.stderr)
         self.assertIn(WAIT_LINE, result.stdout)
+        self.assertIn("gave up ticket", result.stderr)
+        self.assertIn("the suite never started", result.stderr)
         self.assertFalse(marker.exists(), "the command ran without the lock")
 
     def test_a_nested_invocation_trusts_the_enclosing_holder(self) -> None:
@@ -245,14 +268,22 @@ class QueueInstrumentTest(unittest.TestCase):
                                 timeout=120, env=self.env())
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertTrue(marker.exists())
-        acquire = [row for row in self.records() if row["event"] == "acquire"]
-        self.assertEqual(len(acquire), 1, self.records())
+        rows = self.records()
+        tickets = [row for row in rows if row["event"] == "ticket"]
+        self.assertEqual(len(tickets), 1, rows)
+        self.assertEqual(tickets[0]["ticket"], 1, "the first waiter did not take ticket 1")
+        acquire = [row for row in rows if row["event"] == "acquire"]
+        self.assertEqual(len(acquire), 1, rows)
         self.assertEqual(acquire[0]["outcome"], "acquired")
         self.assertTrue(acquire[0]["queued"], "the run did not record that it queued")
         self.assertGreaterEqual(acquire[0]["waited_s"], 0.8,
                                 "the recorded wait is shorter than the hold")
         self.assertEqual(acquire[0]["holder_pid"], 424242,
                          "the holder pid was not recorded")
+        self.assertEqual(acquire[0]["ticket"], 1)
+        self.assertEqual(acquire[0]["ahead"], 0)
+        self.assertIsNone(acquire[0]["holder_s"],
+                          "a pid-only holder must not invent an elapsed time")
         self.assertEqual(stat.S_IMODE(os.stat(self.journal).st_mode) & 0o666, 0o666,
                          "the journal is not appendable by the next uid")
 
@@ -267,7 +298,7 @@ class QueueInstrumentTest(unittest.TestCase):
         result = subprocess.run(self.command(marker, parent=parent.pid),
                                 capture_output=True, text=True, timeout=30, env=self.env())
         parent.wait(timeout=10)
-        self.assertEqual(result.returncode, TIMEOUT_EXIT, result.stderr)
+        self.assertEqual(result.returncode, CALLER_GONE_EXIT, result.stderr)
         self.assertLess(time.monotonic() - started, 10, "the waiter did not notice")
         self.assertFalse(marker.exists(), "the command ran after its caller died")
         self.assertIn("is gone", result.stderr)
@@ -291,11 +322,206 @@ class QueueInstrumentTest(unittest.TestCase):
         parent.terminate()
         parent.wait(timeout=10)
         out, _ = waiter.communicate(timeout=20)
-        self.assertEqual(waiter.returncode, TIMEOUT_EXIT, out)
+        self.assertEqual(waiter.returncode, CALLER_GONE_EXIT, out)
         self.assertIn("stopped the suite", out)
         time.sleep(0.2)
         self.assertFalse(Path(f"/proc/{child_pid}").exists(),
                          "the suite outlived its caller")
+
+
+class TicketQueueTest(unittest.TestCase):
+    """The FIFO queue, the cap, and the lock's lifetime across a SIGKILL."""
+
+    def setUp(self) -> None:
+        self.tmp = Path(tempfile.mkdtemp(prefix="odile-check-ticket-", dir="/var/tmp"))
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.lock = self.tmp / "lock"
+        self.journal = self.tmp / "journal.jsonl"
+        self.order = self.tmp / "order.txt"
+
+    def env(self) -> dict[str, str]:
+        env = {key: value for key, value in os.environ.items()
+               if key not in ("ODILE_CHECK_LOCK", "ODILE_GATE_EVENT_LOG", "ODILE_GATE_PARENT_PID")}
+        env["HOME"] = str(self.tmp)
+        return env
+
+    def command(self, label: str, *, wait: int = 60,
+                event_log: bool = True) -> list[str]:
+        command = [PYTHON, str(HELPER), "--lock", str(self.lock), "--wait", str(wait)]
+        if event_log:
+            command += ["--event-log", str(self.journal)]
+        return command + ["--", PYTHON, "-c", RECORDER, str(self.order), label]
+
+    def hold(self, pid: int = 424242, age: float = 0.0) -> int:
+        """A holder outside the queue: a raw flock with a pid+epoch stamp."""
+        fd = os.open(self.lock, os.O_RDWR | os.O_CREAT, 0o666)
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        os.write(fd, f"{pid} {time.time() - age:.3f}\n".encode("ascii"))
+        os.lseek(fd, 0, os.SEEK_SET)
+        self.addCleanup(lambda: self._close(fd))
+        return fd
+
+    @staticmethod
+    def _close(fd: int) -> None:
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+
+    def records(self) -> list[dict]:
+        if not self.journal.exists():
+            return []
+        return [json.loads(line) for line in self.journal.read_text().splitlines() if line]
+
+    def wait_for(self, predicate, timeout: float = 20.0, what: str = "condition") -> None:
+        deadline = time.monotonic() + timeout
+        while not predicate():
+            if time.monotonic() >= deadline:
+                self.fail(f"timed out waiting for {what}: {self.records()}")
+            time.sleep(0.02)
+
+    def ticket_of(self, pid: int) -> int:
+        rows = [row for row in self.records()
+                if row["event"] == "ticket" and row["pid"] == pid]
+        self.assertEqual(len(rows), 1, f"no ticket row for {pid}: {self.records()}")
+        return rows[0]["ticket"]
+
+    def test_waiters_take_the_lock_in_ticket_order(self) -> None:
+        fd = self.hold()
+        waiters: list[tuple[str, subprocess.Popen]] = []
+        for label in ("a", "b", "c"):
+            proc = subprocess.Popen(self.command(label), stdout=subprocess.PIPE,
+                                    stderr=subprocess.PIPE, text=True, env=self.env())
+            self.wait_for(lambda pid=proc.pid: any(
+                row["event"] == "ticket" and row["pid"] == pid for row in self.records()),
+                what=f"the ticket row for {label}")
+            waiters.append((label, proc))
+        time.sleep(0.1)
+        os.close(fd)  # release: the queue must now drain in number order
+        outputs = []
+        for label, proc in waiters:
+            out, err = proc.communicate(timeout=60)
+            outputs.append((label, proc.returncode, out, err))
+        for label, code, out, err in outputs:
+            self.assertEqual(code, 0, f"{label}: {err}")
+
+        ticket_by_pid = {proc.pid: self.ticket_of(proc.pid) for _, proc in waiters}
+        text = self.order.read_text()
+        acquisitions = [line.split()[0] for line in text.splitlines() if " start " in line]
+        self.assertEqual(sorted(acquisitions), ["a", "b", "c"],
+                         f"not every waiter ran: {text!r}")
+        by_label = {label: ticket_by_pid[proc.pid] for label, proc in waiters}
+        tickets = [by_label[label] for label in acquisitions]
+        self.assertEqual(tickets, sorted(tickets),
+                         f"suites ran out of ticket order: {list(zip(acquisitions, tickets))}")
+        self.assertEqual(len(set(tickets)), len(tickets), "two waiters shared a ticket")
+
+        # No overlap: every start is followed by its own end before the next start.
+        open_label = None
+        for line in text.splitlines():
+            label, phase, _stamp = line.split()
+            if phase == "start":
+                self.assertIsNone(open_label, f"{label} started while {open_label} held the lock")
+                open_label = label
+            else:
+                self.assertEqual(label, open_label, "a suite ended before it started")
+                open_label = None
+        self.assertIsNone(open_label, "a suite never ended")
+
+        acquire_rows = [row for row in self.records()
+                        if row["event"] == "acquire" and row["outcome"] == "acquired"]
+        self.assertEqual(len(acquire_rows), 3, self.records())
+        self.assertEqual(sorted(row["ticket"] for row in acquire_rows), sorted(tickets))
+
+    def test_a_dead_waiter_does_not_block_the_queue(self) -> None:
+        fd = self.hold()
+        dead = subprocess.Popen(self.command("dead", wait=120), stdout=subprocess.PIPE,
+                                stderr=subprocess.PIPE, text=True, env=self.env())
+        self.wait_for(lambda: any(row["event"] == "ticket" and row["pid"] == dead.pid
+                                  for row in self.records()), what="the dead waiter's ticket")
+        dead_ticket = self.ticket_of(dead.pid)
+        dead.kill()
+        dead.communicate(timeout=10)
+        live = subprocess.Popen(self.command("live", wait=30), stdout=subprocess.PIPE,
+                                stderr=subprocess.PIPE, text=True, env=self.env())
+        self.wait_for(lambda: any(row["event"] == "ticket" and row["pid"] == live.pid
+                                  for row in self.records()), what="the second waiter's ticket")
+        self.assertEqual(self.ticket_of(live.pid), dead_ticket + 1)
+        os.close(fd)
+        out, err = live.communicate(timeout=30)
+        self.assertEqual(live.returncode, 0, err)
+        self.assertIn("live start", self.order.read_text())
+
+    def test_the_cap_names_the_holder_and_its_elapsed_hold(self) -> None:
+        self.hold(pid=424242, age=120)
+        result = subprocess.run(self.command("never", wait=2), capture_output=True,
+                                text=True, timeout=30, env=self.env())
+        self.assertEqual(result.returncode, CAP_EXIT, result.stderr)
+        self.assertIn("gave up ticket", result.stderr)
+        self.assertIn("424242", result.stderr)
+        self.assertIn("the suite never started", result.stderr)
+        match = re.search(r"for (\d+\.\d)s", result.stderr)
+        self.assertIsNotNone(match, result.stderr)
+        assert match is not None
+        self.assertGreaterEqual(float(match.group(1)), 100.0,
+                                "the message does not report the holder's elapsed hold")
+        self.assertFalse(self.order.exists(), "the command ran after the cap")
+        cap = [row for row in self.records()
+               if row["event"] == "acquire" and row["outcome"] == "timeout"]
+        self.assertEqual(len(cap), 1, self.records())
+        self.assertEqual(cap[0]["code"], CAP_EXIT)
+        self.assertEqual(cap[0]["holder_pid"], 424242)
+        self.assertGreaterEqual(cap[0]["holder_s"], 100.0)
+        self.assertEqual(cap[0]["ticket"], 1)
+
+    def test_a_killed_wrapper_keeps_the_lock_until_its_suite_exits(self) -> None:
+        """The flock follows the suite, not the killed wrapper (no second suite)."""
+        marker = self.tmp / "suite-started"
+        done = self.tmp / "suite-done"
+        script = (f"import pathlib, time\n"
+                  f"pathlib.Path({str(marker)!r}).write_text('held')\n"
+                  f"time.sleep(3)\n"
+                  f"pathlib.Path({str(done)!r}).write_text('done')\n")
+        wrapper = subprocess.Popen(
+            [PYTHON, str(HELPER), "--lock", str(self.lock), "--wait", "30",
+             "--event-log", str(self.journal), "--", PYTHON, "-c", script],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=self.env())
+        self.wait_for(marker.exists, what="the suite to start")
+        wrapper.kill()
+        wrapper.wait(timeout=10)
+        # `communicate` here would wait for the orphan's inherited pipe ends too.
+        assert wrapper.stdout is not None and wrapper.stderr is not None
+        wrapper.stdout.close()
+        wrapper.stderr.close()
+        self.assertFalse(done.exists(), "the suite died with the wrapper")
+
+        second = subprocess.run(self.command("second", wait=1), capture_output=True,
+                                text=True, timeout=30, env=self.env())
+        self.assertEqual(second.returncode, CAP_EXIT,
+                         f"a second suite started while the orphan held the lock: "
+                         f"{second.stdout}\n{second.stderr}")
+        self.assertNotIn("second start", self.order.read_text()
+                         if self.order.exists() else "")
+
+        self.wait_for(done.exists, timeout=15, what="the orphan suite to finish")
+        time.sleep(0.5)
+        third = subprocess.run(self.command("third", wait=10), capture_output=True,
+                               text=True, timeout=30, env=self.env())
+        self.assertEqual(third.returncode, 0, third.stderr)
+        self.assertIn("third start", self.order.read_text())
+
+    def test_the_makefile_cap_is_the_helpers_default(self) -> None:
+        makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
+        helper = HELPER.read_text(encoding="utf-8")
+        wanted = re.search(r"^CHECK_LOCK_WAIT \?= (\d+)$", makefile, re.MULTILINE)
+        default = re.search(r"^DEFAULT_WAIT = (\d+)$", helper, re.MULTILINE)
+        self.assertIsNotNone(wanted, "the Makefile no longer states the queue cap")
+        self.assertIsNotNone(default, "check_lock.py no longer states its default cap")
+        assert wanted is not None and default is not None
+        self.assertEqual(int(wanted.group(1)), int(default.group(1)),
+                         "the Makefile cap and check_lock.py's default have drifted")
+        self.assertLess(int(wanted.group(1)), 3600,
+                        "the cap is back above the old one-hour wait")
 
 
 if __name__ == "__main__":
