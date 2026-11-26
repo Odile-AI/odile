@@ -563,6 +563,13 @@ last run wrote and prints the box's bytes, share, sub-account count and the
 readback's time; the alert's symptom carries its age, so a readback that
 stopped running is visible as an old time, not a fresh one.
 
+The sample below was measured on 26 November 2026 at 07:28Z, while the drill's
+bench pair still existed; the exit card purged it later the same day (ODL-935),
+so a re-run today prints `unaccounted: 0 sub-account(s)` and
+`sub-accounts: 2 of 100 (1 of 50 tenant pairs)`. The rule is the same either
+way: a sub-account whose slug has no tenant row is printed by name, never
+folded into a tenant's number.
+
 ```
 $ python3 -m odilectl backup-usage --apply
 backup usage: box 709870 odile-backups (hel1, HEL1-BX192), 2.0 MiB of 1.0 TiB used (0.0%)
@@ -579,6 +586,11 @@ backup usage: box 709870 odile-backups (hel1, HEL1-BX192), 2.0 MiB of 1.0 TiB us
   calls:     GET /storage_boxes, GET /storage_boxes/709870/subaccounts
   readback:  /var/lib/odile/backup/usage.json (wrote, mode 0600)
 ```
+
+At 08:49Z the same command read `size_data 1048576 bytes, size_snapshots
+1048576 bytes, total 2097152 bytes`: the purged directory still counted in the
+box's own snapshot, which is why both stats are printed and only their sum is
+the box's usage.
 
 Without `--apply` it prints and writes nothing; `--dry-run` wins when both are
 given. The write is atomic (`os.replace` of a 0600 temp file in the same
