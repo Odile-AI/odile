@@ -1,6 +1,6 @@
 # ADR-004 — The copy that outlives HQ: restic over SFTP to a Hetzner Storage Box BX11
 
-**Status:** Proposed (v3.5 re-cut) · 26 November 2026 · Architect. **The 17 November
+**Status:** Proposed (v3.6 re-cut) · 26 November 2026 · Architect. **The 17 November
 2026 cut named Backblaze B2 in Canada East as the destination; the 19 November
 2026 re-cut made Cloudflare R2 the interim and kept B2 as the target. Both are
 superseded. On 24 November 2026 Savio chose the Hetzner Storage Box BX11, on a
@@ -49,6 +49,7 @@ key, and nothing at HQ can decrypt the repository.
 | 25 November 2026 | v3.3 | Round-4 review corrections: the two `installer/odile_install.py` line pointers replaced by their **symbols** (`backup_unit_files`, `ensure_pin_files`); §11's citation rule extended to the **generated installer**; the verdict cited where it now lives (`main`), not on its old branch; the **RW-can-lock-out-RO** `authorized_keys` residual recorded with the nesting choice; the runbook's "box is empty" banner replaced by the landed drill's `stats` | ODL-926's merge changed 1,373 lines in that embedded file, so both numbers pointed at unrelated code at the tree that lands; the other three were the round's caveats, closed rather than carried |
 | 25 November 2026 | v3.4 | **The first visit is a login, and the restore names the snapshot.** §6's second consequence, §7.1, §7.2 steps 2–6 and §7.3 are re-cut: the user **signs in with the password chosen at registration** (B-once, ODL-925) instead of setting a new sign-in; the first-visit service re-writes the seed's `sign_in_hash` **after** the restore and before the sign-in, because the restored `.env` is the backup night's copy of the verifier and would otherwise accept a **retired** password while refusing the current one; the rebuild seed carries the **T-0 snapshot id** (ADR-005 rev 7) and `backup.py restore <id>` restores that id, with `latest` only as the fallback for a seed that names none; §7.1 gains the T-0 precondition for a windowed rebuild; the "your machine is back" link loses the `?t=` token, which the page has refused with `410` since ODL-925 | ODL-925 landed B-once after v2, so "set a new sign-in" was false at this head — and the order it prescribed (*restore, then set*) now has the opposite failure: the restore is what overwrites the gate. ADR-005 rev 7's windowed rebuild is the flow that makes the T-0 concrete. ODL-937 (`t_c31fb2aa`) is the card that builds both |
 | 26 November 2026 | v3.5 | **Attribution only, no decision moved.** §8 names what `t_12b3720a` superseded — the R2-era **destination half** of the old drill (the demo/bench bucket and token setup), not **ODL-938** — and gives the still-live **ODL-938** (`t_7010af06`) its own row for the BX11 destroy → rebuild → paste → restore drill that gates `t_66fcaa02` and `t_8eb17a54`; the provisioning row no longer claims ODL-924 retires `--backup-password-file` — the flag and `seed-rebuilds.json` keep working, with **ODL-937 named as the retirement trigger** — and §1 item 3 and §8's same-slug row are re-worded to match | ODL-351 re-cut the drill's card, and the ADR still named it dead: a builder reading §8 would execute ODL-924's scope against ODL-938's card |
+| 26 November 2026 | v3.6 | **Citations only, no decision moved.** §4's third fact and §10's "rebuild's password path" row stop citing line numbers: the release-setup pointer is now the script's `--user tenant` invocation (`deploy/image/odile-release-setup.sh`), and the three `seed/seed.py` pointers are the names — `seal_backup_password`, the `backup_repo_url` seed key, and `build_seed`'s `fill(config["backup_repo_url"], slug)` | ODL-924's merge grew `seed/seed.py`, so the three numbers pointed at unrelated code at the merge head (inside `_keystream`, a `try:`, a comment), and the script's line had moved with it; §11's rule already says cite the symbol |
 
 **Related:** `docs/MVP-V0.1.md` §6.1, §6.7, §8, §12 (D19); `docs/CLAIMS.md` §1
 (Access: the recovery-code and recovery-file rows; Money and place: the
@@ -195,7 +196,7 @@ failure the builder did not test.**
    backup unit is rendered from `layout.home` (`backup_unit_files` in
    `installer/odile_install.py`), which for a tenant is `/home/tenant`
    (`Layout.tenant`; `DEFAULT_HOME`; the image runs the installer with
-   `--user tenant`, `deploy/image/odile-release-setup.sh:204`) — the same string
+   `--user tenant` in `deploy/image/odile-release-setup.sh`) — the same string
    the live unit the drill measured names (`backup.md` §2.1). So today the two
    homes agree, and **no migration or home-mapping is needed**: the failure is a
    rebuild whose unit or restore call drops `--home` or overrides it. A restore
@@ -954,8 +955,9 @@ exactly that reason; round 4 found them.
   `sftp_args`, `resolve_repo`, and `command_init`'s `ssh-keygen`/`ssh-keyscan`
   fallback), `seed/seed.py` (`backup_repo_url` templated with the slug).
 - The rebuild's password path: `docs/runbooks/offboard.md` §5 and
-  `docs/runbooks/backup.md` §5.2, §9; `seed/seed.py:331` (`seal_backup_password`),
-  `:508` (`backup_repo_url`), `:883` (the same-slug fill).
+  `docs/runbooks/backup.md` §5.2, §9; `seed/seed.py` (`seal_backup_password`;
+  the `backup_repo_url` seed key; `build_seed`'s
+  `fill(config["backup_repo_url"], slug)`).
 - **The first visit is a login (v3.4):** `installer/first_visit.py`'s
   `--env-file` (the page verifies against `~/.hermes/.env`) and its
   "must not restore `/etc/odile`" rule; `installer/odile_install.py`
