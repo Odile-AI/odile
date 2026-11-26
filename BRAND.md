@@ -964,10 +964,11 @@ on it.
   value is filled — the value is at most 29 characters (`03:10 UTC on 15
   December 2026`), so a line carrying one has to leave room for it. A line whose
   long token is a URL stays one line: a link must stay whole, and a `Label value`
-  line is a value, not prose. Rendered prose now runs to 93 and 96 characters in
-  `upgrade-booked.txt` and to 80–81 in `invite.txt`; both are re-wrapped at ≤78,
-  words unchanged, by `t_b6c9e9ca` — the sheet records the debt here until that
-  card lands.
+  line is a value, not prose. Rendered prose now overruns it: five lines in
+  `upgrade-booked.txt` measure 93, 96, 87, 81 and 81 characters once the values
+  are filled, and three in `invite.txt` measure 80, 81 and 79. Both are
+  re-wrapped at ≤78, words unchanged, by `t_b6c9e9ca` — the sheet records the
+  debt here until that card lands.
 - **One action.** A link is a link: ink, underlined, 1 px; never a filled
   button drawn as an image. Each template has one action: the invitation's
   register link, the confirmation's confirm link, the ready email's tokenless
