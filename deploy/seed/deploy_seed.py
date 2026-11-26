@@ -42,7 +42,12 @@ A rebuild's sealed entry is a third file, ``/var/lib/odile/seed-rebuilds.json``:
 the service reads it per exchange (not through a credential copy), so the deploy
 checks it can be read by the service user and that every entry is the sealed
 shape — a plaintext password in it stops the run, tested by the service's own
-``load_rebuilds``.
+``load_rebuilds``. A fourth, ``/var/lib/odile/seed-backup-pairs.json``, holds
+each tenant's Hetzner sub-account pair (ODL-924: the repository URL, the two
+private keys, the pinned host-key line) for the same reason — ``odilectl
+provision`` writes it between two exchanges, and a restart per tenant would be
+a tenant install failing across that restart — so ``check_backup_pairs`` holds
+it to the service's own ``load_backup_pairs`` and the same owner/mode rule.
 
     /usr/bin/python3 deploy/seed/deploy_seed.py --dry-run
     /usr/bin/python3 deploy/seed/deploy_seed.py --previous-seed-sha <sha256>
@@ -69,6 +74,10 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 REPO = HERE.parents[1]
 REBUILDS = Path("/var/lib/odile/seed-rebuilds.json")
+# ODL-924: each tenant's Hetzner sub-account pair (repository URL, private
+# keys, pinned host key), one entry per slug, written by `odilectl provision`
+# and read per exchange.
+BACKUP_PAIRS = Path("/var/lib/odile/seed-backup-pairs.json")
 
 UNIT_TEMPLATE = HERE / "odile-seed.service"
 ROUTE_TEMPLATE = HERE / "odile-seed.caddy"
@@ -436,6 +445,45 @@ def check_rebuilds() -> str | None:
     return None
 
 
+def check_backup_pairs() -> str | None:
+    """The per-tenant sub-account pairs the service will read, and who can read them.
+
+    ODL-924. The service's own validator (`seed.load_backup_pairs`) checks
+    every entry's shape — the two logins, the nested homes, the no-port URLs,
+    both private keys, one host-key line, no plaintext password. The
+    0600-and-owned-by-`odile` rule is `check_rebuilds`'s reason: the service
+    runs as `odile`, so a root-owned file would break the next provision with
+    no request to blame.
+    """
+    seed = seed_module()
+    try:
+        pairs = seed.load_backup_pairs(str(BACKUP_PAIRS))
+    except seed.ConfigError as exc:
+        return f"error: {exc}"
+    if not pairs:
+        return None
+    if os.geteuid() == 0:
+        try:
+            info = BACKUP_PAIRS.stat()
+        except OSError as exc:
+            return f"error: cannot stat {BACKUP_PAIRS}: {exc}"
+        try:
+            import pwd
+
+            service = pwd.getpwnam("odile").pw_uid
+        except KeyError:
+            service = info.st_uid
+        if info.st_uid != service:
+            return (f"error: {BACKUP_PAIRS} is owned by uid {info.st_uid}; the seed "
+                    f"service runs as odile (uid {service}). chown odile {BACKUP_PAIRS}")
+        if info.st_mode & 0o077:
+            return (f"error: {BACKUP_PAIRS} is {info.st_mode & 0o777:03o}; the "
+                    f"sub-account pairs are root-and-service only. chmod 600 {BACKUP_PAIRS}")
+    print(f"{'pairs':<12} {len(pairs)} entr{'y' if len(pairs) == 1 else 'ies'} "
+          f"({BACKUP_PAIRS}; per-tenant keys, no password)")
+    return None
+
+
 def seed_module_sha() -> str:
     return hashlib.sha256(RUNTIME_SEED.read_bytes()).hexdigest() if RUNTIME_SEED.is_file() else ""
 
@@ -617,6 +665,10 @@ def main(argv: list[str] | None = None) -> int:
         print(f"would check  {SEED_CERT} certifies the new {SEED_KEY_FILE} "
               "(cut it with make seed-cert in the release workflow)")
     problem = check_rebuilds()
+    if problem:
+        print(problem, file=sys.stderr)
+        return 2
+    problem = check_backup_pairs()
     if problem:
         print(problem, file=sys.stderr)
         return 2

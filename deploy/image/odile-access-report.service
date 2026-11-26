@@ -6,11 +6,14 @@
 # at /verify. It runs again after the first visit (the first-visit POST starts
 # this unit when the tenant's hash replaces the placeholder).
 #
-# The pin the wrapper passes to --expect is the image's own: the UKI pin at
-# /etc/odile/tenant-image.pin, else the installer's boot record, else the boot
-# report the machine produced. Read-only on the machine: the reporter reads
-# /proc/cmdline, the attestation document, every authorized_keys and the
-# tenant .env; it writes only the report file.
+# The number the wrapper passes to --expect is this boot's own when the machine
+# wrote a boot report (odile-attest-boot.service is wanted and ordered before
+# this unit); the image's pin is passed only when it agrees with that report.
+# The pin names a file's measurement and a launch has its own (ODL-947). No pin
+# at all fails the run rather than writing a report checked against nothing.
+# Read-only on the machine: the reporter reads /proc/cmdline, the attestation
+# document, every authorized_keys and the tenant .env; it writes only the
+# report file.
 [Unit]
 Description=Odile access report — write the machine's own /verify report
 After=local-fs.target odile-attest-boot.service

@@ -463,8 +463,18 @@ class ReleaseSetupInvocationTest(TempRoot):
         self.done = self.tmp / "state" / "release-setup.done"
 
     def run_script(self, *argv: str, **extra: str) -> subprocess.CompletedProcess[str]:
+        # The script also checks the boot's access report (ODL-947). This class
+        # is about the installer argv, so give it a healthy report and an
+        # `active` unit: a fresh file and a stub `systemctl` in PATH.
+        report = self.tmp / "access-report.txt"
+        report.write_text("read from your machine\n", encoding="utf-8")
+        bindir = self.tmp / "bin"
+        bindir.mkdir(exist_ok=True)
+        systemctl = bindir / "systemctl"
+        systemctl.write_text("#! /bin/sh\nprintf 'active\\n'\nexit 0\n", encoding="utf-8")
+        systemctl.chmod(0o755)
         env = {
-            "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+            "PATH": str(bindir) + ":" + os.environ.get("PATH", "/usr/bin:/bin"),
             "ODILE_RELEASE_CMDLINE": str(self.cmdline),
             "ODILE_RELEASE_PIN": str(self.pin),
             "ODILE_RELEASE_ATTEST": str(self.attest),
@@ -473,6 +483,9 @@ class ReleaseSetupInvocationTest(TempRoot):
             "ODILE_RELEASE_PUBKEY": str(self.pubkey),
             "ODILE_RELEASE_LOG": str(self.log),
             "ODILE_RELEASE_DONE": str(self.done),
+            "ODILE_RELEASE_REPORT": str(report),
+            "ODILE_RELEASE_UNIT": "odile-access-report",
+            "ODILE_RELEASE_REPORT_WAIT": "0",
         }
         env.update(extra)
         return subprocess.run(["sh", str(SETUP)] + list(argv),

@@ -72,17 +72,39 @@ in `/var/lib/odile/seed-rebuilds.json`, one entry per slug: the guest opens it
 with the token from the measured command line, which HQ prints once and keeps
 as a hash. A run *without* the flag removes the slug's entry, so a token never
 carries a stale secret.
+
+**The backup pair is provisioned with the tenant, before the paid order.** One
+`odile-<slug>-rw`/`-ro` sub-account pair on the BX11 (ADR-004 v3 §4.1/§4.2), the
+read-only home nested under the read-write one, each account created, its
+settings corrected (the create call drops them), its password reset once and
+used once to install a generated key, read back, and only then locked read-only.
+The store of record is `/root/.odile/hetzner/odile-<slug>.env` (0600) and the
+seed service's per-exchange copy is `/var/lib/odile/seed-backup-pairs.json`;
+the row's `detail` is the cache. A pair that is already there is read back and
+printed `same` (the drill's bench pair is adopted, never re-created), and the
+51st pair is refused by name before any create — 100 sub-accounts per box, a
+pair per tenant.
 """
 
 from __future__ import annotations
 
+import base64
 import importlib.util
 import json
 import os
+import re
+import secrets
+import socket
 import sqlite3
+import string
+import subprocess
 import sys
+import tempfile
+import time
+import urllib.error
+import urllib.request
 from argparse import ArgumentParser
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from functools import lru_cache
 from pathlib import Path
@@ -563,6 +585,1029 @@ def _write_rebuild_entry(ctx: Context, seed, slug: str, issued: dict,
     return "sealed"
 
 
+# ------------------------------------------------- the tenant's backup pair
+#
+# ADR-004 v3 §4.1/§4.2: one sub-account pair per tenant on the BX11. The
+# read-write home is `tenants/<slug>`; the read-only home is
+# `tenants/<slug>/data`, a subdirectory of it that holds the repository — never
+# the same home, because two accounts on one home share one
+# `.ssh/authorized_keys` (the drill measured the read-only key authenticating
+# as read-write). The provider assigns the logins (`u<box>-sub<N>`), so nothing
+# here derives one from the slug: every login in the store of record came back
+# from the API.
+#
+# The order is the measured one, not the documented one: `POST /subaccounts`
+# silently drops `access_settings`, so every create is followed by
+# `update_access_settings` and a readback; a public key installs only while the
+# home is writable, so both keys go in before the read-only account is locked;
+# and the create-time password may not be live, so it is reset once, used once
+# to install the key, and reset again to a value that is never read back.
+HETZNER_API_BASE = "https://api.hetzner.com/v1"
+HETZNER_BOX_ID = 709870
+HETZNER_TOKEN_FILE = "/root/.odile/hetzner-api-token"
+HETZNER_STORE_DIR = "/root/.odile/hetzner"
+HETZNER_KEYS_DIR = "/root/.odile/keys"
+# The per-exchange file the seed service reads (ODL-924); the seed config is
+# handed to the service at start, so a rewrite would be invisible until restart.
+SEED_BACKUP_PAIRS = "/var/lib/odile/seed-backup-pairs.json"
+# 100 sub-accounts per box, a pair per tenant: the 51st tenant is a second box.
+MAX_BACKUP_TENANTS = 50
+BACKUP_SFTP_PORT = 22
+KEY_INSTALL_PORT = 23
+# The path the repository lives at, relative to each account's home: the
+# read-write account sees `data/restic`, the read-only account `restic`,
+# because its home is the `data` directory.
+BACKUP_REPO_PATH = "data/restic"
+BACKUP_READONLY_REPO_PATH = "restic"
+# Hetzner publishes the only fingerprints its Storage Box hosts present
+# (`docs/hetzner.com/storage/storage-box/general`, read 2026-11-24). A scanned
+# host key outside this set is a mismatch, not a new pin.
+HETZNER_HOST_FINGERPRINTS = frozenset({
+    "SHA256:XqONwb1S0zuj5A1CDxpOSuD2hnAArV1A3wKY7Z3sdgM",   # ED25519
+    "SHA256:EMlfI8GsRIfpVkoW1H2u0zYVpFGKkIMKHFZIRkf2ioI",   # RSA
+    "SHA256:RWkLouD9tfTwdboJOzjiWo5njZI59Hcta82ttAWxDA0",   # DSA
+    "SHA256:oDHZqKXnoMtgvPBjjC57pcuFez28roaEuFcfwyg8O5c",   # ECDSA
+})
+SLEEP = time.sleep
+
+
+@dataclass(frozen=True)
+class BackupSettings:
+    """Where the pair lives: the API, the store of record, the seed handoff."""
+
+    base: str
+    box_id: int
+    token: Path
+    store: Path
+    keys: Path
+    pairs: Path
+
+
+@dataclass(frozen=True)
+class BackupPair:
+    """One tenant's pair, exactly as the provider and the files record it."""
+
+    slug: str
+    box_id: int
+    box_server: str
+    subaccount_id: int
+    subaccount_username: str
+    subaccount_server: str
+    subaccount_home: str
+    readonly_subaccount_id: int
+    readonly_subaccount_username: str
+    readonly_subaccount_server: str
+    readonly_subaccount_home: str
+    repo_url: str
+    readonly_repo_url: str
+    known_hosts: str
+    rw_private_key: str
+    ro_private_key: str
+    previous_instance: str
+    provisioned_at: str
+
+    def to_entry(self) -> dict:
+        """The seed handoff's shape (and the store of record's, minus keys)."""
+        return {
+            "box_id": self.box_id,
+            "box_server": self.box_server,
+            "subaccount_id": self.subaccount_id,
+            "subaccount_username": self.subaccount_username,
+            "subaccount_home": self.subaccount_home,
+            "readonly_subaccount_id": self.readonly_subaccount_id,
+            "readonly_subaccount_username": self.readonly_subaccount_username,
+            "readonly_subaccount_home": self.readonly_subaccount_home,
+            "repo_url": self.repo_url,
+            "readonly_repo_url": self.readonly_repo_url,
+            "ssh_port": BACKUP_SFTP_PORT,
+            "known_hosts": self.known_hosts,
+            "ssh_private_key": self.rw_private_key,
+            "readonly_ssh_private_key": self.ro_private_key,
+            "previous_instance": self.previous_instance,
+            "provisioned_at": self.provisioned_at,
+        }
+
+    def to_env(self) -> bytes:
+        """The store of record: one flat KEY=VALUE line per fact, keys at 0600.
+
+        Both private keys are here because the store of record is what `reopen`
+        re-reads: a fresh tenant's recovery file is rendered on the guest from
+        the seed, so the read-only half has to travel there once, and a rebuild
+        must be able to re-render it without the user's paste.
+        """
+        rows = [
+            ("BACKUP_SLUG", self.slug),
+            ("BACKUP_BOX_ID", str(self.box_id)),
+            ("BACKUP_BOX_SERVER", self.box_server),
+            ("BACKUP_SUBACCOUNT_ID", str(self.subaccount_id)),
+            ("BACKUP_SUBACCOUNT_USERNAME", self.subaccount_username),
+            ("BACKUP_SUBACCOUNT_SERVER", self.subaccount_server),
+            ("BACKUP_SUBACCOUNT_HOME", self.subaccount_home),
+            ("BACKUP_READONLY_SUBACCOUNT_ID", str(self.readonly_subaccount_id)),
+            ("BACKUP_READONLY_SUBACCOUNT_USERNAME", self.readonly_subaccount_username),
+            ("BACKUP_READONLY_SUBACCOUNT_SERVER", self.readonly_subaccount_server),
+            ("BACKUP_READONLY_SUBACCOUNT_HOME", self.readonly_subaccount_home),
+            ("BACKUP_REPOSITORY", self.repo_url),
+            ("BACKUP_READONLY_REPOSITORY", self.readonly_repo_url),
+            ("BACKUP_SSH_PORT", str(BACKUP_SFTP_PORT)),
+            ("BACKUP_KNOWN_HOSTS", base64.b64encode(
+                self.known_hosts.encode("utf-8")).decode("ascii")),
+            ("BACKUP_RW_PRIVATE_KEY", base64.b64encode(
+                self.rw_private_key.encode("utf-8")).decode("ascii")),
+            ("BACKUP_RO_PRIVATE_KEY", base64.b64encode(
+                self.ro_private_key.encode("utf-8")).decode("ascii")),
+            ("BACKUP_PREVIOUS_INSTANCE", self.previous_instance),
+            ("BACKUP_PROVISIONED_AT", self.provisioned_at),
+        ]
+        return "".join("%s=%s\n" % (key, value) for key, value in rows).encode("utf-8")
+
+    @classmethod
+    def from_env(cls, text: str) -> "BackupPair":
+        values: dict[str, str] = {}
+        for line in text.splitlines():
+            if not line.strip() or line.lstrip().startswith("#"):
+                continue
+            key, separator, value = line.partition("=")
+            if not separator:
+                raise ProviderError(f"provision: the store of record has a line without '=': {key!r}")
+            values[key.strip()] = value
+        try:
+            return cls(
+                slug=values["BACKUP_SLUG"],
+                box_id=int(values["BACKUP_BOX_ID"]),
+                box_server=values["BACKUP_BOX_SERVER"],
+                subaccount_id=int(values["BACKUP_SUBACCOUNT_ID"]),
+                subaccount_username=values["BACKUP_SUBACCOUNT_USERNAME"],
+                subaccount_server=values["BACKUP_SUBACCOUNT_SERVER"],
+                subaccount_home=values["BACKUP_SUBACCOUNT_HOME"],
+                readonly_subaccount_id=int(values["BACKUP_READONLY_SUBACCOUNT_ID"]),
+                readonly_subaccount_username=values["BACKUP_READONLY_SUBACCOUNT_USERNAME"],
+                readonly_subaccount_server=values["BACKUP_READONLY_SUBACCOUNT_SERVER"],
+                readonly_subaccount_home=values["BACKUP_READONLY_SUBACCOUNT_HOME"],
+                repo_url=values["BACKUP_REPOSITORY"],
+                readonly_repo_url=values["BACKUP_READONLY_REPOSITORY"],
+                known_hosts=base64.b64decode(values["BACKUP_KNOWN_HOSTS"]).decode("utf-8"),
+                rw_private_key=base64.b64decode(values["BACKUP_RW_PRIVATE_KEY"]).decode("utf-8"),
+                ro_private_key=base64.b64decode(values["BACKUP_RO_PRIVATE_KEY"]).decode("utf-8"),
+                previous_instance=values["BACKUP_PREVIOUS_INSTANCE"],
+                provisioned_at=values["BACKUP_PROVISIONED_AT"],
+            )
+        except (KeyError, ValueError) as error:
+            raise ProviderError(
+                f"provision: the store of record is not a pair file: {error}") from None
+
+
+@dataclass(frozen=True)
+class BackupResult:
+    """What a provision did about the pair: created, adopted or already there."""
+
+    state: str  # "created" | "adopted" | "same"
+    pair: BackupPair
+    resets: int
+    row: str
+
+    def to_dict(self) -> dict:
+        return {
+            "state": self.state,
+            "slug": self.pair.slug,
+            "box_id": self.pair.box_id,
+            "subaccount_id": self.pair.subaccount_id,
+            "subaccount_username": self.pair.subaccount_username,
+            "readonly_subaccount_id": self.pair.readonly_subaccount_id,
+            "readonly_subaccount_username": self.pair.readonly_subaccount_username,
+            "repository": self.pair.repo_url,
+            "previous_instance": self.pair.previous_instance,
+            "password_resets": self.resets,
+            "row": self.row,
+        }
+
+
+def _backup_settings(ctx: Context) -> BackupSettings:
+    configured_box = ctx.config.get("hetzner_box_id")
+    try:
+        box_id = int(configured_box) if configured_box else HETZNER_BOX_ID
+    except (TypeError, ValueError):
+        raise ConfigError(
+            f"provision: hetzner_box_id is {configured_box!r}; it must be an integer"
+        ) from None
+    return BackupSettings(
+        base=(ctx.config.get("hetzner_api_base") or HETZNER_API_BASE).rstrip("/"),
+        box_id=box_id,
+        token=(ctx.config.path_value("hetzner_token", HETZNER_TOKEN_FILE)
+               or Path(HETZNER_TOKEN_FILE)),
+        store=(ctx.config.path_value("hetzner_dir", HETZNER_STORE_DIR)
+               or Path(HETZNER_STORE_DIR)),
+        keys=(ctx.config.path_value("hetzner_keys", HETZNER_KEYS_DIR)
+              or Path(HETZNER_KEYS_DIR)),
+        pairs=(ctx.config.path_value("seed_backup_pairs", SEED_BACKUP_PAIRS)
+               or Path(SEED_BACKUP_PAIRS)),
+    )
+
+
+def _redact(body: str) -> str:
+    """A provider error body without a password value in it."""
+    return re.sub(r'"password"\s*:\s*"[^"]*"', '"password": "***"', body)
+
+
+def _hetzner_api(settings: BackupSettings, method: str, path: str,
+                 body: dict | None = None) -> tuple[int, dict]:
+    """One Box API call, stdlib only; the token comes from a 0600 file.
+
+    Returns `(status, payload)` for every status; a 4xx/5xx raises with the
+    provider's own message (password redacted) so a refusal names the reason.
+    """
+    try:
+        token = settings.token.read_text(encoding="utf-8").strip()
+    except OSError as error:
+        raise ConfigError(
+            f"provision: cannot read the box API token at {settings.token}: {error}"
+        ) from None
+    if token.startswith("HETZNER_API_TOKEN="):
+        token = token.split("=", 1)[1].strip()
+    data = None
+    if body is not None:
+        data = json.dumps(body, sort_keys=True).encode("utf-8")
+    request = urllib.request.Request(settings.base + path, data=data, method=method)
+    request.add_header("Authorization", "Bearer " + token)
+    request.add_header("Content-Type", "application/json")
+    request.add_header("Accept", "application/json")
+    try:
+        with urllib.request.urlopen(request, timeout=90) as response:
+            status, raw = response.status, response.read()
+    except urllib.error.HTTPError as error:
+        status, raw = error.code, error.read()
+    except urllib.error.URLError as error:
+        raise ProviderError(
+            f"provision: the box API at {settings.base} did not answer: {error.reason}"
+        ) from None
+    text = raw.decode("utf-8", "replace")
+    try:
+        payload = json.loads(text) if text.strip() else {}
+    except ValueError:
+        payload = {"raw": text}
+    if status >= 400:
+        error = payload.get("error") if isinstance(payload, dict) else None
+        message = error.get("message") if isinstance(error, dict) else _redact(text[:400])
+        raise ProviderError(
+            f"provision: the box API answered {status} on {method} {path}: {message}"
+        )
+    return status, payload
+
+
+def _subaccounts(settings: BackupSettings) -> list[dict]:
+    """Every sub-account on the box, read once per run."""
+    _status, payload = _hetzner_api(
+        settings, "GET", f"/storage_boxes/{settings.box_id}/subaccounts")
+    found = payload.get("subaccounts")
+    if not isinstance(found, list):
+        raise ProviderError(
+            "provision: the box API answered without a `subaccounts` list; "
+            "refusing to guess what the box holds")
+    return found
+
+
+def _named_pair(subaccounts: list[dict], slug: str) -> tuple[dict, dict] | None:
+    """The pair whose API `name` is `odile-<slug>-rw` / `-ro`, or None."""
+    found: dict[str, list[dict]] = {}
+    for wanted in ("rw", "ro"):
+        name = f"odile-{slug}-{wanted}"
+        matches = [item for item in subaccounts if item.get("name") == name]
+        if len(matches) > 1:
+            raise ProviderError(
+                f"provision: {len(matches)} sub-accounts are named {name}; refusing to guess")
+        if matches:
+            found[wanted] = matches
+    if not found:
+        return None
+    if len(found) != 2:
+        half = "read-write" if "rw" in found else "read-only"
+        raise ProviderError(
+            f"provision: the box holds only the {half} half of {slug}'s pair "
+            f"(odile-{slug}-{'rw' if 'rw' in found else 'ro'}). A pair is both "
+            "accounts; delete the half and provision again")
+    return found["rw"][0], found["ro"][0]
+
+
+def _pair_count(subaccounts: list[dict]) -> int:
+    """Complete `-rw`/`-ro` pairs on the box, counted by name."""
+    names = {item.get("name") for item in subaccounts}
+    return sum(1 for name in names
+               if isinstance(name, str) and name.endswith("-rw")
+               and name[:-3] + "-ro" in names)
+
+
+def _stored_pair_count(settings: BackupSettings) -> int:
+    """The pairs this HQ has a store of record for (no provider call)."""
+    try:
+        return sum(1 for path in settings.store.glob("odile-*.env") if path.is_file())
+    except OSError:
+        return 0
+
+
+def _refuse_the_51st(settings: BackupSettings, slug: str, api_pairs: int | None,
+                     *, adds_pair: bool = True) -> None:
+    """Refuse the 51st pair by name, before any create.
+
+    100 sub-accounts per box, a pair per tenant: 50 tenants, and the 51st is a
+    second box, not an upgrade (the feature table lists 100 sub-accounts and 10
+    connections for every BX tier). The count is the store of record's when no
+    API read has happened yet, and the box's own when one has.
+
+    `adds_pair` is False for a slug that is *already* one of the counted pairs
+    — recorded in the store of record, or named on the box by the API read.
+    Re-running that slug is the idempotent read-back the DoD promises, and at
+    the ceiling it must still print `same` instead of being refused as a 51st
+    (measured in review 1: with 50 recorded pairs, a recorded slug was refused).
+    """
+    if not adds_pair:
+        return
+    counted = max(_stored_pair_count(settings), api_pairs or 0)
+    if counted < MAX_BACKUP_TENANTS:
+        return
+    raise ProviderError(
+        f"provision: refusing the 51st pair — {settings.box_id} records {counted} "
+        f"tenant pairs (100 sub-accounts, a pair per tenant), and {slug} would be "
+        "number %d. A second box is the next purchase, not an upgrade."
+        % (counted + 1))
+
+
+def _password() -> str:
+    """A sub-account password: used once, then replaced and forgotten.
+
+    The provider refuses a password without one upper-case letter, one
+    lower-case letter, one digit and one special character, so the four are
+    guaranteed before the rest is filled in.
+    """
+    upper = string.ascii_uppercase
+    lower = string.ascii_lowercase
+    digits = string.digits
+    special = "!@#%^*_-=+"
+    alphabet = upper + lower + digits + special
+    characters = [secrets.choice(upper), secrets.choice(lower),
+                  secrets.choice(digits), secrets.choice(special)]
+    characters.extend(secrets.choice(alphabet) for _ in range(36))
+    secrets.SystemRandom().shuffle(characters)
+    return "".join(characters)
+
+
+def _await_action(settings: BackupSettings, payload: dict, *,
+                  attempts: int = 90, delay: float = 2.0) -> None:
+    """Wait for the action a write answered, by its own id.
+
+    Every sub-account write answers an action that is still `running`: the
+    create, the settings update and the password reset. Acting on the next step
+    before it finishes is what produced `404 Sub Account … not found` and
+    `Permission denied` on 2026-11-25 — the id and the password exist, the
+    action has not landed. The poll endpoint is
+    `GET /storage_boxes/{id}/actions/{action_id}`.
+    """
+    action = payload.get("action") or {}
+    ident = action.get("id")
+    if not isinstance(ident, int):
+        return
+    if action.get("status") == "success":
+        return
+    for attempt in range(attempts):
+        _status, current = _hetzner_api(
+            settings, "GET", f"/storage_boxes/{settings.box_id}/actions/{ident}")
+        done = current.get("action") or {}
+        if done.get("status") == "success":
+            return
+        if done.get("status") == "error":
+            raise ProviderError(
+                f"provision: the box's {done.get('command')} action {ident} failed: "
+                f"{done.get('error')}")
+        if attempt + 1 < attempts:
+            SLEEP(delay)
+    raise ProviderError(
+        f"provision: the box's action {ident} did not finish in "
+        f"{attempts * delay:.0f}s")
+
+
+def _create_subaccount(settings: BackupSettings, name: str, home: str,
+                       password: str) -> int:
+    """`POST /subaccounts`; returns the id the provider assigned.
+
+    The body carries the settings the create call ignores, so the request says
+    what the pair wants and the follow-up call is what makes it true.
+    """
+    status, payload = _hetzner_api(
+        settings, "POST", f"/storage_boxes/{settings.box_id}/subaccounts",
+        {"name": name, "home_directory": home, "password": password,
+         "readonly": False, "ssh_enabled": True, "reachable_externally": True})
+    ids = (payload.get("subaccount") or {}).get("id")
+    if not isinstance(ids, int):
+        raise ProviderError(
+            f"provision: the create of {name} answered {status} without a sub-account id")
+    _await_action(settings, payload)
+    return ids
+
+
+def _api_when_ready(settings: BackupSettings, method: str, path: str,
+                    body: dict | None = None, attempts: int = 20,
+                    delay: float = 2.0) -> tuple[int, dict]:
+    """One call, retried while the provider says the new id does not exist.
+
+    A create answers before the sub-account is visible to the follow-up call:
+    measured on 2026-11-25, the `update_access_settings` right after a create
+    answered `404 Sub Account with ID … not found` and then succeeded. Only a
+    404 is retried; every other refusal is the provider's answer.
+    """
+    for attempt in range(attempts):
+        try:
+            return _hetzner_api(settings, method, path, body)
+        except ProviderError as error:
+            if "answered 404" not in str(error) or attempt + 1 >= attempts:
+                raise
+            SLEEP(delay)
+    raise AssertionError("unreachable")
+
+
+def _update_access_settings(settings: BackupSettings, subaccount_id: int, *,
+                            readonly: bool) -> None:
+    _status, payload = _api_when_ready(
+        settings, "POST",
+        f"/storage_boxes/{settings.box_id}/subaccounts/{subaccount_id}"
+        "/actions/update_access_settings",
+        {"readonly": readonly, "ssh_enabled": True, "reachable_externally": True})
+    _await_action(settings, payload)
+
+
+def _reset_password(settings: BackupSettings, subaccount_id: int) -> str:
+    """Set a password explicitly, because the create-time one may not be live."""
+    password = _password()
+    _status, payload = _api_when_ready(
+        settings, "POST",
+        f"/storage_boxes/{settings.box_id}/subaccounts/{subaccount_id}"
+        "/actions/reset_subaccount_password",
+        {"password": password})
+    _await_action(settings, payload)
+    return password
+
+
+def _readback(settings: BackupSettings, subaccount_id: int, *, readonly: bool,
+              attempts: int = 15) -> dict:
+    """Read the sub-account back until the settings it must carry are there.
+
+    `update_access_settings` answers an action that is still running, so the
+    readback is the proof, not the POST. A pair that never converges is a loud
+    failure, never a silent one: the key install and the `readonly` lock order
+    both depend on this state.
+    """
+    settings_now: dict = {}
+    for attempt in range(attempts):
+        _status, payload = _api_when_ready(
+            settings, "GET",
+            f"/storage_boxes/{settings.box_id}/subaccounts/{subaccount_id}",
+            attempts=3)
+        subaccount = payload.get("subaccount") or {}
+        settings_now = subaccount.get("access_settings") or {}
+        if (settings_now.get("readonly") == readonly
+                and settings_now.get("ssh_enabled") is True
+                and settings_now.get("reachable_externally") is True):
+            return subaccount
+        if attempt + 1 < attempts:
+            SLEEP(2)
+    raise ProviderError(
+        f"provision: sub-account {subaccount_id} did not read back with "
+        f"readonly={readonly}, ssh_enabled=true, reachable_externally=true "
+        f"(saw {settings_now!r})")
+
+def _generate_keypair(directory: Path, name: str, comment: str) -> tuple[str, str]:
+    """One ed25519 pair on HQ: `(private PEM, public OpenSSH line)` at 0600/0644."""
+    directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+    try:
+        os.chmod(directory, 0o700)
+    except OSError:
+        pass
+    private = directory / name
+    if private.exists():
+        private.unlink()
+    done = subprocess.run(
+        ["ssh-keygen", "-t", "ed25519", "-N", "", "-C", comment, "-f", str(private)],
+        capture_output=True, text=True, timeout=60)
+    if done.returncode != 0:
+        raise ProviderError(
+            f"provision: ssh-keygen for {name} failed: {(done.stderr or done.stdout).strip()}")
+    os.chmod(private, 0o600)
+    public = Path(str(private) + ".pub")
+    os.chmod(public, 0o644)
+    return private.read_text(encoding="utf-8"), public.read_text(encoding="utf-8").strip()
+
+
+def _wait_for_dns(server: str, *, attempts: int = 36, delay: float = 5.0) -> None:
+    """Wait until the provider's new sub-account hostname resolves.
+
+    Measured 2026-11-25: a sub-account created seconds ago has an id, a login
+    and a home, but its `u<box>-sub<N>.your-storagebox.de` name is not in DNS
+    yet — `ssh-keyscan` answers `getaddrinfo … Name or service not known` for
+    minutes. The wait is bounded and names the host when it gives up.
+    """
+    for attempt in range(attempts):
+        try:
+            socket.getaddrinfo(server, BACKUP_SFTP_PORT)
+            return
+        except socket.gaierror:
+            if attempt + 1 < attempts:
+                SLEEP(delay)
+    raise ProviderError(
+        f"provision: {server} did not resolve after {attempts * delay:.0f}s; the "
+        "provider's new sub-account hostname is not in DNS yet")
+
+
+def _scan_host_key(server: str, known_hosts: Path) -> str:
+    """Scan the host's keys on both ports, accept only published fingerprints.
+
+    Hetzner publishes the fingerprints its Storage Box hosts present; anything
+    else is a mismatch and stops the run. Both ports are scanned because the
+    key install runs on port 23 (`[host]:23` in `known_hosts`) while the steady
+    state is port 22; the accepted lines are written once at 0600, and that
+    file is what the install pins. The seed carries the port-22 line.
+    """
+    accepted: list[str] = []
+    for port in (BACKUP_SFTP_PORT, KEY_INSTALL_PORT):
+        done = subprocess.run(
+            ["ssh-keyscan", "-T", "10", "-p", str(port), server],
+            capture_output=True, text=True, timeout=60)
+        lines = [line for line in done.stdout.splitlines()
+                 if line.strip() and not line.lstrip().startswith("#")]
+        if done.returncode != 0 or not lines:
+            raise ProviderError(
+                f"provision: ssh-keyscan of {server} on port {port} failed: "
+                f"{(done.stderr or 'no host key').strip()}")
+        for line in lines:
+            fingerprint = subprocess.run(
+                ["ssh-keygen", "-lf", "-"], input=line + "\n",
+                capture_output=True, text=True, timeout=30)
+            fields = fingerprint.stdout.split()
+            if fingerprint.returncode != 0 or len(fields) < 2:
+                continue
+            if fields[1] in HETZNER_HOST_FINGERPRINTS:
+                accepted.append(line)
+    if not accepted:
+        raise ProviderError(
+            f"provision: {server}'s host key is not one of the fingerprints the "
+            "product publishes; refusing to pin it")
+    known_hosts.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    # Merge, never replace: a pair is two hostnames on one box, and the second
+    # account's scan must not drop the first's lines (measured 2026-11-25: the
+    # read-only scan overwrote the read-write pin and restic then refused the
+    # read-write URL with "No RSA host key is known").
+    existing: list[str] = []
+    if known_hosts.is_file():
+        existing = [line for line in known_hosts.read_text(encoding="utf-8").splitlines()
+                    if line.strip()]
+    combined = list(dict.fromkeys(existing + accepted))
+    known_hosts.write_text("\n".join(combined) + "\n", encoding="utf-8")
+    os.chmod(known_hosts, 0o600)
+    # One line for the seed: an ed25519 line on port 22 when the host offers
+    # one, else the first accepted (the drill measured RSA on port 22). The
+    # seed itself carries one such line *per hostname* — `_seed_host_keys`.
+    for line in accepted:
+        if " ssh-ed25519 " in line and not line.startswith("["):
+            return line
+    for line in accepted:
+        if not line.startswith("["):
+            return line
+    return accepted[0]
+
+
+def _pinned_host_line(known_hosts: Path, server: str) -> str:
+    """The steady-state (port 22) pin for one hostname, or "".
+
+    A `known_hosts` line is `<host> <type> <key>` for port 22 and
+    `[<host>]:23 <type> <key>` for the key-install port; the seed's consumer is
+    restic on port 22, so only the first form is a pin here.
+    """
+    if not known_hosts.is_file():
+        return ""
+    for line in known_hosts.read_text(encoding="utf-8").splitlines():
+        fields = line.split()
+        if len(fields) < 3 or line.lstrip().startswith("#"):
+            continue
+        host, port = fields[0], 22
+        if host.startswith("[") and "]:" in host:
+            host, _, number = host[1:].partition("]:")
+            port = int(number) if number.isdigit() else 0
+        if host == server and port == 22:
+            return line
+    return ""
+
+
+def _seed_host_keys(known_hosts: Path, servers: list[str]) -> str:
+    """The pin the seed carries: one port-22 line per hostname it names.
+
+    A pair is two hostnames (`u<box>-sub<N>` and `u<box>-sub<N+1>`), and the
+    seed carries a repository URL for each — the read-write repository and the
+    read-only one. One line is not enough: measured in review 1, a guest
+    configured from the seed alone failed the read-only `snapshots --no-lock`
+    with "No RSA host key is known for u728180-sub2 … Host key verification
+    failed", because the seed pinned only the read-write hostname. Both
+    hostnames present the same key material; the host field is what
+    `known_hosts` matches, so both lines travel.
+    """
+    lines: list[str] = []
+    for server in servers:
+        if not server:
+            raise ProviderError("provision: the API returned no hostname for a pair's half")
+        line = _pinned_host_line(known_hosts, server)
+        if not line:
+            _scan_host_key(server, known_hosts)
+            line = _pinned_host_line(known_hosts, server)
+        if not line:
+            raise ProviderError(
+                f"provision: {server} has no port-22 host key in {known_hosts}; the "
+                "seed's pinned host key could not be written")
+        lines.append(line)
+    return "\n".join(dict.fromkeys(lines))
+
+
+def _install_public_key(server: str, username: str, public_key: str,
+                        password: str, known_hosts: Path) -> str:
+    """Install one public key over the documented port-23 `install-ssh-key`.
+
+    The command writes both formats in one step — RFC4716 for port 22, OpenSSH
+    for port 23 — which is why the pair is usable on the steady-state port
+    after the read-only account is locked. The password reaches `sshpass`
+    through a 0600 file, never argv.
+    """
+    handle, path = tempfile.mkstemp(prefix=".odile-keyinstall-", suffix=".pass")
+    try:
+        os.write(handle, password.encode("utf-8"))
+        os.close(handle)
+        os.chmod(path, 0o600)
+        command = [
+            "sshpass", "-f", path,
+            "ssh", "-p", str(KEY_INSTALL_PORT),
+            "-o", "StrictHostKeyChecking=yes",
+            "-o", f"UserKnownHostsFile={known_hosts}",
+            "-o", "PubkeyAuthentication=no",
+            "-o", "PreferredAuthentications=password,keyboard-interactive",
+            f"{username}@{server}", "install-ssh-key",
+        ]
+        done = subprocess.run(command, input=public_key + "\n",
+                              capture_output=True, text=True, timeout=120)
+    finally:
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
+    output = (done.stdout or "") + (done.stderr or "")
+    if (done.returncode != 0 or "RFC4716 format" not in output
+            or "OpenSSH format" not in output):
+        raise ProviderError(
+            f"provision: installing the key on {username}@{server} failed "
+            f"(exit {done.returncode}): {output.strip()[-400:]}")
+    return output.strip()
+
+
+def _write_store(path: Path, pair: BackupPair) -> None:
+    """Write the store of record atomically, 0600, in a 0700 directory."""
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    try:
+        os.chmod(path.parent, 0o700)
+    except OSError:
+        pass
+    handle, temporary = tempfile.mkstemp(prefix=".odile-pair-", dir=str(path.parent))
+    try:
+        with os.fdopen(handle, "wb") as stream:
+            stream.write(pair.to_env())
+        os.chmod(temporary, 0o600)
+        os.replace(temporary, path)
+    except BaseException:
+        try:
+            os.unlink(temporary)
+        except OSError:
+            pass
+        raise
+
+
+def _write_seed_pair(ctx: Context, settings: BackupSettings, pair: BackupPair) -> None:
+    """Hand the pair to the seed service's per-exchange file.
+
+    The service runs as `odile` and cannot read `/root/.odile/hetzner/` (0700
+    root), so this is a copy in the shape the service reads: 0600, owned by the
+    directory's owner, one entry per slug. A `seed-config.json` rewrite would be
+    invisible until a restart.
+    """
+    seed = _seed_service()
+    try:
+        seed.set_backup_pair(str(settings.pairs), pair.slug, pair.to_entry())
+    except (seed.ConfigError, OSError, ValueError) as error:
+        raise ProviderError(
+            f"provision: {pair.slug}'s pair was not written to {settings.pairs}: {error}"
+        ) from None
+
+
+def _record_backup_detail(ctx: Context, pair: BackupPair) -> str:
+    """Cache the pair's ids and logins on the tenant row; the env file is truth."""
+    db_path = ctx.config.path_value("state_db", DEFAULT_STATE_DB) or Path(DEFAULT_STATE_DB)
+    try:
+        store = StateStore.open(db_path)
+    except StateError as error:
+        raise ProviderError(f"provision: cannot open the state database: {error}") from None
+    try:
+        try:
+            store.note(pair.slug, detail={
+                "backup_box_id": pair.box_id,
+                "backup_subaccount_id": pair.subaccount_id,
+                "backup_subaccount_username": pair.subaccount_username,
+                "backup_readonly_subaccount_id": pair.readonly_subaccount_id,
+                "backup_readonly_subaccount_username": pair.readonly_subaccount_username,
+                "backup_repository": pair.repo_url,
+                "previous_instance": pair.previous_instance,
+            })
+        except UnknownTenant:
+            return "absent"
+        return "recorded"
+    except StateError as error:
+        raise ProviderError(
+            f"provision: {pair.slug}'s pair is recorded but the row was not updated: "
+            f"{error}") from None
+    finally:
+        store.close()
+
+
+def _remember_backup(ctx: Context, result: "BackupResult") -> "BackupResult":
+    """Record the pair on the row after the machine's own write.
+
+    `store.provision(...)` replaces the row detail, so the pair's cache is
+    written after every transition this run makes — otherwise the machine's
+    `source`/`release` detail would be the only detail left.
+    """
+    return replace(result, row=_record_backup_detail(ctx, result.pair))
+
+
+def _box_server(subaccount_server: str) -> str:
+    """The box's own hostname from a sub-account's (`u728180-sub1…` -> `u728180…`)."""
+    return re.sub(r"-sub\d+(?=\.)", "", subaccount_server)
+
+
+def _pair_from_api(slug: str, rw: dict, ro: dict) -> dict:
+    """The facts the API returned for a pair, checked against the ADR's shape."""
+    rw_home = str(rw.get("home_directory") or "")
+    ro_home = str(ro.get("home_directory") or "")
+    if rw_home != f"tenants/{slug}":
+        raise ProviderError(
+            f"provision: {slug}'s read-write home is {rw_home!r}; ADR-004 §4.1 "
+            f"says tenants/{slug}")
+    if ro_home != f"tenants/{slug}/data":
+        raise ProviderError(
+            f"provision: {slug}'s read-only home is {ro_home!r}; it must be "
+            f"tenants/{slug}/data — a subdirectory of the read-write home, never "
+            "the same home (shared homes share authorized_keys)")
+    ro_settings = ro.get("access_settings") or {}
+    if ro_settings.get("readonly") is not True:
+        raise ProviderError(
+            f"provision: {slug}'s read-only sub-account is not locked "
+            f"(readonly={ro_settings.get('readonly')!r})")
+    rw_settings = rw.get("access_settings") or {}
+    if rw_settings.get("readonly") is not False:
+        raise ProviderError(
+            f"provision: {slug}'s read-write sub-account is read-only on the box; "
+            "the nightly backup could not upload")
+    for item in (rw, ro):
+        login = str(item.get("username") or "")
+        if not re.match(r"^u[0-9]+-sub[0-9]+$", login):
+            raise ProviderError(
+                f"provision: the API returned {login!r} as a login; expected "
+                "u<box>-sub<N>, and it is recorded, never derived")
+    return {"rw": rw, "ro": ro}
+
+
+def _pair_keys(settings: BackupSettings, slug: str) -> tuple[str, str]:
+    """The two private halves HQ holds for a pair that already exists."""
+    directory = settings.keys / slug
+    rw = directory / f"odile-{slug}-rw"
+    ro = directory / f"odile-{slug}-ro"
+    missing = [str(path) for path in (rw, ro) if not path.is_file()]
+    if missing:
+        raise ProviderError(
+            f"provision: {slug}'s pair exists on the box but HQ holds no private "
+            f"key at {', '.join(missing)}; restore the key or delete the pair and "
+            "provision again")
+    return (rw.read_text(encoding="utf-8"), ro.read_text(encoding="utf-8"))
+
+
+def _provision_backup(ctx: Context, slug: str, previous_instance: str) -> BackupResult:
+    """Mint (or adopt, or read back) the tenant's pair. Idempotent by name.
+
+    The order is the measured one: read the box, refuse the 51st, adopt a pair
+    that is already there (the drill's `odl-bench`), or create both accounts
+    and walk each one through update-settings, a password reset, the key
+    install, a readback, and — for the read-only half — the `readonly: true`
+    lock after the readback. The store of record, the row's `detail` and the
+    seed handoff are written last, so a failure before them leaves nothing a
+    later run would believe.
+    """
+    settings = _backup_settings(ctx)
+    store_path = settings.store / f"odile-{slug}.env"
+    # A slug the store already records is not an additional pair: re-running it
+    # is the read-back, even at the 50-pair ceiling (review 1, must 2).
+    _refuse_the_51st(settings, slug, None, adds_pair=not store_path.is_file())
+    subaccounts = _subaccounts(settings)
+    named = _named_pair(subaccounts, slug)
+    api_pairs = _pair_count(subaccounts)
+    rw_home = f"tenants/{slug}"
+    ro_home = f"tenants/{slug}/data"
+
+    recorded = None
+    if store_path.is_file():
+        try:
+            recorded = BackupPair.from_env(store_path.read_text(encoding="utf-8"))
+        except ProviderError:
+            # The drill (t_12b3720a) wrote its own `odile-odl-bench.env` shape.
+            # Keep it under a dated name and record this card's format beside
+            # it: the API pair is the truth, and this file is only the cache.
+            kept = store_path.with_name(store_path.name + ".pre-odl924")
+            if not kept.exists():
+                store_path.rename(kept)
+                os.chmod(kept, 0o600)
+            recorded = None
+    if recorded is not None:
+        if named is None:
+            raise ProviderError(
+                f"provision: {store_path} records sub-accounts "
+                f"{recorded.subaccount_id}/{recorded.readonly_subaccount_id}, but the "
+                f"box holds no pair named odile-{slug}-rw/-ro. Delete the store "
+                "file to mint a new pair")
+        facts = _pair_from_api(slug, *named)
+        if (facts["rw"].get("id") != recorded.subaccount_id
+                or facts["ro"].get("id") != recorded.readonly_subaccount_id
+                or facts["rw"].get("username") != recorded.subaccount_username
+                or facts["ro"].get("username") != recorded.readonly_subaccount_username):
+            raise ProviderError(
+                f"provision: {store_path} and the box disagree about {slug}'s pair "
+                f"(store {recorded.subaccount_id}/{recorded.readonly_subaccount_id}, "
+                f"box {facts['rw'].get('id')}/{facts['ro'].get('id')}); refusing to "
+                "guess which pair the tenant owns")
+        # The reopen path is a rebuild's only writer: a destroyed row reopens
+        # under the same slug and the seed must carry the dead machine's id or
+        # the first visit takes a fresh install instead of a restore (ODL-937).
+        # A run that passes none keeps what the store already carries.
+        pinned = _seed_host_keys(settings.keys / slug / "known_hosts",
+                                 [str(facts["rw"].get("server")),
+                                  str(facts["ro"].get("server"))])
+        reopened = replace(
+            recorded,
+            previous_instance=previous_instance or recorded.previous_instance,
+            known_hosts=pinned,
+        )
+        if reopened != recorded:
+            _write_store(store_path, reopened)
+        _write_seed_pair(ctx, settings, reopened)
+        return BackupResult("same", reopened, 0, "pending")
+
+    _refuse_the_51st(settings, slug, api_pairs, adds_pair=named is None)
+    if named is not None:
+        facts = _pair_from_api(slug, *named)
+        rw_key, ro_key = _pair_keys(settings, slug)
+        known_hosts = settings.keys / slug / "known_hosts"
+        pinned = _seed_host_keys(known_hosts,
+                                 [str(facts["rw"].get("server")),
+                                  str(facts["ro"].get("server"))])
+        pair = BackupPair(
+            slug=slug, box_id=settings.box_id,
+            box_server=_box_server(str(facts["rw"].get("server") or "")),
+            subaccount_id=int(facts["rw"]["id"]),
+            subaccount_username=str(facts["rw"]["username"]),
+            subaccount_server=str(facts["rw"]["server"]),
+            subaccount_home=str(facts["rw"]["home_directory"]),
+            readonly_subaccount_id=int(facts["ro"]["id"]),
+            readonly_subaccount_username=str(facts["ro"]["username"]),
+            readonly_subaccount_server=str(facts["ro"]["server"]),
+            readonly_subaccount_home=str(facts["ro"]["home_directory"]),
+            repo_url=f"sftp:{facts['rw']['username']}@{facts['rw']['server']}:"
+                     f"{BACKUP_REPO_PATH}",
+            readonly_repo_url=f"sftp:{facts['ro']['username']}@{facts['ro']['server']}:"
+                              f"{BACKUP_READONLY_REPO_PATH}",
+            known_hosts=pinned, rw_private_key=rw_key, ro_private_key=ro_key,
+            previous_instance=previous_instance,
+            provisioned_at=_stamp_now(),
+        )
+        _write_store(store_path, pair)
+        _write_seed_pair(ctx, settings, pair)
+        return BackupResult("adopted", pair, 0, "pending")
+
+    # ---- create both halves
+    directory = settings.keys / slug
+    rw_key, rw_public = _generate_keypair(directory, f"odile-{slug}-rw",
+                                          f"odile-{slug}-rw@hq")
+    ro_key, ro_public = _generate_keypair(directory, f"odile-{slug}-ro",
+                                          f"odile-{slug}-ro@hq")
+    resets = 0
+    created: dict[str, dict] = {}
+    for wanted, home, public, lock in (
+        ("rw", rw_home, rw_public, False),
+        ("ro", ro_home, ro_public, True),
+    ):
+        name = f"odile-{slug}-{wanted}"
+        subaccount_id = _create_subaccount(settings, name, home, _password())
+        # The create call dropped these; the follow-up and the readback are what
+        # make them true. The read-only half stays writable until its key is in.
+        _update_access_settings(settings, subaccount_id, readonly=False)
+        password = _reset_password(settings, subaccount_id)
+        resets += 1
+        facts = _readback(settings, subaccount_id, readonly=False)
+        server = str(facts.get("server") or "")
+        known_hosts = directory / "known_hosts"
+        # A brand-new sub-account's hostname appears a beat after the create,
+        # and the reset password takes a beat to reach the SFTP path (the drill
+        # saw both). Retry only the failures that mean "not yet"; a key-format
+        # or a host-key mismatch is final.
+        for attempt in range(24):
+            try:
+                pinned_now = (known_hosts.read_text(encoding="utf-8")
+                              if known_hosts.is_file() else "")
+                if f"[{server}]:{KEY_INSTALL_PORT}" not in pinned_now:
+                    # A first attempt's scan may name another sub-account (the
+                    # provider reuses a login, and a failed run leaves its own
+                    # file behind); scan again for THIS hostname.
+                    _wait_for_dns(server)
+                    _scan_host_key(server, known_hosts)
+                _install_public_key(server, str(facts.get("username") or ""), public,
+                                    password, known_hosts)
+                break
+            except ProviderError as error:
+                # A new sub-account's hostname takes minutes to appear in DNS,
+                # and the reset password takes a beat to reach SFTP. Retry only
+                # the failures that mean "not yet"; a key-format or a host-key
+                # mismatch is final.
+                transient = any(
+                    marker in str(error) for marker in
+                    ("Permission denied", "Could not resolve hostname",
+                     "Name or service not known", "Temporary failure in name resolution",
+                     "Connection closed", "Connection refused", "timed out"))
+                if not transient or attempt == 23:
+                    raise
+                SLEEP(5)
+        password = ""
+        if lock:
+            _update_access_settings(settings, subaccount_id, readonly=True)
+            _readback(settings, subaccount_id, readonly=True)
+        # The password was used once; the reset below is the discard, and its
+        # value is never read, printed or stored.
+        _reset_password(settings, subaccount_id)
+        resets += 1
+        _status, payload = _hetzner_api(
+            settings, "GET",
+            f"/storage_boxes/{settings.box_id}/subaccounts/{subaccount_id}")
+        created[wanted] = payload.get("subaccount") or {}
+
+    facts = _pair_from_api(slug, created["rw"], created["ro"])
+    known_hosts = directory / "known_hosts"
+    pinned = _seed_host_keys(known_hosts,
+                             [str(facts["rw"].get("server")),
+                              str(facts["ro"].get("server"))])
+    pair = BackupPair(
+        slug=slug, box_id=settings.box_id,
+        box_server=_box_server(str(facts["rw"].get("server") or "")),
+        subaccount_id=int(facts["rw"]["id"]),
+        subaccount_username=str(facts["rw"]["username"]),
+        subaccount_server=str(facts["rw"]["server"]),
+        subaccount_home=str(facts["rw"]["home_directory"]),
+        readonly_subaccount_id=int(facts["ro"]["id"]),
+        readonly_subaccount_username=str(facts["ro"]["username"]),
+        readonly_subaccount_server=str(facts["ro"]["server"]),
+        readonly_subaccount_home=str(facts["ro"]["home_directory"]),
+        repo_url=f"sftp:{facts['rw']['username']}@{facts['rw']['server']}:"
+                 f"{BACKUP_REPO_PATH}",
+        readonly_repo_url=f"sftp:{facts['ro']['username']}@{facts['ro']['server']}:"
+                          f"{BACKUP_READONLY_REPO_PATH}",
+        known_hosts=pinned, rw_private_key=rw_key, ro_private_key=ro_key,
+        previous_instance=previous_instance,
+        provisioned_at=_stamp_now(),
+    )
+    _write_store(store_path, pair)
+    _write_seed_pair(ctx, settings, pair)
+    return BackupResult("created", pair, resets, "pending")
+
+
+def _stamp_now() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _backup_lines(result: BackupResult) -> list[str]:
+    pair = result.pair
+    state = {"created": "created", "adopted": "adopted (read back, not re-created)",
+             "same": "same"}[result.state]
+    lines = [
+        f"  backup:     odile-{pair.slug}-rw {pair.subaccount_id} "
+        f"{pair.subaccount_username} {pair.subaccount_home} ({state})",
+        f"  backup ro:  odile-{pair.slug}-ro {pair.readonly_subaccount_id} "
+        f"{pair.readonly_subaccount_username} {pair.readonly_subaccount_home} "
+        f"(readonly: true)",
+        f"  backup repo:{pair.repo_url} (no port; 22 lives in sftp.command)",
+    ]
+    if result.state == "created":
+        lines.append(
+            f"  backup keys: both formats installed (RFC4716 for port 22, OpenSSH "
+            f"for 23); passwords reset twice and discarded")
+    lines.append(f"  backup file:{pair.slug} in the store of record; row detail {result.row}")
+    return lines
+
+
+
 def _reopen_line(slug: str) -> str:
     """The one line a rebuild adds: same slug, same URL (ADR-007)."""
     return (
@@ -1039,6 +2084,25 @@ def run(ctx: Context, args) -> Report:
         })
     actions += [
         {
+            "action": "backup.pair",
+            "slug": spec.hostname,
+            "rw_home": f"tenants/{spec.hostname}",
+            "ro_home": f"tenants/{spec.hostname}/data",
+            "when": (
+                "read back and printed `same` when the box already names the pair; "
+                "adopted without a create when only HQ is missing the record; "
+                "created (each create, update_access_settings, key install, "
+                "readback, then readonly: true) when it is absent"
+            ),
+            "refuse": (
+                f"the 51st pair by name: {MAX_BACKUP_TENANTS} tenants per box "
+                "(100 sub-accounts, a pair per tenant), before any create"
+            ),
+            "store_of_record": str(_backup_settings(ctx).store
+                                   / f"odile-{spec.hostname}.env"),
+            "seed_handoff": str(_backup_settings(ctx).pairs),
+        },
+        {
             "action": "provider.list",
             "provider": configured_name(ctx.config),
             "find_hostname": spec.hostname,
@@ -1116,6 +2180,16 @@ def run(ctx: Context, args) -> Report:
         f"rebuild password: {backup_label} (its 'Backup password:' line is sealed "
         "under the token; `/var/lib/odile/seed-rebuilds.json` holds ciphertext, "
         "never the password)",
+        (
+            f"the backup pair is one sub-account pair on the BX11: 100 sub-accounts "
+            f"per box and a pair per tenant, so {MAX_BACKUP_TENANTS} tenants per box "
+            "and the 51st is refused by name — a second box is the next purchase"
+        ),
+        (
+            "the pair shares the box-wide SFTP ceiling: 10 concurrent connections "
+            "published, 25 measured, the 26th refused; ODL-933 sizes the nightly "
+            "timer to the published 10 with sftp.connections=2"
+        ),
     ]
     if reprovision:
         notes.insert(
@@ -1156,6 +2230,14 @@ def run(ctx: Context, args) -> Report:
         (tenant_before.state, tenant_before.server_id) if tenant_before else (None, None)
     )
 
+    # The tenant's pair, before any paid call: the 51st refusal, a half pair or
+    # a login HQ cannot match all leave no machine billed. `previous_instance`
+    # is the dead machine a rebuild replaces (the reopen kept the slug, not the
+    # id), and "" on a first install.
+    previous_instance = (row_before[1] or "") if (
+        row_before and row_before[0] == "destroyed") else ""
+    backup = _provision_backup(ctx, spec.hostname, previous_instance)
+
     existing = [machine for machine in ctx.provider.list() if machine.hostname == spec.hostname]
     if len(existing) > 1:
         raise ProviderError(
@@ -1191,13 +2273,15 @@ def run(ctx: Context, args) -> Report:
         machine = existing[0]
         if _is_queued(machine):
             seed = bind(machine.server_id)
+            backup = _remember_backup(ctx, backup)
             return _queued_report(
                 ctx, machine, created=False, release=release, seed=seed,
-                reopened=reopened, key=key_binding,
+                reopened=reopened, key=key_binding, backup=backup,
             )
         if machine.state == "active" and machine.ipv4:
             seed = bind(machine.server_id)
             record = _record(ctx, spec, machine, release)
+            backup = _remember_backup(ctx, backup)
             return applied(
                 NAME,
                 ctx,
@@ -1208,6 +2292,7 @@ def run(ctx: Context, args) -> Report:
                     f"  release:   {record['release']} (from the pin, recorded with the tenant)",
                     *_key_lines(key_binding),
                     *_seed_lines(seed),
+                    *_backup_lines(backup),
                 ],
                 head="provision: nothing ordered (the machine already exists)",
                 machine=machine.to_dict(),
@@ -1219,6 +2304,7 @@ def run(ctx: Context, args) -> Report:
                 tenant_state=record["tenant_state"],
                 key=key_binding.to_dict(),
                 seed=seed.to_dict(),
+                backup=backup.to_dict(),
             )
         if machine.state not in ("pending", "active"):
             raise ProviderError(
@@ -1234,9 +2320,10 @@ def run(ctx: Context, args) -> Report:
         # deploying, so the token exists before the guest can boot (ODL-455).
         seed = bind(machine.server_id)
         if _is_queued(machine):
+            backup = _remember_backup(ctx, backup)
             return _queued_report(
                 ctx, machine, created=True, release=release, seed=seed,
-                reopened=reopened, key=key_binding,
+                reopened=reopened, key=key_binding, backup=backup,
             )
         # `create` may answer active before the address is filled in; the poll
         # is what guarantees the tenant actually has somewhere to connect.
@@ -1247,6 +2334,7 @@ def run(ctx: Context, args) -> Report:
         created = True
 
     record = _record(ctx, spec, machine, release)
+    backup = _remember_backup(ctx, backup)
     lines = [
         f"  server_id: {machine.server_id}",
         f"  hostname:  {machine.hostname}",
@@ -1258,6 +2346,7 @@ def run(ctx: Context, args) -> Report:
         f"  release:   {record['release']} (from the pin, recorded with the tenant)",
         *_key_lines(key_binding),
         *_seed_lines(seed),
+        *_backup_lines(backup),
     ]
     return applied(
         NAME,
@@ -1272,6 +2361,7 @@ def run(ctx: Context, args) -> Report:
         tenant_state=record["tenant_state"],
         key=key_binding.to_dict(),
         seed=seed.to_dict(),
+        backup=backup.to_dict(),
     )
 
 
@@ -1289,6 +2379,7 @@ def _queued_report(
     seed: SeedBinding,
     reopened: bool = False,
     key: KeyBinding | None = None,
+    backup: "BackupResult | None" = None,
 ) -> Report:
     """A queued preorder is a success: the money left, the order exists."""
     position = machine.detail.get("queue_position")
@@ -1302,6 +2393,7 @@ def _queued_report(
         "  the order is paid; the provider builds the machine when the queue clears",
         *(_key_lines(key) if key is not None else []),
         *_seed_lines(seed),
+        *(_backup_lines(backup) if backup is not None else []),
     ]
     head = (
         "provision: order queued (paid; the machine is built when the queue clears)"
@@ -1323,6 +2415,7 @@ def _queued_report(
         note="the release is recorded when the machine becomes active",
         key=key.to_dict() if key is not None else None,
         seed=seed.to_dict(),
+        backup=backup.to_dict() if backup is not None else None,
     )
 
 

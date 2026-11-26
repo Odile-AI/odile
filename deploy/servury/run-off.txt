@@ -1,0 +1,18 @@
+# Servury servers retired by policy: tools/servury_renew.py buys them no days.
+#
+# One 8-character server id per line; `#` starts a comment. A missing file is
+# an empty list. A listed server is skipped with reason `run_off` in
+# /root/.odile/servury-renew.json and a RUN_OFF line in servury-renew.log: no
+# price, no balance check, no --max-charge alert, no renewal. Its provider term
+# is left to run out.
+#
+# The rule, not only the list: every Blackbox Core (plan_id 108) is internal R&D
+# until it expires and is never renewed (Savio, 2026-11-24), so a Core a bench
+# test orders later is run-off without an edit here. The Blackbox Nano (plan
+# 138) is the kept tier. These three Cores are pinned because they are the boxes
+# the 2026-11-24 direction names, and because a pin survives an API that stops
+# reporting the plan. The current expiry is the provider's, printed by every run
+# in the status document and the RUN_OFF audit line.
+998405b2
+4b0f450a
+168020b4

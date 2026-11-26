@@ -160,6 +160,14 @@ prereqs:
 	@command -v "$(PYTHON)" >/dev/null 2>&1 || { echo "make check: $(PYTHON) is not executable (set PYTHON=...)" >&2; exit 1; }
 	@command -v "$(SHELLCHECK)" >/dev/null 2>&1 || { echo "make check: $(SHELLCHECK) is not installed (apt-get install shellcheck)" >&2; exit 1; }
 	@command -v openssl >/dev/null 2>&1 || { echo "make check: openssl is not installed (apt-get install openssl)" >&2; exit 1; }
+# The Hetzner pair's key install is the one place `odilectl provision` shells
+# out to OpenSSH: `ssh-keygen`/`ssh-keyscan` pin the host key and `ssh` over
+# port 23 installs the public key, with the one-time password handed to
+# `sshpass` through a 0600 file. A missing binary used to be an uncaught
+# `FileNotFoundError` at the first install (ODL-924 review 1).
+	@command -v ssh-keygen >/dev/null 2>&1 || { echo "make check: ssh-keygen is not installed (apt-get install openssh-client)" >&2; exit 1; }
+	@command -v ssh-keyscan >/dev/null 2>&1 || { echo "make check: ssh-keyscan is not installed (apt-get install openssh-client)" >&2; exit 1; }
+	@command -v sshpass >/dev/null 2>&1 || { echo "make check: sshpass is not installed (apt-get install sshpass)" >&2; exit 1; }
 
 # One suite: every test lives under tests/, so `discover` sees all of them.
 test: test-unit

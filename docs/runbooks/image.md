@@ -123,6 +123,18 @@ The plan says which mirror it will use without building anything —
 `./deploy/image/sealed-image.sh --dry-run` prints a `mirror` line, and `--help`
 prints the resolved default.
 
+**A production image's pin is placed by the command that writes it (ODL-947).**
+For `sealed-image.sh --production`, the UKI step is the pin step:
+`sudo ./deploy/image/uki.sh --in OUT --sign --pin OUT/tenant-image.pin` writes
+the pin and then opens the sealed disk and installs it at
+`/etc/odile/tenant-image.pin` — there is no fifth command to remember. `uki.sh`
+refuses a production image with no `--pin` (exit 2, naming the `record skipped`
+boot it would otherwise produce), refuses `--no-place-pin` on one, and needs
+root because the disk is opened with its bootstrap key. A bench disk has no
+bootstrap key and its own build (`firstboot-bench.sh build`) places the pin with
+the bench stand-in, so §3's command above still needs neither sudo nor the
+placement.
+
 Every state-changing step refuses to overwrite an existing artefact without
 `--force` (the initrd and the disk) and has a `--dry-run`; the disk build is
 destructive only inside `--out` and its outside-the-repo chroot. `uki.sh` runs
@@ -1060,7 +1072,13 @@ The build also places the image's own pin inside the sealed root
 (`place-pin.sh`, after `uki.sh`): `/verify`'s access report and the release
 setup read the measurement from `/etc/odile/tenant-image.pin`, and without it
 the first boot says `record skipped` and `/verify` has no 96-hex value to
-print. One line of this head is a main-regression fix rather than the
+print. **Measured at that head.** Since ODL-947 the UKI step is the pin step:
+`uki.sh --in OUT --sign --pin OUT/tenant-image.pin` on a
+`sealed-image.sh --production` disk writes the pin and places it itself, so the
+`place-pin.sh` line is a same-bytes no-op and the production recipe has three
+commands, not four. The transcripts below are the historical runs; running
+their `place-pin.sh` line again prints `pin raw_image_sha256 -> …` and changes
+nothing. One line of this head is a main-regression fix rather than the
 sign-in rule: `deploy/image/odile-manifest.service` names `User=odile-manifest-svc`
 beside `DynamicUser=yes`, because main's meter removal renamed its
 `SupplementaryGroups` to `odile-manifest` — the same name systemd allocates

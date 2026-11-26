@@ -129,6 +129,7 @@ class EnvFileTests(unittest.TestCase):
             "ODILE_SEED_BIND=127.0.0.1",
             "ODILE_SEED_PORT=8083",
             "ODILE_SEED_REBUILDS=/var/lib/odile-test/seed-rebuilds.json",
+            "ODILE_SEED_BACKUP_PAIRS=/var/lib/odile-test/seed-backup-pairs.json",
         ])
 
     def test_the_env_file_names_no_production_value_and_no_secret(self) -> None:

@@ -1528,6 +1528,13 @@ class FirstbootExchangeTests(unittest.TestCase):
         server.config = json.loads(config.read_text())
         server.config_path = str(config)
         server.rebuilds_path = str(self.dir / "seed-rebuilds.json")
+        # ODL-924: the tenant's sub-account pair, read per exchange like the
+        # rebuild entries. The fixture pair is the bench's own (inert) one, so
+        # the seed's `backup` block and the first boot's path are proved
+        # without a Storage Box.
+        server.backup_pairs_path = str(self.dir / "seed-backup-pairs.json")
+        self.seed.set_backup_pair(server.backup_pairs_path, self.SLUG,
+                                  fixture.fixture_pair(self.SLUG))
         server.signing_key = str(key)
         if release_key is not None:
             # The service carries the pair it would load from disk: the seed
@@ -1797,6 +1804,42 @@ class FirstbootExchangeTests(unittest.TestCase):
         self.assertEqual([(row["kind"], row["from_state"], row["to_state"])
                           for row in events],
                          [("first_visit", "first_boot", "first_visit")])
+
+    def test_the_seed_carries_the_pair_and_the_rebuild_marker(self) -> None:
+        """ODL-924: the guest gets the repository URL, both keys, the host key."""
+        self.write_cmdline(self.token)
+        code, output = self.run_boot()
+        self.assertEqual(code, 0, output)
+        cache = json.loads(self.cache.read_text())
+        pair = fixture.fixture_pair(self.SLUG)
+        self.assertEqual(cache["backup_repo_url"], pair["repo_url"])
+        self.assertEqual(cache["backup"]["repo_url"], pair["repo_url"])
+        self.assertEqual(cache["backup"]["readonly_repo_url"], pair["readonly_repo_url"])
+        self.assertEqual(cache["backup"]["subaccount_username"], pair["subaccount_username"])
+        self.assertEqual(cache["backup"]["readonly_subaccount_id"],
+                         pair["readonly_subaccount_id"])
+        self.assertEqual(cache["backup"]["known_hosts"], pair["known_hosts"])
+        self.assertTrue(cache["backup"]["ssh_private_key"].startswith("-----BEGIN"))
+        self.assertTrue(cache["backup"]["readonly_ssh_private_key"].startswith("-----BEGIN"))
+        self.assertEqual(cache["backup"]["previous_instance"], "")
+        self.assertNotIn(":22/", cache["backup_repo_url"])
+
+        # The row's own marker (written at a reopen) wins over the pair's.
+        con = self.seed.connect(str(self.dir / "seed.db"))
+        try:
+            con.execute("UPDATE tenant_state SET detail = ? WHERE slug = ?",
+                        (json.dumps({"previous_instance": "srv-old-0001"}), self.SLUG))
+            con.commit()
+            binding = self.seed.bind(con, self.SLUG, self.IID)
+        finally:
+            con.close()
+        self.write_cmdline(binding["token"])
+        if self.cache.is_file():
+            self.cache.unlink()   # force a fresh exchange, not the first boot's cache
+        code, output = self.run_boot()
+        self.assertEqual(code, 0, output)
+        cache = json.loads(self.cache.read_text())
+        self.assertEqual(cache["backup"]["previous_instance"], "srv-old-0001")
 
     def test_a_reboot_after_the_first_visit_reports_ready_and_keeps_one_line(self) -> None:
         self.write_cmdline(self.token)
@@ -2554,7 +2597,11 @@ class FixtureRebuildTests(unittest.TestCase):
                 config = json.loads((directory / "seed-config.json").read_text(encoding="utf-8"))
                 served = seed_module.redeem(con, result["token"], self.INSTANCE,
                                             config, rebuilds,
-                                            identity=self.certified_identity(directory, key))
+                                            identity=self.certified_identity(directory, key),
+                                            # Hermetic: without this the seed
+                                            # service's default path is HQ's
+                                            # live `/var/lib/odile/seed-backup-pairs.json`.
+                                            backup_pairs={})
             finally:
                 con.close()
             self.assertEqual(firstboot_module.unseal_rebuild(served["rebuild"], result["token"]),
@@ -4848,6 +4895,91 @@ class BuildMirrorTests(unittest.TestCase):
         self.assertIn("snapshot.debian.org", result.stdout)
         self.assertIn(self.pinned(self.INSTALLER.read_text(encoding="utf-8")), result.stdout)
         self.assertIn("deb.debian.org", result.stdout)
+
+
+class UkiPinTests(unittest.TestCase):
+    """A production image cannot be built without its pin (ODL-947).
+
+    The cold walk's first image was built with the runbook's commands and no
+    `place-pin.sh`: its first boot printed `record skipped (no pinned release at
+    /etc/odile/tenant-image.pin)`, the release half never ran, 443 stayed
+    closed — and nothing failed. `uki.sh` writes the pin, so it owns placing it
+    inside the disk it is given, and it refuses the production shapes that would
+    leave the pin outside.
+    """
+
+    def image_dir(self, production: bool) -> pathlib.Path:
+        tmp = pathlib.Path(tempfile.mkdtemp(prefix="odile-uki-pin-"))
+        self.addCleanup(shutil.rmtree, tmp, True)
+        boot = tmp / "boot"
+        boot.mkdir()
+        for name in ("vmlinuz", "initrd.img"):
+            (boot / name).write_bytes(b"x")
+        newline = chr(10)
+        (boot / "cmdline").write_text(
+            newline.join(["root=/dev/x seal_id=bench", ""]), encoding="utf-8")
+        (boot / "uname").write_text("6.12.0-test" + newline, encoding="utf-8")
+        if production:
+            sealed = tmp / "sealed"
+            sealed.mkdir()
+            (sealed / "seal.txt").write_text(newline.join([
+                "seal_id=bench",
+                "production=yes",
+                "bootstrap_key=/odile/luks-bootstrap.key",
+                "",
+            ]), encoding="utf-8")
+        return tmp
+
+    def run_uki(self, *argv: str) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(["bash", str(IMAGE / "uki.sh")] + list(argv),
+                              capture_output=True, text=True, timeout=120)
+
+    def test_a_production_image_without_a_pin_is_refused(self) -> None:
+        tmp = self.image_dir(production=True)
+        result = self.run_uki("--in", str(tmp), "--sign")
+        self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+        self.assertIn("a production image needs its pin: pass --pin FILE", result.stderr)
+        self.assertIn("no Caddy, no /verify, no /first-visit", result.stderr)
+        self.assertFalse((tmp / "odile-tenant.efi").exists(),
+                         "the refusal must come before the first write")
+
+    def test_a_production_image_refuses_to_leave_its_pin_outside(self) -> None:
+        tmp = self.image_dir(production=True)
+        result = self.run_uki("--in", str(tmp), "--sign",
+                              "--pin", str(tmp / "pin.json"), "--no-place-pin")
+        self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+        self.assertIn("--no-place-pin on a production image", result.stderr)
+        self.assertFalse((tmp / "pin.json").exists())
+
+    def test_a_production_image_with_a_pin_and_no_disk_is_refused(self) -> None:
+        tmp = self.image_dir(production=True)
+        result = self.run_uki("--in", str(tmp), "--sign", "--pin", str(tmp / "pin.json"))
+        self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+        self.assertIn("no " + str(tmp / "odile-tenant-sealed.raw") + " to carry it",
+                      result.stderr)
+
+    def test_a_production_dry_run_plans_the_placement(self) -> None:
+        tmp = self.image_dir(production=True)
+        result = self.run_uki("--in", str(tmp), "--dry-run", "--sign",
+                             "--pin", str(tmp / "pin.json"))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("place it inside " + str(tmp / "odile-tenant-sealed.raw"), result.stdout)
+        self.assertIn("place-pin.sh", result.stdout)
+        self.assertFalse((tmp / "pin.json").exists(), "a dry run writes nothing")
+
+    def test_a_production_dry_run_without_a_pin_plans_the_refusal(self) -> None:
+        tmp = self.image_dir(production=True)
+        result = self.run_uki("--in", str(tmp), "--dry-run", "--sign")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("refuse: a production image needs --pin", result.stdout)
+
+    def test_a_bench_image_leaves_the_pin_outside(self) -> None:
+        """A bench disk has no bootstrap key; firstboot-bench places its pin."""
+        tmp = self.image_dir(production=False)
+        result = self.run_uki("--in", str(tmp), "--dry-run", "--sign",
+                             "--pin", str(tmp / "pin.json"))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("leave the pin outside the disk", result.stdout)
 
 
 if __name__ == "__main__":
