@@ -35,7 +35,7 @@ ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from odilectl import cli, purge  # noqa: E402
+from odilectl import cli, provision, purge  # noqa: E402
 from odilectl.state import StateStore  # noqa: E402
 
 SLUG = "odl-fake01"
@@ -560,6 +560,416 @@ class PurgeRealResticTest(PurgeFixture):
         self.assertFalse(payload["dry_run"])
         self.assertEqual(payload["snapshot"], self.snapshot)
         self.assertEqual(payload["purged"]["path"], str(self.repo))
+
+
+# ------------------------------------------------------------------ the BX11 exit
+
+BX11_RW_ID = 392550
+BX11_RO_ID = 392556
+BX11_SERVER = "u728180-sub1.your-storagebox.de"
+BX11_USERNAME = "u728180-sub1"
+BX11_REPO = f"sftp:{BX11_USERNAME}@{BX11_SERVER}:data/restic"
+BARE_PASSWORD = "bench-" + "purge-password-" + "2026-000000001"
+
+# A restic stand-in that keeps the snapshot list in a file, so a forget is
+# observable. `FAKE_LOCKED=1` is a repository the empty password cannot open
+# (the production case); `FAKE_WRONG=1` is a supplied password that is wrong.
+FAKE_BX11_RESTIC = textwrap.dedent(
+    '''#!/usr/bin/python3
+import json, os, sys
+from pathlib import Path
+
+state = Path(os.environ["FAKE_SNAPSHOTS"])
+password_file = os.environ.get("RESTIC_PASSWORD_FILE")
+with Path(os.environ["FAKE_LOG"]).open("a", encoding="utf-8") as handle:
+    handle.write(json.dumps({
+        "tool": "restic",
+        "argv": sys.argv[1:],
+        "repo": os.environ.get("RESTIC_REPOSITORY"),
+        "password_file": password_file,
+        "password": Path(password_file).read_text() if password_file else None,
+    }) + "\\n")
+ids = json.loads(state.read_text()) if state.exists() else []
+args = sys.argv[1:]
+if "snapshots" in args:
+    if os.environ.get("FAKE_WRONG") == "1":
+        print("wrong password or no key found", file=sys.stderr)
+        sys.exit(12)
+    if os.environ.get("FAKE_LOCKED") == "1" and "--insecure-no-password" in args:
+        print("wrong password or no key found", file=sys.stderr)
+        sys.exit(12)
+    print(json.dumps([{"id": value} for value in ids]))
+    sys.exit(0)
+if "forget" in args:
+    ident = args[args.index("forget") + 2]
+    state.write_text(json.dumps([value for value in ids if value != ident]))
+    print("{}")
+    sys.exit(0)
+print("fake restic: unknown call %r" % (args,), file=sys.stderr)
+sys.exit(2)
+'''
+)
+
+# An sftp stand-in: a scratch tree, the batch grammar the purge uses, a log.
+FAKE_SFTP = textwrap.dedent(
+    '''#!/usr/bin/python3
+import glob, json, os, sys
+from pathlib import Path
+
+root = Path(os.environ["FAKE_SFTP_ROOT"])
+commands = sys.stdin.read().splitlines()
+with Path(os.environ["FAKE_LOG"]).open("a", encoding="utf-8") as handle:
+    handle.write(json.dumps({"tool": "sftp", "argv": sys.argv[1:],
+                             "commands": commands}) + "\\n")
+for raw in commands:
+    line = raw.strip()
+    if not line:
+        continue
+    if line.startswith("-"):
+        line = line[1:]
+    verb, _, rest = line.partition(" ")
+    rest = rest.strip()
+    if verb == "ls":
+        target = rest.split()[-1]
+        path = root / target
+        if path.is_dir():
+            for child in sorted(path.iterdir()):
+                print("%s/%s" % (target.rstrip("/"), child.name))
+        else:
+            print("Can't ls: %r not found" % ("/" + target))
+    elif verb == "rm":
+        for name in glob.glob(str(root / rest)):
+            path = Path(name)
+            if path.is_file():
+                path.unlink()
+    elif verb == "rmdir":
+        try:
+            (root / rest).rmdir()
+        except OSError:
+            pass
+sys.exit(0)
+'''
+)
+
+
+class BoxApi:
+    """The two API shapes the exit uses: the plan GET, and the DELETEs."""
+
+    def __init__(self):
+        self.calls = []
+        self.deleted = []
+        self.actions = []
+
+    def __call__(self, settings, method, path, body=None):
+        self.calls.append({"method": method, "path": path, "body": body})
+        if method == "GET" and "/actions/" not in path:
+            return 200, {"storage_box": {
+                "id": settings.box_id,
+                "snapshot_plan": {"hour": 4, "minute": 30, "max_snapshots": 10,
+                                  "day_of_week": None, "day_of_month": None},
+            }}
+        if method == "DELETE":
+            ident = int(path.rsplit("/", 1)[1])
+            self.deleted.append(ident)
+            return 200, {"action": {"id": len(self.deleted), "status": "running"}}
+        raise AssertionError("unexpected API call %s %s" % (method, path))
+
+    def await_action(self, settings, payload):
+        self.actions.append(payload)
+
+
+class Bx11PurgeFixture(PurgeFixture):
+    """The bench pair's shape: an env store, a locked repository, the box API."""
+
+    def setUp(self):
+        super().setUp()
+        self.store = self.directory / "hetzner"
+        self.store.mkdir(mode=0o700)
+        self.token = self.directory / "hetzner-api-token"
+        self.token.write_text("HETZNER_API_" + "TOKEN=placeholder\n", encoding="utf-8")
+        self.token.chmod(0o600)
+        self.config = self.make_config(
+            hetzner_dir=str(self.store),
+            hetzner_token=str(self.token),
+            hetzner_box_id="709870",
+            hetzner_api_base="https://api.hetzner.test/v1",
+        )
+        self.pair = provision.BackupPair(
+            slug=SLUG, box_id=709870, box_server="u728180.your-storagebox.de",
+            subaccount_id=BX11_RW_ID, subaccount_username=BX11_USERNAME,
+            subaccount_server=BX11_SERVER, subaccount_home=f"tenants/{SLUG}",
+            readonly_subaccount_id=BX11_RO_ID,
+            readonly_subaccount_username="u728180-sub2",
+            readonly_subaccount_server="u728180-sub2.your-storagebox.de",
+            readonly_subaccount_home=f"tenants/{SLUG}/data",
+            repo_url=BX11_REPO,
+            readonly_repo_url="sftp:u728180-sub2@u728180-sub2.your-storagebox.de:restic",
+            known_hosts=f"{BX11_SERVER} ssh-ed25519 AAAAbench",
+            rw_private_key="[REDACTED PRIVATE KEY]\n",
+            ro_private_key="[REDACTED PRIVATE KEY]\n",
+            previous_instance="", provisioned_at="2026-11-25T17:14:31Z",
+        )
+        self.env_path = self.store / f"odile-{SLUG}.env"
+        self.env_path.write_bytes(self.pair.to_env())
+        self.api = BoxApi()
+        for name, value in (("_hetzner_api", self.api),
+                            ("_await_action", self.api.await_action)):
+            patcher = mock.patch.object(provision, name, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+        self.bin = self.directory / "bin"
+        self.bin.mkdir()
+        for name, body in (("restic", FAKE_BX11_RESTIC), ("sftp", FAKE_SFTP)):
+            path = self.bin / name
+            path.write_text(body, encoding="utf-8")
+            path.chmod(0o755)
+        self.log = self.directory / "bx11-calls.jsonl"
+        self.snapshot_state = self.directory / "snapshots.json"
+        self.snapshot_id = "11" * 32
+        self.snapshot_state.write_text(json.dumps([self.snapshot_id]), encoding="utf-8")
+        self.password = self.directory / "restic.pass"
+        self.password.write_text(BARE_PASSWORD + "\n", encoding="utf-8")
+        self.sftp_root = self.directory / "box"
+        self.sftp_root.mkdir()
+        self.environment = mock.patch.dict(os.environ, {
+            "PATH": f"{self.bin}:{os.environ['PATH']}",
+            "FAKE_LOG": str(self.log),
+            "FAKE_SNAPSHOTS": str(self.snapshot_state),
+            "FAKE_SFTP_ROOT": str(self.sftp_root),
+        })
+        self.environment.start()
+        self.addCleanup(self.environment.stop)
+        self.repo_url = BX11_REPO
+        self.seed(repo=BX11_REPO)
+
+    def calls(self, tool):
+        if not self.log.exists():
+            return []
+        entries = [json.loads(line) for line in self.log.read_text(encoding="utf-8").splitlines()
+                   if line.strip()]
+        return [entry for entry in entries if entry.get("tool") == tool]
+
+    def build_key_only_repository(self, *, repo="data/restic"):
+        """A repository tree as sftp sees it: config, keys, the objects."""
+        root = self.sftp_root / repo
+        (root / "keys").mkdir(parents=True)
+        (root / "snapshots").mkdir()
+        (root / "index").mkdir()
+        (root / "data" / "00").mkdir(parents=True)
+        (root / "locks").mkdir()
+        (root / "config").write_text("{}", encoding="utf-8")
+        (root / "keys" / "abc123").write_text("key", encoding="utf-8")
+        (root / "snapshots" / self.snapshot_id).write_text("{}", encoding="utf-8")
+        (root / "index" / ("22" * 32)).write_text("{}", encoding="utf-8")
+        (root / "data" / "00" / ("33" * 32)).write_text("blob", encoding="utf-8")
+        (root / "locks" / "lock").write_text("lock", encoding="utf-8")
+        return root
+
+    def backup_record(self):
+        return self.row()["detail"]["backup"]
+
+
+class Bx11PurgeTest(Bx11PurgeFixture):
+    """ODL-935: prune with the RW key, delete both halves, record, stay put."""
+
+    def test_the_plan_names_the_snapshot_the_two_accounts_and_the_survivors(self):
+        database = self.db.read_bytes()
+        code, out, err = self.command("--password-file", self.password)
+        self.assertEqual(code, 0, err)
+        self.assertIn("purge: dry run (pass --apply to execute)", out)
+        for action in ("backup.verify", "backup.prune", "subaccount.delete", "state.record"):
+            self.assertIn(action, out)
+        self.assertIn(self.snapshot_id, out)
+        self.assertIn("restic forget --prune <id>", out)
+        self.assertIn(str(BX11_RW_ID), out)
+        self.assertIn(str(BX11_RO_ID), out)
+        self.assertIn("04:30", out)
+        self.assertIn("ten days", out)
+        self.assertIn(DUE, out)
+        self.assertEqual(self.db.read_bytes(), database)
+        self.assertEqual(self.api.calls[0]["method"], "GET")
+        self.assertEqual(self.api.deleted, [])
+        self.assertEqual([entry["argv"][-3:] for entry in self.calls("restic")],
+                         [["snapshots", "--json", "--no-lock"]])
+        self.assertFalse(self.calls("sftp"), "the plan opened an sftp batch")
+
+    def test_apply_prunes_with_restic_deletes_both_and_records(self):
+        code, out, err = self.command("--password-file", self.password, apply=True)
+        self.assertEqual(code, 0, err)
+        self.assertIn("purge: applied", out)
+        self.assertIn(self.snapshot_id[:8], out)
+        restic = self.calls("restic")
+        self.assertTrue(any(entry["argv"][-3:] == ["forget", "--prune", self.snapshot_id]
+                            for entry in restic), restic)
+        self.assertEqual(json.loads(self.snapshot_state.read_text(encoding="utf-8")), [])
+        self.assertEqual(self.api.deleted, [BX11_RO_ID, BX11_RW_ID])
+        self.assertEqual(len(self.api.actions), 2)
+        backup = self.backup_record()
+        self.assertTrue(backup["subaccount_deleted_at"].endswith("Z"))
+        self.assertEqual(backup["subaccounts"]["read_write"]["id"], BX11_RW_ID)
+        self.assertEqual(backup["subaccounts"]["read_only"]["id"], BX11_RO_ID)
+        self.assertEqual(backup["pruned"]["mode"], "restic")
+        self.assertEqual(backup["pruned"]["snapshots"], 1)
+        self.assertEqual(backup["pruned"]["ids"], [self.snapshot_id])
+        self.assertEqual(backup["keep_until"], DUE)
+        self.assertEqual(backup["survivors"]["directory"], f"tenants/{SLUG}")
+        self.assertEqual(backup["survivors"]["box_snapshots"]["kept"], 10)
+        self.assertIn("ten days", backup["survivors"]["box_snapshots"]["note"])
+        self.assertNotIn(BARE_PASSWORD, out)
+        self.assertNotIn(BARE_PASSWORD, err)
+
+    def test_a_second_run_says_already_deleted_and_writes_nothing(self):
+        first, out, err = self.command("--password-file", self.password, apply=True)
+        self.assertEqual(first, 0, err)
+        database = self.db.read_bytes()
+        deleted_at = self.backup_record()["subaccount_deleted_at"]
+        self.env_path.unlink()  # the second run must not read the store
+        code, out, err = self.command(apply=True)
+        self.assertEqual(code, 0, err)
+        self.assertIn("purge: already deleted", out)
+        self.assertIn(deleted_at, out)
+        self.assertEqual(self.db.read_bytes(), database)
+        self.assertEqual(self.api.deleted, [BX11_RO_ID, BX11_RW_ID])
+
+    def test_without_a_password_the_objects_are_deleted_with_the_key(self):
+        self.build_key_only_repository()
+        with mock.patch.dict(os.environ, {"FAKE_LOCKED": "1"}):
+            code, out, err = self.command(apply=True)
+        self.assertEqual(code, 0, err)
+        self.assertIn("purge: applied", out)
+        self.assertIn("the repository password is the user's", out)
+        root = self.sftp_root / "data" / "restic"
+        self.assertEqual(sorted(child.name for child in root.iterdir()),
+                         ["config", "keys"])
+        self.assertEqual([child.name for child in (root / "keys").iterdir()], ["abc123"])
+        backup = self.backup_record()
+        self.assertEqual(backup["pruned"]["mode"], "key-only")
+        self.assertEqual(backup["pruned"]["ids"], [self.snapshot_id])
+        self.assertEqual(self.api.deleted, [BX11_RO_ID, BX11_RW_ID])
+        self.assertEqual(self.api.calls[0]["method"], "GET")
+
+    def test_the_key_only_plan_still_names_the_snapshot_ids(self):
+        self.build_key_only_repository()
+        with mock.patch.dict(os.environ, {"FAKE_LOCKED": "1"}):
+            code, out, err = self.command("--json")
+        self.assertEqual(code, 0, err)
+        payload = json.loads(out)
+        self.assertEqual(payload["actions"][0]["snapshots"], 1)
+        self.assertEqual(payload["actions"][0]["ids"], [self.snapshot_id])
+        self.assertIn("read-write key over sftp", payload["actions"][0]["via"])
+        self.assertFalse(self.calls("sftp")[0]["commands"][0].startswith("rm"),
+                         "the plan deleted something")
+
+    def test_a_missing_env_file_refuses_by_name_and_path(self):
+        self.env_path.unlink()
+        database = self.db.read_bytes()
+        code, out, err = self.command(apply=True)
+        self.assertEqual(code, 2)
+        self.assertIn(str(self.env_path), err)
+        self.assertIn("store of record is missing", err)
+        self.assertEqual(self.db.read_bytes(), database)
+        self.assertEqual(self.api.deleted, [])
+        self.assertFalse(self.calls("restic"))
+
+    def test_the_store_of_record_must_be_this_tenants(self):
+        other = self.pair.__class__(**{**self.pair.__dict__, "slug": "odl-other"})
+        self.env_path.write_bytes(other.to_env())
+        code, out, err = self.command("--password-file", self.password, apply=True)
+        self.assertEqual(code, 2)
+        self.assertIn("records 'odl-other'", err)
+        self.assertEqual(self.api.deleted, [])
+
+    def test_the_repository_must_be_the_read_write_sub_account(self):
+        self.set_backup(repo="sftp:u728180-sub2@u728180-sub2.your-storagebox.de:restic")
+        code, out, err = self.command("--password-file", self.password, apply=True)
+        self.assertEqual(code, 2)
+        self.assertIn("not the read-write sub-account", err)
+        self.assertEqual(self.api.deleted, [])
+        self.assertFalse(self.calls("restic"))
+
+    def test_a_wrong_password_is_exit_four_and_nothing_is_deleted(self):
+        database = self.db.read_bytes()
+        with mock.patch.dict(os.environ, {"FAKE_WRONG": "1"}):
+            code, out, err = self.command("--password-file", self.password, apply=True)
+        self.assertEqual(code, 4)
+        self.assertIn("wrong password", err)
+        self.assertEqual(self.api.deleted, [])
+        self.assertEqual(self.db.read_bytes(), database)
+        self.assertNotIn(BARE_PASSWORD, err)
+
+    def test_a_repo_hex_directory_is_pruned_without_an_api_call(self):
+        self.set_backup(repo=f"sftp:{BX11_USERNAME}@{BX11_SERVER}:data/repo-ab12")
+        connection = sqlite3.connect(str(self.db))
+        try:
+            connection.execute("UPDATE tenant_state SET state = 'ready' WHERE slug = ?", (SLUG,))
+            connection.commit()
+        finally:
+            connection.close()
+        code, out, err = self.command("--password-file", self.password, apply=True)
+        self.assertEqual(code, 0, err)
+        self.assertIn("purge: applied", out)
+        self.assertIn("a start-fresh directory", out)
+        self.assertEqual(self.api.calls, [])
+        backup = self.backup_record()
+        self.assertEqual(backup["prunes"][-1]["repo"],
+                         f"sftp:{BX11_USERNAME}@{BX11_SERVER}:data/repo-ab12")
+        self.assertEqual(backup["keep_until"], DUE)
+        database = self.db.read_bytes()
+        code, out, err = self.command("--password-file", self.password, apply=True)
+        self.assertEqual(code, 0, err)
+        self.assertIn("purge: already pruned", out)
+        self.assertEqual(self.db.read_bytes(), database)
+
+    def test_the_plan_json_carries_the_actions(self):
+        code, out, err = self.command("--password-file", self.password, "--json")
+        self.assertEqual(code, 0, err)
+        payload = json.loads(out)
+        self.assertTrue(payload["dry_run"])
+        self.assertEqual([action["action"] for action in payload["actions"]],
+                         ["backup.verify", "backup.prune", "subaccount.delete",
+                          "subaccount.delete", "state.record"])
+
+
+class Bx11PiecesTest(unittest.TestCase):
+    """The URL grammar, the branch choice and the password file."""
+
+    def test_the_sftp_url_keeps_the_colon_form_path_and_reads_a_port_only_in_the_url_form(self):
+        self.assertEqual(purge.sftp_url("sftp:u@h:data/restic"),
+                         ("u", "h", 22, "data/restic"))
+        # restic reads `22` as the first path component in the colon form.
+        self.assertEqual(purge.sftp_url("sftp:u@h:22/data/restic"),
+                         ("u", "h", 22, "22/data/restic"))
+        self.assertEqual(purge.sftp_url("sftp://u@h:2222/data/restic"),
+                         ("u", "h", 2222, "data/restic"))
+        for bad in ("sftp:u@h", "sftp:u@h:", "sftp:u@h:../restic", "https://h/x"):
+            with self.subTest(repo=bad):
+                with self.assertRaises(purge.UsageError):
+                    purge.sftp_url(bad)
+
+    def test_the_branch_is_the_rows_url_not_a_flag(self):
+        self.assertTrue(purge.bx11_repository("sftp:u@h:data/restic", "odl-1"))
+        self.assertTrue(purge.bx11_repository("sftp:u@h:data/repo-ab12", "odl-1"))
+        # t_9d6fb595's HQ-root rows keep the absolute `/tenants/<slug>` path.
+        self.assertFalse(purge.bx11_repository("sftp:u@h:/tenants/odl-1", "odl-1"))
+        self.assertFalse(purge.bx11_repository("/srv/odile-backup/tenants/odl-1", "odl-1"))
+
+    def test_a_recovery_file_and_a_bare_password_file_both_open(self):
+        directory = Path(tempfile.mkdtemp(prefix="odile-purge-pass-"))
+        self.addCleanup(shutil.rmtree, directory, True)
+        recovery = directory / "recovery.txt"
+        recovery.write_text("Odile recovery file\nBackup password: %s\n" % BARE_PASSWORD,
+                            encoding="utf-8")
+        self.assertEqual(purge._read_password(recovery, bare=True), BARE_PASSWORD)
+        bare = directory / "restic.pass"
+        bare.write_text(BARE_PASSWORD + "\n", encoding="utf-8")
+        self.assertEqual(purge._read_password(bare, bare=True), BARE_PASSWORD)
+        with self.assertRaises(purge.UsageError):
+            purge._read_password(bare)  # the HQ-root path keeps the strict grammar
+        short = directory / "short.pass"
+        short.write_text("short\n", encoding="utf-8")
+        with self.assertRaises(purge.UsageError):
+            purge._read_password(short, bare=True)
 
 
 if __name__ == "__main__":

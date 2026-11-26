@@ -360,17 +360,166 @@ a dated step, not a memory:
 - Before the date, nothing touches it. `destroy` never deletes the repository —
   it only prints the date and the path.
 
-**Interim (R2) tenants — ODL-935, not shipped at this head.** On an interim
-tenant the repository is a bucket, `odile-t-<slug>`, and `odilectl/purge.py` has
-no `s3:` path today: the designed step empties the bucket (or the old
-`repo-<4 hex>` prefix) through the tenant's own token and records
-`bucket_emptied_at` on the row, then Savio deletes the empty bucket in the
-Cloudflare dashboard — an Object Read & Write token cannot delete a bucket. The
-30-day promise is unchanged; the bucket half is **ODL-935**'s (ADR-004 §8's exit
-row), and until it lands the dashboard's **Empty Bucket** is the interim
-tenant's only path.
+**The BX11 exit — ODL-935, shipped and measured 2026-11-26.** Every tenant on
+the Hetzner Storage Box (box 709870, `hel1` Helsinki — the EU) has one
+`odile-<slug>-rw`/`-ro` sub-account pair, and the repository sits in the
+read-write account's `data/restic` (ADR-004 v3 §4.1). At `keep_until`,
+`odilectl purge <slug>` prunes that repository with the row's read-write key
+over SFTP on port 22, deletes **both** sub-accounts through the Console API,
+and records `detail.backup.subaccount_deleted_at`. §4.1 is the shipped shape
+and the measured transcript. The HQ-root path below (`t_9d6fb595`) is still
+the branch for a row whose URL names the old stand-in's absolute
+`/tenants/<slug>` — the demo and bench migration — and it is kept byte for
+byte.
 
-### The command — `odilectl purge <slug>`
+### 4.1 The BX11 exit — measured on a bench pair, 2026-11-26T08:35Z
+
+The command is a control-plane verb (`odilectl purge`), deliberately not a
+`scripts/backup.py` verb: that program is embedded byte-for-byte in the signed
+installer, and the fact this command reads (the tenant row) lives on HQ. It
+runs on **HQ**, not on the box. The destination is **the row's repository
+URL**, not a flag:
+
+| The row's `detail.backup.repo` | Branch |
+|---|---|
+| `sftp:` with an **account-relative** path (`data/restic`, `data/repo-<4 hex>`) | the BX11 exit (this section) |
+| `sftp:` with the old stand-in's **absolute** `/tenants/<slug>` | the HQ-root path (§4.2), byte for byte |
+| a local path | the HQ-root path (§4.2) |
+
+For a BX11 row the credentials and ids come from
+`/root/.odile/hetzner/odile-<slug>.env` (0600) — the store of record
+`odilectl provision` writes. A missing file refuses by name and path. The
+read-write private key and the pinned host key are written to 0600 files for
+the length of one call; the token is read from its 0600 file and sent as an
+`Authorization` header. **No password, key or token reaches argv or a log.**
+
+The order is the one the API imposes:
+
+1. `restic snapshots --json` (over `sftp.command=ssh -i <key> … -p 22 <user>@<host> -s sftp`,
+   with the pinned `known_hosts`) with the tenant's read-write key.
+2. `restic forget --prune <id>` for **every** snapshot, which removes the
+   snapshot data and leaves the repository's `config` and `keys/`.
+3. `GET /v1/storage_boxes/709870` — the box's own snapshot plan, so the
+   survivor note is measured, not remembered.
+4. `DELETE /v1/storage_boxes/709870/subaccounts/<id>` for the **read-only**
+   half, then the **read-write** half; each write answers an action that is
+   polled to `success`.
+5. `detail.backup.subaccount_deleted_at` on the row, with the per-half ids and
+   results, the prune record and the two survivors. It is a detail, not a new
+   event (`tenant_state_events.kind` is the state vocabulary). `keep_until`,
+   the repository and the snapshot stay where `destroy` wrote them, and so do
+   `dns`, `export`, `grant`, `machine` and `reason`.
+
+**The repository password is the user's** (ADR-004 §3): HQ holds the keys, not
+the password. With `--password-file` (the user's recovery file, or a bare
+password file) the command runs the two restic calls above. Without it — the
+production case at `keep_until` — restic answers "wrong password" (exit 12),
+and the command deletes the repository's `snapshots/`, `index/` and `data/`
+objects with the read-write key instead, which is the same end state: no user
+data, `config` and `keys/` only. The snapshot ids are the snapshot files' own
+names, so the record still names what was pruned. A **supplied** password that
+does not open the repository is exit 4 and nothing is deleted.
+
+**The two things that outlive the deletion, stated and recorded:**
+
+- **`tenants/<slug>` stays, and it is not literally empty.** Measured on the
+  bench pair: after both sub-accounts were deleted, a throwaway read-only
+  sub-account on the surviving home listed
+  `.ssh/authorized_keys`, `data/.ssh`, and the pruned repository's
+  `config` plus `keys/<id>`, with `data/`, `index/`, `snapshots/` and
+  `locks/` present and **empty** (`ls -1 data/restic/data/*/*` and the three
+  other globs answer `not found`). "Empty" means **no user data**; the
+  skeleton and the key files remain. Hetzner deletes the sub-account, not its
+  home, and only the box's **main account** can delete the directory — which
+  HQ deliberately does not hold (ADR-004 §4.2).
+- **The box's own snapshots** (04:30 UTC, 10 kept — read back from
+  `GET /storage_boxes/709870`) are not deleted by a repository prune, so the
+  surviving directory can be recovered from them until the ten slots roll
+  over: up to about ten days. The 30-day promise is about the repository, and
+  it is unchanged.
+
+**A `repo-<4 hex>` directory** is a lost-recovery-file start-fresh (ADR-004
+§7.4): the old repository is pruned inside the same sub-account and the pair
+**stays**, because the tenant still writes to it — so that branch makes **no
+API call** and records `detail.backup.prunes` (one entry per pruned old
+repository). A second run says `already pruned`.
+
+Dry run and apply on a bench pair, 2026-11-26T08:34–08:35Z (a pair minted for
+the exit — `odl-exit935`, both homes under `tenants/odl-exit935`, one snapshot
+`02983ce3…` written by `restic init` + `backup` with a password minted for the
+drill):
+
+```
+$ /usr/bin/python3 -m odilectl purge odl-exit935 --config /var/tmp/odile-ODL-935/config.yaml \
+    --password-file /var/tmp/odile-ODL-935/odl-exit935-restic.pass
+purge: dry run (pass --apply to execute)
+  1. backup.verify: repository="sftp:u728180-sub1@u728180-sub1.your-storagebox.de:data/restic", via="restic snapshots --json", snapshots=1, ids=["02983ce3ceb6c4b332143c4ccf0562cffa122eab71a29c9da55390e06f3c60fa"]
+  2. backup.prune: repository="sftp:u728180-sub1@u728180-sub1.your-storagebox.de:data/restic", via="restic forget --prune <id>", snapshots=1, ids=["02983ce3ceb6c4b332143c4ccf0562cffa122eab71a29c9da55390e06f3c60fa"]
+  3. subaccount.delete: box=709870, id=395983, name="odile-odl-exit935-ro"
+  4. subaccount.delete: box=709870, id=395979, name="odile-odl-exit935-rw"
+  5. state.record: slug="odl-exit935", detail="detail.backup.subaccount_deleted_at", keep_until="2026-11-01T00:00:00Z"
+note: the store of record is /root/.odile/hetzner/odile-odl-exit935.env (0600); its read-write key is the only credential used, and it never reaches argv
+note: the password file opened the repository; the prune runs restic forget --prune for every snapshot
+note: survives: tenants/odl-exit935 (stays, no user data: .ssh and the repository's config and keys/; only the box's main account can delete it, and HQ does not hold it)
+note: the box's own snapshots: 04:30 UTC, 10 kept — the deleted directory can survive up to about ten days
+note: the 30-day promise and keep_until 2026-11-01T00:00:00Z are unchanged
+
+$ /usr/bin/python3 -m odilectl purge odl-exit935 --config … --password-file … --apply
+purge: applied
+  repository: sftp:u728180-sub1@u728180-sub1.your-storagebox.de:data/restic
+  prune:      1 snapshot(s) via restic forget --prune: 02983ce3
+  left:       config keys (data/, index/, locks/, snapshots/ empty)
+  subaccount: odile-odl-exit935-ro 395983 deleted
+  subaccount: odile-odl-exit935-rw 395979 deleted
+  survives:   tenants/odl-exit935 (stays, no user data: .ssh and the repository's config and keys/; the box's main account would delete it)
+  box:        the box's own snapshots: 04:30 UTC, 10 kept — the deleted directory can survive up to about ten days
+  unchanged:  keep_until 2026-11-01T00:00:00Z and the 30-day promise
+  state:      detail.backup.subaccount_deleted_at at 2026-11-26T08:35:20Z in /var/tmp/odile-ODL-935/waitlist-copy.db
+
+$ /usr/bin/python3 -m odilectl purge odl-exit935 --config … --apply      # the second run
+purge: already deleted
+  deleted_at: 2026-11-26T08:35:20Z
+  repository: sftp:u728180-sub1@u728180-sub1.your-storagebox.de:data/restic
+  subaccount: odile-odl-exit935-rw 395979 (deleted)
+  subaccount: odile-odl-exit935-ro 395983 (deleted)
+  pruned:     1 snapshot(s) via restic
+  survives:   tenants/odl-exit935 (stays, no user data: .ssh and the repository's config and keys/; the box's main account would delete it)
+  box:        the box's own snapshots (04:30 UTC, 10 kept) are not deleted by this; the deleted directory can survive up to about ten days
+```
+
+The API readback after the apply: `GET /storage_boxes/709870/subaccounts`
+lists only the demo pair (395540/395542), and `GET …/subaccounts/395979` and
+`…/395983` both answer **404 `Sub Account with ID … not found`**. The copy of
+the state store is byte-identical before and after the second run
+(`sha256sum -c` OK). The same command deleted the earlier bench pair
+(`odl-bench`, 392550/392556) in the dry-run cycle; both ids now answer 404 as
+well. A missing store of record refuses before anything is touched:
+
+```
+$ /usr/bin/python3 -m odilectl purge odl-noenv --config … --apply   # no …/odile-odl-noenv.env
+odilectl purge: odl-noenv's backup store of record is missing: /root/.odile/hetzner/odile-odl-noenv.env; the pair's ids, keys and host key live there
+rc=2
+```
+
+The redaction check: the drill password appears **0** times in the run's
+output and **0** times in a 0.05 s `ps -eo args` sample taken while restic was
+live; the read-write key and the API token are not in either.
+
+Refusals, each with the row's own reason:
+
+| Refusal | Exit | When |
+|---|---|---|
+| the store of record is missing | 2 | `<slug>'s backup store of record is missing: <path>` — before restic and before the API |
+| the store records another slug | 2 | `<path> records 'odl-other', not '<slug>'` |
+| the row's URL is not the read-write account | 2 | `… is not the read-write sub-account in the store of record (…)` |
+| a supplied password does not open it | 4 | restic's `wrong password or no key found`, nothing deleted |
+| the row is not `destroyed` (and not a start-fresh) | 2 | `<slug> is ready, not destroyed; nothing is due` |
+| `keep_until` is in the future | 2 | `not due: keep_until … (… days away)` |
+
+The full transcripts are in the card's evidence, `docs/evidence/a3-bx11-purge.md`.
+
+### 4.2 The HQ-root path — `odilectl purge <slug>` (`t_9d6fb595`, byte for byte)
+
 
 **t_9d6fb595** is the command: `odilectl purge`, a control-plane verb beside
 `destroy` (`odilectl/purge.py`). It is deliberately not a `scripts/backup.py`
