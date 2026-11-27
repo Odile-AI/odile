@@ -33,6 +33,13 @@ before the operator commits:
   not pull a package in: `sshpass` is in no dependency chain, and without it
   the recovered box's gate exits 1 and `odilectl provision` cannot install a
   key on port 23.
+* the **recovery set's two dead surfaces** — `test.odile.fyi` is repointed by
+  the same run that restores the box, so the restore must carry
+  `/opt/odile-test` (its units' `ExecStart`), `/var/lib/odile-test` (its state)
+  and `/etc/odile-bench` (the one `EnvironmentFile`), and the unit loop must
+  start the two bench units; `/srv/odile-releases` is measured and excluded
+  (ADR §3.1), so the republish block must print the four exact commands and
+  say `/releases/*` is 404 until they run (t_df30ec09).
 
 The rules:
 
@@ -725,6 +732,90 @@ def runbook_step_3() -> str:
     text = RUNBOOK.read_text(encoding="utf-8")
     start = text.index("**3. Packages.**")
     return text[start:text.index("**4. ", start)]
+
+
+def release_images_block() -> str:
+    """The republish block the shipped script runs, verbatim.
+
+    It is the answer to a 404: `/srv/odile-releases` is not a backup root
+    (ADR §3.1), so a restored HQ serves nothing under `/releases/*` and the
+    operator needs the exact four commands, not an empty directory.
+    """
+    text = SCRIPT.read_text(encoding="utf-8")
+    return text[text.index("# --- release-images begin"):
+                text.index("# --- release-images end")]
+
+
+class RecoverySetTests(unittest.TestCase):
+    """The two surfaces a restore used to leave dead (t_df30ec09).
+
+    `/opt/odile-test` (with its state and `/etc/odile-bench`) is restored and
+    its two units started, because the same run moves `test.odile.fyi`'s A
+    record; `/srv/odile-releases` is measured and **not** carried, so the
+    script must name the republish instead of leaving a silent 404.
+    """
+
+    def run_release_block(self, releases: Path, repo: str = str(ROOT)) -> subprocess.CompletedProcess:
+        harness = releases.parent / "release-harness.sh"
+        harness.write_text(
+            "#!/bin/bash\nset -Eeuo pipefail\n"
+            f"REPO={repo}\nRELEASES_DIR={releases}\n"
+            "say() { printf '\\n== %s ==\\n' \"$*\"; }\n"
+            + release_images_block()
+            + "\n",
+            encoding="utf-8",
+        )
+        harness.chmod(0o700)
+        return subprocess.run(["bash", str(harness)], capture_output=True,
+                              text=True, timeout=60)
+
+    def test_the_restore_carries_the_bench_tree_its_state_and_its_env_file(self):
+        text = SCRIPT.read_text(encoding="utf-8")
+        restore = text[text.index("\nrestic restore"):]
+        restore = restore[:restore.index("\n\n")]
+        for path in ("/opt/odile-test", "/var/lib/odile-test", "/etc/odile-bench"):
+            self.assertIn(f"--include {path}", restore,
+                          f"the restore does not carry {path}; test.odile.fyi answers 502")
+        # The bench state must be the service user's after the restore.
+        self.assertIn('chown -R odile:odile /var/lib/odile-test', text)
+
+    def test_the_units_started_by_name_include_the_bench(self):
+        text = SCRIPT.read_text(encoding="utf-8")
+        loop = text[text.index("for unit in odile.service"):]
+        loop = loop[:loop.index("done")]
+        for unit in ("odile.service", "hermes-serve.service",
+                     "odile-bench.service", "odile-bench-seed.service"):
+            self.assertIn(unit, loop)
+        # The messaging gateway is still the one thing left stopped.
+        self.assertNotIn("hermes-gateway", loop)
+
+    def test_an_empty_release_directory_prints_the_republish_commands(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            releases = Path(tmp) / "odile-releases"
+            result = self.run_release_block(releases)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("Release images: none restored", result.stdout)
+        printed = "".join(result.stdout.split())
+        self.assertIn("404", printed)
+        for command in ("./deploy/image/sealed-image.sh--outdeploy/image/out-sealed",
+                        "./deploy/image/uki.sh--in",
+                        "./deploy/caddy/deploy_releases.py--publish-disk",
+                        "./tools/publish_uki.py--uki"):
+            self.assertIn(command, printed)
+        self.assertIn("release.md§7", printed)
+        # No image is read from the backup; the operator must be told where they come from.
+        self.assertIn("isnotinthebackup", printed)
+
+    def test_a_restored_release_directory_reports_its_images_instead(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            releases = Path(tmp) / "odile-releases"
+            (releases / "disks").mkdir(parents=True)
+            (releases / "disks" / "0f1e2d3c4b5a6978.raw").write_bytes(b"x" * 16)
+            result = self.run_release_block(releases)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertIn(f"release images: 1 file(s) restored in {releases}/disks",
+                          result.stdout)
+            self.assertNotIn("none restored", result.stdout)
 
 
 class PackageListTests(unittest.TestCase):

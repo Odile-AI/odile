@@ -300,3 +300,48 @@ set.
 - [ ] `--retention --apply`; the `kept … byte-identical` lines are the proof.
 - [ ] `df -P /` and `du -x -d2 /srv` again; paste into the evidence directory.
 - [ ] A second `--retention` prints `nothing to prune`.
+
+## 7. After a factory restore — republish the release images
+
+`/srv/odile-releases` is **not** in the HQ backup, by decision
+(`docs/architecture/ADR-factory-backup.md` §3.1, 2026-11-26): measured
+34,843,229,977 bytes in 15 files — 32.4 GiB apparent, 30 GiB on disk, four
+fifths of it three 8 GiB disk images — against a backup set of 7.5 GiB. The
+two artefacts the panel pins are build output, and the restored checkpoint
+rebuilds them. So a restored HQ serves **404** on every `/releases/*` URL
+until one republish; `deploy/recovery/recover.sh` prints these commands during
+the recovery (before the DNS update and `RECOVERY COMPLETE`, not after it), and
+this is the page they name.
+
+On the recovered box (the site answers while these are missing — only the
+panel's download links are 404):
+
+```sh
+cd ~/odile
+sudo ./deploy/image/sealed-image.sh --out deploy/image/out-sealed
+./deploy/image/uki.sh --in deploy/image/out-sealed --sign --pin deploy/image/tenant-image.pin
+./deploy/caddy/deploy_releases.py --publish-disk deploy/image/out-sealed/odile-tenant-sealed.raw
+./tools/publish_uki.py --uki deploy/image/out-sealed/odile-tenant.efi
+```
+
+Each publish prints the `URL` / `SHA-256` pair; paste both into the panel
+(§3 step 7) before any `--retention` run — an unpinned new pair is exactly
+what the next prune deletes (§4). The build needs the image bench's packages
+and ~20 GB free (`docs/runbooks/image.md`); on the 40 GB recovery box, build,
+publish and prune before the next build (`docs/ops/DISK-CARE.md`).
+
+Three facts a recovered box should not be surprised by:
+
+- **The digests change.** A rebuild is not the old build: the throwaway boot
+  key and the LUKS passphrase are new, so the disk and UKI hash differently.
+  The old URLs keep their old names but no longer answer; every machine's panel
+  fields must be given the new pair before it can be reinstalled. A machine
+  that is merely *running* is unaffected — it re-hashes the bytes on its own
+  disk at boot, not the URL.
+- **`m1/` does not come back.** It held the fixed-name ODL-332 pair; the panel
+  now names content-addressed pairs in `disks/`/`uki/` (§2), and nothing
+  rewrites `m1/`.
+- **`webapp/` is the one file with no build command here.** The 1.5 MB
+  `web_dist-<id>.tgz` bundle has no tool in this repository; copy the tarball
+  the Webapp build produces:
+  `install -d -m 755 /srv/odile-releases/webapp && cp <bundle>.tgz /srv/odile-releases/webapp/`.

@@ -1163,6 +1163,42 @@ deployed `2026.11.23-4` (installer `84860db3…`, 1,576,209 bytes; manifest
 `7a217601…`). The id says `-9` is later than every cut by `generated_at`
 (2026-11-25T09:20:00Z).
 
+**The `2026.11.23-8` cut (ODL-926: the one recovery code is stable,
+replaceable from the machine and mirrored at HQ; merged with `main`'s `-6`).**
+A use no longer spends or rotates the code; a signed-in replace mints a new one
+and shows it once, and a five-minute timer pushes its scrypt hash to the account
+over `POST /tenant/recovery`, signed with the machine's heartbeat key and
+retried until the account acknowledges. The installer re-embeds the two
+first-visit surfaces and, new, `scripts/heartbeat.py` (page `801a1303…`,
+47,050 bytes; service `e69d80d7…`, 86,172 bytes; heartbeat `2459ca26…`, 34,075
+bytes), and its push re-reads the state under the service's lock after a 200,
+so a replace that lands while a POST is open stays pending instead of being
+overwritten. `install.md` §12.6 has the full record: installer `ba8268d2…`
+(1,628,513 bytes), manifest `c574552f…` (50,044 bytes; its diff against `-6` is
+`installer_sha256` alone), skills `9a10a63e…` (852,667 bytes, `-6`'s),
+`release.json` `8debc19d…` (2,186 bytes) naming `2026.11.23-8` at
+`2026-11-24T06:12:52Z`, `--verify-signature` OK on the checkout's installer
+(`signature: OK (sha256 ba8268d2…)`), a one-byte edit `3d199940…` (1,628,514
+bytes) and `signature: BAD`, exit 3, and `tools/recut_release.py --check` with
+eleven `ok` lines in a card worktree and a twelfth `ok pin hook_sha256` line on
+HQ, never a `warn` for those rows. It is committed, not deployed: measured
+2026-11-25T11:29Z and again 2026-11-26T19:52Z, the URL serves the deployed
+`2026.11.23-4` (installer `84860db3…`, 1,576,209 bytes; manifest `7a217601…`).
+The id ledger: `-4` is ODL-929's page-and-help re-cut (16:45Z); `-5` is
+t_fc412bd9's `/verify` header cut on `main` (21:01:30Z; installer `580f2ad3…`,
+manifest `e97266f0…`, `release.json` `4e803fdb…`, 1,748 bytes); `-6` is ODL-925's
+first-run-close follow-up, merged to `main` (installer `f8bde596…`, 1,576,241
+bytes, manifest `9d6e3b9e…`); `-7` was cut twice before any merge (this
+follow-up at 2026-11-24T01:15Z, ODL-947 at 2026-11-25T05:40Z) and no ref carries
+it now; `-8` itself was first cut at 2026-11-24T01:55Z
+(`2f2f541e…`/`62a70158…`) on `odl/ODL-926` and re-cut at 06:12:52Z as the pair
+above, which merged as `bdc63e6`. By `generated_at` it is later than `-6`, `-5`
+and `-4` but not the board's newest cuts: the sweep of every `refs/heads` and
+`refs/remotes` at 2026-11-26T19:52Z also carries `2026.11.23-9`
+(2026-11-25T09:20Z), `2026.11.25-1` (26 Nov 00:35Z), `2026.11.25-2` (03:08Z),
+`2026.11.25-4` (`main`, 10:06Z) and `2026.11.26-1` (`odl/ODL-933`, 12:18:06Z),
+all later.
+
 **The `2026.11.23-6` cut (the ODL-925 follow-up: the first-run close names no
 unlock).** The tenant first-run skill's closing sentence said a job "runs when
 you unlock" — false under the sealed boot, where the disk unlocks on the boot the

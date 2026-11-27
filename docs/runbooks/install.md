@@ -2933,7 +2933,10 @@ with the boot's measurement, naming both numbers on one line — the rule
 installer's `--self-test` pins both halves and now also pins the boot report's
 path into its fixture (its default is the guest's, and the host that runs the
 self-test has one). `tools/recut_release.py` re-derived and re-signed the pair;
-`--check` prints its `ok` lines and the HQ-only pin warn. The installer is
+`--check` prints eleven `ok` lines (the pin line runs only where the HQ-only hook
+source `spike/sealed-unlock/initramfs/bb-sealed-unlock` sits beside
+`deploy/image/tenant-image.pin`, as it does on HQ, and then reads
+`ok pin hook_sha256`). The installer is
 `ebbe5b5a…` (1,633,588 bytes) and the manifest `a77ab004…` (50,044 bytes);
 the manifest's diff against `-9`'s is `installer_sha256` only — every skill,
 page, template and program row is `-9`'s, whose own diff against `-8`'s was the
@@ -2978,7 +2981,11 @@ bytes); the merge of `main` `8ad9145` also re-embeds `templates/verify.html`
 (`d95b5061…`, the `-6` change) and the skills tarball (`9a10a63e…`, 852,667
 bytes), so the installer carries `-6`, `-5`, ODL-929's `-4` and this cut.
 `tools/recut_release.py` re-derived and re-signed the pair; `--check` prints its
-eleven `ok` lines plus the HQ-only pin warn. The installer is
+eleven `ok` lines in a card worktree and, on HQ, a twelfth `ok pin hook_sha256`
+line (the cutter runs that block only where the HQ-only hook source
+`spike/sealed-unlock/initramfs/bb-sealed-unlock` sits beside
+`deploy/image/tenant-image.pin`); none of these checks prints a `warn`.
+The installer is
 `ba8268d2…` (1,628,513 bytes) and the manifest `c574552f…` (50,044
 bytes); the manifest's diff against `-6`'s is `installer_sha256` only — the
 `6d3f7be0…` audit row, the `d9c4278a…` backup row, the 48 skill rows and
@@ -2990,12 +2997,20 @@ ba8268d2…)`; a one-byte edit reads `3d199940…` (1,628,514 bytes)
 and `signature: BAD`, exit 3. `release/release.json` (`8debc19d…`,
 2,186 bytes) names `2026.11.23-8` at `2026-11-24T06:12:52Z`. It is
 committed, not deployed: measured 2026-11-24T06:12Z the URL serves the deployed
-`2026.11.23-4` (`84860db3…`, 1,576,209 bytes; manifest `7a217601…`). The id
-ledger: `-5` is `main`'s t_fc412bd9 cut (21:01:30Z, `580f2ad3…`/`e97266f0…`),
-`-6` is `main`'s ODL-925 follow-up cut (installer `f8bde596…`, 1,576,241
-bytes, manifest `9d6e3b9e…`), and `-7` is `odl/ODL-926-followup`'s
-(2026-11-24T01:15Z); `-8` is later than every cut before it by `generated_at` and on no
-other ref.
+`2026.11.23-4` (`84860db3…`, 1,576,209 bytes; manifest `7a217601…`), and it
+still did at 2026-11-26T19:52Z. The id ledger: `-5` is `main`'s t_fc412bd9 cut
+(21:01:30Z, `580f2ad3…`/`e97266f0…`), `-6` is `main`'s ODL-925 follow-up cut
+(installer `f8bde596…`, 1,576,241 bytes, manifest `9d6e3b9e…`), and `-7` was
+cut twice before any merge — this follow-up's first cut (2026-11-24T01:15Z) and
+ODL-947's (2026-11-25T05:40Z, below); no ref carries `-7` now. `-8` itself
+has two forms: `odl/ODL-926` carried `2f2f541e…`/`62a70158…` at
+2026-11-24T01:55Z, and this document is the 06:12:52Z re-cut
+(`ba8268d2…`/`c574552f…`) that merged as `bdc63e6`. By `generated_at`, `-8` is
+later than the cuts it re-cut (`-6`, `-5`, `-4`) but not the newest cut on the
+board: the sweep of every `refs/heads` and `refs/remotes` at 2026-11-26T19:52Z
+also carries `2026.11.23-9` (2026-11-25T09:20Z), `2026.11.25-1` (26 Nov
+00:35Z), `2026.11.25-2` (03:08Z), `2026.11.25-4` (`main`, 10:06Z) and
+`2026.11.26-1` (`odl/ODL-933`, 12:18:06Z), all later.
 
 **The `2026.11.23-9` cut (the ODL-947 follow-up: the seeded first boot writes
 the seed's verifier before the state says it is set).** Release `2026.11.23-5`'s
