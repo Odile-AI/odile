@@ -72,9 +72,9 @@ are 32 GB of build output). After a restore, `https://odile.fyi/releases/...`
 answers **404**, so the panel cannot install a new machine until one build is
 published. The site itself is fine; only those download links are missing.
 
-The script prints these four commands when it finishes. A person who knows
-Linux runs them once, on the new server, and pastes the two lines each one
-prints into the server panel:
+The script prints these four commands during the recovery, when it finds the
+release directory empty. A person who knows Linux runs them once, on the new
+server, and pastes the two lines each one prints into the server panel:
 
 ```sh
 cd ~/odile
