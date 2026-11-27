@@ -4631,13 +4631,13 @@ class RecoverySeedTests(unittest.TestCase):
             capture_output=True, text=True, timeout=60)
 
     def run_seed_stdin(self, password: str) -> subprocess.CompletedProcess:
-        """A rebuild's call: the password on stdin, never on argv."""
+        """An operator's call: the password on stdin, never on argv."""
         return subprocess.run(
             [sys.executable, str(self.SCRIPT), "--path", str(self.path),
              "--tenant", "odl-fake01", "--instance", "0badc0de", "--password-stdin"],
             input=password, capture_output=True, text=True, timeout=60)
 
-    def test_a_seeded_password_replaces_a_generated_one_and_keeps_written(self) -> None:
+    def test_a_password_from_stdin_replaces_a_generated_one_and_keeps_written(self) -> None:
         first = self.run_seed()
         self.assertEqual(first.returncode, 0, first.stderr)
         generated = self.installer.parse_recovery(self.path.read_text(encoding="utf-8"))
@@ -4649,7 +4649,7 @@ class RecoverySeedTests(unittest.TestCase):
         self.assertNotEqual(parsed["backup_password"], generated["backup_password"])
         self.assertEqual(parsed["written"], generated["written"])
         self.assertEqual(stat.S_IMODE(self.path.stat().st_mode), 0o600)
-        self.assertIn("the password from the seed", result.stdout)
+        self.assertIn("the password from stdin", result.stdout)
         self.assertNotIn(password, result.stdout)
         self.assertNotIn(password, result.stderr)
 
