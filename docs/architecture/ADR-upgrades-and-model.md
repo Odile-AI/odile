@@ -699,10 +699,14 @@ window it is wrong for half the fleet: a backup start inside 03:00–05:00 is
 app update restarts `odile-agent`, the one writer `state.db` has, while restic
 may be reading it, and it writes the skills and config tree the same snapshot
 carries — so the copy the night exists for would be a half-moved tree. The
-tenant's own minute + 30 keeps the ordering the sentence claims, per machine,
-and clears the rebuild window at +10 (whose quiesce is bounded at about five
-minutes). `RandomizedDelaySec=0`: 240 distinct minutes already spread the
-fleet, and a random delay on top only blurs the arithmetic. `Persistent=true`
+tenant's own minute + 30 keeps the ordering the sentence claims, per machine:
+the rebuild window opens at +10, the app timer fires twenty minutes later, and
+those twenty minutes are the executor's own T-0 gate (§5.4 refuses an `at`
+outside `[window, window + 20 min]`) — so a quiesce that runs long is refused,
+not overlapped. In the normal case the quiesce takes about two minutes (the
+90-second stop plus the measured 27.3 s run). `RandomizedDelaySec=0`:
+240 distinct minutes already spread the fleet, and a random delay on top only
+blurs the arithmetic. `Persistent=true`
 keeps the catch-up; because a boot that missed both timers fires both at once,
 the service waits (bounded at 30 minutes) while `odile-backup-tenant.service` is
 active before its first write.
@@ -1110,12 +1114,15 @@ it is the newest `facts.backup.snapshot` whose `at` falls inside the window and
 whose status record passed step 4, and that id is what the rebuild seed later
 names (§5.4).
 
-**What this costs, stated.** The loss window is the gap between the T-0
-(window + ≈30 s) and the write (window + ≈5 min), not the day since the last
-backup: the agent is stopped for the snapshot, and everything it wrote before the
-window is in it. What is still lost is (a) a turn or a file written during the
-90-second stop, and (b) anything written after the agent restarts but before the
-disk is replaced —
+**What this costs, stated.** The loss window is the gap between the T-0 and the
+write — about four and a half minutes in the normal case, and never the day since
+the last backup: the agent is stopped for the snapshot, and everything it wrote
+before the stop is in it. The T-0's offset from the window is not a constant: it
+is ≈30 s after step 3's fresh run, so when a slow night is still active at the
+window it moves out by that night's remaining time — and the executor's
+`[window, window + 20 min]` gate (§5.4) refuses the run if it moves too far.
+What is still lost is (a) a turn or a file written during the 90-second stop, and
+(b) anything written after the agent restarts but before the disk is replaced —
 minutes, on a machine that is about to be replaced. A machine whose T-0 failed is
 not written at all, so it loses nothing. Before this cut the same event lost the
 day; the flow's own sentence is "minutes", and I6 is the property.
@@ -1887,7 +1894,9 @@ $ grep -n 'OnCalendar\|RandomizedDelaySec' docs/runbooks/update.md
 1677:RandomizedDelaySec=1h
 ```
 
-Three of the readings above moved after `592f352`: `installer/odile_install.py`'s
+Most of the readings above moved after `592f352` — 27 of them no longer reproduce
+at this head, the installer having grown by hundreds of lines since. The ones this
+cut depends on are: `installer/odile_install.py`'s
 timer template is now `BACKUP_TIMER_TEMPLATE` with `{start}` from
 `backup_timer_start(slug)` and `RandomizedDelaySec=0` (ADR-004 §4.3, ODL-933),
 the agent unit's `RestartSec`/`TimeoutStopSec`/`KillMode` lines moved with the
