@@ -9,6 +9,12 @@ are approved (the row lands as ODL-955, `t_62dd6f8a`), and the booking email is
 a notification only — no consent, no reject, no reply-to-decline; booking,
 change and cancel are in-app (`t_08885b98`). One thing is still Savio's: the
 windowed executor that drives the Servury API (§5.4) · 17 November 2026 · Architect
+**Revision 9** — 27 November 2026, §5's app-layer timer and §5.3's window are
+re-cut for the per-slug backup window ODL-933 landed: the app timer is this
+machine's own backup minute + 30 (`RandomizedDelaySec=0`, with a bounded wait
+while the backup unit is active), and the upgrade window is the installed backup
+timer's next elapse + 10 — the rule ODL-951's DoD already carries. No other
+decision changes.
 **Revision 8** — 27 November 2026, §5.3 is re-cut to Savio's 27 November ruling
 (`t_7f88e278`, `t_08885b98`): the booking email is a notification, never a
 consent, reject or prompt path; every decision — book, change, cancel — is an
@@ -325,14 +331,15 @@ ignored by an older installer — but nothing writes one today, and
 supply, not a behaviour the program has. §5.3 and §5.4 close all three by name.
 
 Two more facts bound the flow. The agent unit stops with `TimeoutStopSec=90` and
-`KillMode=mixed` (`installer/odile_install.py:12756`–`:12757`) — that is the "time
-it out" bound in the quiesce, not a number this ADR invents. And the window's
-upper edge does not exist yet: the tenant backup timer is 03:00
-(`installer/odile_install.py:12721`) but the app-layer timer is not installed
+`KillMode=mixed` (`installer/odile_install.py`'s `AGENT_UNIT_TEMPLATE`) — that is
+the "time it out" bound in the quiesce, not a number this ADR invents. And the
+window's upper edge does not exist yet: the tenant backup timer is the slug's own
+minute in 02:00–05:59 (`installer/odile_install.py`'s `backup_timer_start` and
+`BACKUP_TIMER_TEMPLATE`; ADR-004 §4.3), but the app-layer timer is not installed
 (`grep -c odile-update installer/odile_install.py` is 0, §2.2) and the runbook's
-unit is still `daily` + 1 h (`docs/runbooks/update.md:1676`), so "before the
-04:00 app timer" is a property of §8 item 1, and the quiesce stops the timer
-anyway.
+unit is still `OnCalendar=daily` + 1 h (`docs/runbooks/update.md` §8), so
+"before the app timer" is a property of §8 item 1, and the quiesce stops the
+timer anyway.
 
 ## 3. The layer inventory
 
@@ -663,10 +670,10 @@ between.**
 
 | Layer group | Who triggers | When | What the user sees |
 |---|---|---|---|
-| App layer (rows 6–9) | the machine — `odile-update.timer`, installed **on** by default in alpha.0; the user may also run it | daily, 04:00 ± 1 h — `OnCalendar=*-*-* 04:00:00`, `RandomizedDelaySec=1h`, `Persistent=true`, after the 03:00 backup; and after boot | A journal line and a record; the app release readable at `/manifest` and recorded in `/etc/odile/release.json` (the `/verify` row checks the **boot** release); a failed post-check rolls back by itself and the release is still the old one |
+| App layer (rows 6–9) | the machine — `odile-update.timer`, installed **on** by default in alpha.0; the user may also run it | daily, at this machine's own minute — `backup_timer_start(slug)` + 30 min, `OnCalendar=*-*-* <HH:MM>:00`, `RandomizedDelaySec=0`, `Persistent=true`, after this machine's nightly copy; and after boot, bounded by a wait while that backup is still running | A journal line and a record; the app release readable at `/manifest` and recorded in `/etc/odile/release.json` (the `/verify` row checks the **boot** release); a failed post-check rolls back by itself and the release is still the old one |
 | Installer placements (row 15) | the machine — the same timer, one installer re-run after the bytes are written | only when the release's installer artifact changed (a handful of times a year), immediately after the write | nothing visible: the unit or Caddy block moves, `odile-agent` restarts only if a file the gateway reads moved, and the release's journal line says the re-run's exit code |
 | Default model (row 10) | the machine — `odile-update model apply --yes` on its own timer, which is a no-op when current; the user may also run it | on boot, every 15 min ± 3 min, and on demand; a 404 costs one request; a held digest is not retried | The About panel's model label; the one-line `notes` in `/etc/odile/model.json`; the next turn on the new model |
-| Boot chain, OS, environment (rows 1–5) | **the user clicks Upgrade; the machine books its own window; HQ writes the disk; the user restores** | the tenant's next 03:10 at least 15 minutes after the click — or the first window after a security deadline, with no click (§5.3) | A corner notice with two buttons, and a booked notice with **Change** and **Cancel**; the booking email is a notification only; "Upgrading your machine" on the account page while it is rebuilt; then the machine's own page — paste the recovery file, "Restoring your data…", the snapshot id and time, sign in (§5.3) |
+| Boot chain, OS, environment (rows 1–5) | **the user clicks Upgrade; the machine books its own window; HQ writes the disk; the user restores** | the tenant's next own window at least 15 minutes after the click — or the first window after a security deadline, with no click (§5.3) | A corner notice with two buttons, and a booked notice with **Change** and **Cancel**; the booking email is a notification only; "Upgrading your machine" on the account page while it is rebuilt; then the machine's own page — paste the recovery file, "Restoring your data…", the snapshot id and time, sign in (§5.3) |
 
 **Why the app layer's timer is installed on by default.** V0.1's design was a
 manual default with an opt-in timer (`update.md` §8), for paying strangers with a
@@ -679,9 +686,26 @@ risk than a tenant six weeks behind a security fix. The user can turn it off
 same timer, that also freezes the placements; the model timer is separate. The
 first-run skill will say the machine keeps itself updated. The record is
 `/etc/odile/release.json`. The unit in `docs/runbooks/update.md` §8 reads
-`OnCalendar=daily` + `RandomizedDelaySec=1h` (`:1676`–`:1677`), which is
-00:00–01:00; the build card moves it to `*-*-* 04:00:00` so the day's data is
-backed up (03:00) before the app layer moves.
+`OnCalendar=daily` + `RandomizedDelaySec=1h`, which is 00:00–01:00; the build
+card (ODL-956) renders it from the slug instead — **the same minute as this
+machine's backup timer, plus 30** — so the day's data is backed up before the app
+layer moves, and `RandomizedDelaySec` goes to 0 because the offset is the whole
+schedule.
+
+**Why the app timer follows the backup timer, and not 04:00.** The fixed 04:00
+± 1 h was right when every tenant backed up at 03:00; against the 02:00–06:00
+window it is wrong for half the fleet: a backup start inside 03:00–05:00 is
+**121 of the 240 possible minutes (50.4%)**. The overlap is not cosmetic: the
+app update restarts `odile-agent`, the one writer `state.db` has, while restic
+may be reading it, and it writes the skills and config tree the same snapshot
+carries — so the copy the night exists for would be a half-moved tree. The
+tenant's own minute + 30 keeps the ordering the sentence claims, per machine,
+and clears the rebuild window at +10 (whose quiesce is bounded at about five
+minutes). `RandomizedDelaySec=0`: 240 distinct minutes already spread the
+fleet, and a random delay on top only blurs the arithmetic. `Persistent=true`
+keeps the catch-up; because a boot that missed both timers fires both at once,
+the service waits (bounded at 30 minutes) while `odile-backup-tenant.service` is
+active before its first write.
 
 **Why the model check is 15 minutes and the app layer is daily.** The model
 document is a few hundred bytes and a switch is a handful of times a year; the
@@ -826,12 +850,12 @@ comes back from the repository. Nine stages (0–8), and who owns each:
    writes `rebuild.json`.
 1. **the prompt** — the machine; a corner notice (and the same fact in chat).
    It reads `rebuild.json` and `snooze.json`.
-2. **the click** — the machine → HQ; "Booked for 03:10". It reads the signed
+2. **the click** — the machine → HQ; "Booked for 04:47". It reads the signed
    `facts.upgrade` beat and the booking row.
 3. **the window** — the machine; the date, in the notice. It reads the machine's
    own clock.
-4. **quiesce + T-0** — the machine; nothing (≈03:10). It reads the backup unit's
-   status record and its beat.
+4. **quiesce + T-0** — the machine; nothing (at the booked window). It reads the
+   backup unit's status record and its beat.
 5. **the write** — HQ; "Upgrading your machine". It reads the executor's row
    (§5.4).
 6. **boot** — HQ, then the machine; "Booting", then "Waiting for your file". It
@@ -868,8 +892,8 @@ absent (ODL-950's shape and its probe stay valid), `change`, `cancel`; one
 enum, not a new datum class, so the approved privacy row still covers it.
 **A change** moves the one open row's `window` and `updated_at`, keeps the
 same `request_id` (the row is the same booking, moved), and sends no second
-email; the machine computes the next 03:10 after the booked window from its
-own timer (DST-aware), and HQ checks it is later than the booked window and no
+email; the machine computes the next window after the booked one from its own
+timer (DST-aware), and HQ checks it is later than the booked window and no
 more than 26 hours after it — the booking horizon is not re-applied from the
 change's clock. **A cancel** closes the open row as `cancelled`, with no
 email; it names the window it cancels, and a cancel for a window the row no
@@ -951,7 +975,7 @@ X-Odile-Signature: <base64 Ed25519 over the exact body>
                "bytes": 0, "repo_bytes": 0, "at": 1795582800},
     "upgrade": {
       "release": "2026.12.1",
-      "window": "2026-12-01T03:10:00Z",
+      "window": "2026-12-01T04:47:00Z",
       "origin": "click",
       "request_id": "3f0c8ad2f0e14a8b9c6d5e4f3a2b1c0d"
     }
@@ -994,7 +1018,7 @@ The answer gains one key and keeps the four it has (`scripts/heartbeat.py:406`�
 ```json
 {"ok": true, "slug": "odl-7f3a2c", "at": 1795611600,
  "received_at": "2026-11-25T09:00:01Z",
- "upgrade": {"booked": true, "release": "2026.12.1", "window": "2026-12-01T03:10:00Z"}}
+ "upgrade": {"booked": true, "release": "2026.12.1", "window": "2026-12-01T04:47:00Z"}}
 ```
 
 Additive for the guest: `heartbeat.py post` already prints the answer (`:522`).
@@ -1025,15 +1049,20 @@ notification, and a reply to it changes nothing (Savio, 27 November 2026). If th
 product wants a human-presence proof, the account site is the place to get one,
 and that is a new decision.
 
-**The window.** The machine computes it; HQ validates it. The window is the
-machine's own 03:10 — ten minutes after its backup timer
-(`installer/odile_install.py:12721`, `OnCalendar=*-*-* 03:00:00`) and, once §8
-item 1 lands, before the app timer at 04:00. Time is the machine's local time, so
-a tenant in another timezone gets a window at its own night; the fact carries the
-instant in UTC. The booking rule: **the next 03:10 at least 15 minutes out, and
-no more than 26 hours out.** A click at 03:05 books tomorrow, not tonight:
-the machine needs the 15 minutes to quiesce and HQ needs the gate. **There is no
-"upgrade now"**, and that is not a UI choice: the disk write is panel-only
+**The window.** The machine computes it; HQ validates it. The window is **the
+installed backup timer's next elapse plus ten minutes** — ODL-951's rule, and the
+reason there is no fixed minute: the timer is rendered from the slug
+(`installer/odile_install.py`'s `backup_timer_start`; ADR-004 §4.3), so a
+tenant's window is a stable minute in 02:10–06:09 — and, once §8 item 1 lands,
+twenty minutes before the app timer at the same backup minute + 30. Time is the
+machine's local time, so a tenant in another timezone gets a window at its own
+night; the fact carries the instant in UTC. The booking rule: **the next such
+window at least 15 minutes out, and no more than 26 hours out.** A click one
+minute before the machine's own window books tomorrow, not tonight: the machine
+needs the 15 minutes to quiesce and HQ needs the gate. A fixed `03:10` was the
+old `03:00` template's ten-minutes-after, not a rule: a machine whose backup is
+at 05:45 would take its T-0 snapshot nearly a day after its last copy. **There
+is no "upgrade now"**, and that is not a UI choice: the disk write is panel-only
 (ODL-568 §2 — `reinstall` carries no image parameter at all), so the window is
 the one place a machine can be replaced without a vendor dependency created by
 the user's click.
@@ -1049,33 +1078,44 @@ second quiesce for the same booking — the trigger is periodic, the work is onc
 per window. Every step then has a bound:
 
 1. `systemctl stop odile-agent`. The unit's own `TimeoutStopSec=90` and
-   `KillMode=mixed` (`installer/odile_install.py:12756`–`:12757`) end the only
-   writer of `state.db` — a turn that will not finish is cut at 90 s — so restic
-   reads the file with any `-wal` beside it, not a file being written. That is
+   `KillMode=mixed` (`installer/odile_install.py`'s `AGENT_UNIT_TEMPLATE`) end the
+   only writer of `state.db` — a turn that will not finish is cut at 90 s — so
+   restic reads the file with any `-wal` beside it, not a file being written. That is
    ADR-backup §7.4's torn-database failure, on the backup side this time.
-2. `systemctl stop odile-update.timer`, so a 04:00 tick cannot move the app
-   layer between the snapshot and the write.
-3. `systemctl start odile-backup-tenant.service` — the *same* unit the night runs
+2. `systemctl stop odile-update.timer`, so the app timer's tick cannot move the
+   app layer between the snapshot and the write.
+3. `systemctl stop odile-backup-tenant.timer`, wait (bounded) for any active
+   `odile-backup-tenant.service` to finish, then `systemctl start
+   odile-backup-tenant.service` — the *same* unit the night runs
    (`installer/odile_install.py:16145`), so the snapshot uses the same
    repository, key and excludes; its `ExecStartPost` posts the beat with
-   `facts.backup` (`scripts/backup.py:797`–`:808`). Measured: **27.3 s for
-   3.14 GB** (ADR-backup §2).
+   `facts.backup` (`scripts/backup.py:797`–`:808`). The wait is not politeness:
+   a `start` issued while the nightly is still activating **joins that run**, so
+   the "T-0" would be the nightly's own snapshot, taken with the agent live.
+   Measured: **27.3 s for 3.14 GB** (ADR-backup §2), so the wait is normally
+   empty; at ADR-004 §4.3's sizing of 20 minutes for a slow night it is the
+   difference between a quiesced T-0 and a torn one.
 4. **Verify the snapshot**: read the status record — `status: ok`, a non-empty
-   `snapshot`, `last_success_at` at or after the window start. A failed run is
-   not a T-0: the machine restarts the agent and the timer and reports nothing.
-5. `systemctl start odile-agent` and the timer. The machine is live again, with
-   a fresh snapshot behind it — so a window that is skipped (HQ down, the panel
-   refusing) leaves a working tenant, not a quiesced one.
+   `snapshot`, and a run that began **after the agent stopped**
+   (`last_success_at - duration_seconds` at or after the stop), not merely after
+   the window start. A failed or unquiesced run is not a T-0: the machine
+   restarts the agent and both timers and reports nothing.
+5. `systemctl start odile-agent`, `odile-backup-tenant.timer`,
+   `odile-update.timer`. The machine is live again, with a fresh snapshot behind
+   it — so a window that is skipped (HQ down, the panel refusing) leaves a
+   working tenant, not a quiesced one.
 
 The T-0 is the beat step 3 posts. It is not a new fact, and it is not `latest`:
-it is the newest `facts.backup.snapshot` whose `at` falls inside the window, and
-that id is what the rebuild seed later names (§5.4).
+it is the newest `facts.backup.snapshot` whose `at` falls inside the window and
+whose status record passed step 4, and that id is what the rebuild seed later
+names (§5.4).
 
 **What this costs, stated.** The loss window is the gap between the T-0
-(≈03:10:30) and the write (≈03:15), not the day since the last backup: the agent
-is stopped for the snapshot, and everything it wrote before 03:10 is in it. What
-is still lost is (a) a turn or a file written during the 90-second stop, and
-(b) anything written after the agent restarts but before the disk is replaced —
+(window + ≈30 s) and the write (window + ≈5 min), not the day since the last
+backup: the agent is stopped for the snapshot, and everything it wrote before the
+window is in it. What is still lost is (a) a turn or a file written during the
+90-second stop, and (b) anything written after the agent restarts but before the
+disk is replaced —
 minutes, on a machine that is about to be replaced. A machine whose T-0 failed is
 not written at all, so it loses nothing. Before this cut the same event lost the
 day; the flow's own sentence is "minutes", and I6 is the property.
@@ -1370,9 +1410,10 @@ the write does not cross.
   critical path of a button. The window is what makes the click cost nothing.
 - **I — the consent as the next scheduled beat's fact.** The smallest possible
   change — the webapp writes a file, the existing nightly collector reads it —
-  and rejected because the confirmation arrives a day late, and a click at 03:05
-  would race the window it was booking. A five-minute retry over the same route
-  is one timer more and an answer in the same interaction.
+  and rejected because the confirmation arrives a day late, and a click five
+  minutes before the machine's own window would race the window it was booking.
+  A five-minute retry over the same route is one timer more and an answer in the
+  same interaction.
 
 ## 8. Consequences
 
@@ -1519,9 +1560,9 @@ one block on a page: deleting them leaves a tree that installs, updates and
 rebuilds exactly as today, because nothing in the release path, the installer or
 the agent's start depends on any of it. After the first booked window the states
 are shipped surfaces — a machine that has posted `facts.upgrade` holds a booking
-in its own state file and expects to be quiesced at 03:10 — so removing the flow
-is a release plus a `systemctl disable` on every machine, the same cost as the
-model mechanism's.
+in its own state file and expects to be quiesced at its own window — so removing
+the flow is a release plus a `systemctl disable` on every machine, the same cost
+as the model mechanism's.
 **The seed keys and the fact are the reversible-by-construction pieces.** Both
 keys are optional: an older installer ignores them, and a newer installer
 reading an older seed falls back to `latest` — and a seed with no
@@ -1846,6 +1887,15 @@ $ grep -n 'OnCalendar\|RandomizedDelaySec' docs/runbooks/update.md
 1677:RandomizedDelaySec=1h
 ```
 
+Three of the readings above moved after `592f352`: `installer/odile_install.py`'s
+timer template is now `BACKUP_TIMER_TEMPLATE` with `{start}` from
+`backup_timer_start(slug)` and `RandomizedDelaySec=0` (ADR-004 §4.3, ODL-933),
+the agent unit's `RestartSec`/`TimeoutStopSec`/`KillMode` lines moved with the
+installer's growth, and `ensure_backup_units`'s detail strings render the same
+minute.
+The `sed` lines reproduce the 592f352 bytes, which is the head this block names;
+at this head the symbol is the citation.
+
 `docs/MVP-V0.1.md`, `docs/AGENT-ORG.md`, `docs/craft/*` and
 `docs/product/SPIKE-servury-reinstall.md` are untracked (`.git/info/exclude`),
 so a citation to them reads only in a working tree that carries them. The
@@ -1876,14 +1926,14 @@ invariant this ADR turns on is also in a tracked file, verbatim:
 | the model snapshot copies the app layer's record convention | `update/odile_update.py:965` (the four records), `:990` (restore) |
 | the template's keys and their quoting | `installer/odile_install.py:12114`, `:12119`, `:12125` (`TENANT_CONFIG_TEMPLATE`) |
 | the template's two public hosts | `installer/odile_install.py:12136`, `:12142` |
-| the app timer today is 00:00–01:00, not 04:00 | `docs/runbooks/update.md`:1676–1677 |
+| the app timer today is 00:00–01:00, not the tenant's own minute | `docs/runbooks/update.md` §8 |
 | the offer is the app layer's own refusal, with one sentence | `update/odile_update.py:574`–`:578` (`EXIT_REFUSED`) |
 | the heartbeat answer is read by the guest, and a new key is additive | `scripts/heartbeat.py:406`–`:409` (the four keys), `:522` (`post` prints it) |
 | an unknown fact is stored and ignored; an unknown key in the body is refused | `odilectl/health.py:962` (`_validated_facts`), `:1179`–`:1182` (a different key is `409`), `:1191`–`:1196` (`at` must advance) |
 | a rebuilt machine could not post until the key row is cleared | `odilectl/health.py:1171`–`:1177` (first sight registers), `scripts/backup.py:764` (the public half rides every beat); `docs/runbooks/alerting.md` §10 |
 | the T-0 id already reaches HQ every night, as an existing fact | `installer/odile_install.py:2220`–`:2232`; `scripts/backup.py:797`–`:808` (the unit's `ExecStartPost`) |
-| the quiesce's stop bound is the unit's, not this ADR's | `installer/odile_install.py:12756`–`:12757` (`TimeoutStopSec=90`, `KillMode=mixed`) |
-| the window is the machine's own 03:10 | `installer/odile_install.py:12721` (`OnCalendar=*-*-* 03:00:00`); `docs/runbooks/update.md`:1676 (the app timer is still `daily`) |
+| the quiesce's stop bound is the unit's, not this ADR's | `installer/odile_install.py` (`AGENT_UNIT_TEMPLATE`, `TimeoutStopSec=90`, `KillMode=mixed`) |
+| the window is the backup timer's next elapse + 10 min, and the app timer is that minute + 30 | `installer/odile_install.py` (`backup_timer_start`, `BACKUP_TIMER_TEMPLATE`); `scripts/backup.py` (`timer_start`); `docs/runbooks/update.md` §8 (today's manual template is `OnCalendar=daily`, not the shipped default) |
 | the seed carries the account's verifier, and optional keys are tolerated | `installer/odile_install.py:253`–`:261` (`SEED_KEYS`), `:14628` (only a missing key is refused), `:18708` and `:4715` (`write_env_hash`) |
 | the restore can name a snapshot | `scripts/backup.py:930` (`restore <snapshot>`, default `latest`) |
 | `/etc/odile` survives a restore; the login reads the home's `.env` | `installer/first_visit.py:76`–`:81`, `:117`–`:119` (`--env-file`) |

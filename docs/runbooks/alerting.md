@@ -268,7 +268,7 @@ converged machine:
 | the repository | `/etc/odile/backup-repo.txt` — the seed's URL when its host resolves, otherwise `sftp://odile-backup@odile.fyi:2222/tenants/odl-fake01` (the storage box today is HQ's own sftp service, `docs/runbooks/backup.md` §3) |
 | the SFTP key | `/etc/odile/backup-ssh/id_ed25519` (0600) and `known_hosts` (0600, `ssh-keyscan -H`) |
 | the heartbeat key | `/etc/odile/heartbeat/heartbeat.key` (0600) and `.pub` |
-| the backup timer | `odile-backup-tenant.service` + `.timer` from the program's own templates (`OnCalendar=*-*-* 03:00:00`, `Persistent=true`) |
+| the backup timer | `odile-backup-tenant.service` + `.timer` from the program's own templates (`OnCalendar=*-*-* <HH:MM>:00` at the slug's own `02:00 + int(sha256(slug)[:2], 16) % 240`, `RandomizedDelaySec=0`, `Persistent=true`) |
 | the heartbeat timer | `odile-heartbeat.service` + `.timer` (`OnCalendar=*:0/5`, `Persistent=true`), running `backup.py heartbeat` |
 
 The HQ half then finishes what only HQ can:
@@ -411,7 +411,7 @@ without a stopped VM.
 | `brief_missing` | The machine is up; the 07:00 job did not run. `ssh -i ~/.ssh/odile … 'hermes cron list'` and the gateway journal. |
 | `disk` | `df -h /` on the guest; the usual cause is an agent loop writing files. Delete with the owner's approval; a full disk stops the brief. |
 | `spend` | `journalctl -u odile-agent -n 50` on the guest; the alert carries the `spent_usd` and `cap_usd` the heartbeat reported. There is no local meter or monthly cap to read; this alert is the warning. |
-| `backup` | `cat /var/lib/odile/backup.json`; restic runs at 03:00 local. A stale backup is the one alert with no in-guest recovery; ODL-215 owns the drill. |
+| `backup` | `cat /var/lib/odile/backup.json`; `systemctl list-timers odile-backup-tenant.timer` names the next elapse — once a night in the 02:00–06:00 UTC window, at the slug's own minute. A stale backup is the one alert with no in-guest recovery; ODL-215 owns the drill. |
 
 Alerts clear on their own when the condition is gone; the next poll sets
 `resolved_at`. `down` resolves when a heartbeat newer than the stopping beat

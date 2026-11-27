@@ -270,7 +270,7 @@ prints `same` and restarts nothing (the smoke turn is not repeated unless
 | `/etc/odile/{support-key.pub,backup-repo.txt}` | 0644 | root | the seed's public material |
 | `/usr/local/lib/odile/backup.py` | 0755 | root | the reviewed tenant backup (ODL-215), pinned by SHA-256; reads `/etc/odile/backup-repo.txt` and `/etc/odile/recovery.txt` at run time (ODL-215 follow-up) |
 | `/etc/systemd/system/odile-backup-tenant.service` | 0644 | root | the nightly oneshot: one restic snapshot, retention, the status record, and the signed heartbeat |
-| `/etc/systemd/system/odile-backup-tenant.timer` | 0644 | root | daily 03:00, `Persistent=true`; enabled and started by the tenant install |
+| `/etc/systemd/system/odile-backup-tenant.timer` | 0644 | root | daily in the 02:00–06:00 UTC window at the slug's own minute (`OnCalendar=*-*-* <HH:MM>:00`, `HH:MM = 02:00 + int(sha256(slug)[:2], 16) % 240`), `RandomizedDelaySec=0`, `Persistent=true`; enabled and started by the tenant install |
 | `/usr/local/bin/odile-install.sh` | 0755 | root | this program's exact bytes, placed right after the signature check and before the boot record, so `--manifest`, `scripts/manifest.py` and CLAIMS §4.6 hash a file that exists (ODL-332 follow-up) |
 | `/etc/systemd/system/odile-agent.service` | 0644 | root | gateway + Webapp, `User=odile`, no sandbox (sudo) |
 | `/etc/sudoers.d/odile` | 0440 | root | `odile ALL=(ALL) NOPASSWD:ALL`, checked with `visudo -c` |
