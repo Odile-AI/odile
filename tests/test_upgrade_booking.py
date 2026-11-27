@@ -58,16 +58,19 @@ SLUG = "odl-7f3a2c"
 # `docs/backlog.yaml` ODL-950's body, verbatim, plus the account footer
 # BRAND.md §Email gives every account email.  The receipt signs because its one
 # action is a reply, and `— Odile` is who the reader is writing back to
-# (t_d2fc0dfd).  Nothing between the first line and the sign-off moved.
-CARD_BODY = """Your machine will be replaced at 03:10 UTC on 1 December 2026. It takes about 20 minutes, and
-then your data comes back from your backup.
+# (t_d2fc0dfd).  Only line breaks moved in the re-wrap (t_b6c9e9ca).
+CARD_BODY = """Your machine will be replaced at 03:10 UTC on 1 December 2026.
+It takes about 20 minutes, and then your data comes back from your backup.
 
 What happens
-- Your machine is replaced, not updated in place. The same address keeps working.
-- Afterwards you paste the recovery file you saved at your first sign-in, then sign in.
+- Your machine is replaced, not updated in place.
+The same address keeps working.
+- Afterwards you paste the recovery file you saved at your first sign-in,
+then sign in.
 - The agent is offline until the restore finishes.
 
-If that window is wrong, reply to this email before 03:10 UTC on 1 December 2026.
+If that window is wrong, reply to this email before
+03:10 UTC on 1 December 2026.
 
 — Odile
 
@@ -75,7 +78,7 @@ Private alpha · Odile pays for the machine and the inference · no price
 """
 
 SECURITY_PARAGRAPH = (
-    "This is a security update: if you do nothing, it is applied after "
+    "This is a security update: if you do nothing, it is applied after\n"
     "03:10 UTC on 15 December 2026."
 )
 CARD_BODY_SECURITY = CARD_BODY.replace(
@@ -245,7 +248,7 @@ class ReceiverTest(BookingFixture):
         self.assertEqual(self.post(self.body())[0], 200)
         body = self.email_body()
         self.assertIn(
-            "This is a security update: if you do nothing, it is applied after "
+            "This is a security update: if you do nothing, it is applied after\n"
             "09:20 UTC on 9 December 2026.",
             body,
         )

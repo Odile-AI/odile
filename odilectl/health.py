@@ -763,7 +763,8 @@ DEFAULT_RELEASE_DOCUMENT = _default_release_document()
 # the served document carries no `upgrade` block, so the body is the card's
 # text without it.
 DEADLINE_SENTENCE = (
-    "This is a security update: if you do nothing, it is applied after {{DEADLINE}}."
+    "This is a security update: if you do nothing, it is applied after\n"
+    "{{DEADLINE}}."
 )
 DEADLINE_PARAGRAPH = DEADLINE_SENTENCE + "\n\n"
 

@@ -964,11 +964,7 @@ on it.
   value is filled — the value is at most 29 characters (`03:10 UTC on 15
   December 2026`), so a line carrying one has to leave room for it. A line whose
   long token is a URL stays one line: a link must stay whole, and a `Label value`
-  line is a value, not prose. Rendered prose now overruns it: five lines in
-  `upgrade-booked.txt` measure 93, 96, 87, 81 and 81 characters once the values
-  are filled, and three in `invite.txt` measure 80, 81 and 79. Both are
-  re-wrapped at ≤78, words unchanged, by `t_b6c9e9ca` — the sheet records the
-  debt here until that card lands.
+  line is a value, not prose.
 - **One action.** A link is a link: ink, underlined, 1 px; never a filled
   button drawn as an image. Each template has one action: the invitation's
   register link, the confirmation's confirm link, the ready email's tokenless
@@ -1027,8 +1023,8 @@ the invitation and the ready email is a deck row or a subset of one.
 ```text
 Hello,
 
-You asked for a computer that keeps working when you close the tab. A machine is
-reserved for you in the private alpha.
+You asked for a computer that keeps working when you close the tab. A machine
+is reserved for you in the private alpha.
 
 Register here: https://test.odile.fyi/register
 
@@ -1036,11 +1032,11 @@ Use the address this email reached. Your Odile password opens your machine and
 your account page. No one at Odile holds a key to your machine.
 
 Bring one real thing you would do by hand this week — a page of notes to turn
-into a brief, a page to watch, a meeting to write up. After five short questions,
-that is the first thing you will ask it for.
+into a brief, a page to watch, a meeting to write up. After five short
+questions, that is the first thing you will ask it for.
 
-Nothing to install. No key to make, no terminal required. Nothing to pay: Odile
-pays for the machine and the inference during the alpha.
+Nothing to install. No key to make, no terminal required. Nothing to pay:
+Odile pays for the machine and the inference during the alpha.
 
 When your machine is ready, we email you its address. If anything goes wrong,
 reply to this email — there is no support desk in the alpha.
@@ -1125,17 +1121,21 @@ carries the Model A terminal).
 ### Upgrade booking (`upgrade-booked.txt`)
 
 ```text
-Your machine will be replaced at {{WINDOW}}. It takes about 20 minutes, and
-then your data comes back from your backup.
+Your machine will be replaced at {{WINDOW}}.
+It takes about 20 minutes, and then your data comes back from your backup.
 
-This is a security update: if you do nothing, it is applied after {{DEADLINE}}.
+This is a security update: if you do nothing, it is applied after
+{{DEADLINE}}.
 
 What happens
-- Your machine is replaced, not updated in place. The same address keeps working.
-- Afterwards you paste the recovery file you saved at your first sign-in, then sign in.
+- Your machine is replaced, not updated in place.
+The same address keeps working.
+- Afterwards you paste the recovery file you saved at your first sign-in,
+then sign in.
 - The agent is offline until the restore finishes.
 
-If that window is wrong, reply to this email before {{WINDOW}}.
+If that window is wrong, reply to this email before
+{{WINDOW}}.
 
 — Odile
 
