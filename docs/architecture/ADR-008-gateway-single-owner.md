@@ -310,12 +310,17 @@ artifact, and re-apply it after an update if the autostash conflicts.
 | `deploy/hermes-gateway/patches/0001-supervised-takeover.patch` | `t_542ba140` | `hermes_cli/gateway.py` (takeover hook, supervised ATTACH exit 0), `gateway/run_bootstrap.py` (proof of the lock holder, the no-host-record takeover branch, 330 s takeover wait) |
 | `deploy/hermes-gateway/patches/0002-drain-and-reclaim.patch` | `t_436574a6` | `gateway/run_shutdown.py`, `gateway/session_managed_worker.py`, `gateway/session_kanban.py` — the reclaim and cron contract of §3.5 |
 | `deploy/hermes-gateway/apply-patches.sh` | `t_542ba140` | applies `patches/*.patch` in name order after `git apply --check`; `--reverse` reverts; idempotent |
-| `deploy/hermes-gateway/check-takeover.py` | `t_542ba140` | exit 1 when the hook or the exit contract is absent from the checkout |
+| `deploy/hermes-gateway/check-takeover.py` | `t_542ba140` | exit 1 when the hook or the exit contract is absent from the checkout, or when a patch touches a path outside this table |
+| `tests/test_gateway_unit_dropins.py` | `t_542ba140` | `restart.conf`, the no-drop-in-overrides-identity rule, and the lock-held start path with the exit-code contract (lifted from `odl/ODL-355` and extended) |
 
 The two patches touch disjoint files, so the cards run in parallel. Apply order
 is name order; `0001` is safe alone (the takeover drains through the handler the
 gateway already has), and `0002` makes the in-flight run and cron outcomes of
-§3.5 explicit, so it can land before or after it. `hermes update` autostashes and
+§3.5 explicit, so it can land before or after it. `tests/test_gateway_unit_dropins.py`
+exists only on the superseded `odl/ODL-355` branch today (head `0580d2a`, five
+tests over the two drop-ins); `t_542ba140` lifts it to `main` and adds the
+lock-held start path, the exit-code contract, and the patch-path check.
+`hermes update` autostashes and
 restores local changes; after every update, run `check-takeover.py` and
 `systemctl --user show hermes-gateway -p ExecStart` (still `… gateway run` with
 no flag), then `hermes gateway ensure --json` (`state: ready`).
@@ -334,10 +339,10 @@ artifact and `check-takeover.py` name exactly what to re-verify.
 |---|---|---|
 | One gateway, unit owns it, no storm after boot or restart | `systemctl --user restart hermes-gateway`; then `mp=$(systemctl --user show hermes-gateway -p MainPID --value)`; `pgrep -af '[g]ateway run'`; `journalctl --user -u hermes-gateway --since '-10 min'` | `mp` is non-zero, exactly one `gateway run` line and its pid equals `mp`, 0 `Scheduled restart job` rows, `NRestarts=0` |
 | A CLI call while the unit is stopped leaves the unit owning | `systemctl --user stop hermes-gateway`; `hermes gateway ensure --json`; re-read `MainPID` and `pgrep -af '[g]ateway run'` | `state: ready`, `endpoint.supervisor: systemd`, one line, `MainPID` equals its pid |
-| The foreign-pid state is repaired by a start | stop the unit; start a console `gateway run` in a scope outside the unit; `systemctl --user start hermes-gateway`; re-read `MainPID` and `pgrep -af '[g]ateway run'`; then repeat with `~/.local/state/hermes/gateway-locks/host-gateway.json` moved aside, which is state `F′` | one line, `MainPID` equals its pid, the foreign pid gone, 0 rows; or exit 78 with `gateway_takeover_refused` and one gateway still serving — the same for `F′` when the owner's pid record proves `hermes_home`, and 78 when it does not |
+| The foreign-pid state is repaired by a start | stop the unit; start a console `gateway run` with the supervisor markers unset (`env -u INVOCATION_ID -u HERMES_GATEWAY_EXTERNAL_SUPERVISOR hermes -p default gateway run --quiet &`) and wait for `hermes gateway ensure --json` to read `ready`; `systemctl --user start hermes-gateway`; re-read `MainPID` and `pgrep -af '[g]ateway run'`. For `F′`, with the same console owner still serving, `mv ~/.local/state/hermes/gateway-locks/host-gateway.json` aside — the order is the test: a starting gateway publishes the record at host-lock claim (`gateway/run.py:4765-4774`) and republishes it at channel-ready (`gateway/run.py:4908-4926` via `gateway/run_bootstrap.py:895`) and on a profile rescan (`gateway/run_adapters.py:1081`), so a record moved aside before the console start is republished and the step only re-tests `F`; confirm the record is absent (`test ! -e ~/.local/state/hermes/gateway-locks/host-gateway.json`) while `~/.hermes/gateway.pid` still names the console pid, then `systemctl --user start hermes-gateway` (or start the owner with `HERMES_GATEWAY_LOCK_DIR` naming a path that cannot be opened — `COULD_NOT_OPEN` — for the same state with no ordering window) | one line, `MainPID` equals its pid, the foreign pid gone, 0 rows; or exit 78 with `gateway_takeover_refused` and one gateway still serving — the same for `F′` when the owner's pid record proves `hermes_home`, and 78 when it does not |
 | Restart with a card running is graceful | run a drill card whose worker sleeps; `systemctl --user restart hermes-gateway`; `hermes kanban show <task>`; before/after `hermes cron history <pulse>`; `state/gateway.lifecycle.json` | the run ends `worker_lost` and the card is re-claimed, the pulse line reads `completed` (not `interrupted`), `phase=exited`, no `gateway.previous_unclean_exit` for that pid |
 | The unit is the command the CLI can verify | `systemctl --user show hermes-gateway -p Restart -p RestartForceExitStatus -p RestartPreventExitStatus -p ExecStart -p TimeoutStopUSec -p OOMPolicy -p KillMode`; `python3 deploy/hermes-gateway/check-takeover.py` | `Restart=on-failure`, `75`, `78`, `ExecStart=… gateway run`, `7min`, `continue`, `mixed`; the checker exits 0 |
-| OPERATING.md records the rule | `grep -n 'systemctl --user show hermes-gateway -p MainPID' docs/ops/OPERATING.md`; `grep -n 'systemctl --user restart hermes-gateway' docs/ops/OPERATING.md`; `grep -n 'hermes gateway ensure' docs/ops/OPERATING.md` | the three commands are present with their expected output, and the page names the takeover and the park fallback |
+| OPERATING.md records the rule | `grep -n 'systemctl --user show hermes-gateway -p MainPID' docs/ops/OPERATING.md`; `grep -n 'systemctl --user restart hermes-gateway' docs/ops/OPERATING.md`; `grep -n 'hermes gateway ensure' docs/ops/OPERATING.md`; `grep -ni 'takeover' docs/ops/OPERATING.md`; `! grep -q 're-runs the same attach and parks' docs/ops/OPERATING.md` | the three commands are present with their expected output; the page names the takeover and the 78 park fallback, and the pre-0001 sentence `re-runs the same attach and parks` is gone |
 
 The drills restart the gateway, so the driver runs from a transient
 `systemd-run --user --scope` outside the unit's cgroup (the ODL-355 drill's
@@ -388,17 +393,28 @@ the gate's verdict.
 - No tenant claim moves: every tenant already runs one gateway under one unit;
   this makes the same rule true on HQ.
 
-## 10. What pins it
+## 10. What pins it — the post-implementation inventory
 
-- `tests/test_gateway_unit_dropins.py` — `restart.conf` sets `Restart=on-failure`;
-  no drop-in sets `ExecStart`, `ExecStartPre`, `PIDFile`, `Type` or the identity
-  directives; the patch files exist and touch only §6's paths.
-- `deploy/hermes-gateway/check-takeover.py` — the hook and the exit contract are
-  present in the checkout (skipped when the checkout is absent, so a public clone
-  stays green).
-- The drill transcripts in `docs/ops/evidence/2026-11-25-gateway-unit/` — the
-  four states of §4, including the `F′` run with the host record moved aside,
-  with `systemctl show`, `pgrep`, the journal rows, the ledger line and the cron
-  history.
-- `docs/ops/OPERATING.md` § “One gateway — the unit owns it” — the operator
-  commands and the expected output of §7.
+At the time of this ADR the tracked tree carries none of the artifacts below: the
+host carries the three drop-ins, the git-excluded `docs/ops/` carries the
+timeline and the drill-2 transcript, and the test exists only on the superseded
+`odl/ODL-355` branch. Each row names the card that produces the artifact and the
+property it must assert; a row whose artifact never lands, or lands without its
+assertion, is an acceptance failure for the verifier, not a documentation gap.
+
+| Artifact | Produced by | Asserts |
+|---|---|---|
+| `tests/test_gateway_unit_dropins.py` | `t_542ba140` | `restart.conf` sets `Restart=on-failure` and leaves `RestartForceExitStatus` and `RestartPreventExitStatus` to the base unit; no drop-in sets `ExecStart`, an identity-changing directive or `--replace`; the lock-held start path and the 0/1/75/78 contract of §3.4 hold. The pre-ADR copy (five tests over the two drop-ins) is on `odl/ODL-355` at `0580d2a`; it must be lifted to `main` and extended. |
+| `deploy/hermes-gateway/check-takeover.py` | `t_542ba140` | the takeover hook and the exit contract are present in the checkout, and every path the patch files touch is a row of §6's table; skipped when the checkout is absent, so a public clone stays green |
+| Drill transcripts in `docs/ops/evidence/2026-11-25-gateway-unit/` | `t_e45873ef` | the four states of §4 — `R` (restart), `S` (drill 2 A2), `F` (drill 2 C3) and `F′` ordered as §7 row 3 says — each with `systemctl show`, `pgrep`, the journal rows, the ledger line and the cron history. Already on file: `S` (A2), `F` (C3) and the C4 repair. Still unwritten: `R`, `F′` and the restart-with-a-card run. |
+| `docs/ops/OPERATING.md` § “One gateway — the unit owns it” | `t_8b331a57` | the operator commands and the expected output of §7; the page names the takeover and the 78 park fallback, and the pre-0001 sentence (“re-runs the same attach and parks”) is gone |
+
+Two notes make the table checkable. `docs/ops/` is git-excluded on this host
+(`.git/info/exclude:876`), so the last two rows are written in the main checkout,
+not on a branch, and their evidence is the file and transcript hash in the
+handoff — the same rule the parent evidence card followed. And the `F′` drill is
+pinned on `t_e45873ef` by a card comment rather than in its body, because the
+card's four listed drills were written before this ADR and do not include it; the
+ADR's pre-handoff draft claimed all four artifacts in the present tense while
+only the host's drop-ins existed, and this table replaces that claim.
+
