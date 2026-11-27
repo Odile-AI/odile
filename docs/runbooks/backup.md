@@ -6,8 +6,10 @@ page, and held by nobody at Odile. HQ knows the repository URL, its size, the
 last status and the latest snapshot id — and its own stores cannot open any of
 it.
 
-**Two clocks, stated once.** The nightly timer runs at **03:00 local**, so the
-newest snapshot is at most **24 hours** old plus the run — that is the RPO. The
+**Two clocks, stated once.** The nightly timer runs at the slug's own minute
+inside **02:00–06:00 UTC** (`02:00 + int(sha256(slug)[:2], 16) % 240`, ADR-004
+v3 §4.3), so the newest snapshot is at most **24 hours** old plus the run — that
+is the RPO. The
 drills measured both clocks: **0.931 s** from the deletion to a
 checksum-verified file on the live tenant (Drill 1, one file); and for a whole
 machine, **84m13s end-to-end** from the destroyed home's machine (A, destroyed
@@ -46,8 +48,9 @@ own Hermes cron, which is the same path the user has.
 **Vintage of the R2 code paths (20 November 2026).** The destination, the
 bucket layout and the R2 rows in §1 and §3.1 are the interim **design**
 (ADR-004 §8); the code that operates them is **not shipped at this head**. The
-`s3:` branch of `scripts/backup.py`, the guest's `/etc/odile/backup-s3.env` and
-the cap check are **ODL-933**; the `odilectl backup-usage` readback and its
+`s3:` branch of `scripts/backup.py` and the guest's `/etc/odile/backup-s3.env`
+were planned as **ODL-933** and never shipped (ODL-933 shipped the `sftp:`
+shape and the cap check instead); the `odilectl backup-usage` readback and its
 800 GiB warn / 950 GiB critical byte ceilings are **ODL-934**, shipped at this
 head against the Hetzner box rather than R2 (§3.2; the R2 design's 8.0/9.0 GB
 account line is superseded); the provisioning that records the BX11 pair, its
@@ -87,8 +90,8 @@ pair and restic drill are in place, and the box's `stats` reads 1,048,576 bytes
 | Repository password during a rebuild | sealed under the one-time setup token in `/var/lib/odile/seed-rebuilds.json` on HQ (ciphertext only, 0600 `odile`) | the guest, which holds the token; HQ holds ciphertext it cannot open |
 | Repository URL | `/etc/odile/backup-repo.txt` (from the seed, 0644) and the tenant row | everyone; it is an address, not a secret |
 | Repository contents | the SFTP box (v5) / the tenant's R2 bucket `odile-t-<slug>` (interim), restic ciphertext | anyone can copy the bytes; only the password decrypts them |
-| SFTP transport key | `/etc/odile/backup-ssh/id_ed25519` (0600, generated on the guest); public half registered on the backup box | root on the guest; the backup box sees the public half |
-| R2 transport token (interim — ODL-933; not shipped) | `/etc/odile/backup-s3.env` (0600 root): endpoint, bucket, `AWS_DEFAULT_REGION=auto`, cap and the **Object Read & Write** token scoped to `odile-t-<slug>`; the read-only twin is in the user's recovery file | root on the guest; Cloudflare; HQ holds a copy only to re-seed a rebuild |
+| SFTP transport key | `/etc/odile/backup-ssh/id_ed25519` (0600 root, **written from the seed** since ODL-924/933: the key is generated at provision and the machine has none of its own); its public half is installed on the box at provision. `known_hosts` (0600 root) holds the box's pinned host keys, also from the seed | root on the guest; the backup box sees the public half |
+| R2 transport token (interim — superseded by BX11; the `s3:` branch was never shipped) | `/etc/odile/backup-s3.env` (0600 root): endpoint, bucket, `AWS_DEFAULT_REGION=auto`, cap and the **Object Read & Write** token scoped to `odile-t-<slug>`; the read-only twin is in the user's recovery file | root on the guest; Cloudflare; HQ holds a copy only to re-seed a rebuild |
 | Last status, size, snapshot id | `/var/lib/odile/backup.json` on the guest; the signed heartbeat carries the same fields to HQ | the user, HQ (the fields only) |
 | File names, file contents | inside the encrypted repository | nobody without the password |
 
@@ -147,13 +150,12 @@ none of the three control-plane trees.)
 
 ## 2. The nightly job
 
-**v5 (SFTP).** The block below is the live tenant's unit as `systemctl cat`
-prints it against the SFTP stand-in — `--repo sftp://…` with `--key` and
-`--known-hosts`. On an interim tenant the same program is designed to run
-against the R2 repository (§3.1): an `s3:` URL from the seed, the bucket token
-in `/etc/odile/backup-s3.env`, and no `--key` or `--known-hosts`. That `s3:`
-branch is ADR-004 §8's `backup.py` + installer card, **ODL-933**, and **is not
-shipped at this head**; until it lands, a tenant's unit is the SFTP form below.
+**v5 (SFTP), and since ODL-933 the BX11 form.** The block below is the live
+tenant's unit as `systemctl cat` prints it with `--key` and `--known-hosts`; a
+BX11 tenant's unit is the same shape with the installer's extra
+`--sftp-connections 2` and `ConditionPathExists=/etc/odile/recovery.txt`. The
+R2 `s3:` branch (§3.1) was **never shipped** and is cancelled, not adapted: the
+repository is `sftp:u<box>-sub<N>@u<box>-sub<N>.your-storagebox.de:repo`.
 
 ```
 /usr/local/lib/odile/backup.py run
@@ -170,28 +172,80 @@ ExecStartPost=-/usr/local/lib/odile/backup.py heartbeat --status … --slug odl-
 ```
 
 That is the live tenant's unit as `systemctl cat` prints it (the second
-`--status` path is elided); the timer is
-`OnCalendar=*-*-* 03:00:00`, `Persistent=true`, `RandomizedDelaySec=300`.
-A unit the installer or `backup.py install` writes without `--heartbeat-url`
-is the same body with the production URL:
-`--url https://odile.fyi/heartbeat`.
+`--status` path is elided). A unit the installer or `backup.py install` writes
+without `--heartbeat-url` is the same body with the production URL:
+`--url https://odile.fyi/heartbeat`, plus `--sftp-connections 2` and the
+service's `ConditionPathExists` — see the subsection below for why the timer is
+no longer a constant.
 
-One run does, in order:
+One run does, in order (the order ODL-933 shipped):
 
-1. `restic backup /home/tenant --tag tenant --host odl-fake01 --json`
+1. `restic stats --mode raw-data --json` — the size the run **starts** from.
+   Over `BACKUP_TENANT_CAP_BYTES` (default `2000000000`) the run writes
+   `status: over_cap`, prints `nothing uploaded`, and exits 0 **without
+   uploading**: the cap stops growth instead of measuring it.
+2. `restic backup /home/tenant --tag tenant --host odl-fake01 --json`
    — `--host` is the **slug**, not the kernel hostname, so a rebuilt guest
    keeps one retention group.
-2. `restic stats --mode raw-data --json` — the repository size HQ is allowed
-   to know.
 3. `restic forget --keep-daily 7 --keep-weekly 4 --group-by host --host odl-fake01 --prune`
    — the retention the card specifies.
-4. Writes `/var/lib/odile/backup.json` atomically, mode 0600, the HQ-visible
-   fields only. A failed run writes `status: failed` and keeps the previous
-   `last_success_at`, so a silent failure becomes a freshness alert instead of
-   a lie (the 36-hour alert is ODL-216's, `odilectl health`).
-5. `ExecStartPost` posts a signed heartbeat carrying `last_backup_at` and a
+4. `restic stats --mode raw-data --json` — **after the prune**, so the number
+   is the size the next run starts from; over the cap the record is
+   `status: over_cap` with `repo_bytes`, and the next run uploads nothing. The
+   cap never deletes: the last good snapshot stays until an operator prunes.
+5. Writes `/var/lib/odile/backup.json` atomically, mode 0600, the HQ-visible
+   fields only (`status`, `repo_bytes`, `cap_bytes`, `snapshot`,
+   `last_success_at`). A failed run writes `status: failed` and keeps the
+   previous `last_success_at`, so a silent failure becomes a freshness alert
+   instead of a lie (the 36-hour alert is ODL-216's, `odilectl health`).
+6. `ExecStartPost` posts a signed heartbeat carrying `last_backup_at` and a
    `backup` object (repo, snapshot, status, bytes). HQ stores it in the
    heartbeat database; `odilectl status` renders it.
+
+### The schedule, the cap, and a rebuilt machine (ADR-004 v3 §4.1/§4.3/§7.4)
+
+**The timer is the slug's, not a constant.** The box publishes **10 concurrent
+connections** (25 measured; the 26th refused, box-wide), one restic run asks
+for **2** (`-o sftp.connections=2`, restic's own default is 5), so **five runs
+share the published 10** and twelve share the measured 25. To keep the runs
+apart, the installer renders
+
+```
+OnCalendar=*-*-* <HH:MM>:00     # 02:00 UTC + int(sha256(slug)[:2], 16) % 240
+RandomizedDelaySec=0
+Persistent=true
+```
+
+The offset is stable across a rebuild (same slug, same minute) and needs no
+state at HQ. `RandomizedDelaySec` is 0 because the fixed offset **is** the
+schedule; `Persistent=true` stays, so a machine that was off at its minute still
+gets its snapshot (the stampede after an outage is a bounded failure: some runs
+are refused, the next night retries, the freshness watchdog names the tenant).
+
+**The cap is read twice.** `BACKUP_TENANT_CAP_BYTES` (or `--cap-bytes`) is the
+per-repository envelope; `run` reads `restic stats` before the upload and after
+the prune. Over the cap the status record is `status: over_cap` with the size
+and the cap, and the run exits 0 so the heartbeat still reaches HQ — the
+watchdog reports it, a prune by an operator is what clears it.
+
+**A rebuilt machine has no password until the user pastes.** The backup
+**service** carries `ConditionPathExists=/etc/odile/recovery.txt`; the
+installer's `ensure_recovery` mints the file on a fresh install and **skips it
+when the seed names the previous instance and the file is absent** (a freshly
+minted password would not open the old repository). So a rebuilt machine's
+timer fires, the condition fails, the unit is skipped silently, and no false
+"backup failed" reaches the watchdog. The first-visit paste writes the file;
+once it exists a later installer run keeps its password and refreshes only the
+instance and certificate lines.
+
+**The seed's half.** An `sftp:` seed makes the installer write
+`/etc/odile/backup-repo.txt` (the no-port colon URL), `/etc/odile/backup-ssh/id_ed25519`
+(0600 root) and `/etc/odile/backup-ssh/known_hosts` (0600 root, the box's pinned
+host keys), and **no** `backup-s3.env` and no AWS variable. A converged second
+run prints `same` for all three. The colon form carries **no port**:
+`sftp:user@host:22/path` is the path `22/path` (the drill measured a literal
+`22/` directory), so both `scripts/backup.py` and the installer refuse it **by
+name**; 22 lives in `sftp.command` as `-p 22`.
 
 ### Installing it on a guest
 
@@ -492,6 +546,12 @@ password against an existing repository is refused by name, never re-initialised
 
 ### 3.1 The interim destination — Cloudflare R2, 19 November 2026
 
+> **Superseded, and never shipped.** On 24 November 2026 the destination became
+> the Hetzner Storage Box BX11 (ADR-004 v3), and the `s3:` branch, the
+> `backup-s3.env` file and the R2 names below are **history**: no code ever
+> loaded them, and ODL-933 adapted nothing — it shipped the `sftp:` shape in §2.
+> Kept because the drill records and the cap arithmetic still read correctly.
+
 The interim destination until B2 is restored — designed for R2 and never built
 (**ODL-924** shipped the BX11 pair instead; see §7 "Exit"). A tenant repository
 is an R2 bucket,
@@ -530,8 +590,9 @@ dashboard step in that branch.
   head as the box's readback instead** (§3.2): two box `GET`s plus each
   tenant's last restic number, warning at **800 GiB** and critical at
   **950 GiB**. The **fourth bucket — the second paying tenant — waits for
-  B2.** The cap check in `backup.py` is **ODL-933**'s and is not shipped at
-  this head.
+  B2.** The cap check is shipped for the **BX11** shape as
+  `BACKUP_TENANT_CAP_BYTES` (§2); the R2 `R2_TENANT_CAP_BYTES` name never
+  shipped.
 - **Verification after minting:** `HeadBucket` on `odile-t-<slug>` must answer,
   and `HeadBucket` on `hermes-hq-backup` with the tenant token must **not** be
   200. Record both codes in the handoff — that is the proof the token is scoped.
@@ -958,7 +1019,7 @@ recorded before it died.
 | — operator + harness | 23m39s | the gaps between those steps inside the timed run, including the killed first build (7m) and its 1m13s restart |
 | — harness gap before the timed run | 46m10s | 8m48s (A's destroy → B's first visit) + 37m22s (B idle until the timed run began); the worker's 420 s per-call limit, not the machine |
 | RPO | **10m51s** | A died 10m51s after its newest snapshot (22:17:48Z → 22:28:39Z) |
-| RPO worst case | 24 h | the 03:00 timer, if the machine dies just before a run |
+| RPO worst case | 24 h | the nightly timer, if the machine dies just before a run |
 
 The timed run's newest snapshot was already 57m01s old when B died, because B
 had not been backed up; the home restored is A's, so the data-loss window that

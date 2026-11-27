@@ -66,6 +66,19 @@ DEFAULT_HEARTBEAT_URL = "https://odile.fyi/heartbeat"
 DEFAULT_KEEP_DAILY = 7
 DEFAULT_KEEP_WEEKLY = 4
 STATUS_SCHEMA = 1
+# ADR-004 v3 §4.1/§7.4: the per-repository fair-use envelope. A repository over
+# it is `status: over_cap` and the next run uploads nothing, so growth stops at
+# one night's delta above 2.0 GB. It never deletes: the last good snapshot
+# stays until an operator prunes.
+DEFAULT_TENANT_CAP_BYTES = 2_000_000_000
+TENANT_CAP_ENV = "BACKUP_TENANT_CAP_BYTES"
+# ADR-004 v3 §4.3: the box publishes 10 concurrent connections (25 measured),
+# so one run asks for two and five runs share the published ceiling. restic's
+# own default is 5, which would put two runs over the published number.
+SFTP_CONNECTIONS = 2
+# The nightly window: 02:00-06:00 UTC, one stable minute per slug.
+TIMER_WINDOW_START_MINUTE = 2 * 60
+TIMER_WINDOW_MINUTES = 240
 DRILL_SCHEMA = 1
 
 # Trees that come back from the signed installer and the manifest, not from the
@@ -208,13 +221,28 @@ def resolve_repo(value: str | None, repo_file: str) -> str:
 
 
 def sftp_target(repo: str) -> tuple[str, str, str | None] | None:
-    """(user, host, port) for an sftp repository, or None for a local one."""
+    """(user, host, port) for an sftp repository, or None for a local one.
+
+    The colon form has **no port field**: `sftp:user@host:22/path` is the path
+    `22/path` (the drill measured a literal `22/` directory), so a colon-form
+    URL that carries one is refused by name rather than sent to restic. The
+    port lives in `sftp.command` (`-p 22`). The `sftp://host:port/path` form
+    does carry one, and keeps it.
+    """
     if not repo.startswith("sftp:"):
         return None
     match = SFTP_HOST_RE.match(repo)
     if not match:
         raise BadInput(f"cannot parse the SFTP repository {repo!r}")
-    return match.group("user"), match.group("host"), match.group("port")
+    port = match.group("port")
+    if port and not repo.startswith("sftp://"):
+        path = repo.split(":", 2)[2]
+        raise BadInput(
+            f"the colon form has no port field: {repo!r} is the path {path!r}, not a "
+            f"port, so restic would create a directory named {path.split('/')[0]!r}; "
+            "write sftp:user@host:repo and let sftp.command carry -p 22"
+        )
+    return match.group("user"), match.group("host"), port
 
 
 def restic_binary() -> str:
@@ -227,8 +255,15 @@ def restic_binary() -> str:
 # --------------------------------------------------------------------------- restic calls
 
 
-def sftp_args(repo: str, key: str | Path, known_hosts: str | Path) -> list[str]:
-    """`-o sftp.command=...` so restic uses this machine's key, not root's agent."""
+def sftp_args(repo: str, key: str | Path, known_hosts: str | Path,
+              connections: int = SFTP_CONNECTIONS) -> list[str]:
+    """`-o sftp.command=...` so restic uses this machine's key, not root's agent.
+
+    Two restic options, in this order: the transport command (the key, the
+    pinned host file, and `-p 22` for the colon form, which cannot carry a
+    port itself) and the connection ceiling (`sftp.connections=2` — ADR-004 v3
+    §4.3: five runs share the box's published ten).
+    """
     target = sftp_target(repo)
     if target is None:
         return []
@@ -241,12 +276,16 @@ def sftp_args(repo: str, key: str | Path, known_hosts: str | Path) -> list[str]:
         "-o", "StrictHostKeyChecking=yes",
         "-o", f"UserKnownHostsFile={Path(known_hosts).expanduser()}",
         "-o", "LogLevel=ERROR",
+        # The colon form carries no port, so the box's steady-state 22 is named
+        # here; a `sftp://host:port/path` URL names its own.
+        "-p", port or "22",
     ]
-    if port:
-        command += ["-p", port]
     # `-s sftp` is the remote command, so it must follow the destination.
     command += [f"{user}@{host}", "-s", "sftp"]
-    return ["-o", "sftp.command=" + " ".join(_quote_arg(part) for part in command)]
+    return [
+        "-o", "sftp.command=" + " ".join(_quote_arg(part) for part in command),
+        "-o", f"sftp.connections={int(connections)}",
+    ]
 
 
 def _quote_arg(value: str) -> str:
@@ -256,15 +295,87 @@ def _quote_arg(value: str) -> str:
     return "'" + value.replace("'", "'\\''") + "'"
 
 
+def timer_offset(slug: str) -> int:
+    """The slug's stable minute offset inside the nightly window (ADR-004 §4.3)."""
+    digest = hashlib.sha256(slug.encode("utf-8")).hexdigest()
+    return int(digest[:2], 16) % TIMER_WINDOW_MINUTES
+
+
+def timer_start(slug: str) -> str:
+    """`HH:MM` in UTC: 02:00 plus the offset, never before 02:00 or after 05:59."""
+    total = TIMER_WINDOW_START_MINUTE + timer_offset(slug)
+    return f"{total // 60:02d}:{total % 60:02d}"
+
+
+def timer_window(slug: str) -> str:
+    """The one line the installer's handoff prints: the offset and the arithmetic."""
+    offset = timer_offset(slug)
+    return (
+        f"window 02:00-06:00 UTC ({TIMER_WINDOW_MINUTES} min); "
+        f"offset int(sha256({slug})[:2], 16) % {TIMER_WINDOW_MINUTES} = {offset}; "
+        f"start 02:00 UTC + {offset} min = {timer_start(slug)} UTC; "
+        f"-o sftp.connections={SFTP_CONNECTIONS} × {10 // SFTP_CONNECTIONS} runs "
+        f"= the published 10"
+    )
+
+
+def cap_bytes() -> int:
+    """The fair-use envelope: the environment's byte count, else 2.0 GB."""
+    raw = (os.environ.get(TENANT_CAP_ENV) or "").strip()
+    if not raw:
+        return DEFAULT_TENANT_CAP_BYTES
+    try:
+        value = int(raw)
+    except ValueError:
+        raise BadInput(
+            f"{TENANT_CAP_ENV}={raw!r} is not a byte count"
+        ) from None
+    if value <= 0:
+        raise BadInput(f"{TENANT_CAP_ENV}={value} must be a positive byte count")
+    return value
+
+
+def repo_size(stdout: str) -> int | None:
+    """`total_size` from `restic stats --mode raw-data --json`, or None."""
+    try:
+        value = json.loads(stdout or "{}")
+    except ValueError:
+        return None
+    total = value.get("total_size") if isinstance(value, dict) else None
+    return int(total) if isinstance(total, (int, float)) else None
+
+
+def over_cap_record(previous: dict, *, slug: str, host: str, repo: str, size: int,
+                    cap: int, reason: str) -> dict:
+    """The `status: over_cap` record: the size, the cap, and why nothing uploaded."""
+    return {
+        "schema": STATUS_SCHEMA,
+        "slug": slug,
+        "host": host,
+        "repo": repo,
+        "status": "over_cap",
+        "at": int(time.time()),
+        "at_iso": utc_now(),
+        "repo_bytes": size,
+        "cap_bytes": cap,
+        "reason": reason,
+        "last_success_at": previous.get("last_success_at"),
+        "snapshot": previous.get("snapshot"),
+        "snapshot_short": (previous.get("snapshot") or "")[:8] or None,
+    }
+
+
 class Restic:
     """One restic context: repository, password file, transport, cache."""
 
     def __init__(self, repo: str, password: str, *, key: str | Path | None = None,
-                 known_hosts: str | Path | None = None, cache: str | None = None) -> None:
+                 known_hosts: str | Path | None = None, cache: str | None = None,
+                 connections: int = SFTP_CONNECTIONS) -> None:
         self.repo = repo
         self.password = password
         self.key = Path(key).expanduser() if key else None
         self.known_hosts = Path(known_hosts).expanduser() if known_hosts else None
+        self.connections = int(connections)
         self.cache = cache or os.environ.get("RESTIC_CACHE_DIR") or "/var/cache/odile/restic"
 
     def _environment(self, password_file: Path) -> dict[str, str]:
@@ -291,7 +402,8 @@ class Restic:
         binary = restic_binary()
         options: list[str] = []
         if self.key is not None:
-            options = sftp_args(self.repo, self.key, self.known_hosts or "")
+            options = sftp_args(self.repo, self.key, self.known_hosts or "",
+                                connections=self.connections)
         Path(self.cache).mkdir(parents=True, exist_ok=True)
         with tempfile.TemporaryDirectory(prefix="odile-restic-") as directory:
             password_file = self._password_file(directory)
@@ -381,7 +493,8 @@ def command_init(args) -> int:
 
     password = read_recovery_password(args.recovery)
     restic = Restic(repo, password, key=key if target else None,
-                    known_hosts=known_hosts if target else None)
+                    known_hosts=known_hosts if target else None,
+                    connections=args.sftp_connections)
     existing = restic.run(["snapshots", "--json", "--no-lock"])
     if existing.returncode == 0:
         print("same         the repository already answers; init is a no-op")
@@ -401,10 +514,28 @@ def command_init(args) -> int:
             raise BackupError(f"restic init failed: {detail[-1] if detail else 'no output'}")
         print("created      the restic repository")
     if target:
-        public = Path(str(key) + ".pub")
-        print(f"public key   {public} (register this one line on the backup box)")
-        print(public.read_text(encoding="utf-8").strip())
+        print(f"public half  {key} (the line the box registers)")
+        print(public_half(key))
     return 0
+
+
+def public_half(key: str | Path) -> str:
+    """The key's one `ssh-ed25519 …` line, from the `.pub` or derived from the half.
+
+    A seed-written key (the BX11 shape: the pair is minted at provision) has no
+    `.pub` beside it, so the line is derived rather than assumed to exist.
+    """
+    public = Path(str(key) + ".pub")
+    if public.is_file():
+        return public.read_text(encoding="utf-8").strip()
+    done = subprocess.run(["ssh-keygen", "-y", "-f", str(Path(key).expanduser())],
+                          capture_output=True, text=True)
+    if done.returncode != 0 or not done.stdout.strip():
+        raise BackupError(
+            f"cannot read or derive the public half of {key}: "
+            f"{(done.stderr or 'no output').strip()}"
+        )
+    return done.stdout.strip()
 
 
 def command_run(args) -> int:
@@ -419,7 +550,8 @@ def command_run(args) -> int:
         raise Missing(f"no SFTP key at {key}; run `backup.py init` first")
     password = read_recovery_password(args.recovery)
     restic = Restic(repo, password, key=key if target else None,
-                    known_hosts=known_hosts if target else None)
+                    known_hosts=known_hosts if target else None,
+                    connections=args.sftp_connections)
     # The restic host is the slug, not the kernel hostname: a rebuilt guest has
     # a new hostname but the same tenant, and retention groups by --host.
     host = args.host or args.slug or socket.gethostname()
@@ -438,15 +570,36 @@ def command_run(args) -> int:
         "--host", host,
         "--prune",
     ]
+    cap = args.cap_bytes if args.cap_bytes is not None else cap_bytes()
     if args.dry_run:
+        print(f"would run    restic stats --mode raw-data --json (start; cap {cap} bytes)")
         print(f"would run    restic {' '.join(_quote_arg(part) for part in backup_arguments)}")
         print(f"would run    restic {' '.join(_quote_arg(part) for part in forget_arguments)}")
+        print("would run    restic stats --mode raw-data --json (after the prune)")
         print(f"would write  {args.status} (last_success_at, snapshot, size)")
         return 0
 
     started = time.monotonic()
     status_path = Path(args.status).expanduser()
     previous = read_json(status_path)
+    # ADR-004 v3 §4.1: a run that starts over the cap uploads nothing. The
+    # pre-flight read is what makes the cap stop growth instead of measuring it
+    # after the fact; a repository that cannot be read yet (a first run before
+    # `init`) is not a refusal — the upload decides that.
+    version = _restic_version(restic)
+    before = restic.run(["stats", "--mode", "raw-data", "--json"])
+    used = repo_size(before.stdout) if before.returncode == 0 else None
+    if used is not None and used > cap:
+        record = over_cap_record(previous, slug=args.slug or host, host=host, repo=repo,
+                                 size=used, cap=cap,
+                                 reason="the repository was over the cap before this run")
+        write_json(status_path, record)
+        print(
+            f"over_cap     the repository is {human_bytes(used)}, over the "
+            f"{cap}-byte cap; nothing uploaded"
+        )
+        print(f"status       {status_path}")
+        return 0
     done = restic.run(backup_arguments)
     duration = round(time.monotonic() - started, 3)
     if done.returncode != 0:
@@ -461,6 +614,7 @@ def command_run(args) -> int:
             "at_iso": utc_now(),
             "error": detail[-1] if detail else f"restic exit {done.returncode}",
             "duration_seconds": duration,
+            "cap_bytes": cap,
             "last_success_at": previous.get("last_success_at"),
             "snapshot": previous.get("snapshot"),
         }
@@ -472,20 +626,18 @@ def command_run(args) -> int:
     snapshot = summary.get("snapshot_id") or ""
     if not snapshot:
         raise BackupError("restic backup succeeded but printed no snapshot summary")
-    stats = restic.run(["stats", "--mode", "raw-data", "--json"])
-    repo_bytes = None
-    if stats.returncode == 0:
-        try:
-            repo_bytes = json.loads(stats.stdout).get("total_size")
-        except ValueError:
-            repo_bytes = None
     pruned = restic.run(forget_arguments)
+    # The cap is read *after* the prune: that is the size the next run starts
+    # from, not the size the night's delta briefly made.
+    stats = restic.run(["stats", "--mode", "raw-data", "--json"])
+    repo_bytes = repo_size(stats.stdout) if stats.returncode == 0 else None
+    over = repo_bytes is not None and repo_bytes > cap
     record = {
         "schema": STATUS_SCHEMA,
         "slug": args.slug or host,
         "host": host,
         "repo": repo,
-        "status": "ok",
+        "status": "over_cap" if over else "ok",
         "at": int(time.time()),
         "at_iso": utc_now(),
         "last_success_at": int(time.time()),
@@ -495,20 +647,34 @@ def command_run(args) -> int:
         "files_changed": summary.get("files_changed"),
         "bytes_processed": summary.get("total_bytes_processed"),
         "repo_bytes": repo_bytes,
+        "cap_bytes": cap,
         "duration_seconds": duration,
         "retention": {"keep_daily": args.keep_daily, "keep_weekly": args.keep_weekly},
         "forget": "ok" if pruned.returncode == 0 else "failed",
-        "restic": _restic_version(restic),
+        "restic": version,
     }
     write_json(status_path, record)
     print(
         f"ok           snapshot {record['snapshot_short']} of {home} in {duration:.1f}s "
         f"({record['bytes_processed']} bytes processed, {record['files_new']} new files)"
     )
+    if over and repo_bytes is not None:
+        print(
+            f"over_cap     the repository is {human_bytes(repo_bytes)}, "
+            f"over the {cap}-byte cap; the next run uploads nothing"
+        )
     print(f"status       {status_path}")
     if pruned.returncode != 0:
         print("warning      retention/prune failed; the snapshot is still valid", file=sys.stderr)
     return 0
+
+
+def human_bytes(value: int) -> str:
+    """`2194 bytes (2.1 KiB)` — one number a reader can compare to 2.0 GB."""
+    for unit, scale in (("GiB", 1024 ** 3), ("MiB", 1024 ** 2), ("KiB", 1024)):
+        if value >= scale:
+            return f"{value} bytes ({value / scale:.1f} {unit})"
+    return f"{value} bytes"
 
 
 def _restic_version(restic: Restic) -> str:
@@ -564,7 +730,8 @@ def command_restore(args) -> int:
         raise Missing(f"no SFTP key at {key}; run `backup.py init` first")
     password = read_recovery_password(args.recovery)
     restic = Restic(repo, password, key=key if target else None,
-                    known_hosts=known_hosts if target else None)
+                    known_hosts=known_hosts if target else None,
+                    connections=args.sftp_connections)
     arguments = ["restore", args.snapshot, "--target", args.target]
     for include in args.include or []:
         arguments += ["--include", include]
@@ -599,7 +766,8 @@ def command_drill(args) -> int:
         raise Missing(f"no SFTP key at {key}; run `backup.py init` first")
     password = read_recovery_password(args.recovery)
     restic = Restic(repo, password, key=key if target else None,
-                    known_hosts=known_hosts if target else None)
+                    known_hosts=known_hosts if target else None,
+                    connections=args.sftp_connections)
     host = args.host or args.slug or socket.gethostname()
     canary = Path(args.file).expanduser() if args.file else home / "backup-drill" / "canary.txt"
     record_path = Path(args.drill).expanduser()
@@ -690,13 +858,16 @@ def command_verify(args) -> int:
     options = {
         "key": key if target else None,
         "known_hosts": known_hosts if target else None,
+        "connections": args.sftp_connections,
     }
-    good = Restic(repo, password, key=options["key"], known_hosts=options["known_hosts"]).run(
+    good = Restic(repo, password, key=options["key"], known_hosts=options["known_hosts"],
+                  connections=options["connections"]).run(
         ["snapshots", "--json", "--no-lock"]
     )
     wrong = Restic(
         repo, "wrong-" + secrets.token_hex(16),
         key=options["key"], known_hosts=options["known_hosts"],
+        connections=options["connections"],
     ).run(["snapshots", "--json", "--no-lock"])
     if good.returncode != 0:
         detail = (good.stderr or good.stdout).strip().splitlines()
@@ -800,10 +971,15 @@ Description=Odile tenant backup (restic, nightly)
 Documentation=file:///usr/local/lib/odile/backup.py
 After=network-online.target
 Wants=network-online.target
+# ADR-004 §7.4: a rebuilt machine has no recovery file until the user pastes it,
+# so the nightly run is skipped rather than reported as a failed backup.
+ConditionPathExists={recovery}
 
 [Service]
 Type=oneshot
-ExecStart=/usr/bin/python3 {script} run --repo-file {repo_file}{repo_arg} --recovery {recovery} --home {home} --key {key} --known-hosts {known_hosts} --status {status} --slug {slug}
+# Transport: restic -o sftp.connections=2, so one run asks for two of the box's
+# published ten connections (five runs share the ceiling, ADR-004 §4.3).
+ExecStart=/usr/bin/python3 {script} run --repo-file {repo_file}{repo_arg} --recovery {recovery} --home {home} --key {key} --known-hosts {known_hosts} --status {status} --slug {slug} --sftp-connections 2
 ExecStartPost=-/usr/bin/python3 {script} heartbeat --status {status} --slug {slug} --url {url} --key-dir {heartbeat_dir}
 Nice=10
 IOSchedulingClass=idle
@@ -811,12 +987,12 @@ IOSchedulingClass=idle
 
 TIMER_TEMPLATE = """\
 [Unit]
-Description=Odile tenant backup, daily at 03:00
+Description=Odile tenant backup, daily in the 02:00-06:00 UTC window
 
 [Timer]
-OnCalendar=*-*-* 03:00:00
+OnCalendar=*-*-* {start}:00
 Persistent=true
-RandomizedDelaySec=300
+RandomizedDelaySec=0
 
 [Install]
 WantedBy=timers.target
@@ -833,7 +1009,7 @@ def command_install(args) -> int:
         key=args.key, known_hosts=args.known_hosts, status=args.status, slug=args.slug,
         url=args.heartbeat_url, heartbeat_dir=args.heartbeat_key_dir,
     )
-    timer = TIMER_TEMPLATE
+    timer = TIMER_TEMPLATE.format(start=timer_start(args.slug))
     units = {
         Path(args.unit_dir).expanduser() / "odile-backup-tenant.service": service,
         Path(args.unit_dir).expanduser() / "odile-backup-tenant.timer": timer,
@@ -859,6 +1035,7 @@ def command_install(args) -> int:
         path.write_text(text, encoding="utf-8")
         os.chmod(path, 0o644)
         print(f"wrote        {path}")
+    print(f"window       {timer_window(args.slug)}")
     if Path(args.unit_dir).expanduser() != Path("/etc/systemd/system"):
         # A test or a packager owns this tree; enabling a unit systemd cannot
         # see would be a lie, so stop at the files.
@@ -873,7 +1050,8 @@ def command_install(args) -> int:
     )
     if done.returncode != 0:
         raise BackupError(f"systemctl enable failed: {done.stderr.strip()}")
-    print("enabled      odile-backup-tenant.timer (daily 03:00, Persistent=true)")
+    print(f"enabled      odile-backup-tenant.timer (daily {timer_start(args.slug)} UTC, "
+          f"Persistent=true)")
     return 0
 
 
@@ -900,6 +1078,9 @@ def build_parser() -> argparse.ArgumentParser:
                          help="the SFTP private key (generated by init)")
         sub.add_argument("--known-hosts", default=str(Path(DEFAULT_KEY_DIR) / "known_hosts"),
                          help="the SFTP host key file init records")
+        sub.add_argument("--sftp-connections", type=int, default=SFTP_CONNECTIONS,
+                         help="restic's -o sftp.connections for this run "
+                              f"(default: {SFTP_CONNECTIONS})")
         sub.add_argument("--dry-run", action="store_true", help="print the plan, change nothing")
 
     init = subparsers.add_parser("init", help="key, host key, and an idempotent restic init")
@@ -918,6 +1099,9 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--keep-weekly", type=int, default=DEFAULT_KEEP_WEEKLY)
     run.add_argument("--status", default=DEFAULT_STATUS,
                      help=f"the HQ-visible status record (default: {DEFAULT_STATUS})")
+    run.add_argument("--cap-bytes", type=int, default=None,
+                     help=f"the fair-use envelope in bytes (default: ${TENANT_CAP_ENV} "
+                          f"or {DEFAULT_TENANT_CAP_BYTES})")
     run.set_defaults(function=command_run)
 
     status = subparsers.add_parser("status", help="print the last status record")

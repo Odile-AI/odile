@@ -1,8 +1,8 @@
 {
   "artifacts": {
     "installer": {
-      "sha256": "b3678523e8cb1acefe60317f5dc41c19f8d0f671ec092fe5ff0752aaab11add8",
-      "size": 1640996,
+      "sha256": "18bdf333ad52bc174f1336e5aac7dbf18a4dae905986a833ae93571d28d9dd6e",
+      "size": 1661100,
       "url": "odile_install.py"
     },
     "skills": {
@@ -14,14 +14,14 @@
   "boot": {
     "kernel": "6.12.115+deb13.1-amd64"
   },
-  "generated_at": "2026-11-26T10:06:00Z",
+  "generated_at": "2026-11-26T12:18:06Z",
   "manifest": {
-    "sha256": "48ca0c7ee33c956742372409aa3c1e064809e32908bd963f10ef8fd1d786cf45",
+    "sha256": "3bd2d35f9b5ddac15887ee0af902b7fe1d74459a8c53e863e68bb4c107ff4c28",
     "signature_url": "manifest.json.sig",
     "url": "manifest.json"
   },
-  "notes": "ODL-950 (t_910bfe88): HQ accepts the upgrade consent fact and books the window. The installer re-embeds scripts/heartbeat.py (51981cec\u2026, 34,356 bytes): POST /heartbeat validates facts.upgrade (release against the served release.json, window 15 min to 26 h after receipt, origin click|deadline, request_id 32 hex), writes the beat and one upgrade_windows row in one transaction, answers 200 with one added upgrade key, and queues one booking email per row. This cut is 2026.11.25-4 over main's 2026.11.25-2 (the ODL-947 follow-up's /verify pace and done-page cut, 7b8b34e3\u2026 installer, 1,640,715 bytes) and merges main 68f7f1a; against -2 only installer_sha256, the manifest and this document's hashes move. web/privacy.html gains the upgrade_windows inventory row (no installer bytes). No skill, page or template embedded in the installer changed.",
+  "notes": "ODL-933 (t_fda54dd4): the tenant backup over the BX11. scripts/backup.py now asks restic for two SFTP connections (-o sftp.connections=2, five runs = the box's published ten), puts -p 22 in sftp.command because the colon form has no port field and refuses one by name, reads the repository before the upload and again after the prune against BACKUP_TENANT_CAP_BYTES (default 2,000,000,000) and writes status: over_cap with the size (a run that starts over the cap uploads nothing), and renders the timer from the slug (02:00 UTC + int(sha256(slug)[:2], 16) % 240, RandomizedDelaySec=0, Persistent=true). The backup service carries ConditionPathExists=/etc/odile/recovery.txt, and the installer's ensure_recovery mints no password on a rebuild until the user's paste exists. The installer writes /etc/odile/backup-repo.txt, /etc/odile/backup-ssh/id_ed25519 (0600) and known_hosts from the seed, and no backup-s3.env. This cut is 2026.11.26-1 over main's 2026.11.25-4 (the ODL-950 cut: the installer re-embeds scripts/heartbeat.py 51981cec\u2026; verify/verify.py a1ac889e\u2026, installer/first_visit.py 5dd8c97a\u2026 and installer/access_report.sh 7c5629c2\u2026 are -2's bytes, unchanged): installer_sha256 (18bdf333\u2026), backup_sha256 (6d15f06d\u2026), the manifest and this document's hashes move; no skill, page or template changed.",
   "product": "odile",
-  "release": "2026.11.25-4",
+  "release": "2026.11.26-1",
   "schema": 1
 }
