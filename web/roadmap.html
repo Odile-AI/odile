@@ -59,6 +59,23 @@ section{margin:32px 0 0;padding-top:24px;border-top:1px solid var(--line)}
   grid-template-areas:"id name dates count bar";align-items:center;gap:0 16px;
   padding:12px 0;border-top:1px solid var(--line-soft)}
 .timeline > .gate:first-child{border-top:0}
+.version{display:flex;flex-wrap:wrap;align-items:baseline;gap:2px 12px;
+  padding:18px 0 6px;border-top:1px solid var(--line)}
+.timeline > .version:first-child{border-top:0}
+.version + .gate{border-top:0}
+.vid{font:600 .72rem/1.35 ui-monospace,"SF Mono","Cascadia Mono","Liberation Mono",Menlo,Consolas,monospace;
+  letter-spacing:.12em;text-transform:uppercase;color:var(--oxblood)}
+.vname{font-size:17px;font-weight:600;line-height:1.3;overflow-wrap:anywhere}
+.vdates{font:400 .78rem/1.4 ui-monospace,"SF Mono","Cascadia Mono","Liberation Mono",Menlo,Consolas,monospace;
+  color:var(--soft);margin-left:auto;white-space:nowrap}
+.vcount{font:400 .78rem/1.4 ui-monospace,"SF Mono","Cascadia Mono","Liberation Mono",Menlo,Consolas,monospace;
+  font-variant-numeric:tabular-nums;text-align:right}
+.version-block{margin:24px 0 0}
+.version-head{display:flex;flex-wrap:wrap;align-items:baseline;gap:2px 12px;
+  margin:0 0 4px;font-size:1.15rem;line-height:1.3;font-weight:500}
+.version-head .vlabel{font-family:var(--serif)}
+.version-head .target{font:400 .78rem/1.4 ui-monospace,"SF Mono","Cascadia Mono","Liberation Mono",Menlo,Consolas,monospace;
+  color:var(--soft);margin-left:auto;white-space:nowrap}
 .gid{grid-area:id;font:600 .72rem/1.35 ui-monospace,"SF Mono","Cascadia Mono","Liberation Mono",Menlo,Consolas,monospace;
   letter-spacing:.12em;text-transform:uppercase;color:var(--soft)}
 .gname{grid-area:name;font-size:17px;line-height:1.4;overflow-wrap:anywhere}
@@ -92,6 +109,8 @@ section{margin:32px 0 0;padding-top:24px;border-top:1px solid var(--line)}
 .prov li{margin:0 0 8px}
 .foot{margin:32px 0 0;padding-top:24px;border-top:1px solid var(--line);font-size:16px;color:var(--soft)}
 @media (max-width:700px){
+  .vdates{white-space:normal;margin-left:0}
+  .version-head .target{margin-left:0}
   .gate{grid-template-columns:3rem minmax(0,1fr) auto;
     grid-template-areas:"id name count" ". dates dates" ". bar bar";
     gap:2px 12px;padding:12px 0}
@@ -136,13 +155,13 @@ h1,h2,h3,.brand,.mark,.wordmark,.focus{font-family:var(--serif)}
   </section>
 
   <section aria-labelledby="gates-title">
-    <h2 id="gates-title">Gates</h2>
+    <h2 id="gates-title">Versions</h2>
     <ol class="timeline">
 {{TIMELINE}}
     </ol>
   </section>
 
-  <p class="note">Counts are counts, not verdicts: a criterion is judged met in the Monday gate packet, not here.</p>
+  <p class="note">Counts are counts, not verdicts: a part's criterion is judged met in the Monday gate packet, not here.</p>
 
   <div class="gates-full">
 {{GATE_DETAILS}}
@@ -156,7 +175,7 @@ h1,h2,h3,.brand,.mark,.wordmark,.focus{font-family:var(--serif)}
       <li>In flight means running or in review. Blocked means an agent card that cannot proceed. A card in the human lane is never counted as in flight or blocked; it appears under What needs you when its dependencies are done — the entry's depends_on for a plan card, the board's parent links for a card outside the plan. A card outside the plan is named by its board task id and is counted nowhere else on this page.</li>
       <li>The one price in the plan renders as “the founding price”, because the landing page states no price.</li>
       <li>Unlisted: noindex, no link from another page. Not a public commitment.</li>
-      <li>One state word: held — a card in this gate is blocked. Everything else is a number.</li>
+      <li>One state word: held — a card in this part is blocked. Everything else is a number.</li>
     </ol>
   </details>
 
