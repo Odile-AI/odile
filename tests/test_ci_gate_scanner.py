@@ -20,10 +20,12 @@ from __future__ import annotations
 
 import hashlib
 import os
+import re
 import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 
@@ -150,6 +152,19 @@ import sys
 sys.exit(0)
 """
 
+# A base scanner whose only job is to say which path it was executed from.
+# The gate step is what decides that path, so the line it prints is the
+# property under test: two runs on one host must not share it.
+SCRATCH_PROBE = """#!/usr/bin/python3
+import sys
+print("PROBE {marker} argv0=" + sys.argv[0])
+sys.exit(0)
+"""
+
+
+def probe_scanner(marker: str) -> str:
+    return SCRATCH_PROBE.replace("{marker}", marker)
+
 
 # Assembled from parts: this file must stay clean under the gate it exercises.
 HQ_IP = ".".join(["23", "155", "44", "139"])
@@ -193,19 +208,19 @@ class PublishLintUsesTheBaseScanner(unittest.TestCase):
             "if: github.event_name == 'pull_request'")
 
     def test_it_runs_the_base_scanner(self):
-        self.assertIn("git show \"$base_sha:tools/leak_scan.py\"", self.block)
-        self.assertIn("/tmp/base-leak_scan.py --tree", self.block)
+        self.assertIn('git show "$base_sha:tools/leak_scan.py"', self.block)
+        self.assertIn('"$scratch/base-leak_scan.py" --tree', self.block)
 
     def test_it_runs_the_base_allowlist(self):
-        self.assertIn("git show \"$base_sha:leak-allow.tsv\"", self.block)
-        self.assertIn("cp /tmp/base-leak-allow.tsv leak-allow.tsv", self.block)
+        self.assertIn('git show "$base_sha:leak-allow.tsv"', self.block)
+        self.assertIn('cp "$scratch/base-leak-allow.tsv" leak-allow.tsv', self.block)
 
     def test_it_fetches_the_base_branch(self):
         self.assertIn("git fetch", self.block)
         self.assertIn("github.base_ref", self.block)
 
     def test_the_base_pass_runs_before_the_tree_scanner(self):
-        base = self.block.index("/tmp/base-leak_scan.py --tree")
+        base = self.block.index('"$scratch/base-leak_scan.py" --tree')
         own = self.block.index("tools/leak_scan.py --tree", base)
         self.assertLess(base, own, "the tree's own scanner must not run first")
 
@@ -317,7 +332,7 @@ class HistoryUsesTheBaseScanner(unittest.TestCase):
 
     def test_it_runs_the_base_scanner(self):
         self.assertIn('git show "$base_sha:tools/leak_scan.py"', self.block)
-        self.assertIn("scanner=/tmp/base-leak_scan.py", self.block)
+        self.assertIn('scanner="$scratch/base-leak_scan.py"', self.block)
         self.assertIn('"$scanner" --history', self.block)
 
     def test_a_base_that_predates_the_flag_falls_back_with_a_line(self):
@@ -331,7 +346,7 @@ class HistoryUsesTheBaseScanner(unittest.TestCase):
 
     def test_it_runs_the_base_allowlist_and_the_secret_list(self):
         self.assertIn('git show "$base_sha:leak-allow.tsv"', self.block)
-        self.assertIn("cp /tmp/base-leak-allow.tsv leak-allow.tsv", self.block)
+        self.assertIn('cp "$scratch/base-leak-allow.tsv" leak-allow.tsv', self.block)
         # The list is not a file in either checkout: it is the secret, decoded
         # to the documented path by the step above.
         self.assertIn("secrets.LEAK_FORBID_B64", self.block)
@@ -492,6 +507,110 @@ class TheSkipLinesNameBothDenyListClasses(unittest.TestCase):
             with self.subTest(line=line):
                 self.assertIn("forbidden-value", line)
                 self.assertIn("forbidden-path", line)
+
+
+class TheBaseGatesScratchPathsArePerRun(unittest.TestCase):
+    """Two runs of a base gate on one host keep their own scanner and allowlist.
+
+    Both pull-request steps used to write the fixed paths
+    `/tmp/base-leak_scan.py`, `/tmp/base-leak-allow.tsv` and
+    `/tmp/pr-leak-allow.tsv` and then execute the first. A sibling suite's
+    write landing between this run's write and its exec therefore ran the wrong
+    scanner: measured on 2026-11-26 with three concurrent full suites on one
+    host, two were red with `base-leak_scan.py: error: unrecognized arguments:
+    --history --forbid-only` — the publish-lint probe's scanner executed by the
+    history step on an untouched test.
+
+    The property pinned here is the path the scanner itself reports it ran
+    from, not that a directory exists: two runs of this suite's own gate
+    fixture must execute two different paths, each carrying its own base's
+    bytes.
+    """
+
+    STEP = ("publish-lint", "Gate the tree with the base branch's scanner")
+
+    def make_fixture(self, marker: str) -> Path:
+        tmp = Path(tempfile.mkdtemp(prefix=f"ci-scratch-{marker.lower()}-"))
+        self.addCleanup(shutil.rmtree, tmp, True)
+        scanner = tmp / f"probe-{marker.lower()}.py"
+        scanner.write_text(probe_scanner(marker), encoding="utf-8")
+        make_pair(tmp, base_scanner=str(scanner))
+        return tmp / "tree"
+
+    def run_base_gate(self, tree: Path) -> subprocess.CompletedProcess:
+        env = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
+        env["BASE_REF"] = "main"
+        return subprocess.run(["/bin/sh", "-c", step_script(*self.STEP)],
+                              cwd=tree, text=True, capture_output=True, env=env)
+
+    def executed_path(self, result: subprocess.CompletedProcess, marker: str) -> str:
+        output = result.stdout + result.stderr
+        found = re.search(rf"^PROBE {marker} argv0=(\S+)$", output, re.MULTILINE)
+        self.assertIsNotNone(found, output)
+        assert found is not None
+        return found.group(1)
+
+    def test_two_runs_execute_their_own_scanner_from_their_own_path(self) -> None:
+        first = self.run_base_gate(self.make_fixture("ALPHA"))
+        second = self.run_base_gate(self.make_fixture("BRAVO"))
+        self.assertEqual(first.returncode, 0, first.stdout + first.stderr)
+        self.assertEqual(second.returncode, 0, second.stdout + second.stderr)
+        # Each run reports which bytes it ran: its own base's scanner.
+        path_a = self.executed_path(first, "ALPHA")
+        path_b = self.executed_path(second, "BRAVO")
+        self.assertNotIn("BRAVO", first.stdout + first.stderr)
+        self.assertNotIn("ALPHA", second.stdout + second.stderr)
+        # Two runs on one host cannot see each other's scanner or allowlist.
+        self.assertNotEqual(path_a, path_b,
+                            "two runs of the base gate executed the same scanner path")
+        self.assertNotEqual(Path(path_a).parent, Path(path_b).parent,
+                            "two runs of the base gate shared a scratch directory")
+
+    def test_concurrent_runs_keep_their_own_scanner(self) -> None:
+        for round_number in range(3):
+            with self.subTest(round=round_number):
+                tree_a = self.make_fixture(f"CHARLIE{round_number}")
+                tree_b = self.make_fixture(f"DELTA{round_number}")
+                results: dict[str, subprocess.CompletedProcess] = {}
+
+                def drive(name: str, tree: Path) -> None:
+                    results[name] = self.run_base_gate(tree)
+
+                threads = [threading.Thread(target=drive, args=("a", tree_a)),
+                           threading.Thread(target=drive, args=("b", tree_b))]
+                for thread in threads:
+                    thread.start()
+                for thread in threads:
+                    thread.join()
+                self.assertEqual(results["a"].returncode, 0,
+                                 results["a"].stdout + results["a"].stderr)
+                self.assertEqual(results["b"].returncode, 0,
+                                 results["b"].stdout + results["b"].stderr)
+                self.assertIn(f"PROBE CHARLIE{round_number}",
+                              results["a"].stdout + results["a"].stderr)
+                self.assertNotIn(f"PROBE DELTA{round_number}",
+                                 results["a"].stdout + results["a"].stderr)
+                self.assertIn(f"PROBE DELTA{round_number}",
+                              results["b"].stdout + results["b"].stderr)
+                self.assertNotIn(f"PROBE CHARLIE{round_number}",
+                                 results["b"].stdout + results["b"].stderr)
+                self.assertNotEqual(self.executed_path(results["a"], f"CHARLIE{round_number}"),
+                                    self.executed_path(results["b"], f"DELTA{round_number}"))
+
+    def test_both_gates_create_a_per_run_scratch_directory(self) -> None:
+        for job in ("publish-lint", "history-secrets"):
+            self.assertIn("scratch=$(mktemp -d", job_block(job), job)
+
+    def test_no_step_names_a_fixed_scratch_path(self) -> None:
+        # The shell the runner gets, not the whole file: the comment above each
+        # step names the old path on purpose, to say what the change prevents.
+        steps = (("publish-lint", "Gate the tree with the base branch's scanner"),
+                 ("history-secrets", "Gate every blob with the base branch's scanner"))
+        for job, marker in steps:
+            script = step_script(job, marker)
+            for fixed in ("/tmp/base-leak_scan.py", "/tmp/base-leak-allow.tsv",
+                          "/tmp/pr-leak-allow.tsv"):
+                self.assertNotIn(fixed, script, job)
 
 
 if __name__ == "__main__":

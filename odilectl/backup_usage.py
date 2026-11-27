@@ -183,6 +183,33 @@ def _number(value: Any) -> int | None:
     return value
 
 
+def _epoch(value: Any) -> int | None:
+    """A heartbeat timestamp as an epoch: a non-negative int, or an ISO string.
+
+    The two heartbeat writers speak different dialects.  `scripts/backup.py
+    heartbeat` sends `at`; `scripts/heartbeat.py` forwards its backup fact
+    through `BACKUP_FACT_KEYS`, which carries `last_success_at` and `at_iso` and
+    never `at`.  Reading `at` alone left every real tenant's `backup_at` null.
+    A string is parsed as ISO-8601 (a missing offset is UTC); anything else is
+    no time — `None`, never a guess.
+    """
+    number = _number(value)
+    if number is not None:
+        return number
+    if not isinstance(value, str) or not value.strip():
+        return None
+    text = value.strip()
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    try:
+        moment = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=timezone.utc)
+    return int(moment.timestamp())
+
+
 def _stat(record: Mapping[str, Any], name: str) -> int:
     stats = record.get("stats")
     if not isinstance(stats, dict):
@@ -246,7 +273,14 @@ def collect(
         backup = raw_backup if isinstance(raw_backup, dict) else {}
         repo_bytes = _number(backup.get("repo_bytes"))
         status = backup.get("status") if isinstance(backup.get("status"), str) else None
-        at = _number(backup.get("at"))
+        # The time that number is from.  `last_success_at` is the producer's
+        # own key (scripts/heartbeat.py forwards it and `at_iso`); `at` is the
+        # older `scripts/backup.py heartbeat` dialect; `at_iso` is the same
+        # moment as a string.  First readable one wins.
+        at = None
+        for key in ("last_success_at", "at", "at_iso"):
+            if at is None:
+                at = _epoch(backup.get(key))
         if repo_bytes is not None:
             tenant_bytes += repo_bytes
             with_a_number += 1
@@ -343,9 +377,10 @@ def write_record(path: str | Path, record: Mapping[str, Any]) -> Path:
 def read_record(path: str | Path) -> tuple[dict | None, str | None]:
     """The record and, when there is none, the reason — never a silent miss.
 
-    A file another command wrote (a future schema, a truncated write) is
-    `None` with the reason, so `odilectl health` prints why the box line is
-    missing instead of reporting a healthy box it never read.
+    A file another command wrote (a future schema, a truncated write, a
+    non-integer `at`) is `None` with the reason, so `odilectl health` prints
+    why the box line is missing instead of reporting a healthy box it never
+    read.
     """
     target = Path(path).expanduser()
     try:
@@ -362,6 +397,13 @@ def read_record(path: str | Path) -> tuple[dict | None, str | None]:
         return None, f"{target} is not a JSON object"
     if record.get("schema") != SCHEMA:
         return None, f"{target} has schema {record.get('schema')!r}, not {SCHEMA!r}"
+    # The record's own time is what the poll prints beside the box's bytes; a
+    # string here used to reach `int(...)` and kill `odilectl health`, so it is
+    # named as unusable where every other malformed field is.
+    if _number(record.get("at")) is None:
+        return None, (
+            f"{target} carries at {record.get('at')!r}, not an integer epoch"
+        )
     box = record.get("box")
     if (
         not isinstance(box, dict)
