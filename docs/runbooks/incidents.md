@@ -337,8 +337,8 @@ The classification is heartbeat age alone, so a stale heartbeat with a live
 machine is this alert too — check the machine before believing the word "down".
 
 **Blast radius.** One tenant. Chat, the morning brief and the nightly backup all
-stop; the disk is encrypted and untouched. A missed 03:00 backup is the loss that
-compounds.
+stop; the disk is encrypted and untouched. A missed nightly backup is the loss
+that compounds.
 
 **First five commands.**
 
