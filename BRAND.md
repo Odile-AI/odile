@@ -964,11 +964,7 @@ on it.
   value is filled — the value is at most 29 characters (`03:10 UTC on 15
   December 2026`), so a line carrying one has to leave room for it. A line whose
   long token is a URL stays one line: a link must stay whole, and a `Label value`
-  line is a value, not prose. Rendered prose now overruns it: five lines in
-  `upgrade-booked.txt` measure 93, 96, 87, 81 and 81 characters once the values
-  are filled, and three in `invite.txt` measure 80, 81 and 79. Both are
-  re-wrapped at ≤78, words unchanged, by `t_b6c9e9ca` — the sheet records the
-  debt here until that card lands.
+  line is a value, not prose.
 - **One action.** A link is a link: ink, underlined, 1 px; never a filled
   button drawn as an image. Each template has one action: the invitation's
   register link, the confirmation's confirm link, the ready email's tokenless
@@ -1027,8 +1023,8 @@ the invitation and the ready email is a deck row or a subset of one.
 ```text
 Hello,
 
-You asked for a computer that keeps working when you close the tab. A machine is
-reserved for you in the private alpha.
+You asked for a computer that keeps working when you close the tab. A machine
+is reserved for you in the private alpha.
 
 Register here: https://test.odile.fyi/register
 
@@ -1036,11 +1032,11 @@ Use the address this email reached. Your Odile password opens your machine and
 your account page. No one at Odile holds a key to your machine.
 
 Bring one real thing you would do by hand this week — a page of notes to turn
-into a brief, a page to watch, a meeting to write up. After five short questions,
-that is the first thing you will ask it for.
+into a brief, a page to watch, a meeting to write up. After five short
+questions, that is the first thing you will ask it for.
 
-Nothing to install. No key to make, no terminal required. Nothing to pay: Odile
-pays for the machine and the inference during the alpha.
+Nothing to install. No key to make, no terminal required. Nothing to pay:
+Odile pays for the machine and the inference during the alpha.
 
 When your machine is ready, we email you its address. If anything goes wrong,
 reply to this email — there is no support desk in the alpha.
@@ -1125,17 +1121,21 @@ carries the Model A terminal).
 ### Upgrade booking (`upgrade-booked.txt`)
 
 ```text
-Your machine will be replaced at {{WINDOW}}. It takes about 20 minutes, and
-then your data comes back from your backup.
+Your machine will be replaced at {{WINDOW}}.
+It takes about 20 minutes, and then your data comes back from your backup.
 
-This is a security update: if you do nothing, it is applied after {{DEADLINE}}.
+This is a security update: if you do nothing, it is applied after
+{{DEADLINE}}.
 
 What happens
-- Your machine is replaced, not updated in place. The same address keeps working.
-- Afterwards you paste the recovery file you saved at your first sign-in, then sign in.
+- Your machine is replaced, not updated in place. The same
+address keeps working.
+- Afterwards you paste the recovery file you saved at your first sign-in,
+then sign in.
 - The agent is offline until the restore finishes.
 
-If that window is wrong, reply to this email before {{WINDOW}}.
+If that window is wrong, reply to this email before
+{{WINDOW}}.
 
 — Odile
 
@@ -1150,13 +1150,14 @@ zone. The `This is a security update` paragraph is present only when the served
 `release.json` carries an `upgrade` block, with `{{DEADLINE}}` rendered
 `03:10 UTC on 15 December 2026` (the block's `security_deadline`, else
 `generated_at` + 14 days); without the block the paragraph is absent, so the two
-rendered faces differ by that paragraph alone. The body's words are
-`docs/backlog.yaml` ODL-950's, verbatim, followed by the sign-off and the footer
-this sheet gives every account email; "about 20 minutes" is Savio's approved
-estimate (ADR-005 §5.3, 24 November 2026) and the receipt's only duration. The
-one action is the reply — `Reply-To` is `help@odile.fyi`, because in alpha.0 the
-window is a scheduled operator run and a reply before it reaches the operator.
-The receipt signs and carries the alpha footer, as the other three do.
+rendered faces differ by that paragraph alone. The body is
+`docs/backlog.yaml` ODL-950's block, verbatim — the block ends in the sign-off
+and the footer this sheet gives every account email; "about 20 minutes" is
+Savio's approved estimate (ADR-005 §5.3, 24 November 2026) and the receipt's
+only duration. The one action is the reply — `Reply-To` is `help@odile.fyi`,
+because in alpha.0 the window is a scheduled operator run and a reply before it
+reaches the operator. The receipt signs and carries the alpha footer, as the
+other three do.
 
 ### Every privacy, security or reliability sentence, and its row
 
@@ -1441,6 +1442,7 @@ names the `docs/CLAIMS.md` row that moved with it.
 | 2026-11-25 | **Email, the ready email's measurement is the machine's own.** §Ready's prose called `{{MEASUREMENT}}` "the expected measurement", a value the 2026-11-10 row sourced from the release pin (`e99728ef…`); no machine prints that number — the live bench boot reported `9f2bc74b…`, which its own `/verify` also prints — while `/verify` tells the reader the rebuild "must equal the measurement below and the one in your ready email", so the comparison could not hold. The clause now names the machine's own boot-record measurement (its 96-hex launch digest, the number its `/verify` page prints) and says the release pin (`odile-verify.pin`) stays the build-time expectation a rebuild is compared with; the §Email status line says the ready mail is queued once per tenant when the machine's own report answers. `odilectl/claim.py` fills the value from that record, and one builder means every later press rebuilds the same bytes (card `t_c713e767`). Measured on the live bench mail: the decoded body (`email.policy.default`, so the quoted-printable wrap is undone) prints 96 hex equal to `attestation.measurement` and the only 96-hex value on the machine's `/verify` page. The §Ready block and `templates/emails/ready.txt` are unchanged and still byte-equal; no palette, typeface or artwork change; no public sentence in `docs/CLAIMS.md` changed — §4.4's "Compare the measurement to the one in your ready email." is true as written. | Designer | verifier, t_c713e767 |
 | 2026-11-26 | **Claim page, the retired phrase leaves the page.** The 2026-11-25 row retired "the expected measurement" from §Ready, but `web/claim.html` still carried it twice in a `.note` paragraph (`:129`, `:140`) — once under the form's "What happens next", once in the claimed page's status block — and once in the claimed page's step 2 (`:147`); in this tree that phrase names the release pin (`odilectl/claim.py:expected_measurement()`), which the mail does not print and which differs from the machine's own boot report on a real machine (pin `e99728ef…`, bench boot `9f2bc74b…`). The three sentences now say "the measurement the machine reports" — the value the mail's `Measurement` line prints and the machine's `/verify` shows — and `tests/test_claim_page.py`'s summary line follows. `ADR-image-vs-installer.md` row 9 and `PIN-POLICY.md`'s ODL-398 row say "prints the machine's own boot-record measurement". The phrase survives once in the two architecture files, at `ADR-image-vs-installer.md:122`, in its build-time sense — a signed manifest carrying image hashes and the expected measurement — and that sentence is not about the mail. Rendered from the tree through `app.render_claim` at 1440×900, 390×844 and 320×568 in the form, claimed, longest-legal-address and closed states: `scrollWidth == clientWidth` on every one, 0 scripts and no request outside the file; the note is 2 lines at 1440, 3 at 390 and 4 at 320, `.note` 16 px at 7.55:1 on paper; every control is reached by Tab with a 2 px ink ring at 3 px offset, and the button's transition is `0s` under reduced motion. No palette, typeface or artwork change; §Ready and `templates/emails/ready.txt` are unchanged and still byte-equal; no public sentence in `docs/CLAIMS.md` changed. | Designer | verifier, t_abab3ce9 |
 | 2026-11-26 | **Email, the fourth account template is named, and it signs.** `templates/emails/upgrade-booked.txt` — ODL-950's receipt, one message per `upgrade_windows` booking, subject `Your upgrade is booked`, `Reply-To: help@odile.fyi` — was the fourth account email and §Email did not describe it: the status line said three, the templates table had three rows, and the footer rule reached "all three". The sheet now has a fourth row in that table and a §Upgrade booking block byte-equal to the template; the footer bullet becomes **sign-off and footer** — every account email closes `— Odile` and then `Private alpha · Odile pays for the machine and the inference · no price`, the receipt included, because its one action is a reply: a message that asks the reader to write back names who is writing. The status line also names the two bodies `app.py` composes without a template file (`REPOINT_CONFIRM_BODY`, `REPOINT_NOTICE_BODY`), which follow the same rules; `support.md` stays the reply template, outside the account set. The template gains the sign-off and the footer; every word above them is byte-identical to `docs/backlog.yaml` ODL-950's block, and the two rendered faces still differ by exactly the deadline paragraph (two lines, gated on the served document) — measured with `odilectl.health.render_upgrade_body`. `tests/test_upgrade_booking.py`'s `CARD_BODY` carries the footer and its verbatim test is renamed rather than weakened. The map gains four rows for the receipt's sentences (§2 Reliability for the rebuild and its offline window, §1 Access for the address and the recovery file) and names its remaining four as the served document and the receipt's flow — `Your machine will be replaced at {{WINDOW}}.`, `Your machine is replaced, not updated in place.` (the §2 rebuild, said to the owner), `This is a security update…` and `If that window is wrong…` — with ODL-955's heartbeat row owning the deck's upgrade sentence. **Wrap decision:** the sheet states the plain-text band — a prose line is ≤78 characters as written and ≤78 once a `{{WINDOW}}` or `{{DEADLINE}}` value (at most 29 characters) is filled, a URL line staying whole — and records the debt: this template renders 93/96/87/81/81 and `invite.txt` 80/81/79, both re-wrapped at ≤78, words unchanged, by `t_b6c9e9ca`. No palette, typeface or artwork change; no public sentence in `docs/CLAIMS.md` changed. Measured in this tree: `tools/brand_lint.py` OK (26 surfaces, 21 allowed colours), `./tools/claims_lint.py` OK (27 files, 13 phrases), `tests.test_upgrade_booking` 17 tests OK. | Designer | verifier, t_d2fc0dfd |
+| 2026-11-27 | **Email, the wrap band is paid.** `templates/emails/upgrade-booked.txt` and `templates/emails/invite.txt` are re-wrapped at the plain-text band: every line is ≤78 characters as written and ≤78 with `{{WINDOW}}` / `{{DEADLINE}}` filled (longest 74 in the receipt, 78 in the invitation); the words, punctuation, the three `- ` bullets, the blank lines, the `— Odile` sign-off and the alpha footer are byte-identical, and only line breaks moved. Bullet 1's wrap sits inside its sentence (`… in place. The same` / `address keeps working.`), so no continuation opens at column 0 between the `- ` lines; `tests/test_email_wrap.py` pins the band, the intact rendered date, the three items and both sheet blocks. §Invitation's and §Upgrade booking's blocks are byte-equal to the files (894 B / 587 B), `docs/backlog.yaml` ODL-950's block is byte-equal after YAML dedent, and §Upgrade booking's provenance sentence now says the block itself ends in the sign-off and the footer. §Email's wrap bullet drops the debt clause and states the band alone. No palette, typeface, artwork or surface rule changed; no public sentence in `docs/CLAIMS.md` changed. | Designer | verifier, t_b6c9e9ca |
 
 ## Do / Don't
 
