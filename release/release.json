@@ -1,8 +1,8 @@
 {
   "artifacts": {
     "installer": {
-      "sha256": "7b3b9fdee77da25e380f07c7de1f19b1c3ea54865fc1ff62a5184bd9f39b3249",
-      "size": 1719166,
+      "sha256": "43c85ff28067143f7d6b072b0d46dcb3d9dae31b9ef5d2b1ea3bf8aace087ce8",
+      "size": 1718999,
       "url": "odile_install.py"
     },
     "skills": {
@@ -16,7 +16,7 @@
   },
   "generated_at": "2026-11-27T12:20:00Z",
   "manifest": {
-    "sha256": "cc1f8e83fed32cfe14c35fae0444492607f8a308a24d029cd79131173d436d42",
+    "sha256": "e22bd3d0fc3ddcb2abf9fb1e082843b71d273d5a0778da32474f3ce42b98f42e",
     "signature_url": "manifest.json.sig",
     "url": "manifest.json"
   },

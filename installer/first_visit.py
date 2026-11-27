@@ -1316,8 +1316,8 @@ def render(template: str, keep: str, *, title: str, error: FieldError | None = N
     # The sign-in block renders no hint, so its field points at the error only.
     body = body.replace("{{SIGNIN_PASSWORD_ATTRS}}", field_attrs("password", error))
     body = body.replace("{{PASSWORD2_ATTRS}}", field_attrs("password2", error))
-    body = body.replace("{{SNAPSHOT_ID}}", html.escape(snapshot_id))
-    body = body.replace("{{SNAPSHOT_TIME}}", html.escape(snapshot_time))
+    body = body.replace("{{ID}}", html.escape(snapshot_id))
+    body = body.replace("{{TIME}}", html.escape(snapshot_time))
     body = body.replace("{{TITLE}}", html.escape(title))
     body = body.replace("{{DONE_HEADING}}", html.escape(heading))
     body = body.replace("{{RECOVERY}}", html.escape(recovery))

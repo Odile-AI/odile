@@ -4319,7 +4319,7 @@ printf 'members %s\n' "${members# }"
 # The first-visit service and its page are the reviewed files, byte for
 # byte, so the signed installer carries exactly the program and page it
 # writes to /usr/local/lib/odile/. --self-test fails on a one-byte edit.
-FIRST_VISIT_SHA256 = "f0e82096b93d23848d37dbbd8c279387f81167726bb8a16ad90ef56b88459755"
+FIRST_VISIT_SHA256 = "dfb8f6b91d2f83f2db7cfede9a8a0b73db7d57899ef9e77462f7c47b35fe8d58"
 FIRST_VISIT_SOURCE = r'''#!/usr/bin/python3
 """odile first-visit service — sign in to the guest and show the recovery code.
 
@@ -5638,8 +5638,8 @@ def render(template: str, keep: str, *, title: str, error: FieldError | None = N
     # The sign-in block renders no hint, so its field points at the error only.
     body = body.replace("{{SIGNIN_PASSWORD_ATTRS}}", field_attrs("password", error))
     body = body.replace("{{PASSWORD2_ATTRS}}", field_attrs("password2", error))
-    body = body.replace("{{SNAPSHOT_ID}}", html.escape(snapshot_id))
-    body = body.replace("{{SNAPSHOT_TIME}}", html.escape(snapshot_time))
+    body = body.replace("{{ID}}", html.escape(snapshot_id))
+    body = body.replace("{{TIME}}", html.escape(snapshot_time))
     body = body.replace("{{TITLE}}", html.escape(title))
     body = body.replace("{{DONE_HEADING}}", html.escape(heading))
     body = body.replace("{{RECOVERY}}", html.escape(recovery))
@@ -6863,7 +6863,7 @@ def main(argv: list[str] | None = None) -> int:
 if __name__ == "__main__":
     sys.exit(main())
 '''
-FIRST_VISIT_PAGE_SHA256 = "b1d662502df04467ce5ee09bd1ecf7c66c533e710772bd36218979b5c165a209"
+FIRST_VISIT_PAGE_SHA256 = "6e068c7704ec5b91a45f4afc090c799f01292a1ac64fb81c56220111ace12419"
 FIRST_VISIT_PAGE = r'''<!doctype html>
 <html lang="en">
 <head>
@@ -7042,7 +7042,6 @@ h1,h2,h3,.brand,.mark,.wordmark,.focus{font-family:var(--serif)}
     <!--notice-->
     <button class="primary" type="submit">Restore</button>
   </form>
-  <p class="foot">The whole file: the paste is read on this machine, and the password in it never leaves it.</p>
 <!--/restore-->
 <!--restoring-->
   <meta http-equiv="refresh" content="5;url=/first-visit/restoring">
@@ -7050,7 +7049,7 @@ h1,h2,h3,.brand,.mark,.wordmark,.focus{font-family:var(--serif)}
   <p class="lede">The snapshot is coming back over the network. This page checks again every five seconds.</p>
 <!--/restoring-->
 <!--restored-->
-  <h1>Your data is back. Snapshot {{SNAPSHOT_ID}} of {{SNAPSHOT_TIME}}.</h1>
+  <h1>Your data is back. Snapshot {{ID}} of {{TIME}}.</h1>
   <p class="lede">Your files, your agent's memory and its settings come back. The system and its apps were rebuilt.</p>
   <div class="act">
     <a class="primary" href="/first-visit">Sign in</a>
@@ -18981,7 +18980,7 @@ def self_test() -> int:
                  and "Recovery file" in page_text_value
                  and '>Restore</button>' in page_text_value
                  and "Restoring your data…" in page_text_value
-                 and "Your data is back. Snapshot {{SNAPSHOT_ID}} of {{SNAPSHOT_TIME}}."
+                 and "Your data is back. Snapshot {{ID}} of {{TIME}}."
                  in page_text_value
                  and "Your files, your agent's memory and its settings come back. "
                      "The system and its apps were rebuilt." in page_text_value)
