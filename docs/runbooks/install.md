@@ -268,6 +268,7 @@ prints `same` and restarts nothing (the smoke turn is not repeated unless
 | `/etc/odile/key.env` | 0600 | root | the machine's own NEAR AI key, one line `HERMES_CUSTOM_CLOUD_API_NEAR_AI_API_KEY=<key>`; `odile-agent.service` carries `EnvironmentFile=` for it |
 | `/etc/odile/recovery.txt` | 0600 | root | backup password + certificate fingerprint |
 | `/etc/odile/{support-key.pub,backup-repo.txt}` | 0644 | root | the seed's public material |
+| `/etc/odile/backup-ssh/{id_ed25519,known_hosts}` | 0600 | root | the seed's SFTP transport key (the read-write sub-account) and the box's pinned host-key lines, both from the seed; the machine generates no key of its own (ODL-924/933). The directory is 0700 |
 | `/usr/local/lib/odile/backup.py` | 0755 | root | the reviewed tenant backup (ODL-215), pinned by SHA-256; reads `/etc/odile/backup-repo.txt` and `/etc/odile/recovery.txt` at run time (ODL-215 follow-up) |
 | `/etc/systemd/system/odile-backup-tenant.service` | 0644 | root | the nightly oneshot: one restic snapshot, retention, the status record, and the signed heartbeat |
 | `/etc/systemd/system/odile-backup-tenant.timer` | 0644 | root | daily in the 02:00–06:00 UTC window at the slug's own minute (`OnCalendar=*-*-* <HH:MM>:00`, `HH:MM = 02:00 + int(sha256(slug)[:2], 16) % 240`), `RandomizedDelaySec=0`, `Persistent=true`; enabled and started by the tenant install |

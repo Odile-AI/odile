@@ -266,7 +266,7 @@ converged machine:
 |---|---|
 | the program | `/usr/local/lib/odile/backup.py` (0755 root, the checkout's `scripts/backup.py`) |
 | the repository | `/etc/odile/backup-repo.txt` — the seed's URL when its host resolves, otherwise `sftp://odile-backup@odile.fyi:2222/tenants/odl-fake01` (the storage box today is HQ's own sftp service, `docs/runbooks/backup.md` §3) |
-| the SFTP key | `/etc/odile/backup-ssh/id_ed25519` (0600) and `known_hosts` (0600, `ssh-keyscan -H`) |
+| the SFTP key | `/etc/odile/backup-ssh/id_ed25519` (0600) and `known_hosts` (0600). On this demo machine the check generates the key with `ssh-keygen` and records the host key with `ssh-keyscan -H`; on a tenant the installer writes both from the seed's pin and the machine generates no key (ODL-924/933) |
 | the heartbeat key | `/etc/odile/heartbeat/heartbeat.key` (0600) and `.pub` |
 | the backup timer | `odile-backup-tenant.service` + `.timer` from the program's own templates (`OnCalendar=*-*-* <HH:MM>:00` at the slug's own `02:00 + int(sha256(slug)[:2], 16) % 240`, `RandomizedDelaySec=0`, `Persistent=true`) |
 | the heartbeat timer | `odile-heartbeat.service` + `.timer` (`OnCalendar=*:0/5`, `Persistent=true`), running `backup.py heartbeat` |
