@@ -46,10 +46,10 @@ a:focus-visible{outline:2px solid var(--ink);outline-offset:3px}
 .account h2{margin:0 0 12px;font-size:1.34rem;line-height:1.2;font-weight:600;font-family:var(--serif)}
 .account form{display:flex;flex-direction:column;gap:16px;margin:16px 0 8px}
 .account label{font-weight:600;line-height:1.3;margin-bottom:-8px}
-.account input[type=password]{width:100%;min-width:0;border-radius:0;min-height:44px;background:transparent;border:0;border-bottom:1px solid var(--edge);font:400 16.8px/1.4 var(--text);color:var(--ink);padding:9px 2px 11px}
-.account input[type=password]:focus{outline:0;border-bottom-color:var(--ink)}
-.account input[type=password]:focus-visible{outline:2px solid var(--ink);outline-offset:3px}
-.account input[type=password][aria-invalid=true]{border-bottom-color:var(--error)}
+.account input[type=email],.account input[type=password]{width:100%;min-width:0;border-radius:0;min-height:44px;background:transparent;border:0;border-bottom:1px solid var(--edge);font:400 16.8px/1.4 var(--text);color:var(--ink);padding:9px 2px 11px}
+.account input[type=email]:focus,.account input[type=password]:focus{outline:0;border-bottom-color:var(--ink)}
+.account input[type=email]:focus-visible,.account input[type=password]:focus-visible{outline:2px solid var(--ink);outline-offset:3px}
+.account input[type=email][aria-invalid=true],.account input[type=password][aria-invalid=true]{border-bottom-color:var(--error)}
 .account .err{margin:-8px 0 0;font-size:16px;line-height:1.5;font-style:italic;color:var(--error)}
 .account .note:last-child{margin-bottom:0}
 /* Each reset link is the whole content of its paragraph, so it is a target,
@@ -145,6 +145,22 @@ button:focus-visible{outline:2px solid var(--ink);outline-offset:3px}
     {{MACHINE_RESET_LINK}}
     <p class="note">Lost your code? There is no other way back: ask us to delete your account and machine, then register again. Your backup is the only way to bring the files.</p>
   </section>
+
+  <div class="account">
+    <h2 id="account-email">Change your email</h2>
+    <p class="note">This changes the address on your account. Your machine, its sign-in and your backup are unchanged.</p>
+    {{EMAIL_CHANGE_NOTICE}}
+    <form method="post" action="/account/email" novalidate>
+      {{EMAIL_CHANGE_FORM_ERROR}}
+      <label for="new_email">New email</label>
+      <input id="new_email" name="new_email" type="email" maxlength="254" autocomplete="email" inputmode="email" spellcheck="false"{{NEW_EMAIL_INVALID}}>
+      {{NEW_EMAIL_ERROR}}
+      <label for="current_password">Current password</label>
+      <input id="current_password" name="current_password" type="password" minlength="16" maxlength="1024" autocomplete="current-password"{{CURRENT_PASSWORD_INVALID}}>
+      {{CURRENT_PASSWORD_ERROR}}
+      <button class="secondary" type="submit">Change the email</button>
+    </form>
+  </div>
   <!--/actions-->
 
   <p class="foot"><a href="/">odile.fyi</a><a href="/faq">Questions</a><a href="/privacy">Privacy</a></p>
