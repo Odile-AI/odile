@@ -124,6 +124,7 @@ cron job or a new skill is captured without a code change:
 ```
 <checkout>  /root/.hermes  /root/.odile  /root/.ssh  /root/bin  /root/.config
 /root/.gitconfig  /etc  /var/lib/caddy  /var/lib/odile  /srv/odile-testing
+/opt/odile-test  /var/lib/odile-test
 ```
 
 **Amendment, 2026-11-14 (t_9d7ee536).** The three HQ-demo roots —
@@ -132,6 +133,48 @@ set with the HQ demo's code; the demo itself was retired on 2026-11-13. The
 per-path rows above are the 2026-11-10
 measurement; a snapshot taken before this amendment still carries them, and
 `run` skips a missing root by design.
+
+**Amendment, 2026-11-26 (t_df30ec09) — two roots in, measured.** The test
+bench behind `test.odile.fyi` was outside the set while the recovery's DNS step
+moved that name: `odile-bench.service` and `odile-bench-seed.service`
+`ExecStart` from `/opt/odile-test/current/…`, so a restored HQ that repointed
+`test.odile.fyi` answered **502** there. Measured on 2026-11-26:
+**298,309,721 bytes in 8,828 files** for the release tree (a `current` and a
+`previous` symlink over **22** release directories — the app and seed source;
+`ls -1 /opt/odile-test/releases | wc -l` → 22, re-measured 2026-11-27) and
+**305,960 bytes** of state (the session-cookie key, the boot report, the test
+databases). That is **~4 %** of the set, and it is carried rather than
+re-deployed because `deploy/bench/deploy_bench.py` would rebuild the tree but
+not the state. `recover.sh` restores both, chowns the state, and starts the two
+units. Two units beside them are deliberately *not* started by name: the
+`odile-bench-register.timer` (it orders the machine a test registration asks
+for) and `odile-bench-probe.timer` are restored enabled and fire on the next
+boot. The recovery's restore already carried `/etc/odile-bench/bench.env` in
+the set; it now names `--include /etc/odile-bench`, which it did not before.
+**Measured after the change:** the first snapshot that carries them (the run at
+2026-11-26T23:59:28Z) processed **35,928 files / 7.888 GiB in
+128.0 s**, with 79 staged databases / 5.475 GB — against 101.7 s, 75 databases
+and 7.505 GiB for the run before the change, which carried neither root. Its copy of
+`/opt/odile-test/releases/91cca19e7fac/app.py` hashes to the live file
+(`25c5431e086e…`), and its `/var/lib/odile-test/account-session.key` is the live
+32 bytes: the bench is in the snapshot, not merely in the roots list.
+
+**`/srv/odile-releases` is measured and excluded — 2026-11-26 (t_df30ec09).**
+The directory Caddy serves at `/releases/*` (`deploy/caddy/releases.caddy`) and
+the Servury panel downloads a machine's boot and disk image from held
+**34,843,229,977 bytes in 15 files**: 32.4 GiB apparent, 30 GiB on disk, the
+bulk of it four 8 GiB disk images (`disks/` × 3, `m1/`) and four ~120 MB UKIs.
+Against a set of 7.5 GiB that is **4.3×**, and it would push the nightly set to
+~40 GiB — past R2's 10 GB-month free tier — for bytes that are build output.
+The recovery therefore names the republish instead of carrying it: `recover.sh`
+prints the four commands when the directory is empty, `deploy/recovery/README.md`
+§5 and `docs/runbooks/release.md` §7 carry them, and `/releases/*` answers 404
+until they run — a **named** 404, not a silent one. Two consequences are stated
+in §7 and not hidden: a rebuild hashes differently (the throwaway boot key and
+the LUKS passphrase are new), so every machine's panel fields need the new pair
+before it can be reinstalled; and the 1.5 MB `webapp/` bundle is the one file
+there with no build command in this repository, copied from the Webapp build.
+`m1/`'s fixed-name pair is not rebuilt.
 
 `/root/.config` is a root because the gateway is a root **user** service: its
 unit file, the GitHub CLI token (`gh/hosts.yml`) and the Caddy/Cloudflare state
@@ -236,6 +279,7 @@ live on 2026-11-11, **14.3 s, 68 databases, 1.22 GB** (runbook §9).
 | `/home/odiledemo/.hermes/{tools,hermes-agent,installs,cache,logs}`, `/home/odiledemo/.npm` | 3.9 GB | the demo's copy of the same toolchains — inside the loop image below |
 | `/var/lib/odile-demo/home.img` | 4.1 GB (6 GiB sparse) | the demo's loop-mounted home image; its unique files are captured from the mount instead. |
 | `/opt/odile` | 345 MB | the deploy target; `./scripts/deploy.sh` recreates it from the repo. |
+| `/srv/odile-releases` | 30 GiB (32.4 GiB apparent, 34,843,229,977 B in 15 files) | the tenant images the Servury panel downloads: build output the restored checkpoint rebuilds (`deploy/image/sealed-image.sh`, `deploy/image/uki.sh`), 4.3× the whole set. The recovery prints the four republish commands instead of carrying the bytes (2026-11-26; §3.1, `docs/runbooks/release.md` §7). `webapp/`'s 1.5 MB bundle is the one file there with no build command, and `--retention` owns the rest. |
 | `/root/.cache`, `/root/.npm`, `/root/.local/share/{uv,zed}` | 400 MB | tool caches. |
 | `/var/tmp` build and scenario roots (`bb`, `odile-sim*`, `odl214-*`, `verifier-odl*`, rehearsal dirs) | 48 GB | disposable scratch: rebuilt by the install, manifest and image runbooks; the evidence they produced is committed in `docs/evidence/`. The largest and most variable item on the disk, and never product state. |
 | `/var/lib/containers` | 4.3 GB | the `localhost/odile-tenant:v0.23.0` release image and the Debian base build — built from `deploy/image/Containerfile`. |
@@ -696,6 +740,40 @@ answers TLS with alert 40, which is also what three arbitrary account ids answer
 on the same day: that is what an account with R2 not yet enabled looks like.
 **The first connectivity test is `restic init` once the bucket exists**, not a
 TLS investigation.
+
+**The two recovery-set gaps, measured 2026-11-26 (t_df30ec09).** The surfaces a
+restore used to leave dead, measured on HQ before the change:
+
+```
+$ du -sb /srv/odile-releases; find /srv/odile-releases -type f | wc -l
+34843229977     /srv/odile-releases
+15
+$ du -sh /srv/odile-releases/{disks,m1,uki,webapp}
+21G     /srv/odile-releases/disks
+8.2G    /srv/odile-releases/m1
+345M    /srv/odile-releases/uki
+1.5M    /srv/odile-releases/webapp
+$ du -sb /opt/odile-test; find /opt/odile-test -type f | wc -l
+298309721       /opt/odile-test
+8828
+$ du -sb /var/lib/odile-test
+305960  /var/lib/odile-test
+$ restic ls latest /srv          # header only: no /srv entry in the snapshot
+$ restic ls latest /opt          # header only: no /opt entry either
+$ restic ls latest /etc/odile-bench
+/etc/odile-bench
+/etc/odile-bench/bench.env      # in the set — but recover.sh did not restore it
+$ restic ls latest /var/lib | grep -c odile-test
+0
+```
+
+The nightly status on the snapshot the exclusion is measured against
+(`3d8b55aa`, 2026-11-26T12:01:39Z, 101.7 s) is a 7.505 GiB set with 5.37 GB of
+staged databases. The run after the two roots joined (2026-11-26T23:59:28Z)
+processed **35,928 files / 7.888 GiB in 128.0 s** with
+79 staged databases / 5.475 GB, and the snapshot lists
+`/opt/odile-test /var/lib/odile-test` among its paths. `restic ls latest /srv`
+is still header-only: the release images were not added.
 
 **Live evidence, 2026-11-11.** The first consolidated snapshot `97f6c108`
 (09:51:40 UTC) holds **34,907 files / 2.15 GiB in one snapshot**; the
