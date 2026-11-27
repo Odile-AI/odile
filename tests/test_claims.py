@@ -621,6 +621,34 @@ class PrivacyTests(unittest.TestCase):
         # (ADR-004 §1: the bytes are on HQ's disk until the R2 migration lands).
         self.assertIn("an SFTP storage box at HQ", privacy)
 
+    def test_the_heartbeat_row_names_the_upgrade_booking_in_three_homes(self):
+        # ODL-955 / ADR-005 §8 item 10: the one new fact the upgrade flow puts
+        # on the wire is the booking's release and window, and the approved
+        # heartbeat row names it. The prose list is bound to the deck by the
+        # sentence mapping above; the two inventory cells are table text, which
+        # that mapping skips, so this pin carries them.
+        row = (
+            "A heartbeat is a signed note from your machine: that it is up, "
+            "its disk, uptime, spend and versions, the last backup, the last "
+            "brief, and an upgrade's release and booked window. It carries no "
+            "prompt and no file."
+        )
+        deck = (ROOT / "docs" / "CLAIMS.md").read_text(encoding="utf-8")
+        privacy = self.PAGE.read_text(encoding="utf-8")
+        self.assertIn(row, deck, "the deck's heartbeat row is not the approved sentence")
+        self.assertIn(row, privacy, "the privacy page's prose list does not carry the row verbatim")
+        for cell in (
+            "that the machine is up; disk, spend, versions, the last backup "
+            "and an upgrade's release and booked window",
+            "state, disk, spend, versions, the last backup and an upgrade's "
+            "release and booked window",
+        ):
+            self.assertIn(
+                cell,
+                privacy,
+                f"the privacy page's inventory does not name the booking: {cell!r}",
+            )
+
     def test_every_privacy_sentence_maps_to_the_deck(self):
         deck = deck_copy(ROOT)
         allowed = {normalise(sentence) for sentence in UI_SENTENCES}
