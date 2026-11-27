@@ -1,14 +1,15 @@
 # Roadmap page — the plan and the board on one unlisted URL
 
-**Status:** v1, built by ODL-490 and re-cut by ODL-494 · **URL:** `https://odile.fyi/roadmap` · **Generator:** `tools/roadmap_page.py`
+**Status:** v1, built by ODL-490, re-cut by ODL-494 and re-cut to the 2026-11-27 versioned plan by t_508428be · **URL:** `https://odile.fyi/roadmap` · **Generator:** `tools/roadmap_page.py`
 **Contract:** `docs/product/ROADMAP-PAGE-CEO.md` (the CEO overview; read it before changing the page)
 **Sources:** `docs/backlog.yaml` (milestones and cards) and the `odile` board database (execution state)
 
 One screen Savio can open from anywhere: where the project is, whether the
-gate in question is held, what comes next and what needs him — then every gate
-one click away. It is generated, not written, so it cannot drift from either
-source. It is **unlisted**: `noindex`, no link from any other page, no sitemap
-entry, no promotion. It is not a public commitment page.
+part in question is held, what comes next and what needs him — then every
+version and every part one click away. It is generated, not written, so it
+cannot drift from either source. It is **unlisted**: `noindex`, no link from
+any other page, no sitemap entry, no promotion. It is not a public commitment
+page.
 
 ```
 docs/backlog.yaml ─┐
@@ -19,40 +20,53 @@ board kanban.db ───┘        (every 15 min)          (atomic write)      
 ## 1. What the page shows
 
 The order is the contract: status sentence, **Now**, **What needs you**,
-**Gates**, the note, one `<details>` per gate (the focus gate is open), the
-**ADR view** A4 links to, and **How this page is made** (closed).
+**Versions**, the note, one `<details>` per part (the focus part is open,
+grouped under its version), the **ADR view** A4 links to, and **How this page
+is made** (closed).
 
-- **The status sentence** — one computed sentence naming the open gate(s), the
-  days to the next close, the next gate's start date, and the plan-wide count
+- **The status sentence** — one computed sentence naming the open part(s), the
+  days to the next close, the next part's start date, and the plan-wide count
   of cards in flight and blocked. Four facts, one statement of position.
-- **Now** — the focus gate: its `{id} · {name}`, a `held` tag when an agent
-  card is blocked, its when phrase (`Closes …` / `Opens …` / `Closed …`) with
-  `{done} of {total} card(s) done · {f} in flight · {b} blocked`, and the M1
-  go/no-go line while that date is still ahead. The focus gate is defined in
-  every state: the open gate with the most unfinished cards, the next gate in a
-  gap, the last gate after the final window.
+- **Now** — the focus part: its `{version} · {name}` (the version, never the
+  milestone code), a `held` tag when an agent card is blocked, and its when
+  phrase (`Closes …` / `Opens …` / `Closed …`) with `{done} of {total} card(s)
+  done · {f} in flight · {b} blocked`. The date a gate is judged is carried by
+  the version heading's `target {date}` and by the part's own when phrase; the
+  M-era M1 go/no-go line is retired (M-era record, pinned 2026-11-11) and
+  `tools/roadmap_page.py` no longer has the branch or the slot. The focus part
+  is defined in every state: the open part with the most unfinished cards, the
+  next part in a gap, the last part after the final window.
 - **What needs you** — `Nothing.`, or up to three human cards whose
   dependencies are done. A plan card is named by its backlog id; a card that
   exists only on the board is named by its task id. The rule is
   `tools/board_sync.py:is_human_card` plus the plan's `lane: human`, so the
   page and the dispatcher agree on whose card it is.
-- **Gates** — seven rows in window order: id, name, dates, `done/total`, a
-  CSS-only bar, the `now` marker on the open window(s), and `held` where an
-  agent card is blocked. The bar and the count carry the same fact twice, so
-  the visual survives a grayscale screenshot.
-- **The note** — `Counts are counts, not verdicts: a criterion is judged met in
-  the Monday gate packet, not here.`
-- **One `<details>` per gate** — id, name, dates and `done/total` in the
-  `<summary>`; objective, gate question, demo and every exit criterion inside,
-  verbatim from `docs/backlog.yaml`, then the gate's `open` questions as a
-  final list when the milestone defines any. Exactly one is open: the focus
-  gate's.
-- **The ADR view** — A4's block carries one in-page link whose label names
-  ADR-005, and the linked section renders that ADR's §3 layer table (all 15
-  rows, each with its label and the computed `7 in place · 5
-  rebuild-and-restore · 3 not updatable` line), §4's chosen model route (the
-  §4.1 prompt-path row and §4.3's prose) and §5's trigger (the one-line answer
-  and the four row groups). The text is read from
+- **Versions** — the timeline, in part-window order under the versioned plan
+  (V0.0.0 Foundation, V0.0.1 Alpha 0, V0.0.2, V0.0.3, V0.0.4, V0.1.0; a
+  timeline label is the version, not the milestone code — a code appears only
+  as a `<details>` id, `id="g-F0"`, or inside the plan's and ADR's own prose):
+  a version with more than one part leads with a heading row
+  (`{version} · {version_name}`, `target {date}`, the version's `done/total`),
+  then one row per part with its name, dates, `done/total`, a CSS-only bar, the
+  `now` marker on the open window(s), and `held` where an agent card is blocked.
+  A one-part version is a single part row that carries the version id itself.
+  The bar and the count carry the same fact twice, so the visual survives a
+  grayscale screenshot.
+- **The note** — `Counts are counts, not verdicts: a part's criterion is judged
+  met in the Monday gate packet, not here.`
+- **One `<details>` per part** — `{version} — {name} · {dates} · {done}/{total}`
+  (plus ` · held`) in the `<summary>`; objective, gate question, demo and every
+  exit criterion inside, verbatim from `docs/backlog.yaml`, then the part's
+  `open` questions as a final list when the milestone defines any. The parts of
+  a multi-part version sit together in a `<section class="version-block">`
+  under a `<h3 class="version-head">` that carries the version label and its
+  `target {date}`. Exactly one is open: the focus part's.
+- **The ADR view** — A4's block (V0.0.3, Upgrades without an operator) carries
+  one in-page link whose label names ADR-005, and the linked section renders
+  that ADR's §3 layer table (all 15 rows, each with its label and the computed
+  `7 in place · 5 rebuild-and-restore · 3 not updatable` line), §4's chosen
+  model route (the §4.1 prompt-path row and §4.3's prose) and §5's trigger (the
+  one-line answer and the four row groups). The text is read from
   `docs/architecture/ADR-upgrades-and-model.md` on every render, so a changed
   ADR changes the view; a lost row, an unknown label or a moved heading stops
   the generator instead of shortening the page. The inventory is a real table
@@ -77,16 +91,19 @@ backlog entries, and it prints one state word: `held`.
 ## 2. The price rule
 
 The landing page states no price, so this page must not be the first public
-price sentence. M4's exit criterion in `docs/backlog.yaml` reads "Ten
-subscriptions active at $49." and the page renders **"Ten subscriptions active
-at the founding price."**
+price sentence. No criterion in the plan the page renders carries one: the
+2026-11-17 re-cut dropped the M-era M4 criterion "Ten subscriptions active at
+$49." (M-era record, pinned 2026-11-11), and the page's only "founding price"
+is the provenance disclosure — the one price in the plan renders as "the
+founding price", because the landing page states no price.
 
 The map is `REDACTIONS` in `tools/roadmap_page.py`, keyed by the exact
 sentence, and generation **fails** if any `$` followed by a digit survives
-into the output. A new price in the backlog is therefore a loud error, not a
-silent leak: add the sentence to `REDACTIONS`, or the timer stops and the page
-goes stale. `tests/test_roadmap_page.py` pins the rendered page against
-`\$[0-9]`.
+into the output. It still carries the retired M-era sentence as its first key;
+that key matches no text in `docs/backlog.yaml` at HEAD. A new price in the
+backlog is a loud error, not a silent leak: add the sentence to `REDACTIONS`,
+or the timer stops and the page goes stale.
+`tests/test_roadmap_page.py` pins the rendered page against `\$[0-9]`.
 
 A board card's `title` is a sentence on the page too, under **What needs you**
 (§1). A title is redacted by rule: an exact `REDACTIONS` entry wins when one
@@ -161,15 +178,21 @@ The units are committed under `deploy/roadmap/`:
 
 ```sh
 curl -sS -D - -o /tmp/roadmap.html https://odile.fyi/roadmap | head -12
-grep -c '<li class="gate' /tmp/roadmap.html             # one per milestone (7 today)
-grep -c '<details' /tmp/roadmap.html                    # 7 gates + the provenance note (8)
-grep -o '<details[^>]* open' /tmp/roadmap.html | wc -l  # exactly 1: the focus gate
-grep -c 'class="criteria"' /tmp/roadmap.html            # one list per gate (7)
+grep -c '<li class="gate' /tmp/roadmap.html             # one per part (11 today)
+grep -c '<li class="version' /tmp/roadmap.html          # one per multi-part version (1 today)
+grep -c '<details' /tmp/roadmap.html                    # 11 parts + the provenance note (12)
+grep -o '<details[^>]* open' /tmp/roadmap.html | wc -l  # exactly 1: the focus part
+grep -c 'class="criteria"' /tmp/roadmap.html            # one list per part (11)
 grep -F 'generated ' /tmp/roadmap.html                  # the footer line
 sha256sum /tmp/roadmap.html
 systemctl status odile-roadmap.timer --no-pager
 systemctl status odile-roadmap.service --no-pager | head -12
 ```
+
+The counts move with the plan (parts, not versions, own a `<details>`); the
+numbers above are the render at 2026-11-27. A multi-part version adds one
+`<li class="version">` row and one `<section class="version-block">` heading
+above its parts (V0.0.1 today); a one-part version is a single part row.
 
 The page must carry `noindex`, no `<script>`, no cookie, no third-party
 request, and no link to itself. It must also carry one ADR view: A4's in-page
@@ -185,7 +208,7 @@ grep -F 'href="#adr-upgrades-and-model"' /tmp/roadmap.html        # A4's link
 ```
 
 `make check` runs `tests/test_roadmap_page.py`, which pins the disclosure
-structure, the single open gate, the first-screen blocks, all three invariants
+structure, the single open part, the first-screen blocks, all three invariants
 and the ADR view (the 15 row labels, the 7 / 5 / 3 counts, the three headings,
 the A4 link, and a lost row stopping the render). The visual review is at
 1440×900 and 390×844, plus a grayscale screenshot for the `held` tag. In the
@@ -203,7 +226,7 @@ horizontally at 320–1440.
 | `503 roadmap not generated yet` | the state file is missing | `sudo systemctl start odile-roadmap.service`; read its log |
 | The page is stale | the timer did not run or the unit failed | `systemctl status odile-roadmap.timer`; `journalctl -u odile-roadmap -n 40` |
 | `roadmap: board db …: no such file` | the board moved or `HERMES_KANBAN_DB` is unset in the unit's environment | name the file with `--board-db` in the unit |
-| `roadmap: a price reached the page` | a `$`-and-digit sentence in `docs/backlog.yaml` — milestone text or a backlog task title — is not in `REDACTIONS` | add the sentence or title to the map as an exact key; a priced board-card title no longer stops the timer; the page stays at the previous generation until then |
+| `roadmap: a price reached the page` | a `$`-and-digit sentence in `docs/backlog.yaml` — a part's text or a backlog task title — is not in `REDACTIONS` | add the sentence or title to the map as an exact key; a priced board-card title no longer stops the timer; the page stays at the previous generation until then |
 | `roadmap: milestones[3]: unknown key 'owner'` | a field was added to `docs/backlog.yaml` that the tool does not render | add it to `MILESTONE_KEYS` and to the template |
 
 ## 7. Rollback
