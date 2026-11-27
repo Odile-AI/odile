@@ -140,7 +140,8 @@ moved that name: `odile-bench.service` and `odile-bench-seed.service`
 `ExecStart` from `/opt/odile-test/current/…`, so a restored HQ that repointed
 `test.odile.fyi` answered **502** there. Measured on 2026-11-26:
 **298,309,721 bytes in 8,828 files** for the release tree (a `current` and a
-`previous` link over 24 release directories — the app and seed source) and
+`previous` symlink over **22** release directories — the app and seed source;
+`ls -1 /opt/odile-test/releases | wc -l` → 22, re-measured 2026-11-27) and
 **305,960 bytes** of state (the session-cookie key, the boot report, the test
 databases). That is **~4 %** of the set, and it is carried rather than
 re-deployed because `deploy/bench/deploy_bench.py` would rebuild the tree but

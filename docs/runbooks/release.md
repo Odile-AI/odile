@@ -309,8 +309,9 @@ set.
 fifths of it three 8 GiB disk images — against a backup set of 7.5 GiB. The
 two artefacts the panel pins are build output, and the restored checkpoint
 rebuilds them. So a restored HQ serves **404** on every `/releases/*` URL
-until one republish; `deploy/recovery/recover.sh` prints these commands at the
-end of a recovery, and this is the page they name.
+until one republish; `deploy/recovery/recover.sh` prints these commands during
+the recovery (before the DNS update and `RECOVERY COMPLETE`, not after it), and
+this is the page they name.
 
 On the recovered box (the site answers while these are missing — only the
 panel's download links are 404):
