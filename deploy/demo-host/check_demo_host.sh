@@ -1020,7 +1020,11 @@ else
     expect "the heartbeat key mode" "600" "$(stat -c '%a' "$HEARTBEAT_DIR/heartbeat.key")"
 fi
 
-# The nightly backup unit and timer, from the program's own templates.
+# The nightly backup unit and timer, from the program's own templates. The
+# timer's minute belongs to the slug (02:00-06:00 UTC, ODL-933), so the two
+# messages that talk about "daily" read the minute off the installed unit
+# rather than repeating a constant the schedule no longer uses.
+TIMER_START=
 if [ -x "$BACKUP" ]; then
     if "$BACKUP" install --repo "$REPO_URL" --slug "$SLUG" --home "$DEMO_HOME" \
         --recovery /etc/odile/recovery.txt --status /var/lib/odile/backup.json \
@@ -1028,7 +1032,9 @@ if [ -x "$BACKUP" ]; then
         --heartbeat-url https://odile.fyi/heartbeat \
         --heartbeat-key-dir "$HEARTBEAT_DIR" \
         --unit-dir /etc/systemd/system --install-path "$BACKUP"; then
-        ok "the nightly backup unit and timer converged (daily 03:00)"
+        TIMER_START=$(sed -n 's/^OnCalendar=\*-\*-\* \([0-9][0-9]:[0-9][0-9]\):00$/\1/p' \
+            /etc/systemd/system/odile-backup-tenant.timer 2>/dev/null | head -n 1)
+        ok "the nightly backup unit and timer converged (daily at ${TIMER_START:-the minute the slug picks} UTC)"
     else
         bad "backup.py install did not converge the nightly unit"
     fi
@@ -1085,7 +1091,7 @@ if [ -s /var/lib/odile/backup.json ]; then
         bad "/var/lib/odile/backup.json carries no last_success_at"
     fi
 else
-    note "no backup yet: the timer runs daily at 03:00; the SFTP key below must be authorized first"
+    note "no backup yet: the nightly timer runs at ${TIMER_START:-the minute the slug picks} UTC; the SFTP key below must be authorized first"
 fi
 if [ -s "$HEARTBEAT_DIR/heartbeat.pub" ]; then
     note "heartbeat public key: $(cat "$HEARTBEAT_DIR/heartbeat.pub" | tr '\n' ' ')"
