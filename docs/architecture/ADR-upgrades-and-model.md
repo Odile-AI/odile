@@ -1632,7 +1632,7 @@ re-cuts it.
 Read and run at `main`'s `c588bce`
 (`c588bcec129a0d2c97ee1b6eba0640d03b729d8f`, 27 November 2026), the cut these
 readings and every pointer in §2–§8 are taken at. The revision's re-cut commit
-is `e97e67602a669aa202c7297d27bfbcb6491e0cd1`: the first command below names
+is `e7e905e07668983b91a8e739c0b386d8787c4557`: the first command below names
 its whole diff — this ADR and nothing else — and the follow-up commit that
 carries this paragraph changes no other file either. `main` moved
 **thirteen** of the files this section reads between Revision 7's cut at
@@ -1649,7 +1649,7 @@ commands are the shift and the check that nothing else on the list moved;
 `update/odile_update.py` and `scripts/manifest.py` did not):
 
 ```sh
-$ git diff --name-only cbb8c52f48210692f91079da0ef26d6f623eb345 e97e67602a669aa202c7297d27bfbcb6491e0cd1
+$ git diff --name-only c588bcec129a0d2c97ee1b6eba0640d03b729d8f e7e905e07668983b91a8e739c0b386d8787c4557
 docs/architecture/ADR-upgrades-and-model.md
 $ git diff --stat 592f352 c588bce -- installer/odile_install.py \
     update/odile_update.py \
