@@ -605,7 +605,7 @@ provision time:
    file pins (ODL-340 follow-up, §12.4 of `install.md`).
    Measured on the bench, 2026-11-19: a `--production` disk built from the
    `release/` of the `2026.11.19-3` cut (installer `00a84542…`, manifest
-   `49850448…`; the tree now cuts `2026.11.21-5`, §12.6 of `install.md`) with
+   `49850448…`; the tree now cuts `2026.11.25-4`, §12.6 of `install.md`) with
    the line above was written over the disposable tenant
    by the panel and booted. The installer logged `site
    odl-340a1e.test.odile.fyi (heartbeat https://test.odile.fyi/heartbeat)`, and
@@ -1554,8 +1554,13 @@ re-cut both first-visit surfaces: its `-2` cut (`2026.11.23-2`) carries
 `7ddf42c3…` (76,304 bytes) and `web/first-visit.html` `98208a4c…` (45,248
 bytes), and its `-3` cut at this card's head (`2026.11.23-3`, installer
 `36add6da…`) carries `753417a0…` (78,550 bytes) and `1a9e8615…` (45,743
-bytes); the page's pins are `FIRST_VISIT_SHA256` and
-`FIRST_VISIT_PAGE_SHA256` in the installer.
+bytes). The tree's cut, `2026.11.25-4` (installer `b3678523…`, §12.6 of
+`install.md`), carries `installer/first_visit.py` `5dd8c97a…` (87,140 bytes),
+`web/first-visit.html` `d69f6abb…` (47,046 bytes) and, new since ODL-926,
+`scripts/heartbeat.py` `51981cec…` (34,356 bytes), with `templates/verify.html`
+`1f5314db…` (42,959 bytes) unchanged; the pins are `FIRST_VISIT_SHA256`,
+`FIRST_VISIT_PAGE_SHA256`, `HEARTBEAT_SHA256` and `VERIFY_TEMPLATE_SHA256` in
+the installer.
 
 The build's own head line and the fixture seed the boot uses:
 
