@@ -18,7 +18,8 @@ lives outside the unit's cgroup, where the unit's stop cannot reach it.
 `docs/ops/evidence/2026-11-25-gateway-unit/README.md`; Hermes checkout
 `edc8a222a8` (`hermes_cli/gateway.py`, `hermes_cli/gateway_runtime.py`,
 `hermes_cli/gateway_runtime_service_identity.py`, `gateway/host_attach.py`,
-`gateway/run_bootstrap.py`, `gateway/run_shutdown.py`, `gateway/session_kanban.py`,
+`gateway/run_bootstrap.py`, `gateway/run.py`, `gateway/run_shutdown.py`,
+`gateway/status.py`, `gateway/runtime_contract.py`, `gateway/session_kanban.py`,
 `gateway/lifecycle_ledger.py`); cards ODL-355, `t_542ba140`, `t_436574a6`,
 `t_e45873ef`, `t_8b331a57`.
 **Decision owner:** Architect. This ADR adds no provider, network path, trust
@@ -53,8 +54,10 @@ The invariant, as sentences that can be falsified:
   ten-minute window.
 
 I2 is the strong form: it includes the state the previous design left open — the
-unit stopped while a foreign pid serves (drill 2 C3). I3 is the form the parent
-card's second Definition-of-Done bullet tests.
+unit stopped while a foreign pid serves (drill 2 C3) — and its parked branch
+covers a foreign owner the start may not signal, so the state cannot loop in
+either shape. I3 is the form the parent card's second Definition-of-Done bullet
+tests.
 
 ## 2. What was measured
 
@@ -134,15 +137,33 @@ pid through `PIDFile=` — loses for five mechanical reasons:
 
 ### 3.3 When the lock is held: a supervised start takes over, it does not attach
 
-A supervised `gateway run` that finds a live host gateway serving this profile
-does what `--replace` does — but **without the flag**, so the unit's command
-stays inside the identity allowlist:
+**The trigger is this home's runtime lock, not the host record.** A supervised
+`gateway run` takes the host over whenever a live pid owns *either* the host
+gateway record *or* this profile home's `gateway.lock` / `gateway.pid`. The
+second shape is reachable today and is the one that still loops: when
+`host_gateway()` finds no record, `gateway/host_attach.py::decide` returns
+`START`; `gateway/run_bootstrap.py:807-809` then finds the live pid through
+`get_running_pid()` and calls
+`_start_gateway_replace_existing_instance(pid, replace=False)`, which prints “did
+not publish a host record” and returns `False`, so
+`hermes_cli/gateway.py:4545-4547` exits **1** — and under `Restart=on-failure`
+with `RestartSec=5` and no start limit that is a `Scheduled restart job` every
+five seconds. The supervised start applies the handover below to that pid too.
 
-1. write the takeover marker for the foreign pid (so it exits 0, not 1);
-2. SIGTERM it and let its own drain run — up to `agent.restart_drain_timeout`
+The handover is what `--replace` does — but **without the flag**, so the unit's
+command stays inside the identity allowlist:
+
+1. prove the target: the same fail-closed rule `--replace` already uses
+   (`gateway/run.py::_replace_target_belongs_to_other_profile`) — this home's
+   pid record must name that pid with the live start time, carry a stamped
+   `hermes_home`, and the live argv must not contradict it; a record that
+   predates the stamp, names another home, or fails the start-time check is
+   **unprovable**, and is never signalled;
+2. write the takeover marker for the foreign pid (so it exits 0, not 1);
+3. SIGTERM it and let its own drain run — up to `agent.restart_drain_timeout`
    plus the 30 s teardown envelope (330 s), clamped below `TimeoutStopSec=420`;
-3. if it is still alive, SIGKILL, then reap its children and remove its pid file;
-4. claim the host lock and serve.
+4. if it is still alive, SIGKILL, then reap its children and remove its pid file;
+5. claim the host lock and serve.
 
 The new process is the unit's MainPID from the moment systemd forks it; it
 becomes the serving pid when the handover completes. Clients in the window see
@@ -167,7 +188,13 @@ therefore still cannot produce the 135-row storm: it parks instead.
 | 75 | transient: drain-aware relaunch, lost host-lock race, liveness watchdog | `RestartForceExitStatus=75` relaunches after 5 s |
 | 78 | permanent: config refusal, takeover refused | `RestartPreventExitStatus=78` parks the unit |
 
-The exact unit directives to change — one, and nothing else:
+One directive changes, and this host already carries it:
+`/root/.config/systemd/user/hermes-gateway.service.d/restart.conf` has set
+`Restart=on-failure` since 2026-11-25 15:13, and `systemctl --user show
+hermes-gateway -p Restart` reads `on-failure` today. What is pending is the
+**tracked copy** — `deploy/hermes-gateway/restart.conf`, which `t_542ba140` adds
+so the next host gets the rule — not a change to this host's unit. The exact
+directive set, one change and nothing else:
 
 | Directive | Base unit | Decision | Where |
 |---|---|---|---|
@@ -191,8 +218,10 @@ it.
 
 ### 3.5 The drain and takeover protocol
 
-A gateway passes through four observable states: `absent`, `starting`, `ready`,
-`draining`, then gone (`gateway/runtime_contract.py`). A restart's after-turn
+A gateway passes through four lifecycle states — `absent`, `starting`, `ready`,
+`draining` — and returns to `absent` when it is gone; the same module carries
+three refusal verdicts (`incompatible`, `inaccessible`, `conflict`) for an owner
+that will not serve (`gateway/runtime_contract.py:6-8`). A restart's after-turn
 wait is `draining` with `drain_reason=restart_wait` and remains attachable; a
 stop drain is `draining` with no reason and is not.
 
@@ -213,10 +242,18 @@ stop drain is `draining` with no reason and is not.
   the longest scheduled job; the check is the before/after `hermes cron history`
   line.
 - **The lifecycle ledger** is the forensic proof: the single graceful-exit funnel
-  calls `mark_exited` (`gateway/run_shutdown.py` →
-  `gateway/lifecycle_ledger.py`), so `state/gateway.lifecycle.json` reads
+  calls `mark_exited` — `gateway/run.py::_exit_after_graceful_shutdown` →
+  `_mark_exited` → `gateway/lifecycle_ledger.py`, and the two watchdog exits
+  call it directly at `gateway/shutdown_watchdog.py:174` and
+  `hermes_startup_watchdog.py:172` — so `state/gateway.lifecycle.json` reads
   `phase=exited` and the next boot writes no `gateway.previous_unclean_exit`
-  line for that pid. A takeover writes the same clean exit on the old owner.
+  line for that pid. **No ledger edit is needed and no card touches
+  `gateway/run.py`**: the funnel already exists; `0002` only makes the run and
+  cron outcomes explicit. A takeover the target survives writes the same clean
+  exit on the old owner (the marker is consumed by its SIGTERM handler, which
+  then drains and exits 0); a SIGKILL fallback leaves the previous life unclean,
+  which is the truth — the process was killed, and the takeover does not forge a
+  clean exit.
 - **The ledger line and the run outcome are the contract**: a planned restart
   leaves a clean previous life and a reclaim, never `exited UNCLEANLY (no exit
   path ran)`.
@@ -224,20 +261,29 @@ stop drain is `draining` with no reason and is not.
 ## 4. Behaviour matrix
 
 `R` = unit active and owns; `S` = unit stopped, no serving gateway; `F` = unit
-stopped, a foreign pid holds the host lock and serves. “CLI” is any `hermes`
-client entrypoint that needs a gateway (chat, TUI, cron, `gateway ensure`).
+stopped, a foreign pid holds the host lock and serves; `F′` = the same kind of
+foreign pid holds this home's `gateway.lock` / `gateway.pid` but publishes no
+usable host record — the state `gateway/run_bootstrap.py:44-45` names (“an older
+build, or an unwritable lock directory”). “CLI” is any `hermes` client entrypoint
+that needs a gateway (chat, TUI, cron, `gateway ensure`).
 
 | State | CLI call | `systemctl --user start` | `systemctl --user restart` |
 |---|---|---|---|
 | **R** | discovery is `ready`; attaches; no start; exit 0 | no-op (already active); MainPID unchanged | planned-stop marker, drain ≤ 300 s inside `TimeoutStopSec=420`, new ExecStart owns; 0 restart rows |
 | **S** | `start-service` → `systemctl … start`; waits; `ready`; MainPID owns; 0 rows | starts; claims lock; MainPID owns; 0 rows | stop is a no-op, then start; MainPID owns; 0 rows |
 | **F** | discovery is `ready` (the foreign owner serves); attaches; **creates no second gateway**; the unit stays inactive until an explicit start | takeover: marker, SIGTERM, drain ≤ 330 s, SIGKILL if needed, claim; MainPID owns after the handover; 0 rows | same as start (inactive stop is a no-op); takeover; MainPID owns; 0 rows |
+| **F′** | `ready` when the owner answers its own control socket, `starting` (wait-owner) when it does not; either way it attaches or waits, **creates no second gateway**, and the unit stays inactive | takeover by lock pid: proof, marker, SIGTERM, drain ≤ 330 s, SIGKILL if needed, claim; MainPID owns; an unprovable record exits 78, unit parked, foreign owner serving; 0 rows | same as start (inactive stop is a no-op); 0 rows |
 
-Two notes the matrix does not show. In `F`, an ordinary client call does **not**
-restart a unit an operator stopped — the repair is an explicit start (or the boot
-check). In `F`, a takeover that cannot complete exits 78: the unit reads `failed`,
-MainPID is 0, the foreign gateway still serves, and the journal names
-`gateway_takeover_refused`; no loop.
+Three notes the matrix does not show. In `F` and `F′`, an ordinary client call
+does **not** restart a unit an operator stopped — the repair is an explicit start
+(or the boot check); in `F′` the client cannot even see an absent owner while the
+lock is held, so when the owner does not answer it waits and reports `starting`.
+In `F` and `F′`, a takeover that cannot prove the target exits 78: the unit reads
+`failed`, MainPID is 0, the foreign gateway still serves, and the journal names
+`gateway_takeover_refused`; no loop. An unprovable owner is a human repair, not a
+unit SIGTERM: the refusal prints the pid and the remedy (`hermes gateway stop`, or
+remove the stale PID record), and `hermes gateway run --replace` from a console
+refuses by the same fail-closed rule.
 
 ## 5. Alternatives rejected
 
@@ -261,7 +307,7 @@ artifact, and re-apply it after an update if the autostash conflicts.
 | Artifact | Owner card | Touches |
 |---|---|---|
 | `deploy/hermes-gateway/restart.conf` | `t_542ba140` | the one unit directive |
-| `deploy/hermes-gateway/patches/0001-supervised-takeover.patch` | `t_542ba140` | `hermes_cli/gateway.py` (takeover hook, ATTACH exit 0), `gateway/run_bootstrap.py` (330 s takeover wait) |
+| `deploy/hermes-gateway/patches/0001-supervised-takeover.patch` | `t_542ba140` | `hermes_cli/gateway.py` (takeover hook, supervised ATTACH exit 0), `gateway/run_bootstrap.py` (proof of the lock holder, the no-host-record takeover branch, 330 s takeover wait) |
 | `deploy/hermes-gateway/patches/0002-drain-and-reclaim.patch` | `t_436574a6` | `gateway/run_shutdown.py`, `gateway/session_managed_worker.py`, `gateway/session_kanban.py` — the reclaim and cron contract of §3.5 |
 | `deploy/hermes-gateway/apply-patches.sh` | `t_542ba140` | applies `patches/*.patch` in name order after `git apply --check`; `--reverse` reverts; idempotent |
 | `deploy/hermes-gateway/check-takeover.py` | `t_542ba140` | exit 1 when the hook or the exit contract is absent from the checkout |
@@ -288,7 +334,7 @@ artifact and `check-takeover.py` name exactly what to re-verify.
 |---|---|---|
 | One gateway, unit owns it, no storm after boot or restart | `systemctl --user restart hermes-gateway`; then `mp=$(systemctl --user show hermes-gateway -p MainPID --value)`; `pgrep -af '[g]ateway run'`; `journalctl --user -u hermes-gateway --since '-10 min'` | `mp` is non-zero, exactly one `gateway run` line and its pid equals `mp`, 0 `Scheduled restart job` rows, `NRestarts=0` |
 | A CLI call while the unit is stopped leaves the unit owning | `systemctl --user stop hermes-gateway`; `hermes gateway ensure --json`; re-read `MainPID` and `pgrep -af '[g]ateway run'` | `state: ready`, `endpoint.supervisor: systemd`, one line, `MainPID` equals its pid |
-| The foreign-pid state is repaired by a start | stop the unit; start a console `gateway run` in a scope outside the unit; `systemctl --user start hermes-gateway`; re-read `MainPID` and `pgrep -af '[g]ateway run'` | one line, `MainPID` equals its pid, the foreign pid gone, 0 rows; or exit 78 with `gateway_takeover_refused` and one gateway still serving |
+| The foreign-pid state is repaired by a start | stop the unit; start a console `gateway run` in a scope outside the unit; `systemctl --user start hermes-gateway`; re-read `MainPID` and `pgrep -af '[g]ateway run'`; then repeat with `~/.local/state/hermes/gateway-locks/host-gateway.json` moved aside, which is state `F′` | one line, `MainPID` equals its pid, the foreign pid gone, 0 rows; or exit 78 with `gateway_takeover_refused` and one gateway still serving — the same for `F′` when the owner's pid record proves `hermes_home`, and 78 when it does not |
 | Restart with a card running is graceful | run a drill card whose worker sleeps; `systemctl --user restart hermes-gateway`; `hermes kanban show <task>`; before/after `hermes cron history <pulse>`; `state/gateway.lifecycle.json` | the run ends `worker_lost` and the card is re-claimed, the pulse line reads `completed` (not `interrupted`), `phase=exited`, no `gateway.previous_unclean_exit` for that pid |
 | The unit is the command the CLI can verify | `systemctl --user show hermes-gateway -p Restart -p RestartForceExitStatus -p RestartPreventExitStatus -p ExecStart -p TimeoutStopUSec -p OOMPolicy -p KillMode`; `python3 deploy/hermes-gateway/check-takeover.py` | `Restart=on-failure`, `75`, `78`, `ExecStart=… gateway run`, `7min`, `continue`, `mixed`; the checker exits 0 |
 | OPERATING.md records the rule | `grep -n 'systemctl --user show hermes-gateway -p MainPID' docs/ops/OPERATING.md`; `grep -n 'systemctl --user restart hermes-gateway' docs/ops/OPERATING.md`; `grep -n 'hermes gateway ensure' docs/ops/OPERATING.md` | the three commands are present with their expected output, and the page names the takeover and the park fallback |
@@ -311,6 +357,11 @@ the gate's verdict.
   `--replace`, no wrapper, no `ExecStartPre`, no `PIDFile`, no `Type=forking`.
 - **The takeover is in-process, not in the unit.** A supervised start takes over;
   the unit file names none of it.
+- **The trigger is this home's lock, and the pid is proved before it is
+  signalled.** `F` and `F′` of §4 are one behaviour; a builder may not leave the
+  no-host-record branch on its current `return False` (exit 1, the 5 s loop). An
+  owner the fail-closed pid-record proof cannot establish exits 78, never 1 and
+  never a blind SIGTERM.
 - **Exit codes keep their meaning.** 0 clean, 1 crash, 75 transient, 78
   permanent. No `RestartPreventExitStatus=75`, no `Restart=no`, no start limit.
 - **The two patches are disjoint.** `0001` owns `hermes_cli/gateway.py` and
@@ -329,9 +380,11 @@ the gate's verdict.
 - The patch is a local Hermes modification. It is tracked, checkable and
   reversible, and `hermes update` autostashes it; a conflicting update is
   caught by `check-takeover.py`, not by a silent revert to the storm.
-- The foreign-pid state is still reachable by a deliberate console `gateway run`.
-  Under this ADR it is self-healing on the next start, and the boot check names
-  the state (`MainPID=0`) if nobody starts the unit.
+- The foreign-pid state is still reachable by a deliberate console `gateway run`,
+  with or without a published host record. Under this ADR a start takes a
+  provable owner over and parks at 78 on an unprovable one, so `F` is
+  self-healing and `F′` is either self-healing or a named, non-looping repair;
+  the boot check names the state (`MainPID=0`) if nobody starts the unit.
 - No tenant claim moves: every tenant already runs one gateway under one unit;
   this makes the same rule true on HQ.
 
@@ -344,7 +397,8 @@ the gate's verdict.
   present in the checkout (skipped when the checkout is absent, so a public clone
   stays green).
 - The drill transcripts in `docs/ops/evidence/2026-11-25-gateway-unit/` — the
-  three states of §4, with `systemctl show`, `pgrep`, the journal rows, the
-  ledger line and the cron history.
+  four states of §4, including the `F′` run with the host record moved aside,
+  with `systemctl show`, `pgrep`, the journal rows, the ledger line and the cron
+  history.
 - `docs/ops/OPERATING.md` § “One gateway — the unit owns it” — the operator
   commands and the expected output of §7.
