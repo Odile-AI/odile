@@ -205,10 +205,11 @@ parameters*; it deliberately does **not** carry a tenant's measurement,
 because that number is a function of the tenant's command line.
 
 `provision_release` is the release a new order is expected to boot.
-`odilectl provision` records it with the tenant, and the ready email prints it
-(ODL-398). The verifier never uses it: a machine on any pinned release
-verifies against its own entry. Moving `provision_release` is a deliberate act
-after step 4 of §6, not a side effect of adding an entry.
+`odilectl provision` records it with the tenant (ODL-398); the ready email does
+not print it. The tenant row is the source wherever the release is shown. The
+verifier never uses it: a machine on any pinned release verifies against its
+own entry. Moving `provision_release` is a deliberate act after step 4 of §6,
+not a side effect of adding an entry.
 
 `vcpu_counts` names the plan sizes for which the entry has been measured.
 2026.11.1 carries `[4]` because the verification was on a 4-vCPU Plus; a
@@ -389,9 +390,11 @@ The procedure, in order:
    keeps verifying against it.
 6. **Prove it**: `./odile-verify https://odile.fyi` still PASSes; `make check`
    is green; the diff is one added release block plus a new `pinned_at`.
-7. **Tell the next machine**: the ready email carries the release id
-   (ODL-232); the verifier selects that entry, never "latest". A machine on a
-   release that is not in the pin fails, which is the point.
+7. **Tell the next machine**: `provision_release` names the entry a new order
+   boots, and `odilectl provision` records it with the tenant (ODL-232,
+   ODL-398); the ready email does not print it. The verifier selects the entry
+   the machine's own report names, never "latest". A machine on a release that
+   is not in the pin fails, which is the point.
 
 One more consequence, stated because it is the one users notice: a release
 move keeps the disk and **changes the host key once**. The passphrase does not
