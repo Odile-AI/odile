@@ -150,6 +150,13 @@ units. Two units beside them are deliberately *not* started by name: the
 for) and `odile-bench-probe.timer` are restored enabled and fire on the next
 boot. The recovery's restore already carried `/etc/odile-bench/bench.env` in
 the set; it now names `--include /etc/odile-bench`, which it did not before.
+**Measured after the change:** the first snapshot that carries them (the run at
+2026-11-26T23:59:28Z) processed **35,928 files / 7.888 GiB in
+128.0 s**, with 79 staged databases / 5.475 GB — against 101.7 s, 75 databases
+and 7.505 GiB for the run before the change, which carried neither root. Its copy of
+`/opt/odile-test/releases/91cca19e7fac/app.py` hashes to the live file
+(`25c5431e086e…`), and its `/var/lib/odile-test/account-session.key` is the live
+32 bytes: the bench is in the snapshot, not merely in the roots list.
 
 **`/srv/odile-releases` is measured and excluded — 2026-11-26 (t_df30ec09).**
 The directory Caddy serves at `/releases/*` (`deploy/caddy/releases.caddy`) and
@@ -759,9 +766,13 @@ $ restic ls latest /var/lib | grep -c odile-test
 0
 ```
 
-The nightly status on the same snapshot (`3d8b55aa`, 2026-11-26T12:01:39Z,
-101.7 s) is the 7.5 GiB set the exclusion is measured against: the staged
-database set alone is 5.37 GB.
+The nightly status on the snapshot the exclusion is measured against
+(`3d8b55aa`, 2026-11-26T12:01:39Z, 101.7 s) is a 7.505 GiB set with 5.37 GB of
+staged databases. The run after the two roots joined (2026-11-26T23:59:28Z)
+processed **35,928 files / 7.888 GiB in 128.0 s** with
+79 staged databases / 5.475 GB, and the snapshot lists
+`/opt/odile-test /var/lib/odile-test` among its paths. `restic ls latest /srv`
+is still header-only: the release images were not added.
 
 **Live evidence, 2026-11-11.** The first consolidated snapshot `97f6c108`
 (09:51:40 UTC) holds **34,907 files / 2.15 GiB in one snapshot**; the
