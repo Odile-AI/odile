@@ -133,10 +133,11 @@ bytes, the exact command line, the vCPU count, the guest features and the guest
 policy; the app layer is not in it. Because the command line carries the
 tenant's IP, SSH key, hostname and instance id, **the pin is a recipe plus a
 per-machine recomputation, not a number copied from a release page**: publish
-the release id and artifact hashes in the ready email, then have `odile-verify`
-recompute the expected number from the artifacts and the command line the
-machine itself reports, assert the user's key fingerprint and IP inside that
-command line, and write `known_hosts` only on PASS. *(8 November 2026 — the
+the release id and artifact hashes in the pin and the machine's own
+boot-record measurement in the ready email, then have `odile-verify` recompute
+the expected number from the artifacts and the command line the machine itself
+reports, assert the user's key fingerprint and IP inside that command line, and
+write `known_hosts` only on PASS. *(8 November 2026 — the
 tool split is corrected in §14.2: the recompute, the key-and-IP assertion and
 the `known_hosts` write belong to `sev-snp-measure` / `blackbox-verify` and
 the ODL-202 wrapper; `odile-verify` compares the signed report's measurement
@@ -212,8 +213,10 @@ ADR recorded the switch; the scope reconciliation is with the Product Lead.)*
 3. **The pin is per machine and checked before the passphrase.** `odile-verify`
    recomputes the measurement from the published artifacts and the reported
    command line, asserts the user's key fingerprint and IP inside it, and writes
-   `known_hosts` only on PASS; the ready email carries the release id and the
-   recipe (ODL-201, ODL-319). A pin checked after the passphrase is decoration.
+   `known_hosts` only on PASS; the ready email carries the machine's own
+   boot-record measurement — the release id is recorded on the tenant row and in
+   the pin, not printed in the mail (ODL-201, ODL-319; ODL-398). A pin checked
+   after the passphrase is decoration.
 
    *(8 November 2026 — the tool split is corrected in §14.2. The recompute is
    `sev-snp-measure` / `blackbox-verify`; `odile-verify` checks the AMD chain
