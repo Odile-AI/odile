@@ -1128,8 +1128,8 @@ This is a security update: if you do nothing, it is applied after
 {{DEADLINE}}.
 
 What happens
-- Your machine is replaced, not updated in place.
-The same address keeps working.
+- Your machine is replaced, not updated in place. The same
+address keeps working.
 - Afterwards you paste the recovery file you saved at your first sign-in,
 then sign in.
 - The agent is offline until the restore finishes.
@@ -1150,13 +1150,14 @@ zone. The `This is a security update` paragraph is present only when the served
 `release.json` carries an `upgrade` block, with `{{DEADLINE}}` rendered
 `03:10 UTC on 15 December 2026` (the block's `security_deadline`, else
 `generated_at` + 14 days); without the block the paragraph is absent, so the two
-rendered faces differ by that paragraph alone. The body's words are
-`docs/backlog.yaml` ODL-950's, verbatim, followed by the sign-off and the footer
-this sheet gives every account email; "about 20 minutes" is Savio's approved
-estimate (ADR-005 §5.3, 24 November 2026) and the receipt's only duration. The
-one action is the reply — `Reply-To` is `help@odile.fyi`, because in alpha.0 the
-window is a scheduled operator run and a reply before it reaches the operator.
-The receipt signs and carries the alpha footer, as the other three do.
+rendered faces differ by that paragraph alone. The body is
+`docs/backlog.yaml` ODL-950's block, verbatim — the block ends in the sign-off
+and the footer this sheet gives every account email; "about 20 minutes" is
+Savio's approved estimate (ADR-005 §5.3, 24 November 2026) and the receipt's
+only duration. The one action is the reply — `Reply-To` is `help@odile.fyi`,
+because in alpha.0 the window is a scheduled operator run and a reply before it
+reaches the operator. The receipt signs and carries the alpha footer, as the
+other three do.
 
 ### Every privacy, security or reliability sentence, and its row
 

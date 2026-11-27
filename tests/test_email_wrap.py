@@ -61,6 +61,22 @@ class WrapBandTest(unittest.TestCase):
             body,
         )
 
+    def test_a_bullets_wrapped_continuation_reads_as_one_item(self) -> None:
+        # A continuation line must not open a new sentence at column 0: in the
+        # plain-text receipt it would read as an unmarked fourth item.
+        lines = template_bytes("upgrade-booked.txt").decode("utf-8").splitlines()
+        start = lines.index("What happens") + 1
+        block = []
+        for line in lines[start:]:
+            if not line:
+                break
+            block.append(line)
+        self.assertEqual(len([line for line in block if line.startswith("- ")]), 3)
+        continuations = [line for line in block if not line.startswith("- ")]
+        self.assertTrue(continuations, block)
+        for line in continuations:
+            self.assertTrue(line[:1].islower(), f"continuation starts a sentence: {line!r}")
+
     def test_the_invitation_fits_the_band(self) -> None:
         written = template_bytes("invite.txt").decode("utf-8")
         self.assertLessEqual(longest_line(written), LIMIT, "invite.txt")

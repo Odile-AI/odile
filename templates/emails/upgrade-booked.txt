@@ -5,8 +5,8 @@ This is a security update: if you do nothing, it is applied after
 {{DEADLINE}}.
 
 What happens
-- Your machine is replaced, not updated in place.
-The same address keeps working.
+- Your machine is replaced, not updated in place. The same
+address keeps working.
 - Afterwards you paste the recovery file you saved at your first sign-in,
 then sign in.
 - The agent is offline until the restore finishes.
