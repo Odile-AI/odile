@@ -618,6 +618,14 @@ The record's schema is `odile.backup-usage/1`:
 - `thresholds{warn_bytes,critical_bytes,level}`
 - `credential{token_path,token_mode,api_calls}`
 
+`backup_at` is the time the tenant's own `restic stats` ran, read from the
+heartbeat fact's `last_success_at` (what `scripts/heartbeat.py collect`
+forwards), falling back to the older `at` and then `at_iso` parsed as an epoch,
+so a real heartbeat renders `… from its last restic stats at <time>`. A record
+whose `at` is not an integer epoch is not usable: `odilectl health` prints
+`backup usage: <path> carries at <value>, not an integer epoch` instead of
+dying inside the poll, and the next daily run rewrites the record.
+
 Flags: `--token`, `--box-id`, `--api-base`, `--db`, `--heartbeat-db`, `--out`,
 `--now`.
 

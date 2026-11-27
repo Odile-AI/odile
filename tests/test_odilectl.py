@@ -14,6 +14,7 @@ built one.
 from __future__ import annotations
 
 import base64
+import importlib.util
 import io
 import json
 import os
@@ -42,6 +43,24 @@ from odilectl.core import Context  # noqa: E402
 from odilectl.errors import ConfigError, ProviderError, ProviderTimeout  # noqa: E402
 from odilectl.providers import base, servury  # noqa: E402
 from tests import box_fixture  # noqa: E402
+
+
+def load_heartbeat_script():
+    """Load `scripts/heartbeat.py` as a module; it is a script, not a package.
+
+    The backup fact has exactly one producer, so it has exactly one dialect.
+    A test that hand-writes the key it expects proves the reader against a shape
+    no machine sends (the defect this loader exists to prevent); using the
+    producer's own `_backup_fact` means the fact under test is the fact a
+    heartbeat carries. Mirrors tests/test_heartbeat.py's loader.
+    """
+    path = ROOT / "scripts" / "heartbeat.py"
+    spec = importlib.util.spec_from_file_location("odile_heartbeat_backup_usage", path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
 
 # A real ed25519 public key; the private half was generated for this fixture
 # and thrown away. A public key is not a secret.
@@ -2422,6 +2441,120 @@ class BackupUsageTests(TempConfigMixin):
             [("GET", "/storage_boxes"), ("GET", "/storage_boxes/709870/subaccounts")],
         )
         self.assertEqual(fake.mutating(), [])
+
+    def test_the_tenant_timestamp_renders_from_the_producers_own_keys(self) -> None:
+        """The heartbeat never sends `at`, and the row must still print a time.
+
+        The fact is built by the producer's own `_backup_fact`, so this test
+        cannot agree with a dialect the tenant does not speak.
+        """
+        producer = load_heartbeat_script()
+        self.assertNotIn("at", producer.BACKUP_FACT_KEYS)
+        self.make_config()
+        status_path = self._directory / "backup.json"
+        status_path.write_text(json.dumps({
+            "schema": "odile.backup/1",
+            "slug": "odl-alpha1",
+            "host": "odl-alpha1",
+            "repo": "sftp:odile-backup@backup.example:/tenants/odl-alpha1",
+            "status": "ok",
+            "at": 1_795_683_600,
+            "at_iso": "2026-11-26T09:00:00Z",
+            "last_success_at": 1_795_683_600,
+            "snapshot": "608ef125",
+            "bytes_processed": 1,
+            "repo_bytes": 4096,
+        }), encoding="utf-8")
+        fact = producer._backup_fact(status_path)
+        # The dialect gap itself, asserted: the status file has `at`, the fact
+        # that reaches HQ does not.
+        self.assertNotIn("at", fact)
+        self.assertEqual(fact["last_success_at"], 1_795_683_600)
+
+        tenant = state.Tenant("odl-alpha1", "ready", None, None, None, None, None,
+                              None, None, None, {}, "", "")
+        record = backup_usage.collect(
+            [tenant], {"odl-alpha1": {"backup": fact}}, self.box(), [],
+            now=self.NOW, token_path=Path(provision.HETZNER_TOKEN_FILE),
+            token_mode="0600", api_calls=[],
+        )
+        self.assertEqual(record["tenants"][0]["backup_at"], 1_795_683_600)
+        rendered = "\n".join(
+            backup_usage.lines(record, path=self._directory / "usage.json", wrote=False)
+        )
+        self.assertIn("at 2026-11-26T09:00:00Z", rendered)
+
+    def test_the_timestamp_falls_back_to_at_and_then_to_at_iso(self) -> None:
+        """Both producers' dialects; a junk ISO is no time, not a crash."""
+        tenant = state.Tenant("odl-alpha1", "ready", None, None, None, None, None,
+                              None, None, None, {}, "", "")
+
+        def backup_at(backup: dict) -> int | None:
+            record = backup_usage.collect(
+                [tenant], {"odl-alpha1": {"backup": backup}}, self.box(), [],
+                now=self.NOW, token_path=Path(provision.HETZNER_TOKEN_FILE),
+                token_mode="0600", api_calls=[],
+            )
+            return record["tenants"][0]["backup_at"]
+
+        # `scripts/backup.py heartbeat` sends `at`; scripts/heartbeat.py sends
+        # `last_success_at`/`at_iso`, which is why the first key read is that one.
+        self.assertEqual(
+            backup_at({"repo_bytes": 4096, "status": "ok", "at": 1_795_600_000}),
+            1_795_600_000,
+        )
+        self.assertEqual(
+            backup_at({"repo_bytes": 4096, "status": "ok",
+                       "at_iso": "2026-11-26T09:00:00Z"}),
+            1_795_683_600,
+        )
+        self.assertEqual(
+            backup_at({"last_success_at": 1_795_600_000, "at": 1,
+                       "at_iso": "2026-11-26T09:00:00Z"}),
+            1_795_600_000,
+        )
+        for junk in ("yesterday", "", True, -1, {"at": 1}):
+            self.assertIsNone(
+                backup_at({"repo_bytes": 4096, "status": "ok", "at_iso": junk}), junk
+            )
+
+    def test_a_non_integer_at_is_named_not_crashed(self) -> None:
+        """A schema-valid record with `at: "yesterday"` is unusable, not a traceback."""
+        config_path = self.make_config()
+        db = Path(config_path).parent / "waitlist.db"
+        usage_path = self._directory / "usage.json"
+        record = self.record(size_data=950 * 1024 ** 3)
+        record["at"] = "yesterday"
+        backup_usage.write_record(usage_path, record)
+
+        self.assertIsNone(backup_usage.read_record(usage_path)[0])
+        reason = backup_usage.read_record(usage_path)[1] or ""
+        self.assertIn("yesterday", reason)
+        self.assertIn("not an integer epoch", reason)
+
+        code, out, err = run_cli(
+            ["health", "--db", str(db), "--backup-usage", str(usage_path),
+             "--no-http", "--outbox", str(self._directory / "outbox"),
+             "--now", str(self.NOW), "--apply"],
+            config_path,
+        )
+        self.assertEqual(code, 0, out + err)
+        self.assertIn("backup usage: ", out)
+        self.assertIn("not an integer epoch", out)
+        self.assertNotIn("Traceback", err)
+
+        # The render boundary is total too: a hand-built result whose record has
+        # a string `at` still prints the box's own line, without the timestamp.
+        rendered = "\n".join(health._health_lines(
+            health.HealthResult(
+                now=self.NOW, tenants=(), alerts=(), planned=(), resolved=(),
+                applied=False,
+                box_usage=dict(self.record(size_data=2048), at="yesterday"),
+            ),
+            applied=False,
+        ))
+        self.assertIn("box 709870", rendered)
+        self.assertIn("readback time not an epoch", rendered)
 
     def test_both_ceilings_are_inclusive_and_the_record_carries_the_level(self) -> None:
         warn, critical = backup_usage.WARN_BYTES, backup_usage.CRITICAL_BYTES
