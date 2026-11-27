@@ -2970,12 +2970,21 @@ def _health_lines(result: HealthResult, *, applied: bool) -> list[str]:
             f" ({box['total_bytes'] * 100.0 / size:.1f}%)"
             if isinstance(size, int) and size > 0 else ""
         )
+        # `read_record` refuses a record whose `at` is not an epoch, but this
+        # renderer takes any HealthResult: skip the timestamp rather than raise
+        # (the same isinstance guard `check()` already uses for the symptom).
+        readback_at = result.box_usage.get("at")
+        readback = (
+            f"readback {_iso(readback_at)}"
+            if isinstance(readback_at, int) and not isinstance(readback_at, bool)
+            else "readback time not an epoch"
+        )
         lines.append(
             f"  box {box.get('id')} {box.get('name') or '(unnamed)'}:"
             f" {backup_usage.human_bytes(box['total_bytes'])} used{share};"
             f" {box.get('subaccounts')} of {box.get('subaccounts_limit')} sub-accounts;"
             f" level {backup_usage.level_for(int(box['total_bytes']))};"
-            f" readback {_iso(int(result.box_usage.get('at') or 0))}"
+            f" {readback}"
         )
     elif result.box_usage_problem is not None:
         lines.append(f"  backup usage: {result.box_usage_problem}")
