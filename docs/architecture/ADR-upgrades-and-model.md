@@ -3,9 +3,21 @@
 **Status:** Proposed, with the trigger for rows 1–5 confirmed by Savio on 24
 November 2026 (`t_ce72ed5b`): a rebuild is a prompted, clicked, windowed event,
 and §5.3–§5.4 are its flow. The inventory (§3) and the app-layer timer default
-still wait on A4's exit criterion 2. Two things are Savio's: the heartbeat's one
-new fact and the one-sentence privacy row it needs (§5.3), and the windowed
-executor that drives the Servury API (§5.4) · 17 November 2026 · Architect
+still wait on A4's exit criterion 2. Savio's 27 November 2026 rulings
+(`t_7f88e278`): the heartbeat's one new fact and its one-sentence privacy row
+are approved (the row lands as ODL-955, `t_62dd6f8a`), and the booking email is
+a notification only — no consent, no reject, no reply-to-decline; booking,
+change and cancel are in-app (`t_08885b98`). One thing is still Savio's: the
+windowed executor that drives the Servury API (§5.4) · 17 November 2026 · Architect
+**Revision 8** — 27 November 2026, §5.3 is re-cut to Savio's 27 November ruling
+(`t_7f88e278`, `t_08885b98`): the booking email is a notification, never a
+consent, reject or prompt path; every decision — book, change, cancel — is an
+in-app act; and the in-app change/cancel that does not exist yet is named as
+required work and handed to ODL-961, the one card that owns the HQ door, the
+guest verbs, the notice and the copy. The status line records the approval of the
+heartbeat row (ODL-955). No other decision changes: the flow's mechanism and
+the account-site residual are untouched, and the fact gains only the optional
+`action` key the in-app change/cancel needs (§5.3).
 **Revision 7** — 25 November 2026, §5's rebuild half is re-cut to the flow Savio
 approved on 24 November (`t_ce72ed5b`): a rebuild is prompted in the app, the
 click books the tenant's next window, the machine takes a T-0 snapshot and HQ
@@ -85,11 +97,12 @@ talk to.
 (2) the model route in §4 — a signed document, no proxy in front of NEAR;
 (3) the trigger in §5 — **confirmed 24 November 2026** for rows 1–5: the machine
 updates itself, HQ never connects, and a rebuild is a prompted, clicked, windowed
-event (§5.3–§5.4). Two new asks: (4) the heartbeat's one new fact,
-`facts.upgrade`, and the one-sentence privacy row it needs (§5.3), because the
-approved row at `docs/CLAIMS.md` §1 *Data handling* enumerates what a heartbeat
-carries; (5) the windowed executor that drives the Servury API and the panel
-(§5.4), which the authority matrix already puts behind him.
+event (§5.3–§5.4); (4) the heartbeat's one new fact, `facts.upgrade`, and the
+one-sentence privacy row it needs (§5.3) — **approved 27 November 2026**
+(`t_7f88e278`; the row lands as ODL-955, `t_62dd6f8a`), with the email ruled a
+notification only. One ask remains: (5) the windowed executor that drives the
+Servury API and the panel (§5.4), which the authority matrix already puts behind
+him.
 **Related:** `docs/MVP-V0.1.md` §3–§7, §12 (D7, D14, D19, D25, D27);
 `docs/CLAIMS.md` §1 *Inference*, *Money and place* and *Data handling*, §3 gaps
 1–3, §4.6, §5 (the machine-dies answer); `docs/runbooks/update.md` §2, §8, §10;
@@ -653,7 +666,7 @@ between.**
 | App layer (rows 6–9) | the machine — `odile-update.timer`, installed **on** by default in alpha.0; the user may also run it | daily, 04:00 ± 1 h — `OnCalendar=*-*-* 04:00:00`, `RandomizedDelaySec=1h`, `Persistent=true`, after the 03:00 backup; and after boot | A journal line and a record; the app release readable at `/manifest` and recorded in `/etc/odile/release.json` (the `/verify` row checks the **boot** release); a failed post-check rolls back by itself and the release is still the old one |
 | Installer placements (row 15) | the machine — the same timer, one installer re-run after the bytes are written | only when the release's installer artifact changed (a handful of times a year), immediately after the write | nothing visible: the unit or Caddy block moves, `odile-agent` restarts only if a file the gateway reads moved, and the release's journal line says the re-run's exit code |
 | Default model (row 10) | the machine — `odile-update model apply --yes` on its own timer, which is a no-op when current; the user may also run it | on boot, every 15 min ± 3 min, and on demand; a 404 costs one request; a held digest is not retried | The About panel's model label; the one-line `notes` in `/etc/odile/model.json`; the next turn on the new model |
-| Boot chain, OS, environment (rows 1–5) | **the user clicks Upgrade; the machine books its own window; HQ writes the disk; the user restores** | the tenant's next 03:10 at least 15 minutes after the click — or the first window after a security deadline, with no click (§5.3) | A corner notice with two buttons and an email fallback; "Upgrading your machine" on the account page while it is rebuilt; then the machine's own page — paste the recovery file, "Restoring your data…", the snapshot id and time, sign in (§5.3) |
+| Boot chain, OS, environment (rows 1–5) | **the user clicks Upgrade; the machine books its own window; HQ writes the disk; the user restores** | the tenant's next 03:10 at least 15 minutes after the click — or the first window after a security deadline, with no click (§5.3) | A corner notice with two buttons, and a booked notice with **Change** and **Cancel**; the booking email is a notification only; "Upgrading your machine" on the account page while it is rebuilt; then the machine's own page — paste the recovery file, "Restoring your data…", the snapshot id and time, sign in (§5.3) |
 
 **Why the app layer's timer is installed on by default.** V0.1's design was a
 manual default with an opt-in timer (`update.md` §8), for paying strangers with a
@@ -829,13 +842,80 @@ comes back from the repository. Nine stages (0–8), and who owns each:
 
 **The prompt.** A corner notice, not a modal: *"An upgrade is available — about
 20 minutes. [Not now] [Upgrade]"* — that line and two buttons, nothing else.
-The **email is the fallback** for a tenant who never opens the app, and it
-carries the three things the user needs: what happens (the machine is replaced and
-the data comes back), how long, and the one thing they must do afterwards — paste
-the recovery file — plus the deadline date when one exists. The chat surface may
-state the same three facts, because the agent is a surface: the notice is a fact
-the agent may repeat, not a second mechanism. A tenant that presses nothing and
-has no security deadline is never upgraded.
+Every decision is in-app: **Not now** declines here, **Upgrade** books here, and
+changing or cancelling a booked window happens on the booked notice (below). The
+**email is a notification, not a decision path**: at booking it says what was
+booked and when, and carries one link into the app; it never carries consent, a
+reply-to-decline, or a prompt that only email can answer (Savio, 27 November
+2026; D8 is email out only, so an email reply had no route into HQ at all). The
+chat surface may state the same three facts — what happens, how long, the one
+thing the user must do afterwards — and the security deadline when the release
+carries one, all read from `--status`; it books with the same verb, because the
+agent is a surface: the notice is a fact the agent may repeat, not a second
+mechanism. A tenant that presses nothing and has no security deadline is never
+upgraded.
+
+**Change and cancel — required work, not a shipped mechanism.** The
+`/upgrade/decide` contract (ODL-951) defines two actions, `upgrade` and
+`not_now`, and both are decided *before* a booking; the booked state ODL-952
+specifies reads only *"Booked for {{WINDOW}}."* and offers nothing else. So a
+human who books and then needs the window moved has no in-app way to move it,
+and the email is not one. **ODL-961 owns the whole of the missing mechanism on
+one card, and this ADR pins its contract** — it depends on ODL-951 (the
+endpoint), ODL-952 (the offer state it extends) and ODL-960 (the FAQ answer):
+the same `facts.upgrade` object gains one optional key, `action` — `book` when
+absent (ODL-950's shape and its probe stay valid), `change`, `cancel`; one
+enum, not a new datum class, so the approved privacy row still covers it.
+**A change** moves the one open row's `window` and `updated_at`, keeps the
+same `request_id` (the row is the same booking, moved), and sends no second
+email; the machine computes the next 03:10 after the booked window from its
+own timer (DST-aware), and HQ checks it is later than the booked window and no
+more than 26 hours after it — the booking horizon is not re-applied from the
+change's clock. **A cancel** closes the open row as `cancelled`, with no
+email; it names the window it cancels, and a cancel for a window the row no
+longer names is a `409` (the notice re-fetches); `cancelled` enters
+`UPGRADE_STATES` and the table's `CHECK` through the
+same transactional table rebuild `_MIGRATE_ALERT_KINDS` uses, preserving every
+id and row — a `CREATE TABLE IF NOT EXISTS` cannot widen a `CHECK`. **Any
+other `action` is a `400`** (a closed enum, playbook rule 13), and the row's
+state decides a replay: a `cancel` against a row already `cancelled` replays a
+cancelled answer, and a `change` against a row already at the target window
+replays the booking — neither re-books. **The surface**: the booked notice
+keeps one line and two buttons — `Booked for {{WINDOW}}.` with **Change** and
+**Cancel**; a change re-renders the new
+window, and a cancel says `Booking cancelled.` for three seconds and returns
+the box to the offer. That is an **amendment to ODL-952's verbatim-copy
+contract**, whose "one line and two buttons in every state … Nothing else" was
+written for the offer state; this ADR scopes it there, and ODL-961 carries the
+booked state's line and two controls into the brand script. The machine's
+`heartbeat.py upgrade --change|--cancel` posts the actions, the first-visit
+handler answers them beside `upgrade`/`not_now`, and the first-visit source
+(`FIRST_VISIT_SHA256`) and the heartbeat script (`HEARTBEAT_SHA256`) are
+re-embedded in one release. Two constraints are this ADR's: **a cancel clears
+the machine's booking only after HQ confirms the row closed** — the order is HQ
+first, so a lost cancel leaves both sides agreed on the booking, never a
+machine that skips a window while HQ writes the disk; and **both are
+`booked`-state acts** — at `writing` or later the row refuses them with a
+`409`, because the executor's state is the lock (§6), and the notice
+re-fetches. **A `deadline` booking is the one whose cancel is not final** —
+the machine's next deadline tick re-books it at the next window, because the
+deadline is the release's promise and not the user's choice; ODL-961's FAQ
+says the update is applied even if the booking is cancelled, and the cancel is
+a decline of that window, not of the update (the re-book is a new booking and
+sends its own notification). **The deploy order is HQ first**: an HQ that
+predates `action` ignores the key and reads a change as a booking, so the door
+learns the enum before any machine sends it (playbook rule 12). The email copy's
+own offer to reply — the template's *"If that window is wrong…"* sentence,
+`BRAND.md`'s
+restatements of it and the mailer's comment that names a reply as the way to
+change a booking (`odilectl/health.py:743`–`:744`) — is withdrawn by the same
+ruling; ODL-961 owns the template, the brand sheet, the comment and the test
+that pins the body (`tests/test_upgrade_booking.py`); the reply line goes and
+the **one link into the app** the notification carries is the line that
+replaces it, with the template's other lines byte-identical. Until it lands,
+those are the tree's remaining exceptions, and no page may quote them.
+Until this ships, a booking is one-way in the app, and no public sentence may
+say otherwise.
 
 **The offer, and where the machine learns it.** Not from a new HQ field. The
 app layer already fetches the signed release document, and `load_release` refuses
@@ -849,8 +929,8 @@ a rebuild **for you**" without knowing the machine's kernel — it holds the
 release's target kernel, not the guest's — and it would be a second statement of
 what a release needs, next to the signed one. **The notice is blank on a tenant
 until §8 item 1 lands**, because the guest half of the updater is not installed
-(§2.2); in that interval the email is the only prompt, and this ADR does not
-claim otherwise.
+(§2.2); in that interval no prompt exists, so nothing books and no booking email
+is sent — the email never becomes the prompt in the notice's place.
 
 **Consent — the fact, written down.** The click posts one signed heartbeat on
 the route the machine already uses. No new route, no new key, no new credential:
@@ -888,13 +968,18 @@ X-Odile-Signature: <base64 Ed25519 over the exact body>
 - **`release`** — `RELEASE_ID_RE`; at booking time it must be the release HQ
   intends for this tenant. A `400` on shape; the answer carries `stale: true` on
   policy, and the notice refreshes.
-- **`window`** — `YYYY-MM-DDTHH:MM:SSZ`, ≥ 15 minutes and ≤ 26 hours after
-  receipt; a `400`, and the guest recomputes the next window.
+- **`window`** — `YYYY-MM-DDTHH:MM:SSZ`. For `book` it is ≥ 15 minutes and
+  ≤ 26 hours after receipt; a `change` names the next window (§5.3: later than
+  the booked one, ≤ 26 hours after it); a `cancel` names the window it cancels.
+  A `400` on shape, and the guest recomputes.
 - **`origin`** — `click` or `deadline`. **Any other value is refused**, because
   its presence selects a write: a `400`, because an action enum is closed even
   when the key around it is open (playbook rule 13).
 - **`request_id`** — 32 hex, minted once per decision and stable across retries;
   the booking's idempotency key, so a duplicate is the same booking.
+- **`action`** — absent means `book`; `change` and `cancel` are §5.3's two
+  in-app acts. **Any other value is refused**: it selects a write, so the enum
+  is closed even when the key around it is open (playbook rule 13).
 - **no `upgrade` key** — an older machine, or one that never decided; no
   booking, and not an error.
 
@@ -933,9 +1018,12 @@ the click on the machine leaves the booking in the machine's own state file. **T
 residual, stated:** the consenting party is the *machine*, not the human. The user
 and the agent share one uid, so a prompt-injected agent can press the same
 button. What bounds that is not the identity of the clicker but the window, the
-T-0 snapshot and the restore — and the email sent at booking is the human's chance
-to object before 03:10. If the product wants a human-presence proof, the account
-site is the place to get one, and that is a new decision.
+T-0 snapshot, the restore and — once ODL-961 lands it (§5.3) — the human's own
+**Cancel** on the booked notice, which ends an unintended booking before
+the window begins. The **booking email is not the objection path**: it is a
+notification, and a reply to it changes nothing (Savio, 27 November 2026). If the
+product wants a human-presence proof, the account site is the place to get one,
+and that is a new decision.
 
 **The window.** The machine computes it; HQ validates it. The window is the
 machine's own 03:10 — ten minutes after its backup timer
@@ -996,8 +1084,12 @@ day; the flow's own sentence is "minutes", and I6 is the property.
 old machine goes down at the panel write and the new one boots empty, so a page
 on the machine dies in the middle of the flow. The account the user already has
 serves it — a block on `/account/<slug>` (`app.py:1969`), behind the session
-cookie (`:2522`) — and the email carries the same stages for a user who is not
-signed in. **Stages, not a percentage**, because the variable is the panel write:
+cookie (`:2522`) — and the booking email may repeat the same stages as a
+notification for a user who is not signed in, with one link back to the page; it
+carries no control. The block is shown for an **open** row and not for a
+`cancelled` one (ODL-953's row filter, §5.3's change/cancel): a cancel removes
+the booking, so the page must not keep saying `Queued`. **Stages, not a
+percentage**, because the variable is the panel write:
 
 ```
 queued → backed up ✓ → upgrading your machine → booting → waiting for your file
@@ -1134,8 +1226,9 @@ window has room.
 on the record: the latest `facts.backup` has a non-empty `snapshot`, `status: ok`,
 and an `at` inside `[window, window + 20 min]`. No T-0, no write: the machine
 stays live (the quiesce restarted the agent), the booking moves to the next
-window, and after three windows the row is `failed` and the user is emailed. This
-is the data-loss control: **the write follows the snapshot, never the clock.**
+window, and after three windows the row is `failed` and the user is notified by
+email. This is the data-loss control: **the write follows the snapshot, never
+the clock.**
 
 **What the executor does, in order — each step idempotent.**
 
@@ -1210,14 +1303,15 @@ stages rather than a percentage for that reason.
 | The signing key rotates | every document fails to verify | row 12: today a rebuild. A signed rotation document is a later ADR |
 | The applied config is valid YAML but the gateway will not start | the workspace is down | post-check `systemctl is-active`, then restore the snapshot and restart (exit 6) |
 | A click lands after the window it computed (§5.3) | nothing is written; the notice says the next date | the window is `now + 15 min` at the earliest; a booking whose window has passed is advanced to the next one, never executed late |
-| The consent is posted twice, or the retry re-signs | one booking, one window | `request_id` is the booking's idempotency key and `UNIQUE (slug, release)` holds one open row; the second answer repeats the first booking |
-| The T-0 beat never arrives (the backup failed, the machine was off) | the machine keeps running; nothing is wiped | §5.4's gate: the write follows the snapshot, never the clock. The booking moves to the next window; after three the row is `failed` and the user is emailed |
+| The consent is posted twice, or the retry re-signs | one booking, one window | `request_id` is the booking's idempotency key (`UNIQUE (slug, request_id)`) and the partial index `upgrade_windows_open` holds one open row per slug; the second answer repeats the first booking |
+| A **Change** or **Cancel** lands as the window opens | the machine has quiesced and HQ has moved the row to `writing`; closing or moving the row would leave the executor mid-write | both are `booked`-state acts (§5.3): at `writing` the row refuses them and the notice says the window is running — the executor's state is the lock |
+| The T-0 beat never arrives (the backup failed, the machine was off) | the machine keeps running; nothing is wiped | §5.4's gate: the write follows the snapshot, never the clock. The booking moves to the next window; after three the row is `failed` and the user is notified by email |
 | The panel write fails halfway (reinstall ok, boot or disk refused) | stock Debian on the tenant's address, no data loss — the home is in the repository | `--recycle` orders the three calls and its log line names the pair it is about to lose; a retry re-runs boot image and disk (the reinstall is idempotent); `booting` never flips, so the page shows the truth |
 | The rebuilt machine's first heartbeat is `409` | no post-restore beat, so the page never says "restored"; the freshness watchdog opens a false alert three days later | §5.4 step 2 clears `heartbeat_keys` for the slug at the `writing` transition; `record()` then registers the new public key on first sight (`odilectl/health.py:1171`–`:1177`) |
 | Two windows fall due at once, and the allow-list is one file | at best one run is refused; at worst both runs carry the **wrong** tenant's id and one disk is erased | §5.4: one window at a time under the host lock, `--server` from the booking row and never read back from the allow-list, the allow-list written and used inside the lock |
 | The restore puts back a **retired** password | the old password works and the current one does not, silently | the first-visit service re-writes the seed's `sign_in_hash` after the restore and before it offers the sign-in (§5.3); `/etc/odile` is not restored, so the recovery-code hash survives |
 | The user never pastes | the machine waits at the first-visit page with an empty home; the data is safe in the repository | the page re-offers the paste, the 36-hour freshness watchdog reports the silence, and no second write happens — the booking is `done` only after the post-restore beat |
-| A prompt-injected agent presses Upgrade | a rebuild the human did not press | the consenting party is the machine (§5.3, stated); the window, the T-0 and the restore bound what it can cost, and the booking email is the human's record. This is the residual of choosing the click on the machine over the account site |
+| A prompt-injected agent presses Upgrade | a rebuild the human did not press | the consenting party is the machine (§5.3, stated); the window, the T-0, the restore and, once ODL-961 lands it, the in-app **Cancel** bound what it can cost; the booking email is the human's **record**, not their consent. This is the residual of choosing the click on the machine over the account site |
 
 Blast radius: one tenant. The document is per-tenant, the `slug` check is
 server-agnostic, the model applier touches three lines of one file, one record
@@ -1305,8 +1399,12 @@ state files (`upgrade/state.json`, `upgrade/snooze.json`), one guest record
 (`upgrade.security_deadline`), one HQ table (`upgrade_windows`) with a partial
 unique index for the one open booking per machine, one HQ booker in the
 heartbeat path, one HQ executor (`odilectl upgrade window`) and its timer, one
-block on `/account/<slug>`, and one re-cut of ODL-937's restore step. Nothing
-on the machine is a listener, and nothing new is reachable from the internet.
+optional `action` key on the same fact (`book` default, `change`, `cancel`), one
+`cancelled` state and the table rebuild that adds it, two actions on the
+machine's `/upgrade/decide` handler and the two buttons that send them (§5.3,
+ODL-961), one block on `/account/<slug>`, and one re-cut of ODL-937's
+restore step. Nothing on the machine is a listener, and nothing new is reachable
+from the internet.
 
 **Follow-on cards this ADR names but does not do:**
 
@@ -1354,9 +1452,24 @@ on the machine is a listener, and nothing new is reachable from the internet.
    (§5.3). The card is `todo`; its DoD names `restore latest`, so
    the change lands there, not in a new card.
 10. **The heartbeat privacy sentence** — the approved row enumerates what a
-    heartbeat carries, and `facts.upgrade` is one more. The Product lead edits
-    `docs/CLAIMS.md` §1 *Data handling* and Savio approves it (§5.3); until
-    then the fact ships only on the demo tenant.
+    heartbeat carries, and `facts.upgrade` is one more. Savio approved the
+    sentence on 27 November 2026 (`t_7f88e278`); it lands as ODL-955
+    (`t_62dd6f8a`), which edits `docs/CLAIMS.md` §1 *Data handling* and
+    `web/privacy.html`. Until it lands the fact ships only on the demo tenant.
+11. **In-app change and cancel of a booked window** — **ODL-961**, one card,
+    owns the whole: the HQ booker's optional `action` key (`book` default,
+    `change`, `cancel`), the `cancelled` state and the table rebuild that
+    widens the `CHECK`s, the machine's `heartbeat.py upgrade --change|--cancel`
+    and the first-visit handler's two further actions, the re-embeds
+    (`FIRST_VISIT_SHA256`, `HEARTBEAT_SHA256`), the booked notice's **Change**
+    and **Cancel**, the amendment to ODL-952's copy contract that those two
+    controls require, the template/BRAND copy and the FAQ/CLAIMS answer
+    (Savio's approval on that card before the page ships; §5.3), and the
+    account page's row filter that drops a `cancelled` row (ODL-953). ODL-952
+    ships the offer state; ODL-961 extends it. The HQ door
+    lands before any machine sends the enum. Until it lands a booking is
+    one-way in the app, and the booking email is a notification that cannot
+    move it.
 
 **What does not change.** No access-model change: Odile still cannot log in, and
 the new document is a file, not a door. No new provider and no new network path:
@@ -1366,7 +1479,8 @@ progress page is a block on a page that already exists. No standing credential o
 a tenant: the signing key and the heartbeat key are already there, and the
 rebuilt machine gets the **tenant's** key, not an operator's (I5). The *Inference*
 row stays true verbatim, and no public sentence becomes stronger — one becomes
-more complete (item 10), which is why it is an ask rather than a change. The
+more complete (item 10, approved on 27 November and landing as ODL-955), and
+ODL-961's FAQ answer is a new deck row, not a stronger sentence. The
 model was already Odile's choice at install (D7; MVP §5's "one model, chosen and
 pinned by us"), so a movable default is the same power at a later time — not a
 fourth power in gap 3's list, though the deck may want to say it in one sentence
@@ -1383,6 +1497,15 @@ Putting a tenant back on any model is one document, any time.
 
 **The trigger default is two-way** — a unit that is enabled or not, one
 installer line, one skill sentence and, once §8 item 5 lands, one deck row.
+
+**The notification-only email is two-way, and it removes a promise that had no
+mechanism.** D8 is email out only, so the reply-to-decline line had no inbound
+route to HQ; the ruling deletes that line and puts change and cancel where the
+booking is made. Re-cutting it back would need an inbound mail path — a new
+network path and a standing mailbox — which is the expensive direction; this ADR
+chooses the cheap one. The in-app control is additive: two actions on an
+endpoint and two buttons on a notice; deleting them leaves the booking flow as
+ODL-950 shipped it, and a row already cancelled is terminal.
 
 **The installer re-run is two-way too.** It is a step in the app apply, not a new
 daemon: deleting the step leaves the installer bytes being written exactly as
