@@ -7,6 +7,13 @@ stopped heartbeat is `down`.  The host key is a line of the alert's symptom
 (does port 22 answer, and with which key), never a classification, and no owner
 email is sent.
 
+A tenant that has never sent a signed heartbeat has no age to compare.  It is
+polled from `first_visit` on and is `down` when neither public surface answers
+(`/health` and port 22) — the machine that dies between provision and first
+visit is the case this closes.  One answering surface keeps it `ok`: the beat
+is merely not written yet.  The provider's `powered_on` is `status`'s fact, not
+the poll's; the provider called the drill's powered-off box `active`.
+
 Three pieces live here so one test can hold the whole chain:
 
 * `HeartbeatStore` — the signed beats, the public key registered on the first
@@ -2383,6 +2390,15 @@ def _host_key_symptom(observation: HostKeyObservation | None) -> str:
     return f"port 22 answers host key {shown}"
 
 
+def _http_symptom(observation: HttpObservation | None) -> str:
+    """The `/health` half of a `down` symptom (the probe may be disabled)."""
+    if observation is None:
+        return "/health was not probed"
+    if observation.status is None:
+        return f"/health did not answer ({observation.detail or 'no response'})"
+    return f"/health answered {observation.status}"
+
+
 def _duration(seconds: int | None) -> str:
     if seconds is None:
         return "unknown"
@@ -2538,6 +2554,18 @@ def _needs_delivery(record: AlertRecord) -> bool:
     )
 
 
+# The states the poll covers. `first_visit` is a provisioned machine whose
+# owner has not finished the first visit yet: it is serving, so a machine that
+# dies there must not be silent. `ready` and the legacy `waiting_for_owner`
+# follow. `first_boot` is excluded — it is still booting and has no reason to
+# answer yet — and `invited`/`claimed`/`provisioning` have no machine address
+# to poll. `suspended` is an intended stop, not a fault. A tenant that never
+# sent a signed heartbeat is `down` only when *neither* public surface answers
+# (`/health` and port 22); one answer is a live machine, so the heartbeat is
+# merely not written yet.
+POLLED_STATES = ("first_visit", "ready", "waiting_for_owner")
+
+
 def check(
     store: StateStore,
     heartbeats: HeartbeatStore,
@@ -2559,12 +2587,17 @@ def check(
 
     A heartbeat age of `stop_seconds` or more is `down`: under the sealed boot
     the machine comes back by itself, so there is no owner-waiting state to
-    classify.  Port 22's answer is a symptom line, and the legacy
-    `waiting_for_owner` ledger rows are resolved by this poll and never raised.
-    A missed 07:00 brief is folded into the `down` symptom while the heartbeat
-    is stopped, and is its own `brief_missing` alert while heartbeats are live.
-    The alert ledger is idempotent: an open condition is one row and one
-    delivery per channel, not one per five-minute poll.
+    classify.  A tenant that has never sent a signed heartbeat is `down` when
+    neither `/health` nor port 22 answers (see `POLLED_STATES`); the provider's
+    `powered_on` is not consulted here — it is `status`'s fact, and the poll
+    prefers the machine's own surfaces so it keeps working when the provider's
+    API says `active` about a powered-off box.  Port 22's answer is a symptom
+    line, and the legacy `waiting_for_owner` ledger rows are resolved by this
+    poll and never raised.  A missed 07:00 brief is folded into the `down`
+    symptom while the heartbeat is stopped, and is its own `brief_missing`
+    alert while heartbeats are live.  The alert ledger is idempotent: an open
+    condition is one row and one delivery per channel, not one per five-minute
+    poll.
 
     `backup_usage_path` is the box readback ODL-934 writes; `None` means this
     poll was not handed one (the unit tests), `odilectl health` always passes
@@ -2578,7 +2611,7 @@ def check(
     resolutions: list[tuple[str, str]] = []
 
     for tenant in store.tenants():
-        if tenant.state not in ("ready", "waiting_for_owner"):
+        if tenant.state not in POLLED_STATES:
             continue
         # The state machine replaces `detail` on each move, so the alert ledger
         # is the durable memory of who this tenant is: the last non-empty
@@ -2610,6 +2643,7 @@ def check(
             and (not isinstance(last_brief, int) or last_brief < due)
         )
 
+        http = http_probe(tenant.slug) if http_probe is not None else None
         observation: HostKeyObservation | None = None
         classification = "ok"
         if age is not None and age >= stop_seconds:
@@ -2619,7 +2653,17 @@ def check(
             if tenant.ipv4:
                 observation = host_key_probe(tenant.ipv4)
             classification = "down"
-        http = http_probe(tenant.slug) if http_probe is not None else None
+        elif age is None:
+            # Never sent a signed heartbeat: there is no age to compare, so
+            # the machine's own surfaces decide.  `/health` not answering is
+            # confirmed against port 22 (with `--no-http` the SSH port is the
+            # only surface); `down` needs both to answer nothing, because one
+            # answer means the machine is alive and the beat is merely absent.
+            if http is None or http.status is None:
+                if tenant.ipv4:
+                    observation = host_key_probe(tenant.ipv4)
+                if observation is not None and not observation.reachable:
+                    classification = "down"
 
         kinds: list[str] = []
         symptom: str
@@ -2632,13 +2676,25 @@ def check(
             cause = cause.strip()
 
         if classification == "down":
-            symptom = "; ".join(
-                [
-                    f"heartbeat stopped {_duration(age)} ago",
-                    _host_key_symptom(observation),
-                    f"brief missed: {'yes' if brief_missed else 'no'}",
-                ]
-            )
+            if age is None:
+                # No beat to age: name the two surfaces that answered nothing,
+                # so the operator sees why a never-beating machine is down.
+                symptom = "; ".join(
+                    [
+                        "no signed heartbeat has ever arrived",
+                        _http_symptom(http),
+                        _host_key_symptom(observation),
+                        f"brief missed: {'yes' if brief_missed else 'no'}",
+                    ]
+                )
+            else:
+                symptom = "; ".join(
+                    [
+                        f"heartbeat stopped {_duration(age)} ago",
+                        _host_key_symptom(observation),
+                        f"brief missed: {'yes' if brief_missed else 'no'}",
+                    ]
+                )
             planned.append(
                 Alert(
                     slug=tenant.slug,
@@ -2729,9 +2785,20 @@ def check(
         last_backup = facts.get("last_backup_at")
         if not isinstance(last_backup, int) or isinstance(last_backup, bool):
             last_backup = tenant.detail.get("last_backup_at")
-            if not isinstance(last_backup, int) or isinstance(last_backup, bool):
-                last_backup = activated
-        backup_age = moment - last_backup if last_backup else None
+        if (
+            not isinstance(last_backup, int) or isinstance(last_backup, bool)
+        ) and beat is not None:
+            # The machine has checked in but the fact is absent: judge from
+            # activation.  A tenant that has never sent a signed beat has no
+            # backup history at all — its provisioning time is not one — so a
+            # machine that dies before its first visit raises its one `down`
+            # row, not a guessed `backup` beside it.
+            last_backup = activated
+        backup_age = (
+            moment - last_backup
+            if isinstance(last_backup, int) and not isinstance(last_backup, bool)
+            else None
+        )
         if backup_age is not None and backup_age > backup_seconds:
             planned.append(
                 Alert(
@@ -2956,7 +3023,11 @@ def _health_lines(result: HealthResult, *, applied: bool) -> list[str]:
     )
     lines = [head if applied else head + " (dry run; pass --apply to write and send)"]
     for tenant in result.tenants:
-        age = _duration(tenant.heartbeat_age_seconds)
+        beat = (
+            "no signed heartbeat yet"
+            if tenant.last_heartbeat is None
+            else f"heartbeat {_duration(tenant.heartbeat_age_seconds)} ago"
+        )
         release = tenant.release
         release_line = (
             f"release {release['intended'] or 'not recorded'}"
@@ -2964,7 +3035,7 @@ def _health_lines(result: HealthResult, *, applied: bool) -> list[str]:
         )
         lines.append(
             f"  {tenant.slug}: {tenant.state} -> {tenant.classification};"
-            f" heartbeat {age} ago; {release_line}; {', '.join(tenant.alerts) or 'no alert'}"
+            f" {beat}; {release_line}; {', '.join(tenant.alerts) or 'no alert'}"
         )
     for alert in result.alerts:
         mark = "open" if alert.open else "resolved"

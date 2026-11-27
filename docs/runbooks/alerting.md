@@ -35,6 +35,8 @@ HQ     scripts/heartbeat.py serve        heartbeat_keys + heartbeats
          ├─ GET https://<slug>.odile.fyi/health
          ├─ port 22: read the host key (no session, no login)
          ├─ heartbeat age ≥ 600 s → down (the port-22 answer is the symptom)
+         ├─ no signed heartbeat ever, from `first_visit` on: down only when
+         │  `/health` *and* port 22 both answer nothing (one answer = alive)
          └─ Matrix + email + outbox
 ```
 
@@ -48,7 +50,7 @@ replayed.
 
 | Alert | Fires when | Symptom the alert carries | First command |
 |---|---|---|---|
-| `down` | heartbeat age ≥ 600 s | "heartbeat stopped 10m 0s ago; port 22 answers host key SHA256:… / port 22 did not answer (…); brief missed: yes\|no" | `python3 -m odilectl status <slug> --json` |
+| `down` | heartbeat age ≥ 600 s; or no signed heartbeat ever and neither `/health` nor port 22 answers (polled from `first_visit` on) | "heartbeat stopped 10m 0s ago; port 22 answers host key SHA256:… / port 22 did not answer (…); brief missed: yes\|no" — or, for a never-beating machine, "no signed heartbeat has ever arrived; /health did not answer (…); port 22 did not answer (…); brief missed: yes\|no" | `python3 -m odilectl status <slug> --json` |
 | `brief_missing` | the 07:00 brief is overdue while heartbeats are live | "the 07:00 brief did not arrive; heartbeats are live" | `ssh -i ~/.ssh/odile … 'hermes cron list'` |
 | `disk` | latest heartbeat reports disk > 80% | "disk 91.0% used (threshold 80%)" | `ssh -i ~/.ssh/odile … 'df -h /'` |
 | `spend` | a heartbeat reports `facts.spend` above 80% of the `cap_usd` it names | "spend $95.00 of $100.00 cap (95.0%)" | `ssh -i ~/.ssh/odile … 'journalctl -u odile-agent -n 50 --no-pager'` |
@@ -78,9 +80,13 @@ backup do not alert. The heartbeat threshold is inclusive: a heartbeat age of
 exactly 600 s raises `down`, because "within 10 minutes" means 600 s is already
 ten minutes.
 
-The poll classifies on heartbeat age alone; port 22 is a symptom. A missed 07:00
-brief is folded into the `down` symptom when the heartbeat is stopped, and it is
-its own `brief_missing` alert only while heartbeats are live.
+The poll classifies on heartbeat age; port 22 is a symptom. The exception is a
+tenant that has never sent a signed heartbeat (from `first_visit` on): with no
+age to compare, the poll is `down` only when `/health` *and* port 22 both answer
+nothing — one answer means the machine is alive and the beat is merely not
+written yet. A missed 07:00 brief is folded into the `down` symptom when the
+heartbeat is stopped, and it is its own `brief_missing` alert only while
+heartbeats are live.
 
 ## 3. The unlock email is retired
 
@@ -378,6 +384,9 @@ The hermetic test module reproduces the card's evidence without a tenant machine
   raises nothing;
 * port 22's answer — the recorded key, a different key, or no answer — is a
   symptom of `down`, never a second classification;
+* a `first_visit` tenant that has never sent a beat is `down` only when
+  `/health` and port 22 both answer nothing (one row across polls, resolved
+  when either answers again), and one answering surface keeps it `ok`;
 * a missed 07:00 brief folded into `down` when the heartbeat is stopped, and its
   own alert while live;
 * disk, spend and backup thresholds, and the exactly-at-threshold no-alert;
@@ -415,8 +424,9 @@ without a stopped VM.
 
 Alerts clear on their own when the condition is gone; the next poll sets
 `resolved_at`. `down` resolves when a heartbeat newer than the stopping beat
-arrives; a legacy open waiting_for_owner row is resolved by the same poll and
-never re-raised.
+arrives, or — for a tenant that never sent one — when either public surface
+answers again; a legacy open waiting_for_owner row is resolved by the same poll
+and never re-raised.
 
 ## 9. Limits
 
@@ -431,8 +441,9 @@ never re-raised.
    presents", not "this machine is honest"; since ODL-467 it is a symptom line,
    not the classification.
 3. **`/health` is an HTTP liveness check**, not attestation. It is one input to
-   the alert; the heartbeat age decides the classification and the host key is
-   part of the symptom.
+   the alert: the heartbeat age decides the classification, and for a tenant
+   that never sent one the two surfaces decide; the host key is part of the
+   symptom.
 4. **The live stopped-VM check is ODL-332's evidence.** This card's stopped
    tenant is a fixture; the port-22 probe itself is exercised live against
    Odile's own SSH host (`<server:hq>`) and against a fake SSH server.
