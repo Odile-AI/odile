@@ -1331,6 +1331,39 @@ class LogViewTests(AdminBase):
                     "<a ", "method=", "action=", "onclick", "onchange"):
             self.assertNotIn(tag, section, "the log view carries %s" % tag)
 
+    def test_the_time_is_the_sheets_time_first_composite(self):
+        """BRAND.md §Voice: the sheet's only date-and-time composite leads
+        with the time (`03:10 UTC on 15 December 2026`); the date-first comma
+        form was this card's own and no other surface carries it."""
+        self.assertEqual(app.admin_log_time("2026-11-27T20:48:48Z"),
+                         "20:48:48 UTC on 27 November 2026")
+        self.assertEqual(app.admin_log_time("2026-12-05T03:10:00Z"),
+                         "03:10:00 UTC on 5 December 2026")
+
+    def test_the_time_column_is_sized_by_the_time_not_the_addresses(self):
+        """A legal address must not squeeze the timestamp mid-token.
+
+        Brand gate: with the auto layout two 254-character addresses claimed
+        the row, the Time column fell to 72 px and `overflow-wrap:anywhere`
+        broke `20:48:48` inside the token. The table is fixed with a declared
+        width for each column, and only the address cells break inside a
+        token (BRAND.md §Typography, the numbers bullet).
+        """
+        page = app.render_admin(allowed=True)
+        found = re.search(r"<style>(.*?)</style>", page, re.S)
+        assert found is not None, "the console page carries no <style>"
+        sheet = re.sub(r"/\*.*?\*/", "", found.group(1), flags=re.S)
+        self.assertRegex(sheet, r"table\.log\{[^}]*table-layout:fixed")
+        widths = [float(value) for value in re.findall(
+            r"table\.log th:nth-child\(\d\)\{width:([\d.]+)%\}", sheet)]
+        self.assertEqual(len(widths), 4, "every log column needs its width")
+        self.assertAlmostEqual(sum(widths), 100.0)
+        self.assertGreaterEqual(widths[0], 20.0,
+                                "the Time column is too narrow for the time")
+        self.assertRegex(sheet,
+                         r"table\.log td:first-child\{overflow-wrap:normal\}")
+        self.assertRegex(sheet, r"table\.log td\{[^}]*overflow-wrap:anywhere")
+
 
 class LogLimitTests(AdminBase):
     """Fifty lines, newest first, and nothing older."""
@@ -1357,7 +1390,7 @@ class LogLimitTests(AdminBase):
         self.assertNotIn("actor01@example.com", section)
         self.assertLess(section.index("actor51@example.com"),
                         section.index("actor02@example.com"))
-        self.assertIn("27 November 2026, 18:51:00 UTC", section)
+        self.assertIn("18:51:00 UTC on 27 November 2026", section)
         self.assertIn("gone51@example.com", section)
         self.assertNotIn("gone01@example.com", section)
 

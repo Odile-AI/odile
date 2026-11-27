@@ -1057,16 +1057,17 @@ def brand_date(stamp: str) -> str:
 def admin_log_time(stamp: str) -> str:
     """An ISO-8601 instant as the console's operator time, in UTC.
 
-    BRAND.md §Dates and times: an operator time carries the zone and is UTC
-    (`09:41 UTC`). The log keeps the second because two actions can share a
-    minute and the line is evidence.
+    BRAND.md §Voice, dates and times: an operator time carries the zone and
+    is UTC (`09:41 UTC`), and the sheet's only date-and-time composite is
+    time-first — `03:10 UTC on 15 December 2026`. The log keeps the second
+    because two actions can share a minute and the line is evidence.
     """
     try:
         at = datetime.strptime(stamp or "", "%Y-%m-%dT%H:%M:%SZ")
     except ValueError:
         return stamp or ""
-    return "%d %s %d, %s UTC" % (at.day, MONTHS[at.month - 1], at.year,
-                                 at.strftime("%H:%M:%S"))
+    return "%s UTC on %d %s %d" % (at.strftime("%H:%M:%S"), at.day,
+                                   MONTHS[at.month - 1], at.year)
 
 
 def pinned_measurement() -> str:
