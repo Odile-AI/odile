@@ -173,6 +173,33 @@ class StoreTest(unittest.TestCase):
             self.assertNotIn("default ff1f2ef7984e", result.stdout)
             self.assertIn("2 jobs, 1 retired phrases", result.stdout)
 
+    def test_the_live_layout_labels_the_default_store_default(self) -> None:
+        """A store under `~/.hermes` is the default profile, not a name.
+
+        The live store is `/root/.hermes/cron/jobs.json`, whose owner directory
+        is `.hermes`; a fixture rooted anywhere else would label it by the temp
+        directory's name and never exercise the branch the live scan prints.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            store = FixtureStore(Path(tmp) / ".hermes")
+            default = store.default(
+                [
+                    job(
+                        "ff1f2ef7984e",
+                        "Odile weekly plan",
+                        "Commit only `docs/backlog.yaml` as `plan: pulse <date>`.",
+                    )
+                ]
+            )
+            profile = store.profile(
+                "growth", [job("c0ffee", "Odile growth pulse", "No commit.")]
+            )
+            result = run_lint(default, profile)
+            self.assertEqual(result.returncode, 1, result.stderr)
+            self.assertIn("default ff1f2ef7984e Odile weekly plan", result.stdout)
+            self.assertIn("2 jobs, 1 retired phrases", result.stdout)
+            self.assertEqual(prompt_lint.profile_name(profile), "growth")
+
     def test_missing_store_is_a_skip_naming_the_path(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             missing = Path(tmp) / "profiles" / "builder" / "cron" / "jobs.json"
