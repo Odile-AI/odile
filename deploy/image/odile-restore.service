@@ -1,0 +1,33 @@
+# Odile restore — one snapshot over the rebuilt home (ODL-937, ADR-backup §7.2),
+# installed by install-stack.sh into the measured image. The release installer
+# renders the same unit from its own template; this is the image's copy, and
+# tests/test_sealed_image.py keeps the two in step.
+#
+# The first-visit page writes /etc/odile/recovery.txt and starts this oneshot.
+# It stops the backup timer before the first write (so a 02:00-06:00 BX11 run
+# cannot snapshot a half-restored home), stops the agent, restores the seed's
+# snapshot with `backup.py restore <id> --target / --include <home>`, writes
+# the seed's sign-in verifier over the restored .env, starts the agent, takes
+# one fresh snapshot and starts the timer again. /etc/odile is never restored.
+[Unit]
+Description=Odile restore — one snapshot over the rebuilt home
+Documentation=file:///usr/local/lib/odile/first_visit.py
+After=network-online.target
+Wants=network-online.target
+# ADR-backup §7.4: a rebuilt machine has no recovery file until the user
+# pastes it. This unit is admitted only after the paste wrote it.
+ConditionPathExists=/etc/odile/recovery.txt
+
+[Service]
+Type=oneshot
+User=root
+ExecStart=/usr/bin/python3 /usr/local/lib/odile/first_visit.py --restore --state /etc/odile/first-visit.json --env-file __TENANT_HOME__/.hermes/.env --recovery-file /etc/odile/recovery.txt --home __TENANT_HOME__ --repo-file /etc/odile/backup-repo.txt --backup /usr/local/lib/odile/backup.py --key /etc/odile/backup-ssh/id_ed25519 --known-hosts /etc/odile/backup-ssh/known_hosts --status-file /var/lib/odile/backup.json --agent-unit __UNIT__ --timer-unit odile-backup-tenant.timer
+Environment=HOME=/root
+# The measured repository is 1.017 GB; a transatlantic restore is minutes.
+TimeoutStartSec=3600
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+# The home is the target; the state and the backup record are written beside it.
+ReadWritePaths=__TENANT_HOME__ /etc/odile /var/lib/odile

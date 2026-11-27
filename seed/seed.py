@@ -46,17 +46,6 @@ waiting raw key to the token they mint, refuse `409 key_left_hq` when the raw
 key has already left HQ, and a seed with neither key is refused `503
 no_inference_key` without spending the token.
 
-The one exception is a *rebuild* (ODL-215 follow-up): the tenant's old restic
-repository password has to reach the new machine, or `backup.py init` meets the
-existing repository with a new key and re-initialises. HQ still holds no
-readable copy: `odilectl provision --backup-password-file` seals the password
-under the token it just minted (HMAC-SHA256 keystream + tag, see
-`seal_backup_password`) and writes the ciphertext to `/var/lib/odile/seed-rebuilds.json`
-(`{"<slug>": {kdf, sealed, tag, token_hash}}`, 0600, owned by the service
-user). The token exists only in the measured command line and in the guest; the
-service stores its SHA-256. The seed carries `rebuild: {kdf, sealed, tag}` and
-`odile-firstboot` opens it with the token from the same command line.
-
     ODILE_DB=/tmp/waitlist.db \
     ODILE_SEED_CONFIG=/tmp/seed-config.json \
     ODILE_SEED_SIGNING_KEY=/root/.odile/seed-signing.pem \
@@ -84,14 +73,12 @@ Environment:
     ODILE_SEED_SIGNING_KEY      the seed's Ed25519 private key, mode 0600
     ODILE_SEED_CERT             the release key's signature over its public half
     ODILE_SEED_RELEASE_PUBKEY   the release public key (default: the repo's, then .prev)
-    ODILE_SEED_REBUILDS         sealed rebuild entries (default /var/lib/odile/seed-rebuilds.json)
     ODILE_SEED_BACKUP_PAIRS     each tenant's Hetzner sub-account pair
                                 (default /var/lib/odile/seed-backup-pairs.json)
 """
 import argparse
 import base64
 import hashlib
-import hmac
 import json
 import os
 import re
@@ -107,25 +94,19 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 DEFAULT_DB = "/var/lib/odile/waitlist.db"
 DEFAULT_CONFIG = "/root/.odile/seed-config.json"
-# The sealed rebuild entries: a small file beside the ledger, owned by the
-# service user, holding ciphertext only (see `seal_backup_password`). It is
-# separate from the config because systemd hands the service a *copy* of the
-# config at start (LoadCredential), so a config rewrite would be invisible
-# until a restart; this file is read per exchange.
-DEFAULT_REBUILDS = "/var/lib/odile/seed-rebuilds.json"
 # The per-instance inference key waiting for its exchange (ODL-242):
 # `odilectl provision` mints the key with the provider's API and writes it
 # here, bound to the setup token it just minted. The guest takes it *once*, on
 # the redeem that consumes the token, and the entry is removed in the same
 # exchange. The other two removals are the next `provision` (a rewrite) and
 # destroy — HQ holds the raw `sk-…` from the mint until one of the three runs.
-# A file beside the ledger, like `seed-rebuilds`, because systemd hands the
-# service a copy of the config at start.
+# A file beside the ledger: systemd hands the service a copy of the config at
+# start.
 DEFAULT_KEYS = "/var/lib/odile/seed-keys.json"
 # ODL-924: each tenant's Hetzner BX11 sub-account pair — the repository URL,
 # the read-write and read-only private keys, the pinned host-key line and the
 # two sub-account logins. `odilectl provision` writes it between two exchanges
-# and the service reads it per redeem, for the same reason as `seed-rebuilds`:
+# and the service reads it per redeem, for the same reason:
 # systemd hands the service a copy of the config at start, so a config rewrite
 # would be invisible until a restart. `{slug: entry}`, 0600, owned by the
 # service user.
@@ -142,20 +123,6 @@ DEFAULT_PORT = 8081
 MAX_BODY = 4 * 1024
 TOKEN_RE = re.compile(r"^[0-9a-f]{64}$")
 INSTANCE_RE = re.compile(r"^[A-Za-z0-9._:-]{1,128}$")
-
-# A rebuild (ODL-215 follow-up) carries the user's OLD repository password to
-# the new machine so `backup.py init` meets the existing repository with the
-# right key instead of minting a new one. HQ must not hold it in the clear: the
-# password is sealed under the one-time setup token, which HQ prints once and
-# stores only as a SHA-256. The token is the key, so the blob in seed-config is
-# ciphertext to every reader who does not have the measured command line.
-REBUILD_KDF = "hmac-sha256-ctr-v1"
-REBUILD_KEYSTREAM_LABEL = b"odile-rebuild-v1/keystream"
-REBUILD_TAG_LABEL = b"odile-rebuild-v1/tag"
-REBUILD_MIN_PASSWORD = 16
-REBUILD_MAX_PASSWORD = 1024
-REBUILD_SEALED_MAX = 8192          # hex chars; twice REBUILD_MAX_PASSWORD
-REBUILD_TAG_HEX = 64               # HMAC-SHA256, hex
 
 # The token ledger. `tenants` comes from app.py's schema v2; this table is
 # additive and created idempotently by this service. It is separate from
@@ -303,155 +270,6 @@ def new_token() -> str:
     return secrets.token_hex(32)
 
 
-# ------------------------------------------------------------------ rebuild seal
-#
-# The construction is deliberately small and standard-library only:
-#
-#   key        = the 64-hex setup token, as ASCII (32 bytes of entropy)
-#   keystream  = HMAC-SHA256(key, "odile-rebuild-v1/keystream" || counter_be32)
-#                blocks, XORed with the password's UTF-8 bytes
-#   tag        = HMAC-SHA256(key, "odile-rebuild-v1/tag" || ciphertext)
-#
-# Encrypt-then-MAC, verify-then-decrypt, constant-time compare. No AES: the
-# standard library has none, the alternative is a dependency, and a token-sealed
-# 32-character password needs a keystream, not a block cipher. The guest's copy
-# of `unseal` lives in deploy/image/odile-firstboot.py; tests/test_seed.py runs
-# one against the other so the two cannot drift.
-
-
-def _seal_key(token: str) -> bytes:
-    if not isinstance(token, str) or not TOKEN_RE.match(token):
-        raise ValueError("the setup token must be 64 lowercase hex characters")
-    return token.encode("ascii")
-
-
-def _keystream(key: bytes, length: int) -> bytes:
-    blocks = bytearray()
-    counter = 0
-    while len(blocks) < length:
-        blocks += hmac.new(key, REBUILD_KEYSTREAM_LABEL + counter.to_bytes(4, "big"),
-                           hashlib.sha256).digest()
-        counter += 1
-    return bytes(blocks[:length])
-
-
-def _xor(data: bytes, stream: bytes) -> bytes:
-    return bytes(left ^ right for left, right in zip(data, stream))
-
-
-def seal_backup_password(password: str, token: str) -> dict:
-    """Seal `password` under `token`; return the seed payload's `rebuild` object.
-
-    The password is the user's recovery-file value (16+ characters, no
-    whitespace). A wrong token later fails the tag, so a stale entry in the
-    rebuilds file cannot silently hand the rebuilt machine a wrong password.
-    """
-    if not isinstance(password, str) or not (REBUILD_MIN_PASSWORD <= len(password)
-                                             <= REBUILD_MAX_PASSWORD):
-        raise ValueError("the backup password must be %d to %d characters"
-                         % (REBUILD_MIN_PASSWORD, REBUILD_MAX_PASSWORD))
-    if any(char.isspace() for char in password):
-        raise ValueError("the backup password contains whitespace")
-    key = _seal_key(token)
-    data = password.encode("utf-8")
-    sealed = _xor(data, _keystream(key, len(data)))
-    tag = hmac.new(key, REBUILD_TAG_LABEL + sealed, hashlib.sha256).hexdigest()
-    return {"kdf": REBUILD_KDF, "sealed": sealed.hex(), "tag": tag}
-
-
-def unseal_backup_password(entry: dict, token: str) -> str:
-    """Open a `rebuild` object with `token`; raise ValueError when it is not ours."""
-    sealed, tag = validate_rebuild_entry(entry, "rebuild entry")
-    key = _seal_key(token)
-    expected = hmac.new(key, REBUILD_TAG_LABEL + sealed, hashlib.sha256).hexdigest()
-    if not secrets.compare_digest(expected, tag):
-        raise ValueError("the sealed backup password does not open with this setup token")
-    return _xor(sealed, _keystream(key, len(sealed))).decode("utf-8")
-
-
-BACKUP_PASSWORD_RE = re.compile(r"^Backup password:[ \t]*(\S+)[ \t]*$", re.M)
-
-
-def read_recovery_password(path: str) -> str:
-    """The `Backup password:` line of the user's recovery file.
-
-    One grammar for the whole tree: `scripts/backup.py` reads it to open the
-    repository, the installer writes it, and a rebuild's provision seals it.
-    A missing, short or whitespace-bearing value is a `ValueError` before
-    anything is ordered.
-    """
-    try:
-        with open(path, encoding="utf-8") as handle:
-            text = handle.read()
-    except FileNotFoundError:
-        raise ValueError("no recovery file at %s" % path) from None
-    except OSError as error:
-        raise ValueError("cannot read %s: %s" % (path, error.strerror)) from None
-    match = BACKUP_PASSWORD_RE.search(text)
-    if match is None:
-        raise ValueError("%s carries no 'Backup password:' line; pass the user's "
-                         "recovery file" % path)
-    password = match.group(1)
-    if len(password) < REBUILD_MIN_PASSWORD:
-        raise ValueError("the backup password in %s is %d characters; %d or more"
-                         % (path, len(password), REBUILD_MIN_PASSWORD))
-    if any(char.isspace() for char in password):
-        raise ValueError("the backup password in %s contains whitespace" % path)
-    return password
-
-
-def validate_rebuild_entry(entry: object, where: str = "seed config") -> tuple[bytes, str]:
-    """The `(ciphertext, tag)` of one rebuild entry, or ConfigError.
-
-    Called on the way in (`set_rebuild`, `load_rebuilds`) and on the way out
-    (`build_seed`), so a file edited by hand cannot put a malformed or
-    plaintext value into a seed. `backup_password` is refused by name: the
-    rebuilds file may hold the sealed blob and nothing else.
-    """
-    if not isinstance(entry, dict):
-        raise ConfigError("%s: rebuild entry is not a JSON object" % where)
-    for plaintext in ("backup_password", "password", "passphrase"):
-        if plaintext in entry:
-            raise ConfigError(
-                "%s: rebuild entry carries a plaintext %s; seal it under the "
-                "setup token instead (odilectl provision --backup-password-file)"
-                % (where, plaintext))
-    if entry.get("kdf") != REBUILD_KDF:
-        raise ConfigError("%s: rebuild kdf %r is not %r"
-                          % (where, entry.get("kdf"), REBUILD_KDF))
-    sealed_hex = entry.get("sealed")
-    if not isinstance(sealed_hex, str) or not sealed_hex or len(sealed_hex) > REBUILD_SEALED_MAX:
-        raise ConfigError("%s: rebuild sealed value is missing or too long" % where)
-    if len(sealed_hex) % 2 or re.search(r"[^0-9a-f]", sealed_hex):
-        raise ConfigError("%s: rebuild sealed value is not lowercase hex" % where)
-    tag = entry.get("tag")
-    if not isinstance(tag, str) or len(tag) != REBUILD_TAG_HEX or re.search(r"[^0-9a-f]", tag):
-        raise ConfigError("%s: rebuild tag is not %d lowercase hex characters"
-                          % (where, REBUILD_TAG_HEX))
-    token_hash = entry.get("token_hash")
-    if token_hash is not None and (not isinstance(token_hash, str)
-                                   or not TOKEN_RE.match(token_hash)):
-        raise ConfigError("%s: rebuild token_hash is not 64 lowercase hex" % where)
-    return bytes.fromhex(sealed_hex), tag
-
-
-def rebuild_for(rebuilds: dict, slug: str, token_hash: str) -> dict | None:
-    """The sealed rebuild entry for this slug *and this token*, else None.
-
-    Matching the token hash is what makes a stale entry harmless: a later
-    provision mints a new token and rewrites the entry, and an older token's
-    redeem (it cannot happen twice, but the file can be restored) gets no
-    secret rather than a blob it cannot open.
-    """
-    entry = (rebuilds or {}).get(slug)
-    if not isinstance(entry, dict):
-        return None
-    validate_rebuild_entry(entry, "seed rebuilds.%s" % slug)
-    if entry.get("token_hash") != token_hash:
-        return None
-    return {"kdf": entry["kdf"], "sealed": entry["sealed"].lower(), "tag": entry["tag"].lower()}
-
-
 def write_private(path: str, data: bytes, owner: tuple[int, int] | None = None,
                   mode: int = 0o600) -> None:
     """Replace `path` through a sibling temp file; the file is 0600 by default.
@@ -556,70 +374,6 @@ def load_config(path: str | None = None) -> dict:
     return config
 
 
-def rebuilds_path() -> str:
-    """The sealed rebuild entries: `ODILE_SEED_REBUILDS`, else the ledger's dir."""
-    return os.environ.get("ODILE_SEED_REBUILDS", DEFAULT_REBUILDS)
-
-
-def load_rebuilds(path: str | None = None) -> dict:
-    """The sealed `{slug: entry}` map, or {} when no rebuild has been prepared.
-
-    The file holds only ciphertext (see `seal_backup_password`), so it is read
-    by the unprivileged service user directly — no LoadCredential copy, and a
-    `odilectl provision` that writes it takes effect on the next exchange.
-    """
-    path = path or rebuilds_path()
-    try:
-        with open(path, encoding="utf-8") as handle:
-            document = json.load(handle)
-    except FileNotFoundError:
-        return {}
-    except ValueError as exc:
-        raise ConfigError("%s is not valid JSON: %s" % (path, exc)) from exc
-    except OSError as exc:
-        raise ConfigError("cannot read %s: %s" % (path, exc)) from exc
-    if not isinstance(document, dict):
-        raise ConfigError("%s must be a JSON object" % path)
-    for slug, entry in document.items():
-        if not isinstance(slug, str) or not slug:
-            raise ConfigError("%s has a non-string slug" % path)
-        validate_rebuild_entry(entry, "%s.%s" % (path, slug))
-    return document
-
-
-def set_rebuild(path: str, slug: str, entry: dict | None) -> None:
-    """Write (or remove) one tenant's sealed entry, atomically.
-
-    `odilectl provision --backup-password-file` and the bench fixture are the
-    only writers. A provision *without* the flag removes the entry: a token
-    either carries a rebuild secret or it does not, and a leftover from an
-    earlier attempt must not travel with a token minted for a plain install.
-    The file is 0600 and, when written by root, given to the directory's owner
-    (`odile`), which is the user the seed service runs as.
-    """
-    try:
-        with open(path, encoding="utf-8") as handle:
-            document = json.load(handle)
-    except FileNotFoundError:
-        document = {}
-    if not isinstance(document, dict):
-        raise ConfigError("%s must be a JSON object" % path)
-    if entry is None:
-        document.pop(slug, None)
-    else:
-        validate_rebuild_entry(entry, "%s.%s" % (path, slug))
-        document[slug] = entry
-    data = (json.dumps(document, indent=2, sort_keys=True) + "\n").encode("utf-8")
-    owner = None
-    if os.geteuid() == 0:
-        try:
-            info = os.stat(os.path.dirname(os.path.abspath(path)) or ".")
-            owner = (info.st_uid, info.st_gid)
-        except OSError:
-            owner = None
-    write_private(path, data, owner)
-
-
 # ------------------------------------------------------- the sub-account pair
 
 #: The keys of one tenant's pair entry (ODL-924). The two sub-account logins
@@ -644,6 +398,9 @@ BACKUP_REPO_RE = re.compile(
 BACKUP_SUBACCOUNT_RE = re.compile(r"^u[0-9]+-sub[0-9]+$")
 BACKUP_HOSTKEY_RE = re.compile(
     r"^[A-Za-z0-9.-]+ (ssh-ed25519|ssh-rsa|ecdsa-sha2-nistp[0-9]+) [A-Za-z0-9+/=]+$")
+#: ADR-005 §5.4: the optional T-0 restic id a rebuilt machine restores. "" is
+#: `latest`; a present value is a full snapshot id, never a prefix.
+BACKUP_SNAPSHOT_RE = re.compile(r"^[0-9a-f]{64}$")
 #: The sub-account password is a one-time provisioning value; a plaintext one
 #: in this file would be a door into a tenant directory that outlives the run.
 BACKUP_FORBIDDEN = ("password", "passphrase", "luks")
@@ -745,6 +502,17 @@ def validate_backup_pair(entry: object, where: str = "seed backup pairs") -> dic
                 "seed must open every URL it carries" % (where, host, key))
     if not isinstance(entry["previous_instance"], str):
         raise ConfigError("%s.previous_instance must be a string" % where)
+    # ADR-005 §5.4: `backup_snapshot` is optional and non-secret — the restic
+    # id the rebuilt machine restores, or "" for `latest`. It is not a required
+    # key: a pair written before the window existed carries none, and the
+    # installer's own fallback is `latest`.
+    if "backup_snapshot" in entry:
+        snapshot = entry["backup_snapshot"]
+        if not isinstance(snapshot, str):
+            raise ConfigError("%s.backup_snapshot must be a string" % where)
+        if snapshot and not BACKUP_SNAPSHOT_RE.match(snapshot):
+            raise ConfigError(
+                "%s.backup_snapshot is not a restic snapshot id (64 lowercase hex)" % where)
     if not isinstance(entry["provisioned_at"], str) or not entry["provisioned_at"]:
         raise ConfigError("%s.provisioned_at must be a timestamp" % where)
     return entry
@@ -1070,7 +838,6 @@ def near_api_key(config: dict, entry: dict | None, slug: str,
 
 
 def build_seed(tenant: sqlite3.Row, instance_id: str, config: dict,
-               rebuild: dict | None = None,
                identity: tuple[bytes, bytes] | None = None,
                near_api_key_value: str | None = None,
                sign_in_hash: str | None = None,
@@ -1126,6 +893,9 @@ def build_seed(tenant: sqlite3.Row, instance_id: str, config: dict,
             "readonly_subaccount_id": backup_pair["readonly_subaccount_id"],
             "readonly_subaccount_username": backup_pair["readonly_subaccount_username"],
             "readonly_subaccount_home": backup_pair["readonly_subaccount_home"],
+            # ADR-005 §5.4: the window's executor arms the T-0 restic id here;
+            # the installer reads it and falls back to `latest` when it is "".
+            "backup_snapshot": str(backup_pair.get("backup_snapshot") or ""),
         }
     # B-once (Savio, 2026-11-20, card t_ab499d49): the account's scrypt
     # verifier is the machine's first sign-in. It is the installer's own
@@ -1135,11 +905,6 @@ def build_seed(tenant: sqlite3.Row, instance_id: str, config: dict,
     # ODL-925's contract is what refuses a seed without it.
     if sign_in_hash:
         seed["sign_in_hash"] = sign_in_hash
-    # A rebuild: the old repository password, sealed under this exchange's
-    # setup token. Absent on a first install, so the guest mints one.
-    if rebuild is not None:
-        seed["rebuild"] = {"kdf": rebuild["kdf"], "sealed": rebuild["sealed"],
-                          "tag": rebuild["tag"]}
     # ODL-514: the seed key's public half and the release key's certificate
     # over it. The installer checks the certificate against the release key in
     # the recovery kit, then this body against the certified seed key.
@@ -1525,7 +1290,7 @@ def _previous_instance(con: sqlite3.Connection, slug: str) -> str | None:
 
 
 def redeem(con: sqlite3.Connection, token: str, instance_id: str,
-           config: dict, rebuilds: dict | None = None,
+           config: dict,
            now: datetime | None = None,
            identity: tuple[bytes, bytes] | None = None,
            keys: dict | None = None,
@@ -1579,7 +1344,6 @@ def redeem(con: sqlite3.Connection, token: str, instance_id: str,
         "SELECT password_hash FROM accounts WHERE slug = ?", (tenant["slug"],)
     ).fetchone()
     seed = build_seed(tenant, row["instance_id"], config,
-                      rebuild=rebuild_for(rebuilds or {}, tenant["slug"], token_hash),
                       identity=identity,
                       near_api_key_value=key,
                       sign_in_hash=account["password_hash"] if account is not None else None,
@@ -1758,22 +1522,15 @@ class Handler(BaseHTTPRequestHandler):
 
         con = connect(getattr(self.server, "db_path", db_path()))
         try:
-            # The rebuild entries are read per exchange, not once at start: a
-            # rebuild's sealed entry is written by `odilectl provision` between
-            # two requests, and a service that cached the file would hand the
-            # guest a seed without it. One small 0600 file per redeem is
-            # nothing. (`rebuilds_path` is set by the in-process test server;
-            # `serve()` leaves it unset and the env/default decide.)
             seed = redeem(con, token, instance_id,
                           load_config(getattr(self.server, "config_path", None)),
-                          load_rebuilds(getattr(self.server, "rebuilds_path", None)),
                           identity=getattr(self.server, "identity", None),
                           keys=load_keys(getattr(self.server, "keys_path", None)),
                           keys_file=getattr(self.server, "keys_path", None),
                           backup_pairs_file=getattr(self.server, "backup_pairs_path", None))
         except ConfigError as exc:
-            print("seed: config error: %s" % exc, file=sys.stderr, flush=True)
-            return self._json(500, {"error": "the seed config or its rebuild entries are invalid",
+            print("seed: config error: %s" % (exc,), file=sys.stderr, flush=True)
+            return self._json(500, {"error": "the seed config is invalid",
                                     "reason": "bad_config"})
         except SeedError as exc:
             return self._json(exc.status, {"error": exc.message, "reason": exc.reason})

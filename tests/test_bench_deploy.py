@@ -128,7 +128,6 @@ class EnvFileTests(unittest.TestCase):
             "ODILE_ROADMAP=/var/lib/odile-test/roadmap.html",
             "ODILE_SEED_BIND=127.0.0.1",
             "ODILE_SEED_PORT=8083",
-            "ODILE_SEED_REBUILDS=/var/lib/odile-test/seed-rebuilds.json",
             "ODILE_SEED_BACKUP_PAIRS=/var/lib/odile-test/seed-backup-pairs.json",
         ])
 
@@ -382,7 +381,7 @@ class DeployerTests(unittest.TestCase):
         self.recorder = Recorder()
         self.saved = {name: getattr(deploy, name) for name in (
             "ROOT", "RELEASES", "CURRENT", "PREVIOUS", "STATE", "DB_PATH",
-            "ATTEST_PATH", "ROADMAP_PATH", "ROADMAP_SOURCE", "SEED_REBUILDS",
+            "ATTEST_PATH", "ROADMAP_PATH", "ROADMAP_SOURCE",
             "ETC", "ENV_FILE", "UNIT_SITE", "UNIT_SEED", "UNIT_PROBE",
             "TIMER_PROBE", "UNIT_REGISTER", "TIMER_REGISTER", "CADDYFILE",
             "CONFIG_FILE", "PROD_CONFIG", "SEED_KEY_FILE", "TOKEN_FILE",
@@ -399,7 +398,6 @@ class DeployerTests(unittest.TestCase):
         deploy.ATTEST_PATH = self.attest
         deploy.ROADMAP_PATH = self.roadmap
         deploy.ROADMAP_SOURCE = self.state / "roadmap-source"
-        deploy.SEED_REBUILDS = self.state / "seed-rebuilds.json"
         deploy.ETC = self.etc
         deploy.ENV_FILE = self.env_file
         deploy.UNIT_SITE = self.unit_site

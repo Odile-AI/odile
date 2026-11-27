@@ -1501,7 +1501,7 @@ if __name__ == "__main__":
     raise SystemExit(main())
 '''
 # END HEARTBEAT (ODL-926)
-BACKUP_SHA256 = "6d15f06d66eb69c744827911a1adee6a9f11d1b7c834db0b46b202368e41533a"
+BACKUP_SHA256 = "98e663e8b76fc1948fe92ee1a0b72cbd7ef544df4246ace9415729bb11da533d"
 BACKUP_SOURCE = r'''#!/usr/bin/python3
 """Tenant backup — restic on the guest, a password only its owner holds (ODL-215).
 
@@ -1516,6 +1516,7 @@ written from the seed) and, at most, the status record this program writes.
     backup.py run         # one nightly snapshot + 7 daily / 4 weekly, then status
     backup.py status      # print /var/lib/odile/backup.json (the HQ-visible fields)
     backup.py restore latest --target /var/tmp/restore
+    backup.py snapshot-info latest          # the id and time a restore would take
     backup.py drill       # create a canary, back it up, delete it, restore it, compare
     backup.py verify      # the recovery password opens the repo; a wrong one does not
     backup.py heartbeat   # post the status to HQ as a signed heartbeat (optional)
@@ -1531,7 +1532,8 @@ repository password is the one thing a rebuild needs from the user's recovery
 file; the runbook is `docs/runbooks/backup.md`.
 
 Exit codes: 0 ok, 1 a restic/verify failure, 2 usage, 3 a missing prerequisite
-(no restic, no recovery file, no repository URL).
+(no restic, no recovery file, no repository URL), 12 a wrong repository password
+(restic's own code, so a rebuilt machine's first visit can tell it from anything else).
 """
 
 from __future__ import annotations
@@ -1636,6 +1638,12 @@ class BadInput(BackupError):
 
 class Missing(BackupError):
     exit_code = 3
+
+
+class WrongPassword(BackupError):
+    """The recovery file's password does not open the repository (restic's exit 12)."""
+
+    exit_code = 12
 
 
 # --------------------------------------------------------------------------- plain helpers
@@ -2225,6 +2233,12 @@ def _duration(seconds: int) -> str:
     return f"{seconds // 86400}d{(seconds % 86400) // 3600:02d}h"
 
 
+def _last_output_line(done: subprocess.CompletedProcess[str]) -> str:
+    """restic's last word for a one-line error: stderr when it spoke, else stdout."""
+    lines = (done.stderr or done.stdout or "").strip().splitlines()
+    return lines[-1].strip() if lines else "no output"
+
+
 def command_restore(args) -> int:
     repo = resolve_repo(args.repo, args.repo_file)
     key = Path(args.key).expanduser()
@@ -2245,12 +2259,117 @@ def command_restore(args) -> int:
     Path(args.target).expanduser().mkdir(parents=True, exist_ok=True)
     done = restic.run(arguments)
     if done.returncode != 0:
-        detail = (done.stderr or done.stdout).strip().splitlines()
-        raise BackupError(f"restic restore failed: {detail[-1] if detail else 'no output'}")
+        detail = _last_output_line(done)
+        # restic exits 12 for a password that does not open the repository.
+        # A rebuilt machine's first visit shows that pasted recovery file and
+        # needs to tell "wrong password" from every other failure; the same
+        # sentence is also matched, because a transport wrapper can lose the code.
+        if done.returncode == 12 or "wrong password" in (done.stderr + done.stdout).lower():
+            raise WrongPassword(
+                f"restic restore failed (exit {done.returncode}): {detail}; "
+                "the recovery file's password does not open the repository"
+            )
+        raise BackupError(f"restic restore failed (exit {done.returncode}): {detail}")
     lines = [line for line in done.stdout.strip().splitlines() if line.strip()]
     print(f"ok           restored {args.snapshot} to {args.target}")
     if lines:
         print(f"restic       {lines[-1]}")
+    return 0
+
+
+def _snapshot_entries(stdout: str) -> list[dict]:
+    """`restic snapshots --json` is one array; anything else is a failure to read."""
+    try:
+        value = json.loads(stdout or "[]")
+    except ValueError:
+        raise BackupError("restic snapshots printed no JSON") from None
+    if not isinstance(value, list):
+        raise BackupError("restic snapshots printed no JSON array")
+    return [item for item in value if isinstance(item, dict)]
+
+
+def _snapshot_time(value: object) -> datetime.datetime:
+    """restic's RFC3339 time as a comparable instant; unreadable times sort first."""
+    text = str(value or "").replace("Z", "+00:00")
+    try:
+        return datetime.datetime.fromisoformat(text)
+    except ValueError:
+        return datetime.datetime.min.replace(tzinfo=datetime.timezone.utc)
+
+
+def _newest_snapshot(snapshots: list[dict]) -> dict:
+    return max(snapshots, key=lambda item: (_snapshot_time(item.get("time")),
+                                             str(item.get("id") or "")))
+
+
+def choose_snapshot(snapshots: list[dict], selector: str | None) -> dict:
+    """The snapshot a restore would take: exact id, 4+ hex prefix, or the newest.
+
+    `restore` itself passes the word to restic, which has the same rules; this
+    repeats them so `snapshot-info` names the snapshot the restore would land on.
+    """
+    if not snapshots:
+        raise Missing("the repository has no snapshots")
+    text = (selector or "latest").strip()
+    if text == "latest":
+        return _newest_snapshot(snapshots)
+    lowered = text.lower()
+    for item in snapshots:
+        if str(item.get("id") or "").lower() == lowered:
+            return item
+    if re.fullmatch(r"[0-9a-fA-F]{4,}", text):
+        matches = [item for item in snapshots
+                   if str(item.get("id") or "").lower().startswith(lowered)]
+        if len(matches) == 1:
+            return matches[0]
+        if matches:
+            raise BadInput(f"{text!r} matches {len(matches)} snapshots; give more characters")
+    raise Missing(f"no snapshot matches {text!r}")
+
+
+def command_snapshot_info(args) -> int:
+    """The id and time of the snapshot a restore would take (read-only: --no-lock)."""
+    repo = resolve_repo(args.repo, args.repo_file)
+    key = Path(args.key).expanduser()
+    known_hosts = Path(args.known_hosts).expanduser()
+    target = sftp_target(repo)
+    if target and not key.exists():
+        raise Missing(f"no SFTP key at {key}; run `backup.py init` first")
+    password = read_recovery_password(args.recovery)
+    restic = Restic(repo, password, key=key if target else None,
+                    known_hosts=known_hosts if target else None,
+                    connections=args.sftp_connections)
+    arguments = ["snapshots", "--json", "--no-lock"]
+    selector = args.snapshot or "latest"
+    if args.dry_run:
+        print(f"would run    restic {' '.join(_quote_arg(part) for part in arguments)}")
+        print(f"would pick   {selector} (exact id, a 4+ hex prefix, or the newest by time)")
+        return 0
+    done = restic.run(arguments)
+    if done.returncode != 0:
+        detail = _last_output_line(done)
+        if done.returncode == 12 or "wrong password" in detail.lower():
+            # The read is where a wrong password is first seen; exit 12, the
+            # code restore would also give, so the caller can say so.
+            raise WrongPassword(f"restic snapshots failed (exit 12): {detail}")
+        raise Missing(
+            f"restic snapshots failed (exit {done.returncode}): {detail}"
+        )
+    snapshot = choose_snapshot(_snapshot_entries(done.stdout), selector)
+    full_id = str(snapshot.get("id") or "")
+    record = {
+        "id": full_id,
+        "short_id": str(snapshot.get("short_id") or full_id[:8]),
+        "time": snapshot.get("time"),
+        # restic's JSON calls the snapshot's host `hostname`.
+        "host": snapshot.get("hostname") or snapshot.get("host") or None,
+        "paths": list(snapshot.get("paths") or []),
+    }
+    if args.json:
+        print(json.dumps(record, sort_keys=True))
+        return 0
+    print(f"snapshot     {record['id']}")
+    print(f"time         {record['time']}")
     return 0
 
 
@@ -2619,6 +2738,14 @@ def build_parser() -> argparse.ArgumentParser:
     restore.add_argument("--target", required=True)
     restore.add_argument("--include", action="append", help="one absolute path (repeatable)")
     restore.set_defaults(function=command_restore)
+
+    info = subparsers.add_parser(
+        "snapshot-info", help="the id and time of the snapshot a restore would take")
+    common(info)
+    info.add_argument("snapshot", nargs="?", default="latest",
+                      help="a full id, a 4+ hex prefix, or latest (default)")
+    info.add_argument("--json", action="store_true", help="one JSON object on stdout")
+    info.set_defaults(function=command_snapshot_info)
 
     drill = subparsers.add_parser("drill", help="delete a backed-up file, restore it, compare")
     common(drill)
@@ -4192,7 +4319,7 @@ printf 'members %s\n' "${members# }"
 # The first-visit service and its page are the reviewed files, byte for
 # byte, so the signed installer carries exactly the program and page it
 # writes to /usr/local/lib/odile/. --self-test fails on a one-byte edit.
-FIRST_VISIT_SHA256 = "5dd8c97ada69441467809881f0fcc67ffd403c5d4f4a76a75a1fa1f31f3019d5"
+FIRST_VISIT_SHA256 = "aeb75d36e5d79bde66d16147157df399cfca299ee31c3d87afa8c0f4697b2d0d"
 FIRST_VISIT_SOURCE = r'''#!/usr/bin/python3
 """odile first-visit service — sign in to the guest and show the recovery code.
 
@@ -4211,8 +4338,12 @@ two remaining jobs are machine-side — it authenticates the seed exchange
 (``{token, instance_id}`` -> ``POST /seed``, which carries the NEAR key) and
 it seals the rebuild blob (``seed/seed.py``) — and neither is this service's.
 
-    GET  /first-visit             the form: a sign-in (seeded) or a setup (classic)
+    GET  /first-visit             the form: a sign-in (seeded) or a setup (classic),
+                                  or the recovery-file paste on a rebuilt machine
     POST /first-visit             verify the password, or write the setup hash
+    GET  /first-visit/restore     the paste form (a rebuild, before the sign-in)
+    POST /first-visit/restore     parse the paste, write the recovery file, start the restore
+    GET  /first-visit/restoring   the restore's own status page (meta refresh, no JS)
     GET  /first-visit/recovery    the recovery page: enter the code, get the file
     POST /first-visit/recovery    verify the code (not spent), mint a download token
     GET  /first-visit/recovery?d=<download token>   the recovery file, once
@@ -4274,6 +4405,27 @@ Design notes a reviewer should check:
   after the rebuild. A3's restore excludes it (or rotates the code afterwards);
   this service only records the rule, because the state is the anchor the code
   is verified against.
+* **A rebuilt machine asks for the recovery file before the sign-in (ODL-937).**
+  When the seed's ``previous_instance`` is in the state's ``restore`` block, the
+  page serves the paste first (ADR-backup §7.2 steps 3–6). The order is
+  load-bearing: the reborn home is empty, and letting the user in before the
+  restore shows them an agent with no memory. The paste writes
+  ``/etc/odile/recovery.txt`` for **this** machine (same password, new
+  ``Instance:`` and certificate, the repository, the host key and the read-only
+  key) and starts ``odile-restore.service``; the status page polls the state
+  with a meta refresh, so it needs no JavaScript. ``--restore`` *is* that
+  unit's program: it resolves the snapshot (the seed's ``backup_snapshot``, or
+  ``latest`` when the seed names none), stops the backup timer and the agent,
+  runs ``backup.py restore <id> --target / --include <home>``, writes the
+  seed's ``sign_in_hash`` over the restored ``.env`` (the backup's copy is the
+  retired password, ADR-backup §6), starts the agent, takes one fresh snapshot
+  and starts the timer again. Only after it succeeds does the page offer the
+  sign-in.
+* **The paste grammar is the installer's.** A file from another machine is
+  refused by its own ``Tenant:``/``Repository:`` lines before any restic call;
+  a truncated paste and a wrong password both read as ``This file does not open
+  this backup.`` — the page cannot tell a damaged file from a wrong key, and
+  restic exits 12 for the second.
 * **The fingerprint is the certificate the browser is using.** When the request
   arrived over TLS (Caddy's ``X-Forwarded-Proto: https``), the service reads
   the certificate for the request's host from Caddy's store and writes its
@@ -4366,6 +4518,23 @@ DEFAULT_REPORT_COMMAND = "systemctl restart --no-block odile-access-report.servi
 # The replace action asks systemd to try the push now; the five-minute timer
 # retries until HQ acknowledges, so a failed start is not a failed replace.
 DEFAULT_PUSH_COMMAND = ""
+# The restore (ODL-937, ADR-backup §7.2 step 4): the page starts this oneshot
+# and polls the state. `--no-block` matters: the unit takes minutes, and the
+# POST's response must not wait for it.
+DEFAULT_RESTORE_COMMAND = "systemctl start --no-block odile-restore.service"
+# What `--restore` (the unit's program) drives. Every path is the installer's
+# own placement; nothing here is derived from the request.
+DEFAULT_HOME = "/home/odile"
+DEFAULT_BACKUP = "/usr/local/lib/odile/backup.py"
+DEFAULT_REPO_FILE = "/etc/odile/backup-repo.txt"
+DEFAULT_BACKUP_KEY = "/etc/odile/backup-ssh/id_ed25519"
+DEFAULT_BACKUP_KNOWN_HOSTS = "/etc/odile/backup-ssh/known_hosts"
+DEFAULT_BACKUP_STATUS = "/var/lib/odile/backup.json"
+DEFAULT_AGENT_UNIT = "odile-agent"
+DEFAULT_TIMER_UNIT = "odile-backup-tenant.timer"
+# A recovery file with a key block is about 2 KB; 32 KB is the paste limit, so
+# a pasted log file is refused rather than buffered.
+RESTORE_MAX_PASTE = 32 * 1024
 # Caddy stores a leaf certificate at <root>/<issuer>/<host>/<host>.crt. Read
 # only; the unit's ReadWritePaths already includes /etc/odile for the write-back.
 DEFAULT_CADDY_STORES = (
@@ -4416,21 +4585,43 @@ CODE_RE = re.compile(r"^[A-HJ-NP-Z2-9]{%d}$" % (CODE_GROUPS * CODE_GROUP_LEN))
 
 # The installer's file grammar; the service completes one field and serves the
 # rest byte for byte. Tenant: names the download; Certificate SHA-256: is the
-# only line this service ever rewrites.
+# only line this service ever rewrites. The restore (ODL-937) reads the same
+# `Backup password:` line the installer writes and `scripts/backup.py` opens
+# the repository with — one grammar for all three.
 RECOVERY_TENANT_RE = re.compile(r"^Tenant:[ \t]*(\S+)[ \t]*$", re.M)
 RECOVERY_CERT_RE = re.compile(r"^Certificate SHA-256:([ \t]*)(.*)$", re.M)
-RECOVERY_PASSWORD_RE = re.compile(r"^Backup password:.*$", re.M)
+RECOVERY_PASSWORD_RE = re.compile(r"^Backup password:\s*(\S+)\s*$", re.M)
+RECOVERY_REPO_RE = re.compile(r"^Repository:[ \t]*(\S+)[ \t]*$", re.M)
+RECOVERY_HOSTKEY_RE = re.compile(r"^Host key line:[ \t]*(.+?)[ \t]*$", re.M)
+RECOVERY_ROKEY_RE = re.compile(r"^Read-only key:[ \t]*\n(.*?)(?:\n\n|\Z)", re.M | re.S)
 SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,62}$")
 HOST_RE = re.compile(r"^[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?$")
+
+# The three copy sentences the restore page may show (ODL-937's table,
+# verbatim: the card's text is the page's text). A truncated paste and a
+# wrong password share one sentence, because the page cannot tell them apart
+# and restic reports both as "wrong password or no key found" (exit 12).
+RESTORE_WRONG_COPY = "This file does not open this backup."
+RESTORE_OTHER_COPY = "This file is for a different machine."
+RESTORE_PASTE_FIELD = "recovery"
+# The restore's own states; anything else is read as "waiting", so a state
+# written by an older installer still renders the paste.
+RESTORE_STATES = ("waiting", "restoring", "ok", "wrong_password", "failed")
+# The restoring page polls itself with a meta refresh (no JavaScript). It is a
+# head element, so `render` fills the page's `{{REFRESH}}` slot with it only
+# for that state; every other state gets an empty string.
+RESTORE_REFRESH_META = ('<meta http-equiv="refresh" '
+                        'content="5;url=/first-visit/restoring">')
 
 # A user can paste anything into the recovery-code field, braces included, so
 # that slot is filled after the unfilled-slot check through a sentinel.
 CODE_SENTINEL = "\x00recovery-code\x00"
-ERROR_FIELDS = ("code", "password", "password2")
+ERROR_FIELDS = ("code", "password", "password2", "recovery")
 
 BLOCK_RE = re.compile(
     r"<!--(form|signin|signed-in|done|recover|recovery-done|reset-done|reset"
-    r"|replace|replaced-done|refused-unknown|refused-set|refused)-->(.*?)<!--/\1-->", re.S)
+    r"|replace|replaced-done|refused-unknown|refused-set|refused"
+    r"|restore|restoring|restored)-->(.*?)<!--/\1-->", re.S)
 
 _hits: dict[str, list[float]] = {}
 _lock = threading.Lock()
@@ -4556,7 +4747,54 @@ def validate_state(state: object) -> dict:
     pushed = state.get("recovery_pushed_hash")
     if pushed is not None and not (isinstance(pushed, str) and pushed.startswith("scrypt$")):
         raise ValueError("recovery_pushed_hash is not an scrypt hash")
+    validate_restore(state.get("restore"))
     return state
+
+
+# The state's `restore` block (ODL-937) is written by the installer from the
+# seed and then by this service. Every value is a string; the status is one of
+# the five states the page knows. The read-only key and the sign-in hash are
+# secrets of the same class as the .env, and the state is 0600 root already.
+RESTORE_KEYS = ("previous_instance", "instance_id", "slug", "repo_url", "snapshot",
+                "host_key", "host_key_line", "readonly_key", "sign_in_hash",
+                "started_at", "restored_at", "snapshot_id", "snapshot_time",
+                "restore_error")
+
+
+def validate_restore(block: object) -> None:
+    if block is None:
+        return
+    if not isinstance(block, dict):
+        raise ValueError("restore is not a JSON object")
+    for key in RESTORE_KEYS:
+        value = block.get(key)
+        if value is not None and not isinstance(value, str):
+            raise ValueError("restore.%s is not a string or null" % key)
+    status = block.get("status")
+    if status is not None and status not in RESTORE_STATES:
+        raise ValueError("restore.status %r is not one of %s"
+                         % (status, ", ".join(RESTORE_STATES)))
+
+
+def restore_block(state: dict) -> dict:
+    """The rebuild block the installer wrote, or {} on a first install."""
+    block = state.get("restore")
+    return block if isinstance(block, dict) else {}
+
+
+def is_rebuild(state: dict) -> bool:
+    """True when the seed named the machine this one replaces."""
+    return bool(restore_block(state).get("previous_instance"))
+
+
+def restore_status(state: dict) -> str:
+    status = restore_block(state).get("status")
+    return status if status in RESTORE_STATES else "waiting"
+
+
+def paste_needed(state: dict) -> bool:
+    """True while a rebuilt machine has not yet restored its data."""
+    return is_rebuild(state) and restore_status(state) != "ok"
 
 
 def load_state(path: Path) -> dict:
@@ -4773,6 +5011,149 @@ def recovery_filename(recovery: RecoveryFile) -> str:
     return "odile-recovery-%s.txt" % recovery.slug if recovery.slug else "odile-recovery.txt"
 
 
+# ------------------------------------------------------- the recovery file text
+# One template, two writers: the installer writes it at install
+# (`render_recovery`) and the rebuilt machine's first visit re-writes it from
+# the paste (`compose_recovery`). The two strings are pinned equal by
+# tests/test_first_visit.py, so a change to the file's grammar lands in both.
+# The certificate placeholder is the installer's own sentence; the first-visit
+# download fills it from Caddy's store.
+RECOVERY_PENDING = "(pending — filled in when you download this file on the first-visit page)"
+RECOVERY_TEXT = """\
+Odile recovery file
+===================
+Tenant:              {slug}
+Instance:            {instance_id}
+Written:             {written}
+
+Backup password:     {backup_password}
+Certificate SHA-256: {certificate}
+Repository:          {repository}
+Host key:            {host_key}
+Host key line:       {host_key_line}
+Read-only key:
+{readonly_key}
+
+Read-only key commands (restic 0.18; the read-only key cannot write, so every
+command carries --no-lock):
+{readonly_commands}
+
+This file is the only copy of the backup password. Download it on this machine's
+first-visit page and keep it somewhere you can reach when the machine is gone.
+The file stays on the machine; ask your agent to show it again if you need it.
+
+Lose it and the encrypted backup cannot be opened; Odile holds no copy.
+"""
+RECOVERY_NO_REPO = "(none — this machine was installed without a backup repository)"
+RECOVERY_NO_KEY = "(none — this machine was installed without a read-only key)"
+REPO_LOGIN_RE = re.compile(r"^(?:sftp:(?://)?)?([^@/:]+)@([^:/]+)")
+
+
+def repo_login(repo: str) -> str:
+    """`user@host` from an sftp repository URL, or '' when it is not one."""
+    match = REPO_LOGIN_RE.match(repo or "")
+    return "%s@%s" % (match.group(1), match.group(2)) if match else ""
+
+
+def host_key_fingerprint(line: str) -> str:
+    """`SHA256:<b64>` of a host-key line's blob, or '' (what ssh-keygen prints).
+
+    Accepts both shapes in this tree: a `known_hosts` line (`host type blob`)
+    and an `authorized_keys`/`.pub` line (`type blob comment`). The digest is
+    SHA-256 over the decoded blob, base64 without padding.
+    """
+    parts = (line or "").split()
+    if len(parts) >= 2 and parts[0].startswith(("ssh-", "ecdsa-", "sk-")):
+        encoded = parts[1]
+    elif len(parts) >= 3:
+        encoded = parts[2]
+    else:
+        return ""
+    try:
+        blob = base64.b64decode(encoded + "=" * (-len(encoded) % 4), validate=True)
+    except (ValueError, TypeError):
+        return ""
+    if not blob:
+        return ""
+    return "SHA256:" + base64.b64encode(
+        hashlib.sha256(blob).digest()).decode("ascii").rstrip("=")
+
+
+def readonly_commands(repo: str, readonly_key: str) -> str:
+    """The two commands a read-only key can run; both carry `--no-lock`.
+
+    A read-only sub-account refuses the lock file restic writes by default, so
+    the flag is the difference between "the file opens your backup" and a
+    permission error (ADR-backup §5). The key is assumed at `~/odile-ro`, 0600.
+    """
+    login = repo_login(repo)
+    if not repo or not readonly_key.strip() or login == "":
+        return "(none — this file carries no read-only key for a repository)"
+    command = ('ssh -i ~/odile-ro -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes '
+               '-s sftp ' + login)
+    return ("  restic -r %s --no-lock -o sftp.command=\"%s\" snapshots\n"
+            "  restic -r %s --no-lock -o sftp.command=\"%s\" restore latest "
+            "--target ~/odile-restore" % (repo, command, repo, command))
+
+
+def compose_recovery(slug: str, instance_id: str, backup_password: str,
+                     fingerprint: str | None, fqdn: str,
+                     written: str | None = None, *, repo: str = "",
+                     host_key: str = "", host_key_line: str = "",
+                     readonly_key: str = "") -> str:
+    """The recovery file for **this** machine, byte for byte.
+
+    Same password; a new `Instance:` and certificate; the repository, the
+    pinned host key and the read-only key the user needs when the machine is
+    gone. `fqdn` is accepted for the installer's signature and unused.
+    """
+    return RECOVERY_TEXT.format(
+        slug=slug,
+        instance_id=instance_id,
+        written=written or utc_now(),
+        backup_password=backup_password,
+        certificate=fingerprint or RECOVERY_PENDING,
+        repository=repo or RECOVERY_NO_REPO,
+        host_key=host_key or host_key_fingerprint(host_key_line) or "(none)",
+        host_key_line=host_key_line or "(none)",
+        readonly_key=readonly_key.strip() or RECOVERY_NO_KEY,
+        readonly_commands=readonly_commands(repo, readonly_key),
+    )
+
+
+def parse_paste(text: str, slug: str, repo: str) -> tuple[dict[str, str], str]:
+    """One pasted recovery file: (the fields, the refusal copy or "").
+
+    The grammar is the installer's (`RECOVERY_PASSWORD_RE`: one line, one
+    token, at least 16 characters with no whitespace). The file's own
+    `Tenant:` and `Repository:` lines are checked **before** anything restic
+    runs, so another machine's file is named as such. A truncated paste is a
+    missing line and reads as the wrong-password sentence: the page cannot
+    tell a damaged file from a wrong key, and restic exits 12 for the key.
+    A file from before the repository line existed is accepted on its tenant.
+    """
+    if not text or len(text) > RESTORE_MAX_PASTE:
+        return {}, RESTORE_WRONG_COPY
+    match = RECOVERY_PASSWORD_RE.search(text)
+    if match is None:
+        return {}, RESTORE_WRONG_COPY
+    password = match.group(1)
+    if len(password) < MIN_PASSWORD or any(char.isspace() for char in password):
+        return {}, RESTORE_WRONG_COPY
+    tenant = RECOVERY_TENANT_RE.search(text)
+    if tenant is None:
+        return {}, RESTORE_WRONG_COPY
+    if slug and tenant.group(1) != slug:
+        return {}, RESTORE_OTHER_COPY
+    repository = RECOVERY_REPO_RE.search(text)
+    if repository is not None and repo and repository.group(1) != repo.strip():
+        return {}, RESTORE_OTHER_COPY
+    fields = {"backup_password": password}
+    if repository is not None:
+        fields["repository"] = repository.group(1)
+    return fields, ""
+
+
 def recovery_status(state: dict, raw: str) -> str:
     """'ok' or 'bad' for a code presented at either use site.
 
@@ -4962,6 +5343,206 @@ def signin_is_set(state: dict) -> bool:
     return bool(state.get("signin_set_at"))
 
 
+# ------------------------------------------------------------- the restore run
+#
+# `--restore` is the program `odile-restore.service` runs (ADR-backup §7.2
+# step 5). It is deliberately in this file: the snapshot, the recovery file and
+# the sign-in hash are this service's own documents, and the unit carries no
+# copy of them. Every external command is a path the installer placed, and
+# `--systemctl` is a flag so the suite can drive the whole sequence with a stub.
+
+class RestoreError(Exception):
+    """A restore that stopped before restic could report anything."""
+
+
+def run_tool_full(argv: list[str], timeout: int = 3600) -> tuple[int, str, str]:
+    """(returncode, stdout, stderr) for one child process; 124 on a timeout."""
+    try:
+        done = subprocess.run(
+            argv, capture_output=True, text=True, timeout=timeout,
+            env={"PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+                 "LANG": "C.UTF-8"},
+        )
+    except subprocess.TimeoutExpired:
+        return 124, "", "timed out after %ds" % timeout
+    except (OSError, subprocess.SubprocessError) as exc:
+        return 127, "", str(exc)
+    return done.returncode, done.stdout, done.stderr
+
+
+def run_tool(argv: list[str], timeout: int = 3600) -> tuple[int, str]:
+    """(returncode, the last non-empty line of output) for one child process."""
+    code, stdout, stderr = run_tool_full(argv, timeout)
+    detail = (stderr or stdout).strip().splitlines()
+    return code, detail[-1] if detail else ""
+
+
+def read_recovery_password(path: Path) -> str:
+    """The `Backup password:` value, by the installer's grammar, or RestoreError.
+
+    The same three refusals `scripts/backup.py` applies, so a truncated file
+    fails here — before the agent is stopped and before restic runs.
+    """
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise RestoreError("cannot read %s: %s" % (path, exc)) from None
+    match = RECOVERY_PASSWORD_RE.search(text)
+    if match is None:
+        raise RestoreError("%s carries no 'Backup password:' line" % path)
+    password = match.group(1)
+    if len(password) < MIN_PASSWORD:
+        raise RestoreError("the backup password in %s is %d characters; %d or more"
+                           % (path, len(password), MIN_PASSWORD))
+    if any(char.isspace() for char in password):
+        raise RestoreError("the backup password in %s contains whitespace" % path)
+    return password
+
+
+def set_restore_status(state_path: Path, **changes: str) -> dict:
+    """One locked read-modify-write of the restore block."""
+    with locked(state_path):
+        state = load_state(state_path)
+        block = state.setdefault("restore", {})
+        for key, value in changes.items():
+            block[key] = value
+        save_state(state_path, state)
+        return state
+
+
+def backup_argv(args: argparse.Namespace, *rest: str) -> list[str]:
+    """`backup.py` with this machine's own paths; the password is in the file."""
+    return [args.backup, *rest, "--repo-file", args.repo_file,
+            "--recovery", args.recovery_file, "--key", args.key,
+            "--known-hosts", args.known_hosts]
+
+
+def systemctl(args: argparse.Namespace, verb: str, unit: str) -> int:
+    """A best-effort unit action: a stopped timer is not a failed restore."""
+    code, detail = run_tool([args.systemctl, verb, unit], timeout=120)
+    print("restore: systemctl %s %s -> %d%s"
+          % (verb, unit, code, (" (%s)" % detail) if detail else ""), flush=True)
+    return code
+
+
+def snapshot_info(args: argparse.Namespace, target: str) -> tuple[int, dict | None]:
+    """The snapshot `target` names: `{"id", "time"}`, resolved before the restore.
+
+    `latest` is resolved **before** the restore's own run, so the id the page
+    shows is the snapshot that was restored and not the fresh one the run after
+    it creates.
+    """
+    code, stdout, _detail = run_tool_full(
+        backup_argv(args, "snapshot-info", target, "--json"),
+        timeout=args.restore_timeout)
+    if code != 0:
+        return code, None
+    try:
+        document = json.loads(stdout or "{}")
+    except ValueError:
+        return code, None
+    if not isinstance(document, dict) or not document.get("id"):
+        return code, None
+    return code, document
+
+
+def restore_main(args: argparse.Namespace) -> int:
+    """The unit's program: restore one snapshot over this machine's home.
+
+    Exit 0 ok, 12 the recovery file's password does not open the repository
+    (restic's own code), 1/3 anything else, 2 not a rebuild. The timer is
+    stopped before the first write that can touch the home, and started only
+    after a restore that succeeded and rewrote the seed's sign-in — so a
+    half-restored home is never snapshotted and a wrong paste never becomes a
+    false "backup failed".
+    """
+    state_path = Path(args.state)
+    state = load_state(state_path)
+    block = restore_block(state)
+    if not is_rebuild(state):
+        print("restore: this machine is not a rebuild (the seed names no previous instance)")
+        return 2
+    try:
+        read_recovery_password(Path(args.recovery_file))
+    except RestoreError as exc:
+        set_restore_status(state_path, status="failed", restore_error=str(exc))
+        print("restore: %s" % exc, flush=True)
+        return 3
+    print("restore: of %s, snapshot %s"
+          % (block.get("previous_instance", "?"),
+             block.get("snapshot") or "latest (the seed names none)"), flush=True)
+    systemctl(args, "stop", args.timer_unit)
+    systemctl(args, "stop", args.agent_unit)
+    set_restore_status(state_path, status="restoring", started_at=utc_now(),
+                       restore_error="")
+
+    code, info = snapshot_info(args, block.get("snapshot") or "latest")
+    if info is None:
+        systemctl(args, "start", args.agent_unit)
+        if code == 12:
+            # `restic snapshots` is where a wrong password is first seen, and
+            # backup.py propagates its 12 for the page's own sentence.
+            set_restore_status(state_path, status="wrong_password",
+                               restore_error="restic exit 12 reading the repository")
+            print("restore: the recovery file does not open this backup (restic 12)",
+                  flush=True)
+            return 12
+        set_restore_status(state_path, status="failed",
+                           restore_error="the repository named no snapshot")
+        print("restore: the repository named no snapshot", flush=True)
+        return 3
+    snapshot = str(info.get("id"))
+    code, detail = run_tool(
+        backup_argv(args, "restore", snapshot, "--target", "/", "--include", args.home),
+        timeout=args.restore_timeout)
+    if code == 12:
+        systemctl(args, "start", args.agent_unit)
+        set_restore_status(state_path, status="wrong_password",
+                           restore_error="restic exit 12: %s" % (detail or "wrong password"))
+        print("restore: the recovery file does not open this backup (restic 12)", flush=True)
+        return 12
+    if code != 0:
+        systemctl(args, "start", args.agent_unit)
+        set_restore_status(state_path, status="failed",
+                           restore_error="restic restore exited %d: %s" % (code, detail))
+        print("restore: restic restore exited %d" % code, flush=True)
+        return code
+
+    # The restore put back the backup night's `.env`, i.e. the verifier of the
+    # password the user may have retired. The seed's verifier goes back before
+    # the page offers the sign-in (ADR-backup §6, ADR-004 §5.3).
+    seed_hash = block.get("sign_in_hash") or ""
+    if seed_hash:
+        try:
+            write_env_hash(Path(args.env_file), seed_hash)
+            print("restore: the sign-in hash is the seed's verifier again", flush=True)
+        except SystemExit as exc:
+            systemctl(args, "start", args.agent_unit)
+            set_restore_status(state_path, status="failed",
+                               restore_error="the sign-in hash was not written: %s" % exc)
+            print("restore: %s" % exc, flush=True)
+            return 1
+    systemctl(args, "start", args.agent_unit)
+
+    # One fresh snapshot so the newest run in the repository is this machine's
+    # and its ExecStartPost heartbeat tells HQ the restore finished (ADR-005
+    # §5.3). A failure here is recorded, not fatal: the data is back.
+    run_code, run_detail = run_tool(
+        backup_argv(args, "run", "--home", args.home,
+                    "--slug", block.get("slug") or "", "--status", args.status_file),
+        timeout=args.restore_timeout)
+    systemctl(args, "start", args.timer_unit)
+    set_restore_status(
+        state_path, status="ok", snapshot_id=snapshot,
+        snapshot_time=str(info.get("time") or ""), restored_at=utc_now(),
+        restore_error=("" if run_code == 0 else
+                       "the first snapshot after the restore exited %d: %s"
+                       % (run_code, run_detail)))
+    print("restore: ok, snapshot %s of %s" % (snapshot[:12], info.get("time") or "?"),
+          flush=True)
+    return 0
+
+
 # ------------------------------------------------------------------- rendering
 
 def page_text(path: Path) -> str:
@@ -5010,9 +5591,11 @@ def wordmark(keep: str) -> str:
     sign-in was never set and opening ``/`` would only meet a password prompt
     no one can answer. ``form`` and ``signin`` are the two ways the visit
     arrives — a classic setup or the B-once login — and both stay plain: the
-    visitor has not typed anything yet.
+    visitor has not typed anything yet. The restore's two working states stay
+    plain for the same reason: the home is empty until the snapshot is back.
     """
-    if keep in ("form", "signin", "reset", "refused-set", "refused-unknown"):
+    if keep in ("form", "signin", "reset", "refused-set", "refused-unknown",
+                "restore", "restoring"):
         return '<span class="brand">Odile</span>'
     return '<a class="brand" href="/">Odile</a>'
 
@@ -5031,7 +5614,8 @@ def password_error(password: str, repeat: str) -> FieldError | None:
 def render(template: str, keep: str, *, title: str, error: FieldError | None = None,
            notice: str = "", token: str = "", username: str = DEFAULT_USERNAME,
            code: str = "", recovery: str = "", recovery_file: str = "",
-           heading: str = "") -> str:
+           heading: str = "", snapshot_id: str = "", snapshot_time: str = "",
+           refresh: str = "") -> str:
     """Keep one state block, drop the rest, then fill the slots.
 
     Values go in last, so a literal ``{{TOKEN}}`` typed by a user is never
@@ -5055,10 +5639,14 @@ def render(template: str, keep: str, *, title: str, error: FieldError | None = N
             body = body.replace("<!--%s-error-->" % field, "")
     body = body.replace("<!--notice-->", notice_slot(notice))
     body = body.replace("{{CODE_ATTRS}}", field_attrs("code", error))
+    body = body.replace("{{RECOVERY_ATTRS}}", field_attrs("recovery", error))
     body = body.replace("{{PASSWORD_ATTRS}}", field_attrs("password", error, "password-hint"))
     # The sign-in block renders no hint, so its field points at the error only.
     body = body.replace("{{SIGNIN_PASSWORD_ATTRS}}", field_attrs("password", error))
     body = body.replace("{{PASSWORD2_ATTRS}}", field_attrs("password2", error))
+    body = body.replace("{{ID}}", html.escape(snapshot_id))
+    body = body.replace("{{TIME}}", html.escape(snapshot_time))
+    body = body.replace("{{REFRESH}}", refresh)
     body = body.replace("{{TITLE}}", html.escape(title))
     body = body.replace("{{DONE_HEADING}}", html.escape(heading))
     body = body.replace("{{RECOVERY}}", html.escape(recovery))
@@ -5237,7 +5825,8 @@ class FirstVisit:
                  attest: Path = Path(DEFAULT_ATTEST),
                  report_command: list[str] | None = None,
                  icons: Path = Path(DEFAULT_ICONS),
-                 push_command: list[str] | None = None):
+                 push_command: list[str] | None = None,
+                 restore_command: list[str] | None = None):
         self.state = state
         self.env = env
         self.page = page
@@ -5252,6 +5841,7 @@ class FirstVisit:
         self.report_command = report_command or []
         self.icons = icons
         self.push_command = push_command or []
+        self.restore_command = restore_command or []
 
     # -- helpers ---------------------------------------------------------
 
@@ -5390,6 +5980,81 @@ class FirstVisit:
         body = render(self.template(), "signin", title="Sign in — Odile",
                       error=error, notice=notice, username=self.username())
         return 200, body
+
+    # -- the rebuild's restore (ODL-937) ---------------------------------
+
+    def start_restore(self) -> bool:
+        """Start the restore unit; True when the command accepted the job.
+
+        The command is ``systemctl start --no-block odile-restore.service``, so
+        a True answer means systemd took the job, not that the restore
+        finished: the status page polls the state the unit writes.
+        """
+        if not self.restore_command:
+            return False
+        try:
+            result = subprocess.run(
+                self.restore_command, capture_output=True, text=True, timeout=60,
+                env={"PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+                     "LANG": "C.UTF-8"},
+            )
+        except (OSError, subprocess.SubprocessError) as exc:
+            print("first-visit: the restore did not start: %s" % exc,
+                  file=sys.stderr, flush=True)
+            return False
+        if result.returncode != 0:
+            detail = (result.stderr or result.stdout).strip().splitlines()
+            # The command *is* the restore when it runs synchronously (a stub,
+            # or `--restore-command` naming this program). Its exit code is the
+            # restore's outcome and is already in the state; only a command
+            # that could not run at all fails the POST.
+            print("first-visit: the restore command exited %d: %s"
+                  % (result.returncode, detail[-1] if detail else "no output"),
+                  flush=True)
+        print("first-visit: the restore was started", flush=True)
+        return True
+
+    def restore_form(self, error: FieldError | None = None,
+                     notice: str = "") -> tuple[int, str]:
+        """The paste form: one textarea, the whole recovery file, no token."""
+        body = render(self.template(), "restore", title="Your machine is back — Odile",
+                      error=error, notice=notice)
+        return 200, body
+
+    def restoring_page(self) -> tuple[int, str]:
+        """The status page while the unit runs; its own meta refresh polls."""
+        body = render(self.template(), "restoring", title="Restoring your data — Odile",
+                      refresh=RESTORE_REFRESH_META)
+        return 200, body
+
+    def restored_page(self, block: dict) -> tuple[int, str]:
+        """The snapshot that came back, before any sign-in is offered.
+
+        The id is the first 12 hex characters — the same substring the account
+        page shows — so the owner's check is one string against another.
+        """
+        body = render(self.template(), "restored", title="Your data is back — Odile",
+                      snapshot_id=str(block.get("snapshot_id") or "")[:12],
+                      snapshot_time=str(block.get("snapshot_time") or ""))
+        return 200, body
+
+    def recovery_for_this_machine(self, block: dict, password: str,
+                                  host: str, secure: bool) -> str:
+        """The paste's password in this machine's file: new instance, new cert.
+
+        The repository, the pinned host-key line and the read-only key come
+        from the seed (the installer's state block), never from the paste: a
+        file from another machine that got past the tenant check still cannot
+        change what this machine opens.
+        """
+        fingerprint = certificate_sha256(host, self.caddy_stores) if secure else None
+        return compose_recovery(
+            str(block.get("slug") or ""), str(block.get("instance_id") or ""),
+            password, fingerprint, host,
+            repo=str(block.get("repo_url") or ""),
+            host_key=str(block.get("host_key") or ""),
+            host_key_line=str(block.get("host_key_line") or ""),
+            readonly_key=str(block.get("readonly_key") or ""))
 
     def reset_form(self, error: FieldError | None = None, code: str = "",
                    notice: str = "") -> tuple[int, str]:
@@ -5550,6 +6215,16 @@ def build_handler(service: FirstVisit):
         def do_GET(self):
             self._get_path(head=False)
 
+        def _redirect(self, location: str) -> None:
+            """A 303 after a POST, so a reload re-reads the status page."""
+            self.send_response(303)
+            self.send_header("Location", location)
+            self.send_header("Content-Length", "0")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Pragma", "no-cache")
+            self.send_header("Referrer-Policy", "no-referrer")
+            self.end_headers()
+
         # -- GET ---------------------------------------------------------
 
         def _load_state(self) -> dict | None:
@@ -5639,6 +6314,45 @@ def build_handler(service: FirstVisit):
                                         cache=ICON_CACHE if code == 200 else "no-store")
             if path in ("/first-visit/recovery", "/first-visit/recovery/"):
                 return self._recovery_page(head, query)
+            if path in ("/first-visit/restoring", "/first-visit/restoring/"):
+                # The restore's own status page (ODL-937): a meta refresh every
+                # five seconds, no JavaScript, and the id it restored before the
+                # sign-in is offered.
+                state = self._load_state()
+                if state is None:
+                    return
+                if not is_rebuild(state):
+                    return self._send(404, "not found\n", head, "text/plain; charset=utf-8")
+                status = restore_status(state)
+                if status == "restoring":
+                    code, body = service.restoring_page()
+                elif status == "waiting":
+                    code, body = service.restore_form()
+                elif status == "ok":
+                    code, body = service.restored_page(restore_block(state))
+                elif status == "wrong_password":
+                    code, body = service.restore_form(FieldError(
+                        RESTORE_WRONG_COPY, RESTORE_PASTE_FIELD, (RESTORE_PASTE_FIELD,)))
+                else:
+                    code, body = service.restore_form(
+                        notice="The restore did not finish. Try again.")
+                return self._send(code, body, head)
+            if path in ("/first-visit/restore", "/first-visit/restore/"):
+                state = self._load_state()
+                if state is None:
+                    return
+                if not is_rebuild(state):
+                    return self._send(404, "not found\n", head, "text/plain; charset=utf-8")
+                if restore_status(state) == "ok":
+                    return self._redirect("/first-visit")
+                if restore_status(state) == "restoring":
+                    # A reload or Back during the restore lands on the status
+                    # page, never on a live paste box that would start the unit
+                    # a second time.
+                    code, body = service.restoring_page()
+                    return self._send(code, body, head)
+                code, body = service.restore_form()
+                return self._send(code, body, head)
             if path in ("/first-visit", "/first-visit/"):
                 # B-once (ODL-925): no first-visit link carries the setup
                 # token, and no page accepts one. Any `?t=`, valid, unknown or
@@ -5655,7 +6369,15 @@ def build_handler(service: FirstVisit):
                 state = self._load_state()
                 if state is None:
                     return
-                if signin_is_set(state):
+                if paste_needed(state):
+                    # A rebuilt machine's home is empty: the recovery file
+                    # comes before the sign-in (ADR-004 §5.3). A reload while
+                    # the unit runs serves the status page, not the paste.
+                    if restore_status(state) == "restoring":
+                        code, body = service.restoring_page()
+                    else:
+                        code, body = service.restore_form()
+                elif signin_is_set(state):
                     code, body = service.signin_form()
                 else:
                     code, body = service.form()
@@ -5691,14 +6413,16 @@ def build_handler(service: FirstVisit):
             except ValueError:
                 length = 0
             if path not in ("/first-visit", "/first-visit/reset",
-                            "/first-visit/recovery", "/first-visit/replace"):
+                            "/first-visit/recovery", "/first-visit/replace",
+                            "/first-visit/restore"):
                 # Drain a small body so the next request on this connection
                 # starts where it should; a large one is not worth reading.
                 if 0 < length <= MAX_BODY:
                     self.rfile.read(length)
                 return self._send(405, "method not allowed\n",
                                   ctype="text/plain; charset=utf-8", close=length > MAX_BODY)
-            if length <= 0 or length > MAX_BODY:
+            limit = RESTORE_MAX_PASTE * 3 if path == "/first-visit/restore" else MAX_BODY
+            if length <= 0 or length > limit:
                 return self._send(413, "That request was too large.\n",
                                   ctype="text/plain; charset=utf-8", close=True)
             raw = self.rfile.read(length).decode("utf-8", "replace")
@@ -5707,6 +6431,8 @@ def build_handler(service: FirstVisit):
                 return self._too_many(path)
             if path == "/first-visit":
                 return self._set_signin(fields)
+            if path == "/first-visit/restore":
+                return self._restore_paste(fields)
             if path == "/first-visit/recovery":
                 return self._recover_file(fields)
             if path == "/first-visit/replace":
@@ -5726,10 +6452,14 @@ def build_handler(service: FirstVisit):
                 state = self._load_state()
                 if state is None:
                     return
-                if signin_is_set(state):
+                if paste_needed(state):
+                    code, body = service.restore_form(notice=notice)
+                elif signin_is_set(state):
                     code, body = service.signin_form(notice=notice)
                 else:
                     code, body = service.form(notice=notice)
+            elif path == "/first-visit/restore":
+                code, body = service.restore_form(notice=notice)
             elif path == "/first-visit/recovery":
                 code, body = service.recover_form(notice=notice)
             elif path == "/first-visit/replace":
@@ -5830,6 +6560,54 @@ def build_handler(service: FirstVisit):
                                       code_value, username, self._host(), self._secure(),
                                       download, heading)
             return self._send(code, body)
+
+        def _restore_paste(self, fields: dict[str, list[str]]) -> None:
+            """Take the pasted recovery file: refuse early, write, start, poll.
+
+            The refusals happen **before** anything is written or started: the
+            grammar is the installer's, and the file's own `Tenant:` and
+            `Repository:` lines name another machine before restic could see a
+            password. A refused paste leaves the home and the existing file
+            untouched, so a retry is the same step.
+            """
+            raw = (fields.get(RESTORE_PASTE_FIELD) or [""])[0]
+            host = self._host()
+            secure = self._secure()
+            with locked(service.state):
+                state = self._load_state()
+                if state is None:
+                    return
+                block = restore_block(state)
+                if not is_rebuild(state):
+                    return self._send(404, "not found\n",
+                                      ctype="text/plain; charset=utf-8")
+                parsed, refusal = parse_paste(raw, str(block.get("slug") or ""),
+                                              str(block.get("repo_url") or ""))
+                if refusal:
+                    print("first-visit: recovery file refused (%s)"
+                          % ("another machine" if refusal == RESTORE_OTHER_COPY
+                             else "the password line"), flush=True)
+                    code, body = service.restore_form(FieldError(
+                        refusal, RESTORE_PASTE_FIELD, (RESTORE_PASTE_FIELD,)))
+                    return self._send(code, body)
+                # The file this machine keeps: the paste's password, this
+                # machine's instance and certificate, the seed's repository,
+                # host key and read-only key (ADR-backup §7.2 step 4).
+                write_recovery(service.recovery, service.recovery_for_this_machine(
+                    block, parsed["backup_password"], host, secure))
+                for key in ("snapshot_id", "snapshot_time", "restored_at"):
+                    block[key] = ""
+                block["status"] = "restoring"
+                block["started_at"] = utc_now()
+                block["restore_error"] = ""
+                save_state(service.state, state)
+            if not service.start_restore():
+                set_restore_status(service.state, status="failed",
+                                   restore_error="the restore service did not start")
+                code, body = service.restore_form(
+                    notice="The restore did not start. Try again.")
+                return self._send(code, body)
+            return self._redirect("/first-visit/restoring")
 
         def _recover_file(self, fields: dict[str, list[str]]) -> None:
             """Verify the code at the recovery page and serve the file once.
@@ -5992,6 +6770,32 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--push-command", default=DEFAULT_PUSH_COMMAND,
                         help="command run when a code is minted, to push its hash "
                              "to HQ now; the five-minute timer is the fallback")
+    parser.add_argument("--restore-command", default=DEFAULT_RESTORE_COMMAND,
+                        help="command the rebuild page runs to start the restore "
+                             "unit; empty leaves the paste unsupported")
+    parser.add_argument("--restore", action="store_true",
+                        help="run one restore from the state and the recovery file "
+                             "(the program odile-restore.service runs) and exit")
+    parser.add_argument("--home", default=DEFAULT_HOME,
+                        help="the tenant home the restore includes (default %s)" % DEFAULT_HOME)
+    parser.add_argument("--backup", default=DEFAULT_BACKUP,
+                        help="the tenant backup program (default %s)" % DEFAULT_BACKUP)
+    parser.add_argument("--repo-file", default=DEFAULT_REPO_FILE,
+                        help="the seed-written repository URL (default %s)" % DEFAULT_REPO_FILE)
+    parser.add_argument("--key", default=DEFAULT_BACKUP_KEY,
+                        help="the read-write SFTP key (default %s)" % DEFAULT_BACKUP_KEY)
+    parser.add_argument("--known-hosts", default=DEFAULT_BACKUP_KNOWN_HOSTS,
+                        help="the pinned host-key file (default %s)" % DEFAULT_BACKUP_KNOWN_HOSTS)
+    parser.add_argument("--status-file", default=DEFAULT_BACKUP_STATUS,
+                        help="the backup status record (default %s)" % DEFAULT_BACKUP_STATUS)
+    parser.add_argument("--agent-unit", default=DEFAULT_AGENT_UNIT,
+                        help="the gateway unit the restore stops and starts")
+    parser.add_argument("--timer-unit", default=DEFAULT_TIMER_UNIT,
+                        help="the backup timer the restore stops and starts")
+    parser.add_argument("--systemctl", default="systemctl",
+                        help="the systemd client (a stub in the suite)")
+    parser.add_argument("--restore-timeout", type=int, default=3300,
+                        help="seconds one restore child may run (default 3300)")
     parser.add_argument("--icons", default=DEFAULT_ICONS,
                         help="the website-icon set this service serves "
                              "(default %s)" % DEFAULT_ICONS)
@@ -6001,6 +6805,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def summary(state: dict) -> dict:
+    block = restore_block(state)
     return {
         "version": state["version"],
         "token_sha256": state["token_sha256"][:16] + "…",
@@ -6018,6 +6823,18 @@ def summary(state: dict) -> dict:
         if state.get("download_sha256") else None,
         "download_expires_at": state.get("download_expires_at"),
         "download_used_at": state.get("download_used_at"),
+        # The rebuild block (ODL-937), secret-free: no key and no verifier.
+        "restore": {
+            "rebuild": is_rebuild(state),
+            "status": restore_status(state),
+            "previous_instance": block.get("previous_instance"),
+            "snapshot": block.get("snapshot") or None,
+            "snapshot_id": block.get("snapshot_id") or None,
+            "snapshot_time": block.get("snapshot_time") or None,
+            "started_at": block.get("started_at") or None,
+            "restored_at": block.get("restored_at") or None,
+            "error": block.get("restore_error") or None,
+        } if state.get("restore") else None,
     }
 
 
@@ -6027,9 +6844,12 @@ def main(argv: list[str] | None = None) -> int:
     if args.print_state:
         print(json.dumps(summary(load_state(state_path)), indent=2))
         return 0
+    if args.restore:
+        return restore_main(args)
     reload_command = shlex.split(args.reload_command) if args.reload_command else []
     report_command = shlex.split(args.report_command) if args.report_command else []
     push_command = shlex.split(args.push_command) if args.push_command else []
+    restore_command = (shlex.split(args.restore_command) if args.restore_command else [])
     stores = (tuple(Path(raw) for raw in args.caddy_store) if args.caddy_store
               else tuple(Path(raw) for raw in DEFAULT_CADDY_STORES))
     service = FirstVisit(
@@ -6047,6 +6867,7 @@ def main(argv: list[str] | None = None) -> int:
         report_command=report_command,
         icons=Path(args.icons),
         push_command=push_command,
+        restore_command=restore_command,
     )
     page_text(service.page)  # fail before binding, not on the first visit
     # A machine where ODL-473 has not landed has no verify page; /verify then
@@ -6060,7 +6881,7 @@ def main(argv: list[str] | None = None) -> int:
 if __name__ == "__main__":
     sys.exit(main())
 '''
-FIRST_VISIT_PAGE_SHA256 = "d69f6abb2736b7ae851fa71fc7480224879a54c87ae704a1ad28e68f640bed5e"
+FIRST_VISIT_PAGE_SHA256 = "8203fc990d77b78c90b1f2ae0abb68b5fe31e6623c3359d99bc6d4f0f116690e"
 FIRST_VISIT_PAGE = r'''<!doctype html>
 <html lang="en">
 <head>
@@ -6071,6 +6892,7 @@ FIRST_VISIT_PAGE = r'''<!doctype html>
 <link rel="icon" type="image/png" sizes="32x32" href="/icon-32.png">
 <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png">
 <title>{{TITLE}}</title>
+{{REFRESH}}
 <meta name="description" content="Sign in to your Odile machine.">
 <meta name="color-scheme" content="light">
 <meta name="robots" content="noindex">
@@ -6078,7 +6900,7 @@ FIRST_VISIT_PAGE = r'''<!doctype html>
 <style>
 @font-face{font-family:"Cormorant Garamond";font-style:normal;font-weight:300 700;font-display:swap;src:url(data:font/woff2;base64,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) format("woff2")}
 *{box-sizing:border-box}
-:root{--serif:"Cormorant Garamond","Iowan Old Style","Palatino Linotype",Palatino,Georgia,serif;--text:"Iowan Old Style","Palatino Linotype",Palatino,Georgia,"DejaVu Serif",serif;--paper:#eadfc4;--card:#f2e9d4;--panel:#ddd0ae;--ink:#1c1813;--soft:#4a4136;--oxblood:#6e2a2a;
+:root{--serif:"Cormorant Garamond","Iowan Old Style","Palatino Linotype",Palatino,Georgia,serif;--text:"Iowan Old Style","Palatino Linotype",Palatino,Georgia,"DejaVu Serif",serif;--mono:ui-monospace,"SF Mono","Cascadia Mono","Liberation Mono",Menlo,Consolas,monospace;--paper:#eadfc4;--card:#f2e9d4;--panel:#ddd0ae;--ink:#1c1813;--soft:#4a4136;--oxblood:#6e2a2a;
   --edge:rgba(28,24,19,.55);--ink-hover:#2a241c;--line:rgba(28,24,19,.18);--line-soft:rgba(28,24,19,.10);
   --error:#6e2a2a}
 html{-webkit-text-size-adjust:100%}
@@ -6097,7 +6919,10 @@ main{max-width:720px;margin:0 auto;padding:32px 24px 64px}
 .brand{display:inline-block;padding:12px 0;margin:-12px 0;color:var(--ink);text-decoration:none;
   font-size:2rem;font-weight:500;letter-spacing:-.03em;line-height:.88}
 .brand:focus-visible{outline:2px solid var(--ink);outline-offset:3px}
-h1{margin:0 0 16px;font-size:clamp(2.5rem,5vw,4.1rem);line-height:1.02;letter-spacing:-.025em;font-weight:500}
+h1{margin:0 0 16px;font-size:clamp(2.5rem,5vw,4.1rem);line-height:1.02;letter-spacing:-.025em;font-weight:500;
+  overflow-wrap:anywhere}
+.stamp{display:block;margin-top:8px;font:400 .5em/1.35 var(--mono);
+  overflow-wrap:anywhere}
 p{margin:0 0 16px;max-width:60ch}
 a{color:var(--ink);text-decoration-color:var(--soft);text-underline-offset:2px}
 a:focus-visible{outline:2px solid var(--ink);outline-offset:3px}
@@ -6113,10 +6938,20 @@ a:focus-visible{outline:2px solid var(--ink);outline-offset:3px}
 input[type=text],input[type=password]{display:block;width:100%;min-height:44px;padding:9px 2px 11px;
   background:transparent;color:var(--ink);border:0;border-bottom:1px solid var(--edge);border-radius:0;
   font:400 1.05rem/1.4 ui-monospace,"SF Mono","Cascadia Mono","Liberation Mono",Menlo,Consolas,monospace}
+textarea{display:block;width:100%;min-height:11rem;padding:12px 14px;
+  background:var(--card);color:var(--ink);border:1px solid var(--edge);border-radius:0;resize:vertical;
+  font:400 12.5px/1.55 var(--mono);
+  overflow-wrap:anywhere}
+textarea:focus{outline:2px solid var(--ink);outline-offset:3px;border-color:var(--ink)}
+textarea[aria-invalid=true]{border-color:var(--error)}
 input[type=text]:focus,input[type=password]:focus{outline:2px solid var(--ink);outline-offset:3px;
   border-bottom-color:var(--ink)}
 input[aria-invalid=true]{border-bottom-color:var(--error)}
 .error{margin:8px 0 0;font-size:.94rem;font-style:italic;line-height:1.4;color:var(--error)}
+.progress{position:relative;height:2px;margin:0 0 16px;max-width:60ch;background:var(--line);
+  overflow:hidden}
+.progress span{position:absolute;top:0;bottom:0;left:0;width:100%;background:var(--ink);
+  transform-origin:left center;animation:progress 1.2s linear 1 forwards}
 .fixed{margin:0 0 16px;font-family:ui-monospace,"SF Mono","Cascadia Mono","Liberation Mono",Menlo,Consolas,monospace;
   font-size:1rem;overflow-wrap:anywhere}
 .primary{display:inline-flex;align-items:center;justify-content:center;min-height:44px;padding:0 24px;
@@ -6171,7 +7006,9 @@ section{margin:0 0 8px}
 @media (max-width:400px){
   .code{font-size:1.02rem;letter-spacing:.02em}
 }
-@media (prefers-reduced-motion:reduce){.primary{transition:none}.download{transition:none}}
+@media (prefers-reduced-motion:reduce){.primary{transition:none}.download{transition:none}
+  .progress span{animation:none;transform:scaleX(.5)}}
+@keyframes progress{from{transform:scaleX(0)}to{transform:scaleX(1)}}
 h1,h2,h3,.brand,.mark,.wordmark,.focus{font-family:var(--serif)}
 </style>
 </head>
@@ -6220,6 +7057,32 @@ h1,h2,h3,.brand,.mark,.wordmark,.focus{font-family:var(--serif)}
   </form>
   <p class="foot">Your Odile password opens your machine and your account page. You chose it when you registered. It is the only app-layer gate: no 2FA in alpha.0.</p>
 <!--/signin-->
+<!--restore-->
+  <h1>Your machine is back.</h1>
+  <p class="lede">Paste the recovery file you saved at your first sign-in. It opens your backup.</p>
+  <form method="post" action="/first-visit/restore">
+    <div class="field">
+      <label for="recovery">Recovery file</label>
+      <textarea id="recovery" name="recovery" rows="8" spellcheck="false" autocomplete="off"
+                required{{RECOVERY_ATTRS}}></textarea>
+      <!--recovery-error-->
+    </div>
+    <!--notice-->
+    <button class="primary" type="submit">Restore</button>
+  </form>
+<!--/restore-->
+<!--restoring-->
+  <h1>Restoring your data…</h1>
+  <p class="lede">The snapshot is coming back over the network. This page refreshes every five seconds.</p>
+  <div class="progress" aria-hidden="true"><span></span></div>
+<!--/restoring-->
+<!--restored-->
+  <h1>Your data is back.<span class="stamp"> Snapshot {{ID}} of {{TIME}}.</span></h1>
+  <p class="lede">Your files, your agent's memory and its settings come back. The system and its apps were rebuilt.</p>
+  <div class="act">
+    <a class="primary" href="/first-visit">Sign in</a>
+  </div>
+<!--/restored-->
 <!--signed-in-->
   <h1>You are signed in.</h1>
   <p class="lede">Your recovery code is unchanged; using it does not spend it.</p>
@@ -13299,7 +14162,7 @@ Before={unit}.service
 [Service]
 Type=simple
 User=root
-ExecStart=/usr/bin/python3 {source} --bind 127.0.0.1 --port {port} --state {state} --env-file {env_file} --page {page} --icons {icons} --report-command 'systemctl restart --no-block odile-access-report.service' --recovery-file {recovery} --push-command 'systemctl start --no-block odile-recovery-push.service' --reload-command 'systemctl restart {unit}'
+ExecStart=/usr/bin/python3 {source} --bind 127.0.0.1 --port {port} --state {state} --env-file {env_file} --page {page} --icons {icons} --report-command 'systemctl restart --no-block odile-access-report.service' --recovery-file {recovery} --push-command 'systemctl start --no-block odile-recovery-push.service' --restore-command 'systemctl start --no-block odile-restore.service' --reload-command 'systemctl restart {unit}'
 Restart=on-failure
 RestartSec=3
 NoNewPrivileges=true
@@ -13312,6 +14175,41 @@ ReadWritePaths={hermes_home} {etc}
 
 [Install]
 WantedBy=multi-user.target
+"""
+
+RESTORE_UNIT_TEMPLATE = """\
+# Odile restore — one snapshot over the rebuilt home (ODL-937, ADR-backup §7.2);
+# installed by odile-install. Edit the program, not the unit.
+#
+# The first-visit page writes /etc/odile/recovery.txt and starts this oneshot.
+# It is one program, not a shell pipeline: the same file then stops the backup
+# timer before the first write (so a 02:00-06:00 BX11 run cannot snapshot a
+# half-restored home), stops the agent, restores the seed's snapshot with
+# `backup.py restore <id> --target / --include <home>`, writes the seed's
+# sign-in verifier over the restored .env, starts the agent, takes one fresh
+# snapshot and starts the timer again. /etc/odile is never in the restore.
+[Unit]
+Description=Odile restore — one snapshot over the rebuilt home
+Documentation=file:///usr/local/lib/odile/first_visit.py
+After=network-online.target
+Wants=network-online.target
+# ADR-backup §7.4: a rebuilt machine has no recovery file until the user
+# pastes it. This unit is admitted only after the paste wrote it.
+ConditionPathExists={recovery}
+
+[Service]
+Type=oneshot
+User=root
+ExecStart=/usr/bin/python3 {source} --restore --state {state} --env-file {env_file} --recovery-file {recovery} --home {home} --repo-file {repo_file} --backup {backup} --key {key} --known-hosts {known_hosts} --status-file {status} --agent-unit {agent} --timer-unit {timer}
+Environment=HOME=/root
+# The measured repository is 1.017 GB; a transatlantic restore is minutes.
+TimeoutStartSec=3600
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+# The home is the target; the state and the backup record are written beside it.
+ReadWritePaths={home} {etc} {var}
 """
 
 RECOVERY_PUSH_SERVICE_TEMPLATE = """\
@@ -14194,6 +15092,11 @@ class Layout:
     @property
     def first_visit_unit(self) -> Path:
         return self.unit_dir / "odile-first-visit.service"
+
+    @property
+    def restore_unit(self) -> Path:
+        """The rebuild's restore oneshot the first-visit page starts (ODL-937)."""
+        return self.unit_dir / "odile-restore.service"
 
     @property
     def heartbeat_source(self) -> Path:
@@ -15115,18 +16018,29 @@ def current_ids(layout: Layout) -> tuple[int, int]:
 # passwords, recovery, certificate
 
 
-def render_recovery(slug: str, instance_id: str, backup_password: str,
-                    fingerprint: str | None, fqdn: str, written: str | None = None) -> str:
-    cert = fingerprint or "(pending — filled in when you download this file on the first-visit page)"
-    return f"""\
+# The recovery file's text (ODL-937). This is the same template the
+# first-visit service carries (`compose_recovery`): the installer writes the
+# file at install, and a rebuilt machine's paste re-writes it. tests/
+# test_first_visit.py pins the two strings equal, so the grammar cannot drift.
+RECOVERY_PENDING = "(pending — filled in when you download this file on the first-visit page)"
+RECOVERY_TEXT = """\
 Odile recovery file
 ===================
 Tenant:              {slug}
 Instance:            {instance_id}
-Written:             {written or utc_now()}
+Written:             {written}
 
 Backup password:     {backup_password}
-Certificate SHA-256: {cert}
+Certificate SHA-256: {certificate}
+Repository:          {repository}
+Host key:            {host_key}
+Host key line:       {host_key_line}
+Read-only key:
+{readonly_key}
+
+Read-only key commands (restic 0.18; the read-only key cannot write, so every
+command carries --no-lock):
+{readonly_commands}
 
 This file is the only copy of the backup password. Download it on this machine's
 first-visit page and keep it somewhere you can reach when the machine is gone.
@@ -15134,9 +16048,85 @@ The file stays on the machine; ask your agent to show it again if you need it.
 
 Lose it and the encrypted backup cannot be opened; Odile holds no copy.
 """
+RECOVERY_NO_REPO = "(none — this machine was installed without a backup repository)"
+RECOVERY_NO_KEY = "(none — this machine was installed without a read-only key)"
+REPO_LOGIN_RE = re.compile(r"^(?:sftp:(?://)?)?([^@/:]+)@([^:/]+)")
+
+
+def repo_login(repo: str) -> str:
+    """`user@host` from an sftp repository URL, or '' when it is not one."""
+    match = REPO_LOGIN_RE.match(repo or "")
+    return "%s@%s" % (match.group(1), match.group(2)) if match else ""
+
+
+def readonly_commands(repo: str, readonly_key: str) -> str:
+    """The two commands a read-only key can run; both carry `--no-lock`."""
+    login = repo_login(repo)
+    if not repo or not readonly_key.strip() or login == "":
+        return "(none — this file carries no read-only key for a repository)"
+    command = ('ssh -i ~/odile-ro -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes '
+               '-s sftp ' + login)
+    return ("  restic -r %s --no-lock -o sftp.command=\"%s\" snapshots\n"
+            "  restic -r %s --no-lock -o sftp.command=\"%s\" restore latest "
+            "--target ~/odile-restore" % (repo, command, repo, command))
+
+
+def host_key_fingerprint(line: str) -> str:
+    """`SHA256:<b64>` of a host-key line's blob, or '' (what ssh-keygen prints).
+
+    Accepts both shapes in this tree: a `known_hosts` line (`host type blob`)
+    and an `authorized_keys`/`.pub` line (`type blob comment`). The digest is
+    SHA-256 over the decoded blob, base64 without padding.
+    """
+    parts = (line or "").split()
+    if len(parts) >= 2 and parts[0].startswith(("ssh-", "ecdsa-", "sk-")):
+        encoded = parts[1]
+    elif len(parts) >= 3:
+        encoded = parts[2]
+    else:
+        return ""
+    try:
+        blob = base64.b64decode(encoded + "=" * (-len(encoded) % 4), validate=True)
+    except (ValueError, TypeError):
+        return ""
+    if not blob:
+        return ""
+    return "SHA256:" + base64.b64encode(hashlib.sha256(blob).digest()).decode("ascii").rstrip("=")
+
+
+def render_recovery(slug: str, instance_id: str, backup_password: str,
+                    fingerprint: str | None, fqdn: str, written: str | None = None,
+                    repo: str = "", host_key: str = "", host_key_line: str = "",
+                    readonly_key: str = "") -> str:
+    """The recovery file for this machine, byte for byte.
+
+    Four things travel together so the user needs nothing from HQ to get their
+    data back: the repository URL, the pinned host-key line and the read-only
+    key (ADR-backup §5) beside the backup password and this machine's
+    certificate. `fqdn` is kept for the caller's signature and unused.
+    """
+    return RECOVERY_TEXT.format(
+        slug=slug,
+        instance_id=instance_id,
+        written=written or utc_now(),
+        backup_password=backup_password,
+        certificate=fingerprint or RECOVERY_PENDING,
+        repository=repo or RECOVERY_NO_REPO,
+        host_key=host_key or host_key_fingerprint(host_key_line) or "(none)",
+        host_key_line=host_key_line or "(none)",
+        readonly_key=readonly_key.strip() or RECOVERY_NO_KEY,
+        readonly_commands=readonly_commands(repo, readonly_key),
+    )
 
 
 def parse_recovery(text: str) -> dict[str, str]:
+    """The file's fields; line-anchored, so a key block between them is fine.
+
+    A multi-line read-only key sits between the other fields, so every pattern
+    here is line-anchored rather than a whole-file split. A file written
+    before the repository, host-key and key lines existed still parses to its
+    password and certificate.
+    """
     found: dict[str, str] = {}
     match = re.search(r"^Written:\s*(.+?)\s*$", text, re.M)
     if match:
@@ -15147,12 +16137,25 @@ def parse_recovery(text: str) -> dict[str, str]:
     match = re.search(r"^Certificate SHA-256:\s*(.+?)\s*$", text, re.M)
     if match:
         found["certificate"] = match.group(1)
+    match = re.search(r"^Repository:\s*(.+?)\s*$", text, re.M)
+    if match:
+        found["repository"] = match.group(1)
+    match = re.search(r"^Host key:\s*(.+?)\s*$", text, re.M)
+    if match:
+        found["host_key"] = match.group(1)
+    match = re.search(r"^Host key line:\s*(.+?)\s*$", text, re.M)
+    if match:
+        found["host_key_line"] = match.group(1)
+    match = re.search(r"^Read-only key:[ \t]*\n(.*?)(?:\n\n|\Z)", text, re.M | re.S)
+    if match:
+        found["readonly_key"] = match.group(1).strip()
     return found
 
 
 def ensure_recovery(layout: Layout, slug: str, instance_id: str, fingerprint: str | None,
                     dry: bool, supplied_password: str | None = None,
-                    previous_instance: str | None = None) -> tuple[bool, str, bool]:
+                    previous_instance: str | None = None, repo: str = "",
+                    host_key_line: str = "", readonly_key: str = "") -> tuple[bool, str, bool]:
     """Write the recovery file; return (changed, backup_password, created).
 
     ADR-004 §7.4: on a **rebuild** the file is the user's paste, not something
@@ -15161,6 +16164,10 @@ def ensure_recovery(layout: Layout, slug: str, instance_id: str, fingerprint: st
     file is absent, nothing is written and the returned password is empty. Once
     the file exists (the paste, or a fresh install) the run keeps its password
     and refreshes only the instance and certificate lines.
+
+    The repository, the pinned host-key line and the read-only key (ODL-937,
+    ADR-backup §5) travel with the file on a fresh install too: they are what
+    makes "the file opens your backup" true on a laptop that has nothing else.
     """
     if previous_instance and not layout.recovery.is_file():
         print(f"skip         {layout.recovery} (rebuild of {previous_instance}; the paste "
@@ -15177,7 +16184,8 @@ def ensure_recovery(layout: Layout, slug: str, instance_id: str, fingerprint: st
     if fingerprint is None and existing.get("certificate", "").startswith("sha256:"):
         fingerprint = existing["certificate"]
     desired = render_recovery(slug, instance_id, backup, fingerprint, layout.fqdn or "<host>",
-                              written=existing.get("written"))
+                              written=existing.get("written"), repo=repo,
+                              host_key_line=host_key_line, readonly_key=readonly_key)
     created = not layout.recovery.is_file()
     if current_text == desired:
         print(f"same         {layout.recovery} (backup password, certificate {'present' if fingerprint else 'placeholder'})")
@@ -15602,7 +16610,8 @@ def ensure_manifest_group(layout: Layout, dry: bool) -> bool:
 
 
 def first_visit_state(token: str, created_at: str | None = None,
-                      signin_set: bool = False) -> bytes:
+                      signin_set: bool = False,
+                      restore: dict | None = None) -> bytes:
     """The state a first visit starts from; the token's SHA-256 only.
 
     The token is minted for the user (ODL-455: the setup token the ready page
@@ -15611,6 +16620,13 @@ def first_visit_state(token: str, created_at: str | None = None,
     ``signin_set`` is true only for a seeded run: the .env then holds the
     seed's verifier, which *is* the owner's sign-in, and the state says so
     before the first visit (ODL-925).
+
+    ``restore`` is the rebuild block (ODL-937): the previous instance, this
+    one, the repository, the snapshot the window armed (or ""), the pinned
+    host-key line, the read-only key and the seed's sign-in verifier. It is
+    what makes the first visit ask for the recovery file **before** the sign-in
+    and restore the data before letting anyone in. It holds no plaintext
+    password: the paste supplies that.
     """
     if not TOKEN_RE.match(token):
         raise SystemExit("error: the first-visit token is not 64 lowercase hex")
@@ -15626,6 +16642,8 @@ def first_visit_state(token: str, created_at: str | None = None,
         "recovery_issued_at": None,
         "recovery_used_at": None,
     }
+    if restore:
+        state["restore"] = restore
     return (json.dumps(state, indent=2, sort_keys=True) + "\n").encode("utf-8")
 
 
@@ -15653,7 +16671,8 @@ def pinned_icons() -> list[tuple[str, str, bytes]]:
 
 
 def ensure_first_visit(layout: Layout, token: str, dry: bool,
-                       signin_set: bool = False) -> bool:
+                       signin_set: bool = False,
+                       restore: dict | None = None) -> bool:
     """Write the service, its page, the icon set and — once — the token hash.
 
     The page is the reviewed `web/first-visit.html`, the program is the
@@ -15663,6 +16682,9 @@ def ensure_first_visit(layout: Layout, token: str, dry: bool,
     icon root (ODL-505), where it serves them at the paths both pages link.
     On a re-run the state file is left exactly as it is: a machine whose
     sign-in is already set must not reopen the page.
+
+    ``restore`` (ODL-937) travels into the state's rebuild block on the first
+    write, so a rebuilt machine's page knows it is one before any request.
     """
     changed = False
     source = FIRST_VISIT_SOURCE.encode("utf-8")
@@ -15709,7 +16731,8 @@ def ensure_first_visit(layout: Layout, token: str, dry: bool,
             "--token, or a recovery kit that carries setup_token"
         )
     changed |= ensure_file(layout.first_visit_state,
-                           first_visit_state(token, signin_set=signin_set), 0o600,
+                           first_visit_state(token, signin_set=signin_set,
+                                             restore=restore), 0o600,
                            *current_ids(layout), dry,
                            detail="(token sha256 only; no plaintext)")
     return changed
@@ -16725,6 +17748,22 @@ def ensure_units(layout: Layout, slug: str, dry: bool, first_visit: bool = False
         changed |= ensure_file(layout.first_visit_unit, first_visit_unit.encode("utf-8"),
                                0o644, *current_ids(layout), dry,
                                detail="(first visit, loopback only)")
+        # The rebuild's restore oneshot (ODL-937). The page starts it by name;
+        # it reads the same state, the same recovery file and the same backup
+        # program as the nightly unit, so a stale copy cannot drift.
+        restore_unit = RESTORE_UNIT_TEMPLATE.format(
+            source=layout.first_visit_source, state=layout.first_visit_state,
+            env_file=layout.hermes_home / ".env", recovery=layout.recovery,
+            home=layout.home, repo_file=layout.backup_repo_file,
+            backup=layout.backup_source,
+            key=layout.backup_key_dir / "id_ed25519",
+            known_hosts=layout.backup_key_dir / "known_hosts",
+            status=layout.backup_status, agent=layout.unit_name,
+            timer="odile-backup-tenant.timer", etc=layout.etc, var=layout.var,
+        )
+        changed |= ensure_file(layout.restore_unit, restore_unit.encode("utf-8"),
+                               0o644, *current_ids(layout), dry,
+                               detail="(restore one snapshot, root only)")
         # The recovery-code push (ODL-926): one code verifies at HQ and here,
         # so a replace must reach the account. The timer retries every five
         # minutes until HQ acknowledges; the first-visit page asks for the same
@@ -17877,6 +18916,78 @@ def self_test() -> int:
         check.ok("the first-visit unit asks for the recovery push when a code is minted",
                  "--push-command 'systemctl start --no-block odile-recovery-push.service'"
                  in first_unit)
+        # The restore (ODL-937): the first-visit unit names the oneshot, and the
+        # oneshot's own render is checked here so a wrong path cannot ship.
+        check.ok("the first-visit unit starts the restore by name",
+                 "--restore-command 'systemctl start --no-block odile-restore.service'"
+                 in first_unit)
+        restore_unit = RESTORE_UNIT_TEMPLATE.format(
+            source=Path("/usr/local/lib/odile/first_visit.py"),
+            state=Path("/etc/odile/first-visit.json"),
+            env_file=Path("/home/odile/.hermes/.env"),
+            recovery=Path("/etc/odile/recovery.txt"),
+            home=Path("/home/odile"),
+            repo_file=Path("/etc/odile/backup-repo.txt"),
+            backup=Path("/usr/local/lib/odile/backup.py"),
+            key=Path("/etc/odile/backup-ssh/id_ed25519"),
+            known_hosts=Path("/etc/odile/backup-ssh/known_hosts"),
+            status=Path("/var/lib/odile/backup.json"),
+            agent="odile-agent", timer="odile-backup-tenant.timer",
+            etc=Path("/etc/odile"), var=Path("/var/lib/odile"),
+        )
+        check.ok("the restore unit is root-only, oneshot, and admitted only after the paste",
+                 "Type=oneshot" in restore_unit and "User=root" in restore_unit
+                 and "ConditionPathExists=/etc/odile/recovery.txt" in restore_unit)
+        check.ok("the restore unit runs this program's --restore mode",
+                 "first_visit.py --restore --state /etc/odile/first-visit.json" in restore_unit
+                 and "--home /home/odile" in restore_unit
+                 and "--backup /usr/local/lib/odile/backup.py" in restore_unit
+                 and "--agent-unit odile-agent --timer-unit odile-backup-tenant.timer"
+                 in restore_unit)
+        check.ok("the restore unit writes only the home, the state and the backup record",
+                 "ReadWritePaths=/home/odile /etc/odile /var/lib/odile" in restore_unit
+                 and "ProtectHome=read-only" in restore_unit)
+        # The recovery file's grammar (ODL-937): the repository, the pinned host
+        # key and the read-only key travel with the password, and the read-only
+        # key's own commands carry --no-lock (ADR-backup §5).
+        sample_key = "[REDACTED PRIVATE KEY]"
+        sample_line = ("u728180-sub1.your-storagebox.de ssh-ed25519 "
+                       "AAAAC3NzaC1lZDI1NTE5AAAAIOdileTestHostKeyBlob00000000000000")
+        recovery_text = render_recovery(
+            "odl-test", "srv-1", "B" * 32, "sha256:abcd", "odl-test.odile.fyi",
+            written="2026-11-27T00:00:00Z",
+            repo="sftp:u728180-sub1@u728180-sub1.your-storagebox.de:tenants/odl-test",
+            host_key_line=sample_line, readonly_key=sample_key)
+        recovered = parse_recovery(recovery_text)
+        check.ok("the recovery file carries the repository, the host key and the read-only key",
+                 recovered.get("repository", "").startswith("sftp:u728180-sub1@")
+                 and recovered.get("host_key_line") == sample_line
+                 and recovered.get("readonly_key") == sample_key)
+        check.ok("the recovery file's read-only commands carry --no-lock",
+                 "--no-lock" in recovery_text
+                 and recovery_text.count("--no-lock") >= 2)
+        check.ok("the recovery file's host key line has its fingerprint",
+                 recovered.get("host_key", "").startswith("SHA256:"))
+        check.ok("a recovery file written before these lines still parses",
+                 parse_recovery(
+                     "Odile recovery file\nTenant: odl-test\n"
+                     "Backup password:     " + "B" * 32 + "\n"
+                     "Certificate SHA-256: sha256:abcd\n").get("backup_password")
+                 == "B" * 32)
+        # The rebuild block the state carries: no plaintext password, the
+        # previous instance, the snapshot and the seed's verifier.
+        rebuild_state = json.loads(first_visit_state(
+            "a" * 64, signin_set=True,
+            restore={"previous_instance": "srv-old", "instance_id": "srv-new",
+                     "slug": "odl-test", "repo_url": "sftp:u@h:tenants/odl-test",
+                     "snapshot": "c" * 64, "host_key": "SHA256:abcd",
+                     "host_key_line": sample_line, "readonly_key": sample_key,
+                     "sign_in_hash": "scrypt$16384$8$1$AAAA$BBBB", "status": "waiting"})
+            .decode("utf-8"))
+        check.ok("the first-visit state carries the rebuild block",
+                 rebuild_state.get("restore", {}).get("previous_instance") == "srv-old"
+                 and rebuild_state["restore"].get("snapshot") == "c" * 64
+                 and "Backup password" not in json.dumps(rebuild_state))
         embedded_first = FIRST_VISIT_SOURCE.encode("utf-8")
         check.ok("the embedded first-visit service matches its pinned SHA-256",
                  sha256(embedded_first) == FIRST_VISIT_SHA256,
@@ -17885,6 +18996,32 @@ def self_test() -> int:
         check.ok("the embedded first-visit page matches its pinned SHA-256",
                  sha256(embedded_page) == FIRST_VISIT_PAGE_SHA256,
                  sha256(embedded_page)[:12])
+        # The rebuild's copy (ODL-937's table, verbatim) and the two strings
+        # that must never appear on this page: nothing is installed on the old
+        # machine, it was replaced.
+        page_text_value = FIRST_VISIT_PAGE
+        source_text_value = FIRST_VISIT_SOURCE
+        check.ok("the first-visit page carries the rebuild's copy verbatim",
+                 "Your machine is back." in page_text_value
+                 and "Paste the recovery file you saved at your first sign-in. "
+                     "It opens your backup." in page_text_value
+                 and "Recovery file" in page_text_value
+                 and '>Restore</button>' in page_text_value
+                 and "Restoring your data…" in page_text_value
+                 # The sentence is the card's, split at the machine values:
+                 # the display line is what a person reads, the stamp is the
+                 # mono line under it (BRAND §Typography).
+                 and "Your data is back." in page_text_value
+                 and "Snapshot {{ID}} of {{TIME}}." in page_text_value
+                 and '<span class="stamp">' in page_text_value
+                 and "Your files, your agent's memory and its settings come back. "
+                     "The system and its apps were rebuilt." in page_text_value)
+        check.ok("the restore's two refusals are the installer's own sentences",
+                 "This file does not open this backup." in source_text_value
+                 and "This file is for a different machine." in source_text_value)
+        check.ok("the first-visit page never says an upgrade was installed",
+                 "Installing upgrades" not in page_text_value
+                 and "Upgrading" not in page_text_value)
         repo_first = INSTALLER_PATH.parent / "first_visit.py"
         if repo_first.is_file():
             check.ok("the embedded first-visit service matches installer/first_visit.py",
@@ -19324,6 +20461,32 @@ def tenant_main(args: argparse.Namespace) -> int:
     skin_changed = ensure_skin(layout, args.dry_run)
     changed |= skin_changed
     seeded_signin = seed.get("sign_in_hash") if args.first_visit else None
+    # The rebuild's block (ODL-937): the seed names the machine this one
+    # replaces, the repository the pair holds, the snapshot the window armed
+    # (or "" — `latest` is then the T-0) and the read-only key the recovery
+    # file carries. The first-visit page reads it; the paste supplies the one
+    # thing the seed does not: the repository password.
+    pair = seed.get("backup")
+    pair = pair if isinstance(pair, dict) else {}
+    previous_instance = str(pair.get("previous_instance") or "")
+    known_hosts = str(pair.get("known_hosts") or "").strip()
+    first_host_line = known_hosts.splitlines()[0].strip() if known_hosts else ""
+    restore_data = None
+    if previous_instance:
+        restore_data = {
+            "previous_instance": previous_instance,
+            "instance_id": str(seed["instance_id"]),
+            "slug": slug,
+            "repo_url": str(pair.get("repo_url") or seed.get("backup_repo_url") or ""),
+            "snapshot": str(pair.get("backup_snapshot") or ""),
+            "host_key": host_key_fingerprint(first_host_line),
+            "host_key_line": first_host_line,
+            "readonly_key": str(pair.get("readonly_ssh_private_key") or ""),
+            "sign_in_hash": str(seed.get("sign_in_hash") or ""),
+            "status": "waiting",
+        }
+        print(f"rebuild      of {previous_instance}; the first visit asks for the "
+              f"recovery file before the sign-in (snapshot {restore_data['snapshot'] or 'latest'})")
     env_changed, password = ensure_env(layout, args.signin_password, args.signin_username,
                                        args.dry_run, first_visit=args.first_visit,
                                        sign_in_hash=seeded_signin)
@@ -19333,7 +20496,8 @@ def tenant_main(args: argparse.Namespace) -> int:
     first_visit_enabled = bool(args.first_visit) or layout.first_visit_state.is_file()
     if first_visit_enabled:
         changed |= ensure_first_visit(layout, first_visit_token, args.dry_run,
-                                      signin_set=bool(seeded_signin))
+                                      signin_set=bool(seeded_signin),
+                                      restore=restore_data)
         changed |= ensure_verify_surface(layout, args.dry_run,
                                          verdict.boot_key_b64 if verdict else "")
     units_changed = ensure_units(layout, slug, args.dry_run, first_visit=first_visit_enabled,
@@ -19378,13 +20542,12 @@ def tenant_main(args: argparse.Namespace) -> int:
     smoke_ok = run_smoke(layout, username, password, args.dry_run, args.force_smoke,
                          first_visit=args.first_visit)
 
-    previous_instance = ""
-    pair = seed.get("backup")
-    if isinstance(pair, dict):
-        previous_instance = str(pair.get("previous_instance") or "")
     changed |= ensure_recovery(layout, slug, seed["instance_id"], fingerprint,
                                args.dry_run, args.backup_password,
-                               previous_instance=previous_instance)[0]
+                               previous_instance=previous_instance,
+                               repo=str(pair.get("repo_url") or seed.get("backup_repo_url") or ""),
+                               host_key_line=first_host_line,
+                               readonly_key=str(pair.get("readonly_ssh_private_key") or ""))[0]
     # A rebuild's file is the user's paste (ADR-004 §7.4): there is nothing to
     # confirm off the machine until it exists.
     if not args.dry_run and layout.recovery.is_file():

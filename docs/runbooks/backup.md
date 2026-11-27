@@ -492,6 +492,55 @@ terminals; the account is `odile-backup`, an address, not a secret.)
 `last_backup_at`, `age_seconds`, `snapshot`, `repo`, `repo_bytes`,
 `backup_status`. No file name ever leaves the guest.
 
+### 2.2 The rebuilt machine: the paste, the restore, and the snapshot (ODL-937)
+
+A rebuilt machine's home is empty and its seed names the machine it replaced
+(`backup.previous_instance`), so the installer writes no recovery file and the
+first-visit page asks for one **before** it offers the sign-in (ADR-004 §5.3,
+ADR-backup §7.2). The page's copy is fixed by the card: `Your machine is back.`
+/ `Paste the recovery file you saved at your first sign-in. It opens your
+backup.` / `Recovery file` / `Restore`; while the unit runs it shows
+`Restoring your data…` with a five-second meta refresh (no JavaScript); and on
+success `Your data is back. Snapshot <id> of <time>.` with the first 12 hex
+characters of the snapshot the restore named — the same substring the account
+page shows. The words `Installing upgrades` and `Upgrading` never appear: the
+old machine was replaced, not upgraded.
+
+The paste is refused **before** anything runs: the installer's own
+`RECOVERY_PASSWORD_RE` grammar, the file's `Tenant:` line (another tenant's file
+reads `This file is for a different machine.`) and its `Repository:` line (a
+different repository for the same tenant is the same answer), and a truncated
+paste fails at the page with `This file does not open this backup.` A wrong
+password reaches restic, which exits **12**; `backup.py restore` propagates
+that code, and the page shows the same sentence. The home is untouched on every
+refusal, and a retry converges: restic overwrites into the same target.
+
+`odile-restore.service` is one oneshot, root, admitted only by
+`ConditionPathExists=/etc/odile/recovery.txt` (the paste). It runs
+`/usr/local/lib/odile/first_visit.py --restore`, which, in order: stops
+`odile-backup-tenant.timer` (so a 02:00–06:00 UTC run cannot snapshot a
+half-restored home), stops the agent, resolves the snapshot (the seed's
+`backup_snapshot`, or `latest` when the seed names none — resolved **before**
+the restore, so the id shown is the one restored and not the fresh one), runs
+
+```
+backup.py restore <snapshot> --target / --include <home>
+```
+
+writes the seed's `sign_in_hash` back over the restored `.env` (the backup
+night's copy is the verifier of the password the user may have retired), starts
+the agent, runs one `backup.py run` so the newest snapshot is this machine's,
+and starts the timer. `/etc/odile` is never in the restore. A failure leaves
+the timer stopped — the leaves-the-freshness-watchdog signal ADR-backup §7.4
+names — and a wrong password starts the agent again so the machine is never
+worse than before the paste.
+
+`backup.py snapshot-info <id|latest> --json` is the read-only verb the restore
+uses to resolve the id and its time: it runs `restic snapshots --json
+--no-lock` and prints `{id, short_id, time, host, paths}`; no match is exit 3.
+Its `--no-lock` is the read-only key's rule too: the two commands in the
+recovery file carry it, because a read-only sub-account refuses restic's lock.
+
 ---
 
 ## 3. The repository

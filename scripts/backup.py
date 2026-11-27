@@ -12,6 +12,7 @@ written from the seed) and, at most, the status record this program writes.
     backup.py run         # one nightly snapshot + 7 daily / 4 weekly, then status
     backup.py status      # print /var/lib/odile/backup.json (the HQ-visible fields)
     backup.py restore latest --target /var/tmp/restore
+    backup.py snapshot-info latest          # the id and time a restore would take
     backup.py drill       # create a canary, back it up, delete it, restore it, compare
     backup.py verify      # the recovery password opens the repo; a wrong one does not
     backup.py heartbeat   # post the status to HQ as a signed heartbeat (optional)
@@ -27,7 +28,8 @@ repository password is the one thing a rebuild needs from the user's recovery
 file; the runbook is `docs/runbooks/backup.md`.
 
 Exit codes: 0 ok, 1 a restic/verify failure, 2 usage, 3 a missing prerequisite
-(no restic, no recovery file, no repository URL).
+(no restic, no recovery file, no repository URL), 12 a wrong repository password
+(restic's own code, so a rebuilt machine's first visit can tell it from anything else).
 """
 
 from __future__ import annotations
@@ -132,6 +134,12 @@ class BadInput(BackupError):
 
 class Missing(BackupError):
     exit_code = 3
+
+
+class WrongPassword(BackupError):
+    """The recovery file's password does not open the repository (restic's exit 12)."""
+
+    exit_code = 12
 
 
 # --------------------------------------------------------------------------- plain helpers
@@ -721,6 +729,12 @@ def _duration(seconds: int) -> str:
     return f"{seconds // 86400}d{(seconds % 86400) // 3600:02d}h"
 
 
+def _last_output_line(done: subprocess.CompletedProcess[str]) -> str:
+    """restic's last word for a one-line error: stderr when it spoke, else stdout."""
+    lines = (done.stderr or done.stdout or "").strip().splitlines()
+    return lines[-1].strip() if lines else "no output"
+
+
 def command_restore(args) -> int:
     repo = resolve_repo(args.repo, args.repo_file)
     key = Path(args.key).expanduser()
@@ -741,12 +755,117 @@ def command_restore(args) -> int:
     Path(args.target).expanduser().mkdir(parents=True, exist_ok=True)
     done = restic.run(arguments)
     if done.returncode != 0:
-        detail = (done.stderr or done.stdout).strip().splitlines()
-        raise BackupError(f"restic restore failed: {detail[-1] if detail else 'no output'}")
+        detail = _last_output_line(done)
+        # restic exits 12 for a password that does not open the repository.
+        # A rebuilt machine's first visit shows that pasted recovery file and
+        # needs to tell "wrong password" from every other failure; the same
+        # sentence is also matched, because a transport wrapper can lose the code.
+        if done.returncode == 12 or "wrong password" in (done.stderr + done.stdout).lower():
+            raise WrongPassword(
+                f"restic restore failed (exit {done.returncode}): {detail}; "
+                "the recovery file's password does not open the repository"
+            )
+        raise BackupError(f"restic restore failed (exit {done.returncode}): {detail}")
     lines = [line for line in done.stdout.strip().splitlines() if line.strip()]
     print(f"ok           restored {args.snapshot} to {args.target}")
     if lines:
         print(f"restic       {lines[-1]}")
+    return 0
+
+
+def _snapshot_entries(stdout: str) -> list[dict]:
+    """`restic snapshots --json` is one array; anything else is a failure to read."""
+    try:
+        value = json.loads(stdout or "[]")
+    except ValueError:
+        raise BackupError("restic snapshots printed no JSON") from None
+    if not isinstance(value, list):
+        raise BackupError("restic snapshots printed no JSON array")
+    return [item for item in value if isinstance(item, dict)]
+
+
+def _snapshot_time(value: object) -> datetime.datetime:
+    """restic's RFC3339 time as a comparable instant; unreadable times sort first."""
+    text = str(value or "").replace("Z", "+00:00")
+    try:
+        return datetime.datetime.fromisoformat(text)
+    except ValueError:
+        return datetime.datetime.min.replace(tzinfo=datetime.timezone.utc)
+
+
+def _newest_snapshot(snapshots: list[dict]) -> dict:
+    return max(snapshots, key=lambda item: (_snapshot_time(item.get("time")),
+                                             str(item.get("id") or "")))
+
+
+def choose_snapshot(snapshots: list[dict], selector: str | None) -> dict:
+    """The snapshot a restore would take: exact id, 4+ hex prefix, or the newest.
+
+    `restore` itself passes the word to restic, which has the same rules; this
+    repeats them so `snapshot-info` names the snapshot the restore would land on.
+    """
+    if not snapshots:
+        raise Missing("the repository has no snapshots")
+    text = (selector or "latest").strip()
+    if text == "latest":
+        return _newest_snapshot(snapshots)
+    lowered = text.lower()
+    for item in snapshots:
+        if str(item.get("id") or "").lower() == lowered:
+            return item
+    if re.fullmatch(r"[0-9a-fA-F]{4,}", text):
+        matches = [item for item in snapshots
+                   if str(item.get("id") or "").lower().startswith(lowered)]
+        if len(matches) == 1:
+            return matches[0]
+        if matches:
+            raise BadInput(f"{text!r} matches {len(matches)} snapshots; give more characters")
+    raise Missing(f"no snapshot matches {text!r}")
+
+
+def command_snapshot_info(args) -> int:
+    """The id and time of the snapshot a restore would take (read-only: --no-lock)."""
+    repo = resolve_repo(args.repo, args.repo_file)
+    key = Path(args.key).expanduser()
+    known_hosts = Path(args.known_hosts).expanduser()
+    target = sftp_target(repo)
+    if target and not key.exists():
+        raise Missing(f"no SFTP key at {key}; run `backup.py init` first")
+    password = read_recovery_password(args.recovery)
+    restic = Restic(repo, password, key=key if target else None,
+                    known_hosts=known_hosts if target else None,
+                    connections=args.sftp_connections)
+    arguments = ["snapshots", "--json", "--no-lock"]
+    selector = args.snapshot or "latest"
+    if args.dry_run:
+        print(f"would run    restic {' '.join(_quote_arg(part) for part in arguments)}")
+        print(f"would pick   {selector} (exact id, a 4+ hex prefix, or the newest by time)")
+        return 0
+    done = restic.run(arguments)
+    if done.returncode != 0:
+        detail = _last_output_line(done)
+        if done.returncode == 12 or "wrong password" in detail.lower():
+            # The read is where a wrong password is first seen; exit 12, the
+            # code restore would also give, so the caller can say so.
+            raise WrongPassword(f"restic snapshots failed (exit 12): {detail}")
+        raise Missing(
+            f"restic snapshots failed (exit {done.returncode}): {detail}"
+        )
+    snapshot = choose_snapshot(_snapshot_entries(done.stdout), selector)
+    full_id = str(snapshot.get("id") or "")
+    record = {
+        "id": full_id,
+        "short_id": str(snapshot.get("short_id") or full_id[:8]),
+        "time": snapshot.get("time"),
+        # restic's JSON calls the snapshot's host `hostname`.
+        "host": snapshot.get("hostname") or snapshot.get("host") or None,
+        "paths": list(snapshot.get("paths") or []),
+    }
+    if args.json:
+        print(json.dumps(record, sort_keys=True))
+        return 0
+    print(f"snapshot     {record['id']}")
+    print(f"time         {record['time']}")
     return 0
 
 
@@ -1115,6 +1234,14 @@ def build_parser() -> argparse.ArgumentParser:
     restore.add_argument("--target", required=True)
     restore.add_argument("--include", action="append", help="one absolute path (repeatable)")
     restore.set_defaults(function=command_restore)
+
+    info = subparsers.add_parser(
+        "snapshot-info", help="the id and time of the snapshot a restore would take")
+    common(info)
+    info.add_argument("snapshot", nargs="?", default="latest",
+                      help="a full id, a 4+ hex prefix, or latest (default)")
+    info.add_argument("--json", action="store_true", help="one JSON object on stdout")
+    info.set_defaults(function=command_snapshot_info)
 
     drill = subparsers.add_parser("drill", help="delete a backed-up file, restore it, compare")
     common(drill)

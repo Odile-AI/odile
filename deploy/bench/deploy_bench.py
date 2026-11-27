@@ -112,7 +112,6 @@ DB_PATH = STATE / "waitlist.db"
 ATTEST_PATH = STATE / "attestation.json"
 ROADMAP_PATH = STATE / "roadmap.html"
 ROADMAP_SOURCE = STATE / "roadmap-source"
-SEED_REBUILDS = STATE / "seed-rebuilds.json"
 
 ETC = Path("/etc/odile-bench")
 ENV_FILE = ETC / "bench.env"
