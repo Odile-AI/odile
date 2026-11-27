@@ -737,11 +737,12 @@ UPGRADE_MAX_SECONDS = 26 * 60 * 60
 UPGRADE_WINDOW_RE = re.compile(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$")
 UPGRADE_REQUEST_RE = re.compile(r"^[0-9a-f]{32}$")
 
-# The receipt the owner can act on.  The body is the card's verbatim copy in
-# `templates/emails/upgrade-booked.txt`, followed by the sign-off and the alpha
-# footer BRAND.md §Email gives every account email; the subject is the card's
-# line.  The reply address is the help mailbox, because the one action that can
-# change a booking is a reply before its window.
+# The receipt the owner can act on.  The body is
+# `templates/emails/upgrade-booked.txt` — `docs/backlog.yaml` ODL-950's block,
+# verbatim, ending in the sign-off and the alpha footer BRAND.md §Email gives
+# every account email; the subject is the card's line.  The reply address is
+# the help mailbox, because the one action that can change a booking is a reply
+# before its window.
 UPGRADE_SUBJECT = "Your upgrade is booked"
 UPGRADE_TEMPLATE = Path(__file__).resolve().parent.parent / "templates" / "emails" / "upgrade-booked.txt"
 UPGRADE_SENDER = "Odile <invite@mail.odile.fyi>"
@@ -759,13 +760,21 @@ def _default_release_document() -> Path:
 
 
 DEFAULT_RELEASE_DOCUMENT = _default_release_document()
-# The template's deadline paragraph; removed whole (with its blank line) when
-# the served document carries no `upgrade` block, so the body is the card's
-# text without it.
-DEADLINE_SENTENCE = (
-    "This is a security update: if you do nothing, it is applied after {{DEADLINE}}."
-)
-DEADLINE_PARAGRAPH = DEADLINE_SENTENCE + "\n\n"
+# The template's deadline paragraph is cut from the template itself, so a
+# re-wrap of the paragraph moves both: from its opening sentence through the
+# blank line that ends it.  Removing it whole (with that blank line) when the
+# served document carries no `upgrade` block leaves the card's text without it.
+DEADLINE_OPENER = "This is a security update:"
+
+
+def _deadline_paragraph(template: str) -> str:
+    """The template's deadline paragraph, with the blank line that ends it."""
+    start = template.find(DEADLINE_OPENER)
+    if start < 0:
+        return ""
+    end = template.find("\n\n", start)
+    return template[start : len(template) if end < 0 else end] + "\n\n"
+
 
 # Thresholds from ODL-216.  `HEARTBEAT_STOP_SECONDS` is imported from the
 # state machine so the alert and the transition can never disagree.
@@ -1131,7 +1140,7 @@ def render_upgrade_body(window: str, deadline: str | None = None) -> str:
     """
     template = UPGRADE_TEMPLATE.read_text(encoding="utf-8")
     if deadline is None:
-        template = template.replace(DEADLINE_PARAGRAPH, "")
+        template = template.replace(_deadline_paragraph(template), "")
     else:
         template = template.replace("{{DEADLINE}}", owner_window_text(deadline))
     return template.replace("{{WINDOW}}", owner_window_text(window))
