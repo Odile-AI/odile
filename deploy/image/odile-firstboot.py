@@ -59,11 +59,7 @@ What this program does, in order:
    release that retires a key). A seed issued before ODL-514 carries no
    certificate and is checked against the release key itself. A body that is
    not the tenant's (slug / instance / keys) is refused the same way;
-6. writes the seed to /etc/odile/seed.json (0600, atomic). On a **rebuild** it
-   first writes the tenant's OLD backup password — which the seed carries
-   sealed under this boot's setup token — into /etc/odile/recovery.txt through
-   the image's recovery-seed.py (password on stdin, never argv), so the new
-   machine's `backup.py init` meets the repository it already has; then runs the
+6. writes the seed to /etc/odile/seed.json (0600, atomic), then runs the
    image's installer with the seed:
        install-stack.sh --seed /etc/odile/seed.json --first-visit-token <token>
    The installer converges the stack (`same` for everything the build already
@@ -80,10 +76,8 @@ of the transcript see that the key existed before the boot record was read.
 Nothing else goes to the console; the installer's own output goes to
 /var/log/odile-firstboot.log.
 
-No passphrase, private key or operator key is read, written or printed. The one
-secret that passes through is a rebuild's backup password: it is written to the
-0600 recovery file and appears in no argv, `ps` line or log. Standard library
-only.
+No passphrase, private key or operator key is read, written or printed.
+Standard library only.
 
     /usr/bin/python3 odile-firstboot.py                 # the unit's call
     /usr/bin/python3 odile-firstboot.py --print-state    # secret-free summary
@@ -95,11 +89,9 @@ from __future__ import annotations
 import argparse
 import base64
 import hashlib
-import hmac
 import json
 import os
 import re
-import secrets
 import socket
 import subprocess
 import sys
@@ -181,26 +173,7 @@ SEED_KEYS = (
     # boot writes into the tenant .env so the first visit is a login.
     "sign_in_hash",
 )
-# `rebuild` is deliberately not in SEED_KEYS: only a rebuild carries the
-# tenant's old repository password sealed under the setup token, and
-# `validate_seed` validates it when it is present. The writer's half of this
-# construction is seed/seed.py `seal_backup_password`; tests/test_seed.py
-# proves the two agree.
-REBUILD_KDF = "hmac-sha256-ctr-v1"
-REBUILD_KEYSTREAM_LABEL = b"odile-rebuild-v1/keystream"
-REBUILD_TAG_LABEL = b"odile-rebuild-v1/tag"
-REBUILD_MIN_PASSWORD = 16
-REBUILD_MAX_PASSWORD = 1024
-REBUILD_SEALED_MAX = 8192
-REBUILD_TAG_HEX = 64
 SEED_FORBIDDEN = ("password", "passphrase", "private_key", "ssh_private_key", "luks")
-RECOVERY_PASSWORD_RE = re.compile(r"^Backup password:[ \t]*(\S+)[ \t]*$", re.M)
-# The image's own copy: sealed-image.sh places it before the first boot, while
-# the copy the first-visit unit runs (/usr/local/lib/odile/recovery-seed.py) is
-# installed by the installer — which runs *after* this step. Same bytes, same
-# renderer (tests/test_sealed_image.py compares both with the installer's).
-RECOVERY_SEED = "/usr/local/lib/odile-image/recovery-seed.py"
-RECOVERY_PATH = "/etc/odile/recovery.txt"
 TOKEN_RE = re.compile(r"^[0-9a-f]{64}$")
 # The installer's own scrypt format (installer/odile_install.py's SCRYPT_RE);
 # the seed's sign_in_hash is written into the tenant .env byte for byte.
@@ -1125,101 +1098,7 @@ def validate_seed(seed, instance_id: str) -> dict:
     for key in SEED_FORBIDDEN:
         if key in seed:
             raise Refusal("seed carries a forbidden %s field" % key)
-    if "rebuild" in seed:
-        validate_rebuild(seed["rebuild"])
     return seed
-
-
-def validate_rebuild(entry: object) -> tuple[bytes, str]:
-    """The `(ciphertext, tag)` of a seed's rebuild object, or a refusal.
-
-    Shape only: the tag is checked when the password is opened, against the
-    token this boot read from the command line.
-    """
-    if not isinstance(entry, dict):
-        raise Refusal("seed rebuild is not an object")
-    if entry.get("kdf") != REBUILD_KDF:
-        raise Refusal("seed rebuild kdf is not %s" % REBUILD_KDF)
-    sealed_hex, tag = entry.get("sealed"), entry.get("tag")
-    if (not isinstance(sealed_hex, str) or not sealed_hex
-            or len(sealed_hex) > REBUILD_SEALED_MAX or len(sealed_hex) % 2
-            or re.search(r"[^0-9a-f]", sealed_hex)):
-        raise Refusal("seed rebuild sealed value is malformed")
-    if (not isinstance(tag, str) or len(tag) != REBUILD_TAG_HEX
-            or re.search(r"[^0-9a-f]", tag)):
-        raise Refusal("seed rebuild tag is malformed")
-    return bytes.fromhex(sealed_hex), tag
-
-
-def unseal_rebuild(entry: dict, token: str) -> str:
-    """Open the seed's rebuild object with the setup token from the cmdline.
-
-    The same HMAC-SHA256 keystream + tag as seed/seed.py's `seal_backup_password`.
-    A tag that does not match means the entry was sealed for another token (a
-    stale config entry, or a seed fetched for a token that has since been
-    replaced); the boot refuses rather than letting the installer mint a new
-    password and meet the old repository with a key that cannot open it.
-    """
-    sealed, tag = validate_rebuild(entry)
-    if not TOKEN_RE.match(token or ""):
-        raise Refusal("the setup token is malformed")
-    key = token.encode("ascii")
-    expected = hmac.new(key, REBUILD_TAG_LABEL + sealed, hashlib.sha256).hexdigest()
-    if not secrets.compare_digest(expected, tag):
-        raise Refusal("the seed's rebuild password does not open with this setup token")
-    stream = bytearray()
-    counter = 0
-    while len(stream) < len(sealed):
-        stream += hmac.new(key, REBUILD_KEYSTREAM_LABEL + counter.to_bytes(4, "big"),
-                           hashlib.sha256).digest()
-        counter += 1
-    password = bytes(left ^ right for left, right in zip(sealed, stream)).decode("utf-8")
-    if not (REBUILD_MIN_PASSWORD <= len(password) <= REBUILD_MAX_PASSWORD):
-        raise Refusal("the seed's rebuild password is %d characters, not %d to %d"
-                      % (len(password), REBUILD_MIN_PASSWORD, REBUILD_MAX_PASSWORD))
-    return password
-
-
-def write_seeded_recovery(program: str, path: str, slug: str, instance_id: str,
-                          password: str, *, log_path: str) -> None:
-    """Write the recovery file with the seeded password, before the installer.
-
-    The writer is the image's own recovery-seed.py, so the bytes are the
-    installer's `render_recovery` bytes and cannot drift (tests/test_sealed_image.py
-    compares the two). The password goes in on stdin: it never appears on argv,
-    in `ps`, or in the firstboot log. The file is read back and compared, so a
-    writer that silently generated a password is a refusal, not a surprise on
-    the first `backup.py init`.
-    """
-    if not os.path.isfile(program):
-        raise Refusal("the image has no recovery-file writer (%s)" % program)
-    command = ["/usr/bin/python3", program, "--path", path, "--tenant", slug,
-               "--instance", instance_id, "--password-stdin"]
-    try:
-        proc = subprocess.run(command, input=password, text=True,
-                              capture_output=True, timeout=120)
-    except (OSError, subprocess.TimeoutExpired) as error:
-        raise Refusal("the recovery-file writer did not run: %s" % error) from None
-    os.makedirs(os.path.dirname(log_path) or ".", exist_ok=True)
-    with open(log_path, "a", encoding="utf-8") as log:
-        log.write("\n=== odile-firstboot %s: recovery file from the seed\n" % utcnow())
-        log.write("$ %s\n" % " ".join(command))
-        log.write((proc.stdout or "") + (proc.stderr or ""))
-    if proc.returncode != 0:
-        raise Refusal("the recovery file was not written (rc %d)" % proc.returncode)
-    try:
-        with open(path, encoding="utf-8") as handle:
-            text = handle.read()
-        mode = os.stat(path).st_mode & 0o777
-    except OSError as error:
-        raise Refusal("the recovery file is missing: %s" % error) from None
-    match = RECOVERY_PASSWORD_RE.search(text)
-    if match is None:
-        raise Refusal("the recovery file carries no 'Backup password:' line")
-    if not secrets.compare_digest(match.group(1), password):
-        raise Refusal("the recovery file does not carry the seeded password")
-    if mode != 0o600:
-        raise Refusal("the recovery file is mode %03o, not 0600" % mode)
 
 
 def post_seed(url: str, token: str, instance_id: str) -> tuple[int, bytes, object]:
@@ -1395,10 +1274,6 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--seed-cache", default=SEED_CACHE)
     parser.add_argument("--signing-key", default=SIGNING_KEY)
     parser.add_argument("--installer", default=INSTALLER)
-    parser.add_argument("--recovery", default=RECOVERY_PATH,
-                        help="the recovery file a rebuild writes before the installer")
-    parser.add_argument("--recovery-seed", default=RECOVERY_SEED,
-                        help="the image's recovery-file writer (recovery-seed.py)")
     parser.add_argument("--first-visit-port", type=int, default=FIRST_VISIT_PORT)
     parser.add_argument("--first-visit-token", default="",
                         help="the setup token for the seed exchange, when an older kit "
@@ -1559,15 +1434,6 @@ def main(argv: list[str] | None = None) -> int:
         # the write (ODL-947).
         write_first_visit_state(os.path.join(os.path.dirname(args.seed_cache),
                                              "first-visit.json"), token)
-
-        # A rebuild (ODL-215 follow-up): the seed carries the tenant's OLD
-        # repository password, sealed under this boot's setup token. Write it
-        # into the recovery file now — before the installer starts, and so
-        # before the first-visit unit's ExecStartPre can generate a new one.
-        if seed.get("rebuild"):
-            write_seeded_recovery(
-                args.recovery_seed, args.recovery, seed["slug"], instance_id,
-                unseal_rebuild(seed["rebuild"], token), log_path=args.log)
 
         started = time.monotonic()
         code = run_installer(args.installer, args.seed_cache, token,

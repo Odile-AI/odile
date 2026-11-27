@@ -213,12 +213,10 @@ class SeedService(unittest.TestCase):
         cls.release_pub = cls.release_key + ".pub"
         cls.cert = os.path.join(d, "seed-key.crt")
         cls.config = os.path.join(d, "seed-config.json")
-        cls.rebuilds = os.path.join(d, "seed-rebuilds.json")
         cls.env = dict(
             os.environ,
             ODILE_DB=cls.db,
             ODILE_SEED_CONFIG=cls.config,
-            ODILE_SEED_REBUILDS=cls.rebuilds,
             ODILE_SEED_SIGNING_KEY=cls.key,
             ODILE_SEED_CERT=cls.cert,
             ODILE_SEED_RELEASE_PUBKEY=cls.release_pub,
@@ -893,42 +891,22 @@ class SeedService(unittest.TestCase):
         self.assertEqual(status, 409, body)
         self.assertEqual(json.loads(body)["reason"], "not_redeemed")
 
-    def test_a_rebuild_secret_travels_signed_and_only_with_its_own_token(self):
-        seed_module = load_seed_module()
+    def test_a_seed_carries_no_rebuild_block_and_the_signature_verifies(self):
+        # ODL-937: the old sealed-rebuild-password path is gone, so the seed's
+        # field set is exactly the surviving contract — no `rebuild` key.
         token, _ = self.issue("odl-alpha")
-        entry = seed_module.seal_backup_password(REBUILD_PASSWORD, token)
-        entry["token_hash"] = hashlib.sha256(token.encode()).hexdigest()
-        entry["created_at"] = iso(now())
-        seed_module.set_rebuild(self.rebuilds, "odl-alpha", entry)
-        self.addCleanup(seed_module.set_rebuild, self.rebuilds, "odl-alpha", None)
-        self.assertNotIn(REBUILD_PASSWORD, Path(self.rebuilds).read_text(encoding="utf-8"))
-
         status, headers, body = self.exchange(token, "srv-alpha")
         self.assertEqual(status, 200, body)
         parsed = json.loads(body)
-        self.assertIn("rebuild", parsed)
-        self.assertEqual(load_firstboot_module().unseal_rebuild(parsed["rebuild"], token),
-                         REBUILD_PASSWORD)
+        self.assertEqual(EXPECTED_FIELDS, set(parsed))
+        self.assertNotIn("rebuild", parsed)
         signature = headers["x-odile-signature"].split("=", 1)[1]
         self.assertTrue(self.openssl_verify(body, signature))
 
         other, _ = self.issue("odl-beta")
         status, _, body = self.exchange(other, "srv-beta")
         self.assertEqual(status, 200, body)
-        self.assertNotIn("rebuild", json.loads(body))
-
-    def test_a_rebuild_secret_keeps_the_rest_of_the_seed_contract(self):
-        seed_module = load_seed_module()
-        token, _ = self.issue("odl-alpha")
-        entry = seed_module.seal_backup_password(REBUILD_PASSWORD, token)
-        entry["token_hash"] = hashlib.sha256(token.encode()).hexdigest()
-        seed_module.set_rebuild(self.rebuilds, "odl-alpha", entry)
-        self.addCleanup(seed_module.set_rebuild, self.rebuilds, "odl-alpha", None)
-        status, _, body = self.exchange(token, "srv-alpha")
-        self.assertEqual(status, 200, body)
-        parsed = json.loads(body)
-        self.assertEqual(EXPECTED_FIELDS | {"rebuild"}, set(parsed))
-        self.assertEqual(set(parsed["rebuild"]), {"kdf", "sealed", "tag"})
+        self.assertEqual(EXPECTED_FIELDS, set(json.loads(body)))
 
     def test_the_record_after_the_seed_writes_the_measured_row_once(self):
         token, _ = self.issue("odl-boot")
@@ -1124,116 +1102,6 @@ def exchange(port: int, token: str, instance: str) -> tuple[int, dict]:
     return res.status, json.loads(data)
 
 
-FIRSTBOOT = os.path.join(ROOT, "deploy", "image", "odile-firstboot.py")
-
-
-def load_firstboot_module():
-    """The guest's half of the rebuild seal, loaded by path as the image runs it."""
-    spec = importlib.util.spec_from_file_location("firstboot_under_test_seal", FIRSTBOOT)
-    if spec is None or spec.loader is None:
-        raise RuntimeError("cannot load %s" % FIRSTBOOT)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
-
-
-REBUILD_PASSWORD = "test-rebuild-password-2026-0001"
-SEAL_TOKEN = "ab" * 32
-
-
-class RebuildSeal(unittest.TestCase):
-    """ODL-215 follow-up: the old repository password travels sealed under the token.
-
-    The writer is `seed.seal_backup_password` on HQ; the reader is
-    `odile-firstboot.unseal_rebuild` in the image. They are two files in two
-    trees, so this class runs one against the other: a drift in either is a
-    failure here, not a rebuilt machine that meets its old repository with a
-    new key.
-    """
-
-    def setUp(self) -> None:
-        self.seed = load_seed_module()
-        self.firstboot = load_firstboot_module()
-
-    def test_the_guest_opens_what_the_service_sealed(self) -> None:
-        entry = self.seed.seal_backup_password(REBUILD_PASSWORD, SEAL_TOKEN)
-        self.assertEqual(set(entry), {"kdf", "sealed", "tag"})
-        self.assertEqual(entry["kdf"], "hmac-sha256-ctr-v1")
-        self.assertNotIn(REBUILD_PASSWORD, json.dumps(entry))
-        self.assertEqual(self.firstboot.unseal_rebuild(entry, SEAL_TOKEN), REBUILD_PASSWORD)
-        self.assertEqual(self.seed.unseal_backup_password(entry, SEAL_TOKEN), REBUILD_PASSWORD)
-
-    def test_another_token_does_not_open_it(self) -> None:
-        entry = self.seed.seal_backup_password(REBUILD_PASSWORD, SEAL_TOKEN)
-        with self.assertRaisesRegex(self.firstboot.Refusal, "does not open"):
-            self.firstboot.unseal_rebuild(entry, "b2" * 32)
-        with self.assertRaisesRegex(ValueError, "does not open"):
-            self.seed.unseal_backup_password(entry, "b2" * 32)
-
-    def test_one_flipped_byte_fails_the_tag(self) -> None:
-        entry = self.seed.seal_backup_password(REBUILD_PASSWORD, SEAL_TOKEN)
-        first = "0" if entry["sealed"][0] != "0" else "1"
-        tampered = dict(entry, sealed=first + entry["sealed"][1:])
-        with self.assertRaisesRegex(self.firstboot.Refusal, "does not open"):
-            self.firstboot.unseal_rebuild(tampered, SEAL_TOKEN)
-        with self.assertRaisesRegex(ValueError, "does not open"):
-            self.seed.unseal_backup_password(tampered, SEAL_TOKEN)
-
-    def test_a_malformed_entry_is_refused_before_any_crypto(self) -> None:
-        entry = self.seed.seal_backup_password(REBUILD_PASSWORD, SEAL_TOKEN)
-        for broken, reason in (
-            (dict(entry, kdf="aes-256-gcm"), "kdf"),
-            (dict(entry, sealed=entry["sealed"][:-1]), "sealed"),
-            (dict(entry, sealed=entry["sealed"] + "zz"), "hex|sealed"),
-            (dict(entry, tag=entry["tag"][:16]), "tag"),
-        ):
-            with self.assertRaisesRegex(self.firstboot.Refusal, reason):
-                self.firstboot.unseal_rebuild(broken, SEAL_TOKEN)
-
-    def test_the_rebuilds_file_refuses_a_plaintext_password_by_name(self) -> None:
-        entry = self.seed.seal_backup_password(REBUILD_PASSWORD, SEAL_TOKEN)
-        entry["token_hash"] = hashlib.sha256(SEAL_TOKEN.encode()).hexdigest()
-        entry["backup_password"] = REBUILD_PASSWORD
-        with tempfile.TemporaryDirectory() as directory:
-            path = os.path.join(directory, "seed-rebuilds.json")
-            with open(path, "w", encoding="utf-8") as handle:
-                json.dump({"odl-bench": entry}, handle)
-            os.chmod(path, 0o600)
-            with self.assertRaisesRegex(self.seed.ConfigError, "plaintext backup_password"):
-                self.seed.load_rebuilds(path)
-            with self.assertRaisesRegex(self.seed.ConfigError, "plaintext backup_password"):
-                self.seed.set_rebuild(path, "odl-bench", entry)
-
-    def test_a_stale_entry_does_not_travel_with_a_new_token(self) -> None:
-        entry = self.seed.seal_backup_password(REBUILD_PASSWORD, SEAL_TOKEN)
-        entry["token_hash"] = hashlib.sha256(SEAL_TOKEN.encode()).hexdigest()
-        rebuilds = {"odl-bench": entry}
-        self.assertIsNone(self.seed.rebuild_for(rebuilds, "odl-bench", "c3" * 32))
-        self.assertIsNone(self.seed.rebuild_for({}, "odl-bench",
-                                               hashlib.sha256(SEAL_TOKEN.encode()).hexdigest()))
-        served = self.seed.rebuild_for(
-            rebuilds, "odl-bench", hashlib.sha256(SEAL_TOKEN.encode()).hexdigest())
-        self.assertEqual(set(served), {"kdf", "sealed", "tag"})
-        self.assertEqual(self.firstboot.unseal_rebuild(served, SEAL_TOKEN), REBUILD_PASSWORD)
-
-    def test_set_rebuild_writes_ciphertext_and_removes_it(self) -> None:
-        entry = self.seed.seal_backup_password(REBUILD_PASSWORD, SEAL_TOKEN)
-        entry["token_hash"] = hashlib.sha256(SEAL_TOKEN.encode()).hexdigest()
-        with tempfile.TemporaryDirectory() as directory:
-            path = os.path.join(directory, "seed-rebuilds.json")
-            self.seed.set_rebuild(path, "odl-bench", entry)
-            text = Path(path).read_text(encoding="utf-8")
-            self.assertNotIn(REBUILD_PASSWORD, text)
-            self.assertEqual(os.stat(path).st_mode & 0o777, 0o600)
-            self.assertEqual(self.seed.load_rebuilds(path), {"odl-bench": entry})
-            # A second run is byte-identical: the write is idempotent.
-            self.seed.set_rebuild(path, "odl-bench", entry)
-            self.assertEqual(Path(path).read_text(encoding="utf-8"), text)
-            self.seed.set_rebuild(path, "odl-bench", None)
-            self.assertEqual(self.seed.load_rebuilds(path), {})
-            self.assertEqual(Path(path).read_text(encoding="utf-8").strip(), "{}")
-
-
 class RecordedProvision:
     """A recorded provider transport that checks the ledger at the first poll.
 
@@ -1395,8 +1263,7 @@ def _tenant_files(directory: str, slug: str) -> tuple[str, str]:
     return key_file, pin
 
 
-def _odilectl_config(directory: str, slug: str, db: str,
-                     seed_rebuilds: str | None = None) -> str:
+def _odilectl_config(directory: str, slug: str, db: str) -> str:
     """A 0600 odilectl config whose state and seed ledgers are one file."""
     path = os.path.join(directory, slug + "-odilectl.yaml")
     lines = [
@@ -1412,8 +1279,6 @@ def _odilectl_config(directory: str, slug: str, db: str,
         "hetzner_keys: " + os.path.join(directory, "keys"),
         "seed_backup_pairs: " + os.path.join(directory, "seed-backup-pairs.json"),
     ]
-    if seed_rebuilds is not None:
-        lines.append("seed_rebuilds: " + seed_rebuilds)
     with open(path, "w", encoding="utf-8") as f:
         f.write("\n".join(lines) + "\n")
     os.chmod(path, 0o600)
@@ -1497,6 +1362,25 @@ class BackupPairs(unittest.TestCase):
             self.seed.set_backup_pair(path, self.slug, None)
             self.assertEqual(self.seed.load_backup_pairs(path), {})
 
+    def test_the_optional_backup_snapshot_travels_but_is_not_required(self) -> None:
+        """ADR-005 §5.4: the T-0 restic id is optional, string-typed, full-length."""
+        # Absent (an older pair) and "" (`latest`) both validate.
+        self.seed.validate_backup_pair(self.entry, "fixture")
+        self.seed.validate_backup_pair(dict(self.entry, backup_snapshot=""), "fixture")
+        snapshot = "d4" * 32
+        accepted = self.seed.validate_backup_pair(
+            dict(self.entry, backup_snapshot=snapshot), "fixture")
+        self.assertEqual(accepted["backup_snapshot"], snapshot)
+        # Optional means optional: a pair written before the window existed
+        # must not be refused for the missing key.
+        self.assertNotIn("backup_snapshot", self.seed.BACKUP_PAIR_KEYS)
+        for broken, reason in ((1234, "must be a string"),
+                               ("not-hex", "restic snapshot id"),
+                               ("d4" * 16, "restic snapshot id")):
+            with self.assertRaisesRegex(self.seed.ConfigError, reason):
+                self.seed.validate_backup_pair(
+                    dict(self.entry, backup_snapshot=broken), "fixture")
+
     def test_a_plaintext_subaccount_password_is_refused_by_name(self) -> None:
         for plaintext in ("password", "passphrase"):
             with self.assertRaisesRegex(self.seed.ConfigError, "plaintext %s" % plaintext):
@@ -1560,6 +1444,16 @@ class BackupPairs(unittest.TestCase):
         self.assertEqual(seed["backup"]["ssh_port"], 22)
         self.assertIn("PRIVATE KEY", seed["backup"]["ssh_private_key"])
         self.assertEqual(seed["backup"]["previous_instance"], "")
+        # ADR-005 §5.4: the pair's optional T-0 snapshot id rides the seed
+        # block; absent or empty means `latest` and the installer's fallback.
+        self.assertEqual(seed["backup"]["backup_snapshot"], "")
+        with_snapshot = self.seed.build_seed(
+            {"slug": self.slug}, "srv-fixture", CONFIG,
+            backup_pair=dict(self.entry, backup_snapshot="d4" * 32))
+        self.assertEqual(with_snapshot["backup"]["backup_snapshot"], "d4" * 32)
+        # ODL-937: the retired seal is gone — build_seed has no `rebuild` key.
+        self.assertNotIn("rebuild", seed)
+        self.assertNotIn("rebuild", with_snapshot)
         # A row's own marker wins over the pair's (a rebuild).
         rebuilt = self.seed.build_seed({"slug": self.slug}, "srv-fixture", CONFIG,
                                        backup_pair=self.entry,
@@ -1584,13 +1478,11 @@ class ProvisionBinding(unittest.TestCase):
         cls.key = os.path.join(d, "seed-signing.pem")
         cls.pub = cls.key + ".pub"
         cls.seed_config = os.path.join(d, "seed-config.json")
-        cls.seed_rebuilds = os.path.join(d, "seed-rebuilds.json")
         cls.backup_pairs = os.path.join(d, "seed-backup-pairs.json")
         cls.env = dict(
             os.environ,
             ODILE_DB=cls.db,
             ODILE_SEED_CONFIG=cls.seed_config,
-            ODILE_SEED_REBUILDS=cls.seed_rebuilds,
             ODILE_SEED_BACKUP_PAIRS=cls.backup_pairs,
             ODILE_SEED_SIGNING_KEY=cls.key,
             ODILE_SEED_CERT=os.path.join(d, "seed-key.crt"),
@@ -1634,8 +1526,7 @@ class ProvisionBinding(unittest.TestCase):
         self.slug = "odl-%06x" % type(self)._counter
         self.server_id = "%08x" % (0x31A60000 + type(self)._counter)
         self.key_file, self.pin = _tenant_files(self.tmp.name, self.slug)
-        self.config = _odilectl_config(self.tmp.name, self.slug, self.db,
-                                       self.seed_rebuilds)
+        self.config = _odilectl_config(self.tmp.name, self.slug, self.db)
         # ODL-924: the box API, ssh-keygen, the host-key scan and the key
         # install are seams; this class proves the wiring end to end without a
         # socket or a command.
@@ -1665,68 +1556,6 @@ class ProvisionBinding(unittest.TestCase):
             lambda _cfg: ServuryProvider("fixture-reseller-key", transport=transport),
         )
         return code, out, err, transport
-
-    def test_a_rebuild_seals_the_old_password_under_the_bound_token(self):
-        self.add_tenant()
-        recovery = os.path.join(self.tmp.name, self.slug + "-recovery.txt")
-        with open(recovery, "w", encoding="utf-8") as handle:
-            handle.write("Odile recovery file\n"
-                         "===================\n"
-                         "Tenant:              %s\n\n"
-                         "Backup password:     %s\n" % (self.slug, REBUILD_PASSWORD))
-        os.chmod(recovery, 0o600)
-        transport = RecordedProvision(self.db, self.slug, self.server_id)
-        code, out, err = run_odilectl(
-            ["provision", self.slug, "--key", self.key_file, "--pin", self.pin,
-             "--interval", "0", "--apply", "--json",
-             "--backup-password-file", recovery],
-            self.config,
-            lambda _cfg: ServuryProvider("fixture-reseller-key", transport=transport),
-        )
-        self.assertEqual(code, 0, err)
-        binding = json.loads(out)["seed"]
-        self.assertEqual(binding["rebuild"], "sealed")
-        text = Path(self.seed_rebuilds).read_text(encoding="utf-8")
-        self.assertNotIn(REBUILD_PASSWORD, text)
-        entry = json.loads(text)[self.slug]
-        self.assertEqual(os.stat(self.seed_rebuilds).st_mode & 0o777, 0o600)
-        self.assertEqual(entry["token_hash"], binding["token_hash"])
-        self.assertEqual(entry["token_hash"],
-                         hashlib.sha256(binding["token"].encode()).hexdigest())
-
-        # The real service hands the secret to the machine the token is bound
-        # to, and the guest's own code opens it.
-        status, seed = exchange(self.port, binding["token"], self.server_id)
-        self.assertEqual(status, 200, seed)
-        self.assertEqual(
-            load_firstboot_module().unseal_rebuild(seed["rebuild"], binding["token"]),
-            REBUILD_PASSWORD)
-
-        # A later provision without the file clears the entry: a token never
-        # carries the previous attempt's secret. The provider lists the machine
-        # the first run ordered, so this run records it rather than ordering a
-        # second one (a live row takes no new machine; see provision's guard).
-        code, out, err, _transport = self.provision(listed=True)
-        self.assertEqual(code, 0, err)
-        document = json.loads(Path(self.seed_rebuilds).read_text(encoding="utf-8"))
-        self.assertNotIn(self.slug, document)
-
-    def test_a_recovery_file_without_the_line_orders_nothing(self):
-        self.add_tenant()
-        bad = os.path.join(self.tmp.name, self.slug + "-not-a-recovery.txt")
-        with open(bad, "w", encoding="utf-8") as handle:
-            handle.write("this file is not the user's recovery file\n")
-        os.chmod(bad, 0o600)
-        transport = RecordedProvision(self.db, self.slug, self.server_id)
-        code, out, err = run_odilectl(
-            ["provision", self.slug, "--key", self.key_file, "--pin", self.pin,
-             "--apply", "--backup-password-file", bad],
-            self.config,
-            lambda _cfg: ServuryProvider("fixture-reseller-key", transport=transport),
-        )
-        self.assertNotEqual(code, 0)
-        self.assertIn("Backup password:", err)
-        self.assertEqual(transport.calls, [])
 
     def ledger(self) -> list[tuple]:
         con = sqlite3.connect(self.db)
@@ -1834,9 +1663,9 @@ class ProvisionBinding(unittest.TestCase):
     def test_the_claim_path_mints_after_activation_and_the_mail_never_shows_it(self):
         """The fallback: no create-time binding, so the claim worker mints.
 
-        B-once (ODL-925): the token is the machine's seed badge and the
-        rebuild-seal key; the ready email and the kit name the tokenless page
-        and never print it. The minted token still opens the seed exchange.
+        B-once (ODL-925): the token is the machine's seed badge; the ready email
+        and the kit name the tokenless page and never print it. The minted token
+        still opens the seed exchange.
         """
         con = claim_module.open_db(self.db)
         captured: dict[str, str] = {}
@@ -2052,6 +1881,8 @@ class ProvisionBinding(unittest.TestCase):
         self.assertEqual(seed["backup"]["known_hosts"], entry["known_hosts"])
         self.assertTrue(seed["backup"]["ssh_private_key"].startswith("-----BEGIN"))
         self.assertEqual(seed["backup"]["previous_instance"], "")
+        self.assertEqual(seed["backup"]["backup_snapshot"], "")
+        self.assertNotIn("rebuild", seed)
         self.assertNotIn("password", json.dumps(seed).lower())
 
     def test_the_existing_pair_is_adopted_and_a_second_run_prints_same(self):
@@ -2171,7 +2002,7 @@ class ProvisionBinding(unittest.TestCase):
         (keys / ("odile-%s-ro" % self.slug)).write_text(box_fixture.PRIVATE_KEY,
                                                          encoding="utf-8")
         (keys / "known_hosts").write_text(box_fixture.HOST_LINE + "\n", encoding="utf-8")
-        config = _odilectl_config(directory, self.slug, self.db, self.seed_rebuilds)
+        config = _odilectl_config(directory, self.slug, self.db)
 
         def run(slug: str, *, listed: bool) -> tuple[int, str, str]:
             transport = RecordedProvision(self.db, slug, self.server_id, listed=listed)
@@ -2215,7 +2046,7 @@ class ProvisionBinding(unittest.TestCase):
             (store / ("odile-odl-%06x.env" % index)).write_text(
                 "BACKUP_SLUG=fixture\n", encoding="utf-8")
         slug = "odl-51st01"
-        config = _odilectl_config(directory, slug, self.db, self.seed_rebuilds)
+        config = _odilectl_config(directory, slug, self.db)
         transport = RecordedProvision(self.db, slug, self.server_id)
         code, out, err = run_odilectl(
             ["provision", slug, "--key", self.key_file, "--pin", self.pin,

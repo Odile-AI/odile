@@ -24,8 +24,8 @@ User=root
 # machine" and no download. This writes the same file first (a password made on
 # this machine, certificate pending); the installer keeps the password and the
 # page's download fills the certificate line.
-ExecStartPre=/usr/bin/python3 /usr/local/lib/odile/recovery-seed.py --path /etc/odile/recovery.txt --cmdline /proc/cmdline
-ExecStart=/usr/bin/python3 /usr/local/lib/odile/first_visit.py --bind 127.0.0.1 --port __FIRST_VISIT_PORT__ --state /etc/odile/first-visit.json --env-file __TENANT_HOME__/.hermes/.env --page /usr/local/lib/odile/first-visit.html --verify-page /usr/local/lib/odile/verify.html --report-file /var/lib/odile/access-report.txt --attest-file /var/lib/odile/attestation.json --report-command 'systemctl restart --no-block odile-access-report.service' --reload-command 'systemctl restart __UNIT__'
+ExecStartPre=/usr/bin/python3 /usr/local/lib/odile/recovery-seed.py --path /etc/odile/recovery.txt --cmdline /proc/cmdline --state /etc/odile/first-visit.json
+ExecStart=/usr/bin/python3 /usr/local/lib/odile/first_visit.py --bind 127.0.0.1 --port __FIRST_VISIT_PORT__ --state /etc/odile/first-visit.json --env-file __TENANT_HOME__/.hermes/.env --page /usr/local/lib/odile/first-visit.html --verify-page /usr/local/lib/odile/verify.html --report-file /var/lib/odile/access-report.txt --attest-file /var/lib/odile/attestation.json --report-command 'systemctl restart --no-block odile-access-report.service' --restore-command 'systemctl start --no-block odile-restore.service' --reload-command 'systemctl restart __UNIT__'
 Restart=on-failure
 RestartSec=3
 NoNewPrivileges=true

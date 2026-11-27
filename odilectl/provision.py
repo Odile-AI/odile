@@ -63,16 +63,6 @@ dead machine's id. The web row is pointed at the new `server_id`, address,
 expiry and ordered release, with `state='provisioned'` until the boot record
 moves it on; a row that already names the machine is not rewritten.
 
-**A rebuild keeps the repository (ODL-215 follow-up).** The user's old recovery
-file already opens the repository; a new machine that mints a new password
-meets that repository with a key it cannot use. With `--backup-password-file`
-the run reads the `Backup password:` line of the user's file and seals it under
-the token it just minted (`seed.seal_backup_password`), storing only ciphertext
-in `/var/lib/odile/seed-rebuilds.json`, one entry per slug: the guest opens it
-with the token from the measured command line, which HQ prints once and keeps
-as a hash. A run *without* the flag removes the slug's entry, so a token never
-carries a stale secret.
-
 **The backup pair is provisioned with the tenant, before the paid order.** One
 `odile-<slug>-rw`/`-ro` sub-account pair on the BX11 (ADR-004 v3 §4.1/§4.2), the
 read-only home nested under the read-write one, each account created, its
@@ -168,9 +158,6 @@ class SeedBinding:
     token_hash: str | None = None
     expires_at: str | None = None
     reason: str = ""
-    # "sealed" when the old repository password travelled with this token,
-    # "none" when it did not (a first install, or a rebuild without the file).
-    rebuild: str = ""
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -180,7 +167,6 @@ class SeedBinding:
             "token_hash": self.token_hash,
             "expires_at": self.expires_at,
             "reason": self.reason,
-            "rebuild": self.rebuild,
         }
 
 
@@ -468,19 +454,13 @@ def _key_lines(binding: KeyBinding) -> list[str]:
     return lines
 
 
-def _bind_seed_token(ctx: Context, slug: str, instance_id: str,
-                     backup_password: str | None = None) -> SeedBinding:
+def _bind_seed_token(ctx: Context, slug: str, instance_id: str) -> SeedBinding:
     """Mint one single-use token bound to the machine that was just ordered.
 
     Called immediately after the instance id exists (the `create` response, or
     an adopted machine), before the machine is polled. A tenant row without a
     token yet is the manual/claim path, so a missing row is a reported fallback,
     not a failure; any other ledger error is loud.
-
-    `backup_password` is the user's old repository password (a rebuild). It is
-    sealed under the token that was just minted and written to
-    `/var/lib/odile/seed-rebuilds.json` as ciphertext; the run's report says
-    which happened.
     """
     path = _seed_db(ctx)
     try:
@@ -496,14 +476,12 @@ def _bind_seed_token(ctx: Context, slug: str, instance_id: str,
             con, slug, instance_id=instance_id, ttl_hours=SETUP_TOKEN_TTL_HOURS,
             keys_file=_seed_keys_path(ctx, seed),
         )
-        rebuild = _write_rebuild_entry(ctx, seed, slug, issued, backup_password)
         return SeedBinding(
             instance_id=issued["instance_id"],
             bound=True,
             token=issued["token"],
             token_hash=issued["token_hash"],
             expires_at=issued["expires_at"],
-            rebuild=rebuild,
         )
     except seed.SeedError as error:
         if error.reason == "no_tenant":
@@ -524,65 +502,6 @@ def _bind_seed_token(ctx: Context, slug: str, instance_id: str,
         ) from None
     finally:
         con.close()
-
-
-def _read_backup_password(path: Path) -> str:
-    """The `Backup password:` line of the user's recovery file.
-
-    The reader is `seed.read_recovery_password`: the same grammar
-    `scripts/backup.py` uses to open the repository. A missing or short value
-    is a usage error *before* anything is ordered.
-    """
-    seed = _seed_service()
-    try:
-        return seed.read_recovery_password(str(path))
-    except ValueError as error:
-        raise UsageError(f"provision: {error}") from None
-
-
-def _seed_rebuilds_path(ctx: Context, seed) -> str:
-    """The file the seed service reads per exchange: ciphertext, one entry per rebuild.
-
-    Not the seed config: systemd hands the service a *copy* of the config at
-    start (`LoadCredential=`), so a rewrite would be invisible until a restart.
-    This file is read per redeem, is 0600 and is chowned to the service user.
-    """
-    configured = ctx.config.path_value("seed_rebuilds")
-    if configured is not None:
-        return str(configured)
-    return seed.rebuilds_path()
-
-
-def _write_rebuild_entry(ctx: Context, seed, slug: str, issued: dict,
-                         backup_password: str | None) -> str:
-    """Seal the old password under this token, or clear the slug's entry.
-
-    Returns "sealed" or "none" for the report.
-    `/var/lib/odile/seed-rebuilds.json` holds the ciphertext, never the
-    password; a stale entry cannot be opened by a later token.
-    """
-    path = _seed_rebuilds_path(ctx, seed)
-    if backup_password is None:
-        if os.path.isfile(path):
-            try:
-                seed.set_rebuild(path, slug, None)
-            except (seed.ConfigError, OSError, ValueError) as error:
-                raise ProviderError(
-                    f"provision: {issued['instance_id']} is ordered but the rebuilds file "
-                    f"at {path} could not be cleared for {slug}: {error}"
-                ) from None
-        return "none"
-    try:
-        entry = seed.seal_backup_password(backup_password, issued["token"])
-        entry["token_hash"] = issued["token_hash"]
-        entry["created_at"] = seed.iso(seed.utcnow())
-        seed.set_rebuild(path, slug, entry)
-    except (seed.ConfigError, OSError, ValueError) as error:
-        raise ProviderError(
-            f"provision: {issued['instance_id']} is ordered but its rebuild password "
-            f"was not sealed into {path}: {error}"
-        ) from None
-    return "sealed"
 
 
 # ------------------------------------------------- the tenant's backup pair
@@ -1625,13 +1544,6 @@ def _seed_lines(binding: SeedBinding) -> list[str]:
         f"  token expires: {binding.expires_at}",
         "  printed once; the seed service stores only its SHA-256 hash",
     ]
-    if binding.rebuild == "sealed":
-        lines.append(
-            "  rebuild:     the old repository password is sealed under this token "
-            "(seed-rebuilds.json; ciphertext, no plaintext at HQ)"
-        )
-    else:
-        lines.append("  rebuild:     no sealed password (a first install mints one)")
     return lines
 
 
@@ -1641,12 +1553,6 @@ def add_arguments(parser: ArgumentParser) -> None:
         "--key",
         metavar="PATH",
         help="the tenant's SSH public key file (required to apply until ODL-212 holds the row)",
-    )
-    parser.add_argument(
-        "--backup-password-file",
-        metavar="PATH",
-        help="the user's old recovery file (its 'Backup password:' line is sealed "
-             "under the new setup token, so a rebuilt machine keeps its repository)",
     )
     parser.add_argument(
         "--plan", metavar="ID", help="the provider's plan id (default: default_plan_id)"
@@ -2028,13 +1934,6 @@ def run(ctx: Context, args) -> Report:
     key_text = (getattr(args, "key_text", "") or "").strip() or None
     key_label = str(key_path) if key_path else (
         "the tenant row's public key" if key_text else "<the tenant record>")
-    # A rebuild: the old password is read before anything is ordered, so a
-    # missing or unreadable recovery file is a usage error, not a half-done
-    # provision. The value never reaches argv, the plan or the report.
-    backup_password = _read_backup_password(Path(args.backup_password_file)) if (
-        args.backup_password_file) else None
-    backup_label = str(Path(args.backup_password_file).expanduser()) if (
-        args.backup_password_file) else "none"
 
     try:
         # Validating the shape before planning also catches a bad slug early.
@@ -2145,13 +2044,6 @@ def run(ctx: Context, args) -> Report:
             "consumed_by": "the redeem that spends the token; HQ keeps no raw key after it",
         },
         {
-            "action": "seed.rebuild.seal",
-            "slug": spec.hostname,
-            "file": backup_label,
-            "sealed_under": "the setup token the bind above mints",
-            "when": "always: the entry is written with the file, removed without it",
-        },
-        {
             "action": "provider.poll",
             "until": "active",
             "timeout_seconds": args.timeout,
@@ -2177,9 +2069,6 @@ def run(ctx: Context, args) -> Report:
             else "no near_account in the config: the seed carries the config's shared "
             "key (alpha.0's manual path)"
         ),
-        f"rebuild password: {backup_label} (its 'Backup password:' line is sealed "
-        "under the token; `/var/lib/odile/seed-rebuilds.json` holds ciphertext, "
-        "never the password)",
         (
             f"the backup pair is one sub-account pair on the BX11: 100 sub-accounts "
             f"per box and a pair per tenant, so {MAX_BACKUP_TENANTS} tenants per box "
@@ -2213,7 +2102,6 @@ def run(ctx: Context, args) -> Report:
             days=days,
             ssh_key=key_label,
             release=release,
-            backup_password_file=backup_label,
         )
 
     if key_path is None and not key_text:
@@ -2259,8 +2147,7 @@ def run(ctx: Context, args) -> Report:
 
     def bind(instance_id: str) -> SeedBinding:
         """Bind the token, then pin this instance's key to it."""
-        binding = _bind_seed_token(ctx, spec.hostname, instance_id,
-                                   backup_password=backup_password)
+        binding = _bind_seed_token(ctx, spec.hostname, instance_id)
         if binding.bound and binding.token_hash:
             if issued_key is not None:
                 _bind_key_to_token(ctx, spec.hostname, issued_key, binding.token_hash, instance_id)
@@ -2588,7 +2475,7 @@ def _provision_one(connection: sqlite3.Connection, config, row: sqlite3.Row, *,
                   provider_factory=lambda _config: recorder)
     args = SimpleNamespace(
         slug=slug, key=None, key_text=tenant["ssh_public_key"], plan=None,
-        days=None, pin=None, backup_password_file=None, preorder=False,
+        days=None, pin=None, preorder=False,
         timeout=timeout, interval=interval,
     )
     try:

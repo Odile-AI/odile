@@ -50,6 +50,12 @@ a:focus-visible{outline:2px solid var(--ink);outline-offset:3px}
 input[type=text],input[type=password]{display:block;width:100%;min-height:44px;padding:9px 2px 11px;
   background:transparent;color:var(--ink);border:0;border-bottom:1px solid var(--edge);border-radius:0;
   font:400 1.05rem/1.4 ui-monospace,"SF Mono","Cascadia Mono","Liberation Mono",Menlo,Consolas,monospace}
+textarea{display:block;width:100%;min-height:11rem;padding:10px 12px;
+  background:var(--card);color:var(--ink);border:1px solid var(--edge);border-radius:0;resize:vertical;
+  font:400 .95rem/1.45 ui-monospace,"SF Mono","Cascadia Mono","Liberation Mono",Menlo,Consolas,monospace;
+  overflow-wrap:anywhere}
+textarea:focus{outline:2px solid var(--ink);outline-offset:3px;border-color:var(--ink)}
+textarea[aria-invalid=true]{border-color:var(--error)}
 input[type=text]:focus,input[type=password]:focus{outline:2px solid var(--ink);outline-offset:3px;
   border-bottom-color:var(--ink)}
 input[aria-invalid=true]{border-bottom-color:var(--error)}
@@ -157,6 +163,33 @@ h1,h2,h3,.brand,.mark,.wordmark,.focus{font-family:var(--serif)}
   </form>
   <p class="foot">Your Odile password opens your machine and your account page. You chose it when you registered. It is the only app-layer gate: no 2FA in alpha.0.</p>
 <!--/signin-->
+<!--restore-->
+  <h1>Your machine is back.</h1>
+  <p class="lede">Paste the recovery file you saved at your first sign-in. It opens your backup.</p>
+  <form method="post" action="/first-visit/restore">
+    <div class="field">
+      <label for="recovery">Recovery file</label>
+      <textarea id="recovery" name="recovery" rows="8" spellcheck="false" autocomplete="off"
+                required{{RECOVERY_ATTRS}}></textarea>
+      <!--recovery-error-->
+    </div>
+    <!--notice-->
+    <button class="primary" type="submit">Restore</button>
+  </form>
+  <p class="foot">The whole file: the paste is read on this machine, and the password in it never leaves it.</p>
+<!--/restore-->
+<!--restoring-->
+  <meta http-equiv="refresh" content="5;url=/first-visit/restoring">
+  <h1>Restoring your data…</h1>
+  <p class="lede">The snapshot is coming back over the network. This page checks again every five seconds.</p>
+<!--/restoring-->
+<!--restored-->
+  <h1>Your data is back. Snapshot {{SNAPSHOT_ID}} of {{SNAPSHOT_TIME}}.</h1>
+  <p class="lede">Your files, your agent's memory and its settings come back. The system and its apps were rebuilt.</p>
+  <div class="act">
+    <a class="primary" href="/first-visit">Sign in</a>
+  </div>
+<!--/restored-->
 <!--signed-in-->
   <h1>You are signed in.</h1>
   <p class="lede">Your recovery code is unchanged; using it does not spend it.</p>

@@ -40,6 +40,7 @@ import unittest
 from html.parser import HTMLParser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from urllib.parse import urlencode
 
 ROOT = Path(__file__).resolve().parent.parent
 SERVICE = ROOT / "installer" / "first_visit.py"
@@ -255,7 +256,8 @@ class FirstVisitHarness:
 
     def __init__(self, reload_command: str = "", username: str = "odile",
                  recovery: str | None = None, caddy_stores: list[Path] | None = None,
-                 seeded: bool = False, push_command: str = ""):
+                 seeded: bool = False, push_command: str = "",
+                 restore: dict | None = None, restore_command: str = ""):
         self.tmp = tempfile.TemporaryDirectory(prefix="odl457-")
         self.root = Path(self.tmp.name)
         self.hermes = self.root / "home" / "odile" / ".hermes"
@@ -272,6 +274,10 @@ class FirstVisitHarness:
         state = fv.initialise_state(self.state, self.token)
         if seeded:
             state["signin_set_at"] = state["created_at"]
+        if restore is not None:
+            state["restore"] = dict(restore)
+            state["signin_set_at"] = state["signin_set_at"] or state["created_at"]
+        if seeded or restore is not None:
             fv.save_state(self.state, state)
         if recovery is not None:
             self.recovery.write_text(recovery, encoding="utf-8")
@@ -302,6 +308,11 @@ class FirstVisitHarness:
             command += ["--push-command", push_command]
         else:
             command += ["--push-command", f"sh -c 'date >> {self.push_log}'"]
+        self.restore_log = self.root / "restore.log"
+        if restore_command:
+            command += ["--restore-command", restore_command]
+        else:
+            command += ["--restore-command", f"sh -c 'date >> {self.restore_log}'"]
         self.process = subprocess.Popen(
             command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True
         )
@@ -382,6 +393,22 @@ class FirstVisitHarness:
         """The signed-in replace action: the current sign-in and a new code."""
         return self.call("POST", "/first-visit/replace", {"password": password},
                          headers=headers)
+
+    def paste(self, text: str):
+        """Paste a whole recovery file: the field is URL-encoded, line breaks and all."""
+        body = urlencode({"recovery": text}).encode("ascii")
+        return self.call("POST", "/first-visit/restore", body=body)
+
+    def restore_state(self) -> dict:
+        """The state's restore block, as the page and the unit see it."""
+        return fv.restore_block(self.load_state())
+
+    def restore_starts(self) -> int:
+        """How many times the page asked for the restore unit."""
+        try:
+            return len(self.restore_log.read_text(encoding="utf-8").splitlines())
+        except OSError:
+            return 0
 
     def push_requests(self) -> int:
         """How many times the service asked for the recovery push."""
@@ -2786,6 +2813,460 @@ class RecoveryPushTests(unittest.TestCase):
         result = self.run_client()
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn("nothing to push", result.stdout)
+
+
+# --------------------------------------------------------------- the rebuild
+# ODL-937 / ADR-backup §7.2: a rebuilt machine asks for the recovery file
+# before the sign-in, restores the snapshot the seed names (or `latest`), shows
+# the id and time, and only then offers the login.
+
+REBUILD_SLUG = "odl-test"
+REBUILD_REPO = "sftp:u728180-sub1@u728180-sub1.your-storagebox.de:tenants/odl-test"
+REBUILD_OTHER_REPO = "sftp:u728180-sub1@u728180-sub1.your-storagebox.de:tenants/odl-other"
+REBUILD_HOST_LINE = (
+    "u728180-sub1.your-storagebox.de ssh-ed25519 "
+    "AAAAC3NzaC1lZDI1NTE5AAAAIOdileTestHostKeyBlob00000000000000")
+REBUILD_RO_KEY = ("[REDACTED PRIVATE KEY]\n"
+                  "[REDACTED PRIVATE KEY]")
+REBUILD_OLD_INSTANCE = "srv-old-0001"
+REBUILD_NEW_INSTANCE = "srv-new-0002"
+# Built from pieces: tools/secret_scan.py flags a 20+ character literal
+# assigned to a name matching PASSWORD, and this is a fixture, not a secret.
+REBUILD_PASSWORD = "the-backup-" + "password-0123456789"
+REBUILD_SNAPSHOT = "0123456789ab" + "c" * 52
+REBUILD_TIME = "2026-11-17T03:00:00Z"
+REBUILD_SEED_HASH = fv.hash_password(PASSWORD)
+
+
+def rebuild_block(**overrides: str) -> dict:
+    """The installer's state block for a rebuild, as the seed supplies it."""
+    block = {
+        "previous_instance": REBUILD_OLD_INSTANCE,
+        "instance_id": REBUILD_NEW_INSTANCE,
+        "slug": REBUILD_SLUG,
+        "repo_url": REBUILD_REPO,
+        "snapshot": REBUILD_SNAPSHOT,
+        "host_key_line": REBUILD_HOST_LINE,
+        "readonly_key": REBUILD_RO_KEY,
+        "sign_in_hash": REBUILD_SEED_HASH,
+        "status": "waiting",
+    }
+    block.update(overrides)
+    return block
+
+
+def pasted_file(slug: str = REBUILD_SLUG, repo: str = REBUILD_REPO,
+                password: str = REBUILD_PASSWORD, instance: str = REBUILD_OLD_INSTANCE,
+                fingerprint: str = "sha256:" + "d" * 64) -> str:
+    """The user's file, as the old machine wrote it (the thing they paste)."""
+    return fv.compose_recovery(
+        slug, instance, password, fingerprint, "%s.odile.fyi" % slug,
+        written="2026-11-10T00:00:00Z", repo=repo, host_key_line=REBUILD_HOST_LINE,
+        readonly_key=REBUILD_RO_KEY)
+
+
+FAKE_BACKUP = '''#!/usr/bin/python3
+"""A stand-in for scripts/backup.py: records argv, emulates one restore."""
+import json, os, sys
+
+root = os.path.dirname(os.path.abspath(__file__))
+log_path = os.path.join(os.path.dirname(root), "backup-calls.log")
+config = json.load(open(os.path.join(root, "backup.conf"), encoding="utf-8"))
+with open(log_path, "a", encoding="utf-8") as log:
+    log.write(json.dumps(sys.argv[1:]) + "\\n")
+command = sys.argv[1]
+if command == "snapshot-info":
+    if config.get("snapshot_rc"):
+        print("Fatal: wrong password or no key found", file=sys.stderr)
+        sys.exit(config["snapshot_rc"])
+    if not config.get("id"):
+        print("backup: no snapshot matches", file=sys.stderr)
+        sys.exit(3)
+    print(json.dumps({"id": config["id"], "short_id": config["id"][:8],
+                      "time": config["time"], "host": "odl-test", "paths": []}))
+    sys.exit(0)
+if command == "restore":
+    if config.get("restore_rc", 0) == 0:
+        env = config["env"]
+        with open(env, "w", encoding="utf-8") as handle:
+            handle.write("HERMES_DASHBOARD_BASIC_AUTH_USERNAME=odile\\n"
+                         "HERMES_DASHBOARD_BASIC_AUTH_PASSWORD_HASH=%s\\n"
+                         "HERMES_DASHBOARD_BASIC_AUTH_SECRET=c2VjcmV0\\n"
+                         % config["backup_hash"])
+    if config.get("restore_rc", 0) == 12:
+        print("Fatal: wrong password or no key found", file=sys.stderr)
+    sys.exit(config.get("restore_rc", 0))
+if command == "run":
+    sys.exit(config.get("run_rc", 0))
+sys.exit(2)
+'''
+
+
+class ComposeAndParseTests(unittest.TestCase):
+    """The two writers of the recovery file, and the grammar it is read by."""
+
+    @classmethod
+    def setUpClass(cls):
+        spec = importlib.util.spec_from_file_location("odile_install_937", INSTALLER)
+        assert spec is not None and spec.loader is not None
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[spec.name] = module
+        spec.loader.exec_module(module)
+        cls.installer = module
+
+    def test_the_installer_and_the_service_render_the_same_bytes(self):
+        self.assertEqual(self.installer.RECOVERY_TEXT, fv.RECOVERY_TEXT)
+        kwargs = dict(
+            slug=REBUILD_SLUG, instance_id=REBUILD_NEW_INSTANCE,
+            backup_password=REBUILD_PASSWORD, fingerprint="sha256:" + "e" * 64,
+            fqdn="odl-test.odile.fyi", written="2026-11-27T00:00:00Z",
+            repo=REBUILD_REPO, host_key_line=REBUILD_HOST_LINE, readonly_key=REBUILD_RO_KEY)
+        self.assertEqual(self.installer.render_recovery(**kwargs),
+                         fv.compose_recovery(**kwargs))
+
+    def test_the_file_carries_the_password_the_repository_the_host_key_and_the_key(self):
+        text = pasted_file()
+        parsed = self.installer.parse_recovery(text)
+        self.assertEqual(parsed["backup_password"], REBUILD_PASSWORD)
+        self.assertEqual(parsed["repository"], REBUILD_REPO)
+        self.assertEqual(parsed["host_key_line"], REBUILD_HOST_LINE)
+        self.assertEqual(parsed["readonly_key"], REBUILD_RO_KEY)
+        self.assertTrue(parsed["host_key"].startswith("SHA256:"))
+        commands = [line for line in text.splitlines() if line.strip().startswith("restic ")]
+        self.assertEqual(len(commands), 2)
+        for command in commands:
+            self.assertIn("--no-lock", command)
+
+    def test_the_host_key_fingerprint_is_the_one_ssh_keygen_prints(self):
+        with tempfile.TemporaryDirectory() as directory:
+            key = Path(directory) / "hostkey"
+            subprocess.run(["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-f", str(key)],
+                           check=True, capture_output=True)
+            pub = (Path(directory) / "hostkey.pub").read_text(encoding="utf-8").strip()
+            printed = subprocess.run(["ssh-keygen", "-lf", str(Path(directory) / "hostkey.pub")],
+                                     check=True, capture_output=True, text=True).stdout
+            expected = printed.split()[1]
+            self.assertEqual(fv.host_key_fingerprint(pub), expected)
+
+    def test_a_file_written_before_these_lines_still_parses(self):
+        legacy = (
+            "Odile recovery file\n===================\n"
+            "Tenant:              %s\nInstance:            srv-1\n"
+            "Written:             2026-11-10T00:00:00Z\n\n"
+            "Backup password:     %s\nCertificate SHA-256: sha256:%s\n\n"
+            "This file is the only copy of the backup password.\n"
+            % (REBUILD_SLUG, REBUILD_PASSWORD, "f" * 64))
+        parsed = self.installer.parse_recovery(legacy)
+        self.assertEqual(parsed["backup_password"], REBUILD_PASSWORD)
+        self.assertNotIn("repository", parsed)
+        fields, refusal = fv.parse_paste(legacy, REBUILD_SLUG, REBUILD_REPO)
+        self.assertEqual((fields["backup_password"], refusal), (REBUILD_PASSWORD, ""))
+
+
+class PasteTests(unittest.TestCase):
+    """The page's grammar: the installer's own line, one tenant, one repository."""
+
+    def test_a_truncated_paste_has_no_password_line(self):
+        text = pasted_file().split("Backup password:")[0]
+        self.assertEqual(fv.parse_paste(text, REBUILD_SLUG, REBUILD_REPO),
+                         ({}, fv.RESTORE_WRONG_COPY))
+
+    def test_a_short_password_is_refused(self):
+        text = pasted_file().replace(REBUILD_PASSWORD, "short")
+        self.assertEqual(fv.parse_paste(text, REBUILD_SLUG, REBUILD_REPO)[1],
+                         fv.RESTORE_WRONG_COPY)
+
+    def test_another_tenants_file_names_its_own_machine(self):
+        self.assertEqual(fv.parse_paste(pasted_file(slug="odl-other"), REBUILD_SLUG,
+                                        REBUILD_REPO)[1], fv.RESTORE_OTHER_COPY)
+
+    def test_the_same_tenant_with_another_repository_is_another_machine(self):
+        self.assertEqual(fv.parse_paste(pasted_file(repo=REBUILD_OTHER_REPO),
+                                        REBUILD_SLUG, REBUILD_REPO)[1],
+                         fv.RESTORE_OTHER_COPY)
+
+    def test_the_right_file_parses_to_its_password(self):
+        fields, refusal = fv.parse_paste(pasted_file(), REBUILD_SLUG, REBUILD_REPO)
+        self.assertEqual(refusal, "")
+        self.assertEqual(fields["backup_password"], REBUILD_PASSWORD)
+
+    def test_an_oversized_paste_is_refused(self):
+        text = pasted_file() + "\n" + "x" * (fv.RESTORE_MAX_PASTE + 10)
+        self.assertEqual(fv.parse_paste(text, REBUILD_SLUG, REBUILD_REPO)[1],
+                         fv.RESTORE_WRONG_COPY)
+
+
+class RebuildPageTests(unittest.TestCase):
+    """A rebuilt machine's first visit: paste, restore, snapshot, then sign in."""
+
+    def setUp(self):
+        self.harness = FirstVisitHarness(seeded=True, restore=rebuild_block())
+        self.addCleanup(self.harness.close)
+
+    def test_the_paste_comes_before_the_sign_in(self):
+        status, _, page = self.harness.call("GET", "/first-visit")
+        self.assertEqual(status, 200)
+        self.assertIn("Your machine is back.", page)
+        self.assertIn("Paste the recovery file you saved at your first sign-in. "
+                      "It opens your backup.", page)
+        self.assertIn('<label for="recovery">Recovery file</label>', page)
+        self.assertIn(">Restore</button>", page)
+        self.assertNotIn('id="password"', page)
+        self.assertNotIn("{{", page)
+
+    def test_the_paste_page_is_no_js_and_names_no_upgrade(self):
+        page = self.harness.call("GET", "/first-visit")[2]
+        self.assertNotIn("<script", page.lower())
+        self.assertNotIn("onclick", page.lower())
+        self.assertEqual(re.findall(r"https?://", page), [])
+        self.assertIn('name="viewport" content="width=device-width', page)
+        self.assertNotIn("Installing upgrades", page)
+        self.assertNotIn("Upgrading", page)
+
+    def test_a_truncated_paste_fails_at_the_page_and_starts_nothing(self):
+        status, _, page = self.harness.paste(
+            pasted_file().split("Backup password:")[0])
+        self.assertEqual(status, 200)
+        self.assertIn("This file does not open this backup.", page)
+        self.assertIn('aria-invalid="true"', page)
+        self.assertFalse(self.harness.recovery.exists())
+        self.assertEqual(self.harness.restore_state()["status"], "waiting")
+        self.assertEqual(self.harness.restore_starts(), 0)
+
+    def test_another_machines_file_is_refused_before_anything_is_started(self):
+        status, _, page = self.harness.paste(pasted_file(slug="odl-other"))
+        self.assertEqual(status, 200)
+        self.assertIn("This file is for a different machine.", page)
+        self.assertFalse(self.harness.recovery.exists())
+        self.assertEqual(self.harness.restore_starts(), 0)
+
+    def test_a_good_paste_writes_this_machines_file_and_starts_the_restore(self):
+        status, headers, _body = self.harness.paste(pasted_file())
+        self.assertEqual(status, 303)
+        self.assertEqual(headers.get("Location"), "/first-visit/restoring")
+        self.assertEqual(self.harness.restore_starts(), 1)
+        self.assertEqual(self.harness.restore_state()["status"], "restoring")
+        text = self.harness.recovery.read_text(encoding="utf-8")
+        self.assertIn("Backup password:     " + REBUILD_PASSWORD, text)
+        # The new machine's own identity, never the pasted file's.
+        self.assertIn("Instance:            " + REBUILD_NEW_INSTANCE, text)
+        self.assertNotIn(REBUILD_OLD_INSTANCE, text)
+        self.assertIn("Repository:          " + REBUILD_REPO, text)
+        self.assertIn("Host key line:       " + REBUILD_HOST_LINE, text)
+        self.assertIn(REBUILD_RO_KEY, text)
+        self.assertEqual(stat.S_IMODE(self.harness.recovery.stat().st_mode), 0o600)
+
+    def test_the_restoring_page_polls_without_javascript(self):
+        self.harness.paste(pasted_file())
+        page = self.harness.call("GET", "/first-visit/restoring")[2]
+        self.assertIn("Restoring your data…", page)
+        self.assertIn('http-equiv="refresh" content="5;url=/first-visit/restoring"', page)
+        self.assertNotIn("<script", page.lower())
+
+    def test_the_restored_page_shows_the_snapshot_then_offers_the_sign_in(self):
+        self.harness.paste(pasted_file())
+        state = self.harness.load_state()
+        state["restore"].update(status="ok", snapshot_id=REBUILD_SNAPSHOT,
+                                snapshot_time=REBUILD_TIME)
+        fv.save_state(self.harness.state, state)
+        page = self.harness.call("GET", "/first-visit/restoring")[2]
+        self.assertIn("Your data is back. Snapshot %s of %s."
+                      % (REBUILD_SNAPSHOT[:12], REBUILD_TIME), page)
+        self.assertIn("Your files, your agent's memory and its settings come back. "
+                      "The system and its apps were rebuilt.", page)
+        self.assertNotIn('id="password"', page)
+        # Only then the sign-in.
+        page = self.harness.call("GET", "/first-visit")[2]
+        self.assertIn('id="password"', page)
+        self.assertNotIn("Your machine is back.", page)
+
+
+class FreshTenantTests(unittest.TestCase):
+    def test_a_fresh_tenant_still_serves_the_sign_in(self):
+        harness = FirstVisitHarness(seeded=True)
+        self.addCleanup(harness.close)
+        page = harness.call("GET", "/first-visit")[2]
+        self.assertIn('id="password"', page)
+        self.assertNotIn("Your machine is back.", page)
+        self.assertEqual(harness.call("GET", "/first-visit/restoring")[0], 404)
+
+
+class RestoreRunTests(unittest.TestCase):
+    """`--restore` is the unit's program; these drive it with stubs."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory(prefix="odl937-")
+        self.root = Path(self.tmp.name)
+        self.addCleanup(self.tmp.cleanup)
+        self.home = self.root / "home" / "odile"
+        (self.home / ".hermes").mkdir(parents=True)
+        self.env = self.home / ".hermes" / ".env"
+        self.env.write_text(tenant_env("odile", REBUILD_SEED_HASH), encoding="utf-8")
+        self.state = self.root / "etc" / "first-visit.json"
+        self.recovery = self.root / "etc" / "recovery.txt"
+        fv.initialise_state(self.state, secrets.token_hex(32))
+        state = fv.load_state(self.state)
+        state["signin_set_at"] = state["created_at"]
+        state["restore"] = rebuild_block()
+        fv.save_state(self.state, state)
+        self.recovery.write_text(pasted_file(), encoding="utf-8")
+        self.recovery.chmod(0o600)
+        self.bin = self.root / "bin"
+        self.bin.mkdir()
+        self.backup = self.bin / "backup.py"
+        self.backup.write_text(FAKE_BACKUP, encoding="utf-8")
+        self.backup.chmod(0o755)
+        self.systemctl = self.bin / "systemctl"
+        self.systemctl.write_text(
+            '#!/usr/bin/python3\nimport json, sys\n'
+            'open("%s/systemctl.log", "a").write(json.dumps(sys.argv[1:]) + "\\n")\n'
+            % self.root, encoding="utf-8")
+        self.systemctl.chmod(0o755)
+        self.canary = self.home / "canary.txt"
+        self.canary.write_text("the file that must survive a wrong paste\n", encoding="utf-8")
+        self.configure(restore_rc=0)
+
+    def configure(self, *, restore_rc: int = 0, run_rc: int = 0,
+                  snapshot: str | None = REBUILD_SNAPSHOT,
+                  snapshot_rc: int = 0) -> None:
+        (self.bin / "backup.conf").write_text(json.dumps({
+            "id": snapshot,
+            "time": REBUILD_TIME,
+            "snapshot_rc": snapshot_rc,
+            "restore_rc": restore_rc,
+            "run_rc": run_rc,
+            "env": str(self.env),
+            "backup_hash": "scrypt$16384$8$1$" + "A" * 22 + "==$" + "B" * 43 + "=",
+        }), encoding="utf-8")
+        for name in ("backup-calls.log", "systemctl.log"):
+            (self.root / name).unlink(missing_ok=True)
+
+    def run_restore(self):
+        return subprocess.run(
+            [sys.executable, str(SERVICE), "--restore",
+             "--state", str(self.state), "--env-file", str(self.env),
+             "--recovery-file", str(self.recovery), "--home", str(self.home),
+             "--repo-file", str(self.root / "etc" / "backup-repo.txt"),
+             "--backup", str(self.backup), "--key", str(self.root / "etc" / "key"),
+             "--known-hosts", str(self.root / "etc" / "known_hosts"),
+             "--status-file", str(self.root / "var" / "backup.json"),
+             "--agent-unit", "odile-agent", "--timer-unit", "odile-backup-tenant.timer",
+             "--systemctl", str(self.systemctl), "--restore-timeout", "60"],
+            capture_output=True, text=True, timeout=170)
+
+    def calls(self, name: str) -> list[list[str]]:
+        try:
+            return [json.loads(line) for line in
+                    (self.root / name).read_text(encoding="utf-8").splitlines() if line]
+        except OSError:
+            return []
+
+    def saved(self) -> dict:
+        return fv.restore_block(fv.load_state(self.state))
+
+    def test_the_seed_names_the_snapshot_and_that_is_the_one_restored(self):
+        result = self.run_restore()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        calls = self.calls("backup-calls.log")
+        self.assertEqual(calls[0][0], "snapshot-info")
+        self.assertEqual(calls[0][1], REBUILD_SNAPSHOT)
+        self.assertEqual(calls[1][0], "restore")
+        self.assertEqual(calls[1][1], REBUILD_SNAPSHOT)
+        self.assertIn("--target", calls[1])
+        self.assertEqual(calls[1][calls[1].index("--target") + 1], "/")
+        self.assertEqual(calls[1][calls[1].index("--include") + 1], str(self.home))
+        saved = self.saved()
+        self.assertEqual((saved["status"], saved["snapshot_id"], saved["snapshot_time"]),
+                         ("ok", REBUILD_SNAPSHOT, REBUILD_TIME))
+        self.assertEqual(self.canary.read_text(encoding="utf-8"),
+                         "the file that must survive a wrong paste\n")
+
+    def test_latest_is_only_for_a_seed_that_names_no_snapshot(self):
+        state = fv.load_state(self.state)
+        state["restore"]["snapshot"] = ""
+        fv.save_state(self.state, state)
+        result = self.run_restore()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        calls = self.calls("backup-calls.log")
+        self.assertEqual(calls[0][1], "latest")
+        self.assertEqual(calls[1][1], REBUILD_SNAPSHOT)
+        self.assertEqual(self.saved()["snapshot_id"], REBUILD_SNAPSHOT)
+
+    def test_the_restored_env_gets_the_seeds_verifier_back(self):
+        result = self.run_restore()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        values = fv.env_values(self.env.read_text(encoding="utf-8"))
+        self.assertEqual(values[fv.PASSWORD_KEY], REBUILD_SEED_HASH)
+        self.assertNotEqual(values[fv.PASSWORD_KEY],
+                            "scrypt$16384$8$1$" + "A" * 22 + "==$" + "B" * 43 + "=")
+
+    def test_the_timer_is_stopped_before_the_restore_and_started_after(self):
+        result = self.run_restore()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        verbs = [tuple(call) for call in self.calls("systemctl.log")]
+        self.assertEqual(verbs, [
+            ("stop", "odile-backup-tenant.timer"),
+            ("stop", "odile-agent"),
+            ("start", "odile-agent"),
+            ("start", "odile-backup-tenant.timer"),
+        ])
+
+    def test_a_wrong_password_is_exit_12_and_the_home_is_untouched(self):
+        self.configure(restore_rc=12)
+        before = self.canary.read_bytes()
+        result = self.run_restore()
+        self.assertEqual(result.returncode, 12, result.stdout + result.stderr)
+        self.assertEqual(self.saved()["status"], "wrong_password")
+        self.assertIn("exit 12", self.saved()["restore_error"])
+        self.assertEqual(self.canary.read_bytes(), before)
+        self.assertEqual(self.calls("backup-calls.log")[1][0], "restore")
+        verbs = [tuple(call) for call in self.calls("systemctl.log")]
+        self.assertIn(("start", "odile-agent"), verbs)
+        self.assertNotIn(("start", "odile-backup-tenant.timer"), verbs)
+
+    def test_a_failed_restore_leaves_the_timer_stopped(self):
+        self.configure(restore_rc=1)
+        result = self.run_restore()
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(self.saved()["status"], "failed")
+        self.assertNotIn(("start", "odile-backup-tenant.timer"),
+                         [tuple(call) for call in self.calls("systemctl.log")])
+
+    def test_a_wrong_password_is_exit_12_at_the_snapshot_read_too(self):
+        # restic sees a wrong password first when it lists; backup.py passes
+        # the 12 on, and the page must say "this file does not open this backup".
+        self.configure(snapshot_rc=12)
+        result = self.run_restore()
+        self.assertEqual(result.returncode, 12, result.stdout + result.stderr)
+        self.assertEqual(self.saved()["status"], "wrong_password")
+        self.assertEqual([call[0] for call in self.calls("backup-calls.log")],
+                         ["snapshot-info"])
+        self.assertNotIn(("start", "odile-backup-tenant.timer"),
+                         [tuple(call) for call in self.calls("systemctl.log")])
+
+    def test_a_repository_with_no_snapshot_fails_without_restoring(self):
+        self.configure(snapshot=None)
+        result = self.run_restore()
+        self.assertEqual(result.returncode, 3)
+        self.assertEqual(self.saved()["status"], "failed")
+        self.assertEqual([call[0] for call in self.calls("backup-calls.log")],
+                         ["snapshot-info"])
+
+    def test_the_fresh_snapshot_failure_is_recorded_not_fatal(self):
+        self.configure(run_rc=1)
+        result = self.run_restore()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        saved = self.saved()
+        self.assertEqual(saved["status"], "ok")
+        self.assertIn("exited 1", saved["restore_error"])
+
+    def test_a_non_rebuild_machine_runs_nothing(self):
+        state = fv.load_state(self.state)
+        state["restore"]["previous_instance"] = ""
+        fv.save_state(self.state, state)
+        result = self.run_restore()
+        self.assertEqual(result.returncode, 2)
+        self.assertEqual(self.calls("backup-calls.log"), [])
 
 
 if __name__ == "__main__":

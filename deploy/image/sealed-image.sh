@@ -523,7 +523,7 @@ for f in config.yaml tenant.service odile-bench-smoke.service \
          odile-verify.service \
          odile-bench-attest.service odile-attest-boot.service odile-access-report.service \
          odile-bench-proxy-manifest.service odile-bench-proxy-manifest.socket \
-         odile-firstboot.service odile-first-visit.service \
+         odile-firstboot.service odile-first-visit.service odile-restore.service \
          odile-webapp-brand.service odile-webapp-brand.path \
          odile-webapp-brand.conf webapp-brand.js \
          webapp-chrome.css webapp-chrome.js \
@@ -542,6 +542,7 @@ for pair in "installer/first_visit.py:first_visit.py:0755" \
             "verify/verify.py:verify.py:0755" \
             "installer/access_report.sh:access_report.sh:0755" \
             "scripts/verify_and_unlock.sh:verify_and_unlock.sh:0755" \
+            "scripts/backup.py:backup.py:0755" \
             "attest.py:attest.py:0755"; do
     src=${pair%%:*}; rest=${pair#*:}; dst=${rest%%:*}; mode=${rest##*:}
     if [ -f "$REPO/$src" ]; then
