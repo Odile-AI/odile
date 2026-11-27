@@ -15,8 +15,18 @@ After=odile.service
 [Service]
 Type=oneshot
 User=root
-WorkingDirectory=/opt/odile
-ExecStart=/usr/bin/python3 /opt/odile/tools/roadmap_page.py --backlog /opt/odile/docs/backlog.yaml --out /var/lib/odile/roadmap.html --source-file /var/lib/odile/roadmap-source
+# The page is generated from the live HQ checkout, not the deployed tree:
+# docs/backlog.yaml is edited on HQ every pulse, while /opt/odile is refreshed
+# only by scripts/deploy.sh. Reading /opt made the "source of truth" page serve
+# the last deploy's backlog (measured 2026-11-27: the page served 24 November
+# while HQ held 27 November). The deployed tree still runs the web app; the
+# page reads the same HQ files the team reads.
+WorkingDirectory=%h/odile
+# The footer names the HQ revision the page was generated from. The source
+# file is refreshed every tick: the deploy-time writer went stale on 24 Nov
+# while the page kept rendering, so the old footer named a week-old revision.
+ExecStartPre=/bin/sh -c '/usr/bin/git -C %h/odile rev-parse --short HEAD > /var/lib/odile/roadmap-source'
+ExecStart=/usr/bin/python3 %h/odile/tools/roadmap_page.py --backlog %h/odile/docs/backlog.yaml --out /var/lib/odile/roadmap.html --source-file /var/lib/odile/roadmap-source
 Nice=10
 NoNewPrivileges=yes
 PrivateTmp=yes
