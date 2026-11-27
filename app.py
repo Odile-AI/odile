@@ -170,8 +170,10 @@ CHANGE_OLD_SUBJECT = "Confirm the move of your Odile account"
 CHANGE_NEW_SUBJECT = "Confirm your new address"
 CHANGE_OLD_BODY = """Hello,
 
-Confirm the move of your Odile account to {{NEW_EMAIL}}. If you did not
-ask for this, ignore this message; nothing changes.
+Confirm the move of your Odile account to
+{{NEW_EMAIL}}.
+If you did not ask for this, ignore this message; nothing
+changes.
 
 {{CONFIRM}}
 
@@ -1339,7 +1341,7 @@ ACCOUNT_FORM = """<!doctype html>
 body{margin:0;background:var(--paper);color:var(--ink);font:400 18px/1.6 var(--text);-webkit-font-smoothing:antialiased}
 main{max-width:680px;margin:0 auto;padding:32px 24px 64px}
 .brand{display:inline-block;padding:12px 0;margin:-12px 0 24px;color:var(--ink);text-decoration:none;font-size:1.5rem;font-weight:500;letter-spacing:-.03em;line-height:.88;font-family:var(--serif)}
-h1{margin:0 0 16px;font-size:clamp(2.2rem,5vw,3.4rem);line-height:1.04;letter-spacing:-.025em;font-weight:500;font-family:var(--serif)}
+h1{margin:0 0 16px;font-size:clamp(2.5rem,5vw,4.1rem);line-height:1.02;letter-spacing:-.025em;font-weight:500;font-family:var(--serif)}
 h2{margin:0 0 12px;font-size:1.34rem;line-height:1.2;font-weight:600}
 p{margin:0 0 16px;max-width:66ch}
 a{color:var(--ink);text-decoration-color:var(--soft);text-underline-offset:2px}
@@ -1411,8 +1413,11 @@ def signin_body(*, email: str = "", error: str = "",
 # browser. `confirm` is the address that is not verified yet; it wins over
 # `provision_state`, which is still `unverified`.
 ACCOUNT_STATE_RE = re.compile(
-    r"<!--(confirm|repoint|building|ready|failed|missing)-->(.*?)<!--/\1-->", re.S)
+    r"<!--(confirm|repoint|building|ready|failed|missing|link-pending|link-changed|link-closed)-->(.*?)<!--/\1-->", re.S)
 ACCOUNT_ACTIONS_RE = re.compile(r"<!--(actions)-->(.*?)<!--/actions-->", re.S)
+# The trial line and the password note are the signed-in page's; a mailed-link
+# answer renders the same paper without them (ODL-962 round 2).
+ACCOUNT_SIGNED_IN_RE = re.compile(r"<!--(signed-in)-->(.*?)<!--/\1-->", re.S)
 ACCOUNT_PAGE_TITLES = {
     "confirm": "Check your email \u2014 Odile",
     "repoint": "Confirm your new address \u2014 Odile",
@@ -1481,10 +1486,11 @@ def render_account_page(row: sqlite3.Row, tenant: sqlite3.Row | None = None,
     body = page("account.html", TITLE=html.escape(ACCOUNT_PAGE_TITLES[state]))
     body = ACCOUNT_STATE_RE.sub(
         lambda match: match.group(2) if match.group(1) == state else "", body)
+    body = ACCOUNT_SIGNED_IN_RE.sub(lambda match: match.group(2), body)
     body = ACCOUNT_ACTIONS_RE.sub(
         lambda match: match.group(2) if state != "missing" else "", body)
     if email_change == "pending":
-        notice = '<p class="note">%s</p>' % CHANGE_PENDING
+        notice = '<p class="note" role="status">%s</p>' % CHANGE_PENDING
     elif email_change:
         notice = ('<p class="note" role="status">Your address is changed to'
                   ' <strong>%s</strong>.</p>' % html.escape(email_change))
@@ -1526,8 +1532,11 @@ def render_account_page(row: sqlite3.Row, tenant: sqlite3.Row | None = None,
 
 
 # The three answers a mailed change-of-address link can give when the browser
-# is not the account's own (ODL-962). One heading and one sentence per answer:
-# the pending sentence is the account page's, so the two surfaces cannot drift.
+# is not the account's own (ODL-962). They are the account page's own paper and
+# display face — `web/account.html`, `::selection` and the embedded Cormorant
+# included — with the signed-in furniture (the trial line and the forms)
+# removed. Each answer is one heading and its detail; no answer repeats its
+# heading in the sentence below it.
 CHANGE_TITLES = {
     "pending": "Confirm the change \u2014 Odile",
     "changed": "Your address is changed \u2014 Odile",
@@ -1539,22 +1548,23 @@ def render_change(*, state: str, new_email: str = "") -> str:
     """One page for a confirmation link opened outside the account's browser.
 
     The signed-in copy of each answer is the account page itself (the pending
-    note or the success line); this is the same paper in the sign-in shell, so
-    a link opened on a phone still says what happened. No JavaScript.
+    note or the success line); this is the same page — its paper, its
+    `::selection` pair and its embedded display face — without the trial line
+    and the two forms, so a link opened on a phone still says what happened in
+    the account's own type. No JavaScript.
     """
-    if state == "changed":
-        body = ("<h1>Your address is changed.</h1>"
-                '<p class="lede">Your address is changed to <strong>%s</strong>.</p>'
-                '<p class="note">Your machine, its sign-in and your backup are unchanged.</p>'
-                % html.escape(new_email))
-    elif state == "pending":
-        body = ("<h1>Confirm the change.</h1>"
-                '<p class="lede">%s</p>' % CHANGE_PENDING)
-    else:
-        body = ("<h1>Confirm the change.</h1>"
-                '<p class="lede">%s</p>' % CHANGE_CLOSED)
-    body += '<p class="note"><a href="/account">Go to your account</a></p>'
-    return render_account(title=CHANGE_TITLES[state], body=body)
+    key = "link-%s" % state
+    body = page("account.html", TITLE=html.escape(CHANGE_TITLES[state]))
+    body = ACCOUNT_STATE_RE.sub(
+        lambda match: match.group(2) if match.group(1) == key else "", body)
+    body = ACCOUNT_SIGNED_IN_RE.sub("", body)
+    body = ACCOUNT_ACTIONS_RE.sub("", body)
+    body = body.replace("{{NEW_EMAIL}}", html.escape(new_email))
+    body = body.replace("{{CHANGE_PENDING}}", CHANGE_PENDING)
+    body = body.replace("{{CHANGE_CLOSED}}", CHANGE_CLOSED)
+    if "{{" in body:
+        raise RuntimeError("the change answer has an unfilled slot")
+    return body
 
 
 # The account reset (ODL-578). The page copy is docs/product/DECISION-one-

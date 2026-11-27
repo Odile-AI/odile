@@ -30,11 +30,12 @@ main{max-width:720px;margin:0 auto;padding:32px 24px 64px}
   outline:2px solid var(--ink);outline-offset:3px}
 .brand{display:inline-block;padding:12px 0;margin:-12px 0 24px;color:var(--ink);text-decoration:none;font-size:1.5rem;font-weight:500;letter-spacing:-.03em;line-height:.88;font-family:var(--serif)}
 .brand:focus-visible{outline:2px solid var(--ink);outline-offset:3px}
-h1{margin:0 0 16px;font-size:clamp(2.2rem,5vw,3.4rem);line-height:1.04;letter-spacing:-.025em;font-weight:500;font-family:var(--serif)}
+h1{margin:0 0 16px;font-size:clamp(2.5rem,5vw,4.1rem);line-height:1.02;letter-spacing:-.025em;font-weight:500;font-family:var(--serif)}
 p{margin:0 0 16px;max-width:66ch}
 a{color:var(--ink);text-decoration-color:var(--soft);text-underline-offset:2px}
 a:focus-visible{outline:2px solid var(--ink);outline-offset:3px}
 .lede{color:var(--soft)}
+.lede strong{font-weight:600;overflow-wrap:anywhere}
 .note{margin:0 0 12px;font-size:16px;line-height:1.6;color:var(--soft)}
 .note strong{font-weight:600;overflow-wrap:anywhere}
 .trial{margin:24px 0 16px;font-size:17px;line-height:1.6;color:var(--ink)}
@@ -121,8 +122,29 @@ button:focus-visible{outline:2px solid var(--ink);outline-offset:3px}
   <p class="actions"><a class="primary" href="/account">Go to your account</a></p>
   <!--/missing-->
 
+  <!--link-pending-->
+  <h1>Two confirmations.</h1>
+  <p class="lede">{{CHANGE_PENDING}}</p>
+  <p class="note"><a href="/account">Go to your account</a></p>
+  <!--/link-pending-->
+
+  <!--link-changed-->
+  <h1>Your address is changed.</h1>
+  <p class="lede">The account now answers to <strong>{{NEW_EMAIL}}</strong>.</p>
+  <p class="note">Your machine, its sign-in and your backup are unchanged.</p>
+  <p class="note"><a href="/account">Go to your account</a></p>
+  <!--/link-changed-->
+
+  <!--link-closed-->
+  <h1>Confirm the change.</h1>
+  <p class="lede">{{CHANGE_CLOSED}}</p>
+  <p class="note"><a href="/account">Go to your account</a></p>
+  <!--/link-closed-->
+
+  <!--signed-in-->
   <p class="trial">Your trial ends on {{TRIAL}}.</p>
   <p class="note password">Your Odile password opens your machine too.</p>
+  <!--/signed-in-->
 
   <!--actions-->
   <section class="account" aria-labelledby="account-password">
@@ -146,10 +168,10 @@ button:focus-visible{outline:2px solid var(--ink);outline-offset:3px}
     <p class="note">Lost your code? There is no other way back: ask us to delete your account and machine, then register again. Your backup is the only way to bring the files.</p>
   </section>
 
-  <div class="account">
+  <section class="account" aria-labelledby="account-email">
     <h2 id="account-email">Change your email</h2>
-    <p class="note">This changes the address on your account. Your machine, its sign-in and your backup are unchanged.</p>
     {{EMAIL_CHANGE_NOTICE}}
+    <p class="note">This changes the address on your account. Your machine, its sign-in and your backup are unchanged.</p>
     <form method="post" action="/account/email" novalidate>
       {{EMAIL_CHANGE_FORM_ERROR}}
       <label for="new_email">New email</label>
@@ -160,7 +182,7 @@ button:focus-visible{outline:2px solid var(--ink);outline-offset:3px}
       {{CURRENT_PASSWORD_ERROR}}
       <button class="secondary" type="submit">Change the email</button>
     </form>
-  </div>
+  </section>
   <!--/actions-->
 
   <p class="foot"><a href="/">odile.fyi</a><a href="/faq">Questions</a><a href="/privacy">Privacy</a></p>

@@ -133,8 +133,11 @@ class KeyboardContractTests(unittest.TestCase):
         # <header>. ODL-578 adds the account's own actions as one named
         # region (`account-password`: the change form, the two reset links and
         # the lost-code block). ODL-582 adds the re-pointed confirm state, a
-        # sixth heading in the file (one visible per render).
-        "account.html": (6, ["account-password"], 0),
+        # sixth heading in the file (one visible per render). ODL-962 adds the
+        # three mailed-link answers (pending, changed, closed — one visible per
+        # render) and the change-of-address form as a second named region
+        # (`account-email`), so the change form is not a nameless sibling.
+        "account.html": (9, ["account-password", "account-email"], 0),
         # ODL-582: the console is two states (the admin's page and the
         # refusal), one visible per render; the admin's page names the one
         # action and the account table as two regions, in that order — the

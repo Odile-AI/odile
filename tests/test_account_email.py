@@ -25,6 +25,12 @@ What is pinned here, in the card's own words:
   the new one does;
 * the account page carries the form, the help line and the pending sentence,
   and no pending change once the move lands;
+* the three mailed-link answers are the account page's own paper, display face
+  and `::selection`, with the signed-in furniture removed, and no answer
+  repeats its heading in the sentence below it;
+* the old inbox's message keeps the plain-text band for any address: the
+  address is a whole token on its own line and the prose around it stays at 78
+  characters or fewer;
 * no plaintext token reaches the database, the page or the process output.
 
     /usr/bin/python3 -m unittest tests.test_account_email -v
@@ -392,6 +398,13 @@ class SubmitTests(ServiceCase):
         self.assertIn(HELP, text)
         self.assertIn(PENDING, text)
         self.assertIn('action="/account/email"', text)
+        # The state sits under its own heading and is a live region; the help
+        # line follows it, so the sentence is not read as the form's caption.
+        self.assertIn('<p class="note" role="status">%s</p>' % PENDING, text)
+        self.assertLess(text.index(PENDING), text.index(HELP))
+        self.assertIn('<section class="account" aria-labelledby="account-email">',
+                      text)
+        self.assertIn('aria-labelledby="account-password"', text)
         self.assertNotIn("<script", text.lower())
         # Every URL on the page is the account's own machine: no third party.
         for url in re.findall(r"https?://[^\"<]+", text):
@@ -683,6 +696,87 @@ class ConfirmTests(ServiceCase):
             "https://test.odile.fyi/account/email/confirm?side=old&t=%s" % ("ab" * 32))
         self.assertEqual(status, 404)
         self.assertIn(b"That confirmation link is no longer valid.", body)
+
+
+class AnswerPageTests(ServiceCase):
+    """The mailed answers are the account page's paper, not the sign-in shell."""
+
+    def test_the_three_answers_are_the_account_pages_paper(self):
+        address = self.email()
+        new = self.new_address()
+        row = self.seed_account(address)
+        cookie = self.sign_in(address)
+        self.assertEqual(self.submit(cookie, new)[0], 303)
+        links = self.links()
+
+        status, _headers, pending = self.confirm(links["old"])
+        self.assertEqual(status, 200)
+        status, _headers, changed = self.confirm(links["new"])
+        self.assertEqual(status, 200)
+        status, _headers, closed = self.confirm(links["old"])
+        self.assertEqual(status, 404)
+        self.assertEqual(self.account(row["id"])["email"], new)
+
+        for name, body in (("pending", pending), ("changed", changed),
+                           ("closed", closed)):
+            text = body.decode("utf-8")
+            # The account page's selection pair, its embedded display face and
+            # the sheet's page-title clamp — none of them live in the sign-in
+            # shell these answers used to ride.
+            self.assertIn("::selection", text, name)
+            self.assertIn("data:font/woff2", text, name)
+            self.assertIn("clamp(2.5rem,5vw,4.1rem)", text, name)
+            self.assertNotIn("<script", text.lower(), name)
+            self.assertNotIn("<form", text, name)
+            self.assertNotIn("Your trial ends", text, name)
+            self.assertIn('<a href="/account">Go to your account</a>', text, name)
+            for url in re.findall(r"https?://[^\"<]+", text):
+                self.assertIn(".test.odile.fyi", url, name)
+
+        pending_text = pending.decode("utf-8")
+        self.assertIn("<h1>Two confirmations.</h1>", pending_text)
+        self.assertIn(PENDING, pending_text)
+        changed_text = changed.decode("utf-8")
+        self.assertIn("<h1>Your address is changed.</h1>", changed_text)
+        self.assertIn("The account now answers to <strong>%s</strong>." % new,
+                      changed_text)
+        self.assertIn("Your machine, its sign-in and your backup are unchanged.",
+                      changed_text)
+        closed_text = closed.decode("utf-8")
+        self.assertIn("<h1>Confirm the change.</h1>", closed_text)
+        self.assertIn("That confirmation link is no longer valid.", closed_text)
+
+        # No answer repeats its heading in the sentence under it.
+        for text in (pending_text, changed_text, closed_text):
+            heading = re.search(r"<h1>(.*?)</h1>", text)
+            lede = re.search(r'<p class="lede">(.*?)</p>', text, re.S)
+            if heading is None or lede is None:
+                self.fail("the answer has no heading and lede")
+            self.assertFalse(lede.group(1).startswith(heading.group(1)),
+                             (heading.group(1), lede.group(1)))
+
+
+class MessageBandTests(unittest.TestCase):
+    """The old inbox's one line stays in §Email's 78-character band."""
+
+    def test_the_address_is_a_whole_line_and_the_prose_keeps_the_band(self):
+        for address in ("a@example.com",
+                        "a-new@example.com",
+                        "abc.cd.ef@example.com",          # 21
+                        "a-very-long-address-name@example.com",
+                        "x" * 64 + "@example.com"):
+            rendered = app.CHANGE_OLD_BODY.replace("{{NEW_EMAIL}}", address)
+            lines = rendered.splitlines()
+            prose = [line for line in lines if line != address + "."]
+            for line in prose:
+                self.assertLessEqual(len(line), 78, (address, line))
+            self.assertIn(address + ".", lines,
+                          "the address is not a whole token on its own line")
+            flat = " ".join(rendered.split())
+            self.assertIn("Confirm the move of your Odile account to %s."
+                          % address, flat)
+            self.assertIn("If you did not ask for this, ignore this message;"
+                          " nothing changes.", flat)
 
 
 class RateLimitTests(ServiceCase):
