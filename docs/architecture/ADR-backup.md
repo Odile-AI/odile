@@ -1,6 +1,6 @@
 # ADR-004 — The copy that outlives HQ: restic over SFTP to a Hetzner Storage Box BX11
 
-**Status:** Proposed (v3.8 re-cut) · 26 November 2026 · Architect. **The 17 November
+**Status:** Proposed (v3.9 re-cut) · 27 November 2026 · Architect. **The 17 November
 2026 cut named Backblaze B2 in Canada East as the destination; the 19 November
 2026 re-cut made Cloudflare R2 the interim and kept B2 as the target. Both are
 superseded. On 24 November 2026 Savio chose the Hetzner Storage Box BX11, on a
@@ -52,6 +52,7 @@ key, and nothing at HQ can decrypt the repository.
 | 26 November 2026 | v3.6 | **ODL-935's exit landed** (§8's exit row). The command is re-cut from the HQ-root `shutil.rmtree` to the BX11 path: the row's URL chooses the branch, the read-write key prunes the repository over SFTP (`restic forget --prune` with a supplied password, or the snapshot-object prune with the key when HQ has no password), both sub-accounts are deleted through the Console API, and `subaccount_deleted_at` is recorded. **A measured correction:** deleting a sub-account removes the account, not its home, so the surviving `tenants/<slug>` is not literally empty — it keeps `.ssh` and the repository's `config` and `keys/`, with no user data (the restic-mode prune leaves the four object directories empty; the key-only production prune removes them). The box's own 04:30 × 10 snapshots carry it for up to about ten days | The verifier's note on `t_1b578030` asked for the "no SFTP path today" label to be unwound with the code; the bench pair measured what that row had asserted |
 | 26 November 2026 | v3.7 | **Citations only, no decision moved.** §2's third fact (the paragraph beginning "Three facts in that table") and §11's bullet beginning "The rebuild's password path" stop citing line numbers: the release-setup pointer is now the script's `--user tenant` invocation (`deploy/image/odile-release-setup.sh`), and the three `seed/seed.py` pointers are the names — `seal_backup_password`, the `backup_repo_url` seed key, and `build_seed`'s `fill(config["backup_repo_url"], slug)` | ODL-924's merge grew `seed/seed.py`, so the three numbers pointed at unrelated code at the merge head (inside `_keystream`, a `try:`, a comment), and the script's line had moved with it; §11's rule already says cite the symbol |
 | 26 November 2026 | v3.8 | **Tense and attribution only, no decision moved — ODL-933 landed.** §4.3's `SFTP_HOST_RE` note records the shipped refusal (the colon form refuses a port **by name**, in the program's `sftp_target` and in the installer's `validate_backup_seed`); §7.4's cap paragraph, the "nightly timer fires before the user pastes" row and the destination-failure row are re-cut from "added by ODL-933's re-cut" to the shipped behaviour — `BACKUP_TENANT_CAP_BYTES`, the start-of-run and after-prune `restic stats`, `status: over_cap`, `ConditionPathExists=/etc/odile/recovery.txt` and `ensure_recovery`'s skip; §8's row 3 says landed | Card `t_fda54dd4` merges with the code, and the "at this head" labels it leaves behind would read as future at the tree that lands — the same rule v3.6 applied to ODL-935's row |
+| 27 November 2026 | v3.9 | **Tense and date labels only, no decision moved.** §2's "The timer" and "The transport credential" rows are labelled with their measurement dates (2026-11-13; 2026-11-12/13) and their "Where" pointers moved to the shipped renderers (`backup_timer_start(slug)`, `ensure_pin_files`) and `backup.md` §1–§2; §4.3's "Today every tenant fires at 03:00" becomes the pre-decision state in the past tense; §11's appendix bullet names `BACKUP_TIMER_TEMPLATE`'s `{start}`/`backup_timer_start(slug)` shape with `RandomizedDelaySec=0` instead of the retired 03:00 constant and its 300 s delay | ODL-933 (26 November) landed the per-slug minute and the seed-written key, so the §2 rows read as present fact at this head and the appendix named a constant whose value had moved |
 
 **Related:** `docs/MVP-V0.1.md` §6.1, §6.7, §8, §12 (D19); `docs/CLAIMS.md` §1
 (Access: the recovery-code and recovery-file rows; Money and place: the
@@ -173,11 +174,11 @@ line is a measurement with a date and a source.
 | Whole-machine restore (Drill 2) | 550 files / 3.630 MiB into a rebuilt guest: **0.861 s**; timed rebuild-and-restore **38m03s**; end-to-end **84m13s**; of the 38m03s, **14m24s** is the machine's own work (build 7m48s, boot to first-visit 6m29s, restore 0.861 s, transfer and checksum 6 s) | `backup.md` §5.5 |
 | HQ cannot read the repository | no password in `/root/.odile`, `/etc/odile`, `/opt/odile` (`rc=1`); `restic` with a wrong password exits 12; a data pack carries no plaintext name | `backup.md` §1, 2026-11-12T23:24Z |
 | The repository password | 32 characters, in `/etc/odile/recovery.txt` (0600) on the guest and in the user's downloaded recovery file; nobody at HQ | `backup.md` §1 |
-| The transport credential | an ed25519 key **generated on the guest**, public half registered on the box; the box's host key pinned in `known_hosts` | `backup.md` §3 |
+| The transport credential (measured 2026-11-12/13) | an ed25519 key **generated on the guest**, public half registered on the box; the box's host key pinned in `known_hosts`; since ODL-924/933 the installer writes both files from the seed and the machine generates no key of its own | `backup.md` §1–§2 (the trust-boundary row and "the seed's half"), `installer/odile_install.py` (`ensure_pin_files`) |
 | The destination | `sftp:odile-backup@backup.odile.fyi:/tenants/<slug>` — **a name that does not resolve**; the drill used `sftp://***@203.0.113.139:2222/tenants/<slug>` | `backup.md` §3, §9 |
 | The include set | `--home` (which the installer sets to the tenant layout's home), minus `.hermes/hermes-agent`, `.hermes/tools`, `.hermes/installs`, `.hermes/cache`, `.hermes/logs`, `.hermes/audio_cache`, `.hermes/image_cache`, `.cache`, `.npm`, `.local/share/uv`, `node_modules`, `__pycache__` | `installer/odile_install.py` (`DEFAULT_EXCLUDES`) |
 | Retention | 7 daily + 4 weekly, pruned on every run, grouped by `--host <slug>` so a rebuild stays one group | `backup.md` §2, §7 |
-| The timer | `OnCalendar=*-*-* 03:00:00`, `Persistent=true`, `RandomizedDelaySec=300` — **every tenant at the same clock time** | `installer/odile_install.py` (`BACKUP_TIMER_TEMPLATE`) |
+| The timer (measured 2026-11-13) | `OnCalendar=*-*-* 03:00:00`, `Persistent=true`, `RandomizedDelaySec=300` — **every tenant at the same clock time**; superseded by §4.3's per-slug minute | `installer/odile_install.py` (`BACKUP_TIMER_TEMPLATE`, now `OnCalendar=*-*-* {start}:00` filled by `backup_timer_start(slug)`, `RandomizedDelaySec=0`), `backup.md` §2 |
 
 **Three facts in that table are worse than the table looks, and each one is a
 failure the builder did not test.**
@@ -463,9 +464,7 @@ holds at either. Two facts make that a design constraint rather than a footnote:
 1. **A restic run opens up to 5 SFTP connections by default**
    (`sftp.connections`, restic's own option, default 5). Two simultaneous runs
    at defaults sit on the published ceiling.
-2. **Today every tenant fires at 03:00** (`OnCalendar=*-*-* 03:00:00`,
-   `RandomizedDelaySec=300`). Ten tenants at defaults would ask for 50
-   connections in the same five minutes.
+2. **Before this cut every tenant fired at 03:00**: measured 2026-11-13, `OnCalendar=*-*-* 03:00:00` and `RandomizedDelaySec=300`; ten tenants at defaults would have asked for 50 connections in the same five minutes.
 
 **The decision.** The guest's unit carries **`-o sftp.connections=2`**, so one
 nightly run asks for **two** connections: **five runs share the published 10,
@@ -950,11 +949,14 @@ exactly that reason; round 4 found them.
   installer runs with `--user tenant`), `backup.md` §2.1, and
   `installer/first_visit.py`.
 - The timer and the shipped SFTP path: `installer/odile_install.py`
-  (`BACKUP_TIMER_TEMPLATE`, `03:00:00` + `RandomizedDelaySec=300`;
-  `DEFAULT_KEY_DIR = /etc/odile/backup-ssh`; `backup_repo_file` →
+  (`BACKUP_TIMER_TEMPLATE`'s `OnCalendar=*-*-* {start}:00` filled by
+  `backup_timer_start(slug)` with `RandomizedDelaySec=0`; `ensure_pin_files`
+  for `DEFAULT_KEY_DIR = /etc/odile/backup-ssh`, the read-write key and
+  `known_hosts` written from the seed; `backup_repo_file` →
   `/etc/odile/backup-repo.txt`), `scripts/backup.py` (`SFTP_HOST_RE`,
   `sftp_args`, `resolve_repo`, and `command_init`'s `ssh-keygen`/`ssh-keyscan`
-  fallback), `seed/seed.py` (`backup_repo_url` templated with the slug).
+  fallback for a root the seed did not pin), `seed/seed.py` (`backup_repo_url`
+  templated with the slug).
 - The rebuild's password path: `docs/runbooks/offboard.md` §5 and
   `docs/runbooks/backup.md` §5.2, §9; `seed/seed.py` (`seal_backup_password`;
   the `backup_repo_url` seed key; `build_seed`'s
