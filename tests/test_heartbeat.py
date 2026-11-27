@@ -42,7 +42,9 @@ from argparse import Namespace
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Sequence
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
@@ -664,8 +666,42 @@ class CollectTest(unittest.TestCase):
         self.assertNotIn("schema", payload["facts"]["backup"])
         self.assertEqual(payload["facts"]["last_brief_at"], NOW - 60)
         self.assertEqual(payload["facts"]["cause"], "kernel update")
-        self.assertGreater(payload["facts"]["disk"]["percent"], 0)
+        # The fact is a measurement of the filesystem `--disk` names, so its
+        # value belongs to the machine the guest runs on, not to this fixture.
+        # `percent > 0` failed on any filesystem under 0.05 % full (HQ's /tmp
+        # is a 7.6 GB tmpfs holding ~3 MB: 0.0388 %, rounded to 0.0).  Pin the
+        # shape here; the exact arithmetic is the mocked case below.
+        disk = payload["facts"]["disk"]
+        self.assertGreater(disk["total_bytes"], 0)
+        self.assertGreaterEqual(disk["used_bytes"], 0)
+        self.assertGreaterEqual(disk["percent"], 0.0)
+        self.assertLessEqual(disk["percent"], 100.0)
         self.assertIn("BEGIN PUBLIC KEY", payload["public_key"])
+
+    def test_disk_fact_measures_the_named_path_and_rounds_to_one_decimal(self) -> None:
+        directory = tempfile.mkdtemp(prefix="odile-collect-disk-")
+        self.addCleanup(shutil.rmtree, directory, ignore_errors=True)
+        root = Path(directory)
+        cases = (
+            # The /tmp shape measured on HQ, 2026-11-25: nearly empty rounds
+            # to 0.0, and that is a fact, not a failure.
+            ("a nearly-empty tmpfs", 8148393984, 3162112, 0.0),
+            ("a third full", 1000, 333, 33.3),
+            ("a zero total", 0, 0, 0.0),
+        )
+        for name, total, used, percent in cases:
+            with self.subTest(name):
+                usage = SimpleNamespace(total=total, used=used, free=total - used)
+                with mock.patch.object(
+                    heartbeat.shutil, "disk_usage", return_value=usage
+                ) as measured:
+                    payload = heartbeat.collect(self._collect_args(root))
+                # The fact follows `args.disk`; it is not a hardcoded path.
+                measured.assert_called_once_with(str(root))
+                self.assertEqual(
+                    payload["facts"]["disk"],
+                    {"total_bytes": total, "used_bytes": used, "percent": percent},
+                )
 
     def _report(self, root: Path, *, release: str = "2026.11.1") -> Path:
         raw = bytearray(0x90 + 48)
