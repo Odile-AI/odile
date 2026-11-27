@@ -244,6 +244,38 @@ SCHEMA_VERSION = 4
 SCHEMA_TABLES = ("waitlist", "tenants", "claims", "events", "grants", "accounts",
                  "admin_log")
 
+# The log's index and its two append-only triggers, as one text: the schema
+# creates them and `migrate()`'s table rebuild recreates them from the same
+# statements, so the rebuilt table cannot come back without its fence.
+#
+# The UPDATE trigger names every value a line is: only one transition passes —
+# the account link going from an id to NULL, which is exactly what
+# `ON DELETE SET NULL` does when the account is deleted. Any other UPDATE
+# aborts, so the line survives its account and nothing can rewrite it.
+ADMIN_LOG_GUARDS = (
+    "CREATE INDEX IF NOT EXISTS admin_log_account ON admin_log(account_id, id)",
+    """
+CREATE TRIGGER IF NOT EXISTS admin_log_no_update
+BEFORE UPDATE ON admin_log
+WHEN NOT (OLD.account_id IS NOT NULL AND NEW.account_id IS NULL
+          AND NEW.id IS OLD.id
+          AND NEW.actor IS OLD.actor
+          AND NEW.action IS OLD.action
+          AND NEW.previous_email IS OLD.previous_email
+          AND NEW.new_email IS OLD.new_email
+          AND NEW.detail IS OLD.detail
+          AND NEW.created_at IS OLD.created_at)
+BEGIN
+    SELECT RAISE(ABORT, 'the admin log is append-only');
+END""",
+    """
+CREATE TRIGGER IF NOT EXISTS admin_log_no_delete
+BEFORE DELETE ON admin_log
+BEGIN
+    SELECT RAISE(ABORT, 'the admin log is append-only');
+END""",
+)
+
 SCHEMA = """
 PRAGMA journal_mode=WAL;
 
@@ -400,35 +432,29 @@ CREATE TABLE IF NOT EXISTS accounts (
 
 CREATE INDEX IF NOT EXISTS accounts_provision ON accounts(provision_state);
 
--- The admin log (ODL-582). The console's first action rewrites an account's
--- address; this table records who did it, from which address to which, and
--- when. It is the only place the previous address survives, so `/forgot` can
--- still take the old address as the account's name while the new one waits to
--- be confirmed. Append-only, like `events`: a log line is evidence.
+-- The admin log (ODL-582, widened by ODL-965). It records every action the
+-- console takes: who did it, to which account, and when. It is the only place
+-- a previous address survives, so `/forgot` can still take the old address as
+-- the account's name while the new one waits to be confirmed. Append-only,
+-- like `events`: a log line is evidence.
+--
+-- A line outlives its account, so `account_id` is nullable with ON DELETE SET
+-- NULL and `detail` carries the JSON that names the account's address once the
+-- row is gone; the two address columns are nullable because an action (a code
+-- mint, say) need not move an address. SQLite cannot relax a NOT NULL or add a
+-- foreign-key action in place, so `migrate()` runs the table-rebuild recipe
+-- once; the index and both triggers below are its constants.
 CREATE TABLE IF NOT EXISTS admin_log (
     id             INTEGER PRIMARY KEY,
-    account_id     INTEGER NOT NULL REFERENCES accounts(id),
+    account_id     INTEGER REFERENCES accounts(id) ON DELETE SET NULL,
     actor          TEXT    NOT NULL,
     action         TEXT    NOT NULL,
-    previous_email TEXT    NOT NULL,
-    new_email      TEXT    NOT NULL,
-    created_at     TEXT    NOT NULL
+    previous_email TEXT,
+    new_email      TEXT,
+    created_at     TEXT    NOT NULL,
+    detail         TEXT    NOT NULL DEFAULT '{}' CHECK (json_valid(detail))
 );
-
-CREATE INDEX IF NOT EXISTS admin_log_account ON admin_log(account_id, id);
-
-CREATE TRIGGER IF NOT EXISTS admin_log_no_update
-BEFORE UPDATE ON admin_log
-BEGIN
-    SELECT RAISE(ABORT, 'the admin log is append-only');
-END;
-
-CREATE TRIGGER IF NOT EXISTS admin_log_no_delete
-BEFORE DELETE ON admin_log
-BEGIN
-    SELECT RAISE(ABORT, 'the admin log is append-only');
-END;
-"""
+""" + "\n" + ";\n\n".join(ADMIN_LOG_GUARDS) + ";\n"
 
 # One signup event per waitlist row, with the signup's own timestamp. The WHERE
 # clause is what makes the backfill idempotent on the next migrate.
@@ -465,6 +491,80 @@ def _add_column(con, table: str, column: str, declaration: str) -> bool:
     return True
 
 
+def _needs_admin_log_rebuild(con) -> bool:
+    """True when `admin_log` is still ODL-582's shape (or a half-rebuilt one)."""
+    columns = {row[1]: row for row in con.execute("PRAGMA table_info(admin_log)")}
+    if not columns:
+        return False  # a fresh database: SCHEMA created the widened table
+    keys = {row[3]: row for row in con.execute("PRAGMA foreign_key_list(admin_log)")}
+    account = keys.get("account_id")
+    return (
+        "detail" not in columns
+        or columns["account_id"][3] != 0
+        or columns["previous_email"][3] != 0
+        or columns["new_email"][3] != 0
+        or account is None
+        or account[6] != "SET NULL"
+    )
+
+
+def _rebuild_admin_log(con) -> bool:
+    """Rebuild `admin_log` into ODL-965's shape once; True when it ran.
+
+    SQLite cannot drop a NOT NULL or add `ON DELETE SET NULL` in place, so
+    this is the table-rebuild recipe: a new table under a temporary name,
+    every row copied id for id, the old table dropped, the new one renamed,
+    and the index and both append-only triggers recreated from the same
+    statements the schema uses. Foreign keys are suspended for the copy and
+    checked before the commit, so a line whose account vanished is caught here
+    rather than landing in the table.
+    """
+    if not _needs_admin_log_rebuild(con):
+        return False
+    if con.in_transaction:
+        con.commit()
+    enforcing = con.execute("PRAGMA foreign_keys").fetchone()[0]
+    if enforcing:
+        con.execute("PRAGMA foreign_keys = OFF")
+    try:
+        con.execute("BEGIN IMMEDIATE")
+        con.execute(
+            """
+            CREATE TABLE rebuilt_admin_log (
+                id             INTEGER PRIMARY KEY,
+                account_id     INTEGER REFERENCES accounts(id) ON DELETE SET NULL,
+                actor          TEXT    NOT NULL,
+                action         TEXT    NOT NULL,
+                previous_email TEXT,
+                new_email      TEXT,
+                created_at     TEXT    NOT NULL,
+                detail         TEXT    NOT NULL DEFAULT '{}' CHECK (json_valid(detail))
+            )
+            """)
+        con.execute(
+            "INSERT INTO rebuilt_admin_log (id, account_id, actor, action,"
+            " previous_email, new_email, created_at)"
+            " SELECT id, account_id, actor, action, previous_email, new_email,"
+            " created_at FROM admin_log")
+        con.execute("DROP TABLE admin_log")
+        con.execute("ALTER TABLE rebuilt_admin_log RENAME TO admin_log")
+        for statement in ADMIN_LOG_GUARDS:
+            con.execute(statement)
+        broken = con.execute("PRAGMA foreign_key_check").fetchall()
+        if broken:
+            raise sqlite3.IntegrityError(
+                "the admin log rebuild left %d foreign-key violation(s)"
+                % len(broken))
+        con.commit()
+    except BaseException:
+        con.rollback()
+        raise
+    finally:
+        if enforcing:
+            con.execute("PRAGMA foreign_keys = ON")
+    return True
+
+
 def migrate(con):
     """Create or upgrade the schema in place, and report what changed.
 
@@ -482,6 +582,8 @@ def migrate(con):
         added.append("tenants.release")
     if _add_column(con, "accounts", "recovery_hash", "TEXT"):
         added.append("accounts.recovery_hash")
+    if _rebuild_admin_log(con):
+        added.append("admin_log.rebuilt")
     backfilled = con.execute(BACKFILL_SIGNUPS).rowcount
     con.execute("PRAGMA user_version = %d" % SCHEMA_VERSION)
     con.commit()
@@ -952,6 +1054,21 @@ def brand_date(stamp: str) -> str:
     return "%d %s %d" % (at.day, MONTHS[at.month - 1], at.year)
 
 
+def admin_log_time(stamp: str) -> str:
+    """An ISO-8601 instant as the console's operator time, in UTC.
+
+    BRAND.md §Dates and times: an operator time carries the zone and is UTC
+    (`09:41 UTC`). The log keeps the second because two actions can share a
+    minute and the line is evidence.
+    """
+    try:
+        at = datetime.strptime(stamp or "", "%Y-%m-%dT%H:%M:%SZ")
+    except ValueError:
+        return stamp or ""
+    return "%d %s %d, %s UTC" % (at.day, MONTHS[at.month - 1], at.year,
+                                 at.strftime("%H:%M:%S"))
+
+
 def pinned_measurement() -> str:
     """The 96-hex launch measurement the release pin promises.
 
@@ -1106,6 +1223,38 @@ def queue_repoint_notice(account: dict, previous_email: str) -> str:
         handle.write(message.as_bytes())
     os.replace(path + ".tmp", path)
     return path
+
+
+def log_admin(con, actor: str, action: str, account_id: int | None = None,
+              previous_email: str | None = None, new_email: str | None = None,
+              detail: dict | None = None) -> int:
+    """Append one line to the admin log; return its id.
+
+    The only writer of `admin_log` in this service (ODL-965): every console
+    action calls it inside its own transaction, and a route added later is
+    expected to call it once on success (``tests/test_admin`` walks the
+    dispatcher table for exactly that). `actor` is the signed-in admin's
+    address and `created_at` is this function's own time, so no action can
+    leave a line that names neither who nor when.
+
+    The line outlives its account — `account_id` becomes NULL when the row is
+    deleted — so `detail` carries `{"email": <the account's address>}`, and
+    whatever an action chose with it (the delete's backup choice, ODL-964), for
+    the console to name the account once the live row is gone.
+    """
+    if not str(actor or "").strip():
+        raise ValueError("an admin log line needs an actor")
+    if not str(action or "").strip():
+        raise ValueError("an admin log line needs an action")
+    payload = "{}" if detail is None else json.dumps(
+        detail, sort_keys=True, separators=(",", ":"))
+    cursor = con.execute(
+        "INSERT INTO admin_log (account_id, actor, action, previous_email,"
+        " new_email, detail, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (account_id, actor, action, previous_email, new_email, payload,
+         now_iso()),
+    )
+    return int(cursor.lastrowid)
 
 
 def is_repoint(con, row: sqlite3.Row) -> bool:
@@ -1436,8 +1585,38 @@ ADMIN_ERRORS = {
     "shape": "That doesn't look like an email address.",
 }
 
+# Every console action is one POST route under /admin. This table is the one
+# list the router, `tests/test_admin`'s route walk and the next action read: a
+# route that leaves it out is not reachable, and one that joins it without
+# calling `log_admin` on success fails the walk (ODL-965).
+ADMIN_POST_ROUTES = {
+    "/admin/repoint": "_admin_repoint",
+}
 
-def render_admin(*, allowed: bool, actor: str = "", accounts=(),
+# The console's log view: the newest lines, no pagination (ODL-965).
+ADMIN_LOG_LIMIT = 50
+
+
+def _admin_log_account(entry) -> str:
+    """The account a log line names: the live row, else the detail's address.
+
+    A line outlives its account (`account_id` is NULL after the delete), so
+    the address the action wrote into `detail` is what the console shows; a
+    line written before ODL-965 carries no detail and falls back to the two
+    address columns, so an older re-point still reads as it did.
+    """
+    if entry["account_email"]:
+        return entry["account_email"]
+    try:
+        detail = json.loads(entry["detail"] or "{}")
+    except (TypeError, ValueError):
+        detail = {}
+    if isinstance(detail, dict) and isinstance(detail.get("email"), str):
+        return detail["email"]
+    return entry["previous_email"] or entry["new_email"] or ""
+
+
+def render_admin(*, allowed: bool, actor: str = "", accounts=(), log=(),
                  error: str = "", field: str = "", notice: str = "",
                  values: dict | None = None) -> str:
     """The console in its two states: the admin's page, or the refusal.
@@ -1465,6 +1644,16 @@ def render_admin(*, allowed: bool, actor: str = "", accounts=(),
             "<tr><td>%s</td><td>%s</td><td>%s</td></tr>"
             % (html.escape(row["email"]), html.escape(row["slug"]),
                html.escape(state)))
+    logged = []
+    for entry in log:
+        logged.append(
+            "<tr><td>%s</td><td>%s</td><td>%s</td><td>%s</td></tr>"
+            % (html.escape(admin_log_time(entry["created_at"])),
+               html.escape(entry["actor"]), html.escape(entry["action"]),
+               html.escape(_admin_log_account(entry))))
+    if not logged:
+        logged.append(
+            '<tr><td colspan="4">No action has been logged yet.</td></tr>')
     # The actor and the two typed values are template slots but their values
     # are addresses; sentinels keep the unfilled-slot check about the
     # template only (the ODL-457 rule — a typed `{{...}}` is data).
@@ -1477,8 +1666,10 @@ def render_admin(*, allowed: bool, actor: str = "", accounts=(),
         body = body.replace("{{%s}}" % name.upper(), slot)
     rows_slot = "\x00odile-accounts\x00"
     notice_slot = "\x00odile-notice\x00"
+    log_slot = "\x00odile-log\x00"
     body = body.replace("{{ACCOUNTS}}", rows_slot)
     body = body.replace("{{ADMIN_NOTICE}}", notice_slot)
+    body = body.replace("{{ADMIN_LOG}}", log_slot)
     owner = field if field in ADMIN_FIELDS else ""
     body = body.replace(
         "{{ADMIN_ERROR}}",
@@ -1498,6 +1689,7 @@ def render_admin(*, allowed: bool, actor: str = "", accounts=(),
     # read back as a slot of ours (the ODL-457 rule). The check above ran on
     # the template only, before any address or account row was inserted.
     body = body.replace(rows_slot, "".join(rows))
+    body = body.replace(log_slot, "".join(logged))
     body = body.replace(
         notice_slot,
         '<div role="status"><p class="ok">%s</p></div>' % notice if notice else "")
@@ -2060,7 +2252,7 @@ class Handler(BaseHTTPRequestHandler):
             return self._tenant_recovery()
         if path not in ("/waitlist", "/claim", "/register", "/confirm", "/signin",
                         "/login", "/account/retry", "/account/resend",
-                        "/account/password", "/forgot", "/admin/repoint"):
+                        "/account/password", "/forgot") + tuple(ADMIN_POST_ROUTES):
             return self._send(405, "method not allowed\n", "text/plain; charset=utf-8")
         if path == "/register" and not register_open():
             # Closed before the form is parsed: no row, no tenant, no mail.
@@ -2123,8 +2315,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._account_password(fields)
         if path == "/forgot":
             return self._forgot(fields)
-        if path == "/admin/repoint":
-            return self._admin_repoint(fields)
+        if path in ADMIN_POST_ROUTES:
+            return getattr(self, ADMIN_POST_ROUTES[path])(fields)
         email_raw = (fields.get("email") or [""])[0]
 
         # honeypot: filled only by bots. Pretend everything went fine.
@@ -2533,6 +2725,20 @@ class Handler(BaseHTTPRequestHandler):
         finally:
             con.close()
 
+    def _admin_log_rows(self, limit: int = ADMIN_LOG_LIMIT):
+        """The console's log view: the newest lines, live account or detail."""
+        con = db()
+        try:
+            return con.execute(
+                "SELECT l.id, l.created_at, l.actor, l.action,"
+                " l.previous_email, l.new_email, l.detail,"
+                " a.email AS account_email"
+                " FROM admin_log AS l"
+                " LEFT JOIN accounts AS a ON a.id = l.account_id"
+                " ORDER BY l.id DESC LIMIT ?", (limit,)).fetchall()
+        finally:
+            con.close()
+
     def _admin_page(self, head):
         """GET /admin: the console, or the same paper's refusal."""
         row, verdict = self._admin_account()
@@ -2542,7 +2748,8 @@ class Handler(BaseHTTPRequestHandler):
         if verdict == "forbidden":
             return self._send(403, render_admin(allowed=False), head=head)
         return self._send(200, render_admin(
-            allowed=True, actor=row["email"], accounts=self._admin_rows()), head=head)
+            allowed=True, actor=row["email"], accounts=self._admin_rows(),
+            log=self._admin_log_rows()), head=head)
 
     def _admin_repoint(self, fields):
         """POST /admin/repoint: rewrite the address, log it, queue both notices.
@@ -2571,7 +2778,8 @@ class Handler(BaseHTTPRequestHandler):
         def refused(status, message, field="", values=values):
             return self._send(status, render_admin(
                 allowed=True, actor=row["email"], accounts=self._admin_rows(),
-                error=message, field=field, values=values))
+                log=self._admin_log_rows(), error=message, field=field,
+                values=values))
 
         current = valid_email(current_raw)
         if not current:
@@ -2583,7 +2791,6 @@ class Handler(BaseHTTPRequestHandler):
             return refused(422, ADMIN_ERRORS["same"], "new_email")
 
         token = secrets.token_hex(32)
-        stamp = now_iso()
         con = db()
         try:
             target = con.execute(
@@ -2608,13 +2815,10 @@ class Handler(BaseHTTPRequestHandler):
                     "UPDATE tenants SET email = ? WHERE slug = ? AND email = ?",
                     (new, target["slug"], current),
                 )
-                con.execute(
-                    "INSERT INTO admin_log (account_id, actor, action,"
-                    " previous_email, new_email, created_at)"
-                    " VALUES (?, ?, ?, ?, ?, ?)",
-                    (int(target["id"]), row["email"], REPOINT_ACTION,
-                     current, new, stamp),
-                )
+                log_admin(con, row["email"], REPOINT_ACTION,
+                          account_id=int(target["id"]),
+                          previous_email=current, new_email=new,
+                          detail={"email": new})
                 con.commit()
             except sqlite3.IntegrityError:
                 con.rollback()
@@ -2645,11 +2849,13 @@ class Handler(BaseHTTPRequestHandler):
         if problems:
             return self._send(500, render_admin(
                 allowed=True, actor=row["email"], accounts=self._admin_rows(),
+                log=self._admin_log_rows(),
                 notice="The address is changed.",
                 error="%s could not be queued. The account page can send the"
                       " confirmation again." % " and ".join(problems).capitalize()))
         return self._send(200, render_admin(
             allowed=True, actor=row["email"], accounts=self._admin_rows(),
+            log=self._admin_log_rows(),
             notice="The address is changed. The confirmation goes to %s;"
                    " the notice to %s. The machine is untouched."
                    % (html.escape(new), html.escape(current))))
