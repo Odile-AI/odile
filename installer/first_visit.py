@@ -285,6 +285,11 @@ RESTORE_PASTE_FIELD = "recovery"
 # The restore's own states; anything else is read as "waiting", so a state
 # written by an older installer still renders the paste.
 RESTORE_STATES = ("waiting", "restoring", "ok", "wrong_password", "failed")
+# The restoring page polls itself with a meta refresh (no JavaScript). It is a
+# head element, so `render` fills the page's `{{REFRESH}}` slot with it only
+# for that state; every other state gets an empty string.
+RESTORE_REFRESH_META = ('<meta http-equiv="refresh" '
+                        'content="5;url=/first-visit/restoring">')
 
 # A user can paste anything into the recovery-code field, braces included, so
 # that slot is filled after the unfilled-slot check through a sentinel.
@@ -1287,7 +1292,8 @@ def password_error(password: str, repeat: str) -> FieldError | None:
 def render(template: str, keep: str, *, title: str, error: FieldError | None = None,
            notice: str = "", token: str = "", username: str = DEFAULT_USERNAME,
            code: str = "", recovery: str = "", recovery_file: str = "",
-           heading: str = "", snapshot_id: str = "", snapshot_time: str = "") -> str:
+           heading: str = "", snapshot_id: str = "", snapshot_time: str = "",
+           refresh: str = "") -> str:
     """Keep one state block, drop the rest, then fill the slots.
 
     Values go in last, so a literal ``{{TOKEN}}`` typed by a user is never
@@ -1318,6 +1324,7 @@ def render(template: str, keep: str, *, title: str, error: FieldError | None = N
     body = body.replace("{{PASSWORD2_ATTRS}}", field_attrs("password2", error))
     body = body.replace("{{ID}}", html.escape(snapshot_id))
     body = body.replace("{{TIME}}", html.escape(snapshot_time))
+    body = body.replace("{{REFRESH}}", refresh)
     body = body.replace("{{TITLE}}", html.escape(title))
     body = body.replace("{{DONE_HEADING}}", html.escape(heading))
     body = body.replace("{{RECOVERY}}", html.escape(recovery))
@@ -1694,7 +1701,8 @@ class FirstVisit:
 
     def restoring_page(self) -> tuple[int, str]:
         """The status page while the unit runs; its own meta refresh polls."""
-        body = render(self.template(), "restoring", title="Restoring your data — Odile")
+        body = render(self.template(), "restoring", title="Restoring your data — Odile",
+                      refresh=RESTORE_REFRESH_META)
         return 200, body
 
     def restored_page(self, block: dict) -> tuple[int, str]:
@@ -2015,6 +2023,12 @@ def build_handler(service: FirstVisit):
                     return self._send(404, "not found\n", head, "text/plain; charset=utf-8")
                 if restore_status(state) == "ok":
                     return self._redirect("/first-visit")
+                if restore_status(state) == "restoring":
+                    # A reload or Back during the restore lands on the status
+                    # page, never on a live paste box that would start the unit
+                    # a second time.
+                    code, body = service.restoring_page()
+                    return self._send(code, body, head)
                 code, body = service.restore_form()
                 return self._send(code, body, head)
             if path in ("/first-visit", "/first-visit/"):
@@ -2035,8 +2049,12 @@ def build_handler(service: FirstVisit):
                     return
                 if paste_needed(state):
                     # A rebuilt machine's home is empty: the recovery file
-                    # comes before the sign-in (ADR-004 §5.3).
-                    code, body = service.restore_form()
+                    # comes before the sign-in (ADR-004 §5.3). A reload while
+                    # the unit runs serves the status page, not the paste.
+                    if restore_status(state) == "restoring":
+                        code, body = service.restoring_page()
+                    else:
+                        code, body = service.restore_form()
                 elif signin_is_set(state):
                     code, body = service.signin_form()
                 else:

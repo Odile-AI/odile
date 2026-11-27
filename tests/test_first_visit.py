@@ -3061,7 +3061,20 @@ class RebuildPageTests(unittest.TestCase):
         page = self.harness.call("GET", "/first-visit/restoring")[2]
         self.assertIn("Restoring your data…", page)
         self.assertIn('http-equiv="refresh" content="5;url=/first-visit/restoring"', page)
+        # Metadata belongs in the head, not inside <main>.
+        self.assertLess(page.index('http-equiv="refresh"'), page.index("</head>"))
+        self.assertIn("This page refreshes every five seconds.", page)
+        # The sheet's 2 px progress rule, and nothing scripted.
+        self.assertIn('<div class="progress" aria-hidden="true"><span></span></div>', page)
         self.assertNotIn("<script", page.lower())
+
+    def test_a_reload_during_the_restore_serves_the_status_page(self):
+        self.harness.paste(pasted_file())
+        for path in ("/first-visit", "/first-visit/restore"):
+            status, _, page = self.harness.call("GET", path)
+            self.assertEqual(status, 200, path)
+            self.assertIn("Restoring your data…", page, path)
+            self.assertNotIn('id="recovery"', page, path)
 
     def test_the_restored_page_shows_the_snapshot_then_offers_the_sign_in(self):
         self.harness.paste(pasted_file())
@@ -3070,7 +3083,10 @@ class RebuildPageTests(unittest.TestCase):
                                 snapshot_time=REBUILD_TIME)
         fv.save_state(self.harness.state, state)
         page = self.harness.call("GET", "/first-visit/restoring")[2]
-        self.assertIn("Your data is back. Snapshot %s of %s."
+        self.assertIn("Your data is back.", page)
+        # The machine values are the mono stamp under the sentence, not a
+        # run of 40 px Cormorant (BRAND §Typography).
+        self.assertIn('<span class="stamp"> Snapshot %s of %s.</span>'
                       % (REBUILD_SNAPSHOT[:12], REBUILD_TIME), page)
         self.assertIn("Your files, your agent's memory and its settings come back. "
                       "The system and its apps were rebuilt.", page)
