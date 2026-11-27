@@ -63,6 +63,12 @@ reinstalled. Read from the panel on 2026-11-25T16:14Z
 | the bench (`<server:bench>`) | `1f0ec18099aaa464.raw` | `7571cb22a591a5d4.efi` | predecessor 1 |
 | the demo tenant (`<server:demo>`) | `5ab78a3a61393cd3.raw` | `47be81ca41c24a9f.efi` | predecessor 2 |
 
+In this table and in §4.1's transcript, `<server:bench>` and `<server:demo>`
+stand for the panel's instance ids of the bench machine and the demo tenant —
+the same first column the `--pins`/`--pins-out` file carries in §4.3 — while the
+cold-walk tenant's id is named in full because it is the machine this release
+serves.
+
 Every machine on the account that sets neither image field names nothing and
 keeps nothing.
 
