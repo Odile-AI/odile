@@ -9,6 +9,44 @@ are approved (the row lands as ODL-955, `t_62dd6f8a`), and the booking email is
 a notification only — no consent, no reject, no reply-to-decline; booking,
 change and cancel are in-app (`t_08885b98`). One thing is still Savio's: the
 windowed executor that drives the Servury API (§5.4) · 17 November 2026 · Architect
+**Revision 12** — 28 November 2026, every in-text pointer is re-resolved and
+§11 is re-run at `main`'s `e1e6846`
+(`e1e6846046d7630a4f762f9c4312122af8a1564e`): the health merge (`60523f6`)
+moved `odilectl/health.py` by 106/21 after Revision 11's cut at `5fb4c27`, so
+the pointers that cite it and §11's two `sed` readings of it no longer
+resolved at the head this ADR lands on, and they are re-resolved here. §5.1's
+`daemon-reload` citation is also corrected: it read
+`installer/odile_install.py:17164`–`:17166`, the block's line at the round-1
+base `cbb8c52` but `ensure_config`'s body at every head since ODL-937, and now
+cites `:18203`–`:18205`, the block §3 row 15 already names. §11's shift
+commands also name `deploy/image/sealed-image.sh`,
+one of the thirteen files whose movement the prose counts. No other pointer or
+reading moves: the two merges also touched two runbooks, `odilectl/status.py`,
+`deploy/recovery/` and their tests, and no pointer names a line in any of
+them. No decision changes.
+**Revision 11** — 28 November 2026, every in-text pointer is re-resolved and
+§11 is re-run at `main`'s `5fb4c27`
+(`5fb4c2719c262f26b3c16019465db84c966ff380`): ODL-965 moved `app.py` by 245/38
+after Revision 10's cut at `c588bce`, so `app.py`'s readings and the pointers
+that cite it no longer resolved at the head this ADR lands on. The six `app.py`
+line numbers are re-resolved and §11's block is re-run with its real output
+pasted at this head; every other line pointer and reading is unchanged because
+no other file they point into moved. No decision changes.
+**Revision 10** — 27 November 2026, every in-text pointer and §11 are re-cut at
+`main`'s `c588bce` (`c588bcec129a0d2c97ee1b6eba0640d03b729d8f`): ODL-933,
+ODL-937 and the merges after Revision 7 moved `installer/odile_install.py` by
+2,096 lines, `odilectl/health.py` by 870, `installer/first_visit.py` by 748,
+`seed/seed.py` by 474, `scripts/backup.py` by 381, `app.py` by 213 and seven
+other files §11 reads since Revision 7's `592f352`, so its readings no longer
+resolved. Every pointer is re-resolved at the new head — where a function or
+constant names the thing, the line number sits beside it — and §11's commands
+are re-run with their real output pasted. The cut also corrects three pointers
+that were already wrong at `592f352` and had gone unnoticed: the image places
+the signing key at `deploy/image/sealed-image.sh:559`, the mailer's reply
+comment is `odilectl/health.py:750`–`:751`, and §4.6's public-URL derivation is
+`installer/odile_install.py:20434`–`:20436` (`tenant_main`); the citation it
+replaces named `:17453` at `592f352` and `:19299` before this cut, both
+self-tests rather than this block. No decision changes.
 **Revision 9** — 27 November 2026, §5's app-layer timer and §5.3's window are
 re-cut for the per-slug backup window ODL-933 landed: the app timer is this
 machine's own backup minute + 30 (`RandomizedDelaySec=0`, with a bounded wait
@@ -73,8 +111,8 @@ repeated here. No decision changes.
 `9a29fdf` (the ODL-910 rewrite is in `main`'s history, so the round-3 baseline
 `a6b6bed` no longer resolves); §2 and §11 re-cut at that tree and the two
 transcript commands re-run there; two pointers corrected —
-`PRE_ONBOARDING_KEYS` is `:228` and the heartbeat body is `:1247`–`:1259`, the
-slug at `:1259`. No decision changes.
+`PRE_ONBOARDING_KEYS` and the heartbeat body (`facts = {` through
+`facts["slug"]`), the slug on its last line. No decision changes.
 **Revision 3** — 18 November 2026, review round 2 folded in and `main` merged:
 renumbered to **ADR-005** (main's ADR-004 is the backup decision,
 `docs/architecture/ADR-backup.md`); §11 and every in-text pointer re-cut at the
@@ -173,8 +211,8 @@ Six sentences the product is built on, and what this change does to each:
 ## 2. What exists today, at this head
 
 The inventory in §3 is not a wish list; it is a reading of the tree at
-`main`'s `592f352` (25 November 2026), the cut §11 is taken at, and every commit
-this branch adds after it changes the two ADRs and nothing else (§11). Nine facts
+`main`'s `e1e6846` (28 November 2026), the cut §11 is taken at, and every commit
+this revision adds after `c588bce` changes this ADR and nothing else (§11). Nine facts
 shape it, and each is cited because a later card will change one of them.
 
 **2.1 The app layer already has a signed, transactional mover.**
@@ -210,16 +248,16 @@ exactly the trap: the machine starts, fails to unlock, and is a rebuild. The LUK
 
 **2.4 The model has three homes today, and none of them is a switch.**
 The **seed** carries `model`; the installer renders it into the config
-(`installer/odile_install.py:15745`, `model = seed.get("model")`) into **two**
-keys — `model.default` (`:12114`) and `custom_providers[0].model` (`:12125`) —
+(`installer/odile_install.py:17152`, `model = seed.get("model")`) into **two**
+keys — `model.default` (`:13343`) and `custom_providers[0].model` (`:13354`) —
 and the template fixes a third setting beside them,
-`agent.reasoning_effort: "high"` (`:12119`, because this model rejects Hermes's
+`agent.reasoning_effort: "high"` (`:13348`, because this model rejects Hermes's
 default effort); the **manifest** records the model from the seed cache. The
 seed cache at `/etc/odile/seed.json` is verified forever and never re-fetched
-while it verifies — `cached_seed` reads it (`:14278`) and `load_or_fetch_seed`
-only fetches without one (`:14682`) —
+while it verifies — `cached_seed` reads it (`:15552`) and `load_or_fetch_seed`
+only fetches without one (`:15956`) —
 and the token that fetched it is spent on use: `_end_live_tokens` ends every
-live token for a tenant when the next is minted (`seed/seed.py:1141`), and the
+live token for a tenant when the next is minted (`seed/seed.py:1142`), and the
 measured command line carries a token valid once for 24 hours
 (`deploy/image/odile-firstboot.py:18`–`:21`). So the seed is not a channel: a
 tenant cannot get a new seed without a new token, and the seed also carries the
@@ -228,9 +266,9 @@ NEAR key and the mail secret.
 **2.5 The config is a managed-block file, and the installer wins a tie.**
 `MANAGED_KEYS = ("model", "agent", "custom_providers", "dashboard", "webapp",
 "onboarding", "auxiliary")` (`installer/odile_install.py:301`; the template's
-own header calls it "Seven managed blocks", `:12086`, and lists `auxiliary` at
-`:12098`). `merge_block` drops "a current line whose key path the template does
-name … even if its value differs" (`:13452`), and `ensure_config` renders the
+own header calls it "Seven managed blocks", `:13315`, and lists `auxiliary` at
+`:13327`). `merge_block` drops "a current line whose key path the template does
+name … even if its value differs" (`:14721`), and `ensure_config` renders the
 model from the seed on every run. **A model switch applied by any new mechanism
 would be reverted by the next installer re-run** unless the precedence rule in
 §4.6 exists. This is the failure this ADR exists to prevent, and it is invisible
@@ -240,37 +278,38 @@ to a test that only switches a model.
 gained: the four in `PRE_ONBOARDING_KEYS` (`:309`), then `onboarding`, then
 `dashboard` after the first tenant (t_d95b8c13), then `auxiliary` (ODL-341-F1)
 as the seventh. It is the one a line-level rewrite is most likely to drop: the
-template carries `dashboard.public_url` at `:12136` beside `webapp.public_url`
-at `:12142`, and a config written before it has the earlier four
+template carries `dashboard.public_url` at `:13365` beside `webapp.public_url`
+at `:13371`, and a config written before it has the earlier four
 (`PRE_ONBOARDING_KEYS`, `:309`). Both hosts name the same machine, and neither
 is a fallback for the other.
 
 **2.6 What HQ already knows, and what it does not.** HQ's heartbeat contract
-accepts an optional `versions` map of names to strings (`odilectl/health.py:964`),
+accepts an optional `versions` map of names to strings (`odilectl/health.py:1265`),
 and the approved privacy row already names "versions" among what a heartbeat
 carries. But the tenant's own sender is the installer's embedded
 `backup.py heartbeat`, and it sends only the backup facts and the slug
-(`installer/odile_install.py:2220`–`:2232`): no app release, no model, and none of
+(`installer/odile_install.py:2517`–`:2529`): no app release, no model, and none of
 the other facts the row lists. `scripts/heartbeat.py` is the richer sender, with
-a `versions` map at `:279`, and the tenant does not run it. HQ's one drift
-detector, `release_report` (`odilectl/health.py:1020`), compares the **boot**
+a `versions` map at `scripts/heartbeat.py:279`, and the tenant does not run it. HQ's one drift
+detector, `release_report` (`odilectl/health.py:1360`), compares the **boot**
 release it intended with the one the guest reports — there is no app-layer or
 model analogue. §8 lists the signal; today it does not exist.
 
 **2.7 The installer's placements have no mover, only a repair.** The installer
 writes more than its own bytes: `/etc/systemd/system/odile-agent.service`
-(`installer/odile_install.py:16195`), the `# BEGIN odile-<slug>` block in
-`/etc/caddy/Caddyfile` (`ensure_caddy_site`, `:14926`–`:14977`, kept only if
-`caddy validate` passes), the two backup units (`ensure_backup_units`, `:16145`,
-write at `:16151`), the `/etc/odile` files the machine reads (`support-key.pub`
-`:16028`, `backup-repo.txt` `:16031`, `apt-pins.list` `:15155`), and the
+(`installer/odile_install.py:17730`), the `# BEGIN odile-<slug>` block in
+`/etc/caddy/Caddyfile` (`ensure_caddy_site`, `:16318`–`:16369`, kept only if
+`caddy validate` passes), the two backup units (`ensure_backup_units`, `:17678`,
+write at `:17685`), the `/etc/odile` files the machine reads
+(`installer/odile_install.py:17538`, `:17540`, `:16547` for `support-key.pub`,
+`backup-repo.txt` and `apt-pins.list`), and the
 tenant's own export command (`/usr/local/bin/odile-export`,
-`ensure_export_program` `:16098`, write `:16117`). `odile_update` writes the
+`ensure_export_program` `:17617`, write `:17636`). `odile_update` writes the
 installer's bytes and never runs it — its own docstring says so
 (`update/odile_update.py:996`, "a file the next install reads, not a running
 process") — and the image's converge script refuses a second run by design
-(`deploy/image/odile-release-setup.sh:106`, gated on the marker at `:86`; only
-`--force` ignores it, `:98`). So today a changed unit, Caddy block or
+(`deploy/image/odile-release-setup.sh:118`, gated on the marker at `:93`; only
+`--force` ignores it, `:110`). So today a changed unit, Caddy block or
 `/etc/odile` file reaches a tenant only on a manual repair re-run
 (`docs/runbooks/demo-public.md` §6). That is a layer without a row, and §3's
 row 15 is it.
@@ -278,56 +317,58 @@ row 15 is it.
 **2.8 The same re-run can revert the owner's public host.** The tenant layout
 takes its public name from the flag or the slug's default host —
 `args.public_url or public_url_for(name, args.seed_url or DEFAULT_SEED_URL)`
-(`installer/odile_install.py:18474`, re-derived after the seed at `:18681`) —
+(`installer/odile_install.py:20226`, re-derived after the seed at `:20436`) —
 and `render_tenant_config` writes that value into both `dashboard.public_url`
-(`:12136`) and `webapp.public_url` (`:12142`). Because `merge_block` drops the
-live line the template names (`:13452`), a re-run without `--public-url`
+(`:13365`) and `webapp.public_url` (`:13371`). Because `merge_block` drops the
+live line the template names (`:14721`), a re-run without `--public-url`
 rewrites both keys to the slug URL on a tenant whose owner moved the host
 (ODL-503); the Webapp then answers `400 Invalid Host header` for every request
 to the owner's name — the t_d95b8c13 outage. The boot script's comment claims
 the opposite ("keeps it when this script is re-run by hand",
-`deploy/image/odile-release-setup.sh:140`–`:144`), but it has two mechanisms and
+`deploy/image/odile-release-setup.sh:152`–`:156`), but it has two mechanisms and
 neither reads the host the machine already serves: `ODILE_RELEASE_PUBLIC_URL`
-(`:156`), which an operator sets on a re-run and which ranks first, and the
-measured `odile.public_url=` token it parses from `/proc/cmdline` (`:129`, the
+(`:168`), which an operator sets on a re-run and which ranks first, and the
+measured `odile.public_url=` token it parses from `/proc/cmdline` (`:141`, the
 ODL-340 follow-up), which ranks between the operator's setting and production's
-`<slug>.odile.fyi` default (`:146`–`:149`) and reaches the installer as
-`--public-url` (`:206`). A machine with neither — production, or a re-run that
+`<slug>.odile.fyi` default (`:158`–`:161`) and reaches the installer as
+`--public-url` (`:218`). A machine with neither — production, or a re-run that
 sets nothing — gets the slug URL. A trigger that re-runs the installer without
 fixing this would create the outage it is meant to prevent; §5.2 fixes it.
 
 **2.9 The rebuild flow can stand on three existing facts, and it walks into
 three existing traps.** The facts: the nightly unit's `ExecStartPost` posts the
-tenant's status as a signed heartbeat (`scripts/backup.py:797`–`:808`), and that
-body already carries `facts.backup.snapshot` and its `at`
-(`installer/odile_install.py:2220`–`:2232`), so the T-0 snapshot id needs **no new
+tenant's status as a signed heartbeat (`SERVICE_TEMPLATE` at
+`scripts/backup.py:1087`, its `ExecStartPost` at `:1102`), and that body
+already carries `facts.backup.snapshot` and its `at`
+(`installer/odile_install.py:2517`–`:2529`), so the T-0 snapshot id needs **no new
 fact** to reach HQ; the heartbeat answer is already read by the guest — it is
-`{ok, slug, at, received_at}` (`scripts/heartbeat.py:406`–`:409`) and
-`heartbeat.py post` prints it (`:522`), so a new answer key is additive; and
+`{ok, slug, at, received_at}` (`scripts/heartbeat.py:406`–`:411`) and
+the `post` verb in `scripts/heartbeat.py` prints it (`:547`), so a new answer
+key is additive; and
 `_validated_facts` validates the facts it knows and **ignores the rest**
-(`odilectl/health.py:962`), while `heartbeats.body` stores the whole object — an
+(`odilectl/health.py:1263`), while `heartbeats.body` stores the whole object — an
 HQ that does not know a fact accepts and keeps it, which is what lets the HQ half
 ship before any tenant can send it.
 
 The traps. **First, a rebuilt machine cannot post.** `record()` refuses a
 public key that differs from the one registered for the slug, `409`
-(`odilectl/health.py:1179`–`:1182`), and requires `at` to move forward
-(`:1191`–`:1196`); `heartbeat_keys` holds one key per slug
-(`odilectl/health.py:833`) and nothing in the tree clears it on a rebuild — the
+(`odilectl/health.py:1560`–`:1563`), and requires `at` to move forward
+(`:1625`–`:1630`); `heartbeat_keys` holds one key per slug
+(`odilectl/health.py:954`) and nothing in the tree clears it on a rebuild — the
 runbook's revoke is a manual `DELETE` (`docs/runbooks/alerting.md` §10
 *Rollback*). A rebuilt machine mints a new key at install
-(`scripts/backup.py:764` sends the public half on every beat), so without a clear
+(`scripts/backup.py:1054` sends the public half on every beat), so without a clear
 its first beat, and the post-restore beat the progress page reads, are `409`.
 **Second, the sign-in hash collides with the restore.** The first-visit service
-verifies against the tenant `.env` (`installer/first_visit.py:118`) and
-`/etc/odile` must not be restored (`:76`–`:81`); the home's `.env` **is** in the
+verifies against the tenant `.env` (`installer/first_visit.py:143`) and
+`/etc/odile` must not be restored (`:80`–`:85`); the home's `.env` **is** in the
 backup (ADR-backup §6), so the restore replaces the seed's verifier with the
 backup night's copy. **Third, the T-0 id has no carrier into the new machine.**
 `SEED_KEYS` is the set of **required** keys (`installer/odile_install.py:253`)
-and the only refusal is a missing one (`:14628`), so a new optional seed key is
+and the only refusal is a missing one (`:15902`), so a new optional seed key is
 ignored by an older installer — but nothing writes one today, and
 `backup.py restore` takes a snapshot id positionally with `latest` as the default
-(`scripts/backup.py:930`), so "restore the T-0" is an argument the caller must
+(`scripts/backup.py:1233`), so "restore the T-0" is an argument the caller must
 supply, not a behaviour the program has. §5.3 and §5.4 close all three by name.
 
 Two more facts bound the flow. The agent unit stops with `TimeoutStopSec=90` and
@@ -364,7 +405,7 @@ mechanism exists, and by design or by an unbuilt dependency).
 | 12 | The signing-key anchor — `/etc/odile/odile-signing-key.pub` | the recovery kit's copy, installed at first boot | not updatable | It verifies every release and (from §4) every model document. Rotating it needs a document signed by the **old** key, which is not built. Today a key rotation means a rebuild of every tenant, or a user-initiated support grant on each. |
 | 13 | What the CPU measures — firmware, UKI, command line | the live report at `/attestation` | not updatable | No update can make the running app layer measured; that is a new image with dm-verity or a measured disk (`docs/MVP-V0.1.md` §13 item 3). Rows 6–10 and 15 are **signed and hashed, not measured** — gap 1 stands unchanged. |
 | 14 | The user's files, memory and sessions — `/home/odile` | the user's workspace | in place | The user's own, by definition. It is what rows 1–5 restore, and the reason a rebuild is a user-facing event rather than a silent one. |
-| 15 | Installer placements — the agent unit and the two backup units, `/etc/caddy/Caddyfile`'s `# BEGIN odile-<slug>` block, `/etc/odile/{support-key.pub,backup-repo.txt,apt-pins.list}`, `/usr/local/bin/odile-export`, and every other file a re-run writes (`config.yaml`, `.env`, the skin, the first-visit page) | written by the first installer run; the converge marker stops every later run | **in place** | The signed installer is the applier, and it is idempotent by construction — "every step compares and reports `same`" (`installer/odile_install.py:78`–`:79`). A changed placement is one re-run, then `daemon-reload`/restart if a file moved (`:16652`–`:16654`); §5.1 gives the timer that trigger, and today only a manual `--force` repair does (`docs/runbooks/demo-public.md` §6). The snapshot is the installer's own and covers every file it writes (§5.1, §6). |
+| 15 | Installer placements — the agent unit and the two backup units, `/etc/caddy/Caddyfile`'s `# BEGIN odile-<slug>` block, `/etc/odile/{support-key.pub,backup-repo.txt,apt-pins.list}`, `/usr/local/bin/odile-export`, and every other file a re-run writes (`config.yaml`, `.env`, the skin, the first-visit page) | written by the first installer run; the converge marker stops every later run | **in place** | The signed installer is the applier, and it is idempotent by construction — "every step compares and reports `same`" (`installer/odile_install.py:78`–`:79`). A changed placement is one re-run, then `daemon-reload`/restart if a file moved (`:18203`–`:18205`); §5.1 gives the timer that trigger, and today only a manual `--force` repair does (`docs/runbooks/demo-public.md` §6). The snapshot is the installer's own and covers every file it writes (§5.1, §6). |
 
 **The rule behind the labels.** "In place" requires three things: a signed
 artefact, an applier that can fail, and a post-check that can roll back. Row 10
@@ -498,7 +539,7 @@ forward.
 
 `reasoning_effort` is the document's second setting, not a second mechanism:
 it lands in `agent.reasoning_effort`, the same key the installer's template sets
-(`installer/odile_install.py:12119`), because a model change and the effort its
+(`installer/odile_install.py:13348`), because a model change and the effort its
 provider accepts move together. A document without it leaves the live value
 alone.
 
@@ -513,9 +554,9 @@ subcommand skips the app layer's refusals, which do not apply to a text setting.
 
 | Key | Written as | Post-check |
 |---|---|---|
-| `model.default` | double-quoted, the template's own shape (`installer/odile_install.py:12114`) | reads back equal |
-| `custom_providers[0].model` | unquoted, the template's shape (`:12125`) | reads back equal |
-| `agent.reasoning_effort` | double-quoted (`:12119`) — **only when the document carries one**; absent leaves the live value | reads back equal when written |
+| `model.default` | double-quoted, the template's own shape (`installer/odile_install.py:13343`) | reads back equal |
+| `custom_providers[0].model` | unquoted, the template's shape (`:13354`) | reads back equal |
+| `agent.reasoning_effort` | double-quoted (`:13348`) — **only when the document carries one**; absent leaves the live value | reads back equal when written |
 
 The quoting is the template's, key by key, because the byte-compatibility test
 compares the applied file to `render_tenant_config(seed)` — which also means
@@ -592,7 +633,7 @@ too.
 ### 4.6 The precedence rule — the failure this ADR exists for
 
 `ensure_config` renders the model from the seed and `merge_block` drops a drifted
-value (`installer/odile_install.py:15745`, `:13452`). Left alone, a repair
+value (`installer/odile_install.py:17152`, `:14721`). Left alone, a repair
 re-run of the installer would put a switched tenant back on the seed's model,
 silently, days later. The rule:
 
@@ -606,14 +647,15 @@ silently, days later. The rule:
 Four edits follow, and they belong in the build card, not in a later one:
 `render_tenant_config` prefers the record (both keys and the effort); the
 tenant layout's public URL prefers the live `webapp.public_url` over the slug
-default (`:18681`); `scripts/manifest.py` records the **live** model (with the
-seed as fallback) so the machine's own manifest agrees with the machine; and
+default (`installer/odile_install.py:20434`–`:20436`, `tenant_main`);
+`scripts/manifest.py` records the **live** model (with the seed as fallback) so
+the machine's own manifest agrees with the machine; and
 `installer --manifest` prints the same value. The release manifest's `model`
 field then means "the model the release candidate was installed with", which is
 provenance, and it may legitimately differ from a tenant's live model after a
 switch. That is written down in `docs/runbooks/manifest.md` in the same card.
 `dashboard.public_url` takes the same host as `webapp.public_url` in the
-template (`:12136`, `:12142`), and the precedence rule keeps both: a line-level
+template (`:13365`, `:13371`), and the precedence rule keeps both: a line-level
 rewrite that keeps one and drops the other is the t_d95b8c13 fault in a new
 place.
 
@@ -725,10 +767,10 @@ repair, a `pending` re-entry and a held-digest refusal are all `apply`'s work.
 The re-run is the one program on the machine written to converge rather than to
 install again: every step compares and reports `same`
 (`installer/odile_install.py:78`–`:79`), the seed comes from the verified cache
-(`cached_seed`, `:14278`), the measurement from the boot record (a re-run
+(`cached_seed`, `:15552`), the measurement from the boot record (a re-run
 without `--expect` reads that record), the recovery-file prompt is
 `--i-have-copied-it`, the first-visit state is left exactly as it is
-(`ensure_first_visit`, `:15310`–`:15321`), and the paid smoke turn is skipped
+(`ensure_first_visit`, `:16673`), and the paid smoke turn is skipped
 while `smoke.ok` exists unless `--force-smoke` is passed. So a converged re-run
 changes nothing and spends nothing — but only if it is called correctly, and
 today two calls are missing:
@@ -736,19 +778,19 @@ today two calls are missing:
 - **The signature is not beside the bytes.** `odile_update` writes
   `/usr/local/bin/odile-install.sh` and nothing else
   (`update/odile_update.py:1096`); the installer's signature defaults to the
-  installer's own name plus `.sig` (`installer/odile_install.py:18621`–`:18623`),
+  installer's own name plus `.sig` (`installer/odile_install.py:20376`–`:20378`),
   and an update writes no `.sig`, so `verify_or_die` would refuse the re-run with
   `exit 3`. The app layer must write the release's `odile_install.py.sig` beside
   the installed copy and snapshot the pair.
 - **The token is demanded before the cache is read.** `load_or_fetch_seed`
-  refuses without a 64-hex setup token (`:14688`) even when `cached_seed` would
-  return a verified cache; a live tenant's token is spent (`seed/seed.py:1141`).
+  refuses without a 64-hex setup token (`:15962`) even when `cached_seed` would
+  return a verified cache; a live tenant's token is spent (`seed/seed.py:1142`).
   The build card makes the token required only for a fetch.
 
 The rest of the call is read from the machine, not remembered by a timer:
 `--slug` and `--instance-id` from `/etc/odile/seed.json` (the signed cache
 carries both), `--pubkey /etc/odile/odile-signing-key.pub` (the image places it,
-`deploy/image/sealed-image.sh:506`), `--signature
+`deploy/image/sealed-image.sh:559`), `--signature
 /usr/local/bin/odile-install.sh.sig`, `--i-have-copied-it`, `--snapshot-dir`,
 `--json` — and no `--expect` (the boot record) and no `--first-visit` (the
 state file exists).
@@ -761,7 +803,7 @@ Webapp bundle, the pin files, `recovery.txt`, `apt-pins.list`, the sudoers and
 sshd drop-ins, the skills and `AGENTS.md`. A hand list would be stale by the
 next commit, so `--snapshot-dir DIR` makes the installer record the pre-image of
 every path at the two choke points every tenant write already goes through —
-`ensure_file` (`installer/odile_install.py:13209`) and `write_atomic` (`:13144`) —
+`ensure_file` (`installer/odile_install.py:14478`) and `write_atomic` (`:14413`) —
 once per path, before its first write: `{sha256, mode, uid, gid}` with the old
 bytes under `DIR/payload/`, or `null` when the path did not exist, the same
 convention the app layer uses (`update/odile_update.py:965`) and the model
@@ -786,13 +828,13 @@ only in a directory entry.
    `public_url` keys read back equal to the values they held before the re-run;
    and `GET /` plus `GET /api/sessions` on `127.0.0.1:<port>` with
    `Host: <live host>` answer `302`/`401`, never `400` — the two probes
-   `login_table` makes (`installer/odile_install.py:16730`–`:16738`), without a
+   `login_table` makes (`installer/odile_install.py:18286`–`:18289`), without a
    password and without a paid turn;
 5. clear `pending`; the snapshot is the one rollback step.
 
 Any failure, or a leftover `pending` on the next tick, restores every recorded
 path (deleting the `null` ones), runs `systemctl daemon-reload`
-(`:16652`–`:16654`), restarts what moved, writes the release id into `held` with
+(`:18203`–`:18205`), restarts what moved, writes the release id into `held` with
 `reason: failed`, and exits 6. A failed re-run is attempted once per release;
 a newer release replaces the held entry. The crash window is the same shape as
 §4.5's: the state file is written before the first write, and the next tick
@@ -810,10 +852,10 @@ causes one.
 
 §2.8's bug is one line deep. The tenant's live value is read before the slug
 default is substituted — `args.public_url or live_public_url(layout) or
-f"https://{slug}.odile.fyi"` at `installer/odile_install.py:18681` — where
+f"https://{slug}.odile.fyi"` at `installer/odile_install.py:20436` — where
 `live_public_url` reads `webapp.public_url` out of the live managed block with
-the reader `split_blocks` already provides (`:13377`). That makes the boot
-script's comment true (`deploy/image/odile-release-setup.sh:140`–`:156`), keeps
+the reader `split_blocks` already provides (`:14646`). That makes the boot
+script's comment true (`deploy/image/odile-release-setup.sh:152`–`:168`), keeps
 an owner's ODL-503 name across every repair and every timer re-run, and leaves a
 deliberate move as the one case that needs a flag: an explicit `--public-url`
 still wins, and the first install has no live value at all.
@@ -936,7 +978,7 @@ learns the enum before any machine sends it (playbook rule 12). The email copy's
 own offer to reply — the template's *"If that window is wrong…"* sentence,
 `BRAND.md`'s
 restatements of it and the mailer's comment that names a reply as the way to
-change a booking (`odilectl/health.py:743`–`:744`) — is withdrawn by the same
+change a booking (`odilectl/health.py:750`–`:751`) — is withdrawn by the same
 ruling; ODL-961 owns the template, the brand sheet, the comment and the test
 that pins the body (`tests/test_upgrade_booking.py`); the reply line goes and
 the **one link into the app** the notification carries is the line that
@@ -988,10 +1030,10 @@ X-Odile-Signature: <base64 Ed25519 over the exact body>
 ```
 
 - **`signature`** — the key `heartbeat_keys` holds for the slug
-  (`odilectl/health.py:1179`–`:1182`); a different key is `409`, retried, and
+  (`odilectl/health.py:1560`–`:1563`); a different key is `409`, retried, and
   §5.4's clear is what lets a rebuilt machine register again.
 - **`at`** — a Unix second **newer** than the last accepted beat
-  (`odilectl/health.py:1191`–`:1196`); a `409`, and the retry re-signs with
+  (`odilectl/health.py:1625`–`:1630`); a `409`, and the retry re-signs with
   `at = now`.
 - **`release`** — `RELEASE_ID_RE`; at booking time it must be the release HQ
   intends for this tenant. A `400` on shape; the answer carries `stale: true` on
@@ -1013,11 +1055,11 @@ X-Odile-Signature: <base64 Ed25519 over the exact body>
 
 `facts.last_backup_at` and `facts.backup` ride along because `record()` keeps the
 latest beat, and the freshness watchdog, the drift report and the account page
-read the latest beat's facts (`odilectl/health.py:1983`). A consent beat without
+read the latest beat's facts (`odilectl/health.py:2799`). A consent beat without
 them would make the newest beat thinner than the nightly one; both are already in
 the approved privacy row.
 
-The answer gains one key and keeps the four it has (`scripts/heartbeat.py:406`–`:409`):
+The answer gains one key and keeps the four it has (`scripts/heartbeat.py:406`–`:411`):
 
 ```json
 {"ok": true, "slug": "odl-7f3a2c", "at": 1795611600,
@@ -1025,7 +1067,8 @@ The answer gains one key and keeps the four it has (`scripts/heartbeat.py:406`�
  "upgrade": {"booked": true, "release": "2026.12.1", "window": "2026-12-01T04:47:00Z"}}
 ```
 
-Additive for the guest: `heartbeat.py post` already prints the answer (`:522`).
+Additive for the guest: the `post` verb in `scripts/heartbeat.py` already
+prints the answer (`:547`).
 A new `heartbeat.py upgrade` verb collects the same body, adds `facts.upgrade`,
 posts, and records the answer in `/var/lib/odile/upgrade/state.json`; a
 five-minute timer (`odile-upgrade.timer`) re-posts while the state says
@@ -1037,8 +1080,8 @@ and ignored by an older HQ (`_validated_facts`, §2.9); an unknown `origin` is
 refused, because it would select a write.
 
 **Why not the account site.** The alternative was an authenticated click at HQ —
-the user signs in at `/login` (`app.py:1956`, `:2184`) and presses Upgrade on
-`/account/<slug>` (`:1969`, `:2522`), and no new fact exists at all. Rejected on
+the user signs in at `/login` (`app.py:2081`, `:2309`) and presses Upgrade on
+`/account/<slug>` (`:2094`, `:2647`), and no new fact exists at all. Rejected on
 two counts: it is a hop out of the app the user is already in, and — decisive —
 **the machine is what has to quiesce**, so a booking made only at HQ needs a
 second exchange to reach the machine (a query at the window, or a push), while
@@ -1092,9 +1135,10 @@ per window. Every step then has a bound:
 3. `systemctl stop odile-backup-tenant.timer`, wait (bounded) for any active
    `odile-backup-tenant.service` to finish, then `systemctl start
    odile-backup-tenant.service` — the *same* unit the night runs
-   (`installer/odile_install.py:16145`), so the snapshot uses the same
+   (`installer/odile_install.py:17678`), so the snapshot uses the same
    repository, key and excludes; its `ExecStartPost` posts the beat with
-   `facts.backup` (`scripts/backup.py:797`–`:808`). The wait is not politeness:
+   `facts.backup` (`SERVICE_TEMPLATE` at `scripts/backup.py:1087`, its
+   `ExecStartPost` at `:1102`). The wait is not politeness:
    a `start` issued while the nightly is still activating **joins that run**, so
    the "T-0" would be the nightly's own snapshot, taken with the agent live.
    Measured: **27.3 s for 3.14 GB** (ADR-backup §2), so the wait is normally
@@ -1131,8 +1175,8 @@ day; the flow's own sentence is "minutes", and I6 is the property.
 **The progress page, and where it is served.** **By HQ, not by the machine**: the
 old machine goes down at the panel write and the new one boots empty, so a page
 on the machine dies in the middle of the flow. The account the user already has
-serves it — a block on `/account/<slug>` (`app.py:1969`), behind the session
-cookie (`:2522`) — and the booking email may repeat the same stages as a
+serves it — a block on `/account/<slug>` (`app.py:2094`), behind the session
+cookie (`:2647`) — and the booking email may repeat the same stages as a
 notification for a user who is not signed in, with one link back to the page; it
 carries no control. The block is shown for an **open** row and not for a
 `cancelled` one (ODL-953's row filter, §5.3's change/cancel): a cancel removes
@@ -1178,29 +1222,31 @@ for rows 1–5: nothing is installed on the old machine, it is replaced.
 **The first visit: restore before the sign-in.** The rebuild seed decides it
 (ADR-backup §6, §7.2–§7.3). The seed carries `sign_in_hash` (the account's own
 scrypt verifier — the string `accounts.password_hash` holds; the installer reads
-it from the seed at `installer/odile_install.py:18708` and writes it through
-`write_env_hash`, `:4715`) and **two keys new in this cut**, both written by the
+it from the seed at `installer/odile_install.py:20463` and writes it through
+`write_env_hash`, `:5287`) and **two keys new in this cut**, both written by the
 executor's arming (§5.4 step 3) through `seed/seed.py`'s `build_seed` and read
 by the first visit. **`previous_instance`** is the old machine's id, and the
 rebuild marker the first visit reads; it is new because the marker it replaces
-does not survive the BX11 re-cut — at this head a rebuild is a seed's sealed
-`rebuild` object, which `odile-firstboot.py:1559` unseals for the old repository
-password, and the provisioning card retires that password (ADR-backup §8) — while
-`build_seed` writes only the *new* `instance_id` today. **`backup_snapshot`** is
+does not survive the BX11 re-cut — at this head a rebuild is the seed's
+`backup.previous_instance`, which the installer writes into the first-visit
+state's `restore` block (`installer/first_visit.py:463`, `is_rebuild`), and the
+old repository's password arrives in the recovery file the user pastes
+(`deploy/image/recovery-seed.py`, `rebuild_waiting_for_paste`).
+**`backup_snapshot`** is
 the T-0 id, armed by the same step after the gate.
 
 The page asks for the recovery file first; `odile-restore.service` restores
 **that id**, not `latest` (`backup.py restore <id>` takes it positionally,
-`scripts/backup.py:930`; `latest` stays the fallback for a seed that names none,
+`scripts/backup.py:1233`; `latest` stays the fallback for a seed that names none,
 which is what an older seed means); then the page shows the id and its time; only
 then the sign-in.
 
 Three rules make the order load-bearing:
 
-- **`/etc/odile` is not restored** — the A3 rule (`installer/first_visit.py:76`–`:81`)
+- **`/etc/odile` is not restored** — the A3 rule (`installer/first_visit.py:80`–`:85`)
   keeps the machine's own state, including the recovery-code hash.
 - **The restored `.env` is the backup's copy of the sign-in**
-  (`installer/first_visit.py:118` verifies against `~/.hermes/.env`, and
+  (`installer/first_visit.py:143` verifies against `~/.hermes/.env`, and
   ADR-backup §6 lists `.hermes/.env` in the repository). So the restore *replaces*
   the verifier the seed wrote at first boot with the one from the backup's night.
   If the user changed their password after that night, the restored verifier
@@ -1242,7 +1288,7 @@ from the allow-list, `ERASE` typed by the tool and not passed as an argument
 (`REINSTALL_CONTROL`, `tools/servury_panel.py:162`), the build-time fields
 explicit — "what you do not send is off", so an omitted `want_measured` is an
 unmeasured machine — a log line before the POST, and `--apply --confirm` for the
-destructive write (`:1318`–`:1336`). The destroy form next door is kept out by
+destructive write (`:1328`–`:1346`). The destroy form next door is kept out by
 the `action` field and `FORBIDDEN_PATH` (`:137`, `:159`).
 
 **The account boundary, stated rather than hidden.** The tool runs on the host
@@ -1283,13 +1329,13 @@ the clock.**
 1. gate (§ above), then write `writing` into the booking row;
 2. **clear `heartbeat_keys` for the slug.** The rebuilt machine mints a new key
    at install, and `record()` refuses a different key on a registered slug
-   (`odilectl/health.py:1179`–`:1182`). Without this step the post-restore beat
+   (`odilectl/health.py:1560`–`:1563`). Without this step the post-restore beat
    is `409`, the progress page never reaches "restored", and the freshness
    watchdog opens a false alert three days later. A duplicate clear is a no-op.
    **The clear comes after the gate, and that ordering is the control:** between
    the clear and the new machine's first beat the slug's key is unregistered, and
    `record()` accepts the first public key it sees for a slug
-   (`odilectl/health.py:1171`–`:1177`) — so a stranger who posts first can own
+   (`odilectl/health.py:1552`–`:1558`) — so a stranger who posts first can own
    the slug's signature until the runbook's `DELETE` clears it again. What that
    buys them arrives *after* the T-0 has been verified and the disk is already
    being replaced: forged facts, not a wipe. Reversed (clear, then gate), a
@@ -1344,7 +1390,7 @@ stages rather than a percentage for that reason.
 | The re-run rewrites the owner's public host to the slug | every request to the owner's name answers `400 Invalid Host header` | §5.2: the live `webapp.public_url` beats the slug default and `dashboard.public_url` follows; the post-check reads both back and probes the Host with the pre-run value |
 | The installer is re-run after a switch | the seed's model returns, silently | §4.6's precedence rule, plus the byte-compatibility test and `manifest.py` reading the live model |
 | `model.default` and `custom_providers[0].model` disagree | the About panel and the turns disagree | both written; the post-check reads both; refuse if either block is missing |
-| A model id with a YAML metacharacter | a broken config, a dead gateway | the id pattern excludes `:`, quotes, backslash and newline; each key keeps the template's own quoting (`installer/odile_install.py:12114` quoted, `:12125` unquoted), and the byte test holds it |
+| A model id with a YAML metacharacter | a broken config, a dead gateway | the id pattern excludes `:`, quotes, backslash and newline; each key keeps the template's own quoting (`installer/odile_install.py:13343` quoted, `:13354` unquoted), and the byte test holds it |
 | A restart lands mid-turn | that turn is lost | the timer restarts only on a real change; the user re-asks; the record says when |
 | The document names a model NEAR does not serve, retires one, or one the account is not entitled to | the switch applies and the first turn fails | try it on the demo tenant (Odile's own machine) first, with the same key type; publish a new document naming a working model — every tenant picks it up within 15 minutes |
 | The timer dies, or the machine is off for a week | the old model keeps working | `Persistent=true`; a journal line per run; once §8 item 3 lands, `versions.model` against HQ's intended model makes a stale instance visible |
@@ -1355,7 +1401,7 @@ stages rather than a percentage for that reason.
 | A **Change** or **Cancel** lands as the window opens | the machine has quiesced and HQ has moved the row to `writing`; closing or moving the row would leave the executor mid-write | both are `booked`-state acts (§5.3): at `writing` the row refuses them and the notice says the window is running — the executor's state is the lock |
 | The T-0 beat never arrives (the backup failed, the machine was off) | the machine keeps running; nothing is wiped | §5.4's gate: the write follows the snapshot, never the clock. The booking moves to the next window; after three the row is `failed` and the user is notified by email |
 | The panel write fails halfway (reinstall ok, boot or disk refused) | stock Debian on the tenant's address, no data loss — the home is in the repository | `--recycle` orders the three calls and its log line names the pair it is about to lose; a retry re-runs boot image and disk (the reinstall is idempotent); `booting` never flips, so the page shows the truth |
-| The rebuilt machine's first heartbeat is `409` | no post-restore beat, so the page never says "restored"; the freshness watchdog opens a false alert three days later | §5.4 step 2 clears `heartbeat_keys` for the slug at the `writing` transition; `record()` then registers the new public key on first sight (`odilectl/health.py:1171`–`:1177`) |
+| The rebuilt machine's first heartbeat is `409` | no post-restore beat, so the page never says "restored"; the freshness watchdog opens a false alert three days later | §5.4 step 2 clears `heartbeat_keys` for the slug at the `writing` transition; `record()` then registers the new public key on first sight (`odilectl/health.py:1552`–`:1558`) |
 | Two windows fall due at once, and the allow-list is one file | at best one run is refused; at worst both runs carry the **wrong** tenant's id and one disk is erased | §5.4: one window at a time under the host lock, `--server` from the booking row and never read back from the allow-list, the allow-list written and used inside the lock |
 | The restore puts back a **retired** password | the old password works and the current one does not, silently | the first-visit service re-writes the seed's `sign_in_hash` after the restore and before it offers the sign-in (§5.3); `/etc/odile` is not restored, so the recovery-code hash survives |
 | The user never pastes | the machine waits at the first-visit page with an empty home; the data is safe in the repository | the page re-offers the paste, the 36-hour freshness watchdog reports the silence, and no second write happens — the booking is `done` only after the post-restore beat |
@@ -1583,7 +1629,7 @@ That is the correct direction for a replacement, and it is why the clear is the
 executor's step and not a background job.
 
 **The public-host preference is two-way and smaller than the bug it fixes.** One
-line at `installer/odile_install.py:18681`; deleting it restores today's slug
+line at `installer/odile_install.py:20436`; deleting it restores today's slug
 default, and it only ever copies a value the machine already carries, so it
 cannot invent a host. It applies to every installer run, not only the timer's,
 which is the point: a manual repair is today's only route and has the same bug.
@@ -1610,65 +1656,109 @@ re-cuts it.
 
 ## 11. Evidence
 
-Read and run at `main`'s `592f352`
-(`592f352c1d8fd23658348d2f2236fac325c9476c`, 25 November 2026), the cut these
-readings and every pointer in §2–§8 are taken at. Every commit this branch adds
-after it changes the two ADRs and nothing else (the first command). `main` moved
-**five** of these files between Revision 6's cut and this one — ODL-926 in
-`installer/odile_install.py` (+1,373 lines), `scripts/heartbeat.py` (+289),
-`app.py` (+34) and `release/release.json` (+12), and ODL-947 in
-`deploy/image/odile-firstboot.py` (+37) — so every installer pointer in this ADR
-was re-resolved through that shift rather than patched by hand, and §11's
-commands were re-run at the new head (the second and third commands are the shift
-and the check that nothing else on the list moved; `update/odile_update.py`,
-`scripts/manifest.py`, `odilectl/health.py`, `seed/seed.py`,
-`deploy/image/odile-release-setup.sh` and `docs/runbooks/update.md` did not):
+Read and run at `main`'s `e1e6846`
+(`e1e6846046d7630a4f762f9c4312122af8a1564e`, 28 November 2026), the cut these
+readings and every pointer in §2–§8 are taken at. Revision 10's re-cut commit
+is `e7e905e07668983b91a8e739c0b386d8787c4557`: the first command below names
+its whole diff — this ADR and nothing else. Revision 11 re-cut `app.py`'s
+readings and the pointers that cite it at `5fb4c27`, because ODL-965 moved
+`app.py` by 245/38 after `c588bce`; Revision 12 re-cut `odilectl/health.py`'s readings
+and the pointers that cite it, because the health merge (`60523f6`) moved it by
+106/21 after `5fb4c27`. Every other reading and pointer is unchanged, no other
+file they point into having moved. `main` moved
+**thirteen** of the files this section reads between Revision 7's cut at
+`592f352` and this one — `installer/odile_install.py` (2,096),
+`odilectl/health.py` (997), `installer/first_visit.py` (748),
+`seed/seed.py` (474), `scripts/backup.py` (381), `app.py` (±496),
+`deploy/image/odile-firstboot.py` (170),
+`deploy/image/odile-release-setup.sh` (93), `docs/runbooks/update.md` (84),
+`tools/servury_panel.py` (26), `scripts/heartbeat.py` (15),
+`deploy/image/sealed-image.sh` (14) and `release/release.json` (12) — so every
+pointer in this ADR was re-resolved through that shift rather than patched by
+hand, and §11's commands were re-run at the new head (the second and third
+commands are the shift and the check that nothing else on the list moved;
+`update/odile_update.py` and `scripts/manifest.py` did not):
 
 ```sh
-$ git diff --name-only $(git merge-base main HEAD)..HEAD
-docs/architecture/ADR-backup.md
+$ git diff --name-only c588bcec129a0d2c97ee1b6eba0640d03b729d8f e7e905e07668983b91a8e739c0b386d8787c4557
 docs/architecture/ADR-upgrades-and-model.md
-$ git diff --stat 8ad9145 592f352 -- installer/odile_install.py \
-    update/odile_update.py app.py scripts/manifest.py scripts/heartbeat.py \
-    odilectl/health.py seed/seed.py deploy/image/odile-firstboot.py \
-    deploy/image/odile-release-setup.sh docs/runbooks/update.md \
-    release/release.json
- app.py                          |   34 +-
- deploy/image/odile-firstboot.py |   37 +-
- installer/odile_install.py      | 1373 +++++++++++++++++++++++++++++++++++++--
- release/release.json            |   12 +-
- scripts/heartbeat.py            |  289 +++++++-
- 5 files changed, 1634 insertions(+), 111 deletions(-)
-$ git diff --name-only 8ad9145 592f352 -- installer/odile_install.py \
-    update/odile_update.py app.py scripts/manifest.py scripts/heartbeat.py \
-    odilectl/health.py seed/seed.py deploy/image/odile-firstboot.py \
-    deploy/image/odile-release-setup.sh docs/runbooks/update.md \
-    release/release.json
+$ git diff --stat 592f352 e1e6846 -- installer/odile_install.py \
+    update/odile_update.py \
+    app.py \
+    scripts/manifest.py \
+    scripts/heartbeat.py \
+    odilectl/health.py \
+    seed/seed.py \
+    deploy/image/odile-firstboot.py \
+    deploy/image/odile-release-setup.sh \
+    deploy/image/sealed-image.sh \
+    docs/runbooks/update.md \
+    release/release.json \
+    scripts/backup.py \
+    installer/first_visit.py \
+    tools/servury_panel.py
+ app.py                              |  496 ++++++---
+ deploy/image/odile-firstboot.py     |  170 +--
+ deploy/image/odile-release-setup.sh |   93 +-
+ deploy/image/sealed-image.sh        |   14 +-
+ docs/runbooks/update.md             |   84 ++
+ installer/first_visit.py            |  748 ++++++++++++-
+ installer/odile_install.py          | 2096 ++++++++++++++++++++++++++++++++---
+ odilectl/health.py                  |  997 ++++++++++++++++-
+ release/release.json                |   12 +-
+ scripts/backup.py                   |  381 ++++++-
+ scripts/heartbeat.py                |   15 +-
+ seed/seed.py                        |  474 ++++----
+ tools/servury_panel.py              |   26 +-
+ 13 files changed, 4802 insertions(+), 804 deletions(-)
+$ git diff --name-only 592f352 e1e6846 -- installer/odile_install.py \
+    update/odile_update.py \
+    app.py \
+    scripts/manifest.py \
+    scripts/heartbeat.py \
+    odilectl/health.py \
+    seed/seed.py \
+    deploy/image/odile-firstboot.py \
+    deploy/image/odile-release-setup.sh \
+    deploy/image/sealed-image.sh \
+    docs/runbooks/update.md \
+    release/release.json \
+    scripts/backup.py \
+    installer/first_visit.py \
+    tools/servury_panel.py
 app.py
 deploy/image/odile-firstboot.py
+deploy/image/odile-release-setup.sh
+deploy/image/sealed-image.sh
+docs/runbooks/update.md
+installer/first_visit.py
 installer/odile_install.py
+odilectl/health.py
 release/release.json
+scripts/backup.py
 scripts/heartbeat.py
+seed/seed.py
+tools/servury_panel.py
 ```
 
-Read-only: no file outside the two ADRs is touched. `main`'s first-parent
-history from `8ad9145` to `592f352` is where the five moved files moved; the
-other six files §11 reads did not.
+Read-only: no file outside this ADR is touched. `main`'s first-parent history
+from `592f352` to `e1e6846` is where the thirteen files moved; the other two
+§11 reads did not.
 
 ```sh
-$ git rev-parse 592f352
-592f352c1d8fd23658348d2f2236fac325c9476c
+$ git rev-parse e1e6846
+e1e6846046d7630a4f762f9c4312122af8a1564e
 $ sha256sum update/odile_update.py installer/odile_install.py app.py \
     scripts/manifest.py scripts/heartbeat.py scripts/backup.py \
     odilectl/health.py tools/servury_panel.py
 2c795cad3625c870051797881ae95576fab6537ab394586c475b48b8b5c97415  update/odile_update.py
-ba8268d242c282609f4ccc04793ed8cc3156a2aad4ab48c923cfa9d2dc5e0688  installer/odile_install.py
-25c5431e086ee51a497bed444b103b73812e14d5b77a80548ba260a1274b4caf  app.py
+891eb7db1cdf1c6a900f286bf7c1c4181d008f4914b60648799c67a9502c0e76  installer/odile_install.py
+32183c85226c96d99f08aebe4cfd444e0476bb0f00b7fb206fe481466203ba5b  app.py
 7c0b045f8b602e43f1857d8b2813e55c1f82d88d7af717ab23734c8591cdc0a7  scripts/manifest.py
-2459ca264d7c079b0843d65bb3263cb2d4249d23ed7c0fe78a369aa9d4748322  scripts/heartbeat.py
-d9c4278a0660650e7edc6b50847d96cdbb71ca7709c52402257e94a291a98955  scripts/backup.py
-d1c79961121722da7f0b5e11f2a3048c579ee713aab1aaabfbf293093d9f0eee  odilectl/health.py
-275020c6c7229883f6ab2b3f40f1c574bebfe033944d99335af4f29bfa383bfe  tools/servury_panel.py
+51981cec8c7cff629ee7d5c6106c92ecf8ab0e8849b427d099f71e3c5d899cca  scripts/heartbeat.py
+98e663e8b76fc1948fe92ee1a0b72cbd7ef544df4246ace9415729bb11da533d  scripts/backup.py
+4e890dd0884bf0035af9c3c98db1da6918f8b0969fe3edef72054cb611c00134  odilectl/health.py
+a574f17c15a86d00ffe5ff9a2dbf6a664e3b93a83f3b6d9f54687ff9a4c07a7c  tools/servury_panel.py
 $ ./update/odile_update.py self-test | tail -1
 self-test: 42/42 passed
 $ ./installer/odile_install.py --self-test | tail -1
@@ -1681,12 +1771,13 @@ $ grep -c /model app.py                                # no model route exists
 0
 $ grep -n '^MANAGED_KEYS' installer/odile_install.py
 301:MANAGED_KEYS = ("model", "agent", "custom_providers", "dashboard", "webapp", "onboarding",
-$ sed -n '302p' installer/odile_install.py
+$ sed -n '301,302p' installer/odile_install.py
+MANAGED_KEYS = ("model", "agent", "custom_providers", "dashboard", "webapp", "onboarding",
                 "auxiliary")
-$ sed -n '12086p;12098p' installer/odile_install.py
+$ sed -n '13315p;13327p' installer/odile_install.py
 # Seven managed blocks. Everything else in the written file belongs to Hermes
 #   * auxiliary        — an image is described on the auxiliary lane by a
-$ sed -n '13449,13458p' installer/odile_install.py     # merge_block
+$ sed -n '14718,14726p' installer/odile_install.py     # merge_block
 def merge_block(desired: list[str], current: list[str]) -> list[str]:
     """`desired`'s settings, then every current line the template does not name.
 
@@ -1696,26 +1787,25 @@ def merge_block(desired: list[str], current: list[str]) -> list[str]:
     are kept; they are indented, so appending them at the end of the block
     leaves them inside the same mapping.
     """
-    desired_paths = {path for path in line_paths(desired) if path is not None}
-$ sed -n '15745,15750p' installer/odile_install.py   # render_tenant_config
+$ sed -n '17152,17157p' installer/odile_install.py     # render_tenant_config
     model = seed.get("model") or "deepseek-ai/DeepSeek-V4.1-Flash-1017"
     body = TENANT_CONFIG_TEMPLATE.format(
         model=model, webapp_port=layout.webapp_port,
         public_url=layout.webapp_public_url, vision_model=VISION_MODEL,
     )
     version = config_version([
-$ sed -n '18474p;18679,18681p' installer/odile_install.py
+$ sed -n '20226p;20434,20436p' installer/odile_install.py
     public_url = args.public_url or public_url_for(name, args.seed_url or DEFAULT_SEED_URL)
     if layout.mode == "tenant" or layout.webapp_public_url.endswith("<slug>.odile.fyi"):
         layout = dataclasses.replace(layout, webapp_public_url=(
             args.public_url or public_url_for(slug, seed_url)))
-$ sed -n '12114p;12119p;12125p;12136p;12142p' installer/odile_install.py
+$ sed -n '13343p;13348p;13354p;13365p;13371p' installer/odile_install.py
   default: "{model}"
   reasoning_effort: "high"
     model: {model}
   public_url: "{public_url}"
   public_url: "{public_url}"
-$ sed -n '2220,2232p' installer/odile_install.py   # the tenant's own heartbeat body
+$ sed -n '2517,2529p' installer/odile_install.py       # the tenant's own heartbeat body
     facts = {
         "last_backup_at": status.get("last_success_at"),
         "backup": {
@@ -1731,29 +1821,33 @@ $ sed -n '2220,2232p' installer/odile_install.py   # the tenant's own heartbeat 
         facts["slug"] = args.slug
 $ sed -n '537p' scripts/manifest.py
         model_name = seed.get("model")
-$ sed -n '964,965p' odilectl/health.py                # HQ accepts a versions map, optional
+$ sed -n '1263,1266p' odilectl/health.py               # HQ accepts a versions map, optional
+def _validated_facts(facts: dict[str, Any]) -> None:
+    """Reject a malformed fact at the door, not when an alert divides by it."""
     versions = facts.get("versions")
     if versions is not None:
-$ python3 -c 'import json;d=json.load(open("release/release.json"));\
+$ /usr/bin/python3 -c 'import json;d=json.load(open("release/release.json"));\
 print(d["release"],d["generated_at"],sorted(d["artifacts"]))'
-2026.11.23-8 2026-11-24T06:12:52Z ['installer', 'skills']
+2026.11.27-1 2026-11-27T12:20:00Z ['installer', 'skills']
 ```
 
 The rebuild flow's readings, the same head:
 
 ```sh
-$ sed -n '574,578p' update/odile_update.py          # the refusal the notice reads
+$ sed -n '574,578p' update/odile_update.py             # the refusal the notice reads
     machine_kernel = kernel if kernel is not None else os.uname().release
     if document["boot"]["kernel"] != machine_kernel:
         raise UpdateError(
             f"release {document['release']} was built for kernel {document['boot']['kernel']}, "
             f"this machine runs {machine_kernel}: a boot-chain change is rebuild-and-restore",
-$ sed -n '406,409p' scripts/heartbeat.py            # the answer JSON
-        self._json(
-            200,
-            {"ok": True, "slug": beat.slug, "at": beat.at, "received_at": beat.received_at},
-        )
-$ sed -n '1179,1182p;1191,1196p' odilectl/health.py   # a different key is 409; at must move
+$ sed -n '406,411p' scripts/heartbeat.py               # the answer JSON
+        answer = {
+            "ok": True,
+            "slug": beat.slug,
+            "at": beat.at,
+            "received_at": beat.received_at,
+        }
+$ sed -n '1560,1563p;1625,1630p' odilectl/health.py    # a different key is 409; at must move
             if isinstance(offered, str) and offered.strip() != registered.strip():
                 raise HeartbeatRejected(
                     "heartbeat carries a public key different from the registered key", 409
@@ -1764,7 +1858,7 @@ $ sed -n '1179,1182p;1191,1196p' odilectl/health.py   # a different key is 409; 
                 f"heartbeat at {at} is not newer than the last accepted one ({latest.at})",
                 409,
             )
-$ sed -n '758,766p' scripts/backup.py               # the beat carries the public half
+$ sed -n '1048,1056p' scripts/backup.py                  # the beat carries the public half
             ["openssl", "pkey", "-in", str(private), "-pubout", "-out", str(public)],
             capture_output=True, text=True,
         )
@@ -1774,20 +1868,36 @@ $ sed -n '758,766p' scripts/backup.py               # the beat carries the publi
     body["public_key"] = public.read_text(encoding="utf-8")
     payload = json.dumps(body, sort_keys=True).encode("utf-8")
     signed = subprocess.run(
-$ sed -n '930p' scripts/backup.py                  # restore takes the id positionally
+$ sed -n '1233p' scripts/backup.py                     # restore takes the id positionally
     restore.add_argument("snapshot", nargs="?", default="latest")
-$ sed -n '12721p;12755,12757p' installer/odile_install.py   # the window's edge, the stop bound
-OnCalendar=*-*-* 03:00:00
+$ sed -n '13950,13958p;13989,13991p' installer/odile_install.py  # the timer's edge, the stop bound
+BACKUP_TIMER_TEMPLATE = """\
+[Unit]
+Description=Odile tenant backup, daily in the 02:00-06:00 UTC window
+
+[Timer]
+OnCalendar=*-*-* {start}:00
+Persistent=true
+RandomizedDelaySec=0
+
 RestartSec=3
 TimeoutStopSec=90
 KillMode=mixed
-$ sed -n '4715,4717p' installer/odile_install.py       # write_env_hash
+$ sed -n '5287,5289p' installer/odile_install.py        # write_env_hash
 def write_env_hash(env_path: Path, password_hash: str, *,
                    rotate_secret: bool = False) -> str:
     """Write the hash into the tenant .env; return the username it names.
-$ sed -n '18708p' installer/odile_install.py         # the seed's verifier, on a first visit
+$ sed -n '20463p' installer/odile_install.py           # the seed's verifier, on a first visit
     seeded_signin = seed.get("sign_in_hash") if args.first_visit else None
-$ sed -n '253,261p;14628p' installer/odile_install.py    # SEED_KEYS is the required set
+$ sed -n '457,463p' installer/first_visit.py            # the rebuild block the first visit reads
+def restore_block(state: dict) -> dict:
+    """The rebuild block the installer wrote, or {} on a first install."""
+    block = state.get("restore")
+    return block if isinstance(block, dict) else {}
+
+
+def is_rebuild(state: dict) -> bool:
+$ sed -n '253,260p;15902p' installer/odile_install.py    # SEED_KEYS is the required set
 SEED_KEYS = (
     "slug", "instance_id", "near_api_key", "model", "support_public_key",
     "backup_repo_url", "mail_relay", "hermes_version",
@@ -1796,9 +1906,8 @@ SEED_KEYS = (
     # first boot. The first visit is then a login, not a setup.
     "sign_in_hash",
 )
-SEED_FORBIDDEN = ("password", "passphrase", "private_key", "ssh_private_key", "luks")
     missing = [key for key in SEED_KEYS if key not in body]
-$ sed -n '1316,1320p;137p;159p;162p' tools/servury_panel.py
+$ sed -n '1326,1330p;137p;159p;162p' tools/servury_panel.py
 FORBIDDEN_PATH = re.compile(r"(delete|terminate|rebuild|reinstall|power|destroy|cancel|upgrade|resize)", re.I)
 REINSTALL_ACTION = "reinstall"
 REINSTALL_CONTROL = "Erase and reinstall"
@@ -1807,7 +1916,7 @@ REINSTALL_CONTROL = "Erase and reinstall"
     parser.add_argument("--recycle", action="store_true",
                         help="console log, reinstall, boot image, disk image — the order a freed "
                              "machine needs; the disk write starts the machine itself")
-$ sed -n '76,79p;117,119p' installer/first_visit.py
+$ sed -n '80,83p;142,144p' installer/first_visit.py
 * **A whole-machine restore must not restore ``/etc/odile`` (A3's rule).** The
   state file holds this machine's sign-in hash and recovery-code hash; a restore
   that brought back the backup's copy would revoke the code the user was shown
@@ -1815,32 +1924,33 @@ $ sed -n '76,79p;117,119p' installer/first_visit.py
         --state /etc/odile/first-visit.json \
         --env-file /home/odile/.hermes/.env \
         --page /usr/local/lib/odile/first-visit.html
-$ sed -n '1956p;1969p;2184p;2549,2551p' app.py
+$ sed -n '2081p;2094p;2309p;2674,2676p' app.py
         if path in ("/login", "/signin"):
         if path.startswith("/account/"):
         if path in ("/login", "/signin"):
         row = self._session_account()
         if row is None:
             return self._send(303, "", head=head, location="/login",
-$ sed -n '1676p' docs/runbooks/update.md
-OnCalendar=daily
+$ grep -n 'OnCalendar\|RandomizedDelaySec' docs/runbooks/update.md
+1760:OnCalendar=daily
+1761:RandomizedDelaySec=1h
 ```
 
 Revision 3's citations, re-cut at this head: the statements are unchanged and
 every number is now the one that statement resolves to today, so each `sed`
 above reproduces. (Revision 3 cut them at the 23 November 2026 tree; the
-installer has moved twice since, and a block that only reproduced on a tree
-nobody has is not evidence.)
+installer has moved several times since, and a block that only reproduced on a
+tree nobody has is not evidence.)
 
 ```sh
-$ sed -n '1141p' seed/seed.py
+$ sed -n '1142p' seed/seed.py
 def _end_live_tokens(con: sqlite3.Connection, tenant_id: int, stamp: str) -> int:
 $ sed -n '18,21p' deploy/image/odile-firstboot.py
 The token is the badge, not a standing key: it is minted at provision bound to
 `bb.iid`, valid once and for 24 hours. The command line is public, so the
 token is public while it lives; single use and the instance binding are what
 keep it from seeding another machine. (The residual: a host that reads the
-$ sed -n '106p;156p' deploy/image/odile-release-setup.sh
+$ sed -n '118p;168p' deploy/image/odile-release-setup.sh
 if [ -s "$DONE" ] && [ -z "$FORCE" ]; then
 PUBLIC_URL=${ODILE_RELEASE_PUBLIC_URL:-${PUBLIC_TOKEN:-https://$HOST.odile.fyi}}
 $ sed -n '965p;996p;1093,1098p' update/odile_update.py
@@ -1852,30 +1962,31 @@ $ sed -n '965p;996p;1093,1098p' update/odile_update.py
         write_atomic(layout.installer, release.artifacts["installer"],
                      mode_of(layout.installer, 0o755), uid, gid)
         print(f"write        {layout.installer}")
-$ sed -n '16195p;16652,16654p' installer/odile_install.py
+$ sed -n '17730p;18203,18205p' installer/odile_install.py
     changed = ensure_file(layout.unit_target, agent_unit.encode("utf-8"), 0o644,
         print(f"{'would reread' if dry else 'daemon-reload':<12} systemd units")
         if not dry:
             run(["systemctl", "daemon-reload"], check=True)
-$ sed -n '16145,16153p' installer/odile_install.py
+$ sed -n '17678,17687p' installer/odile_install.py
 def ensure_backup_units(layout: Layout, slug: str, dry: bool,
                         heartbeat_url: str = HEARTBEAT_URL) -> bool:
     """Write the nightly backup unit and its timer, root-owned 0644."""
     changed = False
     for path, text in backup_unit_files(layout, slug, heartbeat_url).items():
-        detail = "(nightly restic, 03:00)" if path == layout.backup_service else "(daily 03:00)"
+        detail = (f"(nightly restic, {backup_timer_start(slug)} UTC)"
+                  if path == layout.backup_service else f"(daily {backup_timer_start(slug)} UTC)")
         changed |= ensure_file(path, text.encode("utf-8"), 0o644, *current_ids(layout),
                                dry, detail=detail)
     return changed
-$ sed -n '15155p;16028p;16031p;16117p' installer/odile_install.py
+$ sed -n '16547p;17538p;17540p;17636p' installer/odile_install.py
     ensure_file(apt_pins_file(layout), apt_sources().encode("utf-8"), 0o644, 0, 0, dry,
     changed = ensure_file(layout.etc / "support-key.pub", support.encode("utf-8"), 0o644,
-    changed |= ensure_file(layout.etc / "backup-repo.txt", backup.encode("utf-8"), 0o644,
+    changed |= ensure_file(layout.etc / "backup-repo.txt", (repo + "\n").encode("utf-8"), 0o644,
     changed |= ensure_file(layout.export_program, data, 0o755, *current_ids(layout), dry,
-$ sed -n '13144p;13209p' installer/odile_install.py     # the re-run's snapshot choke points
+$ sed -n '14413p;14478p' installer/odile_install.py     # the re-run's snapshot choke points
 def write_atomic(path: Path, data: bytes, mode: int, uid: int | None = None,
 def ensure_file(target: Path, desired: bytes, mode: int, uid: int | None, gid: int | None,
-$ sed -n '14682,14690p' installer/odile_install.py    # the token is checked before the cache
+$ sed -n '15956,15964p' installer/odile_install.py     # the token is checked before the cache
 def load_or_fetch_seed(layout: Layout, kit: dict, args: argparse.Namespace,
                        pubkey: Path) -> dict:
     """Cache first, exchange second, replay-with-a-valid-cache allowed."""
@@ -1885,26 +1996,24 @@ def load_or_fetch_seed(layout: Layout, kit: dict, args: argparse.Namespace,
     if not TOKEN_RE.match(token):
         raise SystemExit("error: the recovery kit has no 64-hex setup token")
     if not INSTANCE_RE.match(instance_id):
-$ sed -n '18621,18624p' installer/odile_install.py    # the signature defaults beside the bytes
+$ sed -n '20376,20379p' installer/odile_install.py     # the signature defaults beside the bytes
 def verify_or_die(args: argparse.Namespace, kit: dict) -> Path:
     signature = Path(args.signature) if args.signature else INSTALLER_PATH.with_name(
         INSTALLER_PATH.name + ".sig")
     pubkey = kit_pubkey(kit)
-$ grep -n 'OnCalendar\|RandomizedDelaySec' docs/runbooks/update.md
-1676:OnCalendar=daily
-1677:RandomizedDelaySec=1h
+$ sed -n '559p' deploy/image/sealed-image.sh            # the image places the signing key
+install -m 0644 "$REPO/installer/odile-signing-key.pub" "$MNT/etc/odile/odile-signing-key.pub"
 ```
 
-Most of the readings above moved after `592f352` — 27 of them no longer reproduce
-at this head, the installer having grown by hundreds of lines since. The ones this
-cut depends on are: `installer/odile_install.py`'s
-timer template is now `BACKUP_TIMER_TEMPLATE` with `{start}` from
-`backup_timer_start(slug)` and `RandomizedDelaySec=0` (ADR-004 §4.3, ODL-933),
-the agent unit's `RestartSec`/`TimeoutStopSec`/`KillMode` lines moved with the
-installer's growth, and `ensure_backup_units`'s detail strings render the same
-minute.
-The `sed` lines reproduce the 592f352 bytes, which is the head this block names;
-at this head the symbol is the citation.
+Every reading above is the head's own output. Where a line moved, the symbol
+beside it is what the next merge must re-resolve: `merge_block`, `cached_seed`,
+`load_or_fetch_seed`, `ensure_caddy_site`, `ensure_backup_units`,
+`ensure_export_program`, `verify_or_die`, `login_table`, `_validated_facts`,
+`record()`, and the two templates `BACKUP_TIMER_TEMPLATE` and
+`AGENT_UNIT_TEMPLATE`. The window rows are the template's
+`OnCalendar=*-*-* {start}:00` with `backup_timer_start(slug)` (ADR-004 §4.3,
+ODL-933), not a literal `03:00`; `ensure_backup_units`'s detail strings render
+the same minute.
 
 `docs/MVP-V0.1.md`, `docs/AGENT-ORG.md`, `docs/craft/*` and
 `docs/product/SPIKE-servury-reinstall.md` are untracked (`.git/info/exclude`),
@@ -1918,34 +2027,34 @@ invariant this ADR turns on is also in a tracked file, verbatim:
 | the guest half of the updater is not installed | `grep -c odile-update installer/odile_install.py` → 0 |
 | the boot chain is rebuild-and-restore because the seal is bound to the measurement | `docs/CLAIMS.md` §3 gap 3; `docs/MVP-V0.1.md` §5 note; ADR-001 §15.2 |
 | the OS and the environment are pinned and refused, not written | `docs/runbooks/update.md` §10; `docs/runbooks/install.md` §6.1 (`apt-pins.list`) |
-| the model is rendered from the seed into two keys, and a third setting sits beside them | `installer/odile_install.py:15745`, `:12114`, `:12119`, `:12125`, `TENANT_CONFIG_TEMPLATE` |
-| a re-run would revert a switch | `installer/odile_install.py:13452`, `ensure_config` |
-| a re-run would also revert an owner-moved public host | `installer/odile_install.py:18474`, `:18681`, `:12136`, `:12142`; `merge_block` `:13452`; `deploy/image/odile-release-setup.sh:140`–`:156` |
-| the seed cannot be refreshed | `installer/odile_install.py:14278`, `:14682`; `SEED_KEYS` |
+| the model is rendered from the seed into two keys, and a third setting sits beside them | `installer/odile_install.py:17152`, `:13343`, `:13348`, `:13354`, `TENANT_CONFIG_TEMPLATE` |
+| a re-run would revert a switch | `installer/odile_install.py:14721`, `ensure_config` |
+| a re-run would also revert an owner-moved public host | `installer/odile_install.py:20226`, `:20436`, `:13365`, `:13371`; `merge_block` `:14721`; `deploy/image/odile-release-setup.sh:152`–`:168` |
+| the seed cannot be refreshed | `installer/odile_install.py:15552`, `:15956`; `SEED_KEYS` |
 | the manifest records the seed's model, not the live one | `scripts/manifest.py:537` |
-| the tenant's heartbeat sends no versions at all; the contract accepts one | `installer/odile_install.py:2220`; `odilectl/health.py:964`; `scripts/heartbeat.py:279` |
-| HQ's only drift detector is the boot release | `odilectl/health.py:1020` (`release_report`) |
+| the tenant's heartbeat sends no versions at all; the contract accepts one | `installer/odile_install.py:2517`; `odilectl/health.py:1265`; `scripts/heartbeat.py:279` |
+| HQ's only drift detector is the boot release | `odilectl/health.py:1360` (`release_report`) |
 | no Odile service is in the prompt path today | `docs/MVP-V0.1.md` §6.1 invariant 4; `docs/CLAIMS.md` §1 *Inference*; `docs/runbooks/install.md` §4 |
 | the proxy re-creates the retired meter and central key | `docs/CLAIMS.md` §1 *Money and place* (v3.9c, ODL-205) |
-| the installer's placements have no mover; a re-run needs `--force` | `installer/odile_install.py:16195`, `:14926`–`:14977`, `:16145`–`:16153`, `:15155`, `:16028`, `:16031`, `:16117`; `update/odile_update.py:996`; `deploy/image/odile-release-setup.sh:106` |
-| a re-run is designed to converge: `same`, cached seed, boot record, `smoke.ok` | `installer/odile_install.py:78`–`:79`, `:14278`/`:14682` (`load_or_fetch_seed`), `:15310`–`:15321` (`ensure_first_visit`), `--i-have-copied-it`/`--force-smoke` in `build_parser` |
-| the re-run has no signature beside the installed installer | `update/odile_update.py:1093`–`:1098`; `installer/odile_install.py:18621`–`:18623` |
-| the re-run's token is demanded before the cache is read | `installer/odile_install.py:14688`; `seed/seed.py:1141` |
-| the snapshot choke points every tenant write already goes through | `installer/odile_install.py:13144`, `:13209` |
-| the token is spent at the service, not only at the client | `seed/seed.py:1141` (`_end_live_tokens`); `deploy/image/odile-firstboot.py:18`–`:21` |
+| the installer's placements have no mover; a re-run needs `--force` | `installer/odile_install.py:17730`, `:16318`–`:16369`, `:17678`–`:17687`, `:16547`, `:17538`, `:17540`, `:17636`; `update/odile_update.py:996`; `deploy/image/odile-release-setup.sh:118` |
+| a re-run is designed to converge: `same`, cached seed, boot record, `smoke.ok` | `installer/odile_install.py:78`–`:79`, `:15552` (`cached_seed`)/`:15956` (`load_or_fetch_seed`), `:16673` (`ensure_first_visit`), `--i-have-copied-it`/`--force-smoke` in `build_parser` |
+| the re-run has no signature beside the installed installer | `update/odile_update.py:1093`–`:1098`; `installer/odile_install.py:20376`–`:20378` |
+| the re-run's token is demanded before the cache is read | `installer/odile_install.py:15962`; `seed/seed.py:1142` |
+| the snapshot choke points every tenant write already goes through | `installer/odile_install.py:14413`, `:14478` |
+| the token is spent at the service, not only at the client | `seed/seed.py:1142` (`_end_live_tokens`); `deploy/image/odile-firstboot.py:18`–`:21` |
 | the model snapshot copies the app layer's record convention | `update/odile_update.py:965` (the four records), `:990` (restore) |
-| the template's keys and their quoting | `installer/odile_install.py:12114`, `:12119`, `:12125` (`TENANT_CONFIG_TEMPLATE`) |
-| the template's two public hosts | `installer/odile_install.py:12136`, `:12142` |
+| the template's keys and their quoting | `installer/odile_install.py:13343`, `:13348`, `:13354` (`TENANT_CONFIG_TEMPLATE`) |
+| the template's two public hosts | `installer/odile_install.py:13365`, `:13371` |
 | the app timer today is 00:00–01:00, not the tenant's own minute | `docs/runbooks/update.md` §8 |
 | the offer is the app layer's own refusal, with one sentence | `update/odile_update.py:574`–`:578` (`EXIT_REFUSED`) |
-| the heartbeat answer is read by the guest, and a new key is additive | `scripts/heartbeat.py:406`–`:409` (the four keys), `:522` (`post` prints it) |
-| an unknown fact is stored and ignored; an unknown key in the body is refused | `odilectl/health.py:962` (`_validated_facts`), `:1179`–`:1182` (a different key is `409`), `:1191`–`:1196` (`at` must advance) |
-| a rebuilt machine could not post until the key row is cleared | `odilectl/health.py:1171`–`:1177` (first sight registers), `scripts/backup.py:764` (the public half rides every beat); `docs/runbooks/alerting.md` §10 |
-| the T-0 id already reaches HQ every night, as an existing fact | `installer/odile_install.py:2220`–`:2232`; `scripts/backup.py:797`–`:808` (the unit's `ExecStartPost`) |
+| the heartbeat answer is read by the guest, and a new key is additive | `scripts/heartbeat.py:406`–`:411` (the four keys), `:547` (`post` prints it) |
+| an unknown fact is stored and ignored; an unknown key in the body is refused | `odilectl/health.py:1263` (`_validated_facts`), `:1560`–`:1563` (a different key is `409`), `:1625`–`:1630` (`at` must advance) |
+| a rebuilt machine could not post until the key row is cleared | `odilectl/health.py:1552`–`:1558` (first sight registers), `scripts/backup.py:1054` (the public half rides every beat); `docs/runbooks/alerting.md` §10 |
+| the T-0 id already reaches HQ every night, as an existing fact | `installer/odile_install.py:2517`–`:2529`; `scripts/backup.py:1087` (`SERVICE_TEMPLATE`), `:1102` (`ExecStartPost`) |
 | the quiesce's stop bound is the unit's, not this ADR's | `installer/odile_install.py` (`AGENT_UNIT_TEMPLATE`, `TimeoutStopSec=90`, `KillMode=mixed`) |
 | the window is the backup timer's next elapse + 10 min, and the app timer is that minute + 30 | `installer/odile_install.py` (`backup_timer_start`, `BACKUP_TIMER_TEMPLATE`); `scripts/backup.py` (`timer_start`); `docs/runbooks/update.md` §8 (today's manual template is `OnCalendar=daily`, not the shipped default) |
-| the seed carries the account's verifier, and optional keys are tolerated | `installer/odile_install.py:253`–`:261` (`SEED_KEYS`), `:14628` (only a missing key is refused), `:18708` and `:4715` (`write_env_hash`) |
-| the restore can name a snapshot | `scripts/backup.py:930` (`restore <snapshot>`, default `latest`) |
-| `/etc/odile` survives a restore; the login reads the home's `.env` | `installer/first_visit.py:76`–`:81`, `:117`–`:119` (`--env-file`) |
-| the window's three writes are fenced, and the destructive one has two flags | `tools/servury_panel.py:1316`–`:1320` (`--reinstall`/`--recycle`), `:137` (`FORBIDDEN_PATH`), `:159`, `:162` (`REINSTALL_CONTROL`) |
-| the progress page sits behind the account session | `app.py:1969` (`/account/<slug>`), `:2184` (`/login`), `:2549`–`:2551` (a signed-out request is a `303` to `/login`) |
+| the seed carries the account's verifier, and optional keys are tolerated | `installer/odile_install.py:253`–`:260` (`SEED_KEYS`), `:15902` (only a missing key is refused), `:20463` and `:5287` (`write_env_hash`) |
+| the restore can name a snapshot | `scripts/backup.py:1233` (`restore <snapshot>`, default `latest`) |
+| `/etc/odile` survives a restore; the login reads the home's `.env` | `installer/first_visit.py:80`–`:85`, `:142`–`:144` (`--env-file`) |
+| the window's three writes are fenced, and the destructive one has two flags | `tools/servury_panel.py:1326`–`:1330` (`--reinstall`/`--recycle`), `:137` (`FORBIDDEN_PATH`), `:159`, `:162` (`REINSTALL_CONTROL`) |
+| the progress page sits behind the account session | `app.py:2094` (`/account/<slug>`), `:2309` (`/login`), `:2674`–`:2676` (a signed-out request is a `303` to `/login`) |
