@@ -55,7 +55,8 @@ systemctl --user enable --now hermes-gateway.service
 If you want to see the plan before it changes anything, run
 `bash recover.sh --dry-run` first (it needs `restic`:
 `apt-get install -y restic`). It prints the Hermes version, the old server's
-address and the DNS names, and changes nothing.
+address, this server's IPv6 (or `none`, which means the old AAAA records are
+deleted) and the DNS names, and changes nothing.
 
 ## 4. Wait for `RECOVERY COMPLETE`
 
@@ -92,9 +93,19 @@ Boot image**. The rule for keeping old builds, and what to prune, is
 
 Open the Cloudflare dashboard for `odile.fyi` → DNS. Change the **A** records
 for `odile.fyi`, `gw.odile.fyi`, `mail.odile.fyi`, `testing.odile.fyi` and
-`test.odile.fyi` to the new IPv4 the script printed. Leave **alone**:
-`demo.odile.fyi` (the demo tenant), `www`, and every hostname that starts with
-`odl-` (the tenant guests). Wait five minutes.
+`test.odile.fyi` to the new IPv4 the script printed.
+
+Each of those names that also has an **AAAA** record must change too. If the
+script printed a `New IPv6`, point the AAAA at it. If it printed `New IPv6:
+none`, **delete** the AAAA record — otherwise the name still answers with the
+old server's IPv6, and mail sent to `mail.odile.fyi` goes to the dead box. In
+the SPF text at `mail.odile.fyi` (`v=spf1 …`), change `ip4:<old-ipv4>` to
+`ip4:<new-ipv4>` and change `ip6:<old-ipv6>` to the new IPv6 — or delete that
+`ip6:` token when the new server has no IPv6.
+
+Leave **alone**: `demo.odile.fyi` (the demo tenant), `www`, and every hostname
+that starts with `odl-` (the tenant guests), AAAA records included. Wait five
+minutes.
 
 ---
 

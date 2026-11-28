@@ -8,19 +8,26 @@
 #   bash recover.sh
 #
 # It reads ./recovery.env (the kit's secrets), restores the latest `hq` restic
-# snapshot from Cloudflare R2, starts the site and updates the Cloudflare A
-# records to this server's IPv4. Nothing is read from the old HQ: the Hermes
-# build, the old IPv4 and the DNS names come from the snapshot's own
+# snapshot from Cloudflare R2, starts the site and updates the Cloudflare A and
+# AAAA records to this server's addresses. Nothing is read from the old HQ: the
+# Hermes build, the old IPv4 and the DNS names come from the snapshot's own
 # `manifest.json`, and the kit's copy fills any field the snapshot predates.
+#
+# The new box's public IPv6 is detected here, not carried by the backup: the
+# value is the *new* server's, which the old box cannot record. A server with
+# no public IPv6 is a valid answer — the moved names' AAAA records are then
+# deleted and the dead host's `ip6:` token dropped from the mail SPF record,
+# because a name left pointing at the old HQ is the failure this step removes.
 #
 # Hermes is installed at the commit the backup recorded when a new box can
 # fetch it; HQ runs local builds, so the backup also records the nearest
 # published tag and the script installs that instead, saying which and why.
 #
 # Flags: --dry-run (print the plan, change nothing), --no-dns (skip Cloudflare),
-#        --ip ADDRESS (override the detected IPv4). `--dry-run` needs `restic`
-#        installed and reads the live repository; it writes no secret and no
-#        config file, and removes its temporary manifest on exit.
+#        --ip ADDRESS (override the detected IPv4), --ip6 ADDRESS (override the
+#        detected IPv6; `none` forces the delete branch). `--dry-run` needs
+#        `restic` installed and reads the live repository; it writes no secret
+#        and no config file, and removes its temporary manifest on exit.
 
 set -Eeuo pipefail
 
@@ -32,17 +39,20 @@ LOG=${LOG:-/var/tmp/odile-recovery.log}
 DRY_RUN=0
 NO_DNS=0
 NEW_IP_OVERRIDE=""
+NEW_IP6_OVERRIDE=""
 
 usage() {
   cat <<'EOF'
 Odile factory recovery.
 
-  bash recover.sh [--dry-run] [--no-dns] [--ip ADDRESS]
+  bash recover.sh [--dry-run] [--no-dns] [--ip ADDRESS] [--ip6 ADDRESS]
 
   --dry-run     read the latest snapshot's manifest and print the Hermes
                 build to install, the old IPv4 and the DNS plan; change nothing
   --no-dns      do not touch Cloudflare; print the records to change by hand
   --ip ADDRESS  use this IPv4 instead of detecting the server's own
+  --ip6 ADDRESS use this IPv6 instead of detecting it; `none` means the server
+                has no public IPv6, so the AAAA records are deleted
 
 Run as root, in the folder that holds recovery.env.
 EOF
@@ -61,6 +71,12 @@ while [ "$#" -gt 0 ]; do
       shift 2
       ;;
     --ip=*) NEW_IP_OVERRIDE=${1#--ip=}; shift ;;
+    --ip6)
+      [ "$#" -ge 2 ] || { echo "--ip6 needs an address (or none)" >&2; exit 2; }
+      NEW_IP6_OVERRIDE=$2
+      shift 2
+      ;;
+    --ip6=*) NEW_IP6_OVERRIDE=${1#--ip6=}; shift ;;
     -h|--help) usage; exit 0 ;;
     *) echo "unknown argument: $1" >&2; exit 2 ;;
   esac
@@ -140,12 +156,43 @@ fi
 printf '%s' "$NEW_IP" | grep -Eq '^([0-9]{1,3}\.){3}[0-9]{1,3}$' \
   || die "could not determine this server's IPv4 (use --ip ADDRESS)"
 
+# The new box's public IPv6 decides the AAAA branch. Empty is a valid answer
+# (a VPS without IPv6) and is not an error: the DNS step then deletes the
+# moved names' AAAA records instead of leaving them on the box that is gone.
+if [ "$NEW_IP6_OVERRIDE" = none ]; then
+  NEW_IP6=""
+elif [ -n "$NEW_IP6_OVERRIDE" ]; then
+  NEW_IP6=$NEW_IP6_OVERRIDE
+else
+  NEW_IP6=$(curl -6 -fsS --max-time 10 https://ifconfig.me 2>/dev/null || true)
+  if [ -z "$NEW_IP6" ]; then
+    # `|| true`: a box with no IPv6 has no route to ask about, and this
+    # assignment runs under `set -e` + `pipefail`.
+    NEW_IP6=$(ip -6 route get 2001:4860:4860::8888 2>/dev/null \
+      | awk '{for (i = 1; i < NF; i++) if ($i == "src") print $(i + 1)}' || true)
+  fi
+fi
+if [ -n "${NEW_IP6:-}" ]; then
+  printf '%s' "$NEW_IP6" | grep -Eq '^[0-9a-fA-F:]+$' \
+    || die "could not read this server's IPv6 ($NEW_IP6; use --ip6 ADDRESS or --ip6 none)"
+  case "$NEW_IP6" in
+    # Link-local and unique-local addresses are not a public AAAA.
+    fe80:*|fc*|fd*|::1)
+      die "this server's IPv6 ($NEW_IP6) is not public; use --ip6 ADDRESS or --ip6 none" ;;
+  esac
+fi
+
 AVAIL_KB=$(df -Pk / | awk 'NR==2 {print $4}')
 [ "${AVAIL_KB:-0}" -ge 20971520 ] || warn "less than 20 GB free on /; the restore may not fit"
 [ "${AVAIL_KB:-0}" -ge 31457280 ] || warn "40 GB free is the comfortable size"
 
 say "Kit: $KIT_DIR"
 say "New server: $NEW_IP ($PRETTY_NAME)"
+if [ -n "${NEW_IP6:-}" ]; then
+  say "New server IPv6: $NEW_IP6"
+else
+  say "New server IPv6: none — the moved names' AAAA records are deleted"
+fi
 [ "$DRY_RUN" = 1 ] || say "Log: $LOG"
 
 if [ -f "$KIT_DIR/CHECKSUMS.txt" ]; then
@@ -314,7 +361,14 @@ if [ "$DRY_RUN" = 1 ]; then
   printf 'restore %s to / (leaving this kit folder and the log in place);\n' "$SNAP"
   printf 'start Caddy/Postfix/OpenDKIM, the Odile units and the backend hermes-serve;\n'
   printf 'start the test bench (odile-bench, odile-bench-seed) so test.odile.fyi answers;\n'
-  printf 'point %s at %s; leave the messaging gateway stopped.\n' "$DNS_NAMES" "$NEW_IP"
+  printf 'point the A records for %s at %s, ' "$DNS_NAMES" "$NEW_IP"
+  if [ -n "${NEW_IP6:-}" ]; then
+    printf 'move their AAAA records and the mail SPF ip6: token to %s;\n' "$NEW_IP6"
+  else
+    printf 'delete their AAAA records (this box has no public IPv6) and drop\n'
+    printf 'the dead ip6: token from the mail SPF record;\n'
+  fi
+  printf 'rewrite the mail SPF ip4: token; leave the messaging gateway stopped.\n'
   printf 'print the %s republish commands (the release images are not in the backup).\n' \
     "$RELEASES_DIR"
   exit 0
@@ -631,12 +685,12 @@ systemctl --user daemon-reload || true
 # cannot be read from `ps`.
 # ---------------------------------------------------------------------------
 if [ "$NO_DNS" = 0 ]; then
-  say "Updating Cloudflare DNS to $NEW_IP"
+  say "Updating Cloudflare DNS to $NEW_IP${NEW_IP6:+ and $NEW_IP6}"
   # The token and the zone id are already exported (`set -a` above); naming
   # them again here without `=` keeps the token out of a NAME=<long value>
   # shape that a secret scanner reads as a credential assignment.
   export CLOUDFLARE_DNS_TOKEN ZONE_ID
-  if NEW_IP="$NEW_IP" OLD_IP="$OLD_IP" \
+  if NEW_IP="$NEW_IP" OLD_IP="$OLD_IP" NEW_IP6="${NEW_IP6:-}" \
      DNS_NAMES="$DNS_NAMES" DNS_SKIP="$DNS_SKIP" /usr/bin/python3 <<'PY'
 import fnmatch
 import json
@@ -646,6 +700,7 @@ import urllib.error
 import urllib.request
 
 new_ip = os.environ["NEW_IP"]
+new_ip6 = os.environ.get("NEW_IP6", "").strip()
 zone = os.environ["ZONE_ID"]
 token = os.environ["CLOUDFLARE_DNS_TOKEN"]
 old_ip = os.environ.get("OLD_IP", "")
@@ -701,6 +756,16 @@ for name in sorted(names):
     print(f"created {name} A {new_ip}")
     changed += 1
 
+# Every AAAA on a moved name points at the old HQ (the 2026-11-26 drill left
+# mail.odile.fyi's on the dead box while the A rows were reverted). Their
+# content also anchors the SPF rewrite: an `ip6:` token carrying it is the dead
+# host's, not a third party's.
+dead_aaaa = {}
+for record in records:
+    name = record.get("name", "")
+    if record.get("type") == "AAAA" and name in names and not skipped(name):
+        dead_aaaa.setdefault(name, set()).add(record.get("content", ""))
+
 for record in records:
     name, kind, content = (record.get("name", ""), record.get("type", ""),
                            record.get("content", ""))
@@ -712,22 +777,64 @@ for record in records:
         call("PATCH", f"{api}/{record['id']}", {"content": new_ip})
         print(f"updated {name} A {content} -> {new_ip}")
         changed += 1
-    elif kind == "TXT" and old_ip and content.startswith("v=spf1") \
-            and f"ip4:{old_ip}" in content:
-        new_content = content.replace(f"ip4:{old_ip}", f"ip4:{new_ip}")
-        call("PATCH", f"{api}/{record['id']}", {"content": new_content})
-        print(f"updated {name} TXT (SPF) ip4:{old_ip} -> ip4:{new_ip}")
+    elif kind == "AAAA":
+        if new_ip6:
+            if content == new_ip6:
+                continue
+            call("PATCH", f"{api}/{record['id']}", {"content": new_ip6})
+            print(f"updated {name} AAAA {content} -> {new_ip6}")
+        else:
+            # No public IPv6 on this box: leave no AAAA on the dead host.
+            call("DELETE", f"{api}/{record['id']}")
+            print(f"deleted {name} AAAA {content} (this server has no public IPv6)")
         changed += 1
+    elif kind == "TXT" and content.startswith("v=spf1"):
+        # Not `token`: that name holds the Cloudflare API credential above,
+        # and an SPF token would overwrite it in the Authorization header.
+        spf_tokens = content.split()
+        ip6_tokens = [item for item in spf_tokens if item.startswith("ip6:")]
+        dead = dead_aaaa.get(name, set())
+        kept, notes = [], []
+        for item in spf_tokens:
+            if old_ip and item == f"ip4:{old_ip}":
+                kept.append(f"ip4:{new_ip}")
+                notes.append(f"ip4:{old_ip} -> ip4:{new_ip}")
+            elif item.startswith("ip6:"):
+                value = item[len("ip6:"):]
+                # A lone ip6: token on a name with no AAAA left (a rerun after
+                # a delete) is still the dead host's; several tokens with the
+                # dead address gone means one of them may be a third party.
+                ours = value in dead or len(ip6_tokens) == 1
+                if new_ip6:
+                    if value == new_ip6:
+                        kept.append(item)
+                    elif ours:
+                        kept.append(f"ip6:{new_ip6}")
+                        notes.append(f"ip6:{value} -> ip6:{new_ip6}")
+                    else:
+                        kept.append(item)
+                elif ours:
+                    notes.append(f"dropped ip6:{value}")
+                else:
+                    kept.append(item)
+            else:
+                kept.append(item)
+        if notes:
+            new_content = " ".join(dict.fromkeys(kept))
+            if new_content != content:
+                call("PATCH", f"{api}/{record['id']}", {"content": new_content})
+                print(f"updated {name} TXT (SPF) {', '.join(notes)}")
+                changed += 1
 
 if not changed:
     print(f"DNS already points at {new_ip}; no record needed a change")
 print(f"DNS names left alone: {', '.join(skip)}")
 PY
   then
-    warn "DNS NOT UPDATED — change the A records to $NEW_IP in the Cloudflare dashboard"
+    warn "DNS NOT UPDATED — change the A/AAAA records to $NEW_IP (and $NEW_IP6 or none) in the Cloudflare dashboard"
   fi
 else
-  warn "DNS NOT UPDATED (--no-dns) — change the A records to $NEW_IP in the Cloudflare dashboard"
+  warn "DNS NOT UPDATED (--no-dns) — change the A/AAAA records to $NEW_IP (and $NEW_IP6 or none) in the Cloudflare dashboard"
 fi
 
 # ---------------------------------------------------------------------------
@@ -745,7 +852,9 @@ curl -sS --max-time 20 --resolve "odile.fyi:443:$NEW_IP" \
 hermes kanban --board odile list 2>/dev/null | tail -1 || true
 
 say "RECOVERY COMPLETE"
-printf 'New IPv4: %s\nSite: https://odile.fyi (DNS may take up to 5 minutes)\n' "$NEW_IP"
+printf 'New IPv4: %s\n' "$NEW_IP"
+printf 'New IPv6: %s\n' "${NEW_IP6:-none (the moved names have no AAAA)}"
+printf 'Site: https://odile.fyi (DNS may take up to 5 minutes)\n'
 printf 'Test bench: https://test.odile.fyi (odile-bench.service + odile-bench-seed.service)\n'
 printf 'Log: %s\n' "$LOG"
 printf 'Optional messaging gateway: systemctl --user enable --now hermes-gateway.service\n'
