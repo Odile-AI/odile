@@ -157,6 +157,40 @@ If you did not ask for this, reply to the email that invited you.
 
 Private alpha · Odile pays for the machine and the inference · no price
 """
+# The owner's own change of address (ODL-962). Two bodies, one to each inbox,
+# composed here like the re-point pair and on the same rules: one action, the
+# sign-off, the alpha footer. The old address is told and confirms the move;
+# the new address confirms it owns the mailbox. Only both together rewrite the
+# account, so a stolen cookie that also guessed the password still has to hold
+# both mailboxes.
+CHANGE_PENDING = ("Confirm the change from both inboxes: the one you are leaving"
+                  " and the one you are moving to.")
+CHANGE_CLOSED = "That confirmation link is no longer valid."
+CHANGE_OLD_SUBJECT = "Confirm the move of your Odile account"
+CHANGE_NEW_SUBJECT = "Confirm your new address"
+CHANGE_OLD_BODY = """Hello,
+
+Confirm the move of your Odile account to
+{{NEW_EMAIL}}.
+If you did not ask for this, ignore this message; nothing
+changes.
+
+{{CONFIRM}}
+
+— Odile
+
+Private alpha · Odile pays for the machine and the inference · no price
+"""
+CHANGE_NEW_BODY = """Hello,
+
+Confirm that this address belongs to your Odile account.
+
+{{CONFIRM}}
+
+— Odile
+
+Private alpha · Odile pays for the machine and the inference · no price
+"""
 TRIAL_DAYS = 14
 # One scrypt verifier for the account and the machine (the installer's format,
 # n=2**14 r=8 p=1, 16-byte salt, 32-byte key); `hashlib.scrypt` is stdlib.
@@ -242,7 +276,7 @@ _lock = threading.Lock()
 # whose private half was never written.
 SCHEMA_VERSION = 4
 SCHEMA_TABLES = ("waitlist", "tenants", "claims", "events", "grants", "accounts",
-                 "admin_log")
+                 "admin_log", "email_changes")
 
 # The log's index and its two append-only triggers, as one text: the schema
 # creates them and `migrate()`'s table rebuild recreates them from the same
@@ -454,6 +488,36 @@ CREATE TABLE IF NOT EXISTS admin_log (
     created_at     TEXT    NOT NULL,
     detail         TEXT    NOT NULL DEFAULT '{}' CHECK (json_valid(detail))
 );
+-- The owner's change of address (ODL-962). One row per account while a change
+-- is pending: the unique partial index is what makes "one pending change" a
+-- property of the store, not a promise of the handler. `old_token_hash` and
+-- `new_token_hash` are the SHA-256 of the two mailed tokens — the tokens
+-- themselves exist only in their links. Both confirmation times are written by
+-- the confirm route; only when both are set does one transaction move
+-- `accounts.email`, set `email_verified_at`, move `tenants.email` for the same
+-- slug and stamp `completed_at`. A completed row is the record of the move; a
+-- second submit replaces the pending row in place and resets both times.
+CREATE TABLE IF NOT EXISTS email_changes (
+    id               INTEGER PRIMARY KEY,
+    account_id       INTEGER NOT NULL REFERENCES accounts(id),
+    new_email        TEXT    NOT NULL,
+    old_token_hash   TEXT    NOT NULL,
+    new_token_hash   TEXT    NOT NULL,
+    old_confirmed_at TEXT,
+    new_confirmed_at TEXT,
+    expires_at       TEXT    NOT NULL,
+    completed_at     TEXT,
+    created_at       TEXT    NOT NULL
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS email_changes_pending
+ON email_changes(account_id) WHERE completed_at IS NULL;
+
+CREATE INDEX IF NOT EXISTS email_changes_old_token
+ON email_changes(old_token_hash);
+
+CREATE INDEX IF NOT EXISTS email_changes_new_token
+ON email_changes(new_token_hash);
 """ + "\n" + ";\n\n".join(ADMIN_LOG_GUARDS) + ";\n"
 
 # One signup event per waitlist row, with the signup's own timestamp. The WHERE
@@ -1226,6 +1290,73 @@ def queue_repoint_notice(account: dict, previous_email: str) -> str:
     return path
 
 
+def queue_change_message(account: dict, *, side: str, to: str, token: str,
+                         subject: str, body: str, new_email: str) -> str:
+    """Write one side's change-of-address mail; return its path.
+
+    Two messages make one pending change (ODL-962): `side="old"` goes to the
+    address being left and asks it to confirm the move, `side="new"` goes to
+    the address being moved to and asks it to confirm the mailbox. The path is
+    `<outbox>/change/<account id>-<side>.eml`, so a second submit replaces the
+    pair instead of stacking a third and fourth; the old links stop working
+    because the row's token hashes were replaced, not because a file moved.
+
+    The 0600 file, the atomic replace and the one `.eml` are `queue_confirm`'s
+    discipline; the one link is the only place its token travels.
+    """
+    link = "%s/account/email/confirm?side=%s&t=%s" % (ACCOUNT_HOST, side, token)
+    rendered = body.replace("{{CONFIRM}}", link).replace("{{NEW_EMAIL}}", new_email)
+    if "{{" in rendered:
+        raise RuntimeError("the change-of-address body has an unfilled slot")
+    directory = os.path.join(OUTBOX, "change")
+    os.makedirs(directory, exist_ok=True)
+    try:
+        os.chmod(directory, 0o700)
+    except OSError:
+        pass
+    path = os.path.join(directory, "%d-%s.eml" % (int(account["id"]), side))
+    message = EmailMessage()
+    message["From"] = CONFIRM_SENDER
+    message["To"] = to
+    message["Subject"] = subject
+    message["Date"] = formatdate(usegmt=True)
+    message["Message-ID"] = make_msgid(
+        idstring="odile-change.%s.%s" % (account["slug"], side), domain="odile.fyi")
+    message.set_content(rendered)
+    fd = os.open(path + ".tmp", os.O_CREAT | os.O_TRUNC | os.O_WRONLY, 0o600)
+    with os.fdopen(fd, "wb") as handle:
+        handle.write(message.as_bytes())
+    os.replace(path + ".tmp", path)
+    return path
+
+
+def pending_change(con, account_id: int) -> sqlite3.Row | None:
+    """The account's live pending change, or None.
+
+    "One pending change" is the store's rule (the partial unique index on
+    `email_changes`); this read adds the clock, so an expired row blocks a new
+    submit no longer, and the account page stops asking for a confirmation that
+    can no longer arrive.
+    """
+    return con.execute(
+        "SELECT * FROM email_changes WHERE account_id = ? AND completed_at IS NULL"
+        " AND expires_at > ? ORDER BY id DESC LIMIT 1",
+        (int(account_id), now_iso()),
+    ).fetchone()
+
+
+def open_change(con, account_id: int) -> sqlite3.Row | None:
+    """The row that is not completed — expired or not.
+
+    The write path needs the row itself, because the partial unique index still
+    holds the slot of an expired change: a submit after the 24 hours replaces
+    that row in place rather than inserting a second one.
+    """
+    return con.execute(
+        "SELECT * FROM email_changes WHERE account_id = ? AND completed_at IS NULL"
+        " ORDER BY id DESC LIMIT 1", (int(account_id),)).fetchone()
+
+
 def log_admin(con, actor: str, action: str, account_id: int | None = None,
               previous_email: str | None = None, new_email: str | None = None,
               detail: dict | None = None) -> int:
@@ -1359,7 +1490,7 @@ ACCOUNT_FORM = """<!doctype html>
 body{margin:0;background:var(--paper);color:var(--ink);font:400 18px/1.6 var(--text);-webkit-font-smoothing:antialiased}
 main{max-width:680px;margin:0 auto;padding:32px 24px 64px}
 .brand{display:inline-block;padding:12px 0;margin:-12px 0 24px;color:var(--ink);text-decoration:none;font-size:1.5rem;font-weight:500;letter-spacing:-.03em;line-height:.88;font-family:var(--serif)}
-h1{margin:0 0 16px;font-size:clamp(2.2rem,5vw,3.4rem);line-height:1.04;letter-spacing:-.025em;font-weight:500;font-family:var(--serif)}
+h1{margin:0 0 16px;font-size:clamp(2.5rem,5vw,4.1rem);line-height:1.02;letter-spacing:-.025em;font-weight:500;font-family:var(--serif)}
 h2{margin:0 0 12px;font-size:1.34rem;line-height:1.2;font-weight:600}
 p{margin:0 0 16px;max-width:66ch}
 a{color:var(--ink);text-decoration-color:var(--soft);text-underline-offset:2px}
@@ -1431,8 +1562,11 @@ def signin_body(*, email: str = "", error: str = "",
 # browser. `confirm` is the address that is not verified yet; it wins over
 # `provision_state`, which is still `unverified`.
 ACCOUNT_STATE_RE = re.compile(
-    r"<!--(confirm|repoint|building|ready|failed|missing)-->(.*?)<!--/\1-->", re.S)
+    r"<!--(confirm|repoint|building|ready|failed|missing|link-pending|link-changed|link-closed)-->(.*?)<!--/\1-->", re.S)
 ACCOUNT_ACTIONS_RE = re.compile(r"<!--(actions)-->(.*?)<!--/actions-->", re.S)
+# The trial line and the password note are the signed-in page's; a mailed-link
+# answer renders the same paper without them (ODL-962 round 2).
+ACCOUNT_SIGNED_IN_RE = re.compile(r"<!--(signed-in)-->(.*?)<!--/\1-->", re.S)
 ACCOUNT_PAGE_TITLES = {
     "confirm": "Check your email \u2014 Odile",
     "repoint": "Confirm your new address \u2014 Odile",
@@ -1447,6 +1581,10 @@ ACCOUNT_PAGE_TITLES = {
 # verbatim from docs/product/DECISION-one-recovery-code.md §4 in web/account.html
 # — this page does not coin a fourth wording.
 ACCOUNT_PASSWORD_FIELDS = ("current", "password", "password2")
+# The change-of-address form's own fields (ODL-962). They are separate from
+# the password form's so an error lands under the input it names in the right
+# form: the two forms sit on one page and both ask for a current password.
+ACCOUNT_EMAIL_FIELDS = ("new_email", "current_password")
 
 
 def account_state(row: sqlite3.Row, *, repointed: bool = False) -> str:
@@ -1466,7 +1604,9 @@ def account_state(row: sqlite3.Row, *, repointed: bool = False) -> str:
 
 def render_account_page(row: sqlite3.Row, tenant: sqlite3.Row | None = None,
                         state: str | None = None, *, error: str = "",
-                        field: str = "", repointed: bool = False) -> str:
+                        field: str = "", repointed: bool = False,
+                        email_change: str | None = None,
+                        form: str = "password") -> str:
     """The finished account page, server-rendered from the account and tenant.
 
     The machine's address and IPv4 come from the tenant row (the record of the
@@ -1481,6 +1621,12 @@ def render_account_page(row: sqlite3.Row, tenant: sqlite3.Row | None = None,
     machine, so the `failed` state (which names no machine, ODL-583) and the
     signed-in 404 drop them; the change form and the lost-code block (D-16)
     carry no machine name and stay in every signed-in state.
+
+    ODL-962 adds the change of address under those actions. `email_change` is
+    `"pending"` while both inboxes still have to confirm, or the new address
+    when the move has just landed — the one line the browser that made the
+    second confirmation sees. `form` says which of the page's two forms owns a
+    page-level error (a rate limit), so it lands beside the form that spent it.
     """
     state = state or account_state(row, repointed=repointed)
     slug = row["slug"]
@@ -1489,8 +1635,16 @@ def render_account_page(row: sqlite3.Row, tenant: sqlite3.Row | None = None,
     body = page("account.html", TITLE=html.escape(ACCOUNT_PAGE_TITLES[state]))
     body = ACCOUNT_STATE_RE.sub(
         lambda match: match.group(2) if match.group(1) == state else "", body)
+    body = ACCOUNT_SIGNED_IN_RE.sub(lambda match: match.group(2), body)
     body = ACCOUNT_ACTIONS_RE.sub(
         lambda match: match.group(2) if state != "missing" else "", body)
+    if email_change == "pending":
+        notice = '<p class="note" role="status">%s</p>' % CHANGE_PENDING
+    elif email_change:
+        notice = ('<p class="note" role="status">Your address is changed to'
+                  ' <strong>%s</strong>.</p>' % html.escape(email_change))
+    else:
+        notice = ""
     values = {
         "EMAIL": html.escape(row["email"]),
         "MACHINE": html.escape(host),
@@ -1503,10 +1657,17 @@ def render_account_page(row: sqlite3.Row, tenant: sqlite3.Row | None = None,
         "MACHINE_RESET_LINK": "" if state in ("failed", "missing") else
         '<p class="note"><a href="https://%s%s">Reset the sign-in on your machine</a></p>'
         % (html.escape(host, quote=True), MACHINE_RESET_PATH),
-        "ACCOUNT_ERROR": err_slot(error, "account-password-err")
-        if error and field not in ACCOUNT_PASSWORD_FIELDS else "",
     }
-    for name in ACCOUNT_PASSWORD_FIELDS:
+    owner = field if field in ACCOUNT_PASSWORD_FIELDS + ACCOUNT_EMAIL_FIELDS else ""
+    page_level = bool(error) and not owner
+    values["ACCOUNT_ERROR"] = (
+        err_slot(error, "account-password-err")
+        if page_level and form != "email" else "")
+    values["EMAIL_CHANGE_FORM_ERROR"] = (
+        err_slot(error, "account-email-err")
+        if page_level and form == "email" else "")
+    values["EMAIL_CHANGE_NOTICE"] = notice
+    for name in ACCOUNT_PASSWORD_FIELDS + ACCOUNT_EMAIL_FIELDS:
         hit = bool(error) and field == name
         slot_id = "%s-err" % name
         values["%s_INVALID" % name.upper()] = (
@@ -1516,6 +1677,42 @@ def render_account_page(row: sqlite3.Row, tenant: sqlite3.Row | None = None,
         body = body.replace("{{%s}}" % key, value)
     if "{{" in body:
         raise RuntimeError("the account page has an unfilled slot")
+    return body
+
+
+# The three answers a mailed change-of-address link can give when the browser
+# is not the account's own (ODL-962). They are the account page's own paper and
+# display face — `web/account.html`, `::selection` and the embedded Cormorant
+# included — with the signed-in furniture (the trial line and the forms)
+# removed. Each answer is one heading and its detail; no answer repeats its
+# heading in the sentence below it.
+CHANGE_TITLES = {
+    "pending": "Confirm the change \u2014 Odile",
+    "changed": "Your address is changed \u2014 Odile",
+    "closed": "Confirm the change \u2014 Odile",
+}
+
+
+def render_change(*, state: str, new_email: str = "") -> str:
+    """One page for a confirmation link opened outside the account's browser.
+
+    The signed-in copy of each answer is the account page itself (the pending
+    note or the success line); this is the same page — its paper, its
+    `::selection` pair and its embedded display face — without the trial line
+    and the two forms, so a link opened on a phone still says what happened in
+    the account's own type. No JavaScript.
+    """
+    key = "link-%s" % state
+    body = page("account.html", TITLE=html.escape(CHANGE_TITLES[state]))
+    body = ACCOUNT_STATE_RE.sub(
+        lambda match: match.group(2) if match.group(1) == key else "", body)
+    body = ACCOUNT_SIGNED_IN_RE.sub("", body)
+    body = ACCOUNT_ACTIONS_RE.sub("", body)
+    body = body.replace("{{NEW_EMAIL}}", html.escape(new_email))
+    body = body.replace("{{CHANGE_PENDING}}", CHANGE_PENDING)
+    body = body.replace("{{CHANGE_CLOSED}}", CHANGE_CLOSED)
+    if "{{" in body:
+        raise RuntimeError("the change answer has an unfilled slot")
     return body
 
 
@@ -2089,6 +2286,11 @@ class Handler(BaseHTTPRequestHandler):
             return self._forgot_done(head)
         if path == "/account":
             return self._account_page(head)
+        if path == "/account/email/confirm":
+            # The mailed link's one action (ODL-962). It is answered before the
+            # `/account/<slug>` branch below, which would read the rest of the
+            # path as a machine name.
+            return self._account_email_confirm(head, qs)
         if path == "/admin":
             return self._admin_page(head)
         if path.startswith("/account/"):
@@ -2253,7 +2455,7 @@ class Handler(BaseHTTPRequestHandler):
             return self._tenant_recovery()
         if path not in ("/waitlist", "/claim", "/register", "/confirm", "/signin",
                         "/login", "/account/retry", "/account/resend",
-                        "/account/password", "/forgot") + tuple(ADMIN_POST_ROUTES):
+                        "/account/password", "/account/email", "/forgot") + tuple(ADMIN_POST_ROUTES):
             return self._send(405, "method not allowed\n", "text/plain; charset=utf-8")
         if path == "/register" and not register_open():
             # Closed before the form is parsed: no row, no tenant, no mail.
@@ -2293,6 +2495,11 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/forgot":
                 return self._send(413, render_forgot(
                     error="That request was too large."))
+            if path == "/account/email":
+                return self._send(413, render_account(
+                    title="Change your email \u2014 Odile",
+                    body="<h1>Change your email.</h1>"
+                         '<p class="lede">That request was too large.</p>'))
             return self._send(413, render_account(
                 title="Sign in \u2014 Odile", body=signin_body(
                     action=path if path in ("/login", "/signin") else "/signin",
@@ -2314,6 +2521,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._account_resend()
         if path == "/account/password":
             return self._account_password(fields)
+        if path == "/account/email":
+            return self._account_email_change(fields)
         if path == "/forgot":
             return self._forgot(fields)
         if path in ADMIN_POST_ROUTES:
@@ -2682,10 +2891,12 @@ class Handler(BaseHTTPRequestHandler):
             tenant = con.execute("SELECT * FROM tenants WHERE slug = ?",
                                  (row["slug"],)).fetchone()
             repointed = is_repoint(con, row)
+            pending = pending_change(con, row["id"])
         finally:
             con.close()
         return self._send(200, render_account_page(
-            row, tenant=tenant, repointed=repointed), head=head)
+            row, tenant=tenant, repointed=repointed,
+            email_change="pending" if pending is not None else None), head=head)
 
     def _repointed(self, row) -> bool:
         con = db()
@@ -2883,7 +3094,7 @@ class Handler(BaseHTTPRequestHandler):
             con.close()
         return self._send(303, "", location="/account")
 
-    def _account_answer(self, row, status, message, field=""):
+    def _account_answer(self, row, status, message, field="", *, form="password"):
         """One refusal in the account page's own paper (429, 422).
 
         A rate limit and a field error both land on the finished page: a bare
@@ -2892,19 +3103,24 @@ class Handler(BaseHTTPRequestHandler):
         mistake — the account-vs-machine sign-in confusion D-12 exists for
         (Brand gate round 2, must 1). The template's `{{ACCOUNT_ERROR}}` slot
         is the page-level one; a field error keeps its own slot under the
-        input it names.
+        input it names. ODL-962's change form is the second form on the page,
+        so `form` picks which page-level slot a page-level error (a 429) lands
+        in: the one beside the form that spent the bucket.
         """
         con = db()
         try:
             tenant = con.execute("SELECT * FROM tenants WHERE slug = ?",
                                  (row["slug"],)).fetchone()
             repointed = is_repoint(con, row)
+            pending = pending_change(con, row["id"])
         finally:
             con.close()
         headers = {"Retry-After": str(RATE_WINDOW)} if status == 429 else None
         return self._send(status, render_account_page(
             row, tenant=tenant, error=message, field=field,
-            repointed=repointed), headers=headers)
+            repointed=repointed, form=form,
+            email_change="pending" if pending is not None else None),
+            headers=headers)
 
     def _account_resend(self):
         """Re-queue the mail the state owns; no new row, no new machine.
@@ -3030,6 +3246,186 @@ class Handler(BaseHTTPRequestHandler):
             con.close()
         return self._send(303, "", location="/account",
                           headers=self._cookie_pair(fresh))
+
+    def _account_email_change(self, fields):
+        """The owner's own change of address: two mails, no account write yet.
+
+        ODL-962. The current password is the guard a stolen cookie cannot pass;
+        the two mailed links are the proof that both mailboxes agree. This route
+        writes one pending row — replacing a live one, so the store still holds
+        one — and queues exactly two messages. `accounts.email` is untouched
+        until both sides confirm.
+        """
+        if not self._same_origin():
+            return self._send(403, "forbidden: cross-site form\n",
+                              "text/plain; charset=utf-8")
+        row = self._session_account()
+        if row is None:
+            return self._send(303, "", location="/login",
+                              headers={"Set-Cookie": _clear_cookie()})
+        if not allow(self._client_ip(), "account-email"):
+            return self._account_answer(
+                row, 429, "Too many changes. Try again in ten minutes.",
+                form="email")
+        current_password = (fields.get("current_password") or [""])[0]
+        new_raw = (fields.get("new_email") or [""])[0]
+
+        def refused(message, field):
+            return self._account_answer(row, 422, message, field, form="email")
+
+        if not verify_password_or_dummy(current_password, row["password_hash"]):
+            return refused("That password does not match.", "current_password")
+        new = valid_email(new_raw)
+        if not new:
+            return refused("That doesn't look like an email address.", "new_email")
+        if new == row["email"]:
+            return refused("That is already the account's address.", "new_email")
+
+        # A second submit while a change is pending replaces it: the fresh
+        # tokens are the only live ones, so the two older links stop working.
+        old_token = secrets.token_hex(32)
+        new_token = secrets.token_hex(32)
+        stamp = now_iso()
+        expiry = confirm_expiry()
+        con = db()
+        try:
+            taken = con.execute(
+                "SELECT 1 FROM accounts WHERE email = ? AND id != ?"
+                " UNION ALL SELECT 1 FROM tenants WHERE email = ? AND slug != ?",
+                (new, int(row["id"]), new, row["slug"])).fetchone()
+            if taken is not None:
+                return refused("That address already has an account.", "new_email")
+            live = open_change(con, row["id"])
+            if live is None:
+                con.execute(
+                    "INSERT INTO email_changes (account_id, new_email,"
+                    " old_token_hash, new_token_hash, expires_at, created_at)"
+                    " VALUES (?, ?, ?, ?, ?, ?)",
+                    (int(row["id"]), new, hash_token(old_token),
+                     hash_token(new_token), expiry, stamp))
+            else:
+                con.execute(
+                    "UPDATE email_changes SET new_email = ?, old_token_hash = ?,"
+                    " new_token_hash = ?, old_confirmed_at = NULL,"
+                    " new_confirmed_at = NULL, expires_at = ?, created_at = ?"
+                    " WHERE id = ?",
+                    (new, hash_token(old_token), hash_token(new_token), expiry,
+                     stamp, int(live["id"])))
+            con.commit()
+        finally:
+            con.close()
+
+        problems = []
+        try:
+            queue_change_message(dict(row), side="old", to=row["email"],
+                                 token=old_token, subject=CHANGE_OLD_SUBJECT,
+                                 body=CHANGE_OLD_BODY, new_email=new)
+        except (OSError, RuntimeError):
+            traceback.print_exc(file=sys.stderr)
+            problems.append("the message to the address you are leaving")
+        try:
+            queue_change_message(dict(row), side="new", to=new,
+                                 token=new_token, subject=CHANGE_NEW_SUBJECT,
+                                 body=CHANGE_NEW_BODY, new_email=new)
+        except (OSError, RuntimeError):
+            traceback.print_exc(file=sys.stderr)
+            problems.append("the message to the new address")
+        if problems:
+            return self._account_answer(
+                row, 500, "The change is recorded, but %s could not be queued."
+                          " Submit it again." % " and ".join(problems), form="email")
+        return self._send(303, "", location="/account")
+
+    def _account_email_confirm(self, head, qs):
+        """GET a mailed change-of-address link: one side, or the whole move.
+
+        Either side may confirm first; the first records only its own time and
+        leaves the account alone. The second runs the change in one transaction
+        — `accounts.email`, `email_verified_at`, the tenant row's email and the
+        row's `completed_at` — so the account never half-moves. The machine,
+        its sign-in, the recovery code and the session epoch are not touched.
+        A token past its expiry, a token from the other side and a token
+        already spent answer the same sentence and write nothing.
+        """
+        token = (qs.get("t") or [""])[0].strip()
+        side = (qs.get("side") or [""])[0].strip()
+        if side not in ("old", "new") or not re.fullmatch(r"[0-9a-f]{64}", token):
+            return self._send(404, render_change(state="closed"), head=head)
+        token_column = "old_token_hash" if side == "old" else "new_token_hash"
+        time_column = "old_confirmed_at" if side == "old" else "new_confirmed_at"
+        stamp = now_iso()
+        account_id = 0
+        changed = None
+        con = db()
+        try:
+            con.execute("BEGIN IMMEDIATE")
+            row = con.execute(
+                "SELECT * FROM email_changes WHERE %s = ?" % token_column,
+                (hash_token(token),)).fetchone()
+            if (row is None or row["completed_at"] is not None
+                    or row["expires_at"] <= stamp):
+                con.rollback()
+                return self._send(404, render_change(state="closed"), head=head)
+            account_id = int(row["account_id"])
+            if row[time_column] is None:
+                con.execute(
+                    "UPDATE email_changes SET %s = ? WHERE id = ?" % time_column,
+                    (stamp, int(row["id"])))
+                row = con.execute("SELECT * FROM email_changes WHERE id = ?",
+                                  (int(row["id"]),)).fetchone()
+            if row["old_confirmed_at"] and row["new_confirmed_at"]:
+                changed = row["new_email"]
+                account = con.execute("SELECT * FROM accounts WHERE id = ?",
+                                      (account_id,)).fetchone()
+                if account is None:
+                    con.rollback()
+                    return self._send(404, render_change(state="closed"), head=head)
+                try:
+                    con.execute(
+                        "UPDATE accounts SET email = ?, email_verified_at = ?"
+                        " WHERE id = ?", (changed, stamp, account_id))
+                    con.execute("UPDATE tenants SET email = ? WHERE slug = ?",
+                                (changed, account["slug"]))
+                    con.execute(
+                        "UPDATE email_changes SET completed_at = ? WHERE id = ?",
+                        (stamp, int(row["id"])))
+                    con.commit()
+                except sqlite3.IntegrityError:
+                    # The new address was taken between the submit and the
+                    # second confirmation. Nothing moved; the person submits
+                    # the change again with another address.
+                    con.rollback()
+                    traceback.print_exc(file=sys.stderr)
+                    return self._send(409, render_change(state="closed"), head=head)
+            else:
+                con.commit()
+        finally:
+            con.close()
+
+        signed = self._session_account()
+        mine = signed is not None and int(signed["id"]) == account_id
+        if changed:
+            if mine:
+                con = db()
+                try:
+                    fresh = con.execute("SELECT * FROM accounts WHERE id = ?",
+                                        (account_id,)).fetchone()
+                    tenant = con.execute("SELECT * FROM tenants WHERE slug = ?",
+                                         (fresh["slug"],)).fetchone() \
+                        if fresh is not None else None
+                    repointed = is_repoint(con, fresh) if fresh is not None else False
+                finally:
+                    con.close()
+                if fresh is not None:
+                    return self._send(200, render_account_page(
+                        fresh, tenant=tenant, repointed=repointed,
+                        email_change=changed), head=head)
+            return self._send(200, render_change(state="changed", new_email=changed),
+                              head=head)
+        if mine:
+            # The account page already carries the pending sentence.
+            return self._send(303, "", head=head, location="/account")
+        return self._send(200, render_change(state="pending"), head=head)
 
     def _register(self, fields):
         """The public registration POST: one account row, one confirmation mail.
