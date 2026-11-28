@@ -391,9 +391,11 @@ Run all four; each is also the evidence line for the card.
    Expect the eleven tables `app.init_db()` creates — `accounts, admin_log,
    claims, events, grants, seed_tokens, tenant_keys, tenant_state,
    tenant_state_events, tenants, waitlist` — and `user_version: 4`.
-   `admin_log` is the append-only record of the console's re-point action
-   (ODL-582: who moved an account's address, from which address to which, and
-   when; the previous address stays the account's name for `/forgot`).
+   `admin_log` is the append-only record of the console's actions (ODL-582:
+   who moved an account's address, from which address to which, and when; the
+   previous address stays the account's name for `/forgot`; ODL-965 widened it
+   to every console action, and a line outlives its account — `account_id`
+   becomes null and the JSON `detail` keeps the address).
    `tenant_keys` is the inference key's
    record (ODL-242: the label, the first characters and the state; never the
    key), created by `odilectl/state.py`'s additive schema. Schema v2 was the
