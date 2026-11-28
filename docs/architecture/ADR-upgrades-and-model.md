@@ -17,10 +17,13 @@ ODL-937 and the merges after Revision 7 moved `installer/odile_install.py` by
 other files §11 reads since Revision 7's `592f352`, so its readings no longer
 resolved. Every pointer is re-resolved at the new head — where a function or
 constant names the thing, the line number sits beside it — and §11's commands
-are re-run with their real output pasted. The cut also corrects two pointers
+are re-run with their real output pasted. The cut also corrects three pointers
 that were already wrong at `592f352` and had gone unnoticed: the image places
-the signing key at `deploy/image/sealed-image.sh:559`, and the mailer's reply
-comment is `odilectl/health.py:743`–`:744`. No decision changes.
+the signing key at `deploy/image/sealed-image.sh:559`, the mailer's reply
+comment is `odilectl/health.py:743`–`:744`, and §4.6's public-URL derivation is
+`installer/odile_install.py:20434`–`:20436` (`tenant_main`); the citation it
+replaces named `:17453` at `592f352` and `:19299` before this cut, both
+self-tests rather than this block. No decision changes.
 **Revision 9** — 27 November 2026, §5's app-layer timer and §5.3's window are
 re-cut for the per-slug backup window ODL-933 landed: the app timer is this
 machine's own backup minute + 30 (`RandomizedDelaySec=0`, with a bounded wait
@@ -621,8 +624,9 @@ silently, days later. The rule:
 Four edits follow, and they belong in the build card, not in a later one:
 `render_tenant_config` prefers the record (both keys and the effort); the
 tenant layout's public URL prefers the live `webapp.public_url` over the slug
-default (`:19299`); `scripts/manifest.py` records the **live** model (with the
-seed as fallback) so the machine's own manifest agrees with the machine; and
+default (`installer/odile_install.py:20434`–`:20436`, `tenant_main`);
+`scripts/manifest.py` records the **live** model (with the seed as fallback) so
+the machine's own manifest agrees with the machine; and
 `installer --manifest` prints the same value. The release manifest's `model`
 field then means "the model the release candidate was installed with", which is
 provenance, and it may legitimately differ from a tenant's live model after a
