@@ -1,0 +1,353 @@
+diff --git a/gateway/run_shutdown.py b/gateway/run_shutdown.py
+index 011b857ebf..a4835918fe 100644
+--- a/gateway/run_shutdown.py
++++ b/gateway/run_shutdown.py
+@@ -818,14 +818,91 @@ class GatewayShutdownMixin(GatewaySessionEndMixin, GatewayHomeShutdownNoticeMixi
+         return True
+ 
+     # Drain / interrupt
++    # A Kanban card attempt is handed back to the board rather than waited out: a dedicated grace
++    # lets a turn that is just finishing settle, and the rest get worker_lost + a reclaim.
++    KANBAN_DRAIN_GRACE_S = 5.0
++    # Room the hard stop keeps of the watchdog leash after the cron hand-out window: the 1 s hard
++    # drain, the post-interrupt grace, the authority settle and adapter/DB teardown.
++    HARD_STOP_RESERVE_S = 70.0
++
+     def _drain_work_counts(self) -> tuple:
+-        """``(agents, cron, api, deferred, delegations)`` the drain waits on; a managed-worker turn is a chat turn."""
++        """``(agents, cron, api, deferred, delegations)`` the drain waits on.
++
++        A managed-worker turn is a chat turn, except a Kanban card attempt: that one is handed
++        back (``_hand_off_kanban_turns``) instead of draining for ``agent.restart_drain_timeout``,
++        because a card run is re-claimable by design and waiting it out is what left its submitter
++        redialling ``Gateway draining: not_ready`` past its own 180 s patience (ADR-008 §3.5).
++        """
++        from gateway.session_managed_worker import kanban_turn_count
++        managed = max(0, managed_turn_count(self) - kanban_turn_count(self))
+         return (
+-            self._running_agent_count() + managed_turn_count(self), self._active_cron_job_count(),
++            self._running_agent_count() + managed, self._active_cron_job_count(),
+             self._active_api_run_count(), self._active_deferred_agent_worker_count(),
+             _active_async_delegation_count(),
+         )
+ 
++    async def _hand_off_kanban_turns(self, timeout: float) -> int:
++        """Bounded grace, then close every in-flight card attempt as a planned loss (ADR-008 §3.5).
++
++        Returns how many attempts this call handed back. A card that settles inside the grace
++        completes normally and is not touched; the rest get the board write and an immediate Stop,
++        so the card returns to its lane while this owner still settles the admission.
++        """
++        from gateway.session_managed_worker import hand_off_kanban_turns, kanban_turn_count
++        loop = asyncio.get_running_loop()
++        deadline = loop.time() + min(self.KANBAN_DRAIN_GRACE_S, max(0.0, timeout))
++        while kanban_turn_count(self) and loop.time() < deadline:
++            await asyncio.sleep(0.1)
++        try:
++            closed = await hand_off_kanban_turns(self, self._shutdown_interrupt_reason())
++        except Exception:
++            logger.warning("Kanban hand-off during the drain failed", exc_info=True)
++            return 0
++        if closed:
++            logger.info(
++                "Shutdown: handed off %d in-flight Kanban card attempt(s) as worker_lost — "
++                "the board re-claims them; the drain no longer waits a card run out", closed,
++            )
++        return closed
++
++    async def _settle_cron_before_the_hard_drain(
++        self, timeout: float, leash: float
++    ) -> tuple[float, float]:
++        """Serve in-flight cron/api_server work to completion before the hard drain cuts its clients.
++
++        The hard drain publishes ``state=draining`` and the socket admission then answers a client's
++        next frame with a 1013 close (``gateway/run_api.py``). A Kanban submitter retries that; a
++        cron firer does not — it books the execution ``unknown`` and the run is later recorded
++        ``interrupted`` (measured 2026-11-28, the 03:00 pulse). So a cron/api run that can finish
++        inside the envelope finishes in this hand-out window: reversible external drain (platform
++        inbound, ``/v1`` fires and slash commands refuse new work; the process keeps serving every
++        attached client), then the hard stop takes over.
++
++        Returns ``(drain_budget_left, seconds_spent)``; the budget never drops below 1 second and the
++        window is clamped under the shutdown watchdog's leash, so the hard phase still has its
++        teardown room.
++        """
++        if not (self._active_cron_job_count() or self._active_api_run_count()):
++            return timeout, 0.0
++        self._enter_external_drain()
++        self._update_runtime_status("draining")
++        loop = asyncio.get_running_loop()
++        budget = min(timeout, max(0.0, leash - self.HARD_STOP_RESERVE_S))
++        cron0, api0 = self._active_cron_job_count(), self._active_api_run_count()
++        started = loop.time()
++        while (self._active_cron_job_count() or self._active_api_run_count()) and loop.time() - started < budget:
++            self._update_runtime_status("draining")
++            await asyncio.sleep(0.2)
++        spent = loop.time() - started
++        cron1, api1 = self._active_cron_job_count(), self._active_api_run_count()
++        if spent > 0.2:
++            logger.info(
++                "Shutdown: served %d -> %d cron job(s) and %d -> %d api_server run(s) for %.1fs "
++                "before the hard drain (a run that finished here is not cut off at its socket)",
++                cron0, cron1, api0, api1, spent,
++            )
++        return max(1.0, timeout - spent), spent
++
+     async def _drain_active_agents(
+         self, timeout: float, cron_timeout: Optional[float] = None
+     ) -> tuple[dict[str, Any], bool]:
+@@ -1765,6 +1842,9 @@ class GatewayShutdownMixin(GatewaySessionEndMixin, GatewayHomeShutdownNoticeMixi
+         _pre_drain_keys = await GatewayRunner._mark_running_sessions_resume_pending(
+             self, "pre-drain mark_resume_pending"
+         )
++        # A card run cannot finish inside the envelope; hand it back before the drain starts so the
++        # board owns the reclaim and this process never waits its turn out (ADR-008 §3.5).
++        await self._hand_off_kanban_turns(timeout)
+         _cron_at_start = self._active_cron_job_count()
+         _api_at_start = self._active_api_run_count()
+         _deferred_at_start = ctx.deferred_count()
+@@ -2109,15 +2189,23 @@ class GatewayShutdownMixin(GatewaySessionEndMixin, GatewayHomeShutdownNoticeMixi
+                 snapshot_fn=lambda: GatewayRunner._shutdown_watchdog_snapshot(self, ctx), exit_code=1,
+             )
+         try:
+-            await GatewayRunner._stop_begin_teardown(self, ctx)
+             timeout = effective_stop_drain_timeout(self)
++            # Phase 1 (bounded): in-flight cron/api_server runs that CAN finish do so before the hard
++            # drain publishes ``draining`` and the socket admission cuts their client's next frame.
++            timeout_left, served = await self._settle_cron_before_the_hard_drain(
++                timeout, _effective_watchdog_leash(self))
++            await GatewayRunner._stop_begin_teardown(self, ctx)
++            if served:
++                # Every later budget is measured from the watchdog's own arm time; count the hand-out
++                # window against it, or the leash overruns by its length.
++                ctx.started_at = (ctx.started_at or time.monotonic()) - served
+             if timeout < self._restart_drain_timeout:
+                 logger.warning(
+                     "Shutdown drain capped to %.0fs (configured %.0fs) to fit the live launchd exit "
+                     "timeout of %.0fs — launchd SIGKILLs past it",
+                     timeout, self._restart_drain_timeout, self._launchd_exit_timeout_s,
+                 )
+-            await GatewayRunner._stop_drain_active_work(self, timeout, ctx)
++            await GatewayRunner._stop_drain_active_work(self, timeout_left, ctx)
+             if ctx.timed_out:
+                 await GatewayRunner._stop_interrupt_remaining_work(self, ctx)
+             from gateway.run_runtime import settle_gateway_runtime  # within what the leash has left
+diff --git a/gateway/session_kanban.py b/gateway/session_kanban.py
+index 33c53ee6b7..64cf3ca666 100644
+--- a/gateway/session_kanban.py
++++ b/gateway/session_kanban.py
+@@ -4,6 +4,7 @@ import contextlib
+ from contextlib import closing
+ from dataclasses import asdict, replace
+ import threading
++import time
+ import json
+ from pathlib import Path
+ import sqlite3
+@@ -344,6 +345,69 @@ def record_worker_loss(policy, reason, *, pid=None, bound=False):
+         logging.getLogger(__name__).exception('kanban worker_lost record failed')
+ 
+ 
++def record_drain_handoff(policy, reason, *, pid=None, bound=False):
++    """A planned drain hands this card attempt back instead of leaving it owned.
++
++    A stop the host chose (``systemctl --user restart``, a takeover, SIGTERM) starts a drain
++    whose envelope an ordinary card run cannot finish inside. The owner writes the same
++    ``worker_lost`` evidence a lost worker gets — so the board and the next worker know why the
++    attempt ended — and closes the run ``reclaimed`` itself: the card returns to the lane its
++    ``claimed`` event names (``ready``, or ``review`` for a reviewer run) and
++    ``consecutive_failures`` is reset, because a host restart is not the card's failure and the
++    breaker would otherwise block a card that merely happened to be in flight. The dispatcher
++    re-claims it on its next tick; no human step (ADR-008 §3.5).
++
++    Returns True only when this call closed the attempt. Never raises (the drain must not depend
++    on a board write) and drops the note when the card has already moved past the run.
++    """
++    try:
++        context = json.loads(policy.kanban_json or 'null')
++        if not context:
++            return False
++        from hermes_cli.kanban_db_connect import connect_closing
++        from hermes_cli import kanban_db as kb
++        run_id = int(context['run_id'])
++        task_id = context['task_id']
++        claim_lock = context['claim_lock']
++        now = int(time.time())
++        with connect_closing(Path(context['db'])) as conn, kb.write_txn(conn):
++            row = conn.execute(
++                'SELECT status, current_run_id, claim_lock, worker_pid, claim_expires, last_heartbeat_at '
++                'FROM tasks WHERE id=?', (task_id,)).fetchone()
++            if (row is None or row['status'] != 'running' or row['current_run_id'] != run_id
++                    or row['claim_lock'] != claim_lock):
++                return False
++            note = f'managed worker lost: {str(reason)[:80]}'
++            payload = {'reason': str(reason)[:200], 'claim_lock': claim_lock, 'run_id': run_id,
++                       'pid': pid, 'bound': bool(bound), 'drain': True}
++            kb._append_event(conn, task_id, 'worker_lost', payload, run_id=run_id)
++            retry_status = kb._retry_status_for_run(conn, task_id, run_id)
++            error = f'stale_lock={claim_lock} [{note}]'
++            # Close the run first: _end_run reads (and clears) current_run_id.
++            kb._end_run(conn, task_id, outcome='reclaimed', status='reclaimed',
++                        error=error[:500], metadata=dict(payload, attempt_note=note))
++            cur = conn.execute(
++                "UPDATE tasks SET status = ?, claim_lock = NULL, claim_expires = NULL, "
++                "worker_pid = NULL, worker_started_at = NULL, current_run_id = NULL, "
++                "consecutive_failures = 0, last_failure_error = NULL "
++                "WHERE id = ? AND status = 'running' AND claim_lock IS ?",
++                (retry_status, task_id, claim_lock),
++            )
++            if cur.rowcount != 1:
++                return False
++            kb._append_event(conn, task_id, 'reclaimed', {
++                'stale_lock': claim_lock, 'worker_pid': None,
++                'claim_expires': row['claim_expires'], 'last_heartbeat_at': row['last_heartbeat_at'],
++                'now': now, 'host_local': True, 'heartbeat_stale': False,
++                'retry_status': retry_status, 'worker_lost': str(reason)[:200],
++            }, run_id=run_id)
++        return True
++    except Exception:
++        import logging
++        logging.getLogger(__name__).exception('kanban drain hand-off failed')
++        return False
++
++
+ def _bound_worker_matches(conn, context):
+     import os
+     row = conn.execute("SELECT payload FROM task_events WHERE task_id=? AND run_id=? AND kind='worker_bound' ORDER BY id DESC LIMIT 1",
+diff --git a/gateway/session_managed_worker.py b/gateway/session_managed_worker.py
+index a4eaaef5e9..e5c7c72aae 100644
+--- a/gateway/session_managed_worker.py
++++ b/gateway/session_managed_worker.py
+@@ -184,6 +184,11 @@ class ManagedWorker:
+         self.stderr_drain = None
+         # Exact secrets this worker was handed; the stderr sink scrubs them besides the patterns.
+         self.secrets = []
++        # The admission policy this worker is executing. A Kanban card attempt is identifiable by
++        # its ``kanban_json``: a planned drain hands that attempt back instead of waiting it out.
++        self.policy = None
++        # Set once the drain has written this attempt's ``worker_lost`` + reclaim (idempotence).
++        self.kanban_handed_off = False
+ 
+     def _write_controls(self):
+         try:
+@@ -595,6 +600,76 @@ async def _settle_lost(authority, row, scope, recording):
+         await tracked_write(authority, partial(lose_admission_worker, authority, row, scope))
+ 
+ 
++def _kanban_attempts(authority):
++    """``(session_id, worker_or_None, policy)`` for every card attempt this authority is running.
++
++    ``worker`` is None while the turn is still being spawned (``_managed_spawning``): there is no
++    child to signal yet, but the card's run is already the owner's to hand back. The map the drain
++    enumerates is ``authority._managed_policies``, which ``execute_managed`` keeps for exactly the
++    live Kanban attempts (populated before ``@`` expansion, popped when the turn settles).
++    """
++    workers = getattr(authority, '_managed_workers', {}) or {}
++    for sid, policy in list((getattr(authority, '_managed_policies', {}) or {}).items()):
++        if getattr(policy, 'kanban_json', None) is None:
++            continue
++        yield sid, workers.get(sid), policy
++
++
++def kanban_turn_count(runner):
++    """Live Kanban card attempts across every served authority (a subset of ``managed_turn_count``).
++
++    The stop drain subtracts these: a card attempt is handed back (``worker_lost`` + reclaim), not
++    waited out to ``agent.restart_drain_timeout`` — waiting is what left a card's submitter redialling
++    ``Gateway draining: not_ready`` past its own 180 s patience (ADR-008 §3.5).
++    """
++    from gateway.session_authorities import all_authorities
++    return sum(1 for authority in all_authorities(runner) for _sid, _worker, _policy in _kanban_attempts(authority))
++
++
++async def hand_off_kanban_turns(runner, reason, *, write_timeout: float = 10.0) -> int:
++    """Hand every in-flight card attempt back and stop its turn (ADR-008 §3.5).
++
++    The write is the board's: ``worker_lost`` on the run, the run closed ``reclaimed``, the card
++    returned to its source lane with ``consecutive_failures`` reset — so a host restart cannot leave
++    a card owned or block it on the breaker. Only then is the turn stopped, so the admission settles
++    with the drain cause while the owner still serves. Bounded per card (a busy board must not hold
++    the stop); returns how many attempts this call closed.
++    """
++    from gateway.session_kanban import record_drain_handoff
++    from gateway.session_authorities import all_authorities
++    closed = 0
++    for authority in all_authorities(runner):
++        for sid, worker, policy in _kanban_attempts(authority):
++            if worker is not None and worker.kanban_handed_off:
++                continue
++            pid, bound = None, False
++            if worker is not None:
++                worker.kanban_handed_off = True
++                bound = worker.worker is not None
++                pid = (worker.worker or (worker.process.pid,))[0]
++            try:
++                await asyncio.wait_for(
++                    asyncio.to_thread(record_drain_handoff, policy, reason, pid=pid, bound=bound),
++                    timeout=write_timeout)
++            except Exception:
++                import logging
++                logging.getLogger(__name__).warning(
++                    'Kanban drain hand-off write failed for %s', sid, exc_info=True)
++                continue
++            closed += 1
++            if worker is not None:
++                worker.stop_cause = reason
++                try:
++                    worker.control({'type': 'stop'})
++                except Exception:
++                    import logging
++                    # Stop latched the deadline even when the queue was full: the read loop
++                    # escalates on the latch alone (``ManagedWorker.next_frame``).
++                    logging.getLogger(__name__).debug(
++                        'Kanban drain Stop not queued for %s', sid, exc_info=True)
++    return closed
++
++
+ async def _spawn_registered_worker(authority, ref, row):
+     """Spawn the turn's child and register it for Stops: ``(worker, process)``, or None when the spawn was cancelled (the
+     interrupted result is already recorded). The generation stays marked spawning until registration."""
+@@ -689,21 +764,37 @@ async def execute_managed(authority, ref, row, policy):
+     # This route never passes the inbound prepare step, so the worker would read ``@`` tokens as typed.
+     from gateway.session_context_refs import managed_turn_text, refused_turn_result
+     _mark_spawning(authority, ref, row)
++    kanban = getattr(policy, 'kanban_json', None) is not None
++    policies = getattr(authority, '_managed_policies', None)
++    if policies is None:
++        policies = authority._managed_policies = {}
++
++    def _forget_policy():
++        # The drain's hand-off enumerates this map; a settled/replaced attempt must leave it.
++        policies.pop(ref.session_id, None)
++
++    if kanban:
++        policies[ref.session_id] = policy
+     try:
+         text, refusal = await managed_turn_text(authority, row, policy)
+     except BaseException:
+         authority._managed_spawning.pop(ref.session_id, None)
++        _forget_policy()
+         raise
+     if refusal is not None:
+         authority._managed_spawning.pop(ref.session_id, None)
++        _forget_policy()
+         authority.pending_results[row['admission_id']] = {'result': refused_turn_result(row, refusal), 'usage': {}}
+         return refusal
+     if _stopped_before_spawn(authority, ref, row):
++        _forget_policy()
+         return ''
+     spawned = await _spawn_registered_worker(authority, ref, row)
+     if spawned is None:
++        _forget_policy()
+         return ''
+     worker, process = spawned
++    worker.policy = policy
+     workers = authority._managed_workers
+     # A Stop acknowledged during the env/spawn awaits found no worker and was latched for this
+     # generation; consume it in the same step that makes the worker reachable to interrupt_managed.
+@@ -796,4 +887,5 @@ async def execute_managed(authority, ref, row, policy):
+         raise ManagedExecutionUnknown('managed_worker_unknown') from exc
+     finally:
+         workers.pop(ref.session_id, None)
++        _forget_policy()
+         await asyncio.to_thread(worker.close)
