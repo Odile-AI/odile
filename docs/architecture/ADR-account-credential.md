@@ -108,11 +108,11 @@ name — is the pin a reader can actually run.
 |---|---|---|
 | Account | **Does not exist.** The waitlist, the claim spine and the tenant row do, keyed by `tenants.email UNIQUE` | `app.py:153-176` |
 | The schema's own promise | “No passwords, passphrases, private keys or IP history are stored.” | `app.py:135-137` |
-| The sign-in writer | The guest's first-visit service: single-use token → `scrypt$…` (n=2^14, r=8, p=1) → the tenant `.env` (0600), session secret kept byte for byte | `installer/odile_install.py:3229`, `:3604`, `:4222` |
-| The recovery code | scrypt hash on the guest, generated in the same response, rotated on a reset; **not** single-use and **in a URL** | `:3303`, `:3556`, `:4303` (written, never read) |
+| The sign-in writer | The guest's first-visit service: single-use token → `scrypt$…` (n=2^14, r=8, p=1) → the tenant `.env` (0600), session secret kept byte for byte | `installer/odile_install.py` (`FIRST_VISIT_SOURCE`: `write_env_hash`) |
+| The recovery code | scrypt hash on the guest, generated in the same response, rotated on a reset; **not** single-use and **in a URL** | `installer/odile_install.py` (`FIRST_VISIT_SOURCE`: `new_recovery_code`, `mint_code`, `summary`, `/first-visit/recovery`) |
 | The token's route to the owner | The ready email: `/first-visit?t=<64 hex>`, composed and queued on HQ, delivered by `mail.odile.fyi`; the command line is also written to a 0644 log on the guest | `odilectl/claim.py:1185`, `templates/emails/ready.txt:4`, `deploy/image/odile-firstboot.py:1137-1138` |
-| The seed contract | `SEED_KEYS` allow eight fields; `SEED_FORBIDDEN` is `password, passphrase, private_key, ssh_private_key, luks` — **the seed may not carry a password**; a rebuild carries a ciphertext sealed under the setup token | `installer/odile_install.py:184-188`, `seed/seed.py:308-334` |
-| The instance username | fixed `odile`; the account's email is **not** the machine's username | `installer/odile_install.py:3187-3189` |
+| The seed contract | `SEED_KEYS` names nine required fields, the ninth `sign_in_hash` (B-once below); `SEED_FORBIDDEN` is `password, passphrase, private_key, ssh_private_key, luks` — **the seed may not carry a password**; a rebuild carries a ciphertext sealed under the setup token | `installer/odile_install.py` (`SEED_KEYS`, `SEED_FORBIDDEN`), `seed/seed.py:308-334` |
+| The instance username | fixed `odile`; the account's email is **not** the machine's username | `installer/odile_install.py` (`DEFAULT_USERNAME`) |
 | The image's pre-first-visit hole | closed: no usable hash ships, the session secret is per machine, no SSH host key ships | ODL-521/522/523, all done |
 
 Two consequences the options must live with:
@@ -170,7 +170,7 @@ write path" are the refused shape; §3.2's note is the decided one.
 
 Registration takes an email and a password. HQ stores `accounts(email UNIQUE,
 password_hash)` in the installer's own scrypt format (`scrypt$n$r$p$salt$dk`,
-`installer/odile_install.py:3229`) and a session; the account page shows the
+the shape `SIGNIN_SCRYPT_RE` enforces) and a session; the account page shows the
 tenant's state, the URL and the one action that matters (“open your machine”).
 The machine is untouched: the same first-visit service, the same token in the
 ready email, the same scrypt hash on the guest, the same recovery code. **The
@@ -209,8 +209,8 @@ Both shapes share the parts that are expensive, and they are the reason this is
 not merely a seed field:
 
 1. **The seed contract opens.** `SEED_FORBIDDEN` lists `password` today, and
-   `validate_seed` enforces it (`installer/odile_install.py:184-188`,
-   `:10832-10857`). A verifier is not a password, so the field can be
+   `validate_seed` enforces it (`SEED_KEYS` and `SEED_FORBIDDEN` in
+   `installer/odile_install.py`). A verifier is not a password, so the field can be
    `sign_in_hash` — but the seed now carries the machine's gate, and
    `docs/runbooks/seed.md:50-53` says it carries no login credential.
 2. **The guest's only writer changes.** ODL-521's whole point is “the first-visit
@@ -331,7 +331,7 @@ cookie clause is re-cut (§2 item 2). Read against the options:
 | §5 “Can you reset my sign-in or unlock my disk?” “No. There is no escrow…” (:475) | survives | dies |
 
 B also costs two embedded surfaces a re-embed and a re-sign: the first-visit page
-(`web/first-visit.html`, `installer/odile_install.py:4534`) and the installed
+(`web/first-visit.html`, embedded as `FIRST_VISIT_SOURCE`) and the installed
 help skill (`skills/odile-help/SKILL.md` in the installer), plus the generated
 copies in `release/`. A costs one deck clause and one inventory addition, the
 account's rows in the privacy inventory (`tests/test_legal.py` binds them), and
@@ -411,7 +411,7 @@ which has no such account, and nothing is reset.
 - A signed-in user changes the email at the account: confirm at both addresses
   (`old` and `new`), then invalidate live links sent to the old one. The machine
   is untouched, because its username is the fixed `odile`
-  (`installer/odile_install.py:3189`).
+  (`DEFAULT_USERNAME`).
 
 **Machine sign-in (the guest's authority).**
 
@@ -452,7 +452,8 @@ reset, the one-time download token, the redacted first-boot log and the
 session-secret rotation stay.
 
 1. **The recovery code is not single-use.** `recovery_used_at` is written
-   (`installer/odile_install.py:4303`, dumped at `:4371`) and never read, so the
+   (`mint_code` resets it and `summary` reports it, both in `FIRST_VISIT_SOURCE`)
+   and never read, so the
    code re-downloads the recovery file (which holds the backup password)
    indefinitely. Enforce one use, or give the code an expiry.
 2. **The code travels in a URL.** `/first-visit/recovery?c=<code>`
@@ -532,7 +533,7 @@ tenants.account_id → accounts.id        -- the link; no secret crosses it
 ```
 
 `password_hash` is the installer's own string, `scrypt$n$r$p$salt$dk`
-(`installer/odile_install.py:3229`, `:9541-9545`), so the same verifier could be
+(`SIGNIN_SCRYPT_RE`, and `verify_password` in `FIRST_VISIT_SOURCE`), so the same verifier could be
 handed to a guest if B is ever adopted — one format, one implementation to audit.
 The guard rail, stated once and testable: **no column in `accounts` is a value
 that can be presented to a tenant's gate.** A test that asserts exactly that is
@@ -547,8 +548,8 @@ form, and why it still holds:
 - after provision the account and the machine change **separately** (D-11,
   decision §2.4): a change at either end leaves the other's verifier alone;
 - a verifier is **not a bearer**: the gate recomputes scrypt from the typed
-  password and compares (`verify_password`,
-  `installer/odile_install.py:3241`), so typing the stored string at the gate
+  password and compares (`verify_password` in
+  `FIRST_VISIT_SOURCE`), so typing the stored string at the gate
   fails;
 - **no `accounts` column holds a plaintext password or a token**: the plaintext
   exists only in a request (registration, account sign-in), which is the residual
@@ -576,8 +577,9 @@ cut, is ODL-578's column and not part of this rail.
   as "the recovery code is a bearer: store its hash, rate-limit the form, and
   never put it in a URL" (decision §3.1; §5's defect 2 and ODL-579).
 - **The first visit is a one-shot POST.** `check_token` returns `used` after a
-  success and the POST answers **410** (`installer/odile_install.py:4018`,
-  `:4232`). A browser retry after a timeout is therefore *not* a failure, and the
+  success and the POST answers **410** (`check_token` and `build_handler`,
+  both in `FIRST_VISIT_SOURCE`). A browser retry after a timeout is therefore
+  *not* a failure, and the
   page must render it as “already set”, not as an error. Do not “fix” it by
   allowing a second write.
   *20 November 2026:* under B-once the first visit is a **login**, not a setup;
@@ -590,7 +592,7 @@ cut, is ODL-578's column and not part of this rail.
   `sign_in_hash`, the verifier the account holds, and the guest's installer writes
   it before the first visit (decision §2.1; ODL-925). The runbook's "no login
   credential" sentence is ODL-925's re-cut.
-- **No secret in an argv.** `installer/odile_install.py:14040` already has a
+- **No secret in an argv.** `installer/odile_install.py`'s `build_parser` already has a
   `--signin-password` flag on the classic-install path; the account flow must not
   add one, and A5's reset must not pass a password on a command line.
 - **The privacy page is a test, not a document.** `tests/test_legal.py:124-137`

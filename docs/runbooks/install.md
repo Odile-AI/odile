@@ -3285,8 +3285,8 @@ $ git log --all --oneline -- deploy/demo-host/deploy_demo_site.py; echo $?
 0
 $ ls deploy/demo-host/deploy_demo_site.py
 ls: cannot access 'deploy/demo-host/deploy_demo_site.py': No such file or directory
-$ grep -rn "def gate_ok" --include=*.py deploy installer
-installer/odile_install.py:15298:def gate_ok(anonymous_html: int, anonymous_api: int, authenticated: int) -> bool:
+$ grep -rn "def gate_ok" --include=*.py deploy installer | sed -E 's/:[0-9]+:/:/'
+installer/odile_install.py:def gate_ok(anonymous_html: int, anonymous_api: int, authenticated: int) -> bool:
 ```
 
 The table is asserted on this tree by `deploy/demo-host/check_demo_host.sh`:

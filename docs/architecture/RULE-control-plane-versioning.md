@@ -62,8 +62,8 @@ when a schema changes for a real reason.
 |---|---|---|---|---|---|
 | `release.json` | `== SCHEMA` (`odile_update.py:449`) | fails | fails | unknown artifact refused — correct | fails |
 | `manifest.json` | `== SCHEMA` (`:480`) | fails | fails | unknown fields ignored | fails |
-| seed | eight required keys; unknown keys accepted; no `schema` (`odile_install.py:13512`–`:13517`) | n/a | n/a | additive — passes | fails: no version in the document |
-| heartbeat | optional `versions` map (`odilectl/health.py:964`); the sending guest carries none (`installer/odile_install.py:1332`) | n/a | n/a | additive — passes | fails: the sender reports nothing |
+| seed | nine required keys (`SEED_KEYS`); unknown keys accepted; no `schema` | n/a | n/a | additive — passes | fails: no version in the document |
+| heartbeat | optional `versions` map (`odilectl/health.py:964`); the sending guest carries none (`command_heartbeat`'s `facts`) | n/a | n/a | additive — passes | fails: the sender reports nothing |
 
 ## Evidence
 

@@ -62,8 +62,8 @@ card as `probe_marker.py` / `probe_marker.out` for A–D and
 Measured on the live demo machine, 2026-11-22:
 
 - `GET https://demo.odile.fyi/attestation` → `cmdline` carries a 64-hex
-  `odile.token=` (value elided here; the Caddy site template calls `/attestation`
-  "public", `installer/odile_install.py:10962`). Its SHA-256 is exactly the
+  `odile.token=` (value elided here; the Caddy site template's comment calls `/attestation`
+  "public", `CADDY_SITE_TEMPLATE`). Its SHA-256 is exactly the
   state's `token_sha256` (`20fd4bf9…`), so the link the 410 below closes is the
   published token's.
 - On the machine's own name, `GET /first-visit?t=<that token>` → **410** (the
@@ -117,7 +117,7 @@ because that deploy opens its console with the same judge account (measured
 2026-11-21). A runbook paragraph that says "the recovery is three steps" is not
 idempotence. The installer's own docstring already promises the stronger rule
 ("After it, the hash is the owner's and a boot must keep it",
-`installer/odile_install.py:13834-13838`); option 3 makes that promise false for
+`first_visit_signin_set`'s docstring); option 3 makes that promise false for
 one legitimate writer.
 
 **Why not read `used_at` in `first_visit_signin_set()`:** the demo state had
@@ -140,7 +140,7 @@ changes nothing — and the live evidence is the image's own `.env`
 
 **What a forced run does to a deploy-written `.env`.** The installer's file is
 exactly the three allowlisted keys (`TENANT_ENV_KEYS`,
-`installer/odile_install.py:238-242`; template `:10840-10854`). The deploy's
+template `TENANT_ENV_TEMPLATE`). The deploy's
 `.env` carries a fourth key, `HERMES_CUSTOM_CLOUD_API_NEAR_AI_API_KEY`
 (`apply_demo_public.py:1071-1076`), so on the demo (and any machine whose
 `.env` the deploy wrote) **every** forced run takes the rewrite branch: the
