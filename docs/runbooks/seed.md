@@ -1039,12 +1039,15 @@ What the reset does and does not move:
   reinstall, and a reset re-arms the record along with the token.
 - **A replay hands over machine credentials — for a tenant with no key record.**
   That seed carries the mail relay secret, the config's shared NEAR key, and a
-  tenant provisioned as a rebuild also gets its `rebuild` block, sealed under
-  this same token (`/var/lib/odile/seed-rebuilds.json`, the restic repository
-  password): the reset re-arms a machine's credentials, not just its install,
-  and whoever holds that image holds the token. A tenant that owns its own key
-  is the exception: its exchange refuses `503 no_inference_key` (above) and
-  hands over nothing at all until `provision` has minted a replacement key.
+  tenant provisioned as a rebuild also gets the seed's rebuild marker —
+  `backup.previous_instance`, the dead machine's id, which makes the first
+  visit the recovery-file paste rather than a fresh install
+  (`docs/runbooks/backup.md` §2.2; the `/var/lib/odile/seed-rebuilds.json`
+  password block ODL-937 retired): the reset re-arms a machine's credentials,
+  not just its install, and whoever holds that image holds the token. A tenant
+  that owns its own key is the exception: its exchange refuses
+  `503 no_inference_key` (above) and hands over nothing at all until
+  `provision` has minted a replacement key.
 
 A machine booted from an image **built with someone else's `bb.iid`** answers
 `403 wrong_instance` only while that token is unspent; once the token has been

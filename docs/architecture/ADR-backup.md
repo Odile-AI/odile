@@ -180,6 +180,17 @@ line is a measurement with a date and a source.
 | Retention | 7 daily + 4 weekly, pruned on every run, grouped by `--host <slug>` so a rebuild stays one group | `backup.md` §2, §7 |
 | The timer (measured 2026-11-13) | `OnCalendar=*-*-* 03:00:00`, `Persistent=true`, `RandomizedDelaySec=300` — **every tenant at the same clock time**; superseded by §4.3's per-slug minute | `installer/odile_install.py` (`BACKUP_TIMER_TEMPLATE`, now `OnCalendar=*-*-* {start}:00` filled by `backup_timer_start(slug)`, `RandomizedDelaySec=0`), `backup.md` §2 |
 
+**Corrected by the BX11 drill (ODL-938, 2026-11-28).** The two snapshot rows
+above are the **fixture `odl-fake01`**, not the demo tenant the table's opening
+sentence names: `backup.md` §8's 2026-11-12 run is that fixture's, with a home
+built to fill the include set. The demo tenant's own repository, written to the
+BX11 on 2026-11-27 with its real include set, is **2,808,994 bytes for 515
+files / 16,395,412 bytes** — its 4.2 GB home is 3.9 GB of install trees the
+shipped `DEFAULT_EXCLUDES` skip. The 1.017 GB figure (and the "3 GB home" in
+§7.2's transfer paragraph) describes the fixture and a home without the
+excludes; the drill's own transfer measurement (1.0 GiB, 65.91 s up / 67.32 s
+down, ~16 MB/s) bounds the modelled size. `docs/evidence/a3-bx11-drill.md` §2/§6.
+
 **Three facts in that table are worse than the table looks, and each one is a
 failure the builder did not test.**
 
@@ -866,7 +877,7 @@ than smuggled in:**
 | "The encrypted backup is kept 30 days after cancellation, then deleted. Odile can delete it, not read it." (§1 "Money and place") | true on the storage path; conditional during a rebuild | true on both paths, because the password never transits HQ: the rebuild is a paste on the machine and `--backup-password-file` is retired. At `keep_until` the repository's data and both sub-accounts are deleted and the `tenants/<slug>` directory is left with no user data (ODL-935, measured 2026-11-26); the 30 days and the deletion are unchanged |
 | "A recovery code and a recovery file are the way back: … the file opens your backup." (§1 "Access") | true through the agent | **literally true**: the file carries the URL, the pinned host key and a read-only key, so it opens the backup on any machine. **This is stronger than the deck owns** — Product lands the wording, Savio approves it (§3, a published sentence not in `CLAIMS.md`) |
 | "The recovery file holds the backup password and the certificate fingerprint." (§1 "Access") | true | it now also holds the repository, the box's host-key fingerprint and a read-only key; the sentence needs the extra clause |
-| "Backed up nightly. Rebuildable in under an hour — without a key." (§1 "Reliability") | measured at 38m03s against a repository on the same host | **at risk**: the number must be re-measured against the real box over a transatlantic link. The model says 15–25 minutes and the sentence probably survives; the drill decides, and if it does not, the sentence moves |
+| "Backed up nightly. Rebuildable in under an hour — without a key." (§1 "Reliability") | measured at 38m03s against a repository on the same host | **re-measured on the real box, 2026-11-28 (ODL-938, `docs/evidence/a3-bx11-drill.md`) — and it holds.** The drill destroyed and rebuilt a machine from the signed image seeded with the demo tenant's own pair, pasted the user's recovery file on the page, and restored the real `tenants/odl-7971a8` repository through `u728180-sub3` over SFTP/22 from Helsinki: the machine's own work is **6m08s** (build-to-first-visit 368 s at the boot, paste-to-restored under a minute) and the transfer of the real repository (2,808,994 bytes) is seconds; a modelled 1.017 GB moves at the measured **16.3 MB/s / 15.9 MB/s** (1.0 GiB, 65.91 s up, 67.32 s down), i.e. ~65 s each way. The sentence stays; the number that replaces 38m03s is 6m08s for the machine's own work, and the caveats are the bench guest in place of the Servury VM, the real repository being 2.8 MB (not 1.017 GB — see §2's note) and one restic error on the first restore attempt that the retry converged |
 | `docs/MVP-V0.1.md` §6.7 "A restore needs the recovery file and one paste of its password in the browser" | already true at this head | unchanged by this ADR; it is the path §7.2–§7.3 describe, and under v3 the paste carries the key the user's own copy needs |
 
 Nothing here makes the *access* story stronger: no operator key, no escrow, no
