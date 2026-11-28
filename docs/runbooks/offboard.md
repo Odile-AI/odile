@@ -700,8 +700,7 @@ it has two halves.
 ### The mechanics — the same slug comes back (ADR-007)
 
 After a destroy, `odilectl provision <slug> --key <user.pub> --pin
-odile-verify.pin --backup-password-file <the user's old
-odile-recovery-<slug>.txt> --apply` reopens the row and orders the machine.
+odile-verify.pin --apply` reopens the row and orders the machine.
 The reopen is the one edge back (`destroyed -> claimed`, `odilectl/state.py`);
 it appends one `claimed` event with the reason, keeps every earlier event and
 clears the dead machine's columns, so the order records `provisioning` on the
@@ -712,19 +711,23 @@ to `first_boot`, so the machine's own first boot has a row to land on
 `provisioning` spine). **The slug does not change**: the URL, the recovery
 file's name and the `tenants/<slug>` repository survive (ADR-007;
 `docs/CLAIMS.md` §1). A dry run on a destroyed slug lists `state.reopen` as
-its first action and writes nothing. Without the `--backup-password-file` flag
-the rebuilt machine mints a new repository password (Drill 2's C); with it the
-guest's own recovery file carries the old password and `backup.py init` says
-`same` (`docs/runbooks/backup.md` §5.2, §9). The drill's order was **plan 120
-/ 7 days** — the drill config's `default_plan_id: 120` and `default_days: 7`,
-the panel's Blackbox Core (the Netherlands; $9.49 per 31 days, billed $2.15
-for the drill's 7 days), invoice `e0e6fbce` (§3). The live rebuild orders the
-live config's default — **plan 113 / 31 days at the drill's date**, when
-`/root/.odile/config.yaml` carried `default_plan_id: 113` and
-`default_days: 31`. Since 2026-11-24 that file carries `default_plan_id: 138`
-and `default_days: 365`, so a rebuild today orders a **Blackbox Nano at the
-annual term** rather than a Plus (`docs/runbooks/deploy.md`; the default's
-measurement is `docs/evidence/nano-baseline.md`). The live tenant itself is on
+its first action and writes nothing. No password travels on that command: the
+reopen records the dead machine's id as the seed's `backup.previous_instance`,
+and a seed that names the machine it replaces makes the installer write no
+recovery file — the rebuilt machine's first visit is the paste
+(`docs/runbooks/backup.md` §2.2), which writes the user's file back for **this**
+machine with the same password — so `backup.py init` against the surviving
+repository says `same` and the repository continues (the bench drill is §5.2,
+§9). The drill's order was **plan 120 / 7 days** — the drill config's
+`default_plan_id: 120` and `default_days: 7`, the panel's Blackbox Core (the
+Netherlands; $9.49 per 31 days, billed $2.15 for the drill's 7 days), invoice
+`e0e6fbce` (§3). The live rebuild orders the live config's default — **plan
+113 / 31 days at the drill's date**, when `/root/.odile/config.yaml` carried
+`default_plan_id: 113` and `default_days: 31`. Since 2026-11-24 that file
+carries `default_plan_id: 138` and `default_days: 365`, so a rebuild today
+orders a **Blackbox Nano at the annual term** rather than a Plus
+(`docs/runbooks/deploy.md`; the default's measurement is
+`docs/evidence/nano-baseline.md`). The live tenant itself is on
 plan 113 (`?action=server&id=0badc0de` → `plan_id: 113`, Blackbox Plus, Canada,
 $18.99 reseller / $19.99 retail per 31 days, active to 2026-12-10;
 `evidence/plans.txt`). Plan 121 is also Blackbox Plus at $18.99
@@ -761,11 +764,12 @@ reopened to `claimed` first, so the order always lands on a row that can record
 it. The re-provision is now:
 
 1. `odilectl provision <slug> --key <the user's public key> --pin
-   odile-verify.pin --backup-password-file <the user's old
-   odile-recovery-<slug>.txt> --apply` — the reopen, the order, the new
-   `server_id` on both the state row and the web row, the release from the
-   pin, and the state row at `first_boot`; the flag above keeps the old
-   password, so the rebuilt machine does not mint a second one.
+   odile-verify.pin --apply` — the reopen, the order, the new `server_id` on
+   both the state row and the web row, the release from the pin, and the state
+   row at `first_boot`. The reopen puts the dead machine's id in the seed's
+   `backup.previous_instance`; that marker, not a flag, is what makes step 4's
+   visit the paste instead of a first install, and the user's recovery file
+   stays with the user until they paste it.
 2. `odilectl dns create <slug> --ip <the machine's address> --apply` — the A
    record the destroy deleted, for the **same** slug (the replay used the
    module entry point `python3 -m odilectl.dns` before **t_1520be38**
@@ -776,8 +780,9 @@ it. The re-provision is now:
    §6 of the spike, `docs/product/SPIKE-servury-reinstall.md`). Arm
    the seed row before the disk write — the first boot exchanges the token the
    image bakes, and an unarmed row fails closed (below; the spike's §5 #3).
-4. First boot → first visit → the sign-in and the recovery file
-   (`docs/runbooks/install.md`, `docs/runbooks/backup.md` §5.2). The first
+4. First boot → first visit → the paste of the user's recovery file, the
+   restore, and then the sign-in (`docs/runbooks/install.md`,
+   `docs/runbooks/backup.md` §2.2; the bench drill is §5.2). The first
    boot's measured line lands because step 1 left `tenants.server_id` naming
    this machine and the state row at `first_boot`; a record from the dead
    machine's instance is refused.

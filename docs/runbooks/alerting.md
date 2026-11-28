@@ -305,13 +305,22 @@ The HQ half then finishes what only HQ can:
    the slug out of HQ's own `heartbeats` table; a beat newer than ten minutes
    is the line `HQ holds a signed heartbeat for odl-fake01 at <epoch>`.
 
-If the backup fails with `wrong password or no key found`, the rebuild minted a
-new repository password while the repository still holds the old one: a rebuild
-that did not pass `--backup-password-file` to `odilectl provision` gets "no
-sealed password (a first install mints one)" (`odilectl/provision.py`), and the
-old password lives only in the user's recovery file.  Measured on the demo,
-2026-11-15: the machine's recovery file (`2026-11-13T10:29:12Z`) did not open
-the repository created `2026-11-12T19:01Z`.  The check reports the failure and
+If the backup fails with `wrong password or no key found`, the machine's
+`/etc/odile/recovery.txt` and the repository disagree: the file's password does
+not open `tenants/<slug>`. Two live causes — a password rotated on the
+repository (`restic key add` / `key remove`, `docs/runbooks/backup.md` §7)
+without the machine's file re-rendered, and a machine installed as a **fresh**
+install onto a slug whose repository already exists (its seed names no
+`previous_instance`, so the installer mints a new password into the file). A
+rebuild's paste is the third: the file is written before restic reads it, so a
+well-formed file whose password does not open this repository leaves the
+password in place, `wrong_password` in the restore state and the backup timer
+stopped (`docs/runbooks/backup.md` §2.2) — the timer is enabled, so the next
+boot runs the unit against the same wrong file. Measured on the demo,
+2026-11-15, on the sealed rebuild path ODL-937 retired (the rebuilt machine
+minted its own password): the machine's recovery file
+(`2026-11-13T10:29:12Z`) did not open the repository created
+`2026-11-12T19:01Z`. The check reports the failure and
 the remedy — the `FAIL` line carries the error from `backup.json`, or, when the
 unit died before writing one, `systemctl show`'s state and the journal tail —
 and doing it keeps the bytes:
@@ -333,8 +342,10 @@ install -d -m 0700 -o odile-backup -g odile-backup \
 
 Then re-run the check's HQ half (a second `--tenant` run) and the fresh
 repository is backed up against the recovery file the machine actually holds.
-The root cause — a rebuild should seal the old password unless the user says
-otherwise — is ODL-215's provision path, not this check.
+The root cause is a file and a repository that were not written together; a
+rebuild keeps them together with the first-visit paste
+(`docs/runbooks/backup.md` §2.2), which replaced ODL-215's sealed path, and
+this check only reports the mismatch.
 
 A machine that is already converged prints `same` for both keys and skips the
 backup inside twelve hours.  `--local` (serial console, root on the machine)

@@ -427,13 +427,17 @@ pre-order cannot be terminated — it is final. `destroy` moves the state row to
 `destroyed` and deletes the A record; it does **not** replace the tenant, so the
 web row keeps naming the last machine until the rebuild. Re-provisioning is the
 **same slug** and a new order (ADR-007): `odilectl provision <slug> --key
-<user.pub> --pin odile-verify.pin [--backup-password-file
-<the user's old odile-recovery-<slug>.txt>] --apply` reopens the row
+<user.pub> --pin odile-verify.pin --apply` reopens the row
 (`destroyed -> claimed`), orders the machine, points the web row at its
 `server_id` and moves the state row to `first_boot`, so the new machine's first
-boot records itself. The URL, the recovery file's name and the
-`tenants/<slug>` repository keep their names; the address does not survive —
-re-create the A record for the same slug (`docs/runbooks/offboard.md` §5).
+boot records itself. No password travels with the command: the reopen records
+the dead machine's id in the seed's `backup.previous_instance`, and that marker
+is what makes the rebuilt machine's first visit the recovery-file paste
+(`docs/runbooks/backup.md` §2.2) — the action
+`docs/runbooks/offboard.md` §5 puts at step 4, after step 1's order. The URL,
+the recovery file's name and the `tenants/<slug>` repository keep their names;
+the address does not survive — re-create the A record for the same slug
+(`docs/runbooks/offboard.md` §5).
 `claim._advance_state_provisioned` (`claim.py`) already took the same
 `provisioning -> first_boot` step after an order; this path now does too.
 
