@@ -16,7 +16,14 @@ shutdown watchdog at 360 s. The fix is entirely in the three files ADR-008 §6 a
   policy, spawned or still spawning), writes that hand-off, and only then sends the turn's Stop;
 * `run_shutdown._drain_work_counts` subtracts those attempts, so the drain waits for cron/API work
   and not for a card run it has already handed back (``_hand_off_kanban_turns`` gives a turn that
-  is just finishing a five-second grace first).
+  is just finishing a five-second grace first);
+* `run_shutdown._settle_cron_before_the_hard_drain` holds the reversible external drain for the
+  whole hand-out window (``_external_drain_hold``): the supervised ``_drain_control_watcher`` polls
+  ``.drain_request.json`` every second, finds no marker (a shutdown writes none) and calls
+  ``_exit_external_drain``, which must not release the flag until ``_stop_begin_teardown`` starts
+  the hard drain. Without the hold the window re-opened every new-work gate ~1 s in (drill-2:
+  ENGAGED 05:07:13.708, RELEASED 05:07:14.375) for the remaining 64.4 s, and work started there
+  was cut at the hard drain — the ``interrupted`` outcome this card removes.
 
 The ledger half needs no edit: the clean-exit funnel (`gateway/run.py::_exit_after_graceful_shutdown`
 → `_mark_exited`, and the watchdogs) already stamps `phase=exited`.
@@ -258,6 +265,67 @@ elif MODE == "cron":
     out["idle"] = asyncio.run(
         GatewayShutdownMixin._settle_cron_before_the_hard_drain(idle, 300.0, 360.0))
     out["idle_drain"] = idle._external_drain_active
+elif MODE == "watcher":
+    # The real supervised watcher, polling during the hand-out window with no drain marker on
+    # disk (the shutdown's own case). Without a hold the watcher's 1 s tick calls
+    # ``_exit_external_drain`` and re-opens every new-work gate for the rest of the window.
+    import gateway.drain_control as drain_control
+
+    class WatchRunner(Runner):
+        _external_drain_active = False
+        _draining = False
+        _external_drain_hold = False
+        _running = True
+        HARD_STOP_RESERVE_S = GatewayShutdownMixin.HARD_STOP_RESERVE_S
+
+        def __init__(self):
+            super().__init__(Authority())
+            self.cron_until = time.monotonic() + 0.6
+            self.statuses = []
+
+        def _active_cron_job_count(self):
+            return 1 if time.monotonic() < self.cron_until else 0
+
+        _active_work_count = lambda self: 0
+        _persist_active_agents = lambda self: None
+        _serving_state = lambda self: "running"
+
+        def _update_runtime_status(self, state, *_a, **_k):
+            self.statuses.append(state)
+
+    for _name in ("_enter_external_drain", "_exit_external_drain", "_drain_control_watcher"):
+        setattr(WatchRunner, _name, getattr(GatewayShutdownMixin, _name))
+
+    ticks = {"n": 0}
+
+    def _no_marker():
+        ticks["n"] += 1
+        return False
+
+    drain_control.drain_requested = _no_marker
+    runner = WatchRunner()
+
+    async def _drive():
+        task = asyncio.create_task(runner._drain_control_watcher(interval=0.05))
+        await asyncio.sleep(0.02)   # one watcher tick before the window opens
+        budget, spent = await GatewayShutdownMixin._settle_cron_before_the_hard_drain(
+            runner, 300.0, 360.0)
+        during = {"engaged": runner._external_drain_active, "draining": runner._draining,
+                  "statuses": list(runner.statuses)}
+        await asyncio.sleep(0.2)    # several watcher ticks after the window closed
+        after = {"engaged": runner._external_drain_active, "statuses": list(runner.statuses)}
+        runner._running = False
+        await asyncio.sleep(0.1)
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+        return budget, spent, during, after
+
+    budget, spent, during, after = asyncio.run(_drive())
+    out = {"budget": budget, "spent": spent, "ticks": ticks["n"],
+           "during": during, "after": after}
 print(json.dumps(out))
 '''
 
@@ -341,6 +409,23 @@ class DrainHandoffTests(unittest.TestCase):
         self.assertGreaterEqual(out["budget"], 1.0)
         self.assertEqual([300.0, 0.0], out["idle"], "an idle gateway paid the window")
         self.assertFalse(out["idle_drain"])
+
+    def test_the_watcher_cannot_release_the_hand_out_drain(self) -> None:
+        # The supervised watcher polls ``.drain_request.json`` every second. A shutdown's window
+        # has no marker, so an unguarded exit tick flipped the flag off ~1 s in (drill-2 measured
+        # ENGAGED 05:07:13.708 then RELEASED 05:07:14.375) and every new-work gate re-opened for
+        # the remaining 64.4 s: a due cron job started inside the window and was cut at the hard
+        # drain — the ``interrupted`` outcome this card removes. This drives the real watcher.
+        out = self.drive("watcher")
+        self.assertGreaterEqual(out["ticks"], 3, "the real drain watcher never ticked in the window")
+        self.assertTrue(out["during"]["engaged"], "the window did not refuse new platform work")
+        self.assertFalse(out["during"]["draining"], "the hold must carry the gate, not the hard drain")
+        self.assertTrue(out["after"]["engaged"], "a watcher tick released the drain inside the window")
+        self.assertEqual(
+            ["draining"], sorted(set(out["after"]["statuses"])),
+            "a watcher tick published a serving state while the window was still open")
+        self.assertEqual("draining", out["after"]["statuses"][-1])
+        self.assertGreater(out["spent"], 0.2, "the window did not wait for the cron run")
 
 
 if __name__ == "__main__":

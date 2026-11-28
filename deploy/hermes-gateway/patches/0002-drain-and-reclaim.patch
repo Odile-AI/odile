@@ -1,8 +1,49 @@
 diff --git a/gateway/run_shutdown.py b/gateway/run_shutdown.py
-index 011b857ebf..a4835918fe 100644
+index 011b857ebf..716cb4518d 100644
 --- a/gateway/run_shutdown.py
 +++ b/gateway/run_shutdown.py
-@@ -818,14 +818,91 @@ class GatewayShutdownMixin(GatewaySessionEndMixin, GatewayHomeShutdownNoticeMixi
+@@ -720,14 +720,19 @@ class GatewayShutdownMixin(GatewaySessionEndMixin, GatewayHomeShutdownNoticeMixi
+ 
+     # External drain control: the dashboard writes/removes ``.drain_request.json`` (gateway/drain_control.py);
+     # the watcher flips between accepting and refusing NEW turns WITHOUT exiting (reversible).
+-    def _enter_external_drain(self) -> None:
+-        """Begin external drain: refuse NEW turns (in-flight ones are NOT interrupted). Idempotent."""
++    def _enter_external_drain(self, *, source: str = ".drain_request.json present") -> None:
++        """Begin external drain: refuse NEW turns (in-flight ones are NOT interrupted). Idempotent.
++
++        ``source`` is what the operator's line names: the dashboard's marker, or the shutdown's own
++        hand-out window (``_settle_cron_before_the_hard_drain``), which engages the flag directly and
++        writes no marker file.
++        """
+         if self._external_drain_active:
+             return
+         self._external_drain_active = True
+         logger.info(
+-            "External drain ENGAGED (.drain_request.json present) — refusing "
+-            "new turns; %d in-flight turn(s) will finish. Process stays up.", self._active_work_count(),
++            "External drain ENGAGED (%s) — refusing new turns; "
++            "%d in-flight turn(s) will finish. Process stays up.", source, self._active_work_count(),
+         )
+         # Persist "draining" so /api/status tracks it; active_agents is read-merged, only state changes.
+         self._update_runtime_status("draining")
+@@ -736,6 +741,16 @@ class GatewayShutdownMixin(GatewaySessionEndMixin, GatewayHomeShutdownNoticeMixi
+         """Cancel external drain: re-accept new turns. Idempotent; never resurrects a stopping gateway."""
+         if not self._external_drain_active:
+             return
++        if getattr(self, "_external_drain_hold", False):
++            # A shutdown hand-out window owns the flag: the 1 s watcher then finds no marker (the
++            # shutdown wrote none) and would otherwise clear it ~1 s in, re-opening every new-work
++            # gate — cron ``can_dispatch``, platform inbound, slash commands, ``/v1`` fires — for the
++            # rest of the window, whose new work the hard drain then cuts. The hard drain
++            # (``_stop_begin_teardown``) clears the hold and takes over.
++            logger.debug(
++                "External drain still held by the shutdown hand-out window — not releasing."
++            )
++            return
+         self._external_drain_active = False
+         if self._draining or not self._running:
+             logger.info(
+@@ -818,14 +833,96 @@ class GatewayShutdownMixin(GatewaySessionEndMixin, GatewayHomeShutdownNoticeMixi
          return True
  
      # Drain / interrupt
@@ -74,7 +115,12 @@ index 011b857ebf..a4835918fe 100644
 +        """
 +        if not (self._active_cron_job_count() or self._active_api_run_count()):
 +            return timeout, 0.0
-+        self._enter_external_drain()
++        # The hold is what keeps this window engaged: the supervised drain watcher polls every second,
++        # finds no marker (this shutdown wrote none) and calls ``_exit_external_drain``, which must not
++        # release the flag until the hard drain takes over (``_stop_begin_teardown`` clears the hold).
++        self._external_drain_hold = True
++        self._enter_external_drain(
++            source="shutdown hand-out window: serving in-flight cron/api_server work")
 +        self._update_runtime_status("draining")
 +        loop = asyncio.get_running_loop()
 +        budget = min(timeout, max(0.0, leash - self.HARD_STOP_RESERVE_S))
@@ -96,7 +142,18 @@ index 011b857ebf..a4835918fe 100644
      async def _drain_active_agents(
          self, timeout: float, cron_timeout: Optional[float] = None
      ) -> tuple[dict[str, Any], bool]:
-@@ -1765,6 +1842,9 @@ class GatewayShutdownMixin(GatewaySessionEndMixin, GatewayHomeShutdownNoticeMixi
+@@ -1731,6 +1828,10 @@ class GatewayShutdownMixin(GatewaySessionEndMixin, GatewayHomeShutdownNoticeMixi
+         self._running = False
+         self._clear_plugin_message_injector()
+         self._draining = True
++        # The hard drain owns admission from here (``_draining`` gates every new-work path); the
++        # hand-out window's hold has done its job, and a closed hold is what lets
++        # ``_exit_external_drain`` fall back to its "shutdown takes precedence" branch.
++        self._external_drain_hold = False
+         from gateway.run_runtime import drain_gateway_runtime
+         await drain_gateway_runtime(self)
+         self._mark_api_runs_shutdown_requested()
+@@ -1765,6 +1866,9 @@ class GatewayShutdownMixin(GatewaySessionEndMixin, GatewayHomeShutdownNoticeMixi
          _pre_drain_keys = await GatewayRunner._mark_running_sessions_resume_pending(
              self, "pre-drain mark_resume_pending"
          )
@@ -106,7 +163,7 @@ index 011b857ebf..a4835918fe 100644
          _cron_at_start = self._active_cron_job_count()
          _api_at_start = self._active_api_run_count()
          _deferred_at_start = ctx.deferred_count()
-@@ -2109,15 +2189,23 @@ class GatewayShutdownMixin(GatewaySessionEndMixin, GatewayHomeShutdownNoticeMixi
+@@ -2109,15 +2213,23 @@ class GatewayShutdownMixin(GatewaySessionEndMixin, GatewayHomeShutdownNoticeMixi
                  snapshot_fn=lambda: GatewayRunner._shutdown_watchdog_snapshot(self, ctx), exit_code=1,
              )
          try:
