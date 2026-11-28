@@ -181,6 +181,31 @@ class TempStoreMixin(unittest.TestCase):
         self.store.start_first_visit(slug)
         return self.store.ready(slug)
 
+    def first_visit_tenant(
+        self,
+        slug: str = "odl-7f3a2c",
+        *,
+        ipv4: str = "203.0.113.120",
+        owner: str = "ada@example.com",
+        at: int = NOW,
+    ) -> state.Tenant:
+        """Walk one tenant to `first_visit` — provisioned, and never ready."""
+        self.clock.now = at
+        self.store.invite(slug, detail={"owner_email": owner})
+        self.store.claim(slug)
+        self.store.provision(
+            slug,
+            server_id=f"srv-{slug[-6:]}",
+            hostname=slug,
+            ipv4=ipv4,
+            plan_id=113,
+            release=None,
+            expires_at=at + 30 * DAY,
+            initramfs_host_key=TEST_HOST_FP,
+        )
+        self.store.await_boot(slug)
+        return self.store.start_first_visit(slug)
+
     def beat(
         self,
         slug: str = "odl-7f3a2c",
@@ -1078,6 +1103,140 @@ class HealthCheckTest(TempStoreMixin):
         self.assertIn(
             "port 22 did not answer", [a.symptom for a in result.planned if a.kind == "down"][0]
         )
+
+    def test_a_first_visit_machine_that_answers_nothing_is_down_without_a_heartbeat(
+        self,
+    ) -> None:
+        """A machine that dies between provision and first visit is not silent.
+
+        It has never sent a signed heartbeat, so there is no age to compare;
+        the two public surfaces answer nothing (no HTTP answer on `/health`,
+        no host key on port 22).  That is `down`: one ledger row, kept open
+        across polls, resolved when a surface answers again — no signed
+        heartbeat required for the resolution either.
+        """
+        self.first_visit_tenant(at=NOW - 40 * 3600)
+        silent_http = lambda slug: health.HttpObservation(None, "connection refused")  # noqa: E731
+        silent_port = lambda host: observation(reachable=False)  # noqa: E731
+
+        first = self.run_check(NOW + 600, probe=silent_port, http_probe=silent_http)
+        self.assertEqual(len(first.tenants), 1, "first_visit is polled")
+        tenant = first.tenants[0]
+        self.assertEqual(tenant.state, "first_visit")
+        self.assertIsNone(tenant.heartbeat_age_seconds)
+        self.assertEqual(tenant.classification, "down")
+        self.assertEqual(
+            [a.kind for a in first.planned], ["down"],
+            "one condition, one alert: no guessed backup for a never-beating machine",
+        )
+        down = [a for a in first.alerts if a.slug == "odl-7f3a2c" and a.kind == "down"]
+        self.assertEqual(len(down), 1)
+        self.assertIn("no signed heartbeat has ever arrived", down[0].symptom)
+        # The Morning brief cron is created by the onboarding skill after the
+        # sign-in, so a first-visit machine has no brief to miss yet.
+        self.assertIn("brief missed: no", down[0].symptom)
+
+        second = self.run_check(NOW + 900, probe=silent_port, http_probe=silent_http)
+        rows = [a for a in self.beats.alerts("odl-7f3a2c") if a.kind == "down"]
+        self.assertEqual(len(rows), 1, "one row per (slug, kind), not one per poll")
+        self.assertIsNone(rows[0].resolved_at)
+        self.assertEqual(len([a for a in second.alerts if a.slug == "odl-7f3a2c"]), 1)
+
+        answered = self.run_check(
+            NOW + 1200,
+            probe=silent_port,
+            http_probe=lambda slug: health.HttpObservation(200, '{"ok": true}'),
+        )
+        self.assertEqual(answered.tenants[0].classification, "ok")
+        self.assertIn(("odl-7f3a2c", "down"), answered.resolved)
+        self.assertEqual(answered.planned, (), "resolution raises no second alert")
+        rows = [a for a in self.beats.alerts("odl-7f3a2c") if a.kind == "down"]
+        self.assertEqual(len(rows), 1)
+        self.assertIsNotNone(rows[0].resolved_at)
+        self.assertEqual(self.store.get("odl-7f3a2c").state, "first_visit")
+
+    def test_a_first_visit_machine_answering_health_is_not_down(self) -> None:
+        """No heartbeat yet, but the machine serves `/health`: it is alive."""
+        self.first_visit_tenant()
+        result = self.run_check(
+            NOW + 600,
+            http_probe=lambda slug: health.HttpObservation(200, '{"ok": true}'),
+        )
+        self.assertEqual(result.tenants[0].classification, "ok")
+        self.assertEqual(result.planned, ())
+
+    def test_a_first_visit_machine_answering_health_after_the_brief_hour_plans_nothing(
+        self,
+    ) -> None:
+        """The 07:00 brief job does not exist before the first visit.
+
+        `installer/odile_install.py`'s onboarding skill creates it in the
+        tenant's chat after the sign-in moves the row `first_visit -> ready`.
+        A first-visit machine that has been up across a 07:00 has therefore
+        missed no brief: planning `brief_missing` here would page the owner
+        about a cron job nobody created yet.
+        """
+        self.first_visit_tenant(at=NOW - 40 * 3600)
+        result = self.run_check(
+            NOW + 600,
+            http_probe=lambda slug: health.HttpObservation(200, '{"ok": true}'),
+        )
+        tenant = result.tenants[0]
+        self.assertEqual(tenant.state, "first_visit")
+        self.assertFalse(tenant.brief_missed, "a first-visit tenant has no brief yet")
+        self.assertEqual(result.planned, ())
+        self.assertEqual(self.beats.alerts("odl-7f3a2c"), ())
+
+    def test_a_first_visit_machine_answering_only_port_22_after_the_brief_hour_plans_nothing(
+        self,
+    ) -> None:
+        """`--no-http` leaves port 22 as the one answer; the brief is still absent."""
+        self.first_visit_tenant(at=NOW - 40 * 3600)
+        result = self.run_check(NOW + 600, probe=lambda host: observation())
+        self.assertEqual(result.tenants[0].classification, "ok")
+        self.assertFalse(result.tenants[0].brief_missed)
+        self.assertEqual(result.planned, ())
+        self.assertEqual(self.beats.alerts("odl-7f3a2c"), ())
+
+    def test_a_first_visit_machine_with_port_22_answering_is_not_down(self) -> None:
+        """An unanswered `/health` is confirmed against port 22 before `down`."""
+        self.first_visit_tenant()
+        result = self.run_check(
+            NOW + 600,
+            probe=lambda host: observation(),
+            http_probe=lambda slug: health.HttpObservation(None),
+        )
+        self.assertEqual(result.tenants[0].classification, "ok")
+        self.assertEqual(result.planned, ())
+
+    def test_a_machine_still_booting_is_not_polled(self) -> None:
+        """`first_boot` may answer nothing while it boots; the poll starts after it."""
+        self.clock.now = NOW
+        self.store.invite("odl-7f3a2c")
+        self.store.claim("odl-7f3a2c")
+        self.store.provision(
+            "odl-7f3a2c", server_id="srv-7f3a2c", hostname="odl-7f3a2c",
+            ipv4="203.0.113.120", plan_id=113, expires_at=NOW + 30 * DAY,
+        )
+        self.store.await_boot("odl-7f3a2c")
+        self.assertEqual(self.store.get("odl-7f3a2c").state, "first_boot")
+        result = self.run_check(
+            NOW + 600,
+            probe=lambda host: observation(reachable=False),
+            http_probe=lambda slug: health.HttpObservation(None),
+        )
+        self.assertEqual(result.tenants, ())
+
+    def test_without_the_health_probe_port_22_is_the_only_surface(self) -> None:
+        """`--no-http` leaves the SSH port as the one answer consulted."""
+        self.first_visit_tenant()
+        silent = self.run_check(
+            NOW + 600, probe=lambda host: observation(reachable=False)
+        )
+        self.assertEqual(silent.tenants[0].classification, "down")
+        live = self.run_check(NOW + 900, probe=lambda host: observation())
+        self.assertEqual(live.tenants[0].classification, "ok")
+        self.assertIn(("odl-7f3a2c", "down"), live.resolved)
 
     def test_a_fresh_heartbeat_raises_nothing(self) -> None:
         self.active_tenant()

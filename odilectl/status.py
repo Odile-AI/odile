@@ -47,10 +47,21 @@ def add_arguments(parser: ArgumentParser) -> None:
     )
 
 
+def _power_label(machine: Machine) -> str:
+    """The provider's power fact as a word: `off` is not `active`."""
+    value = machine.detail.get("powered_on")
+    if value is True:
+        return "on"
+    if value is False:
+        return "off"
+    return "unknown"
+
+
 def _row(machine: Machine) -> str:
     return (
         f"  {machine.server_id:<10} {machine.hostname:<24} {machine.state:<10} "
-        f"{machine.ipv4 or '-':<16} {render_datetime(machine.expires_at)}"
+        f"{machine.ipv4 or '-':<16} {_power_label(machine):<7} "
+        f"{render_datetime(machine.expires_at)}"
     )
 
 
@@ -176,7 +187,10 @@ def run(ctx: Context, args) -> Report:
 
     lines = [header]
     if rows:
-        lines.append(f"  {'SERVER':<10} {'HOSTNAME':<24} {'STATE':<10} {'IPV4':<16} EXPIRES")
+        lines.append(
+            f"  {'SERVER':<10} {'HOSTNAME':<24} {'STATE':<10} {'IPV4':<16} "
+            f"{'POWER':<7} EXPIRES"
+        )
         for machine, report, backup, brief, _entry in rows:
             lines.append(_row(machine))
             lines.append(_release_line(report))
