@@ -9,6 +9,14 @@ are approved (the row lands as ODL-955, `t_62dd6f8a`), and the booking email is
 a notification only — no consent, no reject, no reply-to-decline; booking,
 change and cancel are in-app (`t_08885b98`). One thing is still Savio's: the
 windowed executor that drives the Servury API (§5.4) · 17 November 2026 · Architect
+**Revision 11** — 28 November 2026, every in-text pointer is re-resolved and
+§11 is re-run at `main`'s `5fb4c27`
+(`5fb4c2719c262f26b3c16019465db84c966ff380`): ODL-965 moved `app.py` by 245/38
+after Revision 10's cut at `c588bce`, so `app.py`'s readings and the pointers
+that cite it no longer resolved at the head this ADR lands on. The six `app.py`
+line numbers are re-resolved and §11's block is re-run with its real output
+pasted at this head; every other line pointer and reading is unchanged because
+no other file they point into moved. No decision changes.
 **Revision 10** — 27 November 2026, every in-text pointer and §11 are re-cut at
 `main`'s `c588bce` (`c588bcec129a0d2c97ee1b6eba0640d03b729d8f`): ODL-933,
 ODL-937 and the merges after Revision 7 moved `installer/odile_install.py` by
@@ -188,8 +196,8 @@ Six sentences the product is built on, and what this change does to each:
 ## 2. What exists today, at this head
 
 The inventory in §3 is not a wish list; it is a reading of the tree at
-`main`'s `c588bce` (27 November 2026), the cut §11 is taken at, and every commit
-this revision adds after it changes this ADR and nothing else (§11). Nine facts
+`main`'s `5fb4c27` (28 November 2026), the cut §11 is taken at, and every commit
+this revision adds after `c588bce` changes this ADR and nothing else (§11). Nine facts
 shape it, and each is cited because a later card will change one of them.
 
 **2.1 The app layer already has a signed, transactional mover.**
@@ -1057,8 +1065,8 @@ and ignored by an older HQ (`_validated_facts`, §2.9); an unknown `origin` is
 refused, because it would select a write.
 
 **Why not the account site.** The alternative was an authenticated click at HQ —
-the user signs in at `/login` (`app.py:1888`, `:2116`) and presses Upgrade on
-`/account/<slug>` (`:1901`, `:2454`), and no new fact exists at all. Rejected on
+the user signs in at `/login` (`app.py:2081`, `:2309`) and presses Upgrade on
+`/account/<slug>` (`:2094`, `:2647`), and no new fact exists at all. Rejected on
 two counts: it is a hop out of the app the user is already in, and — decisive —
 **the machine is what has to quiesce**, so a booking made only at HQ needs a
 second exchange to reach the machine (a query at the window, or a push), while
@@ -1152,8 +1160,8 @@ day; the flow's own sentence is "minutes", and I6 is the property.
 **The progress page, and where it is served.** **By HQ, not by the machine**: the
 old machine goes down at the panel write and the new one boots empty, so a page
 on the machine dies in the middle of the flow. The account the user already has
-serves it — a block on `/account/<slug>` (`app.py:1901`), behind the session
-cookie (`:2454`) — and the booking email may repeat the same stages as a
+serves it — a block on `/account/<slug>` (`app.py:2094`), behind the session
+cookie (`:2647`) — and the booking email may repeat the same stages as a
 notification for a user who is not signed in, with one link back to the page; it
 carries no control. The block is shown for an **open** row and not for a
 `cancelled` one (ODL-953's row filter, §5.3's change/cancel): a cancel removes
@@ -1633,16 +1641,18 @@ re-cuts it.
 
 ## 11. Evidence
 
-Read and run at `main`'s `c588bce`
-(`c588bcec129a0d2c97ee1b6eba0640d03b729d8f`, 27 November 2026), the cut these
-readings and every pointer in §2–§8 are taken at. The revision's re-cut commit
+Read and run at `main`'s `5fb4c27`
+(`5fb4c2719c262f26b3c16019465db84c966ff380`, 28 November 2026), the cut these
+readings and every pointer in §2–§8 are taken at. Revision 10's re-cut commit
 is `e7e905e07668983b91a8e739c0b386d8787c4557`: the first command below names
-its whole diff — this ADR and nothing else — and the follow-up commit that
-carries this paragraph changes no other file either. `main` moved
+its whole diff — this ADR and nothing else. Revision 11 re-cut `app.py`'s
+readings and the pointers that cite it at this head, because ODL-965 moved
+`app.py` by 245/38 after `c588bce`; every other reading and pointer is
+unchanged, no other file they point into having moved. `main` moved
 **thirteen** of the files this section reads between Revision 7's cut at
 `592f352` and this one — `installer/odile_install.py` (2,096),
 `odilectl/health.py` (870), `installer/first_visit.py` (748),
-`seed/seed.py` (474), `scripts/backup.py` (381), `app.py` (±213),
+`seed/seed.py` (474), `scripts/backup.py` (381), `app.py` (±496),
 `deploy/image/odile-firstboot.py` (170),
 `deploy/image/odile-release-setup.sh` (93), `docs/runbooks/update.md` (84),
 `tools/servury_panel.py` (26), `scripts/heartbeat.py` (15),
@@ -1655,7 +1665,7 @@ commands are the shift and the check that nothing else on the list moved;
 ```sh
 $ git diff --name-only c588bcec129a0d2c97ee1b6eba0640d03b729d8f e7e905e07668983b91a8e739c0b386d8787c4557
 docs/architecture/ADR-upgrades-and-model.md
-$ git diff --stat 592f352 c588bce -- installer/odile_install.py \
+$ git diff --stat 592f352 5fb4c27 -- installer/odile_install.py \
     update/odile_update.py \
     app.py \
     scripts/manifest.py \
@@ -1669,7 +1679,7 @@ $ git diff --stat 592f352 c588bce -- installer/odile_install.py \
     scripts/backup.py \
     installer/first_visit.py \
     tools/servury_panel.py
- app.py                              |  213 ++--
+ app.py                              |  496 ++++++---
  deploy/image/odile-firstboot.py     |  170 +--
  deploy/image/odile-release-setup.sh |   93 +-
  docs/runbooks/update.md             |   84 ++
@@ -1681,8 +1691,8 @@ $ git diff --stat 592f352 c588bce -- installer/odile_install.py \
  scripts/heartbeat.py                |   15 +-
  seed/seed.py                        |  474 ++++----
  tools/servury_panel.py              |   26 +-
- 12 files changed, 4439 insertions(+), 743 deletions(-)
-$ git diff --name-only 592f352 c588bce -- installer/odile_install.py \
+ 12 files changed, 4684 insertions(+), 781 deletions(-)
+$ git diff --name-only 592f352 5fb4c27 -- installer/odile_install.py \
     update/odile_update.py \
     app.py \
     scripts/manifest.py \
@@ -1711,18 +1721,18 @@ tools/servury_panel.py
 ```
 
 Read-only: no file outside this ADR is touched. `main`'s first-parent history
-from `592f352` to `c588bce` is where the thirteen files moved; the other two
+from `592f352` to `5fb4c27` is where the thirteen files moved; the other two
 §11 reads did not.
 
 ```sh
-$ git rev-parse c588bce
-c588bcec129a0d2c97ee1b6eba0640d03b729d8f
+$ git rev-parse 5fb4c27
+5fb4c2719c262f26b3c16019465db84c966ff380
 $ sha256sum update/odile_update.py installer/odile_install.py app.py \
     scripts/manifest.py scripts/heartbeat.py scripts/backup.py \
     odilectl/health.py tools/servury_panel.py
 2c795cad3625c870051797881ae95576fab6537ab394586c475b48b8b5c97415  update/odile_update.py
 891eb7db1cdf1c6a900f286bf7c1c4181d008f4914b60648799c67a9502c0e76  installer/odile_install.py
-e5bebec807c1673071a4e8b13a35a2782aa9d9c08bd7c929d3331e1bccb5d462  app.py
+32183c85226c96d99f08aebe4cfd444e0476bb0f00b7fb206fe481466203ba5b  app.py
 7c0b045f8b602e43f1857d8b2813e55c1f82d88d7af717ab23734c8591cdc0a7  scripts/manifest.py
 51981cec8c7cff629ee7d5c6106c92ecf8ab0e8849b427d099f71e3c5d899cca  scripts/heartbeat.py
 98e663e8b76fc1948fe92ee1a0b72cbd7ef544df4246ace9415729bb11da533d  scripts/backup.py
@@ -1893,7 +1903,7 @@ $ sed -n '80,83p;142,144p' installer/first_visit.py
         --state /etc/odile/first-visit.json \
         --env-file /home/odile/.hermes/.env \
         --page /usr/local/lib/odile/first-visit.html
-$ sed -n '1888p;1901p;2116p;2481,2483p' app.py
+$ sed -n '2081p;2094p;2309p;2674,2676p' app.py
         if path in ("/login", "/signin"):
         if path.startswith("/account/"):
         if path in ("/login", "/signin"):
@@ -2026,4 +2036,4 @@ invariant this ADR turns on is also in a tracked file, verbatim:
 | the restore can name a snapshot | `scripts/backup.py:1233` (`restore <snapshot>`, default `latest`) |
 | `/etc/odile` survives a restore; the login reads the home's `.env` | `installer/first_visit.py:80`–`:85`, `:142`–`:144` (`--env-file`) |
 | the window's three writes are fenced, and the destructive one has two flags | `tools/servury_panel.py:1326`–`:1330` (`--reinstall`/`--recycle`), `:137` (`FORBIDDEN_PATH`), `:159`, `:162` (`REINSTALL_CONTROL`) |
-| the progress page sits behind the account session | `app.py:1901` (`/account/<slug>`), `:2116` (`/login`), `:2481`–`:2483` (a signed-out request is a `303` to `/login`) |
+| the progress page sits behind the account session | `app.py:2094` (`/account/<slug>`), `:2309` (`/login`), `:2674`–`:2676` (a signed-out request is a `303` to `/login`) |
