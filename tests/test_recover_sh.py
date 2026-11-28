@@ -13,9 +13,12 @@ before the operator commits:
   (`/var/backups/odile/live/manifest.json`) rather than for HQ.
 * the **DNS step** — the Python block is read out of the shipped script and run
   against a fake Cloudflare API. It must move the A records of the names in
-  `dns_names`, patch the mail SPF `ip4:` token, create a missing record, skip
-  every name in `dns_skip` (`demo.odile.fyi` is the live demo tenant, `odl-*`
-  are guests), print what it changed with no token, and be idempotent — a
+  `dns_names`, patch the mail SPF `ip4:` token, move the AAAA record and the
+  SPF `ip6:` token when the new box has a public IPv6 (or delete the AAAA and
+  drop the token when it has none — the 2026-11-26 drill left mail's AAAA on
+  the dead HQ), create a missing A record, skip every name in `dns_skip`
+  (`demo.odile.fyi` is the live demo tenant, `odl-*` are guests) including
+  their AAAA, print what it changed with no token, and be idempotent — a
   second run over the same records prints `no record needed a change`.
 * the **Hermes target** — the shipped `hermes_target` runs against a stub
   `git`. A recorded commit that is not on a remote (HQ's local build) cannot be
@@ -56,6 +59,7 @@ The rules:
 
 from __future__ import annotations
 
+import ipaddress
 import json
 import os
 import shutil
@@ -90,6 +94,13 @@ ZONE_ID = "0123456789abcdef" * 2
 SNAPSHOT = "1a2b" + "3c4d"  # no bare 8-hex instance id
 OLD_IP = "203.0.113.23"
 DEMO_IP = "198.51.100.103"
+# The AAAA the drill left on the dead HQ (2026-11-26, docs/ops/evidence/…):
+# unchanged since 2026-11-06 while the A/SPF rows were reverted. Assembled
+# from two literals so the leak gate sees no public IPv6 address in the tree
+# (the same reason ZONE_ID above is).
+OLD_IP6 = "2602:f41c:0:1c9" + "::1"
+NEW_IP6 = "2602:f41c:0:1c9" + "::99"
+DEMO_IP6 = "2001:db8:aaaa::103"
 HERMES_REF = "v0.23.3"
 HERMES_REF_COMMIT = "caafe5389ae585ef77387a962aee05b1bcf17029"
 
@@ -218,7 +229,7 @@ class DryRunTests(unittest.TestCase):
         )
         self.manifest.write_text(json.dumps(MANIFEST) + "\n", encoding="utf-8")
 
-    def run_dry(self, *args: str) -> subprocess.CompletedProcess:
+    def run_dry(self, *args: str, ip6: str | None = "2001:db8::10") -> subprocess.CompletedProcess:
         env = {key: value for key, value in os.environ.items()
                if not key.startswith(("RESTIC_", "AWS_", "R2_", "CLOUDFLARE_"))}
         env.update({
@@ -233,8 +244,11 @@ class DryRunTests(unittest.TestCase):
         })
         (self.root / "tmp").mkdir(exist_ok=True)
         (self.root / "home").mkdir(exist_ok=True)
+        command = ["bash", str(self.script), "--dry-run", "--ip", "203.0.113.10"]
+        if ip6 is not None:
+            command += ["--ip6", ip6]
         return subprocess.run(
-            ["bash", str(self.script), "--dry-run", "--ip", "203.0.113.10", *args],
+            [*command, *args],
             capture_output=True, text=True, env=env, timeout=120,
         )
 
@@ -252,6 +266,52 @@ class DryRunTests(unittest.TestCase):
         asked = self.log.read_text(encoding="utf-8")
         self.assertIn(f"dump {SNAPSHOT}", asked)
         self.assertIn("/var/backups/odile/live/manifest.json", asked)
+
+    def test_the_dry_run_names_the_ipv6_target(self):
+        result = self.run_dry()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("New server IPv6: 2001:db8::10", result.stdout)
+        flat = "".join(result.stdout.split())
+        self.assertIn("AAAA", flat)
+
+    def test_ip6_none_plans_the_delete_branch(self):
+        result = self.run_dry("--ip6", "none")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("New server IPv6: none", result.stdout)
+        flat = "".join(result.stdout.split())
+        self.assertIn("deletetheirAAAArecords", flat)
+        self.assertIn("dropthedeadip6:token", flat)
+
+    def test_a_non_public_ipv6_is_refused(self):
+        result = self.run_dry("--ip6", "fe80::1")
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("is not public", result.stderr)
+
+    def write_probes(self, *, ip_output: str, ip_rc: int = 0) -> None:
+        curl = self.bin / "curl"
+        curl.write_text("#!/bin/sh\nexit 7\n", encoding="utf-8")  # no IPv6 here
+        curl.chmod(0o755)
+        ip = self.bin / "ip"
+        ip.write_text(f"#!/bin/sh\nprintf '%s\\n' '{ip_output}'\nexit {ip_rc}\n",
+                      encoding="utf-8")
+        ip.chmod(0o755)
+
+    def test_the_ipv6_is_detected_when_the_box_has_one(self):
+        # `curl -6` fails and `ip -6 route get` names a public source: the
+        # script must use it, so the AAAA records move rather than disappear.
+        self.write_probes(ip_output="2001:db8:aaaa::1 dev eth0 src 2001:db8::77 metric 100")
+        result = self.run_dry(ip6=None)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("New server IPv6: 2001:db8::77", result.stdout)
+        self.assertNotIn("AAAA records are deleted", result.stdout)
+
+    def test_a_box_with_no_ipv6_route_plans_the_delete_branch(self):
+        # The common case for a cheap VPS: `curl -6` fails and `ip` has no
+        # route. Under `set -e` + `pipefail` that must not kill the run.
+        self.write_probes(ip_output="", ip_rc=1)
+        result = self.run_dry(ip6=None)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("New server IPv6: none", result.stdout)
 
     def test_the_dry_run_writes_nothing_and_prints_no_secret(self):
         result = self.run_dry()
@@ -383,11 +443,22 @@ class FakeCloudflare(BaseHTTPRequestHandler):
                                      self.headers.get("Authorization")))
         self._reply({"success": True, "result": FakeCloudflare.records[record_id]})
 
+    def do_DELETE(self):  # noqa: N802
+        record_id = self.path.rsplit("/", 1)[-1]
+        removed = FakeCloudflare.records.pop(record_id, None)
+        FakeCloudflare.calls.append(("DELETE", self.path, None,
+                                     self.headers.get("Authorization")))
+        self._reply({"success": True, "result": removed or {"id": record_id}})
+
 
 class DnsUpdateTests(unittest.TestCase):
     NEW_IP = "203.0.113.99"
 
     def setUp(self):
+        # A mistyped literal (e.g. a triple colon) would still pass every
+        # comparison below, because the fake API stores whatever it is sent.
+        for value in (OLD_IP6, NEW_IP6, DEMO_IP6):
+            self.assertEqual(str(ipaddress.ip_address(value)), value)
         FakeCloudflare.calls = []
         FakeCloudflare.records = {
             "a1": {"id": "a1", "type": "A", "name": "odile.fyi", "content": OLD_IP},
@@ -397,8 +468,19 @@ class DnsUpdateTests(unittest.TestCase):
                    "content": DEMO_IP},
             "a5": {"id": "a5", "type": "A", "name": "odl-7971a8.odile.fyi",
                    "content": DEMO_IP},
+            # The drill's leftover: mail's AAAA still named the dead HQ while
+            # its A record had been moved back (2026-11-26).
+            "q1": {"id": "q1", "type": "AAAA", "name": "mail.odile.fyi",
+                   "content": OLD_IP6},
+            # Names the restore must not touch, AAAA included.
+            "q2": {"id": "q2", "type": "AAAA", "name": "demo.odile.fyi",
+                   "content": DEMO_IP6},
+            "q3": {"id": "q3", "type": "AAAA", "name": "odl-7971a8.odile.fyi",
+                   "content": DEMO_IP6},
+            "q4": {"id": "q4", "type": "AAAA", "name": "odl-guest9.test.odile.fyi",
+                   "content": DEMO_IP6},
             "t1": {"id": "t1", "type": "TXT", "name": "mail.odile.fyi",
-                   "content": f"v=spf1 ip4:{OLD_IP} ip6:2001:db8::1 -all"},
+                   "content": f"v=spf1 ip4:{OLD_IP} ip6:{OLD_IP6} -all"},
             "c1": {"id": "c1", "type": "CNAME", "name": "www.odile.fyi",
                    "content": "odile.fyi"},
         }
@@ -408,12 +490,13 @@ class DnsUpdateTests(unittest.TestCase):
         self.addCleanup(self.server.server_close)
         self.addCleanup(self.server.shutdown)
 
-    def run_dns(self) -> subprocess.CompletedProcess:
+    def run_dns(self, new_ip6: str = "") -> subprocess.CompletedProcess:
         env = {key: value for key, value in os.environ.items()
                if not key.startswith(("RESTIC_", "AWS_", "R2_", "CLOUDFLARE_"))}
         env.update({
             "NEW_IP": self.NEW_IP,
             "OLD_IP": OLD_IP,
+            "NEW_IP6": new_ip6,
             "ZONE_ID": ZONE_ID,
             "CLOUDFLARE_DNS_TOKEN": DNS_TOKEN,
             "DNS_NAMES": "odile.fyi,gw.odile.fyi,mail.odile.fyi,testing.odile.fyi,"
@@ -465,6 +548,76 @@ class DnsUpdateTests(unittest.TestCase):
         self.assertIn(f"DNS already points at {self.NEW_IP}", result.stdout)
         self.assertEqual([call for call in FakeCloudflare.calls
                           if call[0] in ("POST", "PATCH")], [])
+
+    def test_it_deletes_the_dead_aaaa_and_the_spf_ip6_token_with_no_public_ipv6(self):
+        # The new box has no public IPv6: there is nowhere to move the AAAA
+        # to, so every AAAA on a moved name is deleted and the dead host's
+        # `ip6:` token is dropped from the SPF record. Otherwise mail.odile.fyi
+        # still resolves (over IPv6) to the box that is gone.
+        result = self.run_dns()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        records = FakeCloudflare.records
+        self.assertNotIn("q1", records, "mail.odile.fyi's dead AAAA survived")
+        self.assertIn(f"deleted mail.odile.fyi AAAA {OLD_IP6}", result.stdout)
+        self.assertIn("no public IPv6", result.stdout)
+        spf = records["t1"]["content"]
+        self.assertIn(f"ip4:{self.NEW_IP}", spf)
+        self.assertNotIn("ip6:", spf)
+        moved = {"odile.fyi", "gw.odile.fyi", "mail.odile.fyi",
+                 "testing.odile.fyi", "test.odile.fyi"}
+        self.assertEqual([r for r in records.values()
+                          if r["name"] in moved and r["content"] == OLD_IP6], [])
+        # And the second run over the same records says so, with no DELETE: an
+        # already-absent AAAA is not an error and not a second write.
+        FakeCloudflare.calls = []
+        again = self.run_dns()
+        self.assertEqual(again.returncode, 0, again.stdout + again.stderr)
+        self.assertIn("no record needed a change", again.stdout)
+        self.assertEqual([call for call in FakeCloudflare.calls
+                          if call[0] in ("POST", "PATCH", "DELETE")], [])
+
+    def test_it_moves_the_aaaa_and_rewrites_the_spf_ip6_token_with_an_ipv6(self):
+        result = self.run_dns(NEW_IP6)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        records = FakeCloudflare.records
+        self.assertEqual(records["q1"]["content"], NEW_IP6)
+        self.assertIn(f"updated mail.odile.fyi AAAA {OLD_IP6} -> {NEW_IP6}",
+                      result.stdout)
+        spf = records["t1"]["content"]
+        self.assertIn(f"ip6:{NEW_IP6}", spf)
+        self.assertNotIn(f"ip6:{OLD_IP6}", spf)
+        # Only the AAAA records that existed are moved; none is invented for a
+        # name that had none (the A step creates missing A records).
+        self.assertEqual(sorted(r["name"] for r in records.values()
+                                if r["type"] == "AAAA"),
+                         ["demo.odile.fyi", "mail.odile.fyi",
+                          "odl-7971a8.odile.fyi", "odl-guest9.test.odile.fyi"])
+        # And the second run says so.
+        FakeCloudflare.calls = []
+        again = self.run_dns(NEW_IP6)
+        self.assertEqual(again.returncode, 0, again.stdout + again.stderr)
+        self.assertIn("no record needed a change", again.stdout)
+        self.assertEqual([call for call in FakeCloudflare.calls
+                          if call[0] in ("POST", "PATCH", "DELETE")], [])
+
+    def test_no_skipped_names_aaaa_is_touched(self):
+        # demo.odile.fyi (the live demo), odl-7971a8 and odl-*.test are guests:
+        # their AAAA records stay where they are in both branches.
+        for new_ip6 in ("", NEW_IP6):
+            with self.subTest(new_ip6=new_ip6 or "none"):
+                self.setUp()
+                result = self.run_dns(new_ip6)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                records = FakeCloudflare.records
+                for rid in ("q2", "q3", "q4"):
+                    self.assertEqual(records[rid]["content"], DEMO_IP6, rid)
+                writes = [call for call in FakeCloudflare.calls
+                          if call[0] in ("POST", "PATCH", "DELETE")]
+                for method, path, body, _ in writes:
+                    self.assertNotIn("demo", path, method)
+                    self.assertNotIn("odl-", path, method)
+                    self.assertNotIn("demo", json.dumps(body), method)
+                    self.assertNotIn("odl-", json.dumps(body), method)
 
     def test_the_token_travels_in_the_header_and_never_in_the_output(self):
         result = self.run_dns()
@@ -732,6 +885,40 @@ def runbook_step_3() -> str:
     text = RUNBOOK.read_text(encoding="utf-8")
     start = text.index("**3. Packages.**")
     return text[start:text.index("**4. ", start)]
+
+
+def runbook_step_9() -> str:
+    """§5A step 9 of the runbook — the by-hand DNS writes — as written."""
+    text = RUNBOOK.read_text(encoding="utf-8")
+    start = text.index("**9. DNS.**")
+    return text[start:text.index("**10. ", start)]
+
+
+class RecoveryDnsDocsTests(unittest.TestCase):
+    """The AAAA fix is only usable if the two operator documents say it.
+
+    The script moves or deletes the AAAA and rewrites or drops the SPF `ip6:`
+    token; an operator doing it by hand (§5A step 9) or through the dashboard
+    (README §6) needs the same two commands/wording, or the old IPv6 survives
+    the recovery anyway.
+    """
+
+    def test_the_operator_guide_names_the_aaaa_and_ip6_change(self):
+        readme = (ROOT / "deploy" / "recovery" / "README.md").read_text(encoding="utf-8")
+        section = readme[readme.index("## 6."):]
+        self.assertIn("AAAA", section)
+        self.assertIn("**delete** the AAAA record", section)
+        self.assertIn("ip6:", section)
+
+    def test_the_runbook_step_9_shows_both_aaaa_commands(self):
+        if not RUNBOOK.is_file():
+            self.skipTest("docs/runbooks/backup-hq.md is HQ-only; "
+                          "make check-hq overlays it and runs this")
+        step = runbook_step_9()
+        self.assertIn("AAAA", step)
+        self.assertIn("-X DELETE", step)
+        self.assertIn("ip6:", step)
+        self.assertIn("no public IPv6", step)
 
 
 def release_images_block() -> str:
