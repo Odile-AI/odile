@@ -1132,6 +1132,9 @@ class HealthCheckTest(TempStoreMixin):
         down = [a for a in first.alerts if a.slug == "odl-7f3a2c" and a.kind == "down"]
         self.assertEqual(len(down), 1)
         self.assertIn("no signed heartbeat has ever arrived", down[0].symptom)
+        # The Morning brief cron is created by the onboarding skill after the
+        # sign-in, so a first-visit machine has no brief to miss yet.
+        self.assertIn("brief missed: no", down[0].symptom)
 
         second = self.run_check(NOW + 900, probe=silent_port, http_probe=silent_http)
         rows = [a for a in self.beats.alerts("odl-7f3a2c") if a.kind == "down"]
@@ -1146,6 +1149,7 @@ class HealthCheckTest(TempStoreMixin):
         )
         self.assertEqual(answered.tenants[0].classification, "ok")
         self.assertIn(("odl-7f3a2c", "down"), answered.resolved)
+        self.assertEqual(answered.planned, (), "resolution raises no second alert")
         rows = [a for a in self.beats.alerts("odl-7f3a2c") if a.kind == "down"]
         self.assertEqual(len(rows), 1)
         self.assertIsNotNone(rows[0].resolved_at)
@@ -1160,6 +1164,39 @@ class HealthCheckTest(TempStoreMixin):
         )
         self.assertEqual(result.tenants[0].classification, "ok")
         self.assertEqual(result.planned, ())
+
+    def test_a_first_visit_machine_answering_health_after_the_brief_hour_plans_nothing(
+        self,
+    ) -> None:
+        """The 07:00 brief job does not exist before the first visit.
+
+        `installer/odile_install.py`'s onboarding skill creates it in the
+        tenant's chat after the sign-in moves the row `first_visit -> ready`.
+        A first-visit machine that has been up across a 07:00 has therefore
+        missed no brief: planning `brief_missing` here would page the owner
+        about a cron job nobody created yet.
+        """
+        self.first_visit_tenant(at=NOW - 40 * 3600)
+        result = self.run_check(
+            NOW + 600,
+            http_probe=lambda slug: health.HttpObservation(200, '{"ok": true}'),
+        )
+        tenant = result.tenants[0]
+        self.assertEqual(tenant.state, "first_visit")
+        self.assertFalse(tenant.brief_missed, "a first-visit tenant has no brief yet")
+        self.assertEqual(result.planned, ())
+        self.assertEqual(self.beats.alerts("odl-7f3a2c"), ())
+
+    def test_a_first_visit_machine_answering_only_port_22_after_the_brief_hour_plans_nothing(
+        self,
+    ) -> None:
+        """`--no-http` leaves port 22 as the one answer; the brief is still absent."""
+        self.first_visit_tenant(at=NOW - 40 * 3600)
+        result = self.run_check(NOW + 600, probe=lambda host: observation())
+        self.assertEqual(result.tenants[0].classification, "ok")
+        self.assertFalse(result.tenants[0].brief_missed)
+        self.assertEqual(result.planned, ())
+        self.assertEqual(self.beats.alerts("odl-7f3a2c"), ())
 
     def test_a_first_visit_machine_with_port_22_answering_is_not_down(self) -> None:
         """An unanswered `/health` is confirmed against port 22 before `down`."""

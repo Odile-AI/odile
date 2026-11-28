@@ -51,7 +51,7 @@ replayed.
 | Alert | Fires when | Symptom the alert carries | First command |
 |---|---|---|---|
 | `down` | heartbeat age ≥ 600 s; or no signed heartbeat ever and neither `/health` nor port 22 answers (polled from `first_visit` on) | "heartbeat stopped 10m 0s ago; port 22 answers host key SHA256:… / port 22 did not answer (…); brief missed: yes\|no" — or, for a never-beating machine, "no signed heartbeat has ever arrived; /health did not answer (…); port 22 did not answer (…); brief missed: yes\|no" | `python3 -m odilectl status <slug> --json` |
-| `brief_missing` | the 07:00 brief is overdue while heartbeats are live | "the 07:00 brief did not arrive; heartbeats are live" | `ssh -i ~/.ssh/odile … 'hermes cron list'` |
+| `brief_missing` | the 07:00 brief is overdue while heartbeats are live, in `ready` / `waiting_for_owner` only — the brief job does not exist before the first visit | "the 07:00 brief did not arrive; heartbeats are live" | `ssh -i ~/.ssh/odile … 'hermes cron list'` |
 | `disk` | latest heartbeat reports disk > 80% | "disk 91.0% used (threshold 80%)" | `ssh -i ~/.ssh/odile … 'df -h /'` |
 | `spend` | a heartbeat reports `facts.spend` above 80% of the `cap_usd` it names | "spend $95.00 of $100.00 cap (95.0%)" | `ssh -i ~/.ssh/odile … 'journalctl -u odile-agent -n 50 --no-pager'` |
 | `backup` | last successful backup > 36 h ago | "last backup 1d 16h ago (threshold 1d 12h)" | `ssh -i ~/.ssh/odile … 'cat /var/lib/odile/backup.json'` |
@@ -86,7 +86,11 @@ age to compare, the poll is `down` only when `/health` *and* port 22 both answer
 nothing — one answer means the machine is alive and the beat is merely not
 written yet. A missed 07:00 brief is folded into the `down` symptom when the
 heartbeat is stopped, and it is its own `brief_missing` alert only while
-heartbeats are live.
+heartbeats are live — and only in `ready` / `waiting_for_owner`: the onboarding
+skill creates the `Morning brief` cron job in the tenant's chat after the
+sign-in moves the row out of `first_visit`, so a first-visit machine that
+crossed a 07:00 has missed nothing. A `brief_missing` row left on a
+`first_visit` row (the pre-fix defect) is resolved by the next poll.
 
 ## 3. The unlock email is retired
 

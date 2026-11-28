@@ -2565,6 +2565,16 @@ def _needs_delivery(record: AlertRecord) -> bool:
 # merely not written yet.
 POLLED_STATES = ("first_visit", "ready", "waiting_for_owner")
 
+# The Morning brief exists only after the first visit: the onboarding skill
+# creates the `Morning brief` cron job in the tenant's chat, after the sign-in
+# moves the row `first_visit -> ready`.  The brief deadline and its alert are
+# therefore computed only in these states.  A first-visit machine that crossed
+# a 07:00 has missed nothing — alerting `brief_missing` there pages the owner
+# about a job nobody created yet — so a `down` first-visit symptom says
+# `brief missed: no` truthfully.  A stale `brief_missing` row is still
+# resolved by the poll.
+BRIEF_STATES = ("ready", "waiting_for_owner")
+
 
 def check(
     store: StateStore,
@@ -2633,7 +2643,11 @@ def check(
             last = beat.at
         age = moment - last if last is not None else None
         activated = _activated_at(store, tenant)
-        due = _brief_due_at(moment, activated)
+        due = (
+            _brief_due_at(moment, activated)
+            if tenant.state in BRIEF_STATES
+            else None
+        )
         last_brief = facts.get("last_brief_at")
         if not isinstance(last_brief, int) or isinstance(last_brief, bool):
             last_brief = tenant.detail.get("last_brief_at")
