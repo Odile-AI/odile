@@ -1204,7 +1204,7 @@ does not survive the BX11 re-cut — at this head a rebuild is the seed's
 `backup.previous_instance`, which the installer writes into the first-visit
 state's `restore` block (`installer/first_visit.py:463`, `is_rebuild`), and the
 old repository's password arrives in the recovery file the user pastes
-(`deploy/image/recovery-seed.py:115`, `rebuild_waiting_for_paste`).
+(`deploy/image/recovery-seed.py`, `rebuild_waiting_for_paste`).
 **`backup_snapshot`** is
 the T-0 id, armed by the same step after the gate.
 
