@@ -139,7 +139,8 @@ class KeyboardContractTests(unittest.TestCase):
         # refusal), one visible per render; the admin's page names the one
         # action and the account table as two regions, in that order — the
         # action leads so it is above the fold (Brand gate round 1, must 4).
-        "admin.html": (2, ["repoint", "accounts"], 1),
+        # ODL-965 adds the log as the third region, after the accounts.
+        "admin.html": (2, ["repoint", "accounts", "log"], 1),
         "ceremony.html": (1, ["visit", "machine", "support"], 1),
         "claim.html": (3, ["who", "next", "next"], 1),
         # ODL-578: the reset page is register.html's multi-state shape — the

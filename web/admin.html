@@ -8,7 +8,7 @@
 <link rel="icon" type="image/png" sizes="32x32" href="/icon-32.png">
 <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png">
 <title>{{TITLE}}</title>
-<meta name="description" content="The Odile console: re-point an account's address.">
+<meta name="description" content="The Odile console: re-point an account's address and read the log.">
 <meta name="color-scheme" content="light">
 <meta name="robots" content="noindex">
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; img-src 'self' data:; font-src data:; form-action 'self'; base-uri 'none'; frame-ancestors 'none'">
@@ -88,6 +88,36 @@ table.accounts tr:last-child td{border-bottom:0}
   table.accounts td:nth-child(2)::before{content:"Machine · ";color:var(--soft)}
   table.accounts td:nth-child(3)::before{content:"Address confirmed · ";color:var(--soft)}
 }
+/* The log is the record, so it is dense and quiet: the time in tabular
+   figures, the four columns aligned with the accounts table above. The
+   layout is fixed and every column has its declared width, because an auto
+   layout lets two legal addresses (254 characters each) claim the row and
+   squeeze the Time column until `overflow-wrap:anywhere` breaks the
+   timestamp inside its own token; the time is a short machine value and
+   never wraps mid-token (BRAND.md §Typography, the numbers bullet). Only the
+   address cells break inside a token. On a narrow screen each line becomes
+   a block with its own labels, like the accounts table (BRAND.md §Spacing
+   Overflow). */
+table.log{width:100%;min-width:560px;border-collapse:collapse;margin:6px 0 0;font-size:16px;line-height:1.5;table-layout:fixed}
+table.log th:nth-child(1){width:24%}
+table.log th:nth-child(2){width:27%}
+table.log th:nth-child(3){width:13%}
+table.log th:nth-child(4){width:36%}
+table.log th{text-align:left;font-weight:600;font-size:.76rem;letter-spacing:.05em;text-transform:uppercase;color:var(--soft);padding:0 14px 7px 0;border-bottom:1px solid var(--line);vertical-align:bottom}
+table.log td{vertical-align:top;padding:9px 14px 9px 0;border-bottom:1px solid var(--line-soft);overflow-wrap:anywhere;font-variant-numeric:tabular-nums}
+table.log td:first-child{overflow-wrap:normal}
+table.log tr:last-child td{border-bottom:0}
+@media (max-width:560px){
+  table.log{min-width:0}
+  table.log thead{position:absolute;left:-9999px}
+  table.log tr{display:block;padding:12px 0;border-bottom:1px solid var(--line-soft)}
+  table.log tr:last-child{border-bottom:0}
+  table.log td{display:block;padding:0 0 2px;border:0;width:auto}
+  table.log td:first-child{font-weight:600}
+  table.log td:nth-child(2)::before{content:"Actor · ";color:var(--soft);font-weight:400}
+  table.log td:nth-child(3)::before{content:"Action · ";color:var(--soft);font-weight:400}
+  table.log td:nth-child(4)::before{content:"Account · ";color:var(--soft);font-weight:400}
+}
 .ok{margin:0 0 12px;font-size:19.52px;line-height:1.4;font-style:italic;font-weight:400;overflow-wrap:anywhere}
 </style>
 </head>
@@ -125,6 +155,17 @@ table.accounts tr:last-child td{border-bottom:0}
       <table class="accounts">
         <thead><tr><th scope="col">Address</th><th scope="col">Machine</th><th scope="col">Address confirmed</th></tr></thead>
         <tbody>{{ACCOUNTS}}</tbody>
+      </table>
+    </div>
+  </section>
+
+  <section aria-labelledby="log">
+    <h2 id="log">Log</h2>
+    <p class="note">The last fifty console actions, newest first.</p>
+    <div class="scroll">
+      <table class="log">
+        <thead><tr><th scope="col">Time</th><th scope="col">Actor</th><th scope="col">Action</th><th scope="col">Account</th></tr></thead>
+        <tbody>{{ADMIN_LOG}}</tbody>
       </table>
     </div>
   </section>
