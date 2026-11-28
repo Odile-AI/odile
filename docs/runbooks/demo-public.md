@@ -827,8 +827,8 @@ documented wait); rename/delete/archive were re-measured.
 **The customer row after ODL-929's release cut (ODL-932, 2026-11-23).** The
 release page's customer row is the sibling grant row main landed at bd97247,
 `No one at Odile can log in unless you grant it.` — `templates/verify.html:111`,
-`installer/odile_install.py:6378`, `release/odile_install.py:6378` — and
-ODL-929's cut did not move it. The three demo programs name that sentence once
+the embedded `VERIFY_TEMPLATE` in `installer/odile_install.py` and its
+`release/` copy — and ODL-929's cut did not move it. The three demo programs name that sentence once
 (`CUSTOMER_SENTENCE`: `apply_demo_public.py:139`, `check_demo_public.py:87`,
 `deploy_demo_public.py:159`), and `tests/test_demo_public.py`'s
 `CustomerRowTests` pins the shipped page's tenant block to the same constant,
