@@ -2120,6 +2120,45 @@ class StatusDestroyTest(TempConfigMixin):
         self.assertEqual(code, 0, err)
         self.assertIn("backup:    no heartbeat yet", out)
 
+    def test_status_table_shows_the_power_state(self):
+        """The printed row says `off` when the provider says `powered_on: false`.
+
+        The drill's machine stayed `state: active` through a forcestop; the
+        power fact lived only in the JSON's `detail`.  A person reading the
+        table has to see it, so the row carries a POWER column.
+        """
+        config_path = self.make_config()
+        for powered_on, label in ((False, "off"), (True, "on")):
+            routes = {
+                ("GET", "servers"): [
+                    (200, servers_response(machine_row(powered_on=powered_on)))
+                ]
+            }
+            code, out, err = run_cli(
+                ["status", "odl-7f3a2c"],
+                config_path,
+                provider_factory=lambda _config: fixture_provider(routes),
+            )
+            self.assertEqual(code, 0, err)
+            self.assertIn("POWER", out)
+            rows = [line for line in out.splitlines() if SERVER_ID in line]
+            self.assertEqual(len(rows), 1, out)
+            self.assertRegex(
+                rows[0],
+                rf"\bactive\b\s+203\.0\.113\.120\s+{label}\b",
+            )
+
+        row = machine_row()
+        row.pop("powered_on")
+        routes = {("GET", "servers"): [(200, servers_response(row))]}
+        code, out, err = run_cli(
+            ["status", "odl-7f3a2c"],
+            config_path,
+            provider_factory=lambda _config: fixture_provider(routes),
+        )
+        self.assertEqual(code, 0, err)
+        self.assertRegex(out, r"\bactive\b\s+203\.0\.113\.120\s+unknown\b")
+
     def test_destroy_dry_run_only_reads(self):
         transport = RecordedTransport({("GET", "servers"): [(200, servers_response())]})
         code, out, err = run_cli(

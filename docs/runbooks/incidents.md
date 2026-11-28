@@ -332,9 +332,12 @@ copy, the allowance is the key's prepaid credit.
 ### 4.1 Machine down (unexpected)
 
 **Detect.** The `down` alert: "heartbeat stopped 10m 0s ago; port 22 answers
-host key … / port 22 did not answer; brief missed: yes|no" (`alerting.md` §2).
-The classification is heartbeat age alone, so a stale heartbeat with a live
-machine is this alert too — check the machine before believing the word "down".
+host key … / port 22 did not answer; brief missed: yes|no" (`alerting.md` §2),
+or — for a tenant that has never sent a signed heartbeat — "no signed heartbeat
+has ever arrived; /health did not answer; port 22 did not answer; …". The
+classification is heartbeat age, or (with no heartbeats at all) both public
+surfaces silent, so a stale heartbeat with a live machine is this alert too —
+check the machine before believing the word "down".
 
 **Blast radius.** One tenant. Chat, the morning brief and the nightly backup all
 stop; the disk is encrypted and untouched. A missed nightly backup is the loss
