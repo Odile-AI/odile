@@ -63,6 +63,20 @@ def load_backup():
 
 BACKUP = load_backup()
 
+# Three snapshots as `restic snapshots --json` prints them: full ids, the
+# short id restic computes, RFC3339 times out of order on purpose.
+SNAPSHOTS = [
+    {"id": "1111" + "a" * 60, "short_id": "1111aaaa",
+     "time": "2026-11-20T02:07:31.123456789Z", "hostname": "odl-fake01",
+     "paths": ["/home/tenant"]},
+    {"id": "2222" + "b" * 60, "short_id": "2222bbbb",
+     "time": "2026-11-25T02:09:02Z", "hostname": "odl-fake01",
+     "paths": ["/home/tenant"]},
+    {"id": "3333" + "c" * 60, "short_id": "3333cccc",
+     "time": "2026-11-27T02:10:59.5Z", "hostname": "odl-fake01",
+     "paths": ["/home/tenant", "/etc/odile"]},
+]
+
 FAKE_RESTIC = textwrap.dedent(
     '''#!/usr/bin/python3
 """A restic stand-in: records argv and the password file, keeps a tiny state."""
@@ -107,7 +121,9 @@ if command == "snapshots":
     if entry["password"] != PASSWORD:
         print("Fatal: wrong password", file=sys.stderr)
         sys.exit(1)
-    print("[]")
+    # A test hands over the array the real restic would print; the default is
+    # an empty repository, which is what `init` asks about.
+    print(os.environ.get("FAKE_SNAPSHOTS_JSON", "[]"))
     sys.exit(0)
 if command == "backup":
     if os.environ.get("FAKE_FAIL_BACKUP"):
@@ -139,6 +155,11 @@ if command == "forget":
     print("forget done (fake)")
     sys.exit(0)
 if command == "restore":
+    failure = os.environ.get("FAKE_FAIL_RESTORE_RC")
+    if failure:
+        print(os.environ.get("FAKE_FAIL_RESTORE_TEXT", "Fatal: unable to restore"),
+              file=sys.stderr)
+        sys.exit(int(failure))
     target = Path(rest[rest.index("--target") + 1])
     includes = [rest[i + 1] for i, part in enumerate(rest) if part == "--include"]
     for include in includes:
@@ -209,6 +230,15 @@ class BackupFixture(unittest.TestCase):
         with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
             code = BACKUP.main([str(part) for part in arguments])
         return code, out.getvalue(), err.getvalue()
+
+    def run_program(self, *arguments, **environment):
+        """The real process, the way the first-visit page runs it: exit status as seen."""
+        env = dict(os.environ)
+        env.update({key: str(value) for key, value in environment.items()})
+        return subprocess.run(
+            ["/usr/bin/python3", str(SCRIPT), *[str(part) for part in arguments]],
+            capture_output=True, text=True, env=env,
+        )
 
     def common(self, *extra):
         return [
@@ -439,6 +469,111 @@ class StatusTest(BackupFixture):
         for key in ("repo", "snapshot", "status", "bytes_processed", "repo_bytes",
                     "last_success_at", "host"):
             self.assertIn(key, record)
+
+
+class RestoreTest(BackupFixture):
+    """A wrong repository password is restic's exit 12, not the generic exit 1."""
+
+    def restore(self, **environment):
+        return self.run_program(
+            "restore", "latest", "--target", self.directory / "restore", *self.common(),
+            **environment,
+        )
+
+    def test_a_wrong_password_is_exit_12_with_no_traceback(self):
+        done = self.restore(
+            FAKE_FAIL_RESTORE_RC="12",
+            FAKE_FAIL_RESTORE_TEXT="Fatal: wrong password or no key found",
+        )
+        self.assertEqual(done.returncode, 12, done.stderr)
+        self.assertNotIn("Traceback", done.stderr)
+        self.assertNotIn("Traceback", done.stdout)
+        self.assertIn("wrong password", done.stderr)
+        self.assertIn("does not open the repository", done.stderr)
+
+    def test_the_wrong_password_sentence_alone_is_exit_12(self):
+        # A transport wrapper can lose restic's code; the sentence still decides.
+        done = self.restore(
+            FAKE_FAIL_RESTORE_RC="1",
+            FAKE_FAIL_RESTORE_TEXT="Fatal: wrong password or no key found",
+        )
+        self.assertEqual(done.returncode, 12, done.stderr)
+
+    def test_any_other_restic_failure_stays_exit_1_and_names_the_code(self):
+        done = self.restore(
+            FAKE_FAIL_RESTORE_RC="1",
+            FAKE_FAIL_RESTORE_TEXT="Fatal: unable to restore",
+        )
+        self.assertEqual(done.returncode, 1, done.stderr)
+        self.assertNotIn("Traceback", done.stderr)
+        self.assertIn("exit 1", done.stderr)
+        self.assertIn("unable to restore", done.stderr)
+
+
+class SnapshotInfoTest(BackupFixture):
+    """`snapshot-info` names the snapshot a restore would take, read-only."""
+
+    def setUp(self):
+        super().setUp()
+        # The fake repository exists, so `snapshots` answers the array below.
+        self.fake_state.write_text("init", encoding="utf-8")
+
+    def info(self, *arguments, snapshots=None):
+        payload = json.dumps(SNAPSHOTS if snapshots is None else snapshots)
+        with mock.patch.dict(os.environ, {"FAKE_SNAPSHOTS_JSON": payload}):
+            return self.call("snapshot-info", *arguments, *self.common())
+
+    def test_latest_is_the_newest_of_three_and_the_json_names_the_documented_keys(self):
+        code, out, err = self.info("latest", "--json")
+        self.assertEqual(code, 0, err)
+        record = json.loads(out)
+        self.assertEqual(set(record), {"id", "short_id", "time", "host", "paths"})
+        self.assertEqual(record["id"], SNAPSHOTS[2]["id"])
+        self.assertEqual(record["short_id"], "3333cccc")
+        self.assertEqual(record["time"], SNAPSHOTS[2]["time"])
+        self.assertEqual(record["host"], "odl-fake01")
+        self.assertEqual(record["paths"], SNAPSHOTS[2]["paths"])
+
+    def test_the_human_output_is_two_lines_naming_the_id_and_time(self):
+        code, out, err = self.info()
+        self.assertEqual(code, 0, err)
+        lines = out.strip().splitlines()
+        self.assertEqual(len(lines), 2, out)
+        self.assertIn(SNAPSHOTS[2]["id"], lines[0])
+        self.assertIn(SNAPSHOTS[2]["time"], lines[1])
+
+    def test_a_four_character_prefix_picks_that_snapshot_and_a_stranger_is_missing(self):
+        code, out, err = self.info("2222", "--json")
+        self.assertEqual(code, 0, err)
+        self.assertEqual(json.loads(out)["id"], SNAPSHOTS[1]["id"])
+        code, out, err = self.info("dead", "--json")
+        self.assertEqual(code, 3)
+        self.assertEqual(len(err.strip().splitlines()), 1, err)
+        self.assertIn("no snapshot matches", err)
+
+    def test_it_is_read_only_no_lock_in_the_restic_argv(self):
+        code, out, err = self.info("latest", "--json")
+        self.assertEqual(code, 0, err)
+        snapshots_calls = [call for call in self.calls() if call["argv"][0] == "snapshots"]
+        self.assertEqual(len(snapshots_calls), 1)
+        argv = snapshots_calls[0]["argv"]
+        self.assertIn("--json", argv)
+        self.assertIn("--no-lock", argv)
+        self.assertNotIn("--target", argv)
+
+    def test_no_snapshots_is_exit_3_with_one_line(self):
+        code, out, err = self.info(snapshots=[])
+        self.assertEqual(code, 3)
+        self.assertEqual(len(err.strip().splitlines()), 1, err)
+        self.assertIn("no snapshots", err)
+
+    def test_dry_run_prints_the_plan_and_runs_nothing(self):
+        payload = json.dumps(SNAPSHOTS)
+        with mock.patch.dict(os.environ, {"FAKE_SNAPSHOTS_JSON": payload}):
+            code, out, err = self.call("snapshot-info", *self.common("--dry-run"))
+        self.assertEqual(code, 0, err)
+        self.assertIn("snapshots --json --no-lock", out)
+        self.assertEqual(self.calls(), [])
 
 
 class InitTest(BackupFixture):
@@ -990,6 +1125,17 @@ class RealResticTest(unittest.TestCase):
         self.assertEqual(code, 0, err)
         restored = self.directory / "restore" / str(canary).lstrip("/")
         self.assertEqual(BACKUP.sha256_file(restored), before)
+
+        # The page names the snapshot the restore just took, from restic's own
+        # `snapshots --json`: the drill left the newest one, so `latest` is it.
+        code, out, err = self.call("snapshot-info", *self.common("latest", "--json"))
+        self.assertEqual(code, 0, err)
+        info = json.loads(out)
+        self.assertEqual(info["id"], drill["snapshot"])
+        self.assertEqual(info["short_id"], drill["snapshot"][:8])
+        self.assertEqual(info["host"], SLUG)
+        self.assertTrue(info["time"].endswith("Z"), info["time"])
+        self.assertEqual(len(info["id"]), 64)
 
     def test_a_wrong_password_does_not_open_the_repository(self):
         self.call("init", *self.common())

@@ -24,7 +24,6 @@ import contextlib
 import hashlib
 import importlib.util
 import io
-import json
 import os
 import subprocess
 import tempfile
@@ -284,9 +283,8 @@ class DeployerTests(unittest.TestCase):
         self.pub = root / "deploy/seed/seed-key.pub"
         self.cert = root / "deploy/seed/seed-key.crt"
         self.runtime_seed = root / "opt/odile/seed/seed.py"
-        self.rebuilds = root / "var/lib/odile/seed-rebuilds.json"
         for path in (self.unit.parent, self.caddyfile.parent, self.config.parent,
-                     self.release.parent, self.pub.parent, self.rebuilds.parent):
+                     self.release.parent, self.pub.parent):
             path.mkdir(parents=True, exist_ok=True)
         for path in (self.config,):
             path.write_text("{}\n", encoding="utf-8")
@@ -311,7 +309,7 @@ class DeployerTests(unittest.TestCase):
         self.recorder = Recorder()
         self.saved = {name: getattr(deploy, name) for name in (
             "UNIT_TARGET", "CADDYFILE", "CONFIG_FILE", "SEED_KEY_FILE", "SEED_PUB",
-            "SEED_CERT", "RELEASE_PUBKEY", "RUNTIME_SEED", "REBUILDS",
+            "SEED_CERT", "RELEASE_PUBKEY", "RUNTIME_SEED",
             "BACKUP_PAIRS", "run",
             "require_root", "PROBE_SECONDS")}
         deploy.UNIT_TARGET = self.unit
@@ -322,7 +320,6 @@ class DeployerTests(unittest.TestCase):
         deploy.SEED_CERT = self.cert
         deploy.RELEASE_PUBKEY = self.release_pub
         deploy.RUNTIME_SEED = self.runtime_seed
-        deploy.REBUILDS = self.rebuilds
         # ODL-924: the per-tenant pair file too, or the deploy reads the live
         # host's and a converged run prints its entry count.
         deploy.BACKUP_PAIRS = Path(self.tmp.name) / "seed-backup-pairs.json"
@@ -364,42 +361,6 @@ class DeployerTests(unittest.TestCase):
         backups = list(self.caddyfile.parent.glob("Caddyfile.bak-*"))
         self.assertEqual(len(backups), 1)
         self.assertEqual(backups[0].read_text(encoding="utf-8"), FRESH_BARE)
-
-    def test_a_plaintext_rebuild_password_stops_the_deploy(self) -> None:
-        self.rebuilds.write_text(json.dumps({"odl-bench": {
-            "kdf": "hmac-sha256-ctr-v1", "sealed": "00aa", "tag": "00" * 32,
-            "backup_password": "test-rebuild-password-2026-0001"}}), encoding="utf-8")
-        os.chmod(self.rebuilds, 0o600)
-        code, out, err = self.run_main("--dry-run")
-        self.assertEqual(code, 2, err)
-        self.assertIn("plaintext backup_password", err)
-        self.assertEqual(self.recorder.mutating(), [],
-                         "the rebuilds file is checked before anything is installed")
-
-    def test_a_sealed_rebuild_entry_is_counted_and_the_deploy_proceeds(self) -> None:
-        seed = load("odile_seed_for_deploy_test", ROOT / "seed" / "seed.py")
-        entry = seed.seal_backup_password("test-rebuild-password-2026-0001", "ab" * 32)
-        entry["token_hash"] = hashlib.sha256(("ab" * 32).encode()).hexdigest()
-        self.rebuilds.write_text(json.dumps({"odl-bench": entry}), encoding="utf-8")
-        os.chmod(self.rebuilds, 0o600)
-        # The service runs as `odile`; root writes the file, so the deploy must
-        # see it handed over (the chown an operator step would do).
-        import pwd
-        info = pwd.getpwnam("odile")
-        os.chown(self.rebuilds, info.pw_uid, info.pw_gid)
-        code, out, err = self.run_main("--dry-run")
-        self.assertEqual(code, 0, err)
-        self.assertIn("1 sealed entry", out)
-        self.assertNotIn("test-rebuild-password-2026-0001", out)
-
-    def test_a_root_owned_rebuilds_file_stops_the_deploy_with_the_chown(self) -> None:
-        seed = load("odile_seed_for_deploy_test", ROOT / "seed" / "seed.py")
-        entry = seed.seal_backup_password("test-rebuild-password-2026-0001", "ab" * 32)
-        self.rebuilds.write_text(json.dumps({"odl-bench": entry}), encoding="utf-8")
-        os.chmod(self.rebuilds, 0o600)
-        code, out, err = self.run_main("--dry-run")
-        self.assertEqual(code, 2, err)
-        self.assertIn("chown odile", err)
 
     def test_converged_host_changes_nothing(self) -> None:
         # The unit is installed and enabled, the route is spliced, the module

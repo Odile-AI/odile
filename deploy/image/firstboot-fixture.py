@@ -211,7 +211,6 @@ def fixture_pair(slug: str) -> dict:
 
 
 def prepare(directory: Path, instance: str, slug: str, key: str,
-            backup_password: str | None = None,
             token: str | None = None,
             release_key: str | None = None,
             previous_instance: str | None = None) -> dict:
@@ -322,20 +321,6 @@ def prepare(directory: Path, instance: str, slug: str, key: str,
     write_private(config_path,
                   (json.dumps(config, indent=2, sort_keys=True) + "\n").encode())
 
-    # A rebuild: seal the user's OLD repository password under the token this
-    # fixture just minted, exactly as `odilectl provision --backup-password-file`
-    # does in production. The rebuilds file holds the ciphertext; the guest
-    # opens it with the token from the measured command line.
-    rebuild = "none"
-    rebuild_file = directory / "seed-rebuilds.json"
-    if backup_password is not None:
-        entry = seed.seal_backup_password(backup_password, binding["token"])
-        entry["token_hash"] = binding["token_hash"]
-        entry["created_at"] = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-        write_private(rebuild_file,
-                      (json.dumps({slug: entry}, indent=2, sort_keys=True) + "\n").encode())
-        rebuild = "sealed"
-
     write_private(directory / "token", (binding["token"] + "\n").encode())
     write_private(directory / "instance", (instance + "\n").encode())
 
@@ -352,8 +337,8 @@ def prepare(directory: Path, instance: str, slug: str, key: str,
     return {
         "dir": str(directory), "db": str(db), "config": str(config_path),
         "key": key, "slug": slug, "instance": instance, "token": binding["token"],
-        "expires_at": binding["expires_at"], "rebuild": rebuild,
-        "rebuilds": str(rebuild_file), "backup_pairs": str(pair_file),
+        "expires_at": binding["expires_at"],
+        "backup_pairs": str(pair_file),
         "previous_instance": previous_instance or "",
         "certificate": str(directory / "seed-key.crt"),
         "seed_pubkey": str(directory / "seed-key.pub"),
@@ -393,7 +378,6 @@ def serve(directory: Path, port: int) -> int:
     os.environ["ODILE_SEED_RELEASE_PUBKEY"] = str(directory / "release-key.pub")
     os.environ["ODILE_SEED_BIND"] = "127.0.0.1"
     os.environ["ODILE_SEED_PORT"] = str(port)
-    os.environ["ODILE_SEED_REBUILDS"] = str(directory / "seed-rebuilds.json")
     os.environ["ODILE_SEED_BACKUP_PAIRS"] = str(directory / "seed-backup-pairs.json")
     return seed.serve()
 
@@ -410,9 +394,6 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--release-key", default=DEFAULT_RELEASE_KEY,
                    help="the release key that certifies the seed public key "
                         "(default %s)" % DEFAULT_RELEASE_KEY)
-    p.add_argument("--backup-password-file", metavar="PATH",
-                   help="the user's old recovery file: its 'Backup password:' line is "
-                        "sealed under the token, so the boot keeps the repository")
     p.add_argument("--token-file", metavar="PATH",
                    help="re-arm this token instead of minting one: a bench rerun of "
                         "an image whose measured cmdline already carries it")
@@ -438,22 +419,14 @@ def main(argv: list[str] | None = None) -> int:
         with open(args.key, "rb") as source, open(key_copy, "wb") as target:
             target.write(source.read())
         os.chmod(key_copy, 0o600)
-        password = None
-        if args.backup_password_file:
-            seed = _seed_module()
-            try:
-                password = seed.read_recovery_password(args.backup_password_file)
-            except ValueError as error:
-                raise SystemExit("firstboot-fixture: %s" % error) from None
         token = None
         if args.token_file:
             token = Path(args.token_file).read_text(encoding="utf-8").strip()
-        result = prepare(directory, args.instance, args.slug, str(key_copy), password, token,
+        result = prepare(directory, args.instance, args.slug, str(key_copy), token,
                          args.release_key, args.previous_instance)
         print("tenant     %s" % result["slug"])
         print("instance   %s" % result["instance"])
         print("expires    %s" % result["expires_at"])
-        print("rebuild    %s (%s)" % (result["rebuild"], result["rebuilds"]))
         print("backup     %s" % result["backup_pairs"])
         if result["previous_instance"]:
             print("previous   %s" % result["previous_instance"])

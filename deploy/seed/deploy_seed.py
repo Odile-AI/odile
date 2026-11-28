@@ -38,16 +38,13 @@ to install the service when the certificate does not certify the key this host
 will sign with; the fix is the signing ceremony (``make seed-cert``, run by the
 release workflow; docs/runbooks/seed.md §3a), not a hand edit.
 
-A rebuild's sealed entry is a third file, ``/var/lib/odile/seed-rebuilds.json``:
-the service reads it per exchange (not through a credential copy), so the deploy
-checks it can be read by the service user and that every entry is the sealed
-shape — a plaintext password in it stops the run, tested by the service's own
-``load_rebuilds``. A fourth, ``/var/lib/odile/seed-backup-pairs.json``, holds
+One more file, ``/var/lib/odile/seed-backup-pairs.json``, holds
 each tenant's Hetzner sub-account pair (ODL-924: the repository URL, the two
-private keys, the pinned host-key line) for the same reason — ``odilectl
-provision`` writes it between two exchanges, and a restart per tenant would be
-a tenant install failing across that restart — so ``check_backup_pairs`` holds
-it to the service's own ``load_backup_pairs`` and the same owner/mode rule.
+private keys, the pinned host-key line) — the service reads it per exchange (not
+through a credential copy), so ``odilectl provision`` writes it between two
+exchanges and a restart per tenant would be a tenant install failing across that
+restart — so ``check_backup_pairs`` holds it to the service's own
+``load_backup_pairs`` and the same owner/mode rule.
 
     /usr/bin/python3 deploy/seed/deploy_seed.py --dry-run
     /usr/bin/python3 deploy/seed/deploy_seed.py --previous-seed-sha <sha256>
@@ -73,7 +70,6 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 REPO = HERE.parents[1]
-REBUILDS = Path("/var/lib/odile/seed-rebuilds.json")
 # ODL-924: each tenant's Hetzner sub-account pair (repository URL, private
 # keys, pinned host key), one entry per slug, written by `odilectl provision`
 # and read per exchange.
@@ -409,51 +405,15 @@ def seed_module():
     return module
 
 
-def check_rebuilds() -> str | None:
-    """The sealed rebuild entries the service will read, and who can read them.
-
-    The file holds the user's old repository password *sealed* under a setup
-    token, so a plaintext `backup_password` is refused here by the service's own
-    validator (`seed.load_rebuilds`), not by a second copy of the rule. The
-    service runs as `odile`, so a root-owned 0600 file would break the next
-    rebuild: the deploy names it instead of letting the first rebuilt guest
-    fail closed.
-    """
-    seed = seed_module()
-    try:
-        rebuilds = seed.load_rebuilds(str(REBUILDS))
-    except seed.ConfigError as exc:
-        return f"error: {exc}"
-    if not rebuilds:
-        return None
-    if os.geteuid() == 0:
-        try:
-            owner = REBUILDS.stat().st_uid
-        except OSError as exc:
-            return f"error: cannot stat {REBUILDS}: {exc}"
-        try:
-            import pwd
-
-            service = pwd.getpwnam("odile").pw_uid
-        except KeyError:
-            service = owner
-        if owner != service:
-            return (f"error: {REBUILDS} is owned by uid {owner}; the seed service runs "
-                    f"as odile (uid {service}). chown odile {REBUILDS}")
-    print(f"{'rebuilds':<12} {len(rebuilds)} sealed entr"
-          f"{'y' if len(rebuilds) == 1 else 'ies'} ({REBUILDS}; no plaintext password)")
-    return None
-
-
 def check_backup_pairs() -> str | None:
     """The per-tenant sub-account pairs the service will read, and who can read them.
 
     ODL-924. The service's own validator (`seed.load_backup_pairs`) checks
     every entry's shape — the two logins, the nested homes, the no-port URLs,
     both private keys, one host-key line, no plaintext password. The
-    0600-and-owned-by-`odile` rule is `check_rebuilds`'s reason: the service
-    runs as `odile`, so a root-owned file would break the next provision with
-    no request to blame.
+    0600-and-owned-by-`odile` rule is the service's reason: it runs as `odile`,
+    so a root-owned file would break the next provision with no request to
+    blame.
     """
     seed = seed_module()
     try:
@@ -664,10 +624,6 @@ def main(argv: list[str] | None = None) -> int:
         # the certificate for it has to be cut before the service starts.
         print(f"would check  {SEED_CERT} certifies the new {SEED_KEY_FILE} "
               "(cut it with make seed-cert in the release workflow)")
-    problem = check_rebuilds()
-    if problem:
-        print(problem, file=sys.stderr)
-        return 2
     problem = check_backup_pairs()
     if problem:
         print(problem, file=sys.stderr)

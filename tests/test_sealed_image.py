@@ -1014,18 +1014,27 @@ class CopyListTests(unittest.TestCase):
         sealed = image_dir_files(scripts["sealed-image.sh"])
         self.assertNotIn("odile-firstboot.py", bench)
         self.assertIn("odile-firstboot.py", sealed)
-        for name in ("odile-first-visit.service", "first_visit.py", "first-visit.html"):
+        for name in ("odile-first-visit.service", "odile-restore.service",
+                     "first_visit.py", "first-visit.html", "backup.py"):
             self.assertNotIn(name, bench, "the bench image has no first boot")
             self.assertIn(name, sealed)
         self.assertEqual(copy_list_gaps(scripts), [])
         # ...and sealed-image.sh's own need is enforced, not just satisfied:
         # drop the unit its first boot starts and the check names it.
         scripts["sealed-image.sh"] = scripts["sealed-image.sh"].replace(
-            "odile-firstboot.service odile-first-visit.service \\\n",
-            "odile-firstboot.service \\\n")
+            "odile-firstboot.service odile-first-visit.service odile-restore.service \\\n",
+            "odile-firstboot.service odile-restore.service \\\n")
         self.assertEqual(
             copy_list_gaps(scripts),
             [f"sealed-image.sh: {IMAGE_LIB_DIR}/odile-first-visit.service (seed)"],
+        )
+        # The rebuild's restore unit travels with the page it belongs to.
+        scripts = self._scripts()
+        scripts["sealed-image.sh"] = scripts["sealed-image.sh"].replace(
+            " odile-restore.service \\\n", " \\\n")
+        self.assertEqual(
+            copy_list_gaps(scripts),
+            [f"sealed-image.sh: {IMAGE_LIB_DIR}/odile-restore.service (seed)"],
         )
 
 
@@ -1128,25 +1137,22 @@ class FirstbootUnitTests(unittest.TestCase):
         with self.assertRaises(firstboot.Refusal):
             firstboot.validate_seed(seed, self.IID)
 
-    def test_the_seed_validator_accepts_a_rebuild_and_refuses_a_broken_one(self) -> None:
+    def test_the_seed_validator_takes_the_backup_block_and_has_no_seal_step(self) -> None:
+        """ODL-937: the surviving block is `backup`; the guest's seal is gone."""
         seed = {
             "slug": "odl-bench", "instance_id": self.IID, "near_api_key": "k",
             "model": "m", "support_public_key": "ssh-ed25519 x",
             "backup_repo_url": "sftp:x", "mail_relay": {
                 "host": "h", "port": 587, "username": "u", "secret": "s"},
             "hermes_version": "v", "sign_in_hash": "scrypt$16384$8$1$c2FsdA==$ZGs=",
-            "rebuild": {"kdf": "hmac-sha256-ctr-v1", "sealed": "00aa",
-                        "tag": "00" * 32},
+            "backup": {"repo_url": "sftp:x", "previous_instance": "",
+                       "backup_snapshot": "d4" * 32},
         }
         self.assertIs(firstboot.validate_seed(seed, self.IID), seed)
-        for broken, reason in (
-            ({"kdf": "aes-256-gcm", "sealed": "00aa", "tag": "00" * 32}, "kdf"),
-            ({"kdf": "hmac-sha256-ctr-v1", "sealed": "0aa", "tag": "00" * 32}, "sealed"),
-            ({"kdf": "hmac-sha256-ctr-v1", "sealed": "00aa", "tag": "00"}, "tag"),
-        ):
-            with self.assertRaises(firstboot.Refusal) as caught:
-                firstboot.validate_seed(dict(seed, rebuild=broken), self.IID)
-            self.assertIn(reason, caught.exception.reason)
+        # The retired unseal path is not in the image's program at all.
+        for removed in ("validate_rebuild", "unseal_rebuild", "write_seeded_recovery"):
+            self.assertFalse(hasattr(firstboot, removed), removed)
+        self.assertNotIn("rebuild", firstboot.SEED_KEYS)
 
     def test_the_boot_record_reads_the_measured_key_and_the_pin_release(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -1527,11 +1533,9 @@ class FirstbootExchangeTests(unittest.TestCase):
         server.daemon_threads = True
         server.config = json.loads(config.read_text())
         server.config_path = str(config)
-        server.rebuilds_path = str(self.dir / "seed-rebuilds.json")
-        # ODL-924: the tenant's sub-account pair, read per exchange like the
-        # rebuild entries. The fixture pair is the bench's own (inert) one, so
-        # the seed's `backup` block and the first boot's path are proved
-        # without a Storage Box.
+        # ODL-924: the tenant's sub-account pair, read per exchange. The
+        # fixture pair is the bench's own (inert) one, so the seed's `backup`
+        # block and the first boot's path are proved without a Storage Box.
         server.backup_pairs_path = str(self.dir / "seed-backup-pairs.json")
         self.seed.set_backup_pair(server.backup_pairs_path, self.SLUG,
                                   fixture.fixture_pair(self.SLUG))
@@ -1559,9 +1563,7 @@ class FirstbootExchangeTests(unittest.TestCase):
 
     def run_boot(self, *, installer: pathlib.Path | None = None,
                  pubkey: pathlib.Path | None = None, first_visit_port: int = 0,
-                 release: pathlib.Path | None = None,
-                 recovery: pathlib.Path | None = None,
-                 recovery_seed: pathlib.Path | None = None) -> tuple[int, str]:
+                 release: pathlib.Path | None = None) -> tuple[int, str]:
         argv = [
             "--cmdline", str(self.cmdline), "--state", str(self.state),
             "--seed-cache", str(self.cache), "--signing-key", str(pubkey or self.rpub),
@@ -1593,10 +1595,6 @@ class FirstbootExchangeTests(unittest.TestCase):
         # The argv the boot actually ran, so a test can assert which paths the
         # program was told to use instead of inferring them from what it wrote.
         self.last_argv = argv
-        if recovery is not None:
-            argv += ["--recovery", str(recovery)]
-        if recovery_seed is not None:
-            argv += ["--recovery-seed", str(recovery_seed)]
         output = io.StringIO()
         env = {"FAKE_INSTALLER_LOG": str(self.log)}
         # The gate host is not the image: no unit may be enabled on it.
@@ -1613,85 +1611,6 @@ class FirstbootExchangeTests(unittest.TestCase):
             return row["used_at"]
         finally:
             con.close()
-
-    # -- a rebuild: the seed carries the old repository password, sealed ------
-
-    REBUILD_PASSWORD = "test-rebuild-password-2026-0001"
-
-    def seal_rebuild(self, password: str, *, key_token: str | None = None) -> None:
-        """Put a sealed rebuild entry in this fixture's seed config.
-
-        `key_token` seals under another token than the one the cmdline carries;
-        the entry's `token_hash` still matches this boot's token, so the seed
-        is *served* and the guest has to refuse the tag — the stale-seal path.
-        """
-        entry = self.seed.seal_backup_password(password, key_token or self.token)
-        entry["token_hash"] = hashlib.sha256(self.token.encode()).hexdigest()
-        path = self.dir / "seed-rebuilds.json"
-        path.write_text(json.dumps({self.SLUG: entry}), encoding="utf-8")
-        os.chmod(path, 0o600)
-
-    def capture_installer(self, recovery: pathlib.Path) -> pathlib.Path:
-        """An installer that records the recovery file it sees when it starts."""
-        proof = self.dir / "recovery-at-installer.txt"
-        path = self.dir / "capture-installer.sh"
-        path.write_text(
-            "#!/bin/sh\n"
-            "printf '%s\\n' \"$*\" >> \"$FAKE_INSTALLER_LOG\"\n"
-            f"grep '^Backup password:' '{recovery}' > '{proof}' || exit 9\n")
-        path.chmod(0o755)
-        return path
-
-    def test_a_rebuild_seed_writes_the_old_password_before_the_installer(self) -> None:
-        self.write_cmdline(self.token)
-        self.seal_rebuild(self.REBUILD_PASSWORD)
-        recovery = self.dir / "etc" / "recovery.txt"
-        code, output = self.run_boot(
-            installer=self.capture_installer(recovery), recovery=recovery,
-            recovery_seed=IMAGE / "recovery-seed.py")
-        self.assertEqual(code, 0, output)
-        self.assertIn("odile-firstboot: installed %s" % self.SLUG, output)
-        self.assertEqual(recovery.stat().st_mode & 0o777, 0o600)
-        text = recovery.read_text(encoding="utf-8")
-        password = re.search(r"^Backup password:[ \t]*(\S+)[ \t]*$", text, re.M)
-        self.assertIsNotNone(password, text)
-        assert password is not None
-        self.assertEqual(password.group(1), self.REBUILD_PASSWORD)
-        self.assertIn("Tenant:              %s" % self.SLUG, text)
-        self.assertIn("Instance:            %s" % self.IID, text)
-        # The installer saw the old password already in place: the write is
-        # before it runs, not after the first-visit unit's ExecStartPre.
-        self.assertIn(self.REBUILD_PASSWORD,
-                      (self.dir / "recovery-at-installer.txt").read_text(encoding="utf-8"))
-        # The value appears in no argv and no log line.
-        self.assertNotIn(self.REBUILD_PASSWORD,
-                         (self.dir / "installer.log").read_text(encoding="utf-8"))
-        self.assertNotIn(self.REBUILD_PASSWORD,
-                         (self.dir / "installer-run.log").read_text(encoding="utf-8"))
-
-    def test_a_first_install_seed_leaves_the_recovery_file_to_the_unit(self) -> None:
-        self.write_cmdline(self.token)
-        recovery = self.dir / "etc" / "recovery.txt"
-        code, output = self.run_boot(recovery=recovery,
-                                     recovery_seed=IMAGE / "recovery-seed.py")
-        self.assertEqual(code, 0, output)
-        self.assertFalse(recovery.exists(),
-                         "a first install mints its password in recovery-seed.py, not here")
-
-    def test_a_seed_sealed_for_another_token_fails_closed(self) -> None:
-        self.write_cmdline(self.token)
-        self.seal_rebuild(self.REBUILD_PASSWORD, key_token="d4" * 32)
-        recovery = self.dir / "etc" / "recovery.txt"
-        code, output = self.run_boot(recovery=recovery,
-                                     recovery_seed=IMAGE / "recovery-seed.py")
-        self.assertEqual(code, 0, output)
-        self.assertEqual(firstboot_line(output),
-                         "odile-firstboot: fail-closed: the seed's rebuild "
-                         "password does not open with this setup token")
-        self.assertFalse(recovery.exists())
-        self.assertFalse(self.log.exists(), "the installer must not run")
-        state = json.loads(self.state.read_text(encoding="utf-8"))
-        self.assertFalse(state["ok"])
 
     def test_the_first_boot_exchanges_installs_and_records_the_state(self) -> None:
         self.write_cmdline(self.token)
@@ -1805,8 +1724,12 @@ class FirstbootExchangeTests(unittest.TestCase):
                           for row in events],
                          [("first_visit", "first_boot", "first_visit")])
 
-    def test_the_seed_carries_the_pair_and_the_rebuild_marker(self) -> None:
-        """ODL-924: the guest gets the repository URL, both keys, the host key."""
+    def test_the_seed_carries_the_pair_and_the_previous_instance_marker(self) -> None:
+        """ODL-924: the guest gets the repository URL, both keys, the host key.
+
+        `previous_instance` is the seed's only rebuild marker (ODL-937); the
+        retired sealed-rebuild-password block is not in the body at all.
+        """
         self.write_cmdline(self.token)
         code, output = self.run_boot()
         self.assertEqual(code, 0, output)
@@ -1822,6 +1745,8 @@ class FirstbootExchangeTests(unittest.TestCase):
         self.assertTrue(cache["backup"]["ssh_private_key"].startswith("-----BEGIN"))
         self.assertTrue(cache["backup"]["readonly_ssh_private_key"].startswith("-----BEGIN"))
         self.assertEqual(cache["backup"]["previous_instance"], "")
+        self.assertEqual(cache["backup"]["backup_snapshot"], "")
+        self.assertNotIn("rebuild", cache)
         self.assertNotIn(":22/", cache["backup_repo_url"])
 
         # The row's own marker (written at a reopen) wins over the pair's.
@@ -2513,17 +2438,16 @@ class ManifestBenchTests(unittest.TestCase):
 
 
 class FixtureRebuildTests(unittest.TestCase):
-    """`firstboot-fixture.py prepare --backup-password-file`: the bench's writer.
+    """`firstboot-fixture.py prepare`: the bench's seed-service fixture.
 
-    The QEMU rebuild in the card's evidence runs `prepare` with the user's old
-    recovery file; this holds the two properties the guest depends on: the file
-    the service reads holds ciphertext under the token it just minted, and the
-    real exchange serves it so `odile-firstboot` can open it.
+    The QEMU boot in the card's evidence runs `prepare` against the real seed
+    service; this holds the properties the guest depends on: the certificate the
+    image walks, the tenant's pair entry, and a re-armed token that keeps the
+    measured command line's value.
     """
 
     INSTANCE = "45445445-0000-4000-8000-000000000699"
     SLUG = "odl-bench"
-    PASSWORD = "test-rebuild-password-2026-0001"
 
     @staticmethod
     def certified_identity(directory: pathlib.Path, key: pathlib.Path) -> tuple[bytes, bytes]:
@@ -2573,39 +2497,37 @@ class FixtureRebuildTests(unittest.TestCase):
                 capture_output=True, timeout=30)
             self.assertEqual(verified.returncode, 0, verified.stderr)
 
-    def test_prepare_seals_the_old_password_under_the_token_it_mints(self) -> None:
+    def test_prepare_writes_the_pair_and_the_seed_carries_the_snapshot_key(self) -> None:
+        """ODL-937: the pair is the rebuild path now; the seal block is gone."""
         if not shutil.which("openssl"):
             raise unittest.SkipTest("openssl is missing")
-        seed_module = _load("odile_seed_fixture_rebuild", ROOT / "seed" / "seed.py")
-        firstboot_module = _load("odile_firstboot_fixture_rebuild", IMAGE / "odile-firstboot.py")
+        seed_module = _load("odile_seed_fixture_prepare", ROOT / "seed" / "seed.py")
         with tempfile.TemporaryDirectory() as tmp:
             directory = pathlib.Path(tmp) / "bench"
             key = pathlib.Path(tmp) / "k.pem"
             subprocess.run(["openssl", "genpkey", "-algorithm", "ED25519", "-out", str(key)],
                            check=True, capture_output=True, timeout=60)
             os.chmod(key, 0o600)
-            result = fixture.prepare(directory, self.INSTANCE, self.SLUG, str(key), self.PASSWORD)
-            self.assertEqual(result["rebuild"], "sealed")
-            rebuilds_file = directory / "seed-rebuilds.json"
-            self.assertEqual(stat.S_IMODE(rebuilds_file.stat().st_mode), 0o600)
-            self.assertNotIn(self.PASSWORD, rebuilds_file.read_text(encoding="utf-8"))
-            rebuilds = seed_module.load_rebuilds(str(rebuilds_file))
-            self.assertEqual(rebuilds[self.SLUG]["token_hash"],
-                             hashlib.sha256(result["token"].encode()).hexdigest())
+            result = fixture.prepare(directory, self.INSTANCE, self.SLUG, str(key))
+            pairs_file = pathlib.Path(result["backup_pairs"])
+            self.assertEqual(stat.S_IMODE(pairs_file.stat().st_mode), 0o600)
+            pairs = seed_module.load_backup_pairs(str(pairs_file))
+            self.assertEqual(pairs[self.SLUG]["previous_instance"], "")
             con = seed_module.connect(str(directory / "seed.db"))
             try:
                 config = json.loads((directory / "seed-config.json").read_text(encoding="utf-8"))
-                served = seed_module.redeem(con, result["token"], self.INSTANCE,
-                                            config, rebuilds,
+                served = seed_module.redeem(con, result["token"], self.INSTANCE, config,
                                             identity=self.certified_identity(directory, key),
-                                            # Hermetic: without this the seed
-                                            # service's default path is HQ's
-                                            # live `/var/lib/odile/seed-backup-pairs.json`.
-                                            backup_pairs={})
+                                            backup_pairs=pairs)
             finally:
                 con.close()
-            self.assertEqual(firstboot_module.unseal_rebuild(served["rebuild"], result["token"]),
-                             self.PASSWORD)
+            self.assertEqual(served["backup"]["previous_instance"], "")
+            self.assertEqual(served["backup"]["backup_snapshot"], "")
+            self.assertNotIn("rebuild", served)
+            self.assertEqual(sorted(path.name for path in directory.glob("seed-*")),
+                             ["seed-backup-pairs.json", "seed-config.json",
+                              "seed-key.crt", "seed-key.pub"],
+                             "the fixture writes the pair, never a third sealed file")
 
     def test_prepare_rearms_the_token_an_image_already_carries(self) -> None:
         """A bench rerun: the measured line cannot change, so the token must not."""
@@ -2618,14 +2540,10 @@ class FixtureRebuildTests(unittest.TestCase):
             subprocess.run(["openssl", "genpkey", "-algorithm", "ED25519", "-out", str(key)],
                            check=True, capture_output=True, timeout=60)
             os.chmod(key, 0o600)
-            first = fixture.prepare(directory, self.INSTANCE, self.SLUG, str(key), self.PASSWORD)
-            before = seed_module.load_rebuilds(str(directory / "seed-rebuilds.json"))[self.SLUG]
+            first = fixture.prepare(directory, self.INSTANCE, self.SLUG, str(key))
             second = fixture.prepare(directory, self.INSTANCE, self.SLUG, str(key),
-                                     self.PASSWORD, first["token"])
+                                     first["token"])
             self.assertEqual(second["token"], first["token"])
-            # The same token seals to the same ciphertext; only created_at moves.
-            after = seed_module.load_rebuilds(str(directory / "seed-rebuilds.json"))[self.SLUG]
-            self.assertEqual((after["sealed"], after["tag"]), (before["sealed"], before["tag"]))
             con = seed_module.connect(str(directory / "seed.db"))
             try:
                 rows = con.execute(
@@ -2635,20 +2553,6 @@ class FixtureRebuildTests(unittest.TestCase):
                 con.close()
             self.assertEqual(len(rows), 1, "one row per token, never a duplicate")
             self.assertIsNone(rows[0]["used_at"], "re-armed means live again")
-
-    def test_prepare_without_the_file_carries_no_rebuild(self) -> None:
-        if not shutil.which("openssl"):
-            raise unittest.SkipTest("openssl is missing")
-        with tempfile.TemporaryDirectory() as tmp:
-            directory = pathlib.Path(tmp) / "bench"
-            key = pathlib.Path(tmp) / "k.pem"
-            subprocess.run(["openssl", "genpkey", "-algorithm", "ED25519", "-out", str(key)],
-                           check=True, capture_output=True, timeout=60)
-            os.chmod(key, 0o600)
-            result = fixture.prepare(directory, self.INSTANCE, self.SLUG, str(key))
-            self.assertEqual(result["rebuild"], "none")
-            self.assertFalse((directory / "seed-rebuilds.json").exists())
-
 
 class FirstbootBenchTests(unittest.TestCase):
     """The harness that reads the unit's one line and the page's answer."""
@@ -2845,7 +2749,8 @@ class FirstbootScriptTests(unittest.TestCase):
 
     def test_every_first_visit_placeholder_has_a_substitution(self) -> None:
         installer = (IMAGE / "install-stack.sh").read_text(encoding="utf-8")
-        for name in ("odile-first-visit.service", "odile-bench-proxy-firstvisit.service",
+        for name in ("odile-first-visit.service", "odile-restore.service",
+                     "odile-bench-proxy-firstvisit.service",
                      "odile-bench-proxy-firstvisit.socket"):
             text = (IMAGE / name).read_text(encoding="utf-8")
             for placeholder in sorted(set(re.findall(r"__[A-Z_]+__", text))):
@@ -4726,13 +4631,13 @@ class RecoverySeedTests(unittest.TestCase):
             capture_output=True, text=True, timeout=60)
 
     def run_seed_stdin(self, password: str) -> subprocess.CompletedProcess:
-        """A rebuild's call: the password on stdin, never on argv."""
+        """An operator's call: the password on stdin, never on argv."""
         return subprocess.run(
             [sys.executable, str(self.SCRIPT), "--path", str(self.path),
              "--tenant", "odl-fake01", "--instance", "0badc0de", "--password-stdin"],
             input=password, capture_output=True, text=True, timeout=60)
 
-    def test_a_seeded_password_replaces_a_generated_one_and_keeps_written(self) -> None:
+    def test_a_password_from_stdin_replaces_a_generated_one_and_keeps_written(self) -> None:
         first = self.run_seed()
         self.assertEqual(first.returncode, 0, first.stderr)
         generated = self.installer.parse_recovery(self.path.read_text(encoding="utf-8"))
@@ -4744,7 +4649,7 @@ class RecoverySeedTests(unittest.TestCase):
         self.assertNotEqual(parsed["backup_password"], generated["backup_password"])
         self.assertEqual(parsed["written"], generated["written"])
         self.assertEqual(stat.S_IMODE(self.path.stat().st_mode), 0o600)
-        self.assertIn("the password from the seed", result.stdout)
+        self.assertIn("the password from stdin", result.stdout)
         self.assertNotIn(password, result.stdout)
         self.assertNotIn(password, result.stderr)
 
