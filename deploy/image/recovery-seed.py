@@ -16,13 +16,13 @@ published disk image), and the certificate line pending. The release installer's
 the page's download fills the certificate line from Caddy's live store
 (installer/first_visit.py, ODL-471).
 
-**A rebuild passes the old password instead.** With ``--password-stdin`` the
+**An operator can write a password instead.** With ``--password-stdin`` the
 program writes the password it reads on stdin rather than generating one, and
-rewrites an existing file: `odile-firstboot`, which holds the token that opens
-the seed's sealed password, runs it before the installer, so the rebuilt
-machine's recovery file opens the repository it already has. A first install
-passes no such flag and the generated password is unchanged. The value never
-appears on argv.
+rewrites an existing file. Nothing runs it automatically: a rebuild's recovery
+file comes from the first-visit paste, and this program leaves the machine
+without one until then (``rebuild_waiting_for_paste``, ODL-937). The flag is
+the manual way for an operator who already knows a repository's password to put
+it in the file — the value never appears on argv, a ``ps`` line or a log.
 
 The bytes are exactly ``render_recovery``'s in installer/odile_install.py with
 ``fingerprint=None``; ``tests/test_sealed_image.py`` compares the two so the
@@ -35,6 +35,7 @@ line.
 
     /usr/bin/python3 recovery-seed.py --path /etc/odile/recovery.txt \\
         --cmdline /proc/cmdline
+    # an operator writes a password they already know (never on argv)
     printf '%s' "$PASSWORD" | /usr/bin/python3 recovery-seed.py \\
         --path /etc/odile/recovery.txt --tenant odl-7f3a2c --instance <id> \\
         --password-stdin
@@ -186,7 +187,7 @@ def existing_written(text: str | None) -> str | None:
 
 
 def password_from_stdin() -> str:
-    """The seeded password, validated before it reaches the file.
+    """The operator's password, validated before it reaches the file.
 
     A truncated read is refused here rather than written: an empty or short
     value would become a recovery file that restic rejects as "wrong password".
@@ -209,7 +210,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--tenant", default="", help="override bb.host")
     parser.add_argument("--instance", default="", help="override bb.iid")
     parser.add_argument("--password-stdin", action="store_true",
-                        help="write the password read on stdin (a rebuild), not a new one")
+                        help="write the password read on stdin (an operator's), not a new one")
     args = parser.parse_args(argv)
 
     path = Path(args.path)
@@ -241,7 +242,7 @@ def main(argv: list[str] | None = None) -> int:
     write_atomic(path, render(tenant, instance, password or generate_password(),
                               written=existing_written(text)))
     if password is not None:
-        print("recovery-seed: wrote %s (tenant %s, the password from the seed, "
+        print("recovery-seed: wrote %s (tenant %s, the password from stdin, "
               "certificate pending)" % (path, tenant), flush=True)
     else:
         print("recovery-seed: wrote %s (tenant %s, certificate pending)"

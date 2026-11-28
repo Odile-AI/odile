@@ -7,6 +7,14 @@ drill were measured on **11 November 2026** against the `hermes-hq-backup`
 bucket, and `docs/runbooks/backup-hq.md` §9 carries the numbers. Savio cut
 retention to the latest snapshot only on 11 November (card `t_4fa3415f`); §3.4
 and §4 state it.
+
+**Amended 2026-11-26, figures re-measured 2026-11-27** (card `t_65690615`): §2
+and §3.3 name the Hermes build HQ actually runs — `edc8a222a8`, five commits
+past the published `v0.23.3` tag and on no remote; §5.2 points a rebuild at the
+ref it installs (`v0.23.3`, `caafe5389a`); §3.3 dates the clone's file bytes
+and allocated size and states which ref is reproducible. The backup set, the
+decision and the trust boundary do not change.
+
 **Answers:** ODL-450 — "name everything on HQ that exists in exactly one place,
 contract an external copy that survives a Servury wipe, and specify the restore
 drill that proves the copy is real."
@@ -65,12 +73,12 @@ restic repository. This ADR is the factory, and its numbers are internal.
 
 ## 2. What exists in exactly one place
 
-Measured on 2026-11-10 against this machine. **Bytes are file bytes**
-(`du -sb`: the sum of file sizes, the measure restic reports as a snapshot's
-size), not allocated blocks — `/etc` is 2.6 MB here and 6.9 MB on disk, `.git`
-98 MB and 112 MB. The staging manifest and the rehearsal in §8 are the other two
-sources. "Reproducible" means *without this disk*: from the repo, a vendor
-console, or a package archive. A **no** is why the backup exists.
+Measured on 2026-11-10 against this machine. **In this table, bytes are file
+bytes** (`du -sb`: the sum of file sizes, the measure restic reports as a
+snapshot's size), not allocated blocks — `/etc` is 2.6 MB here and 6.9 MB on
+disk, `.git` 98 MB and 112 MB. The staging manifest and the rehearsal in §8 are
+the other two sources. "Reproducible" means *without this disk*: from the repo,
+a vendor console, or a package archive. A **no** is why the backup exists.
 
 | Path | Bytes | What it is | Reproducible? |
 |---|---:|---|---|
@@ -106,8 +114,12 @@ console, or a package archive. A **no** is why the backup exists.
 **Held by a vendor, therefore not a single copy on this box:** the DNS zone
 (Cloudflare: 5 A records — four on HQ, one a Servury tenant guest — 1 AAAA,
 1 CNAME, 2 MX, 3 TXT: SPF, DMARC, DKIM), the tenant VMs (Servury; ODL-215 backs
-up the guest disk), the Hermes source (GitHub, commit `2bd378ed1b8d`, v0.23.0),
-and every Ubuntu package.
+up the guest disk), the Hermes source **at a published ref** (GitHub: the
+`v0.23.3` tag, `caafe5389a`), and every Ubuntu package. HQ's checkout is a
+local build, not that tag: `edc8a222a8` — the commit `hermes --version`
+reported on HQ on 2026-11-26 — is five commits past `v0.23.3` and on no remote
+(GitHub answers `422` for it), so the running build is not held by a vendor;
+§3.3 says what a rebuild gets instead.
 
 **The rule this table states.** A file earns its place in the backup only by
 being *irreplaceable without this disk **and part of the product or its
@@ -264,11 +276,15 @@ live on 2026-11-11, **14.3 s, 68 databases, 1.22 GB** (runbook §9).
 
 ### 3.3 Exclude — every exclusion with its reason
 
-| Excluded | Bytes (allocated) | Why |
+Sizes are allocated bytes (`du -sh`) unless the cell names another measure; the
+Hermes row leads with `du -sb` file bytes, the measure a snapshot carries (§2),
+and excludes the nested `.worktrees/` its cell names.
+
+| Excluded | Bytes | Why |
 |---|---:|---|
 | `<checkout>/.worktrees` | 1.4 GB | derived worktrees; the branch is the durable unit. Uncommitted work in flight is lost by design — RPO for agent work is its last commit, and the board says what was in flight. |
 | `/root/.hermes/{tools,installs}` | 2.2 GB | pinned toolchains and plugin venvs, reinstalled by the Hermes installer from pins in `config.yaml`. |
-| `/root/.hermes/hermes-agent` | 2.3 GB | a git clone of `NousResearch/hermes-agent` at `2bd378ed1b8d` / v0.23.0 — reproducible from GitHub. |
+| `/root/.hermes/hermes-agent` | 1,639,144,544 B file bytes (`du -sb --exclude=.worktrees`, 2026-11-27; ≈1.6 GB; 1,635,947,733 B on 2026-11-26); 1.9 GiB allocated (`du -sh`, `du -s --block-size=1` = 2,023,272,448 B; both with `.worktrees` excluded); 2.3 GB was the 2026-11-10 allocated reading. The nested `.worktrees/` (320,716,063 B on 2026-11-27) is derived work in flight, excluded like `<checkout>/.worktrees`. | a git clone of `NousResearch/hermes-agent` at `edc8a222a8` — the commit `hermes --version` reports on HQ, measured 2026-11-26 — five commits past the published `v0.23.3` tag (`caafe5389a`) and on no remote (`422` from GitHub), with five modified tracked files, which is the `.dirty` in the version string. **The source is reproducible from a published commit, not from the working tree**: GitHub can supply `v0.23.3` `caafe5389a`; the running `edc8a222a8` is five unpublished commits past it, and the working-tree edits are not in the hash. A rebuild installs the tag and records the difference (runbook §5). |
 | `/root/.hermes/{cache,images,audio_cache}` and `profiles/*/{cache,lsp,logs,image_cache,audio_cache}` | 3.8 GB | caches, language servers, logs and generated media; deliverables live in the board's `attachments/`, which is included. |
 | `models_dev_cache.json` (root and per profile) | 64 MB | the model catalogue; refetched. |
 | `/root/.hermes/kanban/boards/*/workspaces` | 240 MB | task worktrees, re-created by the dispatcher from the branch. |
@@ -516,11 +532,13 @@ runbook §9 for the transcript.
 
 The runbook (`docs/runbooks/backup-hq.md` §5) carries every command: a fresh
 Ubuntu 26.04 box, `restic` from apt, the same passphrase, `restic restore
---target /`, the database restore step, the Hermes installer at
-`2bd378ed1b8d`, the selected `/etc` paths, the `/srv` deploy targets the
-snapshot carries (`/srv/odile-demo` today; §3.1 explains the other), the
-systemd units, the demo redeploy and site convergence, and the DNS repoint in
-Cloudflare (the four HQ A records, one AAAA, the SPF `ip4:`/`ip6:` tokens).
+--target /`, the database restore step, the Hermes installer at the commit the
+manifest records — or its published ref when that commit was never pushed
+(§3.3; on 2026-11-26, `v0.23.3` `caafe5389a`) — the selected `/etc` paths,
+the `/srv` deploy targets the snapshot carries (`/srv/odile-demo` today; §3.1
+explains the other), the systemd units, the demo redeploy and site convergence,
+and the DNS repoint in Cloudflare (the four HQ A records, one AAAA, the SPF
+`ip4:`/`ip6:` tokens).
 Expected end state: `https://odile.fyi/` 200, `/attestation` serving,
 `https://demo.odile.fyi/login` 200 with Odile's sign-in page and the gate at
 302/401, `https://testing.odile.fyi/` answering a **301** to
@@ -633,7 +651,7 @@ contract question, not an architecture one.
 
 ## 8. Evidence
 
-All commands run on HQ, 2026-11-10 UTC.
+All commands run on HQ, 2026-11-10 UTC, unless a later date is named.
 
 **The anchor is one-of-one and matches what is published.** Private key
 `/root/.odile/installer-signing.pem`; public half derived locally:
@@ -783,6 +801,52 @@ errors in 7.5 s; the drill restored it in 16 s and passed every clause — board
 to the manifest, signing key `13e8c2ae…` — in 29.3 s total. After a second
 nightly run, `restic snapshots` shows **one** snapshot: the latest-only
 retention of §3.4. The full transcript is `docs/runbooks/backup-hq.md` §9.
+
+**The Hermes pin, measured on HQ 2026-11-26, re-read on 2026-11-27**
+(card `t_65690615`; runbook §5 chooses the ref from the manifest, and this is
+the fact it records):
+
+```
+$ hermes --version | head -1
+Hermes Agent v0.23.3+5.gedc8a22.dirty (2026.9.24) · stable · local edc8a222a801
+$ git -C /root/.hermes/hermes-agent rev-parse HEAD
+edc8a222a8014b7e60414db02e689e519b46bb24
+$ git -C /root/.hermes/hermes-agent describe --tags
+v0.23.3-5-gedc8a222a8
+$ git -C /root/.hermes/hermes-agent status --porcelain | wc -l
+5
+$ du -sb --exclude=.worktrees /root/.hermes/hermes-agent
+1639144544	/root/.hermes/hermes-agent
+$ du -s --block-size=1 --exclude=.worktrees /root/.hermes/hermes-agent
+2023272448	/root/.hermes/hermes-agent
+$ du -sh --exclude=.worktrees /root/.hermes/hermes-agent
+1.9G	/root/.hermes/hermes-agent
+$ curl -s -o /dev/null -w '%{http_code}\n' \
+    https://api.github.com/repos/NousResearch/hermes-agent/commits/edc8a222a8014b7e60414db02e689e519b46bb24
+422
+$ curl -s -o /dev/null -w '%{http_code}\n' \
+    https://api.github.com/repos/NousResearch/hermes-agent/commits/caafe5389ae585ef77387a962aee05b1bcf17029
+200
+```
+
+`hermes --version` renders the suffix with `git rev-parse --short=7`
+(`hermes_cli/version_info.py:256`), so the string carries `gedc8a22`; the commit
+is `edc8a222a8`. The five modified files are working-tree edits on top of the
+five unpublished commits; neither is in the hash, and neither is in the backup
+(§3.3). `v0.23.3` is the nearest published ref, and the snapshot's `recovery`
+block records the commit, the flag, the ref and the ref's commit, so a rebuild
+does not have to guess. The `du -sb` sum — 1,639,144,544 B at the 2026-11-27
+re-read, the file bytes a snapshot carries — is the figure §3.3's row leads
+with; 1.9 GiB is what the checkout occupies on disk (`2,023,272,448 B`). Both
+exclude `.worktrees`, and that exclusion is part of the claim: at 17:05 UTC on
+2026-11-27 the clone gained a nested worktree,
+`/root/.hermes/hermes-agent/.worktrees/t_2f179540` (320,716,063 B, ignored by
+`.gitignore:96`), which is derived work in flight — the rule §3.3 applies to
+`<checkout>/.worktrees` — so the whole directory reads 2.3 G allocated that
+afternoon, and the figure drops again when the worktree is removed. The
+3,196,811 B the clone proper gained since 2026-11-26 is `.git` growth (that
+worktree's index and the day's objects); no working file outside `.git` and
+`.worktrees` is newer than 2026-11-26 (0 files, measured 2026-11-27T20:03Z).
 
 **The destination prices are vendor pages, read on 2026-11-10:**
 <https://developers.cloudflare.com/r2/pricing/> (10 GB-month storage free,
