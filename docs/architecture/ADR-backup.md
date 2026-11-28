@@ -53,6 +53,7 @@ key, and nothing at HQ can decrypt the repository.
 | 26 November 2026 | v3.7 | **Citations only, no decision moved.** §2's third fact (the paragraph beginning "Three facts in that table") and §11's bullet beginning "The rebuild's password path" stop citing line numbers: the release-setup pointer is now the script's `--user tenant` invocation (`deploy/image/odile-release-setup.sh`), and the three `seed/seed.py` pointers are the names — `seal_backup_password`, the `backup_repo_url` seed key, and `build_seed`'s `fill(config["backup_repo_url"], slug)` | ODL-924's merge grew `seed/seed.py`, so the three numbers pointed at unrelated code at the merge head (inside `_keystream`, a `try:`, a comment), and the script's line had moved with it; §11's rule already says cite the symbol |
 | 26 November 2026 | v3.8 | **Tense and attribution only, no decision moved — ODL-933 landed.** §4.3's `SFTP_HOST_RE` note records the shipped refusal (the colon form refuses a port **by name**, in the program's `sftp_target` and in the installer's `validate_backup_seed`); §7.4's cap paragraph, the "nightly timer fires before the user pastes" row and the destination-failure row are re-cut from "added by ODL-933's re-cut" to the shipped behaviour — `BACKUP_TENANT_CAP_BYTES`, the start-of-run and after-prune `restic stats`, `status: over_cap`, `ConditionPathExists=/etc/odile/recovery.txt` and `ensure_recovery`'s skip; §8's row 3 says landed | Card `t_fda54dd4` merges with the code, and the "at this head" labels it leaves behind would read as future at the tree that lands — the same rule v3.6 applied to ODL-935's row |
 | 27 November 2026 | v3.9 | **Tense and date labels only, no decision moved.** §2's "The timer" and "The transport credential" rows are labelled with their measurement dates (2026-11-13; 2026-11-12/13) and their "Where" pointers moved to the shipped renderers (`backup_timer_start(slug)`, `ensure_pin_files`) and `backup.md` §1–§2; §4.3's "Today every tenant fires at 03:00" becomes the pre-decision state in the past tense; §11's appendix bullet names `BACKUP_TIMER_TEMPLATE`'s `{start}`/`backup_timer_start(slug)` shape with `RandomizedDelaySec=0` instead of the retired 03:00 constant and its 300 s delay | ODL-933 (26 November) landed the per-slug minute and the seed-written key, so the §2 rows read as present fact at this head and the appendix named a constant whose value had moved |
+| 28 November 2026 | v3.10 | **The place row landed, and the ADR's hold on it is over.** §1 item 5, §4.4's hand-off, §8's stale row, §9's off-site row and §12's first bullet now say "Backups are off-site" was published on 28 November 2026 (`t_66fcaa02`) after ODL-938's drill, and name the measured destination: the demo tenant's own `tenants/<slug>` repository on the BX11 (id 709870, `hel1`, Helsinki, FI), restored into a rebuilt machine with `state.db` and `cron/jobs.json` equal to the T-0 dump. No decision moved — the destination, the pair and the drill are v3's | The hold this ADR wrote in v3 is over: a real tenant repository was written to the box and restored from it, and Product landed the sentence on `web/faq.html` and §4.4's destination cell on `web/privacy.html` |
 
 **Related:** `docs/MVP-V0.1.md` §6.1, §6.7, §8, §12 (D19); `docs/CLAIMS.md` §1
 (Access: the recovery-code and recovery-file rows; Money and place: the
@@ -134,18 +135,17 @@ fifth is a deck sentence still **held from the public pages** (`docs/CLAIMS.md`
    should work" into a command that works. This is the first time the sentence
    is literally true; §8's drill has to prove it against the real box rather
    than assert it.
-5. **"Backups are off-site."** *In the deck, held from the page.*
-   `docs/CLAIMS.md` §1 "Money and place" carries it and §1a holds it. It
-   becomes true in fact **when `t_12b3720a` lands** — the first sub-account
-   pair, the destroy→rebuild→paste→restore drill against the real box (the box
-   exists and holds only the drill's own fixture; it is the pair and the
-   tenant's bytes that are missing), followed by the demo and bench repositories
-   moving to it — **not when the R2 migration landed**, because the R2 migration
-   never landed. `t_5f10dd14` landed the
-   30-day retention row on 19 November 2026 and corrected `web/privacy.html`'s
-   destination cell, which then said "an SFTP storage box at HQ" and now needs
-   the Hetzner sentence (§4.4 carries the hand-off). Both surfaces are
-   Product's; **this ADR publishes nothing**.
+5. **"Backups are off-site."** *In the deck and on the page since 28 November
+   2026 (`t_66fcaa02`).* `docs/CLAIMS.md` §1 "Money and place" carries it; §1a
+   held it until ODL-938's drill (`t_7010af06`, `docs/evidence/a3-bx11-drill.md`)
+   measured the destination: a Hetzner Storage Box BX11 (id 709870, `hel1`,
+   Helsinki, Finland, the EU), a different provider, account and country from
+   HQ, holding the demo tenant's own repository in `tenants/<slug>` over SFTP,
+   which the drill restored a rebuilt machine from. The destination cell's
+   sentence is §4.4's. `t_5f10dd14` landed the 30-day retention row on 19
+   November 2026 and, at that date, corrected `web/privacy.html`'s destination
+   cell to "an SFTP storage box at HQ" because the bytes were then on HQ's disk;
+   both page sentences are Product's, and this ADR itself published nothing.
 
 **What this ADR preserves:** the shape (restic), the password (guest-generated,
 user-held, never at HQ), the nightly timer, the status record and the heartbeat,
@@ -532,14 +532,16 @@ is fixed at order. **Nothing about a restic repository depends on it**, and
 moving it is `restic copy` to a second box (§10) — but the "where the bytes
 are" answer changes, and the privacy page's destination cell must say so.
 
-**The hand-off to Product Lead / Growth, in one sentence.** The cell that today
-reads "an SFTP storage box at HQ" should become:
+**The hand-off to Product Lead / Growth, in one sentence.** The cell that read
+"an SFTP storage box at HQ" became, on 28 November 2026 (`t_66fcaa02`, after
+ODL-938's drill):
 
 > **"an SFTP storage box in the European Union (Finland), operated by Hetzner"**
 
-and the place row's "Backups are off-site" stays **held** until `t_12b3720a`
-lands. That is the exact wording this card hands over; this ADR edits no page
-and no `docs/CLAIMS.md` row.
+and the place row's "Backups are off-site" landed in the same act, once
+`t_12b3720a` had proved the box and the pair and ODL-938 had restored a real
+tenant repository from it. That is the exact wording this card handed over;
+this ADR edits no page and no `docs/CLAIMS.md` row.
 
 **What it means for the trust boundary:** the ciphertext leaves Canada. A
 tenant's data is protected by restic's encryption, not by jurisdiction, so the
@@ -867,13 +869,13 @@ than smuggled in:**
 | `docs/MVP-V0.1.md` §8 | the $0.60 backup line still covers the box at six or more tenants ($3.60 ≥ €3.20 ≈ $3.58); below six the box's €3.20 is a fixed cost the alpha absorbs, and at fifty the share is $0.07 | Finance / Product lead |
 | `docs/runbooks/backup.md` §1, §3.1, §8, §9 | the R2 interim rows, the bucket token and the 9 GB cap are history; §3's SFTP material is live again with a different host and a sub-account instead of a main account | the `backup.py` card |
 | `docs/architecture/ADR-factory-backup.md` §4.2, §4.4 | the Hetzner row says "rejected by decision C"; §4.4 says the tenant copies share Cloudflare's account and migrate to B2 | this card, a dated correction in that ADR only |
-| `web/privacy.html`'s destination cell, `docs/CLAIMS.md` §1a's held row | the cell's wording and the date "Backups are off-site" lands | Product lead / Growth (§4.4 carries the exact sentence) |
+| `web/privacy.html`'s destination cell, `docs/CLAIMS.md` §1a's held row | the cell's wording, and the date "Backups are off-site" lands | **landed 28 November 2026 (`t_66fcaa02`)**: the cell is §4.4's sentence and the row is out of §1a |
 
 ## 9. Claims
 
 | Sentence | Today | After this ADR |
 |---|---|---|
-| "Backups are off-site." (`CLAIMS.md` §1 "Money and place") | **in the deck, held from the page** (`CLAIMS.md` §1a, `t_66fcaa02`); not true in fact — the bytes are on HQ's disk | **true in fact when `t_12b3720a` lands** — a box at Hetzner, a different provider from the machine and from HQ, a different account from the DNS zone, in the EU. The page sentence stays held until Product lands it — **this ADR does not publish it** |
+| "Backups are off-site." (`CLAIMS.md` §1 "Money and place") | **landed 28 November 2026 (`t_66fcaa02`)**: the deck row and `web/faq.html` carry it, and `web/privacy.html`'s destination cell carries §4.4's sentence | **true in fact**: ODL-938's drill (28 November 2026, `docs/evidence/a3-bx11-drill.md`) restored the demo tenant's own `tenants/<slug>` repository from the Hetzner box — a different provider, account and country from the machine and HQ, in the EU — after destroying and rebuilding the machine. This ADR published nothing; the landing is Product's |
 | "The encrypted backup is kept 30 days after cancellation, then deleted. Odile can delete it, not read it." (§1 "Money and place") | true on the storage path; conditional during a rebuild | true on both paths, because the password never transits HQ: the rebuild is a paste on the machine and `--backup-password-file` is retired. At `keep_until` the repository's data and both sub-accounts are deleted and the `tenants/<slug>` directory is left with no user data (ODL-935, measured 2026-11-26); the 30 days and the deletion are unchanged |
 | "A recovery code and a recovery file are the way back: … the file opens your backup." (§1 "Access") | true through the agent | **literally true**: the file carries the URL, the pinned host key and a read-only key, so it opens the backup on any machine. **This is stronger than the deck owns** — Product lands the wording, Savio approves it (§3, a published sentence not in `CLAIMS.md`) |
 | "The recovery file holds the backup password and the certificate fingerprint." (§1 "Access") | true | it now also holds the repository, the box's host-key fingerprint and a read-only key; the sentence needs the extra clause |
@@ -1081,11 +1083,12 @@ exactly that reason; round 4 found them.
 ## 12. What this ADR does not do
 
 - **No code, no tenant byte moved.** The first honest sentence about this re-cut
-  is that it is still a recommendation: the box exists (id 709870, `hel1`), the
-  token exists, `protection.delete` is on, and **no tenant has a pair and no
-  tenant repository is in it** — the only bytes are the drill's own fixture
-  (1 MiB at 07:48Z). `t_12b3720a` creates the first pair and proves the path;
-  the provisioning re-cut automates it.
+  was that it is still a recommendation: the box exists (id 709870, `hel1`), the
+  token exists, `protection.delete` is on. At this ADR's date no tenant had a
+  pair and the only bytes were the drill's own fixture (1 MiB at 07:48Z); since
+  then ODL-924 minted the demo tenant's pair and ODL-938's drill (28 November
+  2026, `t_7010af06`) wrote and restored a real `tenants/<slug>` repository on
+  the box. The provisioning re-cut automates the pair for every tenant.
 - **No new claim in the deck.** §9 names the one sentence that gets stronger and
   the one property that gets weaker; both land through Product and Savio or not
   at all.

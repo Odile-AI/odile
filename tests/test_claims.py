@@ -241,12 +241,13 @@ class ClaimsDeckTests(unittest.TestCase):
         # holds them from the public pages until their card lands. The deck
         # keeps the row, the page does not quote the clause. ODL-474 landed the
         # backup and grant rows as v3.10 and t_5f10dd14 landed the 30-day
-        # retention row on 19 November 2026; what is left is the disk-custody
-        # and sign-in clusters, "Backups are off-site" (ADR-004 measures
-        # the destination on HQ's disk until the R2 migration lands), and the
-        # dropped timing. ODL-521/522/523 cleared the image's public bench
-        # password that §0.2 named; ODL-925 is what writes the registration
-        # verifier at provision and turns the first visit into a login.
+        # retention row on 19 November 2026; t_66fcaa02 landed the place row's
+        # "Backups are off-site" on 28 November 2026 once ODL-938's BX11 drill
+        # measured the destination, so what is left is the disk-custody and
+        # sign-in clusters and the dropped timing. ODL-521/522/523 cleared the
+        # image's public bench password that §0.2 named; ODL-925 is what writes
+        # the registration verifier at provision and turns the first visit into
+        # a login.
         held = (
             "The password you chose is the only sign-in.",
             "The disk unlocks only on the boot you verify.",
@@ -255,7 +256,6 @@ class ClaimsDeckTests(unittest.TestCase):
             "We can stop it. We cannot read it.",
             "On a tenant machine, Odile cannot read the disk",
             "The hosting provider sees ciphertext",
-            "off-site",
             "Claiming takes 3 minutes",
         )
         # ODL-925 landed D-1 ("It is the only app-layer gate: no 2FA in
@@ -617,9 +617,19 @@ class PrivacyTests(unittest.TestCase):
         faq = FAQ.read_text(encoding="utf-8")
         self.assertIn(row, privacy, "web/privacy.html does not carry the 30-day retention row")
         self.assertIn(row, faq, "web/faq.html does not carry the 30-day retention row")
-        # The destination cell is measured, not the old "off-site SFTP box"
-        # (ADR-004 §1: the bytes are on HQ's disk until the R2 migration lands).
-        self.assertIn("an SFTP storage box at HQ", privacy)
+        # t_66fcaa02: the place row's second sentence landed once ODL-938's
+        # drill measured the destination; the FAQ carries the whole row verbatim.
+        self.assertIn(
+            "The machine is in Montreal, Canada. Backups are off-site.",
+            faq,
+            "web/faq.html does not carry the place row verbatim",
+        )
+        # The destination cell is measured, not the old "off-site SFTP box" or
+        # the HQ stand-in: ADR-004 §4.4's sentence, proved by the BX11 drill.
+        self.assertIn(
+            "an SFTP storage box in the European Union (Finland), operated by Hetzner",
+            privacy,
+        )
 
     def test_the_heartbeat_row_names_the_upgrade_booking_in_three_homes(self):
         # ODL-955 / ADR-005 §8 item 10: the one new fact the upgrade flow puts
