@@ -392,9 +392,11 @@ Run all four; each is also the evidence line for the card.
    claims, email_changes, events, grants, seed_tokens, tenant_keys,
    tenant_state, tenant_state_events, tenants, waitlist` — and
    `user_version: 4`.
-   `admin_log` is the append-only record of the console's re-point action
-   (ODL-582: who moved an account's address, from which address to which, and
-   when; the previous address stays the account's name for `/forgot`).
+   `admin_log` is the append-only record of the console's actions (ODL-582:
+   who moved an account's address, from which address to which, and when; the
+   previous address stays the account's name for `/forgot`; ODL-965 widened it
+   to every console action, and a line outlives its account — `account_id`
+   becomes null and the JSON `detail` keeps the address).
    `email_changes` is the owner's pending change of address (ODL-962: one row
    per account, the new address, one hash of each inbox's token and each
    side's confirmation time; the address moves only when both sides confirm).

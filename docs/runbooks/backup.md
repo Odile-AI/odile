@@ -87,7 +87,7 @@ pair and restic drill are in place, and the box's `stats` reads 1,048,576 bytes
 | Fact | Where it lives | Who can read it |
 |---|---|---|
 | Repository password (32 chars) | `/etc/odile/recovery.txt` on the guest, mode 0600; the only copy the user holds | the user (first-visit download), root on the guest, and `scripts/backup.py` for one restic call |
-| Repository password during a rebuild | sealed under the one-time setup token in `/var/lib/odile/seed-rebuilds.json` on HQ (ciphertext only, 0600 `odile`) | the guest, which holds the token; HQ holds ciphertext it cannot open |
+| Repository password during a rebuild | nowhere at HQ: the user's own recovery file, pasted at the rebuilt machine's first visit and written there to `/etc/odile/recovery.txt` for **this** machine (§2.2) | the user, who holds the file; root on the guest after the paste |
 | Repository URL | `/etc/odile/backup-repo.txt` (from the seed, 0644) and the tenant row | everyone; it is an address, not a secret |
 | Repository contents | the SFTP box (v5) / the tenant's R2 bucket `odile-t-<slug>` (interim), restic ciphertext | anyone can copy the bytes; only the password decrypts them |
 | SFTP transport key | `/etc/odile/backup-ssh/id_ed25519` (0600 root, **written from the seed** since ODL-924/933: the key is generated at provision and the machine has none of its own); its public half is installed on the box at provision. `known_hosts` (0600 root) holds the box's pinned host keys, also from the seed | root on the guest; the backup box sees the public half |
@@ -133,11 +133,11 @@ $ strings /srv/odile-backup/tenants/odl-fake01/data/77/77c52743… | grep -c odi
 The control plane's stores — `/root/.odile`, `/etc/odile`, `/opt/odile` — hold
 no copy of the password, which is why the exact-password grep above is `rc=1`;
 a data pack carries no plaintext name. A **rebuild** does not change that: the
-provision that mints the new token seals the old password under it and stores
-ciphertext in `/var/lib/odile/seed-rebuilds.json` (§5.2), so the same grep finds
-nothing there either. The host that *stores* the ciphertext
-does hold the user's own recovery files under `/var/tmp`, because the drill
-acted as the user and kept the download there:
+rebuilt machine has no recovery file until the user pastes theirs at the first
+visit (§2.2), and the paste writes it on the machine, not at HQ — so the same
+grep finds nothing there either, before or after the paste. The host that runs
+the control plane does hold the user's own recovery files under `/var/tmp`,
+because the drill acted as the user and kept the download there:
 `/var/tmp/odile-332-run/recovery-final.txt` opens the live tenant's repository
 and `/var/tmp/odile-215-run/a-recovery.txt` opens the bench one (both mode
 0600). They are not Odile stores: no HQ process reads them, and "HQ cannot read
@@ -492,21 +492,74 @@ terminals; the account is `odile-backup`, an address, not a secret.)
 `last_backup_at`, `age_seconds`, `snapshot`, `repo`, `repo_bytes`,
 `backup_status`. No file name ever leaves the guest.
 
+### 2.2 The rebuilt machine: the paste, the restore, and the snapshot (ODL-937)
+
+A rebuilt machine's home is empty and its seed names the machine it replaced
+(`backup.previous_instance`), so the installer writes no recovery file and the
+first-visit page asks for one **before** it offers the sign-in (ADR-004 §5.3,
+ADR-backup §7.2). The page's copy is fixed by the card: `Your machine is back.`
+/ `Paste the recovery file you saved at your first sign-in. It opens your
+backup.` / `Recovery file` / `Restore`; while the unit runs it shows
+`Restoring your data…` with a five-second meta refresh (no JavaScript); and on
+success `Your data is back. Snapshot <id> of <time>.` with the first 12 hex
+characters of the snapshot the restore named — the same substring the account
+page shows. The words `Installing upgrades` and `Upgrading` never appear: the
+old machine was replaced, not upgraded.
+
+The paste is refused **before** anything runs: the installer's own
+`RECOVERY_PASSWORD_RE` grammar, the file's `Tenant:` line (another tenant's file
+reads `This file is for a different machine.`) and its `Repository:` line (a
+different repository for the same tenant is the same answer), and a truncated
+paste fails at the page with `This file does not open this backup.` A wrong
+password reaches restic, which exits **12**; `backup.py restore` propagates
+that code, and the page shows the same sentence. The home is untouched on every
+refusal, and a retry converges: restic overwrites into the same target.
+
+`odile-restore.service` is one oneshot, root, admitted only by
+`ConditionPathExists=/etc/odile/recovery.txt` (the paste). It runs
+`/usr/local/lib/odile/first_visit.py --restore`, which, in order: stops
+`odile-backup-tenant.timer` (so a 02:00–06:00 UTC run cannot snapshot a
+half-restored home), stops the agent, resolves the snapshot (the seed's
+`backup_snapshot`, or `latest` when the seed names none — resolved **before**
+the restore, so the id shown is the one restored and not the fresh one), runs
+
+```
+backup.py restore <snapshot> --target / --include <home>
+```
+
+writes the seed's `sign_in_hash` back over the restored `.env` (the backup
+night's copy is the verifier of the password the user may have retired), starts
+the agent, runs one `backup.py run` so the newest snapshot is this machine's,
+and starts the timer. `/etc/odile` is never in the restore. A failure leaves
+the timer stopped — the leaves-the-freshness-watchdog signal ADR-backup §7.4
+names — and a wrong password starts the agent again so the machine is never
+worse than before the paste.
+
+`backup.py snapshot-info <id|latest> --json` is the read-only verb the restore
+uses to resolve the id and its time: it runs `restic snapshots --json
+--no-lock` and prints `{id, short_id, time, host, paths}`; no match is exit 3.
+Its `--no-lock` is the read-only key's rule too: the two commands in the
+recovery file carry it, because a read-only sub-account refuses restic's lock.
+
 ---
 
 ## 3. The repository
 
-The seed gives every tenant one URL:
+Since ODL-924 every tenant's seed carries **its own pair's URL** on the Hetzner
+Storage Box BX11 (ADR-004 v3): `sftp:u<box>-subN@u<box>-subN.your-storagebox.de:data/restic`
+for the read-write half, `…:restic` for the read-only half, SFTP port 22, the
+host key pinned in `/etc/odile/backup-ssh/known_hosts`. The repository lives at
+`tenants/<slug>/data/restic` under the sub-account's home; the box is in `hel1`
+(Helsinki, FI, the EU). Measured by the BX11 drill, 2026-11-28
+(`docs/evidence/a3-bx11-drill.md`): `init` 14.7 s, the first run 23.2 s for 515
+files / 16.4 MB, repository 2,808,994 bytes, and 16.3 MB/s up / 15.9 MB/s down
+for a 1.0 GiB transfer.
 
-```
-sftp:odile-backup@backup.odile.fyi:/tenants/{slug}
-```
-
-`backup.odile.fyi` does **not** resolve yet; the off-site storage box is a
-purchase the card did not name, so the drill used a stand-in on HQ: one
-dedicated `sshd` instance on **port 2222**, one account, chrooted, sftp only,
-no shell and no forwarding. It is kept apart from the system sshd so a mistake
-there cannot lock anyone out of HQ:
+**History — the HQ stand-in (port 2222).** Before the box, the seed named
+`sftp:odile-backup@backup.odile.fyi:/tenants/{slug}`, a name that does not
+resolve: the drill used one dedicated `sshd` instance on **port 2222**, one
+account, chrooted, sftp only, no shell and no forwarding, kept apart from the
+system sshd so a mistake there cannot lock anyone out of HQ:
 
 ```
 /etc/ssh/sshd_odile_backup.conf        Port 2222; AllowUsers odile-backup;
@@ -874,11 +927,16 @@ kept from this drill, does not open A's repository (`restic` exit 12,
 `Fatal: wrong password or no key found`), so a rebuilt machine's `backup.py
 init` would meet the old repository with a key it cannot use.
 
-**A rebuild now continues the same repository** (t_fec9f699). The fixture that
-mints the rebuilt machine's setup token takes A's recovery file; the provision
-seals A's password under that token, and the seed carries the sealed value. The
-rebuilt guest's own first boot opens it and writes `/etc/odile/recovery.txt`
-before the installer runs. Measured on the QEMU bench, 2026-11-13:
+**A rebuilt machine continues the same repository — the sealed path this drill
+measured, retired by ODL-937 (t_fec9f699).** Until ODL-937 the fixture that
+minted the rebuilt machine's setup token also took A's recovery file; the
+provision sealed A's password under that token, and the seed carried the sealed
+value. The rebuilt guest's own first boot opened it and wrote
+`/etc/odile/recovery.txt` before the installer ran. That code is gone from the
+tracked tree at this head: the same-repository rebuild is the first-visit paste
+(§2.2), and the transcript below is the 2026-11-13 measurement of the drill —
+`--backup-password-file` and `/var/lib/odile/seed-rebuilds.json` are the
+retired names. Measured on the QEMU bench, 2026-11-13:
 
 ```
 $ firstboot-fixture.py prepare --dir … --instance 45445445-…-000000000699 \
@@ -1090,7 +1148,7 @@ sentence is quoted (ODL-474 lands it).
 | 2026-11-12T19:14:56Z | HQ cannot read | no password in `/root/.odile`, `/etc/odile`, `/opt/odile`; the storing host gets `wrong password`; a pack has no plaintext name |
 | 2026-11-12T22:25:00Z | Nightly unit again (`systemctl start`) | snapshot `fb0f6694` in 1.0 s; heartbeat accepted; `odilectl status` shows `last 22:25:00Z … snapshot fb0f6694` |
 | 2026-11-12T22:28:39Z–23:52:52Z | **Drill 2** (destroy A, rebuild as B and then C, restore A's home with A's recovery file) | PASS: 550 files / 3.630 MiB restored in 0.861 s; `sha256sum -c` OK for all three manifest files; canary `17469543…`; end-to-end RTO 84m13s, of which the timed rebuild-and-restore is 38m03s; RPO 10m51s |
-| 2026-11-13T09:18–09:31Z | **A rebuilt guest continues the repository** (t_fec9f699) | fixture sealed A's password under the new token (no plaintext in `seed-rebuilds.json`); the rebuilt guest's own download carries the same `Backup password:` line as A (`cmp` rc=0), C's pre-fix file differs; `backup.py init` → `same`; `verify` opens 2 snapshots with the guest's file and with A's, and refuses C's (rc 1, restic 12); a `run` writes snapshot `4cf563b0` under `--host odl-bench` beside A's two |
+| 2026-11-13T09:18–09:31Z | **A rebuilt guest continues the repository** (t_fec9f699; the sealed path, retired by ODL-937) | the fixture sealed A's password under the new token (no plaintext in `seed-rebuilds.json`); the rebuilt guest's own download carries the same `Backup password:` line as A (`cmp` rc=0), C's pre-fix file differs; `backup.py init` → `same`; `verify` opens 2 snapshots with the guest's file and with A's, and refuses C's (rc 1, restic 12); a `run` writes snapshot `4cf563b0` under `--host odl-bench` beside A's two |
 
 ## 9. What this card leaves open
 
@@ -1116,36 +1174,34 @@ sentence is quoted (ODL-474 lands it).
   fate. The drill's copy of the user's file under `/var/tmp` is the only
   password beside the ciphertext, and it is the user's own download, not an
   Odile store.
-- **A rebuilt machine continues the same repository** (t_fec9f699). The
-  provision that mints the rebuilt machine's token takes the user's old
-  recovery file:
-
-  ```
-  odilectl provision odl-7f3a2c --key odile-boot.pub \
-      --backup-password-file ~/odile-recovery-odl-7f3a2c.txt --apply
-  ```
-
-  The run seals that file's `Backup password:` line under the token it just
-  minted and writes only ciphertext to `/var/lib/odile/seed-rebuilds.json`
-  (0600, `odile`; §1), so HQ still cannot read it. The seed carries
-  `rebuild: {kdf, sealed, tag}`; `odile-firstboot` opens it with the token from
-  the measured command line and writes `/etc/odile/recovery.txt` through
-  `recovery-seed.py --password-stdin` **before** the installer runs — the value
-  reaches no argv, no `ps` line and no log. A provision *without*
-  `--backup-password-file` removes the slug's entry, so a plain install never
-  carries a stale secret. Measured on the bench (§5.2): the rebuilt guest's own
-  file opens the repository, `backup.py init` prints `same`, and the user's old
-  file still opens it. The live tenant's rebuild is ODL-218's destroy-and-re-provision path
-  (`docs/runbooks/offboard.md` §5), a human step. ADR-007 (`t_ce52bb8d`) makes
-  it the same slug: `destroyed -> claimed` is the one edge back, `provision
-  <slug>` reopens the row before it orders, points the web row and the state
-  row at the new machine and moves the state row to `first_boot` (so the new
-  machine's first boot records itself), and the URL, the recovery file's
-  name and the `tenants/<slug>` repository all survive — so `backup-repo.txt`
-  names the same repository and §5.2's same-repository rebuild is the live
-  path, not a bench-only one. That path's `provision` step must add the flag
-  above with the user's old file — without it the rebuilt machine mints a new
-  password (Drill 2's C).
+- **A rebuilt machine continues the same repository — by the paste, not a seal
+  (t_fec9f699 measured it; ODL-937 made the paste the live path).**
+  `odilectl provision odl-7f3a2c --key odile-boot.pub --pin odile-verify.pin
+  --apply` reopens the destroyed row and orders the machine, and passes no
+  password. The reopen records the dead machine's id in the seed
+  (`backup.previous_instance`); a seed that names the machine it replaces makes
+  the installer write no recovery file, so the rebuilt machine's first visit is
+  the paste (§2.2). The paste writes the user's file back for **this** machine
+  — the same password, the new `Instance:` and certificate, the repository, the
+  pinned host key and the read-only key — and starts the restore, so HQ holds
+  no copy at any point. Measured on the bench (§5.2), on the sealed path this
+  replaces: the rebuilt guest's recovery file opened the repository,
+  `backup.py init` printed `same`, and the user's old file still opened it. The
+  live tenant's rebuild is ODL-218's
+  destroy-and-re-provision path (`docs/runbooks/offboard.md` §5), a human step.
+  ADR-007 (`t_ce52bb8d`) makes it the same slug: `destroyed -> claimed` is the
+  one edge back, `provision <slug>` reopens the row before it orders, points
+  the web row and the state row at the new machine and moves the state row to
+  `first_boot` (so the new machine's first boot records itself), and the URL,
+  the recovery file's name and the `tenants/<slug>` repository all survive — so
+  `backup-repo.txt` names the same repository and the paste is the live path,
+  not a bench-only one. The sealed-password rebuild is retired: ODL-937 removed
+  every writer and reader of `--backup-password-file` and
+  `/var/lib/odile/seed-rebuilds.json` from the tracked tree. `recovery-seed.py
+  --password-stdin` survives as the operator's tool, not as a rebuild step —
+  its own docstring: "Nothing runs it automatically: a rebuild's recovery file
+  comes from the first-visit paste, and this program leaves the machine without
+  one until then (`rebuild_waiting_for_paste`, ODL-937)."
 - **The Servury rebuild.** Drill 2 rebuilds a VM from the same signed recipe;
   destroying and re-provisioning the *live tenant* is ODL-218's path (destroy
   needs the provider API and a new order, i.e. Savio), and it reuses this

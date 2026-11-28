@@ -16,13 +16,13 @@ published disk image), and the certificate line pending. The release installer's
 the page's download fills the certificate line from Caddy's live store
 (installer/first_visit.py, ODL-471).
 
-**A rebuild passes the old password instead.** With ``--password-stdin`` the
+**An operator can write a password instead.** With ``--password-stdin`` the
 program writes the password it reads on stdin rather than generating one, and
-rewrites an existing file: `odile-firstboot`, which holds the token that opens
-the seed's sealed password, runs it before the installer, so the rebuilt
-machine's recovery file opens the repository it already has. A first install
-passes no such flag and the generated password is unchanged. The value never
-appears on argv.
+rewrites an existing file. Nothing runs it automatically: a rebuild's recovery
+file comes from the first-visit paste, and this program leaves the machine
+without one until then (``rebuild_waiting_for_paste``, ODL-937). The flag is
+the manual way for an operator who already knows a repository's password to put
+it in the file — the value never appears on argv, a ``ps`` line or a log.
 
 The bytes are exactly ``render_recovery``'s in installer/odile_install.py with
 ``fingerprint=None``; ``tests/test_sealed_image.py`` compares the two so the
@@ -35,6 +35,7 @@ line.
 
     /usr/bin/python3 recovery-seed.py --path /etc/odile/recovery.txt \\
         --cmdline /proc/cmdline
+    # an operator writes a password they already know (never on argv)
     printf '%s' "$PASSWORD" | /usr/bin/python3 recovery-seed.py \\
         --path /etc/odile/recovery.txt --tenant odl-7f3a2c --instance <id> \\
         --password-stdin
@@ -43,6 +44,7 @@ line.
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import re
 import secrets
@@ -54,6 +56,7 @@ from pathlib import Path
 
 DEFAULT_PATH = "/etc/odile/recovery.txt"
 DEFAULT_CMDLINE = "/proc/cmdline"
+DEFAULT_STATE = "/etc/odile/first-visit.json"
 PENDING = ("(pending — filled in when you download this file on the "
            "first-visit page)")
 
@@ -76,7 +79,13 @@ def generate_password() -> str:
 
 def render(slug: str, instance_id: str, backup_password: str,
            written: str | None = None) -> str:
-    """The recovery file, byte-identical to the installer's render_recovery."""
+    """The recovery file, byte-identical to the installer's render_recovery.
+
+    This writer has no seed pair in hand (the image path writes the state, not
+    the pair), so the repository, host key and read-only key lines carry the
+    installer's own "none" placeholders; `ensure_recovery` rewrites the file
+    with the pair's values on its next run.
+    """
     return f"""\
 Odile recovery file
 ===================
@@ -86,6 +95,15 @@ Written:             {written or utc_now()}
 
 Backup password:     {backup_password}
 Certificate SHA-256: {PENDING}
+Repository:          (none — this machine was installed without a backup repository)
+Host key:            (none)
+Host key line:       (none)
+Read-only key:
+(none — this machine was installed without a read-only key)
+
+Read-only key commands (restic 0.18; the read-only key cannot write, so every
+command carries --no-lock):
+(none — this file carries no read-only key for a repository)
 
 This file is the only copy of the backup password. Download it on this machine's
 first-visit page and keep it somewhere you can reach when the machine is gone.
@@ -93,6 +111,26 @@ The file stays on the machine; ask your agent to show it again if you need it.
 
 Lose it and the encrypted backup cannot be opened; Odile holds no copy.
 """
+
+
+def rebuild_waiting_for_paste(state: str, path: Path) -> bool:
+    """True when this machine is a rebuild whose recovery file the paste writes.
+
+    The image path installs the first-visit page with a state that says the
+    seed named a previous instance (ODL-937). On such a machine the recovery
+    file must not exist before the paste: the backup service's
+    `ConditionPathExists` is what makes a 02:00-06:00 run skip instead of
+    reporting a false failure, and a generated password would not open the old
+    repository anyway. A first install has no such key and gets its file.
+    """
+    if path.is_file():
+        return False
+    try:
+        document = json.loads(Path(state).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    block = document.get("restore") if isinstance(document, dict) else None
+    return bool(isinstance(block, dict) and block.get("previous_instance"))
 
 
 def cmdline_values(text: str) -> dict[str, str]:
@@ -149,7 +187,7 @@ def existing_written(text: str | None) -> str | None:
 
 
 def password_from_stdin() -> str:
-    """The seeded password, validated before it reaches the file.
+    """The operator's password, validated before it reaches the file.
 
     A truncated read is refused here rather than written: an empty or short
     value would become a recovery file that restic rejects as "wrong password".
@@ -167,10 +205,12 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--path", default=DEFAULT_PATH)
     parser.add_argument("--cmdline", default=DEFAULT_CMDLINE)
+    parser.add_argument("--state", default=DEFAULT_STATE,
+                        help="the first-visit state; a rebuild's paste writes the file")
     parser.add_argument("--tenant", default="", help="override bb.host")
     parser.add_argument("--instance", default="", help="override bb.iid")
     parser.add_argument("--password-stdin", action="store_true",
-                        help="write the password read on stdin (a rebuild), not a new one")
+                        help="write the password read on stdin (an operator's), not a new one")
     args = parser.parse_args(argv)
 
     path = Path(args.path)
@@ -179,6 +219,11 @@ def main(argv: list[str] | None = None) -> int:
     if text is not None and password is None:
         print("recovery-seed: %s exists (%d bytes), left as it is"
               % (path, len(text.encode("utf-8"))), flush=True)
+        return 0
+    if password is None and rebuild_waiting_for_paste(args.state, path):
+        print("recovery-seed: %s waits for the paste (a rebuild of the previous "
+              "instance; a generated password would not open the old repository)"
+              % path, flush=True)
         return 0
 
     tenant, instance = args.tenant, args.instance
@@ -197,7 +242,7 @@ def main(argv: list[str] | None = None) -> int:
     write_atomic(path, render(tenant, instance, password or generate_password(),
                               written=existing_written(text)))
     if password is not None:
-        print("recovery-seed: wrote %s (tenant %s, the password from the seed, "
+        print("recovery-seed: wrote %s (tenant %s, the password from stdin, "
               "certificate pending)" % (path, tenant), flush=True)
     else:
         print("recovery-seed: wrote %s (tenant %s, certificate pending)"

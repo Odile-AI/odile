@@ -158,8 +158,6 @@ class MainWiringTests(unittest.TestCase):
             "--seed-cache", str(self.root / "etc" / "seed.json"),
             "--signing-key", str(self.root / "signing.pub"),
             "--installer", str(self.root / "install-stack.sh"),
-            "--recovery", str(self.root / "recovery.txt"),
-            "--recovery-seed", str(self.root / "recovery-seed.py"),
             "--first-visit-service", str(self.root / "absent.py"),
             "--log", str(self.log),
             "--release-dir", str(self.root / "release"),

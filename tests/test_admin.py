@@ -20,7 +20,13 @@ What is pinned here, in the card's own words:
   needs the email as the name and the code as the credential;
 * a notice is queued to the old address and the confirmation to the new one;
   losing the old-address message (a bounce) does not block the change;
-* no `accounts` column becomes a value the guest's own gate accepts.
+* no `accounts` column becomes a value the guest's own gate accepts;
+* ODL-965: every action the console can take leaves exactly one line in the
+  append-only log, with a non-empty actor and an ISO-8601 time, and the table
+  is the rebuilt shape (nullable `account_id` with `ON DELETE SET NULL`, the
+  two address columns nullable, `detail` JSON) whose rebuild keeps every row
+  and id; a line survives its account, and the console shows the last fifty
+  read-only with no control that could edit or remove one.
 
     /usr/bin/python3 -m unittest tests.test_admin -v
 """
@@ -756,12 +762,18 @@ class ConsoleSheetTests(unittest.TestCase):
     def states(self) -> list[str]:
         row = {"email": "tester@example.com", "slug": "odl-tester",
                "email_verified_at": None}
+        log_row = {"account_email": "tester@example.com",
+                   "created_at": TRIAL_START, "actor": ADMIN,
+                   "action": "repoint", "previous_email": None,
+                   "new_email": None, "detail": "{}"}
         return [
-            app.render_admin(allowed=True, actor=ADMIN, accounts=[row]),
             app.render_admin(allowed=True, actor=ADMIN, accounts=[row],
-                             error="A message.", field="new_email"),
+                             log=[log_row]),
             app.render_admin(allowed=True, actor=ADMIN, accounts=[row],
-                             notice="A notice."),
+                             log=[log_row], error="A message.",
+                             field="new_email"),
+            app.render_admin(allowed=True, actor=ADMIN, accounts=[row],
+                             log=[log_row], notice="A notice."),
             app.render_admin(allowed=False),
         ]
 
@@ -852,15 +864,19 @@ class AddressSlotWrapTests(unittest.TestCase):
         row = {"email": "%s@example.test" % long_local,
                "slug": "odl-tester",
                "email_verified_at": None}
+        log_row = {"account_email": "%s@example.test" % long_local,
+                   "created_at": TRIAL_START, "actor": ADMIN,
+                   "action": "repoint", "previous_email": None,
+                   "new_email": None, "detail": "{}"}
         return [
             app.render_admin(allowed=True, actor="%s@example.test" % long_local,
-                             accounts=[row]),
+                             accounts=[row], log=[log_row]),
             app.render_admin(allowed=True, actor="admin@example.com",
-                             accounts=[row],
+                             accounts=[row], log=[log_row],
                              notice="The address is changed. The confirmation"
                                     " goes to %s@example.test." % ("b" * 68)),
             app.render_admin(allowed=True, actor="admin@example.com",
-                             accounts=[row], error="A message.",
+                             accounts=[row], log=[log_row], error="A message.",
                              field="new_email"),
             app.render_admin(allowed=False),
         ]
@@ -1030,6 +1046,353 @@ class MigrationTests(unittest.TestCase):
             con.rollback()
         finally:
             con.close()
+
+
+# ---------------------------------------------------------------------------
+# ODL-965: the log's shape, its one writer, and the console's view
+
+
+# The table as ODL-582 created it. A live database carries exactly this, so the
+# rebuild test starts from it and not from the card's own new DDL.
+OLD_ADMIN_LOG = """
+CREATE TABLE admin_log (
+    id             INTEGER PRIMARY KEY,
+    account_id     INTEGER NOT NULL REFERENCES accounts(id),
+    actor          TEXT    NOT NULL,
+    action         TEXT    NOT NULL,
+    previous_email TEXT    NOT NULL,
+    new_email      TEXT    NOT NULL,
+    created_at     TEXT    NOT NULL
+);
+CREATE INDEX admin_log_account ON admin_log(account_id, id);
+CREATE TRIGGER admin_log_no_update
+BEFORE UPDATE ON admin_log
+BEGIN
+    SELECT RAISE(ABORT, 'the admin log is append-only');
+END;
+CREATE TRIGGER admin_log_no_delete
+BEFORE DELETE ON admin_log
+BEGIN
+    SELECT RAISE(ABORT, 'the admin log is append-only');
+END;
+"""
+
+ISO = r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$"
+LOG_KEYS = ("id", "account_id", "actor", "action", "previous_email",
+            "new_email", "created_at")
+LOG_SECTION = re.compile(r'<section aria-labelledby="log">(.*?)</section>', re.S)
+
+
+def old_shape_database(rows: int = 3) -> sqlite3.Connection:
+    """An in-memory v4 database carrying the pre-ODL-965 `admin_log` and rows."""
+    con = sqlite3.connect(":memory:")
+    con.row_factory = sqlite3.Row
+    con.executescript(OLD_ADMIN_LOG)
+    # The other stores, as a live database has them. Every `CREATE ... IF NOT
+    # EXISTS` is a no-op on the table above, so this fixture keeps the old one.
+    con.executescript(app.SCHEMA)
+    for index in range(1, rows + 1):
+        con.execute(
+            "INSERT INTO accounts (id, slug, email, password_hash,"
+            " confirm_token_hash, confirm_expires_at, trial_started_at,"
+            " trial_ends_at, created_at)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (index, "odl-old%d" % index, "old%d@example.com" % index,
+             "scrypt$1$1$1$salt$key", "token%d" % index,
+             "2026-11-21T09:00:00Z", TRIAL_START, TRIAL_END, TRIAL_START))
+        con.execute(
+            "INSERT INTO admin_log (id, account_id, actor, action,"
+            " previous_email, new_email, created_at)"
+            " VALUES (?, ?, ?, 'repoint', ?, ?, ?)",
+            (index, index, ADMIN, "old%d@example.com" % index,
+             "new%d@example.com" % index, TRIAL_START))
+    con.commit()
+    return con
+
+
+def log_values(con: sqlite3.Connection) -> list[tuple]:
+    return [tuple(row) for row in con.execute(
+        "SELECT %s FROM admin_log ORDER BY id" % ", ".join(LOG_KEYS))]
+
+
+def log_section(page: str) -> str:
+    found = LOG_SECTION.search(page)
+    if found is None:
+        raise AssertionError("the console has no Log section")
+    return found.group(1)
+
+
+class LogSchemaTests(unittest.TestCase):
+    """The rebuild keeps the record and leaves the fence standing."""
+
+    def test_the_rebuilt_table_has_the_widened_shape(self):
+        con = old_shape_database()
+        try:
+            app.migrate(con)
+            columns = {row[1]: row for row in
+                       con.execute("PRAGMA table_info(admin_log)")}
+            self.assertEqual(list(columns), list(LOG_KEYS) + ["detail"])
+            for name in ("account_id", "previous_email", "new_email"):
+                self.assertEqual(columns[name][3], 0, "%s is still NOT NULL" % name)
+            self.assertEqual(columns["actor"][3], 1)
+            self.assertEqual(columns["action"][3], 1)
+            self.assertEqual(columns["created_at"][3], 1)
+            self.assertEqual(columns["detail"][3], 1, "detail must be NOT NULL")
+            self.assertEqual(columns["detail"][4], "'{}'")
+            keys = list(con.execute("PRAGMA foreign_key_list(admin_log)"))
+            self.assertEqual(len(keys), 1)
+            self.assertEqual((keys[0][2], keys[0][3]), ("accounts", "account_id"))
+            self.assertEqual(keys[0][6], "SET NULL")
+            with self.assertRaises(sqlite3.IntegrityError):
+                con.execute(
+                    "INSERT INTO admin_log (actor, action, created_at, detail)"
+                    " VALUES (?, 'delete', ?, 'not json')", (ADMIN, TRIAL_START))
+            con.rollback()
+        finally:
+            con.close()
+
+    def test_the_rebuild_keeps_every_row_and_id(self):
+        con = old_shape_database()
+        try:
+            before = log_values(con)
+            status = app.migrate(con)
+            self.assertEqual(log_values(con), before)
+            self.assertEqual([row[0] for row in before], [1, 2, 3])
+            self.assertEqual(status["tables"]["admin_log"]["rows"], 3)
+            self.assertIn("admin_log.rebuilt", status["added"])
+        finally:
+            con.close()
+
+    def test_a_second_migrate_is_a_no_op(self):
+        con = old_shape_database()
+        try:
+            app.migrate(con)
+            before = log_values(con)
+            again = app.migrate(con)
+            self.assertEqual(again["added"], [])
+            self.assertEqual(log_values(con), before)
+        finally:
+            con.close()
+
+    def test_both_append_only_triggers_survive_the_rebuild(self):
+        con = old_shape_database()
+        try:
+            app.migrate(con)
+            with self.assertRaises(sqlite3.IntegrityError) as caught:
+                con.execute("UPDATE admin_log SET actor = 'someone'")
+            con.rollback()
+            self.assertEqual(str(caught.exception), "the admin log is append-only")
+            with self.assertRaises(sqlite3.IntegrityError) as caught:
+                con.execute("DELETE FROM admin_log")
+            con.rollback()
+            self.assertEqual(str(caught.exception), "the admin log is append-only")
+            self.assertEqual(len(log_values(con)), 3)
+        finally:
+            con.close()
+
+
+class LogWriterTests(unittest.TestCase):
+    """`log_admin` is the one writer, and it refuses an anonymous line."""
+
+    def setUp(self):
+        self.con = sqlite3.connect(":memory:")
+        self.con.row_factory = sqlite3.Row
+        app.migrate(self.con)
+        self.con.execute("PRAGMA foreign_keys = ON")
+
+    def tearDown(self):
+        self.con.close()
+
+    def test_log_admin_is_the_only_insert_in_app(self):
+        source = (ROOT / "app.py").read_text(encoding="utf-8")
+        self.assertEqual(source.count("INSERT INTO admin_log"), 1)
+
+    def test_it_writes_one_line_with_an_iso_time(self):
+        line_id = app.log_admin(self.con, ADMIN, "delete",
+                                detail={"email": "gone@example.com"})
+        self.con.commit()
+        row = self.con.execute(
+            "SELECT * FROM admin_log WHERE id = ?", (line_id,)).fetchone()
+        self.assertEqual(row["actor"], ADMIN)
+        self.assertEqual(row["action"], "delete")
+        self.assertIsNone(row["account_id"])
+        self.assertEqual(row["detail"], '{"email":"gone@example.com"}')
+        self.assertRegex(row["created_at"], ISO)
+        self.assertEqual(
+            self.con.execute("SELECT count(*) FROM admin_log").fetchone()[0], 1)
+
+    def test_it_refuses_a_line_with_no_actor(self):
+        for actor in ("", "   ", None):
+            with self.assertRaises(ValueError):
+                app.log_admin(self.con, actor, "delete")
+        self.assertEqual(
+            self.con.execute("SELECT count(*) FROM admin_log").fetchone()[0], 0)
+
+
+class LogRouteTests(AdminBase):
+    """Every POST route under /admin leaves exactly one line on success.
+
+    The routes come from the module's own dispatcher table, not from a list
+    here, so an action added to the console is enumerated on the day it lands;
+    a route with no success payload fails the walk until the card that adds the
+    action adds one, and the count (exactly one new line) proves the route
+    writes through `log_admin`.
+    """
+
+    def test_the_dispatch_table_is_the_admin_surface(self):
+        routes = dict(app.ADMIN_POST_ROUTES)
+        self.assertTrue(routes, "the console has no dispatcher table")
+        for route, handler in routes.items():
+            self.assertTrue(route.startswith("/admin/"), route)
+            self.assertTrue(callable(getattr(app.Handler, handler, None)),
+                            "%s names no handler" % route)
+
+    def test_no_admin_route_bypasses_the_table(self):
+        # The route walk can only enumerate what the table names, so an
+        # `/admin/...` literal anywhere else in the module is a route the walk
+        # would miss — and therefore a console action that could ship unlogged.
+        source = (ROOT / "app.py").read_text(encoding="utf-8")
+        literal = set(re.findall(r'"(/admin/[^"]*)"', source))
+        self.assertEqual(
+            sorted(literal), sorted(app.ADMIN_POST_ROUTES),
+            "an /admin route outside ADMIN_POST_ROUTES cannot be walked")
+
+    def test_every_admin_post_route_writes_exactly_one_line(self):
+        payload = {
+            "/admin/repoint": lambda target: form(
+                current_email=target, new_email="new-%s" % target),
+        }
+        for route, _handler in sorted(app.ADMIN_POST_ROUTES.items()):
+            with self.subTest(route=route):
+                if route not in payload:
+                    self.fail("add this console action's success payload here,"
+                              " or it ships unlogged")
+                target = self.email()
+                account = self.seed_account(target)
+                before = len(self.log_rows())
+                status, _headers, body = request(
+                    self.port, "POST", route, payload[route](target),
+                    cookie=self.admin_cookie)
+                self.assertEqual(status, 200, body[:400])
+                lines = self.log_rows()
+                self.assertEqual(len(lines), before + 1,
+                                 "%s wrote %d lines" % (route, len(lines) - before))
+                line = lines[-1]
+                self.assertEqual(line["actor"], ADMIN)
+                self.assertTrue(line["action"].strip())
+                self.assertEqual(line["account_id"], int(account["id"]))
+                self.assertRegex(line["created_at"], ISO)
+
+
+class LogViewTests(AdminBase):
+    """The console's Log section: the record, read-only."""
+
+    def test_a_line_survives_its_account_with_the_address_in_detail(self):
+        target = self.email()
+        before = self.seed_account(target)
+        new = "new-%s" % target
+        status, _headers, body = self.repoint(target, new)
+        self.assertEqual(status, 200, body[:400])
+        connection = self.connect()  # connect() turns foreign keys on
+        try:
+            self.assertEqual(
+                connection.execute("PRAGMA foreign_keys").fetchone()[0], 1)
+            connection.execute("DELETE FROM accounts WHERE id = ?",
+                               (int(before["id"]),))
+            connection.commit()
+            line = connection.execute(
+                "SELECT * FROM admin_log WHERE account_id IS NULL"
+                " ORDER BY id DESC LIMIT 1").fetchone()
+        finally:
+            connection.close()
+        self.assertIsNotNone(line, "the log line did not outlive its account")
+        self.assertEqual(line["actor"], ADMIN)
+        self.assertEqual(line["action"], "repoint")
+        self.assertEqual(line["previous_email"], target)
+        self.assertEqual(line["new_email"], new)
+        self.assertEqual(json.loads(line["detail"]), {"email": new})
+        self.assertRegex(line["created_at"], ISO)
+        status, _headers, body = request(
+            self.port, "GET", "/admin", cookie=self.admin_cookie)
+        self.assertEqual(status, 200)
+        section = log_section(body.decode("utf-8"))
+        self.assertIn(new, section, "the console does not show the detail's address")
+        self.assertIn(ADMIN, section)
+        self.assertIn("repoint", section)
+
+    def test_the_log_section_is_read_only(self):
+        status, _headers, body = request(
+            self.port, "GET", "/admin", cookie=self.admin_cookie)
+        self.assertEqual(status, 200)
+        text = body.decode("utf-8")
+        self.assertNotIn("<script", text.lower())
+        section = log_section(text).lower()
+        for tag in ("<form", "<button", "<input", "<select", "<textarea",
+                    "<a ", "method=", "action=", "onclick", "onchange"):
+            self.assertNotIn(tag, section, "the log view carries %s" % tag)
+
+    def test_the_time_is_the_sheets_time_first_composite(self):
+        """BRAND.md §Voice: the sheet's only date-and-time composite leads
+        with the time (`03:10 UTC on 15 December 2026`); the date-first comma
+        form was this card's own and no other surface carries it."""
+        self.assertEqual(app.admin_log_time("2026-11-27T20:48:48Z"),
+                         "20:48:48 UTC on 27 November 2026")
+        self.assertEqual(app.admin_log_time("2026-12-05T03:10:00Z"),
+                         "03:10:00 UTC on 5 December 2026")
+
+    def test_the_time_column_is_sized_by_the_time_not_the_addresses(self):
+        """A legal address must not squeeze the timestamp mid-token.
+
+        Brand gate: with the auto layout two 254-character addresses claimed
+        the row, the Time column fell to 72 px and `overflow-wrap:anywhere`
+        broke `20:48:48` inside the token. The table is fixed with a declared
+        width for each column, and only the address cells break inside a
+        token (BRAND.md §Typography, the numbers bullet).
+        """
+        page = app.render_admin(allowed=True)
+        found = re.search(r"<style>(.*?)</style>", page, re.S)
+        assert found is not None, "the console page carries no <style>"
+        sheet = re.sub(r"/\*.*?\*/", "", found.group(1), flags=re.S)
+        self.assertRegex(sheet, r"table\.log\{[^}]*table-layout:fixed")
+        widths = [float(value) for value in re.findall(
+            r"table\.log th:nth-child\(\d\)\{width:([\d.]+)%\}", sheet)]
+        self.assertEqual(len(widths), 4, "every log column needs its width")
+        self.assertAlmostEqual(sum(widths), 100.0)
+        self.assertGreaterEqual(widths[0], 20.0,
+                                "the Time column is too narrow for the time")
+        self.assertRegex(sheet,
+                         r"table\.log td:first-child\{overflow-wrap:normal\}")
+        self.assertRegex(sheet, r"table\.log td\{[^}]*overflow-wrap:anywhere")
+
+
+class LogLimitTests(AdminBase):
+    """Fifty lines, newest first, and nothing older."""
+
+    def test_the_console_shows_the_last_fifty_newest_first(self):
+        connection = self.connect()
+        try:
+            for index in range(1, 52):
+                connection.execute(
+                    "INSERT INTO admin_log (account_id, actor, action, detail,"
+                    " created_at) VALUES (NULL, ?, 'repoint', ?, ?)",
+                    ("actor%02d@example.com" % index,
+                     json.dumps({"email": "gone%02d@example.com" % index}),
+                     "2026-11-27T18:%02d:00Z" % index))
+            connection.commit()
+        finally:
+            connection.close()
+        status, _headers, body = request(
+            self.port, "GET", "/admin", cookie=self.admin_cookie)
+        self.assertEqual(status, 200)
+        section = log_section(body.decode("utf-8"))
+        self.assertEqual(len(re.findall(r"<tr><td>", section)), 50)
+        self.assertIn("actor51@example.com", section)
+        self.assertNotIn("actor01@example.com", section)
+        self.assertLess(section.index("actor51@example.com"),
+                        section.index("actor02@example.com"))
+        self.assertIn("18:51:00 UTC on 27 November 2026", section)
+        self.assertIn("gone51@example.com", section)
+        self.assertNotIn("gone01@example.com", section)
 
 
 if __name__ == "__main__":

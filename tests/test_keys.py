@@ -304,7 +304,6 @@ class SeedFixture(unittest.TestCase):
         cls.signing_key = os.path.join(directory, "seed-signing.pem")
         cls.config = os.path.join(directory, "seed-config.json")
         cls.seed_keys = os.path.join(directory, "seed-keys.json")
-        cls.rebuilds = os.path.join(directory, "seed-rebuilds.json")
         cls.backup_pairs = os.path.join(directory, "seed-backup-pairs.json")
         cls.credential = os.path.join(directory, "near-account.json")
         os.makedirs(os.path.join(directory, "etc"), exist_ok=True)
@@ -392,7 +391,6 @@ class SeedFixture(unittest.TestCase):
             "ODILE_DB": cls.db,
             "ODILE_SEED_CONFIG": cls.config,
             "ODILE_SEED_KEYS": cls.seed_keys,
-            "ODILE_SEED_REBUILDS": cls.rebuilds,
             "ODILE_SEED_BACKUP_PAIRS": cls.backup_pairs,
             "ODILE_SEED_SIGNING_KEY": cls.signing_key,
             "ODILE_SEED_CERT": cls.cert,

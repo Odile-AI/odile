@@ -929,6 +929,41 @@ PY
         say write "/etc/odile/seed.json (0600, tenant $SEED_SLUG)"
     fi
 
+    # The backup pair the seed carries (ODL-924/933, ODL-937): the repository
+    # URL, the read-write key and the pinned host-key lines. The restore and the
+    # nightly unit read these three files, never the seed. Idempotent by bytes.
+    /usr/bin/python3 - "$SEED_FILE" <<'PY' || true
+import json, os, pathlib, sys
+try:
+    seed = json.load(open(sys.argv[1], encoding="utf-8"))
+except (OSError, ValueError):
+    raise SystemExit(0)
+pair = seed.get("backup") if isinstance(seed, dict) else None
+if not isinstance(pair, dict) or not pair.get("ssh_private_key"):
+    raise SystemExit(0)
+repo = str(pair.get("repo_url") or seed.get("backup_repo_url") or "").strip()
+if not repo:
+    raise SystemExit(0)
+
+
+def write(path, text, mode):
+    target = pathlib.Path(path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    data = text.encode("utf-8")
+    if target.is_file() and target.read_bytes() == data and \
+            (target.stat().st_mode & 0o777) == mode:
+        print("same %s" % path)
+        return
+    target.write_bytes(data)
+    os.chmod(target, mode)
+    print("write %s" % path)
+
+
+write("/etc/odile/backup-repo.txt", repo + "\n", 0o644)
+write("/etc/odile/backup-ssh/id_ed25519", str(pair["ssh_private_key"]), 0o600)
+write("/etc/odile/backup-ssh/known_hosts", str(pair.get("known_hosts") or ""), 0o600)
+PY
+
     # The state is written once. A re-run must not re-open a page the user has
     # already spent; that is the one thing an idempotent apply must not repair.
     # B-once (ODL-925): a seeded run writes the seed's verifier into the .env,
@@ -942,13 +977,14 @@ PY
         state_tmp=$(mktemp)
         /usr/bin/python3 - "$FIRST_VISIT_TOKEN" \
             "$([ "$ENV_HAS_SEED_SIGNIN" -eq 1 ] && echo seeded || echo classic)" \
+            "$SEED_FILE" \
             > "$state_tmp" <<'PY'
 import hashlib, json, sys
 from datetime import datetime, timezone
 
 seeded = sys.argv[2] == "seeded"
 created = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-print(json.dumps({
+state = {
     "version": 1,
     "token_sha256": hashlib.sha256(sys.argv[1].encode("ascii")).hexdigest(),
     "created_at": created,
@@ -958,7 +994,31 @@ print(json.dumps({
     "recovery_hash": None,
     "recovery_issued_at": None,
     "recovery_used_at": None,
-}, indent=2, sort_keys=True))
+}
+# The rebuild's block (ODL-937): the seed names the machine this one replaces,
+# so the first visit asks for the recovery file before the sign-in and the
+# paste comes before any data is offered. No plaintext password travels here.
+try:
+    seed = json.load(open(sys.argv[3], encoding="utf-8"))
+except (OSError, ValueError, IndexError):
+    seed = {}
+pair = seed.get("backup") if isinstance(seed, dict) else None
+pair = pair if isinstance(pair, dict) else {}
+previous = str(pair.get("previous_instance") or "")
+if previous:
+    line = str(pair.get("known_hosts") or "").strip().splitlines()
+    state["restore"] = {
+        "previous_instance": previous,
+        "instance_id": str(seed.get("instance_id") or ""),
+        "slug": str(seed.get("slug") or ""),
+        "repo_url": str(pair.get("repo_url") or seed.get("backup_repo_url") or ""),
+        "snapshot": str(pair.get("backup_snapshot") or ""),
+        "host_key_line": line[0].strip() if line else "",
+        "readonly_key": str(pair.get("readonly_ssh_private_key") or ""),
+        "sign_in_hash": str(seed.get("sign_in_hash") or ""),
+        "status": "waiting",
+    }
+print(json.dumps(state, indent=2, sort_keys=True))
 PY
         install -m 0600 "$state_tmp" /etc/odile/first-visit.json
         rm -f "$state_tmp"
@@ -977,6 +1037,11 @@ PY
     # must exist before the page can be answered; the release installer writes
     # it only near the end of its run. The unit's ExecStartPre writes it first.
     install_file "$HERE/recovery-seed.py" /usr/local/lib/odile/recovery-seed.py 0755
+    # The backup program the restore runs (ODL-937): the same file the nightly
+    # unit runs on a release installer, so the restore's `restore <id>` and
+    # `snapshot-info` verbs exist on the image path too.
+    install_file "$HERE/backup.py" /usr/local/lib/odile/backup.py 0755
+    install -d -m 0755 /etc/odile/backup-ssh /var/lib/odile
 
     unit_tmp=$(mktemp)
     sed -e "s|__TENANT_USER__|$TENANT_USER|g" \
@@ -994,6 +1059,20 @@ PY
     fi
     systemctl enable odile-first-visit.service >/dev/null
     say same "odile-first-visit.service enabled at boot"
+    # The rebuild's restore oneshot (ODL-937): the page starts it by name after
+    # the paste writes the recovery file. Installed, never enabled at boot.
+    unit_tmp=$(mktemp)
+    sed -e "s|__TENANT_HOME__|$TENANT_HOME|g" \
+        -e "s|__UNIT__|$SERVICE_NAME|g" \
+        "$HERE/odile-restore.service" > "$unit_tmp"
+    if cmp -s "$unit_tmp" /etc/systemd/system/odile-restore.service; then
+        say same "/etc/systemd/system/odile-restore.service"
+        rm -f "$unit_tmp"
+    else
+        chmod 0644 "$unit_tmp"
+        mv "$unit_tmp" /etc/systemd/system/odile-restore.service
+        say write "/etc/systemd/system/odile-restore.service"
+    fi
     # In the guest (the first boot) start it now; the first-boot program then
     # proves the page answers before it writes its state. In a build chroot
     # there is no PID 1 to ask.

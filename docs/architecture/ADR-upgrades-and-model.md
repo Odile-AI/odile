@@ -1063,9 +1063,10 @@ machine's local time, so a tenant in another timezone gets a window at its own
 night; the fact carries the instant in UTC. The booking rule: **the next such
 window at least 15 minutes out, and no more than 26 hours out.** A click one
 minute before the machine's own window books tomorrow, not tonight: the machine
-needs the 15 minutes to quiesce and HQ needs the gate. A fixed `03:10` was the
-old `03:00` template's ten-minutes-after, not a rule: a machine whose backup is
-at 05:45 would take its T-0 snapshot nearly a day after its last copy. **There
+needs the 15 minutes to quiesce and HQ needs the gate. Before ODL-933, a fixed
+`03:10` was the old `03:00` template's ten-minutes-after, not a rule: a machine
+whose backup is at 05:45 would take its T-0 snapshot nearly a day after its last
+copy. **There
 is no "upgrade now"**, and that is not a UI choice: the disk write is panel-only
 (ODL-568 §2 — `reinstall` carries no image parameter at all), so the window is
 the one place a machine can be replaced without a vendor dependency created by
