@@ -701,6 +701,54 @@ class ConfirmTests(ServiceCase):
 class AnswerPageTests(ServiceCase):
     """The mailed answers are the account page's paper, not the sign-in shell."""
 
+    def answers(self) -> dict[str, bytes]:
+        """The three answers a link gives, driven through their real states."""
+        address = self.email()
+        new = self.new_address()
+        row = self.seed_account(address)
+        cookie = self.sign_in(address)
+        self.assertEqual(self.submit(cookie, new)[0], 303)
+        links = self.links()
+        status, _headers, pending = self.confirm(links["old"])
+        self.assertEqual(status, 200)
+        status, _headers, changed = self.confirm(links["new"])
+        self.assertEqual(status, 200)
+        status, _headers, closed = self.confirm(links["old"])
+        self.assertEqual(status, 404)
+        self.assertEqual(self.account(row["id"])["email"], new)
+        return {"pending": pending, "changed": changed, "closed": closed}
+
+    def test_the_way_back_is_a_target_not_inline_prose(self):
+        """The answer's only action fills its paragraph, so it is a 44 px target.
+
+        Round 2 moved these answers off the sign-in shell, which had carried an
+        unscoped `p.note a{min-height:44px}`: the way back fell to a 19 px
+        inline hit. BRAND.md §Accessibility tokens asks 44×44 for a link that
+        is the whole content of its paragraph, and allows inline prose (the
+        ready state's "Check its report at <a>") to stay inline — so the rule
+        is scoped to the marked paragraphs and not to every `.note`.
+        """
+        for name, body in self.answers().items():
+            text = body.decode("utf-8")
+            self.assertIn(
+                '<p class="note way"><a href="/account">Go to your account</a></p>',
+                text, name)
+            self.assertIn(
+                "p.way a{display:inline-flex;align-items:center;min-height:44px}",
+                text, name)
+
+    def test_the_ready_notes_inline_report_link_stays_prose(self):
+        """The scoped rule leaves the ready state's inline report link alone."""
+        address = self.email()
+        self.seed_account(address)
+        cookie = self.sign_in(address)
+        status, _headers, body = self.page(cookie)
+        self.assertEqual(status, 200)
+        text = body.decode("utf-8")
+        self.assertIn('<p class="note">The address is ', text)
+        self.assertIn("Check its report at <a href=", text)
+        self.assertNotIn('class="note way"', text)
+
     def test_the_three_answers_are_the_account_pages_paper(self):
         address = self.email()
         new = self.new_address()

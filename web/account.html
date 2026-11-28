@@ -57,6 +57,11 @@ a:focus-visible{outline:2px solid var(--ink);outline-offset:3px}
    not inline prose (BRAND.md §Accessibility tokens; the same rule /forgot
    already carries for its standalone links). */
 .account p.note a{display:inline-flex;align-items:center;min-height:44px}
+/* The three mailed-link answers' way back is the whole content of its
+   paragraph, so it is a target too — and the paragraph is marked, not every
+   `.note`, because the ready state's report link is inline prose (BRAND.md
+   §Accessibility tokens, the documented exception). */
+p.way a{display:inline-flex;align-items:center;min-height:44px}
 .account .next{margin:8px 0 12px}
 .primary{display:inline-flex;align-items:center;justify-content:center;min-height:44px;width:340px;max-width:100%;padding:15px 24px 14px 26px;background:var(--ink);color:var(--paper);border:1px solid var(--ink);text-decoration:none;font:600 10px/1 var(--text);text-transform:uppercase;letter-spacing:.28em}
 .primary:hover{background:var(--ink-hover);border-color:var(--ink-hover)}
@@ -125,20 +130,20 @@ button:focus-visible{outline:2px solid var(--ink);outline-offset:3px}
   <!--link-pending-->
   <h1>Two confirmations.</h1>
   <p class="lede">{{CHANGE_PENDING}}</p>
-  <p class="note"><a href="/account">Go to your account</a></p>
+  <p class="note way"><a href="/account">Go to your account</a></p>
   <!--/link-pending-->
 
   <!--link-changed-->
   <h1>Your address is changed.</h1>
   <p class="lede">The account now answers to <strong>{{NEW_EMAIL}}</strong>.</p>
   <p class="note">Your machine, its sign-in and your backup are unchanged.</p>
-  <p class="note"><a href="/account">Go to your account</a></p>
+  <p class="note way"><a href="/account">Go to your account</a></p>
   <!--/link-changed-->
 
   <!--link-closed-->
   <h1>Confirm the change.</h1>
   <p class="lede">{{CHANGE_CLOSED}}</p>
-  <p class="note"><a href="/account">Go to your account</a></p>
+  <p class="note way"><a href="/account">Go to your account</a></p>
   <!--/link-closed-->
 
   <!--signed-in-->
