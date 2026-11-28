@@ -545,17 +545,21 @@ recovery file carry it, because a read-only sub-account refuses restic's lock.
 
 ## 3. The repository
 
-The seed gives every tenant one URL:
+Since ODL-924 every tenant's seed carries **its own pair's URL** on the Hetzner
+Storage Box BX11 (ADR-004 v3): `sftp:u<box>-subN@u<box>-subN.your-storagebox.de:data/restic`
+for the read-write half, `…:restic` for the read-only half, SFTP port 22, the
+host key pinned in `/etc/odile/backup-ssh/known_hosts`. The repository lives at
+`tenants/<slug>/data/restic` under the sub-account's home; the box is in `hel1`
+(Helsinki, FI, the EU). Measured by the BX11 drill, 2026-11-28
+(`docs/evidence/a3-bx11-drill.md`): `init` 14.7 s, the first run 23.2 s for 515
+files / 16.4 MB, repository 2,808,994 bytes, and 16.3 MB/s up / 15.9 MB/s down
+for a 1.0 GiB transfer.
 
-```
-sftp:odile-backup@backup.odile.fyi:/tenants/{slug}
-```
-
-`backup.odile.fyi` does **not** resolve yet; the off-site storage box is a
-purchase the card did not name, so the drill used a stand-in on HQ: one
-dedicated `sshd` instance on **port 2222**, one account, chrooted, sftp only,
-no shell and no forwarding. It is kept apart from the system sshd so a mistake
-there cannot lock anyone out of HQ:
+**History — the HQ stand-in (port 2222).** Before the box, the seed named
+`sftp:odile-backup@backup.odile.fyi:/tenants/{slug}`, a name that does not
+resolve: the drill used one dedicated `sshd` instance on **port 2222**, one
+account, chrooted, sftp only, no shell and no forwarding, kept apart from the
+system sshd so a mistake there cannot lock anyone out of HQ:
 
 ```
 /etc/ssh/sshd_odile_backup.conf        Port 2222; AllowUsers odile-backup;
